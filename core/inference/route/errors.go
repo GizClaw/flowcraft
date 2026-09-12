@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 type ErrorKind string
@@ -32,11 +33,11 @@ const (
 // sensitive rather than as redacted output.
 type Error struct {
 	Kind      ErrorKind
-	Operation inference.Operation
+	Operation model.Operation
 	cause     error
 }
 
-func NewError(kind ErrorKind, operation inference.Operation, cause error) *Error {
+func NewError(kind ErrorKind, operation model.Operation, cause error) *Error {
 	if cause == nil {
 		cause = errors.New(string(kind))
 	}

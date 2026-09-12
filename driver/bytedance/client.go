@@ -40,13 +40,17 @@ type profileMaterial struct {
 // time.
 type clients struct {
 	ark *arkruntime.Client
+	// arkRequestOptions carries the deployment's static headers, query
+	// parameters, and project attribution. The SDK takes them per call, so
+	// every transport replays this list.
+	arkRequestOptions []arkruntime.RequestOption
 	// endpoints binds model names to this account's deployment addresses
 	// (ProfileSpec.Endpoints); empty maps resolve to the catalog name.
 	endpoints map[string]string
 	// Raw request support: the pinned SDK cannot encode every official
-	// parameter (image layer_decomposition/background), so the image
-	// transport falls back to a direct POST carrying the same credentials,
-	// base URL, and HTTP client.
+	// parameter (the image background field), so the image transport falls
+	// back to a direct POST carrying the same credentials, base URL, and
+	// HTTP client.
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
@@ -105,9 +109,17 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 		built.baseURL = strings.TrimSuffix(built.baseURL, "/")
 	}
 	options := []arkruntime.ConfigOption{}
+	timeout := defaultClientTimeout
+	if spec.Timeout != "" {
+		parsed, err := time.ParseDuration(spec.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("bytedance: parse timeout: %w", err)
+		}
+		timeout = parsed
+	}
 	httpOptions := []utils.Option{
 		utils.WithHTTP2(),
-		utils.WithTimeout(defaultClientTimeout),
+		utils.WithTimeout(timeout),
 		utils.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
 	}
 	if spec.HTTPRetries != nil {
@@ -128,6 +140,25 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 		// replayable transient failures so attempts do not multiply.
 		arkruntime.WithRetryTimes(0),
 	)
+	// Static headers, query parameters, and project attribution are
+	// deployment-wide here, but the SDK only accepts them per call
+	// (RequestOption), so they are compiled once and replayed by every
+	// transport call.
+	if len(spec.Headers) > 0 {
+		built.arkRequestOptions = append(
+			built.arkRequestOptions, arkruntime.WithCustomHeaders(spec.Headers),
+		)
+	}
+	for key, value := range spec.Query {
+		built.arkRequestOptions = append(
+			built.arkRequestOptions, arkruntime.WithQuery(key, value),
+		)
+	}
+	if spec.Project != "" {
+		built.arkRequestOptions = append(
+			built.arkRequestOptions, arkruntime.WithProjectName(spec.Project),
+		)
+	}
 	if apiKey != "" {
 		built.ark = arkruntime.NewClientWithApiKey(apiKey, options...)
 	}

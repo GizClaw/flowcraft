@@ -16,9 +16,8 @@
 //     with execution), route/ (the inference.Router decorator:
 //     tiers, selectors, retry/backoff, circuit breaker, trace)
 //
-// Realtime — the fourth workload — is reserved in the operation enum and
-// field ledger but has no request/session surface yet; it lands in a later
-// milestone. When implemented it plugs in as an OpenRealtime entry on
-// inference.Openers and an AttemptPhaseOpen route path in inference/route;
-// until then providers must not advertise realtime operations.
+// The operation axis is declared once, by model.Operations(); a workload
+// without a request/session surface is not enumerated, so it cannot be
+// declared, routed, or advertised. Realtime remains unimplemented and is
+// therefore absent from the vocabulary until its surface lands.
 package inference

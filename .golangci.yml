@@ -24,3 +24,19 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - depguard
+
+  settings:
+    depguard:
+      rules:
+        # core/inference/model holds the model declaration vocabulary and
+        # depends only on core/message and the leaf core/utils/ptr, never on
+        # the inference contract that re-exports it. An import in this
+        # direction would be a cycle — and, more importantly, would mean the
+        # vocabulary had grown a dependency on the runtime it describes.
+        model-is-a-leaf:
+          files:
+            - "**/core/inference/model/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/inference"
+              desc: "core/inference/model must not import the inference contract"

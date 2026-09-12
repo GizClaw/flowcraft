@@ -9,8 +9,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -30,33 +32,6 @@ import (
 // (reference_image / reference_video / reference_audio), which only the
 // 2.0 series and 2.5 support. First/last-frame input and reference inputs
 // are mutually exclusive, mirroring the official task scenarios.
-
-type videoWire struct {
-	model      string
-	prompt     string
-	firstFrame string
-	lastFrame  string
-	// Reference inputs (Seedance 2.0 series / 2.5 only).
-	referenceImages []string
-	referenceVideos []string
-	referenceAudios []string
-	duration        *int64 // seconds
-	resolution      string // 480p | 720p | 1080p | 4k
-	ratio           string // width:height, e.g. 16:9
-	seed            *int64
-	watermark       *bool
-	// Extension settings (VideoOptions).
-	cameraFixed           *bool
-	generateAudio         *bool
-	serviceTier           string
-	executionExpiresAfter *int64
-	priority              *int32
-	outputFormat          string
-	omniReferenceTaskType string
-	webSearch             bool
-	callbackURL           string
-	safetyIdentifier      string
-}
 
 type videoRaw struct {
 	videoURL         string
@@ -78,22 +53,21 @@ const statusExpired = "expired"
 func compileVideo(
 	endpoint string,
 	entry catalogEntry,
-) inference.GenerateCompiler[videoWire] {
+) inference.GenerateCompiler[*arkmodel.CreateContentGenerationTaskRequest] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		ref model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[videoWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+	) (inference.Compiled[*arkmodel.CreateContentGenerationTaskRequest], error) {
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
-		wire := videoWire{
-			model: endpoint,
-		}
+		ark := &arkmodel.CreateContentGenerationTaskRequest{Model: endpoint}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"video generation is unary on this provider",
 			)
@@ -103,7 +77,7 @@ func compileVideo(
 		var images []string
 		var videos []string
 		var audios []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
 				case message.TextPart:
@@ -115,8 +89,8 @@ func compileVideo(
 				case message.AudioPart:
 					audios = append(audios, value.Source.URL())
 				default:
-					ledger.reject(
-						fields[part.Kind()],
+					ledger.Reject(
+						fields(part.Kind()),
 						fmt.Sprintf(
 							"video generation accepts text, image, video, and audio parts, not %s",
 							part.Kind(),
@@ -127,96 +101,113 @@ func compileVideo(
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"video generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
-		wire.prompt = strings.Join(prompt, "\n")
+		collect(request.Input.Content.Parts, inputPartField)
+		joined := strings.Join(prompt, "\n")
+		ark.Content = []*arkmodel.CreateContentGenerationContentItem{{
+			Type: arkmodel.ContentGenerationContentItemTypeText,
+			Text: &joined,
+		}}
+
+		// The image count picks the role every input plays: one image is the
+		// first frame, two are the bookends, and anything beyond that is a
+		// reference input the 2.0 series and 2.5 accept.
 		referenceMode := len(images) > 2 || len(videos) > 0 || len(audios) > 0
 		switch {
 		case len(images) == 1:
 			if referenceMode {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					"first/last-frame input and reference inputs are mutually exclusive",
 				)
 			}
-			wire.firstFrame = images[0]
+			ark.Content = append(ark.Content, itemImage(images[0], "first_frame"))
 		case len(images) == 2:
 			if referenceMode {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					"first/last-frame input and reference inputs are mutually exclusive",
 				)
 			}
-			wire.firstFrame, wire.lastFrame = images[0], images[1]
+			ark.Content = append(ark.Content,
+				itemImage(images[0], "first_frame"),
+				itemImage(images[1], "last_frame"),
+			)
 		case len(images) > 2:
 			if entry.video.referenceImage == 0 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
 						"model %s does not support reference-image input; it accepts at most a first-frame and a last-frame image",
-						model.ID.Name,
+						ref.ID.Name,
 					),
 				)
 			} else if len(images) > entry.video.referenceImage {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
 						"model %s supports at most %d reference images",
-						model.ID.Name, entry.video.referenceImage,
+						ref.ID.Name, entry.video.referenceImage,
 					),
 				)
 			} else {
-				wire.referenceImages = images
+				for _, url := range images {
+					ark.Content = append(ark.Content, itemImage(url, "reference_image"))
+				}
 			}
 		}
 		switch {
 		case len(videos) > 0 && entry.video.referenceVideo == 0:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputVideo,
-				fmt.Sprintf("model %s does not support video-reference input", model.ID.Name),
+				fmt.Sprintf("model %s does not support video-reference input", ref.ID.Name),
 			)
 		case len(videos) > entry.video.referenceVideo:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputVideo,
 				fmt.Sprintf(
 					"model %s supports at most %d reference videos",
-					model.ID.Name, entry.video.referenceVideo,
+					ref.ID.Name, entry.video.referenceVideo,
 				),
 			)
 		default:
-			wire.referenceVideos = videos
+			for _, url := range videos {
+				ark.Content = append(ark.Content, itemVideo(url, "reference_video"))
+			}
 		}
 		switch {
 		case len(audios) > 0 && entry.video.referenceAudio == 0:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
-				fmt.Sprintf("model %s does not support audio-reference input", model.ID.Name),
+				fmt.Sprintf("model %s does not support audio-reference input", ref.ID.Name),
 			)
 		case len(audios) > entry.video.referenceAudio:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
 					"model %s supports at most %d reference audio clips",
-					model.ID.Name, entry.video.referenceAudio,
+					ref.ID.Name, entry.video.referenceAudio,
 				),
 			)
 		default:
-			wire.referenceAudios = audios
+			for _, url := range audios {
+				ark.Content = append(ark.Content, itemAudio(url, "reference_audio"))
+			}
 		}
 		if len(audios) > 0 && len(images) == 0 && len(videos) == 0 &&
 			!entry.video.audioOnly {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
 					"model %s does not allow audio-only input; include at least one reference image or video",
-					model.ID.Name,
+					ref.ID.Name,
 				),
 			)
 		}
@@ -226,72 +217,75 @@ func compileVideo(
 			if video.DurationMillis != nil {
 				millis := *video.DurationMillis
 				if millis%1000 != 0 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						"the task API bills whole seconds; sub-second durations cannot be honored",
 					)
 				} else {
 					seconds := millis / 1000
 					if min := entry.video.durationMin; min != nil && seconds < *min {
-						ledger.reject(
+						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
-							fmt.Sprintf("model %s requires a duration of at least %ds", model.ID.Name, *min),
+							fmt.Sprintf("model %s requires a duration of at least %ds", ref.ID.Name, *min),
 						)
 					}
 					if max := entry.video.durationMax; max != nil && seconds > *max {
-						ledger.reject(
+						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
-							fmt.Sprintf("model %s caps duration at %ds", model.ID.Name, *max),
+							fmt.Sprintf("model %s caps duration at %ds", ref.ID.Name, *max),
 						)
 					}
-					wire.duration = &seconds
+					ark.Duration = &seconds
 				}
 			}
 			if video.Resolution != "" {
-				wire.resolution = strings.ToLower(video.Resolution)
-				if cap := entry.maxResolution; cap != "" && !resolutionWithin(wire.resolution, cap) {
-					ledger.reject(
+				resolution := strings.ToLower(video.Resolution)
+				ark.Resolution = &resolution
+				if cap := entry.maxResolution; cap != "" && !resolutionWithin(resolution, cap) {
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoResolution,
-						fmt.Sprintf("model %s caps resolution at %s", model.ID.Name, cap),
+						fmt.Sprintf("model %s caps resolution at %s", ref.ID.Name, cap),
 					)
 				}
 			}
 			if video.AspectRatio != "" {
-				wire.ratio = string(video.AspectRatio)
-				if !validVideoRatio(wire.ratio) {
-					ledger.reject(
+				ratio := string(video.AspectRatio)
+				ark.Ratio = &ratio
+				if !validVideoRatio(ratio) {
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoAspectRatio,
-						fmt.Sprintf("unsupported video ratio %q", wire.ratio),
+						fmt.Sprintf("unsupported video ratio %q", ratio),
 					)
 				} else if entry.video.frameRatioAdaptiveOnly &&
-					(wire.firstFrame != "" || wire.lastFrame != "") &&
-					wire.ratio != "adaptive" {
-					ledger.reject(
+					(hasContentRole(ark, "first_frame") ||
+						hasContentRole(ark, "last_frame")) &&
+					ratio != "adaptive" {
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoAspectRatio,
 						fmt.Sprintf(
 							"model %s supports only ratio=adaptive for first/last-frame tasks",
-							model.ID.Name,
+							ref.ID.Name,
 						),
 					)
 				}
 			}
-			wire.seed = video.Seed
-			if wire.seed != nil && !entry.video.seed {
-				ledger.reject(
+			ark.Seed = ptr.Clone(video.Seed)
+			if ark.Seed != nil && !entry.video.seed {
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoSeed,
-					fmt.Sprintf("model %s does not support seed", model.ID.Name),
+					fmt.Sprintf("model %s does not support seed", ref.ID.Name),
 				)
-			} else if wire.seed != nil && (*wire.seed < -1 || *wire.seed > 2_147_483_647) {
-				ledger.reject(
+			} else if ark.Seed != nil && (*ark.Seed < -1 || *ark.Seed > 2_147_483_647) {
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoSeed,
 					"seed must be within [-1, 2147483647]",
 				)
 			}
-			wire.watermark = video.Watermark
+			ark.Watermark = ptr.Clone(video.Watermark)
 		}
-		options, other := operationExtensions[VideoOptions](request.Extensions)
-		rejectOtherExtensions("video generation", other, ledger)
-		compileVideoOptions(&wire, options, entry, ledger, model.ID.Name)
+		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
+		ledger.RejectExtensions("video generation", other)
+		compileVideoOptions(ark, options, entry, ledger, ref.ID.Name)
 
 		if text := intent.Text; text != nil {
 			// Specific control rejections precede the wholesale text
@@ -301,83 +295,88 @@ func compileVideo(
 				"the task API has no sampling controls",
 				"video models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"video models do not produce text",
 			)
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"video models do not produce images",
 			)
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"video models do not synthesize standalone audio; the generate_audio extension adds a track to the video",
 			)
 		}
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[videoWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[*arkmodel.CreateContentGenerationTaskRequest]{
+				Report: report,
+			}, ledger.Err()
 		}
-		return inference.Compiled[videoWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[*arkmodel.CreateContentGenerationTaskRequest]{
+			Wire:   ark,
+			Report: report,
+		}, nil
 	}
 }
 
-// compileVideoOptions lowers VideoOptions onto the wire and rejects
+// compileVideoOptions lowers VideoOptions onto the task request and rejects
 // extension settings the model does not support, per the official
 // documentation's per-model support matrix (catalogEntry.video).
 func compileVideoOptions(
-	wire *videoWire,
+	ark *arkmodel.CreateContentGenerationTaskRequest,
 	options VideoOptions,
 	entry catalogEntry,
-	ledger *ledger,
+	ledger *inference.Ledger,
 	modelName string,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
 	}
 	if options.CameraFixed != nil && !entry.video.cameraFixed {
-		ledger.reject(
+		ledger.Reject(
 			field("camera_fixed"),
 			fmt.Sprintf("model %s does not support camera_fixed", modelName),
 		)
 	}
 	if options.GenerateAudio != nil && !entry.video.generateAudio {
-		ledger.reject(
+		ledger.Reject(
 			field("generate_audio"),
 			fmt.Sprintf("model %s does not support generate_audio", modelName),
 		)
 	}
 	if options.ServiceTier == "flex" && !entry.video.flexTier {
-		ledger.reject(
+		ledger.Reject(
 			field("service_tier"),
 			fmt.Sprintf("model %s does not support service_tier=flex", modelName),
 		)
 	}
 	if options.Priority != nil && !entry.video.priority {
-		ledger.reject(
+		ledger.Reject(
 			field("priority"),
 			fmt.Sprintf("model %s does not support priority", modelName),
 		)
 	}
 	if options.OutputFormat != nil && !entry.video.outputFormat {
-		ledger.reject(
+		ledger.Reject(
 			field("output_format"),
 			fmt.Sprintf("model %s does not support output_format", modelName),
 		)
 	}
 	if options.OmniReferenceTaskType != nil && !entry.video.omniReference {
-		ledger.reject(
+		ledger.Reject(
 			field("omni_reference_task_type"),
 			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
 		)
 	}
 	if options.WebSearch != nil && *options.WebSearch &&
 		!entry.capabilities.HostedWebSearch {
-		ledger.reject(
+		ledger.Reject(
 			field("web_search"),
 			fmt.Sprintf("model %s does not support web_search", modelName),
 		)
@@ -387,36 +386,65 @@ func compileVideoOptions(
 		if taskType == "edit" || taskType == "extend" {
 			// Official constraints: at least one reference_video;
 			// ratio=adaptive; edit additionally requires duration=-1.
-			if len(wire.referenceVideos) == 0 {
-				ledger.reject(
+			if !hasContentRole(ark, "reference_video") {
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					fmt.Sprintf("%s requires at least one reference video", taskType),
 				)
 			}
-			if wire.ratio != "adaptive" {
-				ledger.reject(
+			if derefString(ark.Ratio) != "adaptive" {
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					fmt.Sprintf("%s requires ratio=adaptive", taskType),
 				)
 			}
-			if taskType == "edit" && wire.duration != nil {
-				ledger.reject(
+			if taskType == "edit" && ark.Duration != nil {
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					"edit requires duration=-1; omit the canonical duration",
 				)
 			}
 		}
 	}
-	wire.cameraFixed = options.CameraFixed
-	wire.generateAudio = options.GenerateAudio
-	wire.serviceTier = options.ServiceTier
-	wire.executionExpiresAfter = options.ExecutionExpiresAfter
-	wire.priority = options.Priority
-	wire.outputFormat = derefString(options.OutputFormat)
-	wire.omniReferenceTaskType = derefString(options.OmniReferenceTaskType)
-	wire.webSearch = options.WebSearch != nil && *options.WebSearch
-	wire.callbackURL = derefString(options.CallbackURL)
-	wire.safetyIdentifier = derefString(options.SafetyIdentifier)
+	ark.CameraFixed = ptr.Clone(options.CameraFixed)
+	ark.GenerateAudio = ptr.Clone(options.GenerateAudio)
+	if options.ServiceTier != "" {
+		tier := options.ServiceTier
+		ark.ServiceTier = &tier
+	}
+	ark.ExecutionExpiresAfter = ptr.Clone(options.ExecutionExpiresAfter)
+	ark.Priority = ptr.Clone(options.Priority)
+	if format := derefString(options.OutputFormat); format != "" {
+		ark.OutputFormat = &format
+	}
+	if taskType := derefString(options.OmniReferenceTaskType); taskType != "" {
+		ark.OmniReferenceTaskType = &taskType
+	}
+	if options.WebSearch != nil && *options.WebSearch {
+		ark.Tools = []*arkmodel.ContentGenerationTool{{
+			Type: arkmodel.ToolTypeWebSearch,
+		}}
+	}
+	if url := derefString(options.CallbackURL); url != "" {
+		ark.CallbackUrl = &url
+	}
+	if identifier := derefString(options.SafetyIdentifier); identifier != "" {
+		ark.SafetyIdentifier = &identifier
+	}
+}
+
+// hasContentRole reports whether the compiled content carries an item with the
+// given role.
+func hasContentRole(
+	ark *arkmodel.CreateContentGenerationTaskRequest,
+	role string,
+) bool {
+	for _, item := range ark.Content {
+		if item.Role != nil && *item.Role == role {
+			return true
+		}
+	}
+	return false
 }
 
 // validVideoRatio reports whether ratio is one of the official create-task
@@ -456,66 +484,13 @@ func resolutionWithin(resolution, cap string) bool {
 func transportVideo(
 	client *arkruntime.Client,
 	pollInterval time.Duration,
-) inference.Transport[videoWire, videoRaw] {
-	return func(ctx context.Context, wire videoWire) (videoRaw, error) {
-		prompt := wire.prompt
-		content := []*arkmodel.CreateContentGenerationContentItem{{
-			Type: arkmodel.ContentGenerationContentItemTypeText,
-			Text: &prompt,
-		}}
-		if wire.firstFrame != "" {
-			content = append(content, itemImage(wire.firstFrame, "first_frame"))
-		}
-		if wire.lastFrame != "" {
-			content = append(content, itemImage(wire.lastFrame, "last_frame"))
-		}
-		for _, url := range wire.referenceImages {
-			content = append(content, itemImage(url, "reference_image"))
-		}
-		for _, url := range wire.referenceVideos {
-			content = append(content, itemVideo(url, "reference_video"))
-		}
-		for _, url := range wire.referenceAudios {
-			content = append(content, itemAudio(url, "reference_audio"))
-		}
-		request := arkmodel.CreateContentGenerationTaskRequest{
-			Model:                 wire.model,
-			Content:               content,
-			Duration:              wire.duration,
-			Seed:                  wire.seed,
-			Watermark:             wire.watermark,
-			CameraFixed:           wire.cameraFixed,
-			GenerateAudio:         wire.generateAudio,
-			ExecutionExpiresAfter: wire.executionExpiresAfter,
-		}
-		if wire.resolution != "" {
-			request.Resolution = &wire.resolution
-		}
-		if wire.ratio != "" {
-			request.Ratio = &wire.ratio
-		}
-		if wire.serviceTier != "" {
-			request.ServiceTier = &wire.serviceTier
-		}
-		request.Priority = wire.priority
-		if wire.outputFormat != "" {
-			request.OutputFormat = &wire.outputFormat
-		}
-		if wire.omniReferenceTaskType != "" {
-			request.OmniReferenceTaskType = &wire.omniReferenceTaskType
-		}
-		if wire.webSearch {
-			request.Tools = []*arkmodel.ContentGenerationTool{{
-				Type: arkmodel.ToolTypeWebSearch,
-			}}
-		}
-		if wire.callbackURL != "" {
-			request.CallbackUrl = &wire.callbackURL
-		}
-		if wire.safetyIdentifier != "" {
-			request.SafetyIdentifier = &wire.safetyIdentifier
-		}
-		created, err := client.CreateContentGenerationTask(ctx, request)
+	options []arkruntime.RequestOption,
+) inference.Transport[*arkmodel.CreateContentGenerationTaskRequest, videoRaw] {
+	return func(
+		ctx context.Context,
+		request *arkmodel.CreateContentGenerationTaskRequest,
+	) (videoRaw, error) {
+		created, err := client.CreateContentGenerationTask(ctx, *request, options...)
 		if err != nil {
 			return videoRaw{}, classifyError(err)
 		}
@@ -523,6 +498,7 @@ func transportVideo(
 			task, err := client.GetContentGenerationTask(
 				ctx,
 				arkmodel.GetContentGenerationTaskRequest{ID: created.ID},
+				options...,
 			)
 			if err != nil {
 				return videoRaw{}, classifyError(err)
@@ -621,7 +597,7 @@ func openVideo(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
 	ark, err := cls.requireArk(profile)
@@ -630,7 +606,7 @@ func openVideo(
 	}
 	unary, err := inference.BindGenerate(
 		compileVideo(cls.endpoint(id.Name), entry),
-		transportVideo(ark, spec.videoPollInterval()),
+		transportVideo(ark, spec.videoPollInterval(), cls.arkRequestOptions),
 		decodeVideo,
 	)
 	if err != nil {

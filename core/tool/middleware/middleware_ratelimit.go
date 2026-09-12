@@ -28,11 +28,8 @@ func RateLimit(catalog tool.Catalog) tool.Middleware {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			if p := limiters.forTool(call.Name); p != nil {
 				if err := p.wait(ctx); err != nil {
-					return message.ToolResult{
-						CallID:  call.ID,
-						Content: fmt.Sprintf("tool %q rate-limit wait interrupted: %v", call.Name, err),
-						IsError: true,
-					}
+					return message.NewErrorToolResult(call.ID,
+						fmt.Sprintf("tool %q rate-limit wait interrupted: %v", call.Name, err))
 				}
 			}
 			return next(ctx, call)

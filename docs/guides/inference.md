@@ -5,19 +5,24 @@ title: Inference Runtime
 # Inference Runtime Guide
 
 `core/inference` is the unified, instance-owned runtime for model inference.
-Active workloads are `Generate`, `Embed`, and `Transcription`. `Realtime`
-is reserved in the operation enum and field ledger but has no request or
-session surface yet — it lands in a later milestone.
+Active workloads are `Generate`, `Embed`, and `Transcription`; they are
+enumerated once, by `model.Operations()` in `core/inference/model`.
+
+The model declaration vocabulary — identity, descriptor, capabilities,
+limits, lifecycle, and the catalog patch language — lives in
+`core/inference/model`. `core/inference` re-exports it through deprecated
+aliases (`inference.ModelRef` and friends) so existing callers keep
+compiling; new code should import `core/inference/model` directly.
 
 ## Exact addressing
 
 Every call takes a concrete `ModelRef`:
 
 ```go
-model := inference.ModelRef{
-    ID: inference.ModelID{
+model := model.ModelRef{
+    ID: model.ModelID{
         Provider: "deepseek",
-        Name:     "deepseek-v4-flash",
+        Name:     "deepseek-flash",
     },
 }
 ```
@@ -37,9 +42,22 @@ Providers and the assembly are separate resources:
 resources:
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       id: deepseek
+      spec:
+        api: responses
+        endpoint:
+          base_url: https://api.deepseek.com
+        wire:
+          reasoning_channel: text   # DeepSeek streams plain reasoning text
+        catalog: declared
+        models:
+          - name: deepseek-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
       profiles:
         - secrets:
             api_key: ${env:DEEPSEEK_API_KEY}
@@ -54,9 +72,57 @@ Provider implementations are registered by the application from provider
 driver modules:
 
 ```go
-reg.MustRegister(deepseek.NewFactory())
+reg.MustRegister(openai.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
+
+## Provider lifecycle
+
+Opening a model resolves its credentials and constructs its provider clients.
+The default call path (`Assembly.Generate`, `Embed`, `Transcribe`, ...) resolves
+the target per call, so nothing is cached behind the caller's back and a
+deployment never needs credentials at build time: `Validate` and `InspectModel`
+work without them, and a missing credential surfaces on first use.
+
+Callers that want opened drivers to outlive a single call say so explicitly.
+`Assembly.Bind(ctx, ref)` opens every operation the model declares and returns
+a `Binding`: immutable, safe for concurrent use, owning its drivers until
+dropped. Binding again picks up rotated credentials. A binding compiles per
+request:
+
+```go
+binding, err := assembly.Bind(ctx, model)
+prepared, err := binding.PrepareGenerate(ctx, request) // compiles once
+response, err := prepared.Execute(ctx)                 // provider I/O only
+```
+
+A `Prepared` attempt is what keeps preflight and execution from compiling the
+same request twice. `Assembly.Prepare*` returns the same kind of handle for
+callers that do not hold a binding, and executing one performs provider I/O
+only while still carrying the span, metrics, and usage envelope of a direct
+call. Routing uses exactly this: a routed attempt opens and compiles once, then
+executes that compilation.
+
+The graph `inference` node is the in-tree example of the binding lifetime: a
+node's model is static graph config and the node outlives the turns that run
+through it, so it opens each configured model once (keyed by the full model
+reference, shared by every node in the graph) and compiles per turn.
+
+The script bridge does the same for script calls: `inference.generate`,
+`explain`, `stream`, `embed`, `transcribe`, and `transcribeSession` resolve
+their model through one `inference.BindingCache` owned by the bridge, so a
+script that keeps addressing the same model reuses its drivers. Both hosts rely
+on the same cache type, and both keep working when the model is not one they
+have seen before: a miss simply opens it.
+
+That reuse has a staleness window: a credential or client setting rotated after
+a model was opened stays in effect until the deployment is rebuilt (or the node
+addresses a different profile). Opening is logged with `llm.provider`,
+`llm.model`, and `llm.profile`, so "the deployment is still using the previous
+key" is diagnosable rather than silent. The node keeps at most 16 bindings;
+past that it evicts the least recently used one, so a board-derived model
+reference cannot accumulate drivers while the models the graph keeps addressing
+stay open.
 
 ## Model declarations
 
@@ -67,9 +133,9 @@ capability leaf that is written replaces that leaf, while unstated
 capability leaves, numeric limits, and driver control facts are inherited —
 redeclaring a model to tweak one channel cannot silently revoke the rest,
 and removal is explicit (`hosted_web_search: false`, an empty inputs or
-outputs list, or reasoning kind `none`). Qwen and Kimi follow the same
-leaf semantics; Qwen's custom embed dimensions additionally stay tied to
-its built-in size whitelist.
+outputs list, or reasoning kind `none`). Compatible endpoints configured
+through the OpenAI and Anthropic drivers follow the same leaf semantics,
+and custom embed dimensions stay tied to the built-in size whitelist.
 
 Capability declarations are promises validated per provider surface: a
 model published with reasoning kind `toggle` must compile
@@ -77,6 +143,19 @@ model published with reasoning kind `toggle` must compile
 rejects it. Discovery bits such as `hosted_web_search` and
 `custom_embed_dimensions` ride on the model descriptor, so hosts can
 surface per-model options without driver-specific knowledge.
+
+Declared limits are enforced before any provider work. A `Generate` request
+whose `max_output_tokens` exceeds the target model's declared
+`max_output_tokens` is rejected at declaration time — the driver is not
+opened, and the rejection is transport-safe, so a routed request falls back
+to a target that declares room for it instead of failing. The limit is a
+promise, not a clamp: the caller's budget is never silently lowered, and an
+undeclared limit rejects nothing.
+
+`max_input_tokens` is not enforced: the module has no tokenizer, and a
+missing or approximate count would be worse than none. Hosts that own the
+conversation history can read the declared input window from
+`InspectModel` and enforce it where they already trim context.
 
 ## Routing
 
@@ -95,7 +174,7 @@ resources:
       generate:
         - tier: fast
           targets:
-            - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+            - model: {id: {provider: deepseek, name: deepseek-flash}}
               score: {quality: 0.8, speed: 0.9}
       retry:
         generate:
@@ -178,9 +257,10 @@ object; `client_metadata` is emitted as a passthrough object for gateways
 that speak the Codex convention. An empty configuration never sends
 anything, and core keys are forwarded verbatim.
 
-`request_metadata` forwarding is implemented by the DeepSeek, OpenAI, and
-Azure drivers. Anthropic, MiniMax, Bytedance, Kimi, and Qwen are the current
-exceptions: their official Messages/Ark/DashScope surfaces do not model
+`request_metadata` forwarding is implemented by the OpenAI driver, which
+covers OpenAI, Azure, DeepSeek, Kimi and any compatible endpoint configured
+through its `endpoint` block. Anthropic, MiniMax, and Bytedance are the
+current exceptions: their official Messages/Ark surfaces do not model
 arbitrary request metadata and the drivers deliberately keep their native
 transport paths, so canonical metadata is not forwarded until those
 SDKs/providers add a native channel.
@@ -191,6 +271,25 @@ Drivers that forward it report `native` when their deployment enables an
 envelope. The envelope is an arbitrary non-empty string naming the top-level
 body field; providers that type `metadata` natively lower that name through
 their SDK types, while other names ride as passthrough JSON fields.
+
+### Component notes
+
+Decisions are field-level: every active canonical field carries exactly one
+terminal disposition. Some fields aggregate several content parts under one
+path — the `*` in `generate.context.*.content.parts.tool_result` spans every
+message — so a single disposition cannot say "the text arrived but the image
+did not". Such a decision may carry `components` notes: one entry per part,
+in encounter order, each naming the content kind, its position, and its own
+disposition. The notes are populated only when the field lost at least one
+part, and they must fold onto the field's disposition, so a field can never
+read `native` while one of its components was dropped.
+
+The OpenAI driver uses them for multimodal tool results: text that rides
+along is `native`, an image the wire cannot carry (a Chat Completions tool
+message, a model without image input, an unmaterialized stream source) is
+`dropped` at its own position with a reason, and the model receives an
+in-place `[omitted tool output: ...]` placeholder so the surrounding text
+keeps its meaning.
 
 ## Streaming
 

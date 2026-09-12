@@ -1,6 +1,7 @@
 package script
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -358,24 +359,58 @@ func payloadToToolCall(payload any) (message.ToolCall, bool) {
 // payloadToToolResult decodes a script-supplied tool_result payload
 // into a message.ToolResult. The script-facing field keeps the legacy
 // tool_call_id name; the wire result type uses call_id.
+//
+// Content arrives as "parts": the canonical part array, exactly the
+// shape tools.call returns. A missing or undecodable array rejects the
+// payload rather than degrading to an empty text result.
 func payloadToToolResult(payload any) (message.ToolResult, bool) {
 	raw, ok := marshalPayload(payload)
 	if !ok {
 		return message.ToolResult{}, false
 	}
 	var wire struct {
-		CallID  string `json:"tool_call_id"`
-		Content string `json:"content"`
-		IsError bool   `json:"is_error"`
+		CallID  string          `json:"tool_call_id"`
+		Parts   json.RawMessage `json:"parts"`
+		IsError bool            `json:"is_error"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return message.ToolResult{}, false
 	}
-	result := message.ToolResult{CallID: wire.CallID, Content: wire.Content, IsError: wire.IsError}
+	parts, ok := payloadToParts(wire.Parts)
+	if !ok {
+		return message.ToolResult{}, false
+	}
+	result := message.ToolResult{
+		CallID:  wire.CallID,
+		Content: message.Content{Parts: parts},
+		IsError: wire.IsError,
+	}
 	if err := result.Validate(); err != nil {
 		return message.ToolResult{}, false
 	}
 	return result, true
+}
+
+// payloadToParts decodes a script-supplied array of canonical part wire
+// objects (see [message.UnmarshalPart]). A missing, empty, or
+// undecodable array reports false.
+func payloadToParts(raw json.RawMessage) ([]message.Part, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, false
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	parts := make([]message.Part, 0, len(items))
+	for _, item := range items {
+		part, err := message.UnmarshalPart(item)
+		if err != nil {
+			return nil, false
+		}
+		parts = append(parts, part)
+	}
+	return parts, true
 }
 
 func marshalPayload(payload any) ([]byte, bool) {

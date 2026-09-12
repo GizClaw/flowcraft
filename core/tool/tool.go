@@ -7,9 +7,22 @@ import (
 )
 
 // Tool is the interface that LLM-callable tools must implement.
+//
+// Execute returns provider-neutral content, not a string: a text-only
+// tool returns a single text part ([message.NewTextContent]), while a
+// tool that produces images, audio, files, or structured data keeps
+// those parts intact all the way to the wire. Errors are transport or
+// execution failures; a failure the model should read and recover from
+// is better expressed as an error result at the dispatch layer, which
+// preserves the distinction for middleware and telemetry.
+//
+// Returning zero parts with a nil error is allowed and means "nothing to
+// report": dispatch normalizes it to one empty text part before the
+// result is stored. Content that fails [message.Content.Validate] is a
+// contract violation and comes back as an error result naming the tool.
 type Tool interface {
 	Definition() message.ToolDefinition
-	Execute(ctx context.Context, arguments string) (string, error)
+	Execute(ctx context.Context, arguments string) (message.Content, error)
 }
 
 // ToolMeta carries optional, execution-relevant metadata about a Tool.
@@ -56,19 +69,32 @@ func MetadataOf(t Tool) ToolMeta {
 }
 
 // FuncTool wraps a plain function as a Tool.
-func FuncTool(def message.ToolDefinition, fn func(ctx context.Context, args string) (string, error)) Tool {
+func FuncTool(def message.ToolDefinition, fn func(ctx context.Context, args string) (message.Content, error)) Tool {
 	return &funcTool{def: def, fn: fn}
 }
 
 type funcTool struct {
 	def message.ToolDefinition
-	fn  func(ctx context.Context, args string) (string, error)
+	fn  func(ctx context.Context, args string) (message.Content, error)
 }
 
 func (f *funcTool) Definition() message.ToolDefinition { return f.def }
 
-func (f *funcTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (f *funcTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	return f.fn(ctx, arguments)
+}
+
+// TextTool wraps a plain string-returning function as a Tool. It is the
+// convenience form of [FuncTool] for the common case where the result
+// is a single text part.
+func TextTool(def message.ToolDefinition, fn func(ctx context.Context, args string) (string, error)) Tool {
+	return FuncTool(def, func(ctx context.Context, args string) (message.Content, error) {
+		text, err := fn(ctx, args)
+		if err != nil {
+			return message.Content{}, err
+		}
+		return message.NewTextContent(text), nil
+	})
 }
 
 func (f *funcTool) Metadata() ToolMeta { return ToolMeta{} }

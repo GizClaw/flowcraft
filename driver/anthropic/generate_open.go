@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // openGenerate binds the generate pipeline (Messages API, unary + stream)
@@ -12,7 +13,7 @@ import (
 func openGenerate(
 	cls *clients,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(

@@ -76,9 +76,15 @@ runtime 运行,并写出 `stats.txt`(每轮指标,包含失败信息)和 `chat_l
 ## 凭证
 
 Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声明的
-环境变量。demo 启动时会加载 forge 目录下的 `.env`,目前里面是
-`DEEPSEEK_API_KEY`,所有场景都固定使用 `deepseek-v4-flash`。缺少凭证时应用
-会给出明确报错。
+环境变量。demo 启动时会加载 forge 目录下的 `.env`。只有 `DEEPSEEK_API_KEY`
+是必需的:所有场景都固定使用 `deepseek-flash`。另外还声明了三个可直接使用
+的 provider —— 走 OpenAI 内置目录的 `gpt-5.6-luna`(`OPENAI_API_KEY`),
+走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`),以及走 MiniMax
+Anthropic 兼容 Messages 端点、由 anthropic driver 以声明式目录提供的
+`MiniMax-M3`(`MINIMAX_API_KEY`),以及走 bytedance driver 的 Ark Responses API、
+由 profile 绑定账号内带日期部署地址的 `doubao-seed-2-0-lite`(`ARK_API_KEY`);
+它们用的是惰性引用,只有在图里真的路由过去时缺少 key 才会报错。完全没有凭证
+时应用会给出明确报错。
 
 ## TUI
 
@@ -89,6 +95,19 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 
 `Tab` 切换焦点,`Enter` 提交,`Esc` 清空当前输入,连续按两次 `Ctrl+C`
 退出。空输入不会提交;输入 `/start` 开启新故事,`/next` 让故事继续推进。
+
+两个宿主指令可以在 TUI 内直接配置推理:
+
+- `/model` 选择后端 —— `auto`(走路由策略的默认 target)或部署暴露的任意
+  `provider/name`。也可以直接写 `/model auto`、`/model <target>` 跳过选择器。
+- `/think` 选择思考档位 —— `auto`(沿用图里的默认)或 canonical 五档
+  (`minimal`/`low`/`medium`/`high`/`xhigh`)。各 provider 会折叠到自己的档位,
+  折叠情况记录在编译 ledger 上。
+
+这两个选择只存在于 TUI 进程内:它们作为 engine inputs 传给下一轮,不写入
+工作区或会话。状态栏会显示当前选择。场景自己定义的指令(例如 `/start`、
+`/next`)不是 TUI 命令,仍会作为普通用户文本发给 agent。
+
 每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
 输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
 `core/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;

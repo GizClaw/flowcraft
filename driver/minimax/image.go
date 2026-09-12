@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -48,12 +49,13 @@ func compileImage(
 ) inference.GenerateCompiler[imageWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[imageWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := imageWire{
@@ -62,30 +64,30 @@ func compileImage(
 			delivery: "url",
 		}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"image generation is unary on this provider",
 			)
 		}
 
 		var prompt []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
 				case message.TextPart:
 					prompt = append(prompt, value.Text)
 				case message.ImagePart:
 					if value.Source.Kind() == media.SourceStream {
-						ledger.reject(
-							fields[message.PartImage],
+						ledger.Reject(
+							fields(message.PartImage),
 							"stream media sources must be materialized before generate",
 						)
 						continue
 					}
 					wire.references = append(wire.references, imageSourceValue(value.Source))
 				default:
-					ledger.reject(
-						fields[part.Kind()],
+					ledger.Reject(
+						fields(part.Kind()),
 						fmt.Sprintf("image generation accepts text and image parts, not %s", part.Kind()),
 					)
 				}
@@ -93,15 +95,15 @@ func compileImage(
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
+		collect(request.Input.Content.Parts, inputPartField)
 		wire.prompt = strings.Join(prompt, "\n")
 
 		intent := request.Input.Content.Intent
@@ -111,19 +113,19 @@ func compileImage(
 				"the image API has no sampling controls",
 				"image models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"image models do not produce text",
 			)
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"image models do not synthesize audio",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"image models do not generate video",
 			)
@@ -133,7 +135,7 @@ func compileImage(
 				if size.Width < 512 || size.Width > 2048 ||
 					size.Height < 512 || size.Height > 2048 ||
 					size.Width%8 != 0 || size.Height%8 != 0 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageSize,
 						fmt.Sprintf(
 							"minimax image dimensions are 512–2048 and divisible by 8, not %dx%d",
@@ -147,7 +149,7 @@ func compileImage(
 			}
 			if ratio := string(image.AspectRatio); ratio != "" {
 				if !imageAspectRatios[ratio] {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageAspectRatio,
 						fmt.Sprintf("minimax image aspect ratios are 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9, not %q", ratio),
 					)
@@ -157,7 +159,7 @@ func compileImage(
 			}
 			if image.Count != nil {
 				if *image.Count > 9 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageCount,
 						fmt.Sprintf("minimax image generation serves at most 9 images per request, not %d", *image.Count),
 					)
@@ -167,7 +169,7 @@ func compileImage(
 			}
 			wire.seed = image.Seed
 			if image.OutputFormat != "" && image.OutputFormat != media.ImageFormatJPEG {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentImageOutputFormat,
 					fmt.Sprintf("minimax image generation returns JPEG only, not %s", image.OutputFormat),
 				)
@@ -180,17 +182,17 @@ func compileImage(
 				wire.delivery = "base64"
 			}
 			if image.Quality != "" {
-				ledger.drop(
+				ledger.Drop(
 					inference.FieldGenerateIntentImageQuality,
 					"image-01 has no quality parameter",
 				)
 			}
 		}
-		rejectOtherExtensions("image generation", request.Extensions, ledger)
+		ledger.RejectExtensions("image generation", request.Extensions)
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[imageWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[imageWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[imageWire]{Wire: wire, Report: report}, nil
 	}
@@ -315,7 +317,7 @@ func decodeImage(
 func openImage(
 	cls *clients,
 	_ catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	unary, err := inference.BindGenerate(
 		compileImage(id.Name),

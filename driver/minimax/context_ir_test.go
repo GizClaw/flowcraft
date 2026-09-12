@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -34,17 +35,17 @@ func contextIRRequest(
 
 func compileContextIRWire(
 	t *testing.T,
-	model string,
+	name string,
 	request inference.GenerateRequest,
 ) (contextIRWire, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[model]
+	entry, ok := catalog[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", model)
+		t.Fatalf("catalog model %q missing", name)
 	}
-	compiled, err := compileContextIR(wireModel(model, entry), entry)(
+	compiled, err := compileContextIR(wireModel(name, entry), entry)(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: model}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,
 		inference.GenerateExecutionUnary,
 	)
@@ -379,7 +380,7 @@ func TestCompileContextIRIntents(t *testing.T) {
 				return request
 			}(),
 			field:  videoOptionsField("callback_url"),
-			reason: "does not consume video_options",
+			reason: `extension "video_options" does not apply to context-IR`,
 		},
 	}
 	for _, tc := range cases {

@@ -45,29 +45,34 @@ type streamPart struct {
 	sawArgsDelta    bool
 	sawArgsSnapshot bool
 	sawSummary      bool
+	// sawReasoningText marks a reasoning item whose trace arrived as
+	// reasoning_text deltas (a plain-text reasoning channel) rather than
+	// summary deltas.
+	sawReasoningText bool
 }
 
 func transportGenerateStream(
 	client openai.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+) inference.Transport[*responsesRequest, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		request *responsesRequest,
 	) (inference.ProviderStream[streamRaw], error) {
+		modelName := string(request.params.Model)
 		var requestID string
-		opts := append([]option.RequestOption(nil), requestMetadataOptions(wire)...)
+		opts := append([]option.RequestOption(nil), request.options...)
 		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Responses.NewStreaming(
 			ctx,
-			wireToParams(wire),
+			request.params,
 			opts...,
 		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", modelName, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", modelName, nil, "")
 		return &responsesStream{
 			stream:    stream,
 			parts:     make(map[int64]*streamPart),
@@ -94,7 +99,7 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
 				classified := classifyError(err)
-				logInferenceStream(ctx, "generate", "", classified, "")
+				inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 				return streamRaw{}, classified
 			}
 			return streamRaw{}, io.EOF
@@ -154,8 +159,11 @@ func (s *responsesStream) apply(
 				signature: event.Item.EncryptedContent,
 				id:        part.id,
 			}
-			if !part.sawSummary {
-				raw.text = reasoningSummary(event.Item.Summary)
+			// The item terminal carries the full trace when no deltas
+			// streamed: summary entries on the OpenAI shape, reasoning_text
+			// content on a plain-text channel.
+			if !part.sawSummary && !part.sawReasoningText {
+				raw.text = reasoningText(event.Item.AsReasoning())
 			}
 			if raw.text == "" && raw.signature == "" {
 				return streamRaw{}, false, nil
@@ -199,6 +207,36 @@ func (s *responsesStream) apply(
 			kind: streamRawReasoning,
 			part: part.index,
 			text: event.Delta,
+		}, true, nil
+	case "response.reasoning_text.delta":
+		// A plain-text reasoning channel streams the trace as
+		// reasoning_text rather than as summary entries.
+		part := s.registerPart(event.OutputIndex, false)
+		part.reasoning = true
+		part.sawReasoningText = true
+		if event.Delta == "" {
+			return streamRaw{}, false, nil
+		}
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: event.Delta,
+		}, true, nil
+	case "response.reasoning_text.done":
+		part := s.registerPart(event.OutputIndex, false)
+		part.reasoning = true
+		if event.ItemID != "" {
+			part.id = event.ItemID
+		}
+		if part.sawReasoningText || event.Text == "" {
+			return streamRaw{}, false, nil
+		}
+		part.sawReasoningText = true
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: event.Text,
+			id:   part.id,
 		}, true, nil
 	case "response.output_text.delta":
 		part := s.registerPart(event.OutputIndex, false)
@@ -420,7 +458,7 @@ func decodeGenerateStream(
 			ResponseID:        raw.responseID,
 			ProviderOutputs:   raw.providerOutputs.Clone(),
 		}
-		logInferenceStreamEnd(ctx, "generate", raw.responseID)
+		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

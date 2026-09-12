@@ -9,6 +9,20 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
+// jsonOf returns the JSON an object result carries as its structured
+// data part.
+func jsonOf(t *testing.T, content message.Content) string {
+	t.Helper()
+	if len(content.Parts) != 1 {
+		t.Fatalf("content parts = %d, want 1", len(content.Parts))
+	}
+	data, ok := content.Parts[0].(message.DataPart)
+	if !ok {
+		t.Fatalf("content part = %T, want message.DataPart", content.Parts[0])
+	}
+	return string(data.Value)
+}
+
 func TestAssembly_DynamicRegistersSearchTool(t *testing.T) {
 	assembly, err := tool.NewAssembly(
 		[]tool.Source{source{tools: []tool.Tool{funcTool("search", "no")}}},
@@ -54,8 +68,8 @@ func TestAssembly_SearchToolExecutesAgainstSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute tool_search: %v", err)
 	}
-	if !strings.Contains(out, `"exposed":["web.search"]`) {
-		t.Fatalf("tool_search output = %s", out)
+	if rendered := jsonOf(t, out); !strings.Contains(rendered, `"exposed":["web.search"]`) {
+		t.Fatalf("tool_search output = %s", rendered)
 	}
 	names := definitionNames(session.Definitions())
 	if !contains(names, "web.search") {
@@ -96,7 +110,7 @@ func TestAssembly_DispatcherDelegation(t *testing.T) {
 	var dispatcher tool.Dispatcher = assembly
 	res := dispatcher.Execute(context.Background(),
 		message.ToolCall{ID: "c", Name: "ok", Arguments: []byte(`{}`)})
-	if res.IsError || res.Content != "fine" {
+	if res.IsError || res.Content.Text() != "fine" {
 		t.Fatalf("result = %+v", res)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -89,7 +90,7 @@ func (r *Runtime) publishLifecycleEvent(
 	subject event.Subject,
 	payload any,
 ) {
-	if r == nil || r.bus == nil || isNilContext(ctx) {
+	if r == nil || r.bus == nil || ptr.IsNil(ctx) {
 		return
 	}
 	envelope, err := event.NewEnvelope(ctx, subject, payload)

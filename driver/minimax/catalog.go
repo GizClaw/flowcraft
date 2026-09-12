@@ -6,14 +6,13 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type modelKind string
 
 const (
-	kindGenerate  modelKind = "generate"
 	kindImage     modelKind = "image"
 	kindTTS       modelKind = "tts"
 	kindVideo     modelKind = "video"
@@ -28,7 +27,7 @@ const (
 // no capability kind expresses and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
-	capabilities inference.ModelCapabilities
+	capabilities model.ModelCapabilities
 	// wireModel overrides the model token sent to the API when the
 	// catalog name is a deployment-side alias (e.g. MiniMax-H3-Context-IR
 	// still speaks to the MiniMax-H3 model). Empty uses the catalog name.
@@ -54,7 +53,7 @@ type catalogEntry struct {
 	// leaves are undeclared. M3 holds the 1M context with a 524288
 	// max_tokens cap (recommended 131072); the M2.x series holds 204,800 —
 	// per https://platform.minimaxi.com/docs/guides/text-generation.
-	limits inference.ModelLimits
+	limits model.ModelLimits
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -65,10 +64,6 @@ func (e catalogEntry) validate() error {
 		return err
 	}
 	switch e.kind {
-	case kindGenerate:
-		if !slices.Contains(e.capabilities.Outputs, message.PartText) {
-			return fmt.Errorf("generate family must declare text output")
-		}
 	case kindImage:
 		if !slices.Contains(e.capabilities.Outputs, message.PartImage) {
 			return fmt.Errorf("image family must declare image output")
@@ -91,21 +86,6 @@ func (e catalogEntry) validate() error {
 	return e.limits.Validate()
 }
 
-// generateChatCapabilities is the common capability declaration for the
-// MiniMax Messages compiler family. Individual entries add image input when
-// the model has vision and the reasoning kind the model serves.
-func generateChatCapabilities() inference.ModelCapabilities {
-	return inference.ModelCapabilities{
-		Inputs: []message.PartKind{
-			message.PartText,
-			message.PartData,
-			message.PartToolCall,
-			message.PartToolResult,
-		},
-		Outputs: []message.PartKind{message.PartText},
-	}
-}
-
 // catalog reflects MiniMax's lineup as of 2026-07. Sources:
 //   - https://platform.minimaxi.com/docs/api-reference/api-overview
 //   - https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
@@ -122,92 +102,39 @@ func generateChatCapabilities() inference.ModelCapabilities {
 // lyrics/format through MusicOptions; music-cover stays out because it has
 // no honest surface in that intent.
 var catalog = map[string]catalogEntry{
-	"MiniMax-M3": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithInputs(message.PartImage, message.PartVideo).
-			WithReasoning(inference.ReasoningToggle),
-		limits: inference.ModelLimits{}.
-			WithMaxInputTokens(1_000_000).
-			WithMaxOutputTokens(524_288),
-	},
-	"MiniMax-M2.7": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.7-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.5": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.5-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.1": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.1-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-
-	// Speech synthesis (t2a_v2): HD and turbo tiers.
 	"speech-2.8-hd": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"speech-2.8-turbo": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"speech-2.6-hd": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"speech-2.6-turbo": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"speech-02-hd": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"speech-02-turbo": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
@@ -215,13 +142,13 @@ var catalog = map[string]catalogEntry{
 	// Image generation.
 	"image-01": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"image-01-live": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
@@ -235,7 +162,7 @@ var catalog = map[string]catalogEntry{
 	// (image-to-video) and first/last-frame input.
 	"MiniMax-Hailuo-2.3": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		video10s: true,
@@ -243,7 +170,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"MiniMax-Hailuo-2.3-Fast": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		videoI2VOnly: true,
@@ -252,7 +179,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"MiniMax-Hailuo-02": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		video10s:       true,
@@ -262,7 +189,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"MiniMax-H3": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -280,7 +207,7 @@ var catalog = map[string]catalogEntry{
 	"MiniMax-H3-Context-IR": {
 		kind:      kindContextIR,
 		wireModel: "MiniMax-H3",
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -294,25 +221,25 @@ var catalog = map[string]catalogEntry{
 	// music.go). The -free tiers are rate-limited gratis twins.
 	"music-3.0": {
 		kind: kindMusic,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"music-3.0-free": {
 		kind: kindMusic,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"music-2.6": {
 		kind: kindMusic,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"music-2.6-free": {
 		kind: kindMusic,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
@@ -329,7 +256,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		entry := catalogEntry{
 			kind: modelKind(declared.Kind),
 		}
-		base := inference.ModelCapabilities{}
+		base := model.ModelCapabilities{}
 		if existing, exists := models[declared.Name]; exists {
 			if entry.kind == "" {
 				entry.kind = existing.kind
@@ -353,7 +280,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			}
 		} else {
 			if entry.kind == "" {
-				entry.kind = kindGenerate
+				return nil, fmt.Errorf(
+					"model %q needs a kind: text generation moved to the anthropic driver (impl: anthropic)",
+					declared.Name,
+				)
 			}
 		}
 		// The declaration's capability leaves always apply; the base is the
@@ -402,8 +332,8 @@ func sortedNames(models map[string]catalogEntry) []string {
 // descriptorFor lowers one catalog entry into its public discovery
 // descriptor under id. buildProvider and Catalog share this lowering so
 // offline catalog views cannot drift from deployed provider models.
-func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDescriptor {
-	descriptor := inference.ModelDescriptor{
+func descriptorFor(id model.ModelID, entry catalogEntry) model.ModelDescriptor {
+	descriptor := model.ModelDescriptor{
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
@@ -416,14 +346,14 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 // lifecycle; Operations stay empty because the inference assembly derives them
 // from the model's openers after deployment. Provider IDs are a deployment
 // property, so callers supply the identity that appears in each descriptor.
-func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+func Catalog(provider string) ([]model.ModelDescriptor, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("catalog: provider is required")
 	}
-	descriptors := make([]inference.ModelDescriptor, 0, len(catalog))
+	descriptors := make([]model.ModelDescriptor, 0, len(catalog))
 	for _, name := range sortedNames(catalog) {
 		descriptor := descriptorFor(
-			inference.ModelID{Provider: provider, Name: name},
+			model.ModelID{Provider: provider, Name: name},
 			catalog[name],
 		)
 		descriptors = append(descriptors, descriptor)

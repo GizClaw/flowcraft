@@ -11,7 +11,7 @@ File definitions are capped at 1 MiB.
   "entry": "chat",
   "nodes": [
     {"id": "chat", "type": "inference", "config": {
-      "model": {"id": {"provider": "deepseek", "name": "deepseek-v4-flash"}},
+      "model": {"id": {"provider": "deepseek", "name": "deepseek-flash"}},
       "messages_channel": "__main_channel"
     }},
     {"id": "tools", "type": "tool", "config": {
@@ -140,7 +140,7 @@ and appends the results as one `role=tool` message.
 | Config field | Meaning |
 | --- | --- |
 | `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
-| `results_key` | board var receiving the raw `[]message.Result` |
+| `results_key` | board var receiving the raw `[]message.ToolResult` (`{call_id, content: {parts: [...]}, is_error}`) |
 
 Allow-listing/approval policy lives in the dispatcher's middleware, not the
 node.
@@ -296,10 +296,14 @@ payloads that do not decode into the type's required shape (e.g. a
 
 ### `tools`
 
-- `call(name, argumentsJSON)` → `{content, is_error, tool_call_id}`
+- `call(name, argumentsJSON)` → `{parts, is_error, tool_call_id, name}`
 - `callAll([{name, arguments, id?}, ...])` → per-entry result plus `name`;
   model-issued `id`s are forwarded verbatim
 - `list()` → allowed tool names; `definitions()` → wire-ready tool JSON
+
+`parts` is the canonical part array (`{"type":"text","text":"..."}`,
+`{"type":"image","source":{...}}`, ...), so multimodal tool results reach
+the script intact.
 
 By default **no** tool is callable until the host allow-lists it; denied
 entries become `is_error` results.

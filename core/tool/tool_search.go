@@ -58,22 +58,22 @@ type searchFailure struct {
 
 // Execute parses the query, ranks hits, and exposes the top results for
 // the following rounds through the session discovery pool.
-func (SearchTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (SearchTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	session, ok := SessionFromContext(ctx)
 	if !ok {
-		return "", errdefs.NotAvailablef(
+		return message.Content{}, errdefs.NotAvailablef(
 			"tool: %s requires a session on the context", ToolName)
 	}
 	var args searchArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", errdefs.Validationf("tool: %s: parse arguments: %v", ToolName, err)
+		return message.Content{}, errdefs.Validationf("tool: %s: parse arguments: %v", ToolName, err)
 	}
 	if strings.TrimSpace(args.Query) == "" {
-		return "", errdefs.Validationf("tool: %s: query is required", ToolName)
+		return message.Content{}, errdefs.Validationf("tool: %s: query is required", ToolName)
 	}
 	hits, err := session.Search(ctx, args.Query, args.Limit)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	loaded := make([]string, 0, len(hits))
 	var failed []searchFailure
@@ -98,13 +98,20 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (string, error)
 			failed = append(failed, searchFailure{Name: result.Name, Reason: result.Reason})
 		}
 	}
-	return compactJSON(searchResult{
+	encoded, err := compactJSON(searchResult{
 		Query:   args.Query,
 		Hits:    hits,
 		Exposed: exposed,
 		Failed:  failed,
 		Evicted: outcome.Evicted,
 	})
+	if err != nil {
+		return message.Content{}, err
+	}
+	// The result is a JSON object: it rides as structured data, not as
+	// prose, so redaction and result limiting treat it like any other
+	// part.
+	return message.NewJSONContent([]byte(encoded))
 }
 
 func compactJSON(v any) (string, error) {

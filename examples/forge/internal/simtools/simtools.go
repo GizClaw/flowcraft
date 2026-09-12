@@ -134,7 +134,7 @@ func (t *simulatedTool) Definition() message.ToolDefinition {
 	return t.definition
 }
 
-func (t *simulatedTool) Execute(_ context.Context, arguments string) (string, error) {
+func (t *simulatedTool) Execute(_ context.Context, arguments string) (message.Content, error) {
 	if t.count != nil {
 		t.count.Add(1)
 	}
@@ -151,7 +151,7 @@ func (t *simulatedTool) Execute(_ context.Context, arguments string) (string, er
 	}
 	raw, err := json.Marshal(out)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
-	return string(raw), nil
+	return message.NewTextContent(string(raw)), nil
 }

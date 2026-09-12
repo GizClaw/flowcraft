@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -472,9 +473,9 @@ func TestInferenceBridge_Explain_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("explanation = %T, want object", out)
 	}
-	if explanation["Operation"] != string(inference.OperationGenerate) {
+	if explanation["Operation"] != string(model.OperationGenerate) {
 		t.Fatalf("explanation.Operation = %v, want %q",
-			explanation["Operation"], inference.OperationGenerate)
+			explanation["Operation"], model.OperationGenerate)
 	}
 	model, ok := explanation["Model"].(map[string]any)
 	if !ok || model["id"] == nil {
@@ -501,9 +502,9 @@ func TestInferenceBridge_Explain_NoRuntime(t *testing.T) {
 func TestInferenceBridge_RouteExplain_RoundTrip(t *testing.T) {
 	limit := 128_000
 	fake := &inferencetest.GenerateFake{
-		Descriptor: inference.ModelDescriptor{
+		Descriptor: model.ModelDescriptor{
 			ID: inferencetest.DefaultFakeModel.ID,
-			Limits: inference.ModelLimits{
+			Limits: model.ModelLimits{
 				MaxInputTokens: &limit,
 			},
 		},
@@ -572,9 +573,9 @@ func TestInferenceBridge_Models_RoundTrip(t *testing.T) {
 	limit := 128_000
 	outputLimit := 32_768
 	fake := &inferencetest.GenerateFake{
-		Descriptor: inference.ModelDescriptor{
+		Descriptor: model.ModelDescriptor{
 			ID: inferencetest.DefaultFakeModel.ID,
-			Limits: inference.ModelLimits{
+			Limits: model.ModelLimits{
 				MaxInputTokens:  &limit,
 				MaxOutputTokens: &outputLimit,
 			},
@@ -616,9 +617,9 @@ func TestInferenceBridge_Models_NoRuntime(t *testing.T) {
 func TestInferenceBridge_Inspect_RoundTrip(t *testing.T) {
 	limit := 64_000
 	fake := &inferencetest.GenerateFake{
-		Descriptor: inference.ModelDescriptor{
+		Descriptor: model.ModelDescriptor{
 			ID: inferencetest.DefaultFakeModel.ID,
-			Limits: inference.ModelLimits{
+			Limits: model.ModelLimits{
 				MaxInputTokens: &limit,
 			},
 		},
@@ -666,18 +667,18 @@ func TestInferenceBridge_ExplainStream_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("explanation = %T, want object", out)
 	}
-	if explanation["Operation"] != string(inference.OperationGenerate) {
+	if explanation["Operation"] != string(model.OperationGenerate) {
 		t.Fatalf("explanation.Operation = %v, want %q",
-			explanation["Operation"], inference.OperationGenerate)
+			explanation["Operation"], model.OperationGenerate)
 	}
 }
 
 func TestInferenceBridge_RouteExplainStream_RoundTrip(t *testing.T) {
 	limit := 128_000
 	fake := &inferencetest.GenerateFake{
-		Descriptor: inference.ModelDescriptor{
+		Descriptor: model.ModelDescriptor{
 			ID: inferencetest.DefaultFakeModel.ID,
-			Limits: inference.ModelLimits{
+			Limits: model.ModelLimits{
 				MaxInputTokens: &limit,
 			},
 		},
@@ -810,18 +811,18 @@ func TestInferenceBridge_ExplainEmbed_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("explanation = %T, want object", out)
 	}
-	if explanation["Operation"] != string(inference.OperationEmbed) {
+	if explanation["Operation"] != string(model.OperationEmbed) {
 		t.Fatalf("explanation.Operation = %v, want %q",
-			explanation["Operation"], inference.OperationEmbed)
+			explanation["Operation"], model.OperationEmbed)
 	}
 }
 
 func TestInferenceBridge_RouteExplainEmbed_RoundTrip(t *testing.T) {
 	limit := 8_192
 	fake := &inferencetest.EmbedFake{
-		Descriptor: inference.ModelDescriptor{
+		Descriptor: model.ModelDescriptor{
 			ID: inferencetest.DefaultFakeEmbedModel.ID,
-			Limits: inference.ModelLimits{
+			Limits: model.ModelLimits{
 				MaxInputTokens: &limit,
 			},
 		},
@@ -1184,11 +1185,12 @@ func TestInferenceBridge_RouteTranscribeSession_Extensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routeTranscribeSession with extensions: %v", err)
 	}
-	// Route session open compiles twice: the Explain preflight and the
-	// actual open. Both must carry the extension.
+	// A routed session open compiles once: the router's preflight produces the
+	// compiled attempt and the open executes it. The extension must ride that
+	// single compilation.
 	reqs := fake.SessionRequests()
-	if len(reqs) != 2 {
-		t.Fatalf("router forwarded %d session requests, want 2", len(reqs))
+	if len(reqs) != 1 {
+		t.Fatalf("router forwarded %d session requests, want 1", len(reqs))
 	}
 	for _, req := range reqs {
 		if len(req.Extensions) != 1 {
@@ -1216,9 +1218,9 @@ func TestInferenceBridge_ExplainTranscribe_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("explanation = %T, want object", out)
 	}
-	if explanation["Operation"] != string(inference.OperationTranscription) {
+	if explanation["Operation"] != string(model.OperationTranscription) {
 		t.Fatalf("explanation.Operation = %v, want %q",
-			explanation["Operation"], inference.OperationTranscription)
+			explanation["Operation"], model.OperationTranscription)
 	}
 }
 

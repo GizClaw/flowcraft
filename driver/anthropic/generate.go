@@ -9,96 +9,18 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
-)
 
-// ---------------------------------------------------------------------------
-// Wire model — provider-owned, concrete, canonical-free.
-//
-// The compiler lowers a canonical GenerateRequest into generateWire: plain Go
-// values that preserve the request's part order, bytes, and intent verbatim.
-// Only the transport converts the wire into anthropic-sdk-go param types, so
-// the compiled form stays inspectable and free of SDK union wrappers.
-// ---------------------------------------------------------------------------
+	anthropicgo "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
+)
 
 // DefaultMaxTokens pins the required max_tokens parameter when the request
 // leaves MaxOutputTokens unset: the Messages API rejects requests without
 // it, and inventing a per-model figure would be a silent behavior choice.
 const DefaultMaxTokens = 8192
-
-type generateWire struct {
-	model       string
-	stream      bool
-	system      []string
-	messages    []wireMessage
-	maxTokens   int64
-	temperature *float64
-	topP        *float64
-	effort      string // low | medium | high; empty means unset
-	// thinking carries the explicit reasoning switch: nil means unset,
-	// false emits thinking: {type: "disabled"}, true emits adaptive
-	// thinking where effort levels do not apply.
-	thinking   *bool
-	format     *wireFormat
-	tools      []wireTool
-	toolChoice *wireToolChoice
-}
-
-type wireMessage struct {
-	role   string // user | assistant
-	blocks []wireBlock
-}
-
-type wireBlockKind string
-
-const (
-	wireBlockText             wireBlockKind = "text"
-	wireBlockImage            wireBlockKind = "image"
-	wireBlockToolUse          wireBlockKind = "tool_use"
-	wireBlockToolResult       wireBlockKind = "tool_result"
-	wireBlockThinking         wireBlockKind = "thinking"
-	wireBlockRedactedThinking wireBlockKind = "redacted_thinking"
-)
-
-type wireBlock struct {
-	kind wireBlockKind
-	text string // text / thinking
-	// image carries an absolute URL or base64 bytes with a media type.
-	imageURL  string
-	imageData []byte
-	imageType string
-	// tool_use / tool_result.
-	callID string
-	name   string // tool_use
-	args   []byte // tool_use: JSON object
-	output string // tool_result
-	// signature carries the thinking block's verification signature; for
-	// redacted_thinking it carries the opaque redacted data.
-	signature string
-}
-
-// thinking reports whether the block belongs at the head of an assistant
-// message: the Messages API requires thinking and redacted blocks to precede
-// all other blocks in their turn.
-func (b wireBlock) thinking() bool {
-	return b.kind == wireBlockThinking || b.kind == wireBlockRedactedThinking
-}
-
-type wireFormat struct {
-	schema []byte // JSON schema object
-}
-
-type wireTool struct {
-	name        string
-	description string
-	schema      []byte
-}
-
-type wireToolChoice struct {
-	mode string // auto | none | any | tool
-	name string
-}
 
 // ---------------------------------------------------------------------------
 // Raw model — transport-owned response data, decoded into canonical forms.
@@ -168,149 +90,55 @@ type streamRawTool struct {
 }
 
 // ---------------------------------------------------------------------------
-// Compile ledger — tracks rejected active fields and builds reports.
-// ---------------------------------------------------------------------------
-
-type ledger struct {
-	operation inference.Operation
-	active    []inference.FieldID
-	rejected  map[inference.FieldID]string
-	dropped   map[inference.FieldID]string
-	order     []inference.FieldID // rejection order, deterministic
-}
-
-func newLedger(
-	operation inference.Operation,
-	active []inference.FieldID,
-) *ledger {
-	return &ledger{
-		operation: operation,
-		active:    append([]inference.FieldID(nil), active...),
-		rejected:  make(map[inference.FieldID]string),
-		dropped:   make(map[inference.FieldID]string),
-	}
-}
-
-func (l *ledger) reject(field inference.FieldID, reason string) {
-	if _, exists := l.rejected[field]; !exists {
-		l.order = append(l.order, field)
-		l.rejected[field] = reason
-	}
-}
-
-// drop records an intentional discard that keeps the compile successful.
-// Rejection wins when both land on one field: a failed compile reports the
-// rejection.
-func (l *ledger) drop(field inference.FieldID, reason string) {
-	if _, rejected := l.rejected[field]; rejected {
-		return
-	}
-	if _, exists := l.dropped[field]; !exists {
-		l.dropped[field] = reason
-	}
-}
-
-// report renders the compile report: every active field carries exactly one
-// disposition — Rejected, then Dropped, otherwise Native.
-func (l *ledger) report() inference.CompileReport {
-	decisions := make([]inference.Decision, 0, len(l.active))
-	for _, field := range l.active {
-		if reason, rejected := l.rejected[field]; rejected {
-			decisions = append(decisions, inference.Decision{
-				Field:       field,
-				Disposition: inference.Rejected,
-				Reason:      reason,
-			})
-			continue
-		}
-		if reason, dropped := l.dropped[field]; dropped {
-			decisions = append(decisions, inference.Decision{
-				Field:       field,
-				Disposition: inference.Dropped,
-				Reason:      reason,
-			})
-			continue
-		}
-		decisions = append(decisions, inference.Decision{
-			Field:       field,
-			Disposition: inference.Native,
-		})
-	}
-	return inference.CompileReport{
-		Operation: l.operation,
-		Decisions: decisions,
-	}
-}
-
-// err builds the structured compiler rejection. The first rejected field in
-// rejection order becomes the error field; extension rejections classify as
-// InvalidExtension, everything else as UnsupportedFeature.
-func (l *ledger) err() error {
-	field := l.order[0]
-	kind := inference.UnsupportedFeature
-	if strings.HasPrefix(string(field), "extension.") {
-		kind = inference.InvalidExtension
-	}
-	return inference.NewError(
-		kind,
-		l.operation,
-		field,
-		fmt.Errorf("anthropic: %s", l.rejected[field]),
-	)
-}
-
-// ---------------------------------------------------------------------------
 // Compiler
 // ---------------------------------------------------------------------------
 
-var contextPartFields = map[message.PartKind]inference.FieldID{
-	message.PartText:       inference.FieldGenerateContextText,
-	message.PartImage:      inference.FieldGenerateContextImage,
-	message.PartAudio:      inference.FieldGenerateContextAudio,
-	message.PartVideo:      inference.FieldGenerateContextVideo,
-	message.PartFile:       inference.FieldGenerateContextFile,
-	message.PartData:       inference.FieldGenerateContextData,
-	message.PartToolCall:   inference.FieldGenerateContextToolCall,
-	message.PartToolResult: inference.FieldGenerateContextToolResult,
-	message.PartReasoning:  inference.FieldGenerateContextReasoning,
+// partField resolves a part kind to its ledger field through core's table, so
+// the driver cannot drift from the field list the runtime activates. A miss
+// cannot happen — core's TestGenerateLedgerCoversPartKinds pins the table
+// against message.PartKinds — and panics rather than returning an empty field,
+// because a decision recorded against "" never reaches the report.
+func partField(
+	lookup func(message.PartKind) (inference.FieldID, bool),
+) func(message.PartKind) inference.FieldID {
+	return func(kind message.PartKind) inference.FieldID {
+		field, ok := lookup(kind)
+		if !ok {
+			panic("anthropic: no ledger field for part kind " + string(kind))
+		}
+		return field
+	}
 }
 
-var inputPartFields = map[message.PartKind]inference.FieldID{
-	message.PartText:       inference.FieldGenerateInputText,
-	message.PartImage:      inference.FieldGenerateInputImage,
-	message.PartAudio:      inference.FieldGenerateInputAudio,
-	message.PartVideo:      inference.FieldGenerateInputVideo,
-	message.PartFile:       inference.FieldGenerateInputFile,
-	message.PartData:       inference.FieldGenerateInputData,
-	message.PartToolCall:   inference.FieldGenerateInputToolCall,
-	message.PartToolResult: inference.FieldGenerateInputToolResult,
-	message.PartReasoning:  inference.FieldGenerateInputReasoning,
-}
+var (
+	contextPartField = partField(inference.GenerateContextPartField)
+	inputPartField   = partField(inference.GenerateInputPartField)
+)
 
 // compileGenerate lowers a canonical request into the provider wire. It never
 // downgrades silently: parts the model cannot consume natively are rejected
 // in the ledger with a precise reason.
 func compileGenerate(
-	model string,
+	modelName string,
 	entry catalogEntry,
-) inference.GenerateCompiler[generateWire] {
+) inference.GenerateCompiler[anthropicgo.MessageNewParams] {
 	return func(
 		_ context.Context,
-		_ inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[generateWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+	) (inference.Compiled[anthropicgo.MessageNewParams], error) {
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
-		wire := generateWire{
-			model:     model,
-			stream:    shape == inference.GenerateExecutionStream,
-			maxTokens: DefaultMaxTokens,
+		params := anthropicgo.MessageNewParams{
+			Model:     anthropicgo.Model(modelName),
+			MaxTokens: DefaultMaxTokens,
 		}
 		if len(request.RequestMetadata) > 0 {
-			ledger.drop(
+			ledger.Drop(
 				inference.FieldGenerateRequestMetadata,
 				"anthropic Messages API has no arbitrary request metadata channel",
 			)
@@ -321,70 +149,89 @@ func compileGenerate(
 		for _, turn := range request.Context {
 			switch turn.Role {
 			case message.RoleSystem:
-				compileSystem(&wire, turn.Content.Parts, contextPartFields, ledger)
+				compileSystem(&params, turn.Content.Parts, contextPartField, ledger)
 			case message.RoleTool:
-				compileToolResults(&wire, turn.Content.Parts, contextPartFields, ledger)
+				compileToolResults(&params, turn.Content.Parts, entry, contextPartField, ledger)
 			default: // user / assistant
-				compileMessage(&wire, string(turn.Role), turn.Content.Parts, entry, contextPartFields, ledger)
+				compileMessage(&params, turnRole(turn.Role), turn.Content.Parts, entry, contextPartField, ledger)
 			}
 		}
 
 		// Current input.
 		switch request.Input.Role {
 		case inference.InputRoleTool:
-			compileToolResults(&wire, request.Input.Content.Parts, inputPartFields, ledger)
+			compileToolResults(&params, request.Input.Content.Parts, entry, inputPartField, ledger)
 		default:
-			compileMessage(&wire, "user", request.Input.Content.Parts, entry, inputPartFields, ledger)
+			compileMessage(&params, anthropicgo.MessageParamRoleUser, request.Input.Content.Parts, entry, inputPartField, ledger)
 		}
 
-		compileIntent(&wire, request.Input.Content.Intent, entry, ledger)
+		compileIntent(&params, request.Input.Content.Intent, entry, ledger)
 
 		// No provider extensions exist yet; anything attached is rejected
 		// truthfully rather than dropped.
-		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "anthropic generate supports no extensions")
-		}
+		ledger.RejectExtensions("generate", request.Extensions)
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[generateWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[anthropicgo.MessageNewParams]{Report: report}, ledger.Err()
 		}
-		return inference.Compiled[generateWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[anthropicgo.MessageNewParams]{Wire: params, Report: report}, nil
 	}
 }
 
-// appendBlock adds one block to the wire, merging into the previous message
-// when roles collide: the Messages API rejects consecutive same-role turns,
-// and tool results always ride a user-role message. Thinking blocks hoist
-// ahead of non-thinking blocks inside their turn, which the API requires.
-func (w *generateWire) appendBlock(role string, block wireBlock) {
-	if block.kind == wireBlockToolResult {
-		role = "user"
+// turnRole maps a canonical turn role onto the Messages role. Only the
+// assistant turn is distinct: system and tool turns take their own compile
+// paths, so everything left is user-side.
+func turnRole(role message.Role) anthropicgo.MessageParamRole {
+	if role == message.RoleAssistant {
+		return anthropicgo.MessageParamRoleAssistant
 	}
-	if last := len(w.messages) - 1; last >= 0 && w.messages[last].role == role {
-		message := &w.messages[last]
-		if block.thinking() {
-			message.blocks = hoistThinking(message.blocks, block)
+	return anthropicgo.MessageParamRoleUser
+}
+
+// appendBlock appends one content block under role, merging into the previous
+// turn when roles collide: the Messages API rejects consecutive same-role
+// turns, and tool results always ride a user-role message. Thinking blocks
+// hoist ahead of the rest of their turn, which the API requires.
+func appendBlock(
+	params *anthropicgo.MessageNewParams,
+	role anthropicgo.MessageParamRole,
+	block anthropicgo.ContentBlockParamUnion,
+) {
+	if last := len(params.Messages) - 1; last >= 0 && params.Messages[last].Role == role {
+		message := &params.Messages[last]
+		if isThinkingBlock(block) {
+			message.Content = hoistThinking(message.Content, block)
 			return
 		}
-		message.blocks = append(message.blocks, block)
+		message.Content = append(message.Content, block)
 		return
 	}
-	w.messages = append(w.messages, wireMessage{
-		role:   role,
-		blocks: []wireBlock{block},
+	params.Messages = append(params.Messages, anthropicgo.MessageParam{
+		Role:    role,
+		Content: []anthropicgo.ContentBlockParamUnion{block},
 	})
+}
+
+// isThinkingBlock reports whether the block belongs at the head of an
+// assistant turn: the Messages API requires thinking and redacted blocks to
+// precede all other blocks in their message.
+func isThinkingBlock(block anthropicgo.ContentBlockParamUnion) bool {
+	return block.OfThinking != nil || block.OfRedactedThinking != nil
 }
 
 // hoistThinking inserts a thinking block after the message's existing
 // thinking prefix, preserving the relative order of thinking blocks while
 // keeping them ahead of text and tool blocks.
-func hoistThinking(blocks []wireBlock, block wireBlock) []wireBlock {
+func hoistThinking(
+	blocks []anthropicgo.ContentBlockParamUnion,
+	block anthropicgo.ContentBlockParamUnion,
+) []anthropicgo.ContentBlockParamUnion {
 	at := 0
-	for at < len(blocks) && blocks[at].thinking() {
+	for at < len(blocks) && isThinkingBlock(blocks[at]) {
 		at++
 	}
-	out := make([]wireBlock, 0, len(blocks)+1)
+	out := make([]anthropicgo.ContentBlockParamUnion, 0, len(blocks)+1)
 	out = append(out, blocks[:at]...)
 	out = append(out, block)
 	return append(out, blocks[at:]...)
@@ -394,72 +241,93 @@ func hoistThinking(blocks []wireBlock, block wireBlock) []wireBlock {
 // system blocks. Only text survives: the system channel carries no images
 // or tool blocks.
 func compileSystem(
-	wire *generateWire,
+	params *anthropicgo.MessageNewParams,
 	parts []message.Part,
-	fields map[message.PartKind]inference.FieldID,
-	ledger *ledger,
+	fields func(message.PartKind) inference.FieldID,
+	ledger *inference.Ledger,
 ) {
 	for _, part := range parts {
 		switch value := part.(type) {
 		case message.TextPart:
-			wire.system = append(wire.system, value.Text)
+			params.System = append(params.System, anthropicgo.TextBlockParam{Text: value.Text})
 		case message.DataPart:
-			wire.system = append(wire.system, "\n"+string(value.Value)+"\n")
+			params.System = append(params.System, anthropicgo.TextBlockParam{
+				Text: "\n" + string(value.Value) + "\n",
+			})
 		default:
-			ledger.reject(
-				fields[part.Kind()],
+			ledger.Reject(
+				fields(part.Kind()),
 				"system blocks carry text only",
 			)
 		}
 	}
 }
 
-// compileMessage appends one user or assistant message's parts to the wire.
+// compileMessage appends one user or assistant turn's parts to the request.
 // Tool calls stay assistant-side blocks; tool results move to the user role.
 func compileMessage(
-	wire *generateWire,
-	role string,
+	params *anthropicgo.MessageNewParams,
+	role anthropicgo.MessageParamRole,
 	parts []message.Part,
 	entry catalogEntry,
-	fields map[message.PartKind]inference.FieldID,
-	ledger *ledger,
+	fields func(message.PartKind) inference.FieldID,
+	ledger *inference.Ledger,
 ) {
 	for _, part := range parts {
 		switch value := part.(type) {
 		case message.TextPart:
-			wire.appendBlock(role, wireBlock{kind: wireBlockText, text: value.Text})
+			appendBlock(params, role, textBlock(value.Text))
 		case message.ImagePart:
 			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
-				ledger.reject(fields[message.PartImage], "model does not accept image input")
+				ledger.Reject(fields(message.PartImage), "model does not accept image input")
 				continue
 			}
-			wire.appendBlock(role, imageBlock(value.Source))
+			appendBlock(params, role, imageBlock(value.Source))
 		case message.AudioPart:
-			ledger.reject(fields[message.PartAudio], "audio input is not supported by claude models")
+			ledger.Reject(fields(message.PartAudio), "audio input is not supported by claude models")
 		case message.VideoPart:
-			ledger.reject(fields[message.PartVideo], "video input is not supported by claude models")
+			switch {
+			case !entry.videoInput:
+				ledger.Reject(
+					fields(message.PartVideo),
+					"endpoint does not accept video blocks (set spec.wire.video_input)",
+				)
+			case !slices.Contains(entry.capabilities.Inputs, message.PartVideo):
+				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
+			case value.Source.Kind() == media.SourceStream:
+				ledger.Reject(
+					fields(message.PartVideo),
+					"stream media sources must be materialized before generate",
+				)
+			default:
+				appendBlock(params, role, videoBlock(value.Source))
+			}
 		case message.FilePart:
-			ledger.reject(fields[message.PartFile], "file references are not supported")
+			ledger.Reject(fields(message.PartFile), "file references are not supported")
 		case message.DataPart:
-			wire.appendBlock(role, wireBlock{
-				kind: wireBlockText,
-				text: "\n" + string(value.Value) + "\n",
-			})
+			appendBlock(params, role, dataBlock(value.Value))
 		case message.ToolCallPart:
-			wire.appendBlock("assistant", wireBlock{
-				kind:   wireBlockToolUse,
-				callID: value.Call.ID,
-				name:   value.Call.Name,
-				args:   bytesClone(value.Call.Arguments),
-			})
+			appendBlock(
+				params,
+				anthropicgo.MessageParamRoleAssistant,
+				toolUseBlock(value.Call.ID, value.Call.Name, value.Call.Arguments),
+			)
 		case message.ToolResultPart:
-			wire.appendBlock("user", wireBlock{
-				kind:   wireBlockToolResult,
-				callID: value.Result.CallID,
-				output: value.Result.Content,
-			})
+			appendBlock(
+				params,
+				anthropicgo.MessageParamRoleUser,
+				toolResultBlock(
+					value.Result.CallID,
+					compileToolResultContent(
+						value.Result.Content,
+						entry,
+						fields(message.PartToolResult),
+						ledger,
+					),
+				),
+			)
 		case message.ReasoningPart:
-			compileReasoning(wire, role, value, fields, ledger)
+			compileReasoning(params, role, value, fields, ledger)
 		}
 	}
 }
@@ -470,111 +338,277 @@ func compileMessage(
 // dropped with the reason on the ledger; redacted traces (empty text)
 // round-trip through the opaque data slot.
 func compileReasoning(
-	wire *generateWire,
-	role string,
+	params *anthropicgo.MessageNewParams,
+	role anthropicgo.MessageParamRole,
 	part message.ReasoningPart,
-	fields map[message.PartKind]inference.FieldID,
-	ledger *ledger,
+	fields func(message.PartKind) inference.FieldID,
+	ledger *inference.Ledger,
 ) {
-	field := fields[message.PartReasoning]
-	if role != "assistant" {
-		ledger.reject(field, "reasoning parts belong to assistant context")
+	field := fields(message.PartReasoning)
+	if role != anthropicgo.MessageParamRoleAssistant {
+		ledger.Reject(field, "reasoning parts belong to assistant context")
 		return
 	}
 	if part.Signature == "" {
-		ledger.drop(field, "unsigned reasoning cannot round-trip through the messages api")
+		ledger.Drop(field, "unsigned reasoning cannot round-trip through the messages api")
 		return
 	}
 	if part.Text == "" {
-		wire.appendBlock("assistant", wireBlock{
-			kind:      wireBlockRedactedThinking,
-			signature: part.Signature,
-		})
+		appendBlock(params, role, redactedThinkingBlock(part.Signature))
 		return
 	}
-	wire.appendBlock("assistant", wireBlock{
-		kind:      wireBlockThinking,
-		text:      part.Text,
-		signature: part.Signature,
-	})
+	appendBlock(params, role, thinkingBlock(part.Text, part.Signature))
 }
 
 // compileToolResults appends tool-role content as user-side tool_result
 // blocks.
 func compileToolResults(
-	wire *generateWire,
+	params *anthropicgo.MessageNewParams,
 	parts []message.Part,
-	fields map[message.PartKind]inference.FieldID,
-	ledger *ledger,
+	entry catalogEntry,
+	fields func(message.PartKind) inference.FieldID,
+	ledger *inference.Ledger,
 ) {
 	for _, part := range parts {
 		result, ok := part.(message.ToolResultPart)
 		if !ok {
-			ledger.reject(
-				fields[part.Kind()],
+			ledger.Reject(
+				fields(part.Kind()),
 				"tool-role content carries tool results only",
 			)
 			continue
 		}
-		wire.appendBlock("user", wireBlock{
-			kind:   wireBlockToolResult,
-			callID: result.Result.CallID,
-			output: result.Result.Content,
-		})
+		appendBlock(
+			params,
+			anthropicgo.MessageParamRoleUser,
+			toolResultBlock(
+				result.Result.CallID,
+				compileToolResultContent(
+					result.Result.Content,
+					entry,
+					fields(message.PartToolResult),
+					ledger,
+				),
+			),
+		)
 	}
 }
 
-// imageBlock lowers an image source: URLs pass through, inline bytes carry
-// their raw data plus media type for base64 encoding at the transport.
-func imageBlock(source media.ImageSource) wireBlock {
+// compileToolResultContent lowers one tool result's content parts. Text and
+// structured data always ride; an image needs a model that declares image
+// input and a materialized source. The tool_result content union carries text
+// and images only, so a video becomes a placeholder even where the endpoint
+// accepts video blocks elsewhere. A part that cannot ride is replaced in place
+// by a text placeholder, so the model sees where something was missing, and
+// the loss lands on the ledger.
+func compileToolResultContent(
+	content message.Content,
+	entry catalogEntry,
+	field inference.FieldID,
+	ledger *inference.Ledger,
+) []anthropicgo.ToolResultBlockParamContentUnion {
+	vision := slices.Contains(entry.capabilities.Inputs, message.PartImage)
+	out := make([]anthropicgo.ToolResultBlockParamContentUnion, 0, len(content.Parts))
+	omitted := make([]string, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		switch value := part.(type) {
+		case message.TextPart:
+			out = append(out, toolResultText(value.Text))
+		case message.DataPart:
+			out = append(out, toolResultText("\n"+string(value.Value)+"\n"))
+		case message.ImagePart:
+			reason := ""
+			switch {
+			case !vision:
+				reason = "image (model does not accept image input)"
+			case value.Source.Kind() == media.SourceStream:
+				reason = "image (stream source was not materialized)"
+			}
+			if reason != "" {
+				omitted = append(omitted, reason)
+				out = append(out, toolResultText(toolResultPlaceholder(reason)))
+				continue
+			}
+			out = append(out, anthropicgo.ToolResultBlockParamContentUnion{
+				OfImage: &anthropicgo.ImageBlockParam{Source: imageSource(value.Source)},
+			})
+		case message.VideoPart:
+			reason := "video (tool results carry text and images only)"
+			omitted = append(omitted, reason)
+			out = append(out, toolResultText(toolResultPlaceholder(reason)))
+		default:
+			reason := string(part.Kind())
+			omitted = append(omitted, reason)
+			out = append(out, toolResultText(toolResultPlaceholder(reason)))
+		}
+	}
+	if len(omitted) > 0 {
+		ledger.Drop(field, "tool output omitted "+strings.Join(omitted, ", "))
+	}
+	return out
+}
+
+func toolResultText(text string) anthropicgo.ToolResultBlockParamContentUnion {
+	return anthropicgo.ToolResultBlockParamContentUnion{
+		OfText: &anthropicgo.TextBlockParam{Text: text},
+	}
+}
+
+// toolResultPlaceholder keeps a dropped part's slot in the result list.
+func toolResultPlaceholder(reason string) string {
+	return "[omitted tool output: " + reason + "]"
+}
+
+// The block constructors below are the only place the compiler speaks the
+// SDK's content union: each owns one wire shape, and the compile loop reads as
+// what the part means.
+
+func textBlock(text string) anthropicgo.ContentBlockParamUnion {
+	return anthropicgo.NewTextBlock(text)
+}
+
+func dataBlock(value []byte) anthropicgo.ContentBlockParamUnion {
+	return anthropicgo.NewTextBlock("\n" + string(value) + "\n")
+}
+
+func thinkingBlock(text, signature string) anthropicgo.ContentBlockParamUnion {
+	return anthropicgo.NewThinkingBlock(signature, text)
+}
+
+func redactedThinkingBlock(signature string) anthropicgo.ContentBlockParamUnion {
+	return anthropicgo.NewRedactedThinkingBlock(signature)
+}
+
+func toolUseBlock(callID, name string, args []byte) anthropicgo.ContentBlockParamUnion {
+	return anthropicgo.NewToolUseBlock(callID, argsValue(args), name)
+}
+
+// toolParam lowers one canonical tool definition into the SDK's tool union.
+func toolParam(definition message.ToolDefinition) anthropicgo.ToolUnionParam {
+	tool := anthropicgo.ToolParam{
+		Name:        definition.Name,
+		InputSchema: toolInputSchema(definition.InputSchema),
+	}
+	if definition.Description != "" {
+		tool.Description = param.NewOpt(definition.Description)
+	}
+	return anthropicgo.ToolUnionParam{OfTool: &tool}
+}
+
+// toolResultBlock keeps the string form for a single text part — every model
+// accepts it verbatim — and rides the content list only when the result
+// carries more.
+func toolResultBlock(
+	callID string,
+	content []anthropicgo.ToolResultBlockParamContentUnion,
+) anthropicgo.ContentBlockParamUnion {
+	if len(content) <= 1 && (len(content) == 0 || content[0].OfText != nil) {
+		text := ""
+		if len(content) == 1 {
+			text = content[0].OfText.Text
+		}
+		return anthropicgo.NewToolResultBlock(callID, text, false)
+	}
+	return anthropicgo.ContentBlockParamUnion{
+		OfToolResult: &anthropicgo.ToolResultBlockParam{
+			ToolUseID: callID,
+			Content:   content,
+			IsError:   anthropicgo.Bool(false),
+		},
+	}
+}
+
+// imageBlock and videoBlock lower media sources: URLs pass through, inline
+// bytes carry their raw data plus media type for base64 encoding.
+func imageBlock(source media.ImageSource) anthropicgo.ContentBlockParamUnion {
 	if source.Kind() == media.SourceURL {
-		return wireBlock{kind: wireBlockImage, imageURL: source.URL()}
+		return anthropicgo.NewImageBlock(anthropicgo.URLImageSourceParam{
+			URL: source.URL(),
+		})
 	}
-	return wireBlock{
-		kind:      wireBlockImage,
-		imageData: bytesClone(source.Bytes()),
-		imageType: source.MediaType(),
+	return anthropicgo.NewImageBlock(anthropicgo.Base64ImageSourceParam{
+		MediaType: anthropicgo.Base64ImageSourceMediaType(source.MediaType()),
+		Data:      base64Encode(source.Bytes()),
+	})
+}
+
+// imageSource builds the source union a tool_result image entry carries.
+func imageSource(source media.ImageSource) anthropicgo.ImageBlockParamSourceUnion {
+	if source.Kind() == media.SourceURL {
+		return anthropicgo.ImageBlockParamSourceUnion{
+			OfURL: &anthropicgo.URLImageSourceParam{URL: source.URL()},
+		}
 	}
+	return anthropicgo.ImageBlockParamSourceUnion{
+		OfBase64: &anthropicgo.Base64ImageSourceParam{
+			MediaType: anthropicgo.Base64ImageSourceMediaType(source.MediaType()),
+			Data:      base64Encode(source.Bytes()),
+		},
+	}
+}
+
+// videoBlock carries a compatible-endpoint extension the SDK does not model
+// yet, so it rides a raw union; Anthropic's own schema has no video content.
+func videoBlock(source media.VideoSource) anthropicgo.ContentBlockParamUnion {
+	body := map[string]any{"type": "url", "url": source.URL()}
+	if source.Kind() != media.SourceURL {
+		body = map[string]any{
+			"type":       "base64",
+			"media_type": source.MediaType(),
+			"data":       base64Encode(source.Bytes()),
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"type": "video", "source": body})
+	return param.Override[anthropicgo.ContentBlockParamUnion](json.RawMessage(raw))
 }
 
 func compileIntent(
-	wire *generateWire,
+	params *anthropicgo.MessageNewParams,
 	intent inference.Intent,
 	entry catalogEntry,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
+	// thinking and effort are collected first: the Messages API carries one
+	// reasoning control per request, and the dialect switch below resolves
+	// which field carries it.
+	var (
+		thinking *bool
+		effort   string
+	)
 	text := intent.Text
 	if text != nil {
 		if format := text.Response; format != nil {
 			switch format.Kind {
 			case "", inference.ResponseText:
 			case inference.ResponseJSONObject:
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentTextResponseKind,
 					"claude has no json_object mode; supply a schema for structured output",
 				)
 			case inference.ResponseJSONSchema:
-				wire.format = &wireFormat{schema: bytesClone(format.Schema)}
+				params.OutputConfig.Format = anthropicgo.JSONOutputFormatParam{
+					Schema: schemaMap(format.Schema),
+				}
 			}
 		}
 		if text.MaxOutputTokens != nil {
-			wire.maxTokens = int64(*text.MaxOutputTokens)
+			params.MaxTokens = int64(*text.MaxOutputTokens)
 		}
 	}
 	if intent.Image != nil {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentImage,
 			"claude models do not generate images",
 		)
 	}
 	if intent.Audio != nil {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudio,
 			"claude models do not synthesize speech",
 		)
 	}
 	if intent.Video != nil {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentVideo,
 			"claude models do not generate video",
 		)
@@ -583,48 +617,39 @@ func compileIntent(
 		return
 	}
 	for _, definition := range text.Tools {
-		wire.tools = append(wire.tools, wireTool{
-			name:        definition.Name,
-			description: definition.Description,
-			schema:      bytesClone(definition.InputSchema),
-		})
+		params.Tools = append(params.Tools, toolParam(definition))
 	}
 	if choice := text.ToolChoice; choice != nil {
-		switch choice.Kind {
-		case inference.ToolChoiceAuto:
-			wire.toolChoice = &wireToolChoice{mode: "auto"}
-		case inference.ToolChoiceNone:
-			wire.toolChoice = &wireToolChoice{mode: "none"}
-		case inference.ToolChoiceRequired:
-			wire.toolChoice = &wireToolChoice{mode: "any"}
-		case inference.ToolChoiceNamed:
-			wire.toolChoice = &wireToolChoice{mode: "tool", name: choice.Name}
-		}
+		params.ToolChoice = toolChoiceParam(*choice)
 	}
-	wire.temperature = text.Temperature
-	wire.topP = text.TopP
+	if text.Temperature != nil {
+		params.Temperature = param.NewOpt(*text.Temperature)
+	}
+	if text.TopP != nil {
+		params.TopP = param.NewOpt(*text.TopP)
+	}
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
-			ledger.reject(
+		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == model.ReasoningAlways &&
 			!*text.ReasoningEnabled:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model cannot disable thinking",
 			)
 		default:
 			enabled := *text.ReasoningEnabled
-			wire.thinking = &enabled
+			thinking = &enabled
 		}
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
-			ledger.reject(
+		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
@@ -633,8 +658,8 @@ func compileIntent(
 			// honored, but the request for reasoning itself is — turn
 			// thinking on and report the loss.
 			on := true
-			wire.thinking = &on
-			ledger.drop(
+			thinking = &on
+			ledger.Drop(
 				inference.FieldGenerateIntentReasoningEffort,
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
@@ -642,9 +667,9 @@ func compileIntent(
 			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
 			)
-			wire.effort = mode
+			effort = mode
 			if mode != string(text.ReasoningEffort) {
-				ledger.drop(
+				ledger.Drop(
 					inference.FieldGenerateIntentReasoningEffort,
 					fmt.Sprintf(
 						"model maps reasoning effort %q to %q",
@@ -655,10 +680,20 @@ func compileIntent(
 			}
 		}
 	}
-}
-
-func bytesClone(raw []byte) []byte {
-	return append([]byte(nil), raw...)
+	// The Messages API expresses one reasoning control per request: an
+	// explicit disable wins, then an effort level, then adaptive thinking.
+	switch {
+	case thinking != nil && !*thinking:
+		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
+			OfDisabled: &anthropicgo.ThinkingConfigDisabledParam{},
+		}
+	case effort != "":
+		params.OutputConfig.Effort = anthropicgo.OutputConfigEffort(effort)
+	case thinking != nil && *thinking:
+		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropicgo.ThinkingConfigAdaptiveParam{},
+		}
+	}
 }
 
 // schemaMap lowers a canonical JSON schema into the map shape the SDK's

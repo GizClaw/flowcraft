@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -20,7 +21,7 @@ type routeRaw struct{ Text string }
 func routeCompiler() inference.GenerateCompiler[routeWire] {
 	return func(
 		_ context.Context,
-		_ inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[routeWire], error) {
@@ -32,7 +33,7 @@ func routeCompiler() inference.GenerateCompiler[routeWire] {
 		return inference.Compiled[routeWire]{
 			Wire: routeWire{},
 			Report: inference.CompileReport{
-				Operation: inference.OperationGenerate,
+				Operation: model.OperationGenerate,
 				Decisions: decisions,
 			},
 		}, nil
@@ -117,13 +118,13 @@ func providerDefinitionWithOutputs(
 	return inference.ProviderDefinition{
 		ID: id,
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{
-				ID:           inference.ModelID{Provider: id, Name: "model-1"},
-				Capabilities: inference.ModelCapabilities{Outputs: outputs},
+			Descriptor: model.ModelDescriptor{
+				ID:           model.ModelID{Provider: id, Name: "model-1"},
+				Capabilities: model.ModelCapabilities{Outputs: outputs},
 			},
 			Openers: inference.Openers{
 				Generate: func(
-					context.Context, inference.ModelRef,
+					context.Context, model.ModelRef,
 				) (inference.GenerateOperations, error) {
 					return inference.GenerateOperations{Unary: driver}, nil
 				},
@@ -176,13 +177,13 @@ func TestRouterGenerateFallsBackAcrossPools(t *testing.T) {
 	policy := Policy{
 		Generate: []Pool{
 			{Tier: "primary", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "bad", Name: "model-1"},
 				},
 			}}},
 			{Tier: "fallback", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "good", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "good", Name: "model-1"},
 				},
 			}}},
 		},
@@ -277,7 +278,7 @@ func transcriptionProviderWithTransports(
 	t.Helper()
 	unary, err := inference.BindTranscribe(
 		inference.Compiler[inference.TranscriptionRequest, routeWire](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[routeWire], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[routeWire], error) {
 				return routeTranscriptionCompiled(request.ActiveFields())
 			},
 		),
@@ -296,7 +297,7 @@ func transcriptionProviderWithTransports(
 	}
 	session, err := inference.BindTranscribeSession(
 		inference.Compiler[inference.TranscriptionSessionRequest, routeWire](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[routeWire], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[routeWire], error) {
 				return routeTranscriptionCompiled(request.ActiveFields())
 			},
 		),
@@ -316,13 +317,13 @@ func transcriptionProviderWithTransports(
 	return inference.ProviderDefinition{
 		ID: id,
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{
-				ID: inference.ModelID{Provider: id, Name: "model-1"},
+			Descriptor: model.ModelDescriptor{
+				ID: model.ModelID{Provider: id, Name: "model-1"},
 			},
 			Openers: inference.Openers{
 				Transcribe: func(
 					_ context.Context,
-					_ inference.ModelRef,
+					_ model.ModelRef,
 				) (inference.TranscribeOperations, error) {
 					return inference.TranscribeOperations{
 						Unary:   unary,
@@ -347,7 +348,7 @@ func routeTranscriptionCompiled(
 	return inference.Compiled[routeWire]{
 		Wire: routeWire{},
 		Report: inference.CompileReport{
-			Operation: inference.OperationTranscription,
+			Operation: model.OperationTranscription,
 			Decisions: decisions,
 		},
 	}, nil
@@ -501,8 +502,8 @@ func TestPolicyTranscriptionPools(t *testing.T) {
 		Transcription: []Pool{{
 			Tier: "primary",
 			Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "good", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "good", Name: "model-1"},
 				},
 			}},
 		}},
@@ -520,13 +521,13 @@ func TestRouterTranscribeFallsBackAcrossPools(t *testing.T) {
 	policy := Policy{
 		Transcription: []Pool{
 			{Tier: "primary", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "bad", Name: "model-1"},
 				},
 			}}},
 			{Tier: "fallback", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "good", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "good", Name: "model-1"},
 				},
 			}}},
 		},
@@ -569,8 +570,8 @@ func TestRouterTranscribeSessionOpens(t *testing.T) {
 		Transcription: []Pool{{
 			Tier: "primary",
 			Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "good", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "good", Name: "model-1"},
 				},
 			}},
 		}},
@@ -652,8 +653,8 @@ func TestRouterTranscribeStream(t *testing.T) {
 		Transcription: []Pool{{
 			Tier: "primary",
 			Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "good", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "good", Name: "model-1"},
 				},
 			}},
 		}},
@@ -686,8 +687,8 @@ func TestRouterTranscribeStream(t *testing.T) {
 }
 
 func TestRouterTranscribeRetriesSameTarget(t *testing.T) {
-	retryRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "retry", Name: "model-1"},
+	retryRef := model.ModelRef{
+		ID: model.ModelID{Provider: "retry", Name: "model-1"},
 	}
 	assembly := transcriptionAssemblyWith(t, map[string]inference.ProviderDefinition{
 		"retry": transcriptionProviderWithTransports(
@@ -749,8 +750,8 @@ func TestRouterTranscribeRetriesSameTarget(t *testing.T) {
 }
 
 func TestRouterTranscribeCircuitBreakerSkipsOpenTarget(t *testing.T) {
-	badRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	badRef := model.ModelRef{
+		ID: model.ModelID{Provider: "bad", Name: "model-1"},
 	}
 	assembly := newTranscriptionRouteAssembly(t)
 	policy := Policy{
@@ -817,13 +818,13 @@ func TestRouterGenerateSelectsCapableTargetForIntent(t *testing.T) {
 	policy := Policy{
 		Generate: []Pool{
 			{Tier: "text", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "text", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "text", Name: "model-1"},
 				},
 			}}},
 			{Tier: "image", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "image", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "image", Name: "model-1"},
 				},
 			}}},
 		},
@@ -876,13 +877,13 @@ func TestRouterGenerateUndeclaredOutputsKeepsDeclaredOrder(t *testing.T) {
 	policy := Policy{
 		Generate: []Pool{
 			{Tier: "primary", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "first", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "first", Name: "model-1"},
 				},
 			}}},
 			{Tier: "fallback", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "second", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "second", Name: "model-1"},
 				},
 			}}},
 		},
@@ -915,11 +916,11 @@ func TestRouterGenerateDedupsRepeatedModelsAcrossTiers(t *testing.T) {
 			routeDecode(),
 		),
 	})
-	repeated := inference.ModelRef{
-		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	repeated := model.ModelRef{
+		ID: model.ModelID{Provider: "bad", Name: "model-1"},
 	}
-	good := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good", Name: "model-1"},
+	good := model.ModelRef{
+		ID: model.ModelID{Provider: "good", Name: "model-1"},
 	}
 	policy := Policy{
 		Generate: []Pool{
@@ -993,8 +994,8 @@ func TestRouterGenerateNoRouteWhenNoDeclaredTargetServesIntent(t *testing.T) {
 	policy := Policy{
 		Generate: []Pool{
 			{Tier: "text", Targets: []Target{{
-				Model: inference.ModelRef{
-					ID: inference.ModelID{Provider: "text", Name: "model-1"},
+				Model: model.ModelRef{
+					ID: model.ModelID{Provider: "text", Name: "model-1"},
 				},
 			}}},
 		},
@@ -1011,8 +1012,8 @@ func TestRouterGenerateNoRouteWhenNoDeclaredTargetServesIntent(t *testing.T) {
 }
 
 func TestRouterTranscribeSessionRetriesOpen(t *testing.T) {
-	retryRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "retry", Name: "model-1"},
+	retryRef := model.ModelRef{
+		ID: model.ModelID{Provider: "retry", Name: "model-1"},
 	}
 	assembly := transcriptionAssemblyWith(t, map[string]inference.ProviderDefinition{
 		"retry": transcriptionProviderWithTransports(
@@ -1076,11 +1077,11 @@ func TestRouterTranscribeSessionRetriesOpen(t *testing.T) {
 }
 
 func TestRouterTranscribeSessionFallsBackAfterRetryExhausted(t *testing.T) {
-	badRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	badRef := model.ModelRef{
+		ID: model.ModelID{Provider: "bad", Name: "model-1"},
 	}
-	goodRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good", Name: "model-1"},
+	goodRef := model.ModelRef{
+		ID: model.ModelID{Provider: "good", Name: "model-1"},
 	}
 	assembly := newTranscriptionRouteAssembly(t)
 	policy := Policy{
@@ -1128,8 +1129,8 @@ func TestRouterTranscribeSessionFallsBackAfterRetryExhausted(t *testing.T) {
 }
 
 func TestRouterTranscribeSessionCircuitBreakerSkipsOpenTarget(t *testing.T) {
-	badRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	badRef := model.ModelRef{
+		ID: model.ModelID{Provider: "bad", Name: "model-1"},
 	}
 	assembly := newTranscriptionRouteAssembly(t)
 	policy := Policy{
@@ -1202,15 +1203,15 @@ func providerDefinitionNamed(
 	return inference.ProviderDefinition{
 		ID: id,
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{
-				ID: inference.ModelID{Provider: id, Name: name},
-				Capabilities: inference.ModelCapabilities{
+			Descriptor: model.ModelDescriptor{
+				ID: model.ModelID{Provider: id, Name: name},
+				Capabilities: model.ModelCapabilities{
 					Outputs: outputs,
 				},
 			},
 			Openers: inference.Openers{
 				Generate: func(
-					context.Context, inference.ModelRef,
+					context.Context, model.ModelRef,
 				) (inference.GenerateOperations, error) {
 					return inference.GenerateOperations{Unary: driver}, nil
 				},
@@ -1226,13 +1227,13 @@ func hintedRequest(hint string) inference.GenerateRequest {
 }
 
 func TestPolicyGenerateHintSelectsConfiguredTarget(t *testing.T) {
-	good := inference.ModelRef{
-		ID:      inference.ModelID{Provider: "good", Name: "model-1"},
+	good := model.ModelRef{
+		ID:      model.ModelID{Provider: "good", Name: "model-1"},
 		Profile: "prod",
 	}
 	policy := Policy{Generate: []Pool{
-		{Tier: "primary", Targets: []Target{{Model: inference.ModelRef{
-			ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+		{Tier: "primary", Targets: []Target{{Model: model.ModelRef{
+			ID: model.ModelID{Provider: "bad", Name: "model-1"},
 		}}}},
 		{Tier: "fallback", Targets: []Target{{Model: good}}},
 	}}
@@ -1253,13 +1254,13 @@ func TestPolicyGenerateHintSelectsConfiguredTarget(t *testing.T) {
 }
 
 func TestPolicyGenerateHintUnknownOrEmptyFallsBack(t *testing.T) {
-	first := inference.ModelRef{
-		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	first := model.ModelRef{
+		ID: model.ModelID{Provider: "bad", Name: "model-1"},
 	}
 	policy := Policy{Generate: []Pool{
 		{Tier: "primary", Targets: []Target{{Model: first}}},
-		{Tier: "fallback", Targets: []Target{{Model: inference.ModelRef{
-			ID: inference.ModelID{Provider: "good", Name: "model-1"},
+		{Tier: "fallback", Targets: []Target{{Model: model.ModelRef{
+			ID: model.ModelID{Provider: "good", Name: "model-1"},
 		}}}},
 	}}
 	selectors := policy.Selectors(nil)
@@ -1278,11 +1279,11 @@ func TestPolicyGenerateHintUnknownOrEmptyFallsBack(t *testing.T) {
 }
 
 func TestPolicyGenerateHintBareNameUniqueAndAmbiguous(t *testing.T) {
-	first := inference.ModelRef{
-		ID: inference.ModelID{Provider: "provider-a", Name: "model-a"},
+	first := model.ModelRef{
+		ID: model.ModelID{Provider: "provider-a", Name: "model-a"},
 	}
-	second := inference.ModelRef{
-		ID: inference.ModelID{Provider: "provider-b", Name: "model-b"},
+	second := model.ModelRef{
+		ID: model.ModelID{Provider: "provider-b", Name: "model-b"},
 	}
 	policy := Policy{Generate: []Pool{{
 		Tier: "primary",
@@ -1307,11 +1308,11 @@ func TestPolicyGenerateHintBareNameUniqueAndAmbiguous(t *testing.T) {
 	ambiguous := Policy{Generate: []Pool{{
 		Tier: "primary",
 		Targets: []Target{
-			{Model: inference.ModelRef{
-				ID: inference.ModelID{Provider: "provider-a", Name: "shared"},
+			{Model: model.ModelRef{
+				ID: model.ModelID{Provider: "provider-a", Name: "shared"},
 			}},
-			{Model: inference.ModelRef{
-				ID: inference.ModelID{Provider: "provider-b", Name: "shared"},
+			{Model: model.ModelRef{
+				ID: model.ModelID{Provider: "provider-b", Name: "shared"},
 			}},
 		},
 	}}}
@@ -1323,8 +1324,8 @@ func TestPolicyGenerateHintBareNameUniqueAndAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectGenerate(ambiguous): %v", err)
 	}
-	wantFirst := inference.ModelRef{
-		ID: inference.ModelID{Provider: "provider-a", Name: "shared"},
+	wantFirst := model.ModelRef{
+		ID: model.ModelID{Provider: "provider-a", Name: "shared"},
 	}
 	if decision.Selected != wantFirst {
 		t.Fatalf("ambiguous bare hint Selected = %+v, want first target", decision.Selected)
@@ -1336,14 +1337,14 @@ func TestPolicyGenerateHintTargetUnsupportedOutputsFallsBack(t *testing.T) {
 		"provider.image": providerDefinitionNamed(t, "image-only", "model-1", false, []message.PartKind{message.PartImage}),
 		"provider.text":  providerDefinitionNamed(t, "text-only", "model-1", false, []message.PartKind{message.PartText}),
 	})
-	textRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "text-only", Name: "model-1"},
+	textRef := model.ModelRef{
+		ID: model.ModelID{Provider: "text-only", Name: "model-1"},
 	}
 	policy := Policy{Generate: []Pool{{
 		Tier: "primary",
 		Targets: []Target{
-			{Model: inference.ModelRef{
-				ID: inference.ModelID{Provider: "image-only", Name: "model-1"},
+			{Model: model.ModelRef{
+				ID: model.ModelID{Provider: "image-only", Name: "model-1"},
 			}},
 			{Model: textRef},
 		},
@@ -1364,13 +1365,13 @@ func TestPolicyGenerateHintTargetUnsupportedOutputsFallsBack(t *testing.T) {
 
 func TestRouterGenerateHintSelectsTargetWithoutFallback(t *testing.T) {
 	assembly := newRouteAssembly(t)
-	goodRef := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good", Name: "model-1"},
+	goodRef := model.ModelRef{
+		ID: model.ModelID{Provider: "good", Name: "model-1"},
 	}
 	policy := Policy{
 		Generate: []Pool{
-			{Tier: "primary", Targets: []Target{{Model: inference.ModelRef{
-				ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+			{Tier: "primary", Targets: []Target{{Model: model.ModelRef{
+				ID: model.ModelID{Provider: "bad", Name: "model-1"},
 			}}}},
 			{Tier: "fallback", Targets: []Target{{Model: goodRef}}},
 		},
@@ -1412,14 +1413,14 @@ func hintFallbackRetryConfig() *RetryConfig {
 }
 
 func TestRouterGenerateHintFallsBackToDefaultChain(t *testing.T) {
-	goodA := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good-a", Name: "model-1"},
+	goodA := model.ModelRef{
+		ID: model.ModelID{Provider: "good-a", Name: "model-1"},
 	}
-	failB := inference.ModelRef{
-		ID: inference.ModelID{Provider: "fail-b", Name: "model-1"},
+	failB := model.ModelRef{
+		ID: model.ModelID{Provider: "fail-b", Name: "model-1"},
 	}
-	failC := inference.ModelRef{
-		ID: inference.ModelID{Provider: "fail-c", Name: "model-1"},
+	failC := model.ModelRef{
+		ID: model.ModelID{Provider: "fail-c", Name: "model-1"},
 	}
 	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
 		"provider.good-a": providerDefinitionNamed(t, "good-a", "model-1", false, nil),
@@ -1465,7 +1466,7 @@ func TestRouterGenerateHintFallsBackToDefaultChain(t *testing.T) {
 	}
 	attempts := trace.Attempts
 	wantAttempts := []struct {
-		target  inference.ModelRef
+		target  model.ModelRef
 		phase   AttemptPhase
 		outcome AttemptOutcome
 	}{
@@ -1487,14 +1488,14 @@ func TestRouterGenerateHintFallsBackToDefaultChain(t *testing.T) {
 }
 
 func TestRouterGenerateHintFallbackNeverRevisitsHintedTarget(t *testing.T) {
-	failA := inference.ModelRef{
-		ID: inference.ModelID{Provider: "fail-a", Name: "model-1"},
+	failA := model.ModelRef{
+		ID: model.ModelID{Provider: "fail-a", Name: "model-1"},
 	}
-	goodB := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good-b", Name: "model-1"},
+	goodB := model.ModelRef{
+		ID: model.ModelID{Provider: "good-b", Name: "model-1"},
 	}
-	failC := inference.ModelRef{
-		ID: inference.ModelID{Provider: "fail-c", Name: "model-1"},
+	failC := model.ModelRef{
+		ID: model.ModelID{Provider: "fail-c", Name: "model-1"},
 	}
 	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
 		"provider.fail-a": providerDefinitionNamed(t, "fail-a", "model-1", true, nil),
@@ -1536,14 +1537,14 @@ func TestRouterGenerateHintFallbackNeverRevisitsHintedTarget(t *testing.T) {
 	if trace.Executed != goodB {
 		t.Fatalf("executed = %+v, want %+v", trace.Executed, goodB)
 	}
-	var targets []inference.ModelRef
+	var targets []model.ModelRef
 	for _, attempt := range trace.Attempts {
 		if attempt.Phase != AttemptPhaseExecute {
 			continue
 		}
 		targets = append(targets, attempt.Target)
 	}
-	want := []inference.ModelRef{failC, failA, goodB}
+	want := []model.ModelRef{failC, failA, goodB}
 	if len(targets) != len(want) {
 		t.Fatalf("attempt targets = %v, want %v", targets, want)
 	}
@@ -1555,11 +1556,11 @@ func TestRouterGenerateHintFallbackNeverRevisitsHintedTarget(t *testing.T) {
 }
 
 func TestRouterGenerateHintCircuitOpenFallsBackToDefaultChain(t *testing.T) {
-	goodA := inference.ModelRef{
-		ID: inference.ModelID{Provider: "good-a", Name: "model-1"},
+	goodA := model.ModelRef{
+		ID: model.ModelID{Provider: "good-a", Name: "model-1"},
 	}
-	failC := inference.ModelRef{
-		ID: inference.ModelID{Provider: "fail-c", Name: "model-1"},
+	failC := model.ModelRef{
+		ID: model.ModelID{Provider: "fail-c", Name: "model-1"},
 	}
 	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
 		"provider.good-a": providerDefinitionNamed(t, "good-a", "model-1", false, nil),
@@ -1675,12 +1676,12 @@ func streamProviderNamed(
 	return inference.ProviderDefinition{
 		ID: id,
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{
-				ID: inference.ModelID{Provider: id, Name: name},
+			Descriptor: model.ModelDescriptor{
+				ID: model.ModelID{Provider: id, Name: name},
 			},
 			Openers: inference.Openers{
 				Generate: func(
-					context.Context, inference.ModelRef,
+					context.Context, model.ModelRef,
 				) (inference.GenerateOperations, error) {
 					return operations, nil
 				},
@@ -1690,11 +1691,11 @@ func streamProviderNamed(
 }
 
 func TestRouterGenerateStreamHintFallsBackAfterPreflight(t *testing.T) {
-	streamA := inference.ModelRef{
-		ID: inference.ModelID{Provider: "stream-a", Name: "model-1"},
+	streamA := model.ModelRef{
+		ID: model.ModelID{Provider: "stream-a", Name: "model-1"},
 	}
-	unaryB := inference.ModelRef{
-		ID: inference.ModelID{Provider: "unary-b", Name: "model-1"},
+	unaryB := model.ModelRef{
+		ID: model.ModelID{Provider: "unary-b", Name: "model-1"},
 	}
 	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
 		"provider.stream-a": streamProviderNamed(t, "stream-a", "model-1"),

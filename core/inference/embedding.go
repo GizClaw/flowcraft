@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type EmbedItem struct {
@@ -32,7 +33,7 @@ func (r EmbedRequest) Clone() EmbedRequest {
 	for i, item := range r.Items {
 		clone.Items[i] = item.Clone()
 	}
-	clone.Dimensions = clonePointer(r.Dimensions)
+	clone.Dimensions = ptr.Clone(r.Dimensions)
 	clone.Extensions = r.Extensions.Clone()
 	return clone
 }
@@ -45,63 +46,47 @@ func (r EmbedRequest) ActiveFields() []FieldID {
 	if r.Dimensions != nil {
 		fields = append(fields, FieldEmbedDimensions)
 	}
-	var hasText, hasImage, hasAudio, hasVideo, hasFile, hasData bool
-	var hasToolCall, hasToolResult, hasMultiPart bool
+	kinds := make(map[message.PartKind]bool)
+	multiPart := false
 	for _, item := range r.Items {
-		hasMultiPart = hasMultiPart || len(item.Content.Parts) > 1
+		multiPart = multiPart || len(item.Content.Parts) > 1
 		for _, part := range item.Content.Parts {
 			normalized, err := message.NormalizePart(part)
 			if err != nil {
 				continue
 			}
-			switch normalized.(type) {
-			case message.TextPart:
-				hasText = true
-			case message.ImagePart:
-				hasImage = true
-			case message.AudioPart:
-				hasAudio = true
-			case message.VideoPart:
-				hasVideo = true
-			case message.FilePart:
-				hasFile = true
-			case message.DataPart:
-				hasData = true
-			case message.ToolCallPart:
-				hasToolCall = true
-			case message.ToolResultPart:
-				hasToolResult = true
-			}
+			kinds[normalized.Kind()] = true
 		}
 	}
-	if hasText {
-		fields = append(fields, FieldEmbedItemText)
-	}
-	if hasImage {
-		fields = append(fields, FieldEmbedItemImage)
-	}
-	if hasAudio {
-		fields = append(fields, FieldEmbedItemAudio)
-	}
-	if hasVideo {
-		fields = append(fields, FieldEmbedItemVideo)
-	}
-	if hasFile {
-		fields = append(fields, FieldEmbedItemFile)
-	}
-	if hasData {
-		fields = append(fields, FieldEmbedItemData)
-	}
-	if hasToolCall {
-		fields = append(fields, FieldEmbedItemToolCall)
-	}
-	if hasToolResult {
-		fields = append(fields, FieldEmbedItemToolResult)
-	}
-	if hasMultiPart {
+	fields = appendPartFields(fields, embedItemPartFields, kinds)
+	if multiPart {
 		fields = append(fields, FieldEmbedItemMultiPart)
 	}
 	return r.Extensions.AppendActiveFields(fields)
+}
+
+// EmbedItemPartField returns the ledger field one embedding item activates for
+// one content kind. Reasoning has no row: it is not an embedding input, so the
+// boolean is false for it and for any kind outside the vocabulary — see
+// GenerateContextPartField for what false means.
+func EmbedItemPartField(kind message.PartKind) (FieldID, bool) {
+	field, ok := embedItemPartFields[kind]
+	return field, ok
+}
+
+// embedItemPartFields maps a content kind onto the ledger field an embedding
+// item activates. Reasoning has no row: it is a trace of the model's own
+// process, not an input an embedding call can consume.
+// TestEmbedLedgerCoversPartKinds pins the table against the vocabulary.
+var embedItemPartFields = map[message.PartKind]FieldID{
+	message.PartText:       FieldEmbedItemText,
+	message.PartImage:      FieldEmbedItemImage,
+	message.PartAudio:      FieldEmbedItemAudio,
+	message.PartVideo:      FieldEmbedItemVideo,
+	message.PartFile:       FieldEmbedItemFile,
+	message.PartData:       FieldEmbedItemData,
+	message.PartToolCall:   FieldEmbedItemToolCall,
+	message.PartToolResult: FieldEmbedItemToolResult,
 }
 
 func (r EmbedRequest) Validate() error {

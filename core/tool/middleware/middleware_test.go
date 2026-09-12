@@ -20,7 +20,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestRecover_PanicBecomesErrorResult(t *testing.T) {
-	reg := catalogWith(tool.FuncTool(message.ToolDefinition{Name: "panicker"},
+	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "panicker"},
 		func(_ context.Context, _ string) (string, error) { panic("boom") }))
 	exec := tool.NewExecutor(reg, Recover())
 
@@ -28,14 +28,14 @@ func TestRecover_PanicBecomesErrorResult(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected IsError result for panic")
 	}
-	if !strings.Contains(res.Content, "panicked") {
-		t.Errorf("Content = %q, want to contain 'panicked'", res.Content)
+	if !strings.Contains(res.Content.Text(), "panicked") {
+		t.Errorf("Content = %q, want to contain 'panicked'", res.Content.Text())
 	}
 }
 
 func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 	reg := catalogWith(
-		tool.FuncTool(message.ToolDefinition{Name: "panicker"},
+		tool.TextTool(message.ToolDefinition{Name: "panicker"},
 			func(_ context.Context, _ string) (string, error) { panic("boom") }),
 		echoTool("fine"),
 	)
@@ -49,7 +49,7 @@ func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 		t.Error("panicking call should produce IsError result")
 	}
 	if results[1].IsError {
-		t.Errorf("healthy call should succeed, got %q", results[1].Content)
+		t.Errorf("healthy call should succeed, got %q", results[1].Content.Text())
 	}
 }
 
@@ -59,7 +59,7 @@ func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 
 func TestConcurrency_CapsInFlight(t *testing.T) {
 	var inFlight, maxSeen atomic.Int32
-	reg := catalogWith(tool.FuncTool(message.ToolDefinition{Name: "slow"},
+	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "slow"},
 		func(_ context.Context, _ string) (string, error) {
 			cur := inFlight.Add(1)
 			for {
@@ -87,7 +87,7 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	reg := catalogWith(tool.FuncTool(message.ToolDefinition{Name: "holder"},
+	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "holder"},
 		func(ctx context.Context, _ string) (string, error) {
 			close(started)
 			select {
@@ -127,7 +127,7 @@ func TestConcurrency_InvalidLimitPanics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTimeout_SlowToolTimesOut(t *testing.T) {
-	reg := catalogWith(tool.FuncTool(message.ToolDefinition{Name: "hang"},
+	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "hang"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -138,14 +138,14 @@ func TestTimeout_SlowToolTimesOut(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected IsError for timed-out tool")
 	}
-	if !strings.Contains(res.Content, "timed out") {
-		t.Errorf("Content = %q, want to contain 'timed out'", res.Content)
+	if !strings.Contains(res.Content.Text(), "timed out") {
+		t.Errorf("Content = %q, want to contain 'timed out'", res.Content.Text())
 	}
 }
 
 func TestTimeout_PerToolOverrideAndExemption(t *testing.T) {
 	reg := catalogWith(
-		tool.FuncTool(message.ToolDefinition{Name: "slowish"},
+		tool.TextTool(message.ToolDefinition{Name: "slowish"},
 			func(ctx context.Context, _ string) (string, error) {
 				select {
 				case <-time.After(80 * time.Millisecond):
@@ -162,10 +162,10 @@ func TestTimeout_PerToolOverrideAndExemption(t *testing.T) {
 	}))
 
 	if res := exec.Execute(context.Background(), call("slowish")); res.IsError {
-		t.Errorf("slowish with generous override should succeed, got %q", res.Content)
+		t.Errorf("slowish with generous override should succeed, got %q", res.Content.Text())
 	}
 	if res := exec.Execute(context.Background(), call("fast")); res.IsError {
-		t.Errorf("exempt tool should succeed, got %q", res.Content)
+		t.Errorf("exempt tool should succeed, got %q", res.Content.Text())
 	}
 }
 
@@ -179,8 +179,8 @@ type ratedTool struct {
 }
 
 func (r ratedTool) Definition() message.ToolDefinition { return r.def }
-func (r ratedTool) Execute(_ context.Context, _ string) (string, error) {
-	return "ok", nil
+func (r ratedTool) Execute(_ context.Context, _ string) (message.Content, error) {
+	return message.NewTextContent("ok"), nil
 }
 func (r ratedTool) Metadata() tool.ToolMeta { return tool.ToolMeta{RateLimit: r.rate} }
 
@@ -191,7 +191,7 @@ func TestRateLimit_PacesCalls(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 3; i++ {
 		if res := exec.Execute(context.Background(), call("api")); res.IsError {
-			t.Fatalf("call %d: %s", i, res.Content)
+			t.Fatalf("call %d: %s", i, res.Content.Text())
 		}
 	}
 	// 3 calls at 50/s: first immediate, slots 2 and 3 wait ~20ms each.
@@ -207,7 +207,7 @@ func TestRateLimit_UndeclaredPassesThrough(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 5; i++ {
 		if res := exec.Execute(context.Background(), call("plain")); res.IsError {
-			t.Fatalf("call %d: %s", i, res.Content)
+			t.Fatalf("call %d: %s", i, res.Content.Text())
 		}
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
@@ -221,7 +221,7 @@ func TestRateLimit_UndeclaredPassesThrough(t *testing.T) {
 
 func TestApproval_DeniedShortCircuits(t *testing.T) {
 	var executed atomic.Bool
-	reg := catalogWith(tool.FuncTool(message.ToolDefinition{Name: "exec"},
+	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "exec"},
 		func(_ context.Context, _ string) (string, error) {
 			executed.Store(true)
 			return "ran", nil
@@ -235,8 +235,8 @@ func TestApproval_DeniedShortCircuits(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected IsError for denied call")
 	}
-	if !strings.Contains(res.Content, "denied") {
-		t.Errorf("Content = %q, want to contain 'denied'", res.Content)
+	if !strings.Contains(res.Content.Text(), "denied") {
+		t.Errorf("Content = %q, want to contain 'denied'", res.Content.Text())
 	}
 	if executed.Load() {
 		t.Error("denied call reached the tool")
@@ -249,10 +249,10 @@ func TestApproval_ApprovedAndUngated(t *testing.T) {
 	exec := tool.NewExecutor(reg, Approval(approver, "exec"))
 
 	if res := exec.Execute(context.Background(), call("exec")); res.IsError {
-		t.Errorf("approved call should succeed, got %q", res.Content)
+		t.Errorf("approved call should succeed, got %q", res.Content.Text())
 	}
 	if res := exec.Execute(context.Background(), call("other")); res.IsError {
-		t.Errorf("ungated tool should skip approval, got %q", res.Content)
+		t.Errorf("ungated tool should skip approval, got %q", res.Content.Text())
 	}
 }
 
@@ -273,7 +273,7 @@ func TestAudit_RecordsEveryCall(t *testing.T) {
 
 	res := exec.Execute(context.Background(), call("echo"))
 	if res.IsError {
-		t.Fatalf("unexpected error: %s", res.Content)
+		t.Fatalf("unexpected error: %s", res.Content.Text())
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -306,12 +306,12 @@ func (s selfTimingTool) Metadata() tool.ToolMeta {
 	return tool.ToolMeta{SelfTimeout: s.selfTimeout}
 }
 
-func (s selfTimingTool) Execute(ctx context.Context, _ string) (string, error) {
+func (s selfTimingTool) Execute(ctx context.Context, _ string) (message.Content, error) {
 	select {
 	case <-time.After(s.sleep):
-		return "finished", nil
+		return message.NewTextContent("finished"), nil
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return message.Content{}, ctx.Err()
 	}
 }
 
@@ -326,15 +326,15 @@ func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
 
 	self := executor.Execute(context.Background(), call("self"))
 	if self.IsError {
-		t.Errorf("self-timing tool was cut short: %q", self.Content)
+		t.Errorf("self-timing tool was cut short: %q", self.Content.Text())
 	}
-	if self.Content != "finished" {
-		t.Errorf("self-timing tool content = %q, want %q", self.Content, "finished")
+	if self.Content.Text() != "finished" {
+		t.Errorf("self-timing tool content = %q, want %q", self.Content.Text(), "finished")
 	}
 
 	wrapped := executor.Execute(context.Background(), call("wrapped"))
 	if !wrapped.IsError {
-		t.Errorf("tool without a SelfTimeout claim should have timed out, got %q", wrapped.Content)
+		t.Errorf("tool without a SelfTimeout claim should have timed out, got %q", wrapped.Content.Text())
 	}
 }
 
@@ -351,7 +351,7 @@ func TestTimeoutWithCatalog_PerToolOverridesSelfTimeout(t *testing.T) {
 
 	res := executor.Execute(context.Background(), call("self"))
 	if !res.IsError {
-		t.Errorf("per-tool override should bound a self-timing tool, got %q", res.Content)
+		t.Errorf("per-tool override should bound a self-timing tool, got %q", res.Content.Text())
 	}
 }
 
@@ -367,6 +367,6 @@ func TestTimeout_IgnoresSelfTimeoutWithoutCatalog(t *testing.T) {
 
 	res := executor.Execute(context.Background(), call("self"))
 	if !res.IsError {
-		t.Errorf("Timeout without a catalog should still wrap, got %q", res.Content)
+		t.Errorf("Timeout without a catalog should still wrap, got %q", res.Content.Text())
 	}
 }

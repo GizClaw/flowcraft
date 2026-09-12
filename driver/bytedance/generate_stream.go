@@ -47,18 +47,19 @@ type streamPart struct {
 
 func transportGenerateStream(
 	client *arkruntime.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+	options []arkruntime.RequestOption,
+) inference.Transport[*arkresponses.ResponsesRequest, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		request *arkresponses.ResponsesRequest,
 	) (inference.ProviderStream[streamRaw], error) {
-		reader, err := client.CreateResponsesStream(ctx, wireToArk(wire))
+		reader, err := client.CreateResponsesStream(ctx, request, options...)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", request.Model, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", request.Model, nil, "")
 		return &responsesStream{
 			reader:    reader,
 			requestID: reader.Header().Get(arkmodel.ClientRequestHeader),
@@ -88,7 +89,7 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 				return streamRaw{}, io.EOF
 			}
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", "", classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 			return streamRaw{}, classified
 		}
 		if event == nil {
@@ -289,7 +290,7 @@ func (s *responsesStream) applyTerminal(
 // registerPart assigns a stable canonical part index per ark output index.
 // Text output (the answer message) lands before tool calls in the canonical
 // response only when ark emits it first; the runtime assembles parts in
-// index order, which mirrors wire order here.
+// index order, which mirrors the request's output order here.
 func (s *responsesStream) registerPart(outputIndex int64, tool bool) *streamPart {
 	part, ok := s.parts[outputIndex]
 	if !ok {
@@ -441,7 +442,7 @@ func decodeGenerateStream(
 			ResponseID:      raw.responseID,
 			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
-		logInferenceStreamEnd(ctx, "generate", raw.responseID)
+		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

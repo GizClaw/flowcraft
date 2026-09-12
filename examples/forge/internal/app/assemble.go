@@ -9,13 +9,16 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	graphresource "github.com/GizClaw/flowcraft/core/graph/resource"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/secret"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/middleware"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
-	"github.com/GizClaw/flowcraft/driver/deepseek"
+	"github.com/GizClaw/flowcraft/driver/anthropic"
+	"github.com/GizClaw/flowcraft/driver/bytedance"
 	"github.com/GizClaw/flowcraft/driver/openai"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
@@ -47,13 +50,22 @@ func buildRuntimeFromDocument(
 	if err := inference.Register(reg); err != nil {
 		return nil, err
 	}
+	if err := route.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := secret.Register(reg); err != nil {
+		return nil, err
+	}
 	if err := scriptrt.Register(reg); err != nil {
 		return nil, err
 	}
 	if err := openai.Register(reg); err != nil {
 		return nil, err
 	}
-	if err := deepseek.Register(reg); err != nil {
+	if err := anthropic.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := bytedance.Register(reg); err != nil {
 		return nil, err
 	}
 	if err := reg.Register(simtools.NewSourceFactory(&a.toolCalls)); err != nil {

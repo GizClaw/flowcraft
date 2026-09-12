@@ -6,10 +6,16 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+)
+
+// Secret names owned by this provider. Profile secrets outside this set are
+// rejected at build time so typos fail fast instead of silently missing.
+const (
+	// SecretAPIKey authenticates every OpenAI-wire API surface.
+	SecretAPIKey = "api_key"
 )
 
 // profileMaterial is one credential profile after secret resolution: the
@@ -47,40 +53,24 @@ func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *r
 	return material, nil
 }
 
-// newClients builds the service handles for one profile.
+// newClients builds the service handles for one profile. The endpoint and
+// auth blocks decide how a request travels; nothing here changes how a
+// request is compiled.
 func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
-	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
-	if err != nil {
-		return nil, errdefs.Validationf(
-			"openai profile: resolve api_key: %v", err)
+	var apiKey string
+	if spec.authScheme() != authNone {
+		resolved, err := m.apiKey.Resolve(ctx, m.resolver)
+		if err != nil {
+			return nil, errdefs.Validationf(
+				"openai profile: resolve api_key: %v", err)
+		}
+		apiKey = strings.TrimSpace(resolved)
+		if apiKey == "" {
+			return nil, errdefs.Validationf(
+				"openai profile needs %q", SecretAPIKey)
+		}
 	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return nil, errdefs.Validationf(
-			"openai profile needs %q", SecretAPIKey)
-	}
-	options := []option.RequestOption{option.WithAPIKey(apiKey)}
-	if spec.BaseURL != "" {
-		options = append(options, option.WithBaseURL(spec.BaseURL))
-	}
-	if spec.Organization != "" {
-		options = append(options, option.WithOrganization(spec.Organization))
-	}
-	if spec.Project != "" {
-		options = append(options, option.WithProject(spec.Project))
-	}
-	if spec.HTTPRetries != nil {
-		options = append(options,
-			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
-	}
-	return &clients{api: openai.NewClient(options...)}, nil
-}
 
-// sdkMaxRetries converts a total-attempt budget (including the first) into
-// the SDK's retry-count option.
-func sdkMaxRetries(total int) int {
-	if total <= 1 {
-		return 0
-	}
-	return total - 1
+	options := spec.requestOptions(apiKey)
+	return &clients{api: openai.NewClient(options...)}, nil
 }

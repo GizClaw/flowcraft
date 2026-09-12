@@ -37,6 +37,7 @@ package errdefs
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -88,6 +89,34 @@ func ClassifyProviderError(provider string, err error) error {
 	default:
 		return NotAvailable(wrapped)
 	}
+}
+
+// ClassifyStatus wraps cause with the errdefs classification one HTTP status
+// implies, preserving the cause chain. Use it from a transport that already
+// holds a provider-typed error and only needs the status mapped; callers that
+// have a raw response body should use ClassifyHTTPStatus, which builds the
+// message as well.
+//
+// The mapping is the one every provider transport needs: 400/404/422 are
+// validation, 401 unauthorized, 403 forbidden, 409 conflict, 429 rate limit,
+// 408/504 timeout, and everything else — including 5xx — not-available, which
+// the router retries.
+func ClassifyStatus(status int, cause error) error {
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return Validation(cause)
+	case http.StatusUnauthorized:
+		return Unauthorized(cause)
+	case http.StatusForbidden:
+		return Forbidden(cause)
+	case http.StatusConflict:
+		return Conflict(cause)
+	case http.StatusTooManyRequests:
+		return RateLimit(cause)
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return Timeout(cause)
+	}
+	return NotAvailable(cause)
 }
 
 // ClassifyHTTPStatus wraps a raw HTTP status code into an errdefs-

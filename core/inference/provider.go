@@ -9,8 +9,17 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
+// Compiled is one provider-native request plus the ledger explaining how the
+// canonical request became it.
+//
+// Wire is the provider's own type, and Transport is its only reader. It may
+// contain interface values — SDK parameter types carry them, for example a
+// tool schema as map[string]any — but it must not embed canonical request
+// types, which the bind functions reject: Transport would otherwise be able to
+// read canonical fields that Report never accounted for.
 type Compiled[Wire any] struct {
 	Wire   Wire
 	Report CompileReport
@@ -42,12 +51,16 @@ type Explanation struct {
 
 type GenerateDriver interface {
 	Explain(context.Context, ModelRef, GenerateRequest) (Explanation, error)
+	// Prepare compiles one request and returns a handle that executes it
+	// without compiling again; Execute is Prepare plus immediate execution.
+	Prepare(context.Context, ModelRef, GenerateRequest) (*Prepared[GenerateResponse], error)
 	Execute(context.Context, ModelRef, GenerateRequest) (GenerateResponse, error)
 	inferenceGenerateDriver()
 }
 
 type GenerateStreamDriver interface {
 	Explain(context.Context, ModelRef, GenerateRequest) (Explanation, error)
+	PrepareStream(context.Context, ModelRef, GenerateRequest) (*Prepared[GenerateStream], error)
 	Stream(context.Context, ModelRef, GenerateRequest) (GenerateStream, error)
 	inferenceGenerateStreamDriver()
 }
@@ -66,10 +79,10 @@ type boundGenerateDriver interface {
 }
 
 func (o GenerateOperations) Validate() error {
-	if isNilValue(o.Unary) && isNilValue(o.Stream) {
+	if ptr.IsNil(o.Unary) && ptr.IsNil(o.Stream) {
 		return fmt.Errorf("generate operations require a unary or stream driver")
 	}
-	if !isNilValue(o.Unary) && !isNilValue(o.Stream) {
+	if !ptr.IsNil(o.Unary) && !ptr.IsNil(o.Stream) {
 		unary, unaryOK := o.Unary.(boundGenerateDriver)
 		stream, streamOK := o.Stream.(boundGenerateDriver)
 		if !unaryOK || !streamOK ||
@@ -84,6 +97,7 @@ func (o GenerateOperations) Validate() error {
 
 type EmbedDriver interface {
 	Explain(context.Context, ModelRef, EmbedRequest) (Explanation, error)
+	Prepare(context.Context, ModelRef, EmbedRequest) (*Prepared[EmbedResponse], error)
 	Execute(context.Context, ModelRef, EmbedRequest) (EmbedResponse, error)
 	inferenceEmbedDriver()
 }
@@ -251,30 +265,6 @@ func BindEmbed[Wire, Raw any](
 	return &embedDriver[Wire, Raw]{pipeline: bound}, nil
 }
 
-func typeContainsInterface(value reflect.Type, seen map[reflect.Type]bool) bool {
-	if value == nil || seen[value] {
-		return false
-	}
-	seen[value] = true
-	if value.Kind() == reflect.Interface {
-		return true
-	}
-	switch value.Kind() {
-	case reflect.Pointer, reflect.Slice, reflect.Array:
-		return typeContainsInterface(value.Elem(), seen)
-	case reflect.Map:
-		return typeContainsInterface(value.Key(), seen) ||
-			typeContainsInterface(value.Elem(), seen)
-	case reflect.Struct:
-		for index := 0; index < value.NumField(); index++ {
-			if typeContainsInterface(value.Field(index).Type, seen) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func bindPipeline[Req, Wire, Raw, Resp any](
 	operation Operation,
 	compile Compiler[Req, Wire],
@@ -291,10 +281,9 @@ func bindPipeline[Req, Wire, Raw, Resp any](
 		return nil, errdefs.Validationf("inference pipeline requires all provider stages")
 	}
 	wireType := reflect.TypeFor[Wire]()
-	if invalidProviderWire(wireType) ||
-		typeContains(wireType, reflect.TypeFor[Req](), make(map[reflect.Type]bool)) {
+	if containsCanonicalProviderInput(wireType, reflect.TypeFor[Req]()) {
 		return nil, errdefs.Validationf(
-			"provider wire type must be concrete and must not contain canonical or open interface values",
+			"provider wire type must not embed canonical request types",
 		)
 	}
 	return &pipeline[Req, Wire, Raw, Resp]{
@@ -323,23 +312,23 @@ func (p *pipeline[Req, Wire, Raw, Resp]) explain(
 	return Explanation{
 		Model:     model,
 		Operation: p.operation,
-		Decisions: append([]Decision(nil), compiled.Report.Decisions...),
+		Decisions: cloneDecisions(compiled.Report.Decisions),
 	}, nil
 }
 
-func (p *pipeline[Req, Wire, Raw, Resp]) execute(
+// executeCompiled runs an attempt whose compiler work is already done:
+// transport, decode, and the response contract check. Prepared attempts use it
+// so a preflighted request is compiled exactly once.
+func (p *pipeline[Req, Wire, Raw, Resp]) executeCompiled(
 	ctx context.Context,
 	model ModelRef,
 	request Req,
-) (Resp, CompileReport, error) {
+	compiled Compiled[Wire],
+) (Resp, error) {
 	var zero Resp
-	compiled, err := p.prepare(ctx, model, request)
-	if err != nil {
-		return zero, compiled.Report, err
-	}
 	raw, err := p.transport(ctx, compiled.Wire)
 	if err != nil {
-		return zero, compiled.Report, newProviderError(
+		return zero, newProviderError(
 			p.operation,
 			model.ID.Provider,
 			err,
@@ -347,12 +336,12 @@ func (p *pipeline[Req, Wire, Raw, Resp]) execute(
 	}
 	response, err := p.decode(ctx, raw)
 	if err != nil {
-		return zero, compiled.Report, NewError(InvalidProviderResponse, p.operation, "", err)
+		return zero, NewError(InvalidProviderResponse, p.operation, "", err)
 	}
 	if err := p.validateResponse(request, response); err != nil {
-		return zero, compiled.Report, newResponseValidationError(p.operation, err)
+		return zero, newResponseValidationError(p.operation, err)
 	}
-	return response, compiled.Report, nil
+	return response, nil
 }
 
 func (p *pipeline[Req, Wire, Raw, Resp]) prepare(
@@ -428,8 +417,17 @@ func (p *pipeline[Req, Wire, Raw, Resp]) prepare(
 	return compiled, nil
 }
 
-func invalidProviderWire(wire reflect.Type) bool {
-	if typeContainsInterface(wire, make(map[reflect.Type]bool)) {
+// containsCanonicalProviderInput reports whether a provider wire type embeds a
+// canonical request type. Providers are expected to lower canonical requests
+// into their own wire values, and Transport only ever sees that wire, so an
+// embedded canonical type would hand the transport request fields the
+// compiler never recorded in its ledger.
+//
+// The walk is static and therefore best-effort: an interface field (an SDK's
+// map[string]any tool schema, for example) hides whatever it holds, and the
+// conformance suites cover what the type system cannot see.
+func containsCanonicalProviderInput(wire, request reflect.Type) bool {
+	if typeContains(wire, request, make(map[reflect.Type]bool)) {
 		return true
 	}
 	for _, canonical := range []reflect.Type{

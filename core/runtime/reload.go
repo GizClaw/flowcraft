@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -61,12 +62,12 @@ func (r *Runtime) Reload(
 		return nil, errdefs.Validationf(
 			"runtime: Reload requires a built Runtime")
 	}
-	if isNilContext(ctx) {
+	if ptr.IsNil(ctx) {
 		return nil, errdefs.Validationf(
 			"runtime: Reload context is required")
 	}
 	for _, option := range opts {
-		if isNil(option) {
+		if ptr.IsNil(option) {
 			return nil, errdefs.Validationf(
 				"runtime: ReloadOption must not be nil")
 		}
@@ -222,7 +223,7 @@ func (r *Runtime) Reload(
 			return nil, abort(fmt.Errorf(
 				"runtime reload decorate host factory: %w", err))
 		}
-		if isNil(hostFactory) {
+		if ptr.IsNil(hostFactory) {
 			return nil, abort(errdefs.Internalf(
 				"runtime reload host factory decorator returned nil"))
 		}
@@ -233,7 +234,7 @@ func (r *Runtime) Reload(
 			return nil, abort(fmt.Errorf(
 				"runtime reload decorate host factory with deployment: %w", err))
 		}
-		if isNil(hostFactory) {
+		if ptr.IsNil(hostFactory) {
 			return nil, abort(errdefs.Internalf(
 				"runtime reload result host factory decorator returned nil"))
 		}

@@ -12,10 +12,12 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
+	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
 const videoTaskTestPath = "/contents/generations/tasks"
@@ -37,24 +39,75 @@ func compileVideoRequest(parts []message.Part, options VideoOptions) inference.G
 
 func compileVideoWire(
 	t *testing.T,
-	model string,
+	name string,
 	request inference.GenerateRequest,
-) (videoWire, inference.CompileReport, error) {
+) (*arkmodel.CreateContentGenerationTaskRequest, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[model]
+	entry, ok := catalog[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", model)
+		t.Fatalf("catalog model %q missing", name)
 	}
 	compiled, err := compileVideo("ep-test", entry)(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: model}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		return videoWire{}, compiled.Report, err
+		return nil, compiled.Report, err
 	}
 	return compiled.Wire, compiled.Report, nil
+}
+
+// contentURL returns the URL of the first content item carrying role, or "".
+func contentURL(request *arkmodel.CreateContentGenerationTaskRequest, role string) string {
+	for _, item := range request.Content {
+		if item.Role == nil || *item.Role != role {
+			continue
+		}
+		switch {
+		case item.ImageURL != nil:
+			return item.ImageURL.URL
+		case item.VideoURL != nil:
+			return item.VideoURL.Url
+		case item.AudioURL != nil:
+			return item.AudioURL.Url
+		}
+	}
+	return ""
+}
+
+// contentURLs returns every URL carrying role, in content order.
+func contentURLs(request *arkmodel.CreateContentGenerationTaskRequest, role string) []string {
+	var urls []string
+	for _, item := range request.Content {
+		if item.Role == nil || *item.Role != role {
+			continue
+		}
+		switch {
+		case item.ImageURL != nil:
+			urls = append(urls, item.ImageURL.URL)
+		case item.VideoURL != nil:
+			urls = append(urls, item.VideoURL.Url)
+		case item.AudioURL != nil:
+			urls = append(urls, item.AudioURL.Url)
+		}
+	}
+	return urls
+}
+
+// videoTaskRequest builds the request one transport attempt posts: the Ark
+// task request with its text item, so transport tests can add the content
+// items they need without going through the compiler.
+func videoTaskRequest(
+	model, prompt string,
+) *arkmodel.CreateContentGenerationTaskRequest {
+	request := &arkmodel.CreateContentGenerationTaskRequest{Model: model}
+	request.Content = []*arkmodel.CreateContentGenerationContentItem{{
+		Type: arkmodel.ContentGenerationContentItemTypeText,
+		Text: &prompt,
+	}}
+	return request
 }
 
 // videoOptionsField qualifies one VideoOptions extension field the same way
@@ -211,24 +264,24 @@ func TestCompileVideoAllowsSupportedParams(t *testing.T) {
 	video.AspectRatio = "16:9"
 	video.Seed = &seed
 
-	wire, report, err := compileVideoWire(t, "doubao-seedance-1-5-pro", request)
+	ark, report, err := compileVideoWire(t, "doubao-seedance-1-5-pro", request)
 	if err != nil {
 		t.Fatalf("compile: %v; report = %+v", err, report)
 	}
-	if wire.duration == nil || *wire.duration != 5 {
-		t.Fatalf("wire.duration = %v, want 5", wire.duration)
+	if ark.Duration == nil || *ark.Duration != 5 {
+		t.Fatalf("duration = %v, want 5", ark.Duration)
 	}
-	if wire.seed == nil || *wire.seed != seed {
-		t.Fatalf("wire.seed = %v, want %d", wire.seed, seed)
+	if ark.Seed == nil || *ark.Seed != seed {
+		t.Fatalf("seed = %v, want %d", ark.Seed, seed)
 	}
-	if wire.cameraFixed == nil || !*wire.cameraFixed {
-		t.Fatal("wire.cameraFixed not set")
+	if ark.CameraFixed == nil || !*ark.CameraFixed {
+		t.Fatal("camera_fixed not set")
 	}
-	if wire.generateAudio == nil || !*wire.generateAudio {
-		t.Fatal("wire.generateAudio not set")
+	if ark.GenerateAudio == nil || !*ark.GenerateAudio {
+		t.Fatal("generate_audio not set")
 	}
-	if wire.serviceTier != "flex" {
-		t.Fatalf("wire.serviceTier = %q, want flex", wire.serviceTier)
+	if derefString(ark.ServiceTier) != "flex" {
+		t.Fatalf("service_tier = %q, want flex", derefString(ark.ServiceTier))
 	}
 }
 
@@ -364,12 +417,13 @@ func TestCompileVideoOmniReferenceTaskTypeLinkage(t *testing.T) {
 	for _, tc := range accepted {
 		t.Run(tc.name, func(t *testing.T) {
 			req := requestWith(&tc.taskType, tc.parts, "adaptive", nil)
-			wire, report, err := compileVideoWire(t, "doubao-seedance-2-5", req)
+			ark, report, err := compileVideoWire(t, "doubao-seedance-2-5", req)
 			if err != nil {
 				t.Fatalf("compile: %v; report = %+v", err, report)
 			}
-			if wire.omniReferenceTaskType != tc.taskType {
-				t.Errorf("omniReferenceTaskType = %q, want %q", wire.omniReferenceTaskType, tc.taskType)
+			if derefString(ark.OmniReferenceTaskType) != tc.taskType {
+				t.Errorf("omni_reference_task_type = %q, want %q",
+					derefString(ark.OmniReferenceTaskType), tc.taskType)
 			}
 		})
 	}
@@ -553,10 +607,10 @@ func TestTransportVideoExpired(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
-		model:  "ep-test",
-		prompt: "a cinematic scene",
-	})
+	_, err := transportVideo(client, time.Millisecond, nil)(
+		context.Background(),
+		videoTaskRequest("ep-test", "a cinematic scene"),
+	)
 	if err == nil {
 		t.Fatal("transport returned nil error for expired task")
 	}
@@ -590,10 +644,10 @@ func TestTransportVideoSucceeded(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	raw, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
-		model:  "ep-test",
-		prompt: "a cinematic scene",
-	})
+	raw, err := transportVideo(client, time.Millisecond, nil)(
+		context.Background(),
+		videoTaskRequest("ep-test", "a cinematic scene"),
+	)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -700,7 +754,7 @@ func TestCompileVideoReferenceInputs(t *testing.T) {
 	}
 	for _, tc := range accepted {
 		t.Run(tc.name, func(t *testing.T) {
-			wire, report, err := compileVideoWire(
+			ark, report, err := compileVideoWire(
 				t,
 				tc.model,
 				compileVideoRequest(tc.parts, VideoOptions{}),
@@ -708,20 +762,20 @@ func TestCompileVideoReferenceInputs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v; report = %+v", err, report)
 			}
-			if wire.firstFrame != tc.wantFirst {
-				t.Errorf("firstFrame = %q, want %q", wire.firstFrame, tc.wantFirst)
+			if got := contentURL(ark, "first_frame"); got != tc.wantFirst {
+				t.Errorf("first_frame = %q, want %q", got, tc.wantFirst)
 			}
-			if wire.lastFrame != tc.wantLast {
-				t.Errorf("lastFrame = %q, want %q", wire.lastFrame, tc.wantLast)
+			if got := contentURL(ark, "last_frame"); got != tc.wantLast {
+				t.Errorf("last_frame = %q, want %q", got, tc.wantLast)
 			}
-			if !reflect.DeepEqual(wire.referenceImages, tc.wantImages) {
-				t.Errorf("referenceImages = %v, want %v", wire.referenceImages, tc.wantImages)
+			if got := contentURLs(ark, "reference_image"); !reflect.DeepEqual(got, tc.wantImages) {
+				t.Errorf("reference_image = %v, want %v", got, tc.wantImages)
 			}
-			if !reflect.DeepEqual(wire.referenceVideos, tc.wantVideos) {
-				t.Errorf("referenceVideos = %v, want %v", wire.referenceVideos, tc.wantVideos)
+			if got := contentURLs(ark, "reference_video"); !reflect.DeepEqual(got, tc.wantVideos) {
+				t.Errorf("reference_video = %v, want %v", got, tc.wantVideos)
 			}
-			if !reflect.DeepEqual(wire.referenceAudios, tc.wantAudios) {
-				t.Errorf("referenceAudios = %v, want %v", wire.referenceAudios, tc.wantAudios)
+			if got := contentURLs(ark, "reference_audio"); !reflect.DeepEqual(got, tc.wantAudios) {
+				t.Errorf("reference_audio = %v, want %v", got, tc.wantAudios)
 			}
 		})
 	}
@@ -863,15 +917,18 @@ func TestTransportVideoCarriesReferenceInputs(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
-		model:           "ep-test",
-		prompt:          "reference please",
-		firstFrame:      "https://example.com/first.png",
-		lastFrame:       "https://example.com/last.png",
-		referenceImages: []string{"https://example.com/ref1.png"},
-		referenceVideos: []string{"https://example.com/clip.mp4"},
-		referenceAudios: []string{"https://example.com/track.mp3"},
-	})
+	request := videoTaskRequest("ep-test", "reference please")
+	request.Content = append(request.Content,
+		itemImage("https://example.com/first.png", "first_frame"),
+		itemImage("https://example.com/last.png", "last_frame"),
+		itemImage("https://example.com/ref1.png", "reference_image"),
+		itemVideo("https://example.com/clip.mp4", "reference_video"),
+		itemAudio("https://example.com/track.mp3", "reference_audio"),
+	)
+	_, err := transportVideo(client, time.Millisecond, nil)(
+		context.Background(),
+		request,
+	)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -918,16 +975,23 @@ func TestTransportVideoCarriesExtendedFields(t *testing.T) {
 		arkruntime.WithRetryTimes(0),
 	)
 	priority := int32(5)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
-		model:                 "ep-test",
-		prompt:                "a cinematic scene",
-		priority:              &priority,
-		outputFormat:          "mp4",
-		omniReferenceTaskType: "reference",
-		webSearch:             true,
-		callbackURL:           "https://example.com/hooks",
-		safetyIdentifier:      "user-42",
-	})
+	request := videoTaskRequest("ep-test", "a cinematic scene")
+	outputFormat := "mp4"
+	omniReferenceTaskType := "reference"
+	callbackURL := "https://example.com/hooks"
+	safetyIdentifier := "user-42"
+	request.Priority = &priority
+	request.OutputFormat = &outputFormat
+	request.OmniReferenceTaskType = &omniReferenceTaskType
+	request.Tools = []*arkmodel.ContentGenerationTool{{
+		Type: arkmodel.ToolTypeWebSearch,
+	}}
+	request.CallbackUrl = &callbackURL
+	request.SafetyIdentifier = &safetyIdentifier
+	_, err := transportVideo(client, time.Millisecond, nil)(
+		context.Background(),
+		request,
+	)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -950,5 +1014,88 @@ func TestTransportVideoCarriesExtendedFields(t *testing.T) {
 	tool := tools[0].(map[string]any)
 	if tool["type"] != "web_search" {
 		t.Errorf("tool type = %#v, want web_search", tool["type"])
+	}
+}
+
+// TestVideoCompileToTransportBody closes the loop the wire used to close: one
+// canonical request compiles into the task body the API actually receives,
+// content roles and extension knobs included.
+func TestVideoCompileToTransportBody(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == videoTaskTestPath:
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			_, _ = writer.Write([]byte(`{"id":"cgt-test"}`))
+		case request.Method == http.MethodGet &&
+			request.URL.Path == videoTaskTestPath+"/cgt-test":
+			_, _ = writer.Write([]byte(`{
+				"id": "cgt-test",
+				"status": "succeeded",
+				"content": {"video_url": "https://example.com/out.mp4"},
+				"usage": {"completion_tokens": 1}
+			}`))
+		default:
+			t.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	generateAudio := true
+	fiveSeconds := int64(5_000)
+	request := compileVideoRequest(
+		[]message.Part{
+			message.TextPart{Text: "a cinematic scene"},
+			videoImagePart(t, "https://example.com/first.png"),
+		},
+		VideoOptions{GenerateAudio: &generateAudio, ServiceTier: "flex"},
+	)
+	request.Input.Content.Intent.Video = &inference.VideoIntent{
+		DurationMillis: &fiveSeconds,
+		AspectRatio:    "16:9",
+	}
+	ark, report, err := compileVideoWire(t, "doubao-seedance-1-5-pro", request)
+	if err != nil {
+		t.Fatalf("compile: %v; report = %+v", err, report)
+	}
+
+	client := arkruntime.NewClientWithApiKey(
+		"sk-test",
+		arkruntime.WithBaseUrl(server.URL),
+		arkruntime.WithHTTPClient(server.Client()),
+		arkruntime.WithRetryTimes(0),
+	)
+	if _, err := transportVideo(client, time.Millisecond, nil)(
+		context.Background(),
+		ark,
+	); err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+
+	if body["model"] != "ep-test" {
+		t.Errorf("model = %#v, want ep-test", body["model"])
+	}
+	if body["duration"] != float64(5) || body["ratio"] != "16:9" {
+		t.Errorf("duration/ratio = %#v/%#v, want 5/16:9",
+			body["duration"], body["ratio"])
+	}
+	if body["generate_audio"] != true || body["service_tier"] != "flex" {
+		t.Errorf("generate_audio/service_tier = %#v/%#v, want true/flex",
+			body["generate_audio"], body["service_tier"])
+	}
+	content, ok := body["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content = %#v, want a text item and a first-frame image", body["content"])
+	}
+	image := content[1].(map[string]any)
+	if image["type"] != "image_url" || image["role"] != "first_frame" {
+		t.Errorf("content[1] = %#v, want an image_url item with role first_frame", image)
 	}
 }

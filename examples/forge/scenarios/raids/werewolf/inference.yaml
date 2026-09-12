@@ -1,7 +1,19 @@
 version: v1
 providers:
   - id: deepseek
-    driver: deepseek
+    driver: openai
     profiles:
       - secrets:
           api_key: {resolver: env, key: DEEPSEEK_API_KEY}
+  # Optional: the scenarios route to deepseek-flash, so these keys are only
+  # needed once a graph points at gpt-5.6-luna or glm-5.3-flash.
+  - id: openai
+    driver: openai
+    profiles:
+      - secrets:
+          api_key: {resolver: env, key: OPENAI_API_KEY}
+  - id: glm
+    driver: openai
+    profiles:
+      - secrets:
+          api_key: {resolver: env, key: ZHIPU_API_KEY}

@@ -55,12 +55,15 @@ func (r *RecordingTool) Definition() message.ToolDefinition {
 }
 
 // Execute implements tool.Tool.
-func (r *RecordingTool) Execute(_ context.Context, arguments string) (string, error) {
+func (r *RecordingTool) Execute(_ context.Context, arguments string) (message.Content, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, RecordedCall{Arguments: arguments})
 	response, err := r.response, r.err
 	r.mu.Unlock()
-	return response, err
+	if err != nil {
+		return message.Content{}, err
+	}
+	return message.NewTextContent(response), nil
 }
 
 var _ tool.Tool = (*RecordingTool)(nil)

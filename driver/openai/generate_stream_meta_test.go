@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 var _ inference.ProviderStreamMetadata = (*chatStream)(nil)
@@ -25,11 +26,13 @@ func TestResponsesStreamTransportCapturesRequestID(t *testing.T) {
 	defer server.Close()
 
 	entry := catalogEntry{
-		kind:         kindGenerate,
-		api:          apiResponses,
-		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
-	}
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+		kind: kindGenerate,
+
+		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
+		dialect: dialect{
+			api: apiResponses,
+		}}
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),

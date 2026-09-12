@@ -16,8 +16,8 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	typed := catalog["gpt-5.6-sol"]
-	typed.requestMetadataEnvelope = "metadata"
-	compiled, err := compileGenerate("gpt-5.6-sol", typed)(
+	typed.dialect.requestMetadataEnvelope = "metadata"
+	compiled, err := compileResponses("gpt-5.6-sol", typed)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -26,7 +26,7 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile metadata: %v", err)
 	}
-	params := wireToParams(compiled.Wire)
+	params := compiled.Wire.params
 	if params.Metadata["session_id"] != "s-1" ||
 		params.Metadata["turn_id"] != "t-1" {
 		t.Fatalf("metadata = %v, want session + turn", params.Metadata)
@@ -36,8 +36,8 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	client := catalog["gpt-5.6-sol"]
-	client.requestMetadataEnvelope = "client_metadata"
-	compiled, err = compileGenerate("gpt-5.6-sol", client)(
+	client.dialect.requestMetadataEnvelope = "client_metadata"
+	compiled, err = compileResponses("gpt-5.6-sol", client)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -46,7 +46,7 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile client_metadata: %v", err)
 	}
-	if options := requestMetadataOptions(compiled.Wire); len(options) != 1 {
+	if options := compiled.Wire.options; len(options) != 1 {
 		t.Fatalf("client_metadata options = %d, want 1", len(options))
 	}
 	if disposition := metadataDisposition(compiled.Report); disposition != inference.Native {
@@ -54,8 +54,8 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	custom := catalog["gpt-5.6-sol"]
-	custom.requestMetadataEnvelope = "request_fields"
-	compiled, err = compileGenerate("gpt-5.6-sol", custom)(
+	custom.dialect.requestMetadataEnvelope = "request_fields"
+	compiled, err = compileResponses("gpt-5.6-sol", custom)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -64,12 +64,12 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile custom envelope: %v", err)
 	}
-	if options := requestMetadataOptions(compiled.Wire); len(options) != 1 {
+	if options := compiled.Wire.options; len(options) != 1 {
 		t.Fatalf("custom envelope options = %d, want 1", len(options))
 	}
 
 	disabled := catalog["gpt-5.6-sol"]
-	compiled, err = compileGenerate("gpt-5.6-sol", disabled)(
+	compiled, err = compileResponses("gpt-5.6-sol", disabled)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -105,7 +105,7 @@ func TestRequestMetadataClientForwardedUnaryBody(t *testing.T) {
 	})
 	cls := testClients(t, server)
 	entry := catalog["gpt-5.6-sol"]
-	entry.requestMetadataEnvelope = "client_metadata"
+	entry.dialect.requestMetadataEnvelope = "client_metadata"
 	operations, err := openGenerate(
 		cls,
 		entry,

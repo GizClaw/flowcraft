@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -59,7 +60,7 @@ func NewStreamExportRegistry(buses map[string]event.Bus) *StreamExportRegistry {
 // conversation and UnregisterConversation when they detach. Nil sinks
 // are ignored.
 func (r *StreamExportRegistry) RegisterConversation(contextID string, sink agent.StreamSink) {
-	if contextID == "" || isNil(sink) {
+	if contextID == "" || ptr.IsNil(sink) {
 		return
 	}
 	wrapped := conversationStreamSink{contextID: contextID, inner: sink}
@@ -95,7 +96,7 @@ func (r *StreamExportRegistry) ConversationSink(contextID string) (agent.StreamS
 	r.mu.Lock()
 	sink, ok := r.conversations[contextID]
 	r.mu.Unlock()
-	if !ok || isNil(sink) {
+	if !ok || ptr.IsNil(sink) {
 		return nil, false
 	}
 	return sink, true
@@ -133,7 +134,7 @@ func (r *StreamExportRegistry) Resolver(
 		r.mu.Lock()
 		sink, ok := r.conversations[target.ID]
 		r.mu.Unlock()
-		if !ok || isNil(sink) {
+		if !ok || ptr.IsNil(sink) {
 			return nil, errdefs.NotAvailablef(
 				"runtime stream export: conversation %q has no attached sink",
 				target.ID)
@@ -151,7 +152,7 @@ func (r *StreamExportRegistry) Resolver(
 		r.mu.Lock()
 		bus, ok := r.buses[target.ID]
 		r.mu.Unlock()
-		if !ok || isNil(bus) {
+		if !ok || ptr.IsNil(bus) {
 			return nil, errdefs.Validationf(
 				"runtime stream export: unknown bus %q", target.ID)
 		}
@@ -173,7 +174,7 @@ type conversationStreamSink struct {
 }
 
 func (s conversationStreamSink) StreamTarget() (delegation.StreamTarget, bool) {
-	if s.contextID == "" || isNil(s.inner) {
+	if s.contextID == "" || ptr.IsNil(s.inner) {
 		return delegation.StreamTarget{}, false
 	}
 	return delegation.StreamTarget{

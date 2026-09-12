@@ -1,6 +1,6 @@
 // Package openai implements the OpenAI provider for the unified inference
 // runtime. It owns the provider's model catalog, strict Spec decoding, and
-// all wire compilers; core/inference never sees OpenAI concepts.
+// all request lowering; core/inference never sees OpenAI concepts.
 //
 // Operation coverage:
 //

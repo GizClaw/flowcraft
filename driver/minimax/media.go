@@ -81,7 +81,7 @@ func (c *mediaClient) request(
 			RequestID string `json:"request_id"`
 		}
 		_ = json.Unmarshal(snippet, &errorBody)
-		classified := classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
+		classified := errdefs.ClassifyStatus(resp.StatusCode, fmt.Errorf(
 			"minimax: %s %s: HTTP %d: %s",
 			method, path, resp.StatusCode, strings.TrimSpace(string(snippet)),
 		))

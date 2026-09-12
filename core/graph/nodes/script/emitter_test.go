@@ -37,16 +37,57 @@ func TestPayloadToToolCall(t *testing.T) {
 
 func TestPayloadToToolResult(t *testing.T) {
 	result, ok := payloadToToolResult(map[string]any{
-		"tool_call_id": "c1", "content": "ok", "is_error": false,
+		"tool_call_id": "c1", "is_error": false,
+		"parts": []any{map[string]any{"type": "text", "text": "ok"}},
 	})
 	if !ok {
 		t.Fatal("valid tool_result payload rejected")
 	}
-	if result.CallID != "c1" || result.Content != "ok" || result.IsError {
+	if result.CallID != "c1" || result.Content.Text() != "ok" || result.IsError {
 		t.Fatalf("result = %+v", result)
 	}
-	if _, ok := payloadToToolResult(map[string]any{"content": "x"}); ok {
+	if _, ok := payloadToToolResult(map[string]any{"parts": []any{map[string]any{"type": "text", "text": "x"}}}); ok {
 		t.Fatal("missing tool_call_id must be rejected")
+	}
+}
+
+func TestPayloadToToolResultCarriesParts(t *testing.T) {
+	image := map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"kind": "url", "url": "https://example.com/a.png", "media_type": "image/png",
+		},
+	}
+	result, ok := payloadToToolResult(map[string]any{
+		"tool_call_id": "c1", "is_error": false,
+		"parts": []any{map[string]any{"type": "text", "text": "captured"}, image},
+	})
+	if !ok {
+		t.Fatal("multipart tool_result payload rejected")
+	}
+	if len(result.Content.Parts) != 2 {
+		t.Fatalf("parts = %d, want 2", len(result.Content.Parts))
+	}
+	if _, ok := result.Content.Parts[1].(message.ImagePart); !ok {
+		t.Fatalf("part 1 = %T, want message.ImagePart", result.Content.Parts[1])
+	}
+
+	for name, payload := range map[string]map[string]any{
+		"unknown part type": {
+			"tool_call_id": "c1", "parts": []any{map[string]any{"type": "nope"}},
+		},
+		"missing parts": {
+			"tool_call_id": "c1", "content": "legacy text",
+		},
+		"empty parts": {
+			"tool_call_id": "c1", "parts": []any{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := payloadToToolResult(payload); ok {
+				t.Fatalf("payload %v must be rejected", payload)
+			}
+		})
 	}
 }
 

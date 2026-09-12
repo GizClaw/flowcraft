@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // FeedTranscription pumps a live part stream into an open transcription
@@ -31,10 +32,10 @@ func FeedTranscription(
 	format media.AudioFormat,
 	stream message.Stream,
 ) error {
-	if isNilValue(session) {
+	if ptr.IsNil(session) {
 		return fmt.Errorf("feed transcription: session is nil")
 	}
-	if isNilValue(stream) {
+	if ptr.IsNil(stream) {
 		return fmt.Errorf("feed transcription: stream is nil")
 	}
 	var sequence uint64

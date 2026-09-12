@@ -3,11 +3,11 @@ package delegation
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -144,7 +144,7 @@ func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
 	var backend AsyncBackend
 	if value, ok := in.Dep(BackendDep); ok {
 		b, ok := value.(AsyncBackend)
-		if !ok || isNilBackend(b) {
+		if !ok || ptr.IsNil(b) {
 			return nil, errdefs.Validationf(
 				"delegation service resource: dep %q is %T, want AsyncBackend",
 				BackendDep, value)
@@ -154,7 +154,7 @@ func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
 
 	if value, ok := in.Dep(SessionProviderDep); ok {
 		provider, ok := value.(SessionProvider)
-		if !ok || isNilInterface(provider) {
+		if !ok || ptr.IsNil(provider) {
 			return nil, errdefs.Validationf(
 				"delegation service resource: dep %q is %T, want delegation.SessionProvider",
 				SessionProviderDep, value)
@@ -163,20 +163,6 @@ func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
 	}
 
 	return NewService(directory, backend, options...)
-}
-
-func isNilBackend(backend AsyncBackend) bool {
-	if backend == nil {
-		return true
-	}
-	value := reflect.ValueOf(backend)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }
 
 func parseServiceDuration(field, value string) (time.Duration, error) {

@@ -9,6 +9,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/message"
+
+	"github.com/openai/openai-go/v3"
 )
 
 func TestConformanceGenerateConcurrent(t *testing.T) {
@@ -30,10 +32,12 @@ func conformanceGenerateDriversOpenAI(
 	t.Helper()
 	model := "gpt-5.6-sol"
 	operations, err := inference.BindGenerateOperations(
-		compileGenerate(model, catalog[model]),
-		countingTransport(calls, func(_ context.Context, wire generateWire) (generateWire, error) { return wire, nil }),
-		inference.Decoder[generateWire, inference.GenerateResponse](
-			func(_ context.Context, _ generateWire) (inference.GenerateResponse, error) {
+		compileResponses(model, catalog[model]),
+		countingTransport(calls, func(_ context.Context, request *responsesRequest) (*responsesRequest, error) {
+			return request, nil
+		}),
+		inference.Decoder[*responsesRequest, inference.GenerateResponse](
+			func(_ context.Context, _ *responsesRequest) (inference.GenerateResponse, error) {
 				return inference.GenerateResponse{
 					Message: message.Message{
 						Role:    message.RoleAssistant,
@@ -43,7 +47,7 @@ func conformanceGenerateDriversOpenAI(
 				}, nil
 			},
 		),
-		countingTransport(calls, func(_ context.Context, _ generateWire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
+		countingTransport(calls, func(_ context.Context, _ *responsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &okOpenAIStream{events: []inference.GenerateStreamEvent{
 				{PartIndex: 0, Delta: inference.TextPartDelta{Text: "ok"}},
 				{FinishReason: inference.FinishCompleted},
@@ -81,9 +85,11 @@ func TestConformanceEmbedUnary(t *testing.T) {
 	model := "text-embedding-3-large"
 	driver, err := inference.BindEmbed(
 		compileEmbed(model, catalog[model]),
-		countingTransport(calls, func(_ context.Context, wire embedWire) (embedWire, error) { return wire, nil }),
-		inference.Decoder[embedWire, inference.EmbedResponse](
-			func(_ context.Context, _ embedWire) (inference.EmbedResponse, error) {
+		countingTransport(calls, func(_ context.Context, params openai.EmbeddingNewParams) (openai.EmbeddingNewParams, error) {
+			return params, nil
+		}),
+		inference.Decoder[openai.EmbeddingNewParams, inference.EmbedResponse](
+			func(_ context.Context, _ openai.EmbeddingNewParams) (inference.EmbedResponse, error) {
 				return inference.EmbedResponse{
 					Embeddings: []inference.Embedding{{Vector: []float32{1}}},
 				}, nil
@@ -118,8 +124,8 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "gpt-5.6-sol"
 	driver, err := inference.BindGenerateStream(
-		compileGenerate(model, catalog[model]),
-		countingTransport(calls, func(_ context.Context, _ generateWire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
+		compileResponses(model, catalog[model]),
+		countingTransport(calls, func(_ context.Context, _ *responsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingOpenAIStream{}, nil
 		}),
 		inference.GenerateStreamDecoder[inference.GenerateStreamEvent](

@@ -91,17 +91,21 @@
 // as the MCP spec prescribes — hosts never reap child processes
 // themselves.
 //
-// # Result rendering
+// # Result mapping
 //
-// [tool.Tool] returns one string, MCP returns a list of content parts,
-// so the mapping is fixed and documented rather than left to chance:
+// [tool.Tool] returns [message.Content] and MCP returns a list of
+// content parts, so the mapping is structural rather than textual:
 //
-//   - parts render in order, joined by "\n";
-//   - a text part contributes its text verbatim;
-//   - any other part (image, audio, resource link, embedded resource)
-//     contributes its JSON wire form, so nothing is silently dropped;
+//   - text, image, and audio content become their typed parts;
+//   - a resource link becomes a [message.FilePart];
+//   - an embedded resource contributes its text or its typed media
+//     payload;
+//   - anything with no typed home — including content types this
+//     client does not know yet — keeps its JSON wire form as a
+//     [message.DataPart] (or a text part when it is not a JSON
+//     object), so nothing is silently dropped;
 //   - when there are no content parts but structuredContent is set,
-//     the structured value is rendered as JSON instead.
+//     the structured value is carried as a data part instead.
 //
 // A result flagged isError becomes a non-nil error carrying the rendered
 // content, which the executor reports as an error result — the model

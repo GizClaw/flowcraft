@@ -283,8 +283,8 @@ func TestSearchTool_ReportsLoadFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute tool_search: %v", err)
 	}
-	if !strings.Contains(out, `"failed":[{"name":"broken","reason":"load_failed"}]`) {
-		t.Fatalf("tool_search output = %s", out)
+	if rendered := jsonOf(t, out); !strings.Contains(rendered, `"failed":[{"name":"broken","reason":"load_failed"}]`) {
+		t.Fatalf("tool_search output = %s", rendered)
 	}
 	if contains(definitionNames(session.Definitions()), "broken") {
 		t.Fatal("failed lazy tool must not be exposed")

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -74,10 +74,10 @@ func NewManager(
 	router *event.Router,
 	options ...ManagerOption,
 ) (*Manager, error) {
-	if isNil(resolver) {
+	if ptr.IsNil(resolver) {
 		return nil, errdefs.Validationf("runtime session: instance resolver is required")
 	}
-	if isNil(hostFactory) {
+	if ptr.IsNil(hostFactory) {
 		return nil, errdefs.Validationf("runtime session: HostFactory is required")
 	}
 	if router == nil {
@@ -92,7 +92,7 @@ func NewManager(
 		maxSessions:         defaultMaxSessions,
 	}
 	for _, option := range options {
-		if isNil(option) {
+		if ptr.IsNil(option) {
 			return nil, errdefs.Validationf("runtime session: ManagerOption must not be nil")
 		}
 		if err := option(&opts); err != nil {
@@ -100,7 +100,7 @@ func NewManager(
 		}
 	}
 	if opts.resume {
-		if isNil(opts.checkpoints) {
+		if ptr.IsNil(opts.checkpoints) {
 			return nil, errdefs.Validationf(
 				"runtime session: resume requires a checkpoint store")
 		}
@@ -201,7 +201,7 @@ func (m *Manager) WaitIdle(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
-	if isNil(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("runtime session: context is required")
 	}
 	return m.waitIdle(ctx)
@@ -217,7 +217,7 @@ func (m *Manager) Drain(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
-	if isNil(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("runtime session: context is required")
 	}
 	m.mu.Lock()
@@ -234,7 +234,7 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	if m == nil {
 		return nil, ErrManagerClosed
 	}
-	if isNil(ctx) {
+	if ptr.IsNil(ctx) {
 		return nil, errdefs.Validationf("runtime session: context is required")
 	}
 	if err := key.Validate(); err != nil {
@@ -398,7 +398,7 @@ func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
 	if m == nil {
 		return nil
 	}
-	if isNil(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("runtime session: context is required")
 	}
 
@@ -496,7 +496,7 @@ func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 	if m == nil {
 		return nil
 	}
-	if isNil(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("runtime session: context is required")
 	}
 	if err := key.Validate(); err != nil {
@@ -816,17 +816,4 @@ func (m *Manager) sessionCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.entries)
-}
-
-func isNil(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

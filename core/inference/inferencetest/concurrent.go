@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // GenerateConcurrentSuite exercises the concurrency contract of a
 // provider's bound Generate pipelines: compilers, transports, and
 // decoders must be safe for concurrent calls.
 type GenerateConcurrentSuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.GenerateRequest
 	Unary   inference.GenerateDriver
 	Stream  inference.GenerateStreamDriver

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // CompilerRejection describes one canonical field a provider must reject
@@ -29,8 +30,8 @@ type CompilerDrop[Request any] struct {
 // CompilerSuite verifies field-ledger completeness and provider-native wire
 // compilation independently from transport.
 type CompilerSuite[Request, Wire any] struct {
-	Operation inference.Operation
-	Model     inference.ModelRef
+	Operation model.Operation
+	Model     model.ModelRef
 	Request   func() Request
 	Snapshot  func(Request) any
 	Fields    func(Request) []inference.FieldID
@@ -44,7 +45,7 @@ type CompilerSuite[Request, Wire any] struct {
 // GenerateCompilerSuite fixes the canonical request type while retaining the
 // provider wire type selected by a conformance test.
 type GenerateCompilerSuite[Wire any] struct {
-	Model      inference.ModelRef
+	Model      model.ModelRef
 	Shape      inference.GenerateExecutionShape
 	Request    func() inference.GenerateRequest
 	Snapshot   func(inference.GenerateRequest) any
@@ -65,7 +66,7 @@ func RunGenerateCompiler[Wire any](
 		t.Fatalf("Shape: %v", err)
 	}
 	RunCompiler(t, CompilerSuite[inference.GenerateRequest, Wire]{
-		Operation: inference.OperationGenerate,
+		Operation: model.OperationGenerate,
 		Model:     suite.Model,
 		Request:   suite.Request,
 		Snapshot:  suite.Snapshot,
@@ -74,10 +75,10 @@ func RunGenerateCompiler[Wire any](
 		},
 		Compile: func(
 			ctx context.Context,
-			model inference.ModelRef,
+			ref model.ModelRef,
 			request inference.GenerateRequest,
 		) (inference.Compiled[Wire], error) {
-			return suite.Compile(ctx, model, request, suite.Shape)
+			return suite.Compile(ctx, ref, request, suite.Shape)
 		},
 		AssertWire: suite.AssertWire,
 		Rejections: suite.Rejections,
@@ -208,15 +209,10 @@ func RunCompiler[Request, Wire any](
 }
 
 func NativeReport(
-	operation inference.Operation,
+	operation model.Operation,
 	fields ...inference.FieldID,
 ) inference.CompileReport {
-	decisions := make([]inference.Decision, len(fields))
-	for index, field := range fields {
-		decisions[index] = inference.Decision{
-			Field:       field,
-			Disposition: inference.Native,
-		}
-	}
-	return inference.CompileReport{Operation: operation, Decisions: decisions}
+	// The convenience suites have no drops or rejections to report, so this is
+	// the ledger with no decisions recorded: every active field stays Native.
+	return inference.NewLedger(operation, "inferencetest", fields).Report()
 }

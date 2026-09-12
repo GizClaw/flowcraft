@@ -212,7 +212,7 @@ func (s testSource) Tools() []tool.Tool         { return s.tools }
 func (s testSource) LazyTools() []tool.LazyTool { return nil }
 
 func funcTool(name, content string) tool.Tool {
-	return tool.FuncTool(
+	return tool.TextTool(
 		message.ToolDefinition{
 			Name:        name,
 			Description: name,

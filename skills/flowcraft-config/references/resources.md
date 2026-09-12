@@ -10,25 +10,41 @@ are checked when the host build decodes them through the factory.
 ```yaml
 id: deepseek
 spec:
-  api: chat             # "chat" (default) or "responses"
-  base_url: https://api.deepseek.com   # optional override
-  request_metadata:     # optional; supported by deepseek/openai/azure
+  api: responses        # "responses" (default) or "chat"
+  endpoint:             # transport only: where the API is, how it authenticates
+    base_url: https://api.deepseek.com   # optional; default https://api.openai.com/v1
+    routing: azure_deployment            # optional: deployment-path rewriting
+    query: {api-version: "2025-04-01-preview"}   # optional: added to every request
+    headers: {x-gw: "1"}                 # optional static headers (credentials go in auth)
+    timeout: 90s                         # optional: bounds one wire attempt
+  auth:                 # how the profile's api_key rides the wire
+    scheme: header      # "bearer" (default), "header", or "none" (no credential)
+    header: Api-Key
+  wire:                 # dialect this endpoint speaks
+    store: false        # default false: responses are not retained server-side
+    reasoning_channel: summary   # "summary" (default) or "text"
+    include_reasoning_payload: true
+    reasoning_summary: detailed  # optional "auto"/"concise"/"detailed"; opt in to readable traces
+    truncation: auto    # optional "auto"/"disabled": context-overflow policy (responses)
+  catalog: declared     # "builtin_declared" (default) or "declared"
+  request_metadata:     # optional; supported by the openai wire family
     envelope: request_fields   # any non-empty top-level body field; empty disables
   models:               # optional: declare/override catalog models
-    - name: deepseek-v4-flash
+    - name: deepseek-flash
       kind: generate
       capabilities:     # optional: capability leaves (see "Model declarations" below)
-        inputs: [text, data, tool_call, tool_result]
+        inputs: [text, image, data, tool_call, tool_result]
         outputs: [text]
         reasoning:
-          kind: toggle     # "always" or "toggle" (legacy string form accepted); toggle promises reasoning_enabled=false compiles on this surface
+          kind: toggle     # "always" or "toggle"; toggle promises reasoning_enabled=false compiles on this surface
           effort_map:      # optional: canonical effort -> model wire level
             minimal: low
             low: low
             medium: high
             high: high
             xhigh: max
-        hosted_web_search: true
+        # hosted_web_search: false — DeepSeek ignores server-side tools other
+        # than function calls, so claiming hosted search would be a lie.
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}
@@ -52,8 +68,8 @@ those leaves, and everything unstated — other capability leaves, numeric
 limits, and driver control facts such as Bytedance's `max_resolution` —
 is inherited from the built-in entry. Unknown names start from the
 conservative zero base, so every published capability must be stated.
-Qwen and Kimi follow the same leaf semantics as the catalog-backed
-drivers.
+Compatible endpoints configured through the OpenAI and Anthropic drivers
+follow the same leaf semantics.
 
 Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
 compiles on that provider surface; models whose wire cannot turn reasoning
@@ -65,18 +81,18 @@ chat surface has no off route.
 Embed models that accept custom output dimensions declare the capability
 leaf `custom_embed_dimensions` (OpenAI, Azure, Bytedance). The old
 top-level `dimensions:` key is gone, drivers without an embed family reject
-the leaf, and Qwen's accepted sizes come from its built-in catalog
-whitelist — a declaration can restate the leaf on a whitelisted entry but
-cannot grant it to a model without one.
+the leaf, and accepted sizes come from the built-in catalog whitelist — a
+declaration can restate the leaf on a whitelisted entry but cannot grant it
+to a model without one.
 
 Routing prefers targets whose declared outputs cover the request intent
 and skips declared-incompatible tiers.
 
 `request_metadata.envelope` names the top-level body field that receives
 canonical `GenerateRequest.RequestMetadata`. It is supported by the
-DeepSeek, OpenAI, and Azure drivers; other drivers (Anthropic, MiniMax,
-Bytedance, Kimi, Qwen) keep their native transports and report request
-metadata as `dropped` in the compile report.
+OpenAI driver, which covers OpenAI, Azure, DeepSeek, Kimi and compatible
+gateways; the Anthropic, MiniMax, and Bytedance drivers keep their native
+transports and report request metadata as `dropped` in the compile report.
 
 ## inference assembly
 
@@ -107,7 +123,7 @@ router:
     generate:
       - tier: fast
         targets:
-          - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+          - model: {id: {provider: deepseek, name: deepseek-flash}}
             score: {quality: 0.8, speed: 0.9}
     retry:
       generate:
@@ -232,6 +248,7 @@ tools:
     middlewares:
       recover: {enabled: true}
       telemetry: {enabled: true}
+      result_limit: {max: 20000}
       timeout: {default: 30s}
       concurrency: {limit: 8}
     dynamic: {default: deferred, exposures: {tool_search: always}}
@@ -244,7 +261,12 @@ converts tool panics into error results, `telemetry.enabled` records an
 OpenTelemetry span plus executions/duration/error metrics and a warning
 log per call, `timeout.default` bounds each call (calls that already
 carry a deadline pass through), and `concurrency.limit` caps in-flight
-executions.
+executions. `result_limit.max` caps the runes of one result's text parts
+and `result_limit.part_budget_bytes` caps the encoded size of its non-text
+parts (images, audio, video, file references, structured data); an absent
+budget means 1 MiB and `0` lifts the cap. Parts over budget are dropped and
+the truncation marker (`result_limit.marker`, default `…[result truncated]`)
+is appended.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host

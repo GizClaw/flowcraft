@@ -104,6 +104,97 @@ func (a *Assembly) InspectModel(ref ModelRef) (ModelDescriptor, error) {
 	return model.Descriptor.Clone(), nil
 }
 
+// PrepareGenerate resolves the target and compiles one unary generate request,
+// returning a handle that executes it without resolving or compiling again.
+// The declaration check runs before the driver is opened, so a request the
+// model's declared limits reject costs no driver construction at all.
+func (a *Assembly) PrepareGenerate(
+	ctx context.Context,
+	ref ModelRef,
+	req GenerateRequest,
+) (*Prepared[GenerateResponse], error) {
+	operations, err := a.openGenerate(ctx, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareGenerateCall(ctx, operations, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentGenerateCall(prepared), nil
+}
+
+// PrepareGenerateStream compiles one streaming generate request against the
+// resolved target.
+func (a *Assembly) PrepareGenerateStream(
+	ctx context.Context,
+	ref ModelRef,
+	req GenerateRequest,
+) (*Prepared[GenerateStream], error) {
+	operations, err := a.openGenerate(ctx, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareGenerateStreamCall(ctx, operations, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentGenerateStreamCall(prepared), nil
+}
+
+// PrepareEmbed compiles one embedding request against the resolved target.
+func (a *Assembly) PrepareEmbed(
+	ctx context.Context,
+	ref ModelRef,
+	req EmbedRequest,
+) (*Prepared[EmbedResponse], error) {
+	driver, err := a.openEmbed(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareEmbedCall(ctx, driver, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentEmbedCall(prepared), nil
+}
+
+// PrepareTranscribe compiles one whole-file transcription request against the
+// resolved target.
+func (a *Assembly) PrepareTranscribe(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionRequest,
+) (*Prepared[TranscriptionResponse], error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareTranscribeCall(ctx, operations, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentTranscribeCall(prepared), nil
+}
+
+// PrepareTranscribeSession compiles one duplex transcription session request
+// against the resolved target.
+func (a *Assembly) PrepareTranscribeSession(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionSessionRequest,
+) (*Prepared[TranscriptionSession], error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareTranscribeSessionCall(ctx, operations, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentTranscribeSessionCall(prepared), nil
+}
+
 // Generate executes one unary generate request against the model
 // addressed by ref.
 func (a *Assembly) Generate(
@@ -111,20 +202,11 @@ func (a *Assembly) Generate(
 	ref ModelRef,
 	req GenerateRequest,
 ) (GenerateResponse, error) {
-	operations, err := a.openGenerate(ctx, ref)
+	prepared, err := a.PrepareGenerate(ctx, ref, req)
 	if err != nil {
 		return GenerateResponse{}, err
 	}
-	if operations.Unary == nil {
-		return GenerateResponse{}, NewError(
-			UnsupportedOperation, OperationGenerate, "",
-			fmt.Errorf("model %q has no unary generate driver", ref.ID.Name))
-	}
-	ctx, call := startInferenceCall(ctx, OperationGenerate, ref)
-	response, err := operations.Unary.Execute(ctx, ref, req)
-	call.stampUsage(&response.Usage)
-	call.finish(response.Metadata, response.Usage, err)
-	return response, err
+	return prepared.Execute(ctx)
 }
 
 // ExplainGenerate runs the compiler for a unary generate request
@@ -134,7 +216,7 @@ func (a *Assembly) ExplainGenerate(
 	ref ModelRef,
 	req GenerateRequest,
 ) (Explanation, error) {
-	operations, err := a.openGenerate(ctx, ref)
+	operations, err := a.openGenerate(ctx, ref, req)
 	if err != nil {
 		return Explanation{}, err
 	}
@@ -153,25 +235,11 @@ func (a *Assembly) GenerateStream(
 	ref ModelRef,
 	req GenerateRequest,
 ) (GenerateStream, error) {
-	operations, err := a.openGenerate(ctx, ref)
+	prepared, err := a.PrepareGenerateStream(ctx, ref, req)
 	if err != nil {
 		return nil, err
 	}
-	if operations.Stream == nil {
-		return nil, NewError(
-			UnsupportedOperation, OperationGenerate, "",
-			fmt.Errorf("model %q has no streaming generate driver", ref.ID.Name))
-	}
-	ctx, call := startInferenceCall(ctx, OperationGenerate, ref)
-	stream, err := operations.Stream.Stream(ctx, ref, req)
-	if err != nil {
-		call.finish(Metadata{}, Usage{}, err)
-		return nil, err
-	}
-	return &telemetryGenerateStream{
-		inner: stream,
-		tel:   call,
-	}, nil
+	return prepared.Execute(ctx)
 }
 
 // ExplainGenerateStream runs the compiler for a generate stream
@@ -181,7 +249,7 @@ func (a *Assembly) ExplainGenerateStream(
 	ref ModelRef,
 	req GenerateRequest,
 ) (Explanation, error) {
-	operations, err := a.openGenerate(ctx, ref)
+	operations, err := a.openGenerate(ctx, ref, req)
 	if err != nil {
 		return Explanation{}, err
 	}
@@ -200,15 +268,11 @@ func (a *Assembly) Embed(
 	ref ModelRef,
 	req EmbedRequest,
 ) (EmbedResponse, error) {
-	driver, err := a.openEmbed(ctx, ref)
+	prepared, err := a.PrepareEmbed(ctx, ref, req)
 	if err != nil {
 		return EmbedResponse{}, err
 	}
-	ctx, call := startInferenceCall(ctx, OperationEmbed, ref)
-	response, err := driver.Execute(ctx, ref, req)
-	call.recordEmbedUsage(ctx, response.Usage)
-	call.finish(response.Metadata, Usage{}, err)
-	return response, err
+	return prepared.Execute(ctx)
 }
 
 // ExplainEmbed runs the compiler for an embedding request without
@@ -232,21 +296,11 @@ func (a *Assembly) Transcribe(
 	ref ModelRef,
 	req TranscriptionRequest,
 ) (TranscriptionResponse, error) {
-	operations, err := a.openTranscribe(ctx, ref)
+	prepared, err := a.PrepareTranscribe(ctx, ref, req)
 	if err != nil {
 		return TranscriptionResponse{}, err
 	}
-	if operations.Unary == nil {
-		return TranscriptionResponse{}, NewError(
-			UnsupportedOperation, OperationTranscription, "",
-			fmt.Errorf("model %q has no unary transcription driver", ref.ID.Name),
-		)
-	}
-	ctx, call := startInferenceCall(ctx, OperationTranscription, ref)
-	response, err := operations.Unary.Execute(ctx, ref, req)
-	call.stampUsage(&response.Usage)
-	call.finish(response.Metadata, response.Usage, err)
-	return response, err
+	return prepared.Execute(ctx)
 }
 
 // ExplainTranscribe runs the compiler for a unary transcription request
@@ -276,26 +330,11 @@ func (a *Assembly) TranscribeSession(
 	ref ModelRef,
 	req TranscriptionSessionRequest,
 ) (TranscriptionSession, error) {
-	operations, err := a.openTranscribe(ctx, ref)
+	prepared, err := a.PrepareTranscribeSession(ctx, ref, req)
 	if err != nil {
 		return nil, err
 	}
-	if operations.Session == nil {
-		return nil, NewError(
-			UnsupportedOperation, OperationTranscription, "",
-			fmt.Errorf("model %q has no transcription session driver", ref.ID.Name),
-		)
-	}
-	ctx, call := startInferenceCall(ctx, OperationTranscription, ref)
-	session, err := operations.Session.Open(ctx, ref, req)
-	if err != nil {
-		call.finish(Metadata{}, Usage{}, err)
-		return nil, err
-	}
-	return &telemetryTranscriptionSession{
-		inner: session,
-		tel:   call,
-	}, nil
+	return prepared.Execute(ctx)
 }
 
 // ExplainTranscribeSession compiles a transcription session request without
@@ -321,6 +360,7 @@ func (a *Assembly) ExplainTranscribeSession(
 func (a *Assembly) openGenerate(
 	ctx context.Context,
 	ref ModelRef,
+	request GenerateRequest,
 ) (GenerateOperations, error) {
 	entry, model, err := a.lookupEntry(ref, OperationGenerate)
 	if err != nil {
@@ -332,6 +372,9 @@ func (a *Assembly) openGenerate(
 			fmt.Errorf("model %q has no generate openers", ref.ID.Name))
 	}
 	if err := entry.checkProfile(ref, OperationGenerate); err != nil {
+		return GenerateOperations{}, err
+	}
+	if err := checkGenerateDeclaration(model.Descriptor, request); err != nil {
 		return GenerateOperations{}, err
 	}
 	return model.Openers.Generate(ctx, ref)

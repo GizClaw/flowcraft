@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -23,7 +24,7 @@ func TestRequestMetadataDroppedByLedger(t *testing.T) {
 	}
 	compiled, err := compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"])(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: "anthropic", Name: "claude-sonnet-5"}},
+		model.ModelRef{ID: model.ModelID{Provider: "anthropic", Name: "claude-sonnet-5"}},
 		request,
 		inference.GenerateExecutionUnary,
 	)

@@ -16,8 +16,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+
+	"github.com/openai/openai-go/v3"
 )
 
 // countingTransport wraps one pipeline transport stage with a probe.
@@ -41,7 +44,7 @@ func instrumentedGenerateDrivers(
 	t.Helper()
 	cls := testClients(t, server)
 	operations, err := inference.BindGenerateOperations(
-		compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
+		compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
 		countingTransport(calls, transportGenerate(cls.api)),
 		decodeGenerate,
 		countingTransport(calls, transportGenerateStream(cls.api)),
@@ -158,20 +161,17 @@ func TestConformanceGenerateCompileParity(t *testing.T) {
 func TestConformanceGenerateCompiler(t *testing.T) {
 	model := openaiModel("gpt-5.6-sol")
 
-	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[generateWire]{
+	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[*responsesRequest]{
 		Model:   model,
 		Shape:   inference.GenerateExecutionUnary,
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
-		AssertWire: func(t *testing.T, wire generateWire) {
-			if wire.model != "gpt-5.6-sol" {
-				t.Fatalf("wire model = %q", wire.model)
-			}
-			if wire.stream {
-				t.Fatal("unary shape compiled a stream wire")
+		Compile: compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
+		AssertWire: func(t *testing.T, request *responsesRequest) {
+			if request.params.Model != "gpt-5.6-sol" {
+				t.Fatalf("compiled model = %q", request.params.Model)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
@@ -241,7 +241,7 @@ func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
 		MediaType: "application/vnd.example",
 		Value:     json.RawMessage(`{"k":1}`),
 	})
-	compiled, err := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
 		context.Background(), openaiModel("gpt-5.6-sol"), request,
 		inference.GenerateExecutionUnary,
 	)
@@ -249,10 +249,13 @@ func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
 		t.Fatalf("Compile: %v", err)
 	}
 	var texts []string
-	for _, item := range compiled.Wire.items {
-		for _, content := range item.content {
-			if content.kind == wireContentText {
-				texts = append(texts, content.text)
+	for _, item := range compiled.Wire.params.Input.OfInputItemList {
+		if item.OfMessage == nil {
+			continue
+		}
+		for _, content := range item.OfMessage.Content.OfInputItemContentList {
+			if content.OfInputText != nil {
+				texts = append(texts, content.OfInputText.Text)
 			}
 		}
 	}
@@ -280,17 +283,17 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[generateWire]{
+	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[*responsesRequest]{
 		Model:   openaiModel("my-plain-model"),
 		Shape:   inference.GenerateExecutionUnary,
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate("my-plain-model", models["my-plain-model"]),
-		AssertWire: func(t *testing.T, wire generateWire) {
-			if wire.model != "my-plain-model" {
-				t.Fatalf("wire model = %q", wire.model)
+		Compile: compileResponses("my-plain-model", models["my-plain-model"]),
+		AssertWire: func(t *testing.T, request *responsesRequest) {
+			if request.params.Model != "my-plain-model" {
+				t.Fatalf("compiled model = %q", request.params.Model)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
@@ -311,7 +314,7 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 				Name: "reasoning on non-reasoning model",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
-					request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
+					request.Input.Content.Intent.Text.ReasoningEffort = model.ReasoningLow
 					return request
 				},
 				Field: inference.FieldGenerateIntentReasoningEffort,
@@ -332,8 +335,8 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 		}
 	}
 
-	inferencetest.RunCompiler(t, inferencetest.CompilerSuite[inference.EmbedRequest, embedWire]{
-		Operation: inference.OperationEmbed,
+	inferencetest.RunCompiler(t, inferencetest.CompilerSuite[inference.EmbedRequest, openai.EmbeddingNewParams]{
+		Operation: model.OperationEmbed,
 		Model:     openaiModel("text-embedding-3-large"),
 		Request:   embedRequest,
 		Snapshot: func(request inference.EmbedRequest) any {
@@ -343,9 +346,10 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 			return request.ActiveFields()
 		},
 		Compile: compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"]),
-		AssertWire: func(t *testing.T, wire embedWire) {
-			if wire.model != "text-embedding-3-large" || len(wire.texts) != 1 {
-				t.Fatalf("wire = %+v", wire)
+		AssertWire: func(t *testing.T, params openai.EmbeddingNewParams) {
+			if params.Model != "text-embedding-3-large" ||
+				len(params.Input.OfArrayOfStrings) != 1 {
+				t.Fatalf("params = %+v", params)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.EmbedRequest]{
@@ -387,8 +391,8 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 
 	// Dimensions must reject on a fixed-size model: ada-002 has no
 	// dimensions parameter.
-	inferencetest.RunCompiler(t, inferencetest.CompilerSuite[inference.EmbedRequest, embedWire]{
-		Operation: inference.OperationEmbed,
+	inferencetest.RunCompiler(t, inferencetest.CompilerSuite[inference.EmbedRequest, openai.EmbeddingNewParams]{
+		Operation: model.OperationEmbed,
 		Model:     openaiModel("text-embedding-ada-002"),
 		Request:   embedRequest,
 		Snapshot: func(request inference.EmbedRequest) any {
@@ -398,9 +402,9 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 			return request.ActiveFields()
 		},
 		Compile: compileEmbed("text-embedding-ada-002", catalog["text-embedding-ada-002"]),
-		AssertWire: func(t *testing.T, wire embedWire) {
-			if wire.model != "text-embedding-ada-002" {
-				t.Fatalf("wire = %+v", wire)
+		AssertWire: func(t *testing.T, params openai.EmbeddingNewParams) {
+			if params.Model != "text-embedding-ada-002" {
+				t.Fatalf("params = %+v", params)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.EmbedRequest]{
@@ -438,8 +442,8 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dimensions request rejected: %v", err)
 	}
-	if compiled.Wire.dimensions == nil || *compiled.Wire.dimensions != 512 {
-		t.Fatalf("wire dimensions = %v", compiled.Wire.dimensions)
+	if !compiled.Wire.Dimensions.Valid() || compiled.Wire.Dimensions.Value != 512 {
+		t.Fatalf("dimensions = %+v", compiled.Wire.Dimensions)
 	}
 }
 
@@ -459,14 +463,14 @@ func TestConformanceEmbedDataPartLowersToText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if len(compiled.Wire.texts) != 1 ||
-		!strings.Contains(compiled.Wire.texts[0], `{"k":1}`) {
-		t.Fatalf("wire texts = %+v", compiled.Wire.texts)
+	texts := compiled.Wire.Input.OfArrayOfStrings
+	if len(texts) != 1 || !strings.Contains(texts[0], `{"k":1}`) {
+		t.Fatalf("embed inputs = %+v", texts)
 	}
 }
 
 func TestConformanceImageCompiler(t *testing.T) {
-	imageRequest := func() inference.GenerateRequest {
+	imagePromptRequest := func() inference.GenerateRequest {
 		return inference.GenerateRequest{
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
@@ -480,24 +484,25 @@ func TestConformanceImageCompiler(t *testing.T) {
 		}
 	}
 
-	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[imageWire]{
+	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[*imageRequest]{
 		Model:   openaiModel("gpt-image-2"),
 		Shape:   inference.GenerateExecutionUnary,
-		Request: imageRequest,
+		Request: imagePromptRequest,
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileImage("gpt-image-2"),
-		AssertWire: func(t *testing.T, wire imageWire) {
-			if wire.model != "gpt-image-2" || wire.prompt != "draw a rocket" {
-				t.Fatalf("wire = %+v", wire)
+		Compile: compileImage("gpt-image-2", false),
+		AssertWire: func(t *testing.T, request *imageRequest) {
+			if request.params.Model != "gpt-image-2" ||
+				request.params.Prompt != "draw a rocket" {
+				t.Fatalf("params = %+v", request.params)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
 				Name: "seed has no parameter",
 				Request: func() inference.GenerateRequest {
-					request := imageRequest()
+					request := imagePromptRequest()
 					seed := int64(7)
 					request.Input.Content.Intent.Image.Seed = &seed
 					return request
@@ -508,7 +513,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 			{
 				Name: "size outside the gpt-image-2 resolution rules",
 				Request: func() inference.GenerateRequest {
-					request := imageRequest()
+					request := imagePromptRequest()
 					request.Input.Content.Intent.Image.Size = &media.ImageSize{
 						Width: 800, Height: 600,
 					}
@@ -520,7 +525,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 			{
 				Name: "URL delivery",
 				Request: func() inference.GenerateRequest {
-					request := imageRequest()
+					request := imagePromptRequest()
 					request.Input.Content.Intent.Image.Delivery = media.SourceURL
 					return request
 				},
@@ -530,7 +535,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 			{
 				Name: "URL reference image has no upload channel",
 				Request: func() inference.GenerateRequest {
-					request := imageRequest()
+					request := imagePromptRequest()
 					source, err := media.NewImageURL(
 						"https://example.com/reference.png",
 						"image/png",
@@ -550,7 +555,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 			{
 				Name: "text intent alongside image",
 				Request: func() inference.GenerateRequest {
-					request := imageRequest()
+					request := imagePromptRequest()
 					request.Input.Content.Intent.Text = &inference.TextIntent{}
 					return request
 				},
@@ -579,7 +584,7 @@ func TestConformanceTTSCompiler(t *testing.T) {
 		}
 	}
 
-	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[ttsWire]{
+	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[openai.AudioSpeechNewParams]{
 		Model:   openaiModel("gpt-4o-mini-tts"),
 		Shape:   inference.GenerateExecutionUnary,
 		Request: ttsRequest,
@@ -587,12 +592,13 @@ func TestConformanceTTSCompiler(t *testing.T) {
 			return request.Clone()
 		},
 		Compile: compileTTS("gpt-4o-mini-tts"),
-		AssertWire: func(t *testing.T, wire ttsWire) {
-			if wire.model != "gpt-4o-mini-tts" || wire.text != "hello world" {
-				t.Fatalf("wire = %+v", wire)
+		AssertWire: func(t *testing.T, params openai.AudioSpeechNewParams) {
+			if params.Model != "gpt-4o-mini-tts" || params.Input != "hello world" {
+				t.Fatalf("params = %+v", params)
 			}
-			if wire.voice != "alloy" || wire.format != "mp3" {
-				t.Fatalf("wire voice = %q format = %q", wire.voice, wire.format)
+			if params.Voice.OfAudioSpeechNewsVoiceString2.Value != "alloy" ||
+				params.ResponseFormat != openai.AudioSpeechNewParamsResponseFormatMP3 {
+				t.Fatalf("voice = %+v format = %q", params.Voice, params.ResponseFormat)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{

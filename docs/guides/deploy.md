@@ -20,9 +20,16 @@ resources:
 
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       id: deepseek
+      spec:
+        endpoint: {base_url: https://api.deepseek.com}
+        wire: {reasoning_channel: text}
+        catalog: declared
+        models:
+          - {name: deepseek-flash, kind: generate,
+             capabilities: {inputs: [text, image, data, tool_call, tool_result], outputs: [text]}}
       profiles:
         - secrets:
             api_key: ${env:DEEPSEEK_API_KEY}
@@ -73,7 +80,7 @@ resources:
 
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       profiles:
         - secrets:

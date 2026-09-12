@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/GizClaw/flowcraft/core v0.3.0
-	github.com/volcengine/volcengine-go-sdk v1.2.48
+	github.com/volcengine/volcengine-go-sdk v1.2.52
 	go.opentelemetry.io/otel/log v0.19.0
 )
 

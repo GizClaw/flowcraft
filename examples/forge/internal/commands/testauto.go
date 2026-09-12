@@ -121,7 +121,7 @@ func runAutoTurn(
 	defer cancel()
 	toolsBefore := a.ToolCalls()
 	collector := &textCollectorSink{labels: a.SpeakerLabel}
-	result, err := a.RunTurn(turnCtx, input, collector.spec())
+	result, err := a.RunTurn(turnCtx, input, collector.spec(), app.TurnOptions{})
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
 	metric.FirstTokenAt = collector.first

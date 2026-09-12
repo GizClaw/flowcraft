@@ -20,7 +20,7 @@ func TestDecodeInferenceCredentialsIgnoresProviderFields(t *testing.T) {
 version: v1
 providers:
   - id: deepseek
-    driver: deepseek
+    driver: openai
     profiles:
       - secrets:
           api_key: {resolver: env, key: DEEPSEEK_API_KEY}

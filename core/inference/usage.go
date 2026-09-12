@@ -2,6 +2,8 @@ package inference
 
 import (
 	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Usage contains normalized effective token totals plus optional
@@ -164,20 +166,20 @@ func (m Money) Add(other Money) (Money, bool) {
 }
 
 func (u Usage) Clone() Usage {
-	u.GeneratedImages = clonePointer(u.GeneratedImages)
-	u.GeneratedVideos = clonePointer(u.GeneratedVideos)
-	u.InputCharacters = clonePointer(u.InputCharacters)
-	u.AudioDurationMillis = clonePointer(u.AudioDurationMillis)
-	u.Input.CacheReadTokens = clonePointer(u.Input.CacheReadTokens)
-	u.Input.CacheWriteTokens = clonePointer(u.Input.CacheWriteTokens)
-	u.Input.UncachedTokens = clonePointer(u.Input.UncachedTokens)
+	u.GeneratedImages = ptr.Clone(u.GeneratedImages)
+	u.GeneratedVideos = ptr.Clone(u.GeneratedVideos)
+	u.InputCharacters = ptr.Clone(u.InputCharacters)
+	u.AudioDurationMillis = ptr.Clone(u.AudioDurationMillis)
+	u.Input.CacheReadTokens = ptr.Clone(u.Input.CacheReadTokens)
+	u.Input.CacheWriteTokens = ptr.Clone(u.Input.CacheWriteTokens)
+	u.Input.UncachedTokens = ptr.Clone(u.Input.UncachedTokens)
 	u.Input.ByModality = append([]ModalityTokenUsage(nil), u.Input.ByModality...)
 	u.Input.CacheWrites = append([]CacheWriteUsage(nil), u.Input.CacheWrites...)
-	u.Output.ReasoningTokens = clonePointer(u.Output.ReasoningTokens)
-	u.Output.AcceptedPredictionTokens = clonePointer(
+	u.Output.ReasoningTokens = ptr.Clone(u.Output.ReasoningTokens)
+	u.Output.AcceptedPredictionTokens = ptr.Clone(
 		u.Output.AcceptedPredictionTokens,
 	)
-	u.Output.RejectedPredictionTokens = clonePointer(
+	u.Output.RejectedPredictionTokens = ptr.Clone(
 		u.Output.RejectedPredictionTokens,
 	)
 	u.Output.ByModality = append([]ModalityTokenUsage(nil), u.Output.ByModality...)
@@ -185,9 +187,9 @@ func (u Usage) Clone() Usage {
 	u.Tools = append([]ToolUsage(nil), u.Tools...)
 	if u.Billing != nil {
 		billing := *u.Billing
-		billing.InputTokens = clonePointer(billing.InputTokens)
-		billing.OutputTokens = clonePointer(billing.OutputTokens)
-		billing.Cost = clonePointer(billing.Cost)
+		billing.InputTokens = ptr.Clone(billing.InputTokens)
+		billing.OutputTokens = ptr.Clone(billing.OutputTokens)
+		billing.Cost = ptr.Clone(billing.Cost)
 		u.Billing = &billing
 	}
 	return u

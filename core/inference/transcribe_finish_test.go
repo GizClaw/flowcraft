@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
@@ -53,13 +54,13 @@ func transcriptionSessionDriver[
 	compile := inference.Compiler[inference.TranscriptionSessionRequest, string](
 		func(
 			_ context.Context,
-			_ inference.ModelRef,
+			_ model.ModelRef,
 			request inference.TranscriptionSessionRequest,
 		) (inference.Compiled[string], error) {
 			return inference.Compiled[string]{
 				Wire: "wire",
 				Report: inferencetest.NativeReport(
-					inference.OperationTranscription,
+					model.OperationTranscription,
 					request.ActiveFields()...,
 				),
 			}, nil

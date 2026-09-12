@@ -13,6 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -27,22 +28,48 @@ type RetryPolicies struct {
 	Transcription *RetryPolicy
 }
 
-func (p RetryPolicies) policyFor(operation inference.Operation) *RetryPolicy {
-	switch operation {
-	case inference.OperationGenerate:
-		return p.Generate
-	case inference.OperationEmbed:
-		return p.Embed
-	case inference.OperationTranscription:
-		return p.Transcription
-	default:
-		return nil
+// retryPolicyEntry pairs one operation with its retry slot.
+type retryPolicyEntry struct {
+	operation model.Operation
+	policy    *RetryPolicy
+}
+
+// byOperation is the retry lookup table. policyFor reads it, and
+// TestPolicyTablesCoverOperationVocabulary pins that it covers
+// model.Operations(), so a new workload cannot end up with no retry slot.
+func (p RetryPolicies) byOperation() []retryPolicyEntry {
+	return []retryPolicyEntry{
+		{operation: model.OperationGenerate, policy: p.Generate},
+		{operation: model.OperationEmbed, policy: p.Embed},
+		{operation: model.OperationTranscription, policy: p.Transcription},
 	}
+}
+
+// set stores one operation's policy; unknown operations are ignored (the
+// table in RetryConfig.byOperation is the guard that they cannot be).
+func (p *RetryPolicies) set(operation model.Operation, policy *RetryPolicy) {
+	switch operation {
+	case model.OperationGenerate:
+		p.Generate = policy
+	case model.OperationEmbed:
+		p.Embed = policy
+	case model.OperationTranscription:
+		p.Transcription = policy
+	}
+}
+
+func (p RetryPolicies) policyFor(operation model.Operation) *RetryPolicy {
+	for _, entry := range p.byOperation() {
+		if entry.operation == operation {
+			return entry.policy
+		}
+	}
+	return nil
 }
 
 // RetryDecision is the observable input to a Retryable predicate.
 type RetryDecision struct {
-	Operation        inference.Operation
+	Operation        model.Operation
 	Phase            AttemptPhase
 	Trigger          AttemptTrigger
 	ErrorKind        inference.ErrorKind
@@ -433,8 +460,8 @@ func defaultSleeper(ctx context.Context, delay time.Duration) error {
 }
 
 type circuitKey struct {
-	operation inference.Operation
-	model     inference.ModelRef
+	operation model.Operation
+	model     model.ModelRef
 }
 
 type circuitState string

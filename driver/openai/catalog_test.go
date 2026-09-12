@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -15,7 +15,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
 	for _, model := range provider.Models {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}
@@ -55,7 +55,7 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
 	for _, model := range provider.Models {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}
@@ -94,7 +94,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
 	for _, model := range provider.Models {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}
@@ -112,7 +112,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !flagship.Capabilities.HostedWebSearch {
 		t.Fatal("gpt-5.6-sol must declare hosted web search")
 	}
-	if flagship.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if flagship.Capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf(
 			"gpt-5.6-sol reasoning = %q, want toggle",
 			flagship.Capabilities.Reasoning,
@@ -123,7 +123,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if nano.Capabilities.HostedWebSearch {
 		t.Fatal("gpt-4.1-nano must not declare hosted web search")
 	}
-	if nano.Lifecycle.Status != inference.ModelStatusDeprecated ||
+	if nano.Lifecycle.Status != model.ModelStatusDeprecated ||
 		nano.Lifecycle.Replacement == nil ||
 		nano.Lifecycle.Replacement.Name != "gpt-5.6-luna" {
 		t.Fatalf("gpt-4.1-nano lifecycle = %+v", nano.Lifecycle)
@@ -131,7 +131,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !slices.Contains(nano.Capabilities.Inputs, message.PartImage) {
 		t.Fatalf("gpt-4.1-nano inputs = %v, want image input", nano.Capabilities.Inputs)
 	}
-	if nano.Capabilities.Reasoning.Kind != inference.ReasoningNone {
+	if nano.Capabilities.Reasoning.Kind != model.ReasoningNone {
 		t.Fatalf(
 			"gpt-4.1-nano reasoning = %q, want none",
 			nano.Capabilities.Reasoning,
@@ -198,7 +198,7 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 
 func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(
-		`{"api":"chat","chat_stream_options":{"include_usage":false,"include_obfuscation":false}}`,
+		`{"api":"chat","wire":{"chat_stream_options":{"include_usage":false,"include_obfuscation":false}}}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
@@ -207,10 +207,10 @@ func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
-	if models["gpt-5.6-sol"].includeChatStreamUsage() {
+	if models["gpt-5.6-sol"].dialect.chatStreamUsage() {
 		t.Fatal("chat_stream_options include_usage=false must reach catalog entries")
 	}
-	if obfuscation := models["gpt-5.6-sol"].chatStreamObfuscation(); obfuscation == nil || *obfuscation {
+	if obfuscation := models["gpt-5.6-sol"].dialect.chatObfuscation(); obfuscation == nil || *obfuscation {
 		t.Fatal("chat_stream_options include_obfuscation=false must reach catalog entries")
 	}
 
@@ -222,10 +222,10 @@ func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
-	if !models["gpt-5.6-sol"].includeChatStreamUsage() {
+	if !models["gpt-5.6-sol"].dialect.chatStreamUsage() {
 		t.Fatal("nil chat_stream_options must keep the driver default of true")
 	}
-	if obfuscation := models["gpt-5.6-sol"].chatStreamObfuscation(); obfuscation != nil {
+	if obfuscation := models["gpt-5.6-sol"].dialect.chatObfuscation(); obfuscation != nil {
 		t.Fatal("nil chat_stream_options must keep the OpenAI default obfuscation policy")
 	}
 }
@@ -378,7 +378,7 @@ func TestMergedCatalogLegacyReasoningStringKeepsEffortMap(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("reasoning kind = %q, want toggle", entry.capabilities.Reasoning.Kind)
 	}
 	if len(entry.capabilities.Reasoning.EffortMap) != 5 {
@@ -415,7 +415,7 @@ func TestMergedCatalogLeafOverrides(t *testing.T) {
 	if entry.capabilities.HostedWebSearch {
 		t.Fatal("hosted_web_search: false must remove the built-in capability")
 	}
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle ||
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle ||
 		len(entry.capabilities.Reasoning.EffortMap) != 5 {
 		t.Fatalf("undeclared reasoning must stay inherited: %+v",
 			entry.capabilities.Reasoning)
@@ -446,12 +446,12 @@ func TestMergedCatalogLeafOverrides(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry = models["gpt-5.6-sol"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("reasoning kind = %q, want inherited toggle",
 			entry.capabilities.Reasoning.Kind)
 	}
 	if mode, _ := entry.capabilities.Reasoning.ResolveEffort(
-		inference.ReasoningMinimal,
+		model.ReasoningMinimal,
 	); mode != "low" {
 		t.Fatalf("declared effort map must replace the built-in one, minimal -> %q",
 			mode)

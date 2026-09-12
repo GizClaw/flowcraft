@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -17,12 +17,10 @@ const SecretAPIKey = "api_key"
 // Spec is the provider-level configuration surface. It is credential-free:
 // secrets resolve per profile and never appear here.
 type Spec struct {
-	// BaseURL overrides the Anthropic-compatible endpoint. Defaults to
-	// https://api.minimaxi.com/anthropic (China); international
-	// deployments use https://api.minimax.io/anthropic.
-	BaseURL string `json:"base_url,omitempty"`
-	// MediaBaseURL overrides the media API root (t2a, video, image).
-	// Defaults to BaseURL with the /anthropic suffix trimmed.
+	// MediaBaseURL is the media API root (t2a, video, image, music).
+	// Defaults to https://api.minimaxi.com; international deployments use
+	// https://api.minimax.io. The Messages surface moved to the anthropic
+	// driver, which owns its own endpoint.
 	MediaBaseURL string `json:"media_base_url,omitempty"`
 	// HTTPRetries bounds wire-level HTTP retries on the media client.
 	// Zero disables transport retries so the route Router owns the full
@@ -46,11 +44,11 @@ type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	// Capabilities declares the capability leaves this model changes.
-	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
+	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
-	Limits inference.ModelLimits `json:"limits,omitempty"`
+	Limits model.ModelLimits `json:"limits,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -60,13 +58,17 @@ func (m ModelSpec) Validate() error {
 	if !modelNamePattern.MatchString(m.Name) {
 		return fmt.Errorf("invalid model name %q", m.Name)
 	}
-	if m.Kind != "" && modelKind(m.Kind) != kindGenerate &&
+	if m.Kind != "" &&
 		modelKind(m.Kind) != kindImage &&
 		modelKind(m.Kind) != kindTTS &&
 		modelKind(m.Kind) != kindVideo &&
 		modelKind(m.Kind) != kindContextIR &&
 		modelKind(m.Kind) != kindMusic {
-		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
+		return fmt.Errorf(
+			"model %q declares unsupported kind %q; text generation moved to the anthropic driver (impl: anthropic)",
+			m.Name,
+			m.Kind,
+		)
 	}
 	if m.Capabilities != nil && m.Capabilities.CustomEmbedDimensions != nil {
 		return fmt.Errorf(
@@ -83,11 +85,6 @@ func (m ModelSpec) Validate() error {
 
 // Validate checks the provider spec for structural sanity.
 func (s Spec) Validate() error {
-	if s.BaseURL != "" {
-		if err := validateURL("base_url", s.BaseURL); err != nil {
-			return err
-		}
-	}
 	if s.MediaBaseURL != "" {
 		if err := validateURL("media_base_url", s.MediaBaseURL); err != nil {
 			return err
@@ -155,11 +152,7 @@ func (s Spec) mediaBaseURL() string {
 	if s.MediaBaseURL != "" {
 		return s.MediaBaseURL
 	}
-	base := s.BaseURL
-	if base == "" {
-		base = defaultBaseURL
-	}
-	return strings.TrimSuffix(strings.TrimRight(base, "/"), "/anthropic")
+	return defaultMediaBaseURL
 }
 
 // videoPollInterval paces video task polling; the default is 5 seconds.

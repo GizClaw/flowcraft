@@ -7,12 +7,18 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // ResourceKind is the deployment resource kind implemented by the
 // Anthropic provider driver.
 const ResourceKind = "inference.Provider"
+
+// providerID is this driver's provider identity: it labels the compile errors
+// the ledger builds and tags telemetry, matching the model.ModelID.Provider
+// values the catalog publishes.
+const providerID = "anthropic"
 
 // ResourceSettings is the settings subtree of one Anthropic provider
 // resource.
@@ -25,7 +31,7 @@ type ResourceSettings struct {
 // ProfileSettings is one credential profile.
 type ProfileSettings struct {
 	ID         string                     `json:"id,omitempty"`
-	Operations []inference.Operation      `json:"operations,omitempty"`
+	Operations []model.Operation          `json:"operations,omitempty"`
 	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
 	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
@@ -81,7 +87,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			provider.Profiles,
 			inference.ProfileDefinition{
 				ID:         profile.ID,
-				Operations: append([]inference.Operation(nil), profile.Operations...),
+				Operations: append([]model.Operation(nil), profile.Operations...),
 			},
 		)
 	}
@@ -92,7 +98,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	slices.Sort(names)
 	for _, name := range names {
 		entry := models[name]
-		id := inference.ModelID{Provider: settings.ID, Name: name}
+		id := model.ModelID{Provider: settings.ID, Name: name}
 		descriptor := descriptorFor(id, entry)
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
@@ -107,7 +113,7 @@ func openersFor(
 	spec Spec,
 	entry catalogEntry,
 	profiles map[string]profileMaterial,
-	id inference.ModelID,
+	id model.ModelID,
 ) inference.Openers {
 	open := func(ctx context.Context, profile string) (*clients, error) {
 		material, ok := profiles[profile]
@@ -123,7 +129,7 @@ func openersFor(
 	return inference.Openers{
 		Generate: func(
 			ctx context.Context,
-			model inference.ModelRef,
+			model model.ModelRef,
 		) (inference.GenerateOperations, error) {
 			cls, err := open(ctx, model.Profile)
 			if err != nil {

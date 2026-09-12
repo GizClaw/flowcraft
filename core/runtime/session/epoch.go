@@ -3,6 +3,7 @@ package session
 import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Deps is one Start's complete consistency snapshot: the resolver,
@@ -90,7 +91,7 @@ func (m *Manager) SwapDeps(
 	deps Deps,
 	onRetired func(epoch uint64, d Deps),
 ) error {
-	if isNil(deps.Resolver) || isNil(deps.HostFactory) {
+	if ptr.IsNil(deps.Resolver) || ptr.IsNil(deps.HostFactory) {
 		return errdefs.Validationf(
 			"runtime session: swap deps require a resolver and a host factory")
 	}

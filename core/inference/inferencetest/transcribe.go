@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // DefaultFakeTranscribeModel is TranscriptionFake's default model ref.
-var DefaultFakeTranscribeModel = inference.ModelRef{
-	ID:      inference.ModelID{Provider: "fake", Name: "transcribe"},
+var DefaultFakeTranscribeModel = model.ModelRef{
+	ID:      model.ModelID{Provider: "fake", Name: "transcribe"},
 	Profile: "default",
 }
 
@@ -24,10 +25,10 @@ var DefaultFakeTranscribeModel = inference.ModelRef{
 type TranscriptionFake struct {
 	// Model is the ref the runtime resolves. Defaults to
 	// DefaultFakeTranscribeModel.
-	Model inference.ModelRef
+	Model model.ModelRef
 	// Descriptor overrides the model's discovery metadata. The zero
 	// value falls back to {ID: Model.ID}.
-	Descriptor inference.ModelDescriptor
+	Descriptor model.ModelDescriptor
 	// Respond answers Transcribe calls. Default: "ok" with one segment.
 	Respond func(inference.TranscriptionRequest) inference.TranscriptionResponse
 	// SessionEvents plays back on TranscribeSession. Default: one final
@@ -56,9 +57,9 @@ func (f *TranscriptionFake) SessionRequests() []inference.TranscriptionSessionRe
 // Assembly builds the fake's inference assembly.
 func (f *TranscriptionFake) Assembly(t *testing.T) *inference.Assembly {
 	t.Helper()
-	model := f.Model
-	if model.ID.Provider == "" {
-		model = DefaultFakeTranscribeModel
+	ref := f.Model
+	if ref.ID.Provider == "" {
+		ref = DefaultFakeTranscribeModel
 	}
 	respond := f.Respond
 	if respond == nil {
@@ -73,13 +74,13 @@ func (f *TranscriptionFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 
 	compile := inference.Compiler[inference.TranscriptionRequest, string](
-		func(_ context.Context, _ inference.ModelRef, req inference.TranscriptionRequest) (inference.Compiled[string], error) {
+		func(_ context.Context, _ model.ModelRef, req inference.TranscriptionRequest) (inference.Compiled[string], error) {
 			f.mu.Lock()
 			f.requests = append(f.requests, req.Clone())
 			f.mu.Unlock()
 			return inference.Compiled[string]{
 				Wire:   "wire",
-				Report: NativeReport(inference.OperationTranscription, req.ActiveFields()...),
+				Report: NativeReport(model.OperationTranscription, req.ActiveFields()...),
 			}, nil
 		},
 	)
@@ -92,13 +93,13 @@ func (f *TranscriptionFake) Assembly(t *testing.T) *inference.Assembly {
 		},
 	)
 	sessionCompile := inference.Compiler[inference.TranscriptionSessionRequest, string](
-		func(_ context.Context, _ inference.ModelRef, req inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
+		func(_ context.Context, _ model.ModelRef, req inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
 			f.mu.Lock()
 			f.sessionRequests = append(f.sessionRequests, req.Clone())
 			f.mu.Unlock()
 			return inference.Compiled[string]{
 				Wire:   "wire",
-				Report: NativeReport(inference.OperationTranscription, req.ActiveFields()...),
+				Report: NativeReport(model.OperationTranscription, req.ActiveFields()...),
 			}, nil
 		},
 	)
@@ -132,21 +133,21 @@ func (f *TranscriptionFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 	descriptor := f.Descriptor
 	if descriptor.ID.Provider == "" {
-		descriptor = inference.ModelDescriptor{ID: model.ID}
+		descriptor = model.ModelDescriptor{ID: ref.ID}
 	}
 
 	definition := inference.ProviderDefinition{
-		ID: model.ID.Provider,
+		ID: ref.ID.Provider,
 		Profiles: []inference.ProfileDefinition{{
-			ID:         model.Profile,
-			Operations: []inference.Operation{inference.OperationTranscription},
+			ID:         ref.Profile,
+			Operations: []model.Operation{model.OperationTranscription},
 		}},
 		Models: []inference.ModelImplementation{{
 			Descriptor: descriptor,
 			Openers: inference.Openers{
 				Transcribe: func(
 					_ context.Context,
-					_ inference.ModelRef,
+					_ model.ModelRef,
 				) (inference.TranscribeOperations, error) {
 					return operations, nil
 				},
@@ -154,7 +155,7 @@ func (f *TranscriptionFake) Assembly(t *testing.T) *inference.Assembly {
 		}},
 	}
 	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + model.ID.Provider: definition},
+		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
 	})
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
@@ -209,7 +210,7 @@ func (s *fakeProviderSession) Close() error     { return nil }
 // TranscriptionUnarySuite verifies the unary transcription driver contract
 // through the shared UnarySuite.
 type TranscriptionUnarySuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.TranscriptionRequest
 	Driver  inference.TranscriptionDriver
 
@@ -224,7 +225,7 @@ func RunTranscribeUnary(t *testing.T, suite TranscriptionUnarySuite) {
 	}
 	assertResponse := suite.AssertResponse
 	RunUnary(t, UnarySuite[inference.TranscriptionRequest, inference.TranscriptionResponse]{
-		Operation: inference.OperationTranscription,
+		Operation: model.OperationTranscription,
 		Model:     suite.Model,
 		Request:   suite.Request,
 		Snapshot: func(request inference.TranscriptionRequest) any {
@@ -262,7 +263,7 @@ func RunTranscribeUnary(t *testing.T, suite TranscriptionUnarySuite) {
 // call, Send/Next over the scripted provider session, Result with stamped
 // metadata, and Close.
 type TranscriptionSessionSuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.TranscriptionSessionRequest
 	Driver  inference.TranscriptionSessionDriver
 
@@ -299,7 +300,7 @@ func RunTranscribeSession(t *testing.T, suite TranscriptionSessionSuite) {
 		t.Fatalf("Explain: %v", err)
 	}
 	if suite.TransportCalls() != before ||
-		explanation.Operation != inference.OperationTranscription ||
+		explanation.Operation != model.OperationTranscription ||
 		len(explanation.Decisions) == 0 {
 		t.Fatalf("Explain performed I/O or lost decisions: %+v", explanation)
 	}
@@ -346,7 +347,7 @@ func RunTranscribeSession(t *testing.T, suite TranscriptionSessionSuite) {
 		t.Fatalf("Result: %v", err)
 	}
 	if response.Metadata.Model != suite.Model.ID ||
-		response.Metadata.Operation != inference.OperationTranscription ||
+		response.Metadata.Operation != model.OperationTranscription ||
 		len(response.Metadata.Decisions) == 0 {
 		t.Fatalf("Result metadata = %+v", response.Metadata)
 	}

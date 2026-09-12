@@ -20,7 +20,7 @@ func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 
 	res := exec.Execute(context.Background(), tc)
 	if res.IsError {
-		t.Fatalf("execute = %q, want success", res.Content)
+		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
 
 	spans := rec.Ended()
@@ -55,7 +55,7 @@ func TestFromSettings_EnablesTelemetry(t *testing.T) {
 
 	exec := tool.NewExecutor(catalogWith(echoTool("echo")), mws...)
 	if res := exec.Execute(context.Background(), call("echo")); res.IsError {
-		t.Fatalf("execute = %q, want success", res.Content)
+		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
 	if spans := rec.Ended(); len(spans) != 1 {
 		t.Fatalf("ended spans = %d, want 1", len(spans))

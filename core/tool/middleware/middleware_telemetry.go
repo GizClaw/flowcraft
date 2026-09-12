@@ -50,7 +50,11 @@ func Telemetry() tool.Middleware {
 			toolExecDuration.Record(ctx, dur.Seconds(), nameAttr)
 
 			if res.IsError {
-				span.SetStatus(codes.Error, res.Content)
+				// Error results are text-only by construction: the executor
+				// and every short-circuiting middleware build them with
+				// message.NewErrorToolResult.
+				detail := res.Content.Text()
+				span.SetStatus(codes.Error, detail)
 				toolExecCount.Add(ctx, 1, metric.WithAttributes(
 					attribute.String(telemetry.AttrToolName, call.Name),
 					attribute.String("status", "error")))
@@ -58,7 +62,7 @@ func Telemetry() tool.Middleware {
 				telemetry.Warn(ctx, "tool execution failed",
 					otellog.String(telemetry.AttrToolName, call.Name),
 					otellog.String(telemetry.AttrToolCallID, call.ID),
-					otellog.String(telemetry.AttrErrorMessage, res.Content))
+					otellog.String(telemetry.AttrErrorMessage, detail))
 				return res
 			}
 

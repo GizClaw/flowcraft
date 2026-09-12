@@ -24,8 +24,9 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   model, message, inference, memory contracts, event bus, telemetry,
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
-- **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
-  ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
+- **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
+  whole OpenAI wire family), Anthropic (the Messages family), ByteDance, and
+  MiniMax.
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
   (`backends/checkpoint`); the sandbox backends (`bwrap`, `seatbelt`) live in
   `core/sandbox`.
@@ -47,11 +48,14 @@ the layers they need.
 `impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
 the GoTemplate context renderer.
 
-This mirrors the inference pattern: `core/inference` is generic, and
-each provider (`openai`, `deepseek`, …) is a registered factory. Memory
-implementations plug in the same way — each registers under its own
-`impl:` name with its own parameters (the flowcraft memory module is one
-such app-registered implementation); `core` owns only the contracts and
+This mirrors the inference pattern: `core/inference` is generic, and each
+provider driver (`openai`, `anthropic`, `bytedance`, `minimax`) is a
+registered factory. A deployment points one of them at any endpoint speaking
+that wire family — DeepSeek and GLM ride the OpenAI driver, for example — so
+the document's provider id (`openai`, `deepseek`, …) names the deployment, not
+the module. Memory implementations plug in the same way — each registers under
+its own `impl:` name with its own parameters (the flowcraft memory module is
+one such app-registered implementation); `core` owns only the contracts and
 glue.
 
 ## Quickstart
@@ -170,8 +174,9 @@ the core and depend on it, never the reverse.
 
 - One runtime for Generate / Embed / Transcription (Realtime reserved), with exact
   `ModelRef` addressing and compile-time capability checks.
-- Providers registered as factories: Anthropic, Azure, ByteDance, DeepSeek,
-  Kimi, MiniMax, OpenAI, and Qwen.
+- Providers registered as factories: OpenAI (OpenAI, Azure, DeepSeek, Kimi and
+  compatible gateways), Anthropic (Anthropic and compatible Messages
+  endpoints), ByteDance, and MiniMax.
 
 ### Runnable local workspace demo (`examples/forge`)
 

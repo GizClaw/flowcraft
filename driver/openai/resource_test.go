@@ -14,7 +14,7 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
-			"spec": {"organization": "org-1"},
+			"spec": {"endpoint": {"organization": "org-1"}},
 			"profiles": [{
 				"id": "default",
 				"operations": ["generate", "embed"],

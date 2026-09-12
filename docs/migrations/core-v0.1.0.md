@@ -43,6 +43,12 @@ There are **no compatibility shims**.
 | `github.com/GizClaw/flowcraft/sdkx/inference/minimax` | `github.com/GizClaw/flowcraft/driver/minimax` |
 | `github.com/GizClaw/flowcraft/sdkx/inference/bytedance` | `github.com/GizClaw/flowcraft/driver/bytedance` |
 
+The `azure`, `deepseek`, `kimi`, `qwen` and `minimax` rows above describe the
+module layout at `core/v0.1.0`. Since then the wire families were consolidated
+— one driver serves each family — so deployments that still name those modules
+should follow
+[One driver per wire family](drivers-one-per-wire-family.md).
+
 ## Breaking changes in deployment documents
 
 - Agent engine dependencies live under `engine.deps`, not top-level
@@ -57,7 +63,7 @@ There are **no compatibility shims**.
 
 ```bash
 go get github.com/GizClaw/flowcraft/core@v0.1.0
-go get github.com/GizClaw/flowcraft/driver/deepseek@v0.1.0
+go get github.com/GizClaw/flowcraft/driver/openai@v0.1.0
 ```
 
 Assemble and run a deployment with:

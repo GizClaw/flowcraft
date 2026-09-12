@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type PartKind string
@@ -22,15 +24,23 @@ const (
 	PartReasoning  PartKind = "reasoning"
 )
 
+// PartKinds returns every canonical content part kind, in declaration order. It
+// is the single enumeration of the part vocabulary: tables that map kinds to
+// behavior (the inference ledger, for one) are pinned against it by tests, so a
+// new kind cannot be added without deciding what it means everywhere.
+func PartKinds() []PartKind {
+	return []PartKind{
+		PartText, PartImage, PartAudio, PartVideo, PartFile, PartData,
+		PartToolCall, PartToolResult, PartReasoning,
+	}
+}
+
 // Validate reports whether k is one of the canonical content part kinds.
 func (k PartKind) Validate() error {
-	switch k {
-	case PartText, PartImage, PartAudio, PartVideo, PartFile, PartData,
-		PartToolCall, PartToolResult, PartReasoning:
+	if slices.Contains(PartKinds(), k) {
 		return nil
-	default:
-		return fmt.Errorf("unknown content part kind %q", k)
 	}
+	return fmt.Errorf("unknown content part kind %q", k)
 }
 
 // Part is the sealed canonical content union. Each operation validates which
@@ -51,7 +61,7 @@ type Part interface {
 // It returns an error if part is nil (including a typed nil pointer) or is not
 // one of the canonical part types.
 func NormalizePart(part Part) (Part, error) {
-	if isNilValue(part) {
+	if ptr.IsNil(part) {
 		return nil, fmt.Errorf("content part is nil")
 	}
 	switch value := part.(type) {
@@ -376,8 +386,11 @@ type ToolResultPart struct {
 	Result ToolResult `json:"result"`
 }
 
-func (ToolResultPart) Kind() PartKind    { return PartToolResult }
-func (p ToolResultPart) Clone() Part     { return p }
+func (ToolResultPart) Kind() PartKind { return PartToolResult }
+func (p ToolResultPart) Clone() Part {
+	p.Result = p.Result.Clone()
+	return p
+}
 func (p ToolResultPart) Validate() error { return p.Result.Validate() }
 func (ToolResultPart) messagePart()      {}
 

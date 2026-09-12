@@ -2,8 +2,135 @@ package inference
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/message"
 )
+
+// TestComponentNotesFoldOntoFieldDisposition locks the contract that lets a
+// field report per-component detail without lying about the whole field: a
+// dropped image inside a tool result must not leave the field reading
+// native, and the notes must be retrievable in encounter order.
+func TestComponentNotesFoldOntoFieldDisposition(t *testing.T) {
+	report := CompileReport{
+		Operation: OperationGenerate,
+		Decisions: []Decision{
+			{
+				Field:       FieldGenerateContextToolResult,
+				Disposition: Dropped,
+				Reason:      "tool output omitted image (model does not accept image input)",
+				Components: []ComponentNote{
+					{Kind: message.PartText, Disposition: Native, Index: 0},
+					{
+						Kind:        message.PartImage,
+						Disposition: Dropped,
+						Index:       1,
+						Reason:      "model does not accept image input",
+					},
+					{Kind: message.PartText, Disposition: Native, Index: 2},
+				},
+			},
+		},
+	}
+	active := []FieldID{FieldGenerateContextToolResult}
+	if err := report.ValidateSuccess(OperationGenerate, active); err != nil {
+		t.Fatalf("ValidateSuccess rejected a folded component report: %v", err)
+	}
+	notes := report.Components(FieldGenerateContextToolResult)
+	if len(notes) != 3 ||
+		notes[1].Kind != message.PartImage ||
+		notes[1].Disposition != Dropped ||
+		notes[1].Index != 1 {
+		t.Fatalf("components = %+v", notes)
+	}
+	// The accessor hands out a copy: mutating it must not reach the report.
+	notes[0].Kind = message.PartAudio
+	if report.Decisions[0].Components[0].Kind != message.PartText {
+		t.Fatal("Components returned a view into the report")
+	}
+}
+
+// TestComponentNotesMustFoldOntoFieldDisposition rejects the two ways a
+// report could contradict itself: a field reading native while a component
+// was dropped, and a component without a reason.
+func TestComponentNotesMustFoldOntoFieldDisposition(t *testing.T) {
+	cases := []struct {
+		name    string
+		report  CompileReport
+		wantErr string
+	}{
+		{
+			name: "field claims native while a component was dropped",
+			report: CompileReport{
+				Operation: OperationGenerate,
+				Decisions: []Decision{{
+					Field:       FieldGenerateContextToolResult,
+					Disposition: Native,
+					Components: []ComponentNote{{
+						Kind:        message.PartImage,
+						Disposition: Dropped,
+						Index:       0,
+						Reason:      "model does not accept image input",
+					}},
+				}},
+			},
+			wantErr: "do not fold onto the field disposition",
+		},
+		{
+			name: "dropped component without a reason",
+			report: CompileReport{
+				Operation: OperationGenerate,
+				Decisions: []Decision{{
+					Field:       FieldGenerateContextToolResult,
+					Disposition: Dropped,
+					Reason:      "tool output omitted image",
+					Components: []ComponentNote{{
+						Kind:        message.PartImage,
+						Disposition: Dropped,
+						Index:       0,
+					}},
+				}},
+			},
+			wantErr: "dropped component carries no reason",
+		},
+		{
+			name: "duplicate component position",
+			report: CompileReport{
+				Operation: OperationGenerate,
+				Decisions: []Decision{{
+					Field:       FieldGenerateContextToolResult,
+					Disposition: Dropped,
+					Reason:      "tool output omitted image",
+					Components: []ComponentNote{
+						{Kind: message.PartText, Disposition: Native, Index: 0},
+						{
+							Kind:        message.PartImage,
+							Disposition: Dropped,
+							Index:       0,
+							Reason:      "model does not accept image input",
+						},
+					},
+				}},
+			},
+			wantErr: "duplicate component index",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.report.ValidateSuccess(
+				OperationGenerate,
+				[]FieldID{FieldGenerateContextToolResult},
+			)
+			if err == nil {
+				t.Fatalf("ValidateSuccess accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
 
 func TestValidateFailureAllowsDroppedAlongsideRejection(t *testing.T) {
 	active := []FieldID{

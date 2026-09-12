@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 func TestNeverRetriedKinds(t *testing.T) {
@@ -29,10 +30,10 @@ func TestNeverRetriedKinds(t *testing.T) {
 // available and no output was observed.
 func TestProviderTruncatedNeverDefaultRetryable(t *testing.T) {
 	infErr := inference.NewError(
-		inference.ProviderTruncated, inference.OperationGenerate, "",
+		inference.ProviderTruncated, model.OperationGenerate, "",
 		errors.New("stream ended without a finish reason"))
 	decision := RetryDecision{
-		Operation: inference.OperationGenerate,
+		Operation: model.OperationGenerate,
 		Phase:     AttemptPhaseExecute,
 		ErrorKind: inference.ProviderTruncated,
 		Err:       infErr,

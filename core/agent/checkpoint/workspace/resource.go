@@ -3,10 +3,10 @@ package workspace
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -49,7 +49,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 			"workspace checkpoint: decode settings: %w", err))
 	}
 	value, ok := in.Deps["workspace"]
-	if !ok || isNilValue(value) {
+	if !ok || ptr.IsNil(value) {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"workspace checkpoint: dep %q is required", "workspace"))
 	}
@@ -70,17 +70,4 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 // registry.
 func Register(r *resource.Registry) error {
 	return r.Register(Factory{})
-}
-
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

@@ -8,7 +8,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
 func conformanceTextRequest() inference.GenerateRequest {
@@ -21,9 +23,9 @@ func conformanceTextRequest() inference.GenerateRequest {
 	}}
 }
 
-func conformanceModel(name string) inference.ModelRef {
-	return inference.ModelRef{
-		ID:      inference.ModelID{Provider: driverID, Name: name},
+func conformanceModel(name string) model.ModelRef {
+	return model.ModelRef{
+		ID:      model.ModelID{Provider: providerID, Name: name},
 		Profile: "default",
 	}
 }
@@ -141,7 +143,7 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 	model := "doubao-seed-2-0-lite"
 	driver, err := inference.BindGenerateStream(
 		compileGenerate(model, catalog[model]),
-		countingTransport(calls, func(_ context.Context, _ generateWire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
+		countingTransport(calls, func(_ context.Context, _ *arkresponses.ResponsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingStream{}, nil
 		}),
 		inference.GenerateStreamDecoder[inference.GenerateStreamEvent](

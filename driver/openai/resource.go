@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -33,7 +34,7 @@ type ResourceSettings struct {
 // referenced value.
 type ProfileSettings struct {
 	ID         string                     `json:"id,omitempty"`
-	Operations []inference.Operation      `json:"operations,omitempty"`
+	Operations []model.Operation          `json:"operations,omitempty"`
 	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
 	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
@@ -99,6 +100,12 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
 				return &GenerateOptions{Provider: settings.ID}
 			}),
+			extensionImage: inference.ExtensionDecoderFor(func() *ImageOptions {
+				return &ImageOptions{Provider: settings.ID}
+			}),
+			extensionTTS: inference.ExtensionDecoderFor(func() *TTSOptions {
+				return &TTSOptions{Provider: settings.ID}
+			}),
 		},
 	}
 	for _, profile := range settings.Profiles {
@@ -106,7 +113,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			provider.Profiles,
 			inference.ProfileDefinition{
 				ID:         profile.ID,
-				Operations: append([]inference.Operation(nil), profile.Operations...),
+				Operations: append([]model.Operation(nil), profile.Operations...),
 			},
 		)
 	}
@@ -117,7 +124,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	slices.Sort(names)
 	for _, name := range names {
 		entry := models[name]
-		id := inference.ModelID{Provider: settings.ID, Name: name}
+		id := model.ModelID{Provider: settings.ID, Name: name}
 		descriptor := descriptorFor(id, entry)
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
@@ -136,7 +143,7 @@ func openersFor(
 	spec Spec,
 	entry catalogEntry,
 	profiles map[string]profileMaterial,
-	id inference.ModelID,
+	id model.ModelID,
 ) inference.Openers {
 	// The runtime validates ModelRef.Profile against the registered profiles
 	// before any opener runs, so an unknown profile here is a provider bug.
@@ -156,7 +163,7 @@ func openersFor(
 		return inference.Openers{
 			Generate: func(
 				ctx context.Context,
-				model inference.ModelRef,
+				model model.ModelRef,
 			) (inference.GenerateOperations, error) {
 				cls, err := open(ctx, model.Profile)
 				if err != nil {
@@ -169,7 +176,7 @@ func openersFor(
 		return inference.Openers{
 			Embed: func(
 				ctx context.Context,
-				model inference.ModelRef,
+				model model.ModelRef,
 			) (inference.EmbedDriver, error) {
 				cls, err := open(ctx, model.Profile)
 				if err != nil {
@@ -182,20 +189,20 @@ func openersFor(
 		return inference.Openers{
 			Generate: func(
 				ctx context.Context,
-				model inference.ModelRef,
+				model model.ModelRef,
 			) (inference.GenerateOperations, error) {
 				cls, err := open(ctx, model.Profile)
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openImage(cls, id, model.Profile)
+				return openImage(cls, entry, id, model.Profile)
 			},
 		}
 	case kindTTS:
 		return inference.Openers{
 			Generate: func(
 				ctx context.Context,
-				model inference.ModelRef,
+				model model.ModelRef,
 			) (inference.GenerateOperations, error) {
 				cls, err := open(ctx, model.Profile)
 				if err != nil {

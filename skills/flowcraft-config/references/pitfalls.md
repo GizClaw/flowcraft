@@ -58,10 +58,10 @@ builds the deployment with its own factory registry, or at runtime.
     fact the declaration does not state. Do not re-state the full catalog
     entry, and do not assume an omitted leaf is removed — write
     `hosted_web_search: false` or an explicit list to express removal.
-    Qwen and Kimi accept the same leaf patches; Qwen embed dimension sizes
-    still come from the built-in whitelist, so `custom_embed_dimensions`
-    can only be restated on those entries, never granted elsewhere — host
-    build.
+    Compatible endpoints configured through the OpenAI driver accept the
+    same leaf patches; embed dimension sizes still come from each entry's
+    built-in whitelist, so `custom_embed_dimensions` can only be restated
+    on those entries, never granted elsewhere — host build.
 18. `effort_none` (OpenAI/Azure) and the top-level `dimensions:` key
     (OpenAI/Azure/Bytedance) were removed: strict decoding reports them as
     unknown fields. OpenAI-family reasoning off is implied by

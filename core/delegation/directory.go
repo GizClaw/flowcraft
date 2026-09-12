@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Directory exposes the agents assembled by deploy.Build as local delegation
@@ -98,7 +99,7 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
 	}
-	if isNilInterface(result) {
+	if ptr.IsNil(result) {
 		return errdefs.Validationf("local delegation directory: nil deployment")
 	}
 
@@ -149,7 +150,7 @@ func (d *LocalDirectory) BindTargetSource(source TargetSource) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
 	}
-	if isNilInterface(source) {
+	if ptr.IsNil(source) {
 		return errdefs.Validationf("local delegation directory: nil target source")
 	}
 	d.mu.Lock()
@@ -211,7 +212,7 @@ func (d *LocalDirectory) BindDeployment(deployment any) error {
 		return errdefs.Validationf("local delegation directory: nil receiver")
 	}
 	view, ok := deployment.(Deployment)
-	if !ok || isNilInterface(deployment) {
+	if !ok || ptr.IsNil(deployment) {
 		return errdefs.Validationf(
 			"local delegation directory: deployment is not a read-only deployment view")
 	}

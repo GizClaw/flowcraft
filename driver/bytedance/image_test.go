@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -41,19 +42,33 @@ func imageReferencePart(t *testing.T) message.ImagePart {
 	return message.ImagePart{Source: source}
 }
 
+// imageTransportRequest builds the request one transport attempt posts, so the
+// transport tests can drive it directly without going through the compiler.
+func imageTransportRequest(model, prompt string) *imageRequest {
+	delivery := "url"
+	return &imageRequest{
+		ark: arkmodel.GenerateImagesRequest{
+			Model:          model,
+			Prompt:         prompt,
+			ResponseFormat: &delivery,
+		},
+		count: 1,
+	}
+}
+
 func compileImageWire(
 	t *testing.T,
 	request inference.GenerateRequest,
-) (imageWire, inference.CompileReport, error) {
+) (*imageRequest, inference.CompileReport, error) {
 	t.Helper()
 	compiled, err := compileImage("ep-test")(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: "seedream-5-0-pro"}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: "seedream-5-0-pro"}},
 		request,
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		return imageWire{}, compiled.Report, err
+		return nil, compiled.Report, err
 	}
 	return compiled.Wire, compiled.Report, nil
 }
@@ -81,8 +96,8 @@ func TestCompileImageLayerDecomposition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if wire.layerDecomposition == nil || !*wire.layerDecomposition {
-		t.Fatal("wire.layerDecomposition not set")
+	if wire.ark.LayerDecomposition == nil || !*wire.ark.LayerDecomposition {
+		t.Fatal("layer_decomposition not set on the request")
 	}
 }
 
@@ -152,7 +167,7 @@ func TestCompileImageBackground(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	if wire.background != "transparent" {
-		t.Fatalf("wire.background = %q, want transparent", wire.background)
+		t.Fatalf("background = %q, want transparent", wire.background)
 	}
 }
 
@@ -259,8 +274,8 @@ func TestCompileImageSizeToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("size_token %s: compile: %v", tc.token, err)
 		}
-		if wire.size != tc.want {
-			t.Errorf("size_token %s: wire.size = %q, want %q", tc.token, wire.size, tc.want)
+		if got := derefString(wire.ark.Size); got != tc.want {
+			t.Errorf("size_token %s: size = %q, want %q", tc.token, got, tc.want)
 		}
 	}
 }
@@ -305,14 +320,12 @@ func TestTransportImageRawCarriesExtendedFields(t *testing.T) {
 		baseURL:    server.URL,
 		httpClient: server.Client(),
 	}
-	raw, err := transportImage(cls)(context.Background(), imageWire{
-		model:              "ep-test",
-		prompt:             "make it transparent",
-		count:              1,
-		delivery:           "url",
-		layerDecomposition: &enabled,
-		background:         "transparent",
-	})
+	request := imageTransportRequest("ep-test", "make it transparent")
+	// layer_decomposition now rides the SDK request; background still forces
+	// the raw body path, which re-marshals that request and adds the field.
+	request.ark.LayerDecomposition = &enabled
+	request.background = "transparent"
+	raw, err := transportImage(cls)(context.Background(), request)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -350,17 +363,88 @@ func TestTransportImageSDKRequestID(t *testing.T) {
 		arkruntime.WithRetryTimes(0),
 	)
 	cls := &clients{ark: client}
-	raw, err := transportImage(cls)(context.Background(), imageWire{
-		model:    "ep-test",
-		prompt:   "a cat",
-		count:    1,
-		delivery: "url",
-	})
+	raw, err := transportImage(cls)(
+		context.Background(),
+		imageTransportRequest("ep-test", "a cat"),
+	)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
 	if raw.requestID != "req-sdk" {
 		t.Fatalf("raw.requestID = %q, want req-sdk", raw.requestID)
+	}
+}
+
+// TestImageCompileToTransportBody closes the loop the wire used to close: one
+// canonical request compiles into the images body the API receives, intent and
+// extension knobs included.
+func TestImageCompileToTransportBody(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"model": "ep-test",
+			"created": 1,
+			"data": [{"url": "https://example.com/out.png", "size": "2048x2048"}],
+			"usage": {"generated_images": 1, "output_tokens": 100, "total_tokens": 100}
+		}`))
+	}))
+	defer server.Close()
+
+	watermark := false
+	request := compileImageRequest(
+		[]message.Part{
+			message.TextPart{Text: "a red circle"},
+			imageReferencePart(t),
+		},
+		ImageOptions{Watermark: &watermark},
+	)
+	request.Input.Content.Intent.Image = &inference.ImageIntent{
+		Size:         &media.ImageSize{Width: 2048, Height: 2048},
+		OutputFormat: media.ImageFormatJPEG,
+	}
+	compiled, report, err := compileImageWire(t, request)
+	if err != nil {
+		t.Fatalf("compile: %v; report = %+v", err, report)
+	}
+
+	client := arkruntime.NewClientWithApiKey(
+		"sk-test",
+		arkruntime.WithBaseUrl(server.URL),
+		arkruntime.WithHTTPClient(server.Client()),
+		arkruntime.WithRetryTimes(0),
+	)
+	if _, err := transportImage(&clients{ark: client})(
+		context.Background(),
+		compiled,
+	); err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+
+	for key, want := range map[string]any{
+		"model":           "ep-test",
+		"prompt":          "a red circle",
+		"size":            "2048x2048",
+		"output_format":   "jpeg",
+		"watermark":       false,
+		"response_format": "url",
+	} {
+		if body[key] != want {
+			t.Errorf("body[%q] = %#v, want %#v", key, body[key], want)
+		}
+	}
+	references, ok := body["image"].([]any)
+	if !ok || len(references) != 1 {
+		t.Fatalf("image = %#v, want one reference image", body["image"])
+	}
+	if references[0] != "https://example.com/input.png" {
+		t.Errorf("image[0] = %#v, want the reference url", references[0])
 	}
 }
 
@@ -393,17 +477,144 @@ func TestTransportImageRawErrorClassification(t *testing.T) {
 		baseURL:    server.URL,
 		httpClient: server.Client(),
 	}
-	_, err := transportImage(cls)(context.Background(), imageWire{
-		model:      "ep-test",
-		prompt:     "edit",
-		count:      1,
-		delivery:   "url",
-		background: "transparent",
-	})
+	request := imageTransportRequest("ep-test", "edit")
+	request.background = "transparent"
+	_, err := transportImage(cls)(context.Background(), request)
 	if err == nil {
 		t.Fatal("transport error = nil, want validation")
 	}
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("transport error = %v, want errdefs.Validation", err)
+	}
+}
+
+// TestImageDeliveryLowering pins the response_format knob: the delivery choice
+// is the only place the canonical inline/URL intent reaches the request.
+func TestImageDeliveryLowering(t *testing.T) {
+	cases := []struct {
+		delivery media.SourceKind
+		want     string
+	}{
+		{delivery: "", want: "url"},
+		{delivery: media.SourceURL, want: "url"},
+		{delivery: media.SourceInline, want: "b64_json"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.delivery), func(t *testing.T) {
+			request := compileImageRequest(
+				[]message.Part{message.TextPart{Text: "a cat"}},
+				ImageOptions{},
+			)
+			request.Input.Content.Intent.Image.Delivery = tc.delivery
+			compiled, report, err := compileImageWire(t, request)
+			if err != nil {
+				t.Fatalf("compile: %v; report = %+v", err, report)
+			}
+			if got := derefString(compiled.ark.ResponseFormat); got != tc.want {
+				t.Fatalf("response_format = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestImageTransportFanOut locks the multi-image contract: the endpoint
+// returns one image per call, so a count above one repeats the call unless
+// grouped generation is on (then one call returns the whole set).
+func TestImageTransportFanOut(t *testing.T) {
+	cases := []struct {
+		name      string
+		count     int
+		grouped   bool
+		wantCalls int
+		wantParts int
+	}{
+		{name: "single", count: 1, wantCalls: 1, wantParts: 1},
+		{name: "three calls", count: 3, wantCalls: 3, wantParts: 3},
+		{name: "grouped is one call", count: 3, grouped: true, wantCalls: 1, wantParts: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(
+				writer http.ResponseWriter,
+				_ *http.Request,
+			) {
+				calls++
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{
+					"model": "ep-test",
+					"created": 1,
+					"data": [{"url": "https://example.com/out.png", "size": "1024x1024"}],
+					"usage": {"generated_images": 1, "output_tokens": 1, "total_tokens": 1}
+				}`))
+			}))
+			defer server.Close()
+
+			request := imageTransportRequest("ep-test", "a cat")
+			request.count = tc.count
+			if tc.grouped {
+				grouped := arkmodel.SequentialImageGeneration(
+					arkmodel.SequentialImageGenerationAuto,
+				)
+				request.ark.SequentialImageGeneration = &grouped
+			}
+			raw, err := transportImage(&clients{ark: arkTestClient(t, server)})(
+				context.Background(),
+				request,
+			)
+			if err != nil {
+				t.Fatalf("transport: %v", err)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("provider calls = %d, want %d", calls, tc.wantCalls)
+			}
+			if len(raw.images) != tc.wantParts {
+				t.Fatalf("images = %d, want %d", len(raw.images), tc.wantParts)
+			}
+		})
+	}
+}
+
+// TestImageLayerDecompositionRidesTheSDKRequest pins the SDK leaf that the
+// pinned request struct used to lack: layer decomposition goes out on the
+// typed SDK call, so only background still needs the raw body path.
+func TestImageLayerDecompositionRidesTheSDKRequest(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"model": "ep-test",
+			"created": 1,
+			"data": [{"url": "https://example.com/out.png", "size": "2048x2048"}],
+			"usage": {"generated_images": 1, "output_tokens": 1, "total_tokens": 1}
+		}`))
+	}))
+	defer server.Close()
+
+	enabled := true
+	compiled, report, err := compileImageWire(t, compileImageRequest(
+		[]message.Part{imageReferencePart(t)},
+		ImageOptions{LayerDecomposition: &enabled},
+	))
+	if err != nil {
+		t.Fatalf("compile: %v; report = %+v", err, report)
+	}
+	if compiled.background != "" {
+		t.Fatal("layer decomposition alone must not need the raw body path")
+	}
+	if _, err := transportImage(&clients{ark: arkTestClient(t, server)})(
+		context.Background(),
+		compiled,
+	); err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	if body["layer_decomposition"] != true {
+		t.Errorf("layer_decomposition = %#v, want true", body["layer_decomposition"])
 	}
 }

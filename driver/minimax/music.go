@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -51,12 +52,13 @@ func compileMusic(
 ) inference.GenerateCompiler[musicWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[musicWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := musicWire{
@@ -65,29 +67,29 @@ func compileMusic(
 		}
 
 		var prompt []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				if value, ok := part.(message.TextPart); ok {
 					prompt = append(prompt, value.Text)
 					continue
 				}
-				ledger.reject(
-					fields[part.Kind()],
+				ledger.Reject(
+					fields(part.Kind()),
 					fmt.Sprintf("music generation takes a text style prompt, not %s", part.Kind()),
 				)
 			}
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"music generation keeps user context only",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
+		collect(request.Input.Content.Parts, inputPartField)
 		wire.prompt = strings.Join(prompt, "\n")
 
 		intent := request.Input.Content.Intent
@@ -97,73 +99,73 @@ func compileMusic(
 				"music generation has no sampling controls",
 				"music models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"music models do not produce text",
 			)
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"music models do not produce images",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"music models do not produce video",
 			)
 		}
 		if audio := intent.Audio; audio != nil {
 			if audio.Voice.ID != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioVoiceID,
 					"music generation has no voice; omit the voice and put lyrics in MusicOptions",
 				)
 			}
 			if audio.Voice.Language != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioVoiceLanguage,
 					"music generation has no voice language",
 				)
 			}
 			compileMusicFormat(&wire, audio.Format, ledger)
 			if audio.Speed != nil {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioSpeed,
 					"music generation has no speed control",
 				)
 			}
 			if audio.Count != nil && *audio.Count > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioCount,
 					"music generation produces a single track",
 				)
 			}
 		}
 
-		options, other := operationExtensions[MusicOptions](request.Extensions)
-		rejectOtherExtensions("music generation", other, ledger)
+		options, other := inference.ExtensionFor[MusicOptions](request.Extensions)
+		ledger.RejectExtensions("music generation", other)
 		wire.lyrics = options.Lyrics
 		wire.instrumental = options.Instrumental
 		wire.optimizer = options.LyricsOptimizer
 		wire.watermark = options.Watermark
 		if wire.watermark != nil && wire.stream {
-			ledger.reject(
+			ledger.Reject(
 				inference.ExtensionField("watermark").Qualify(options),
 				"the AIGC watermark applies to unary requests only",
 			)
 		}
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[musicWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[musicWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[musicWire]{Wire: wire, Report: report}, nil
 	}
 }
 
-func compileMusicFormat(wire *musicWire, format media.AudioFormat, ledger *ledger) {
+func compileMusicFormat(wire *musicWire, format media.AudioFormat, ledger *inference.Ledger) {
 	switch format.Encoding {
 	case "":
 		// Unset: the endpoint defaults to mp3.
@@ -174,19 +176,19 @@ func compileMusicFormat(wire *musicWire, format media.AudioFormat, ledger *ledge
 	case media.AudioEncodingFLAC, media.AudioEncodingOpus,
 		media.AudioEncodingPCM24, media.AudioEncodingFloat32,
 		media.AudioEncodingAAC:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatEncoding,
 			fmt.Sprintf("minimax music encodes mp3 or 16-bit pcm, not %s", format.Encoding),
 		)
 	default:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatEncoding,
 			fmt.Sprintf("minimax music cannot encode %s", format.Encoding),
 		)
 	}
 	if format.SampleRateHz != 0 {
 		if !musicSampleRates[format.SampleRateHz] {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudioFormatSampleRate,
 				fmt.Sprintf("minimax music sample rates are 16000/24000/32000/44100, not %d", format.SampleRateHz),
 			)
@@ -195,7 +197,7 @@ func compileMusicFormat(wire *musicWire, format media.AudioFormat, ledger *ledge
 		}
 	}
 	if format.Channels != 0 && format.Channels != 2 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatChannels,
 			fmt.Sprintf("minimax music output is stereo, not %d channels", format.Channels),
 		)
@@ -333,7 +335,7 @@ func transportMusicStream(
 func openMusic(
 	cls *clients,
 	_ catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
 		compileMusic(id.Name),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -24,7 +25,7 @@ type ResourceSettings struct {
 // ProfileSettings is one credential profile.
 type ProfileSettings struct {
 	ID         string                     `json:"id,omitempty"`
-	Operations []inference.Operation      `json:"operations,omitempty"`
+	Operations []model.Operation          `json:"operations,omitempty"`
 	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
 	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
@@ -93,13 +94,13 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			provider.Profiles,
 			inference.ProfileDefinition{
 				ID:         profile.ID,
-				Operations: append([]inference.Operation(nil), profile.Operations...),
+				Operations: append([]model.Operation(nil), profile.Operations...),
 			},
 		)
 	}
 	for _, name := range sortedNames(models) {
 		entry := models[name]
-		id := inference.ModelID{Provider: settings.ID, Name: name}
+		id := model.ModelID{Provider: settings.ID, Name: name}
 		descriptor := descriptorFor(id, entry)
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
@@ -114,7 +115,7 @@ func openersFor(
 	spec Spec,
 	entry catalogEntry,
 	profiles map[string]profileMaterial,
-	id inference.ModelID,
+	id model.ModelID,
 ) inference.Openers {
 	open := func(ctx context.Context, profile string) (*clients, error) {
 		material, exists := profiles[profile]
@@ -125,14 +126,12 @@ func openersFor(
 	}
 
 	var openers inference.Openers
-	openers.Generate = func(ctx context.Context, model inference.ModelRef) (inference.GenerateOperations, error) {
+	openers.Generate = func(ctx context.Context, model model.ModelRef) (inference.GenerateOperations, error) {
 		cls, err := open(ctx, model.Profile)
 		if err != nil {
 			return inference.GenerateOperations{}, err
 		}
 		switch entry.kind {
-		case kindGenerate:
-			return openGenerate(cls, entry, id, model.Profile)
 		case kindImage:
 			return openImage(cls, entry, id)
 		case kindTTS:

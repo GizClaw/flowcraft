@@ -32,7 +32,7 @@ A `*Graph` is an `agent.Engine`.
       "type": "inference",
       "config": {
         "model": {
-          "id": { "provider": "deepseek", "name": "deepseek-v4-flash" }
+          "id": { "provider": "deepseek", "name": "deepseek-flash" }
         },
         "messages_channel": "__main_channel"
       }
@@ -246,7 +246,11 @@ results as one `role=tool` message — again a valid tail for `inference`.
 | Config field       | Meaning                                                                        |
 | ------------------ | ------------------------------------------------------------------------------ |
 | `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
-| `results_key`      | board var receiving the raw `[]message.Result` for downstream nodes/conditions |
+| `results_key`      | board var receiving the raw `[]message.ToolResult` for downstream nodes/conditions |
+
+Each result uses the message wire shape — `{call_id, content: {parts:
+[...]}, is_error}` — so a multimodal tool result stays intact; read
+`content.parts[].text` for the text of a text part.
 
 Behavior:
 
@@ -438,7 +442,7 @@ a no-op host, so scripts can call them unconditionally.
 | ------------- | -------------------------------------------- | ------------------------------ |
 | `token`       | string (or any value, JSON-stringified)      | text part delta                |
 | `tool_call`   | JSON string or `{id, name, arguments}`       | tool call part delta           |
-| `tool_result` | `{tool_call_id, content, is_error}`          | tool result part delta         |
+| `tool_result` | `{tool_call_id, parts, is_error}`            | tool result part delta         |
 | `part`        | canonical part wire object (`{"type": ...}`) | arbitrary `message.Part` delta |
 | `finish`      | `{finish_reason, request_id?, response_id?}` | finish delta with typed fields |
 | `provider_outputs` | `[{provider, extension, value}]`        | provider_outputs delta         |
@@ -480,12 +484,17 @@ Script-callable facade over the tool dispatcher/catalog pair, with an
 allow-list set by the host (`WithAllowedToolNames` / `WithToolAllowAll`). By
 default **no** tool is callable.
 
-| Method                                         | Signature                                                      |
-| ---------------------------------------------- | -------------------------------------------------------------- |
-| `tools.call(name, argumentsJSON)`              | `{content, is_error, tool_call_id}`                            |
-| `tools.callAll([{name, arguments, id?}, ...])` | same shape per entry, plus `name`; batch via the dispatcher    |
-| `tools.list()`                                 | `[names]` the script is allowed to call                        |
-| `tools.definitions()`                          | wire-ready tool declarations to splice into a generate request |
+| Method                                         | Signature                                                       |
+| ---------------------------------------------- | --------------------------------------------------------------- |
+| `tools.call(name, argumentsJSON)`              | `{parts, is_error, tool_call_id, name}`                         |
+| `tools.callAll([{name, arguments, id?}, ...])` | same shape per entry, plus `name`; batch via the dispatcher     |
+| `tools.list()`                                 | `[names]` the script is allowed to call                         |
+| `tools.definitions()`                          | wire-ready tool declarations to splice into a generate request  |
+
+`parts` is the canonical part array (`{"type":"text","text":"..."}`,
+`{"type":"image","source":{...}}`, ...), never a flattened string, so a
+multimodal tool result reaches the script intact and can be passed back
+to `tools.callAll` or emitted unchanged.
 
 Denied entries get an `is_error` result in place; the rest of the batch
 still runs. A model-issued `id` passed to `callAll` is forwarded verbatim,

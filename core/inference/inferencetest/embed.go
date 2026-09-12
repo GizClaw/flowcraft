@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // DefaultFakeEmbedModel is EmbedFake's default model ref.
-var DefaultFakeEmbedModel = inference.ModelRef{
-	ID:      inference.ModelID{Provider: "fake", Name: "embed"},
+var DefaultFakeEmbedModel = model.ModelRef{
+	ID:      model.ModelID{Provider: "fake", Name: "embed"},
 	Profile: "default",
 }
 
@@ -22,11 +23,11 @@ var DefaultFakeEmbedModel = inference.ModelRef{
 type EmbedFake struct {
 	// Model is the ref the runtime resolves. Defaults to
 	// DefaultFakeEmbedModel.
-	Model inference.ModelRef
+	Model model.ModelRef
 	// Descriptor overrides the model's discovery metadata. The zero
 	// value falls back to {ID: Model.ID}, so tests can declare limits
 	// or lifecycle without rebuilding the provider.
-	Descriptor inference.ModelDescriptor
+	Descriptor model.ModelDescriptor
 	// Respond answers Embed calls. Default: one unit-length vector per
 	// request item.
 	Respond func(inference.EmbedRequest) inference.EmbedResponse
@@ -38,9 +39,9 @@ type EmbedFake struct {
 // Assembly builds the fake's inference assembly.
 func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 	t.Helper()
-	model := f.Model
-	if model.ID.Provider == "" {
-		model = DefaultFakeEmbedModel
+	ref := f.Model
+	if ref.ID.Provider == "" {
+		ref = DefaultFakeEmbedModel
 	}
 	respond := f.Respond
 	if respond == nil {
@@ -54,13 +55,13 @@ func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 
 	compile := inference.Compiler[inference.EmbedRequest, string](
-		func(_ context.Context, _ inference.ModelRef, req inference.EmbedRequest) (inference.Compiled[string], error) {
+		func(_ context.Context, _ model.ModelRef, req inference.EmbedRequest) (inference.Compiled[string], error) {
 			f.mu.Lock()
 			f.requests = append(f.requests, req.Clone())
 			f.mu.Unlock()
 			return inference.Compiled[string]{
 				Wire:   "wire",
-				Report: NativeReport(inference.OperationEmbed, req.ActiveFields()...),
+				Report: NativeReport(model.OperationEmbed, req.ActiveFields()...),
 			}, nil
 		},
 	)
@@ -78,26 +79,26 @@ func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 	descriptor := f.Descriptor
 	if descriptor.ID.Provider == "" {
-		descriptor = inference.ModelDescriptor{ID: model.ID}
+		descriptor = model.ModelDescriptor{ID: ref.ID}
 	}
 
 	definition := inference.ProviderDefinition{
-		ID: model.ID.Provider,
+		ID: ref.ID.Provider,
 		Profiles: []inference.ProfileDefinition{{
-			ID:         model.Profile,
-			Operations: []inference.Operation{inference.OperationEmbed},
+			ID:         ref.Profile,
+			Operations: []model.Operation{model.OperationEmbed},
 		}},
 		Models: []inference.ModelImplementation{{
 			Descriptor: descriptor,
 			Openers: inference.Openers{
-				Embed: func(_ context.Context, _ inference.ModelRef) (inference.EmbedDriver, error) {
+				Embed: func(_ context.Context, _ model.ModelRef) (inference.EmbedDriver, error) {
 					return driver, nil
 				},
 			},
 		}},
 	}
 	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + model.ID.Provider: definition},
+		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
 	})
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
@@ -135,7 +136,7 @@ func (f *EmbedFake) lastRequest() inference.EmbedRequest {
 // EmbedUnarySuite verifies the shared Runtime contracts for Embed
 // drivers.
 type EmbedUnarySuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.EmbedRequest
 	Driver  inference.EmbedDriver
 
@@ -150,7 +151,7 @@ func RunEmbedUnary(t *testing.T, suite EmbedUnarySuite) {
 		t.Fatal("EmbedUnarySuite requires a driver")
 	}
 	RunUnary(t, UnarySuite[inference.EmbedRequest, inference.EmbedResponse]{
-		Operation: inference.OperationEmbed,
+		Operation: model.OperationEmbed,
 		Model:     suite.Model,
 		Request:   suite.Request,
 		Snapshot: func(request inference.EmbedRequest) any {

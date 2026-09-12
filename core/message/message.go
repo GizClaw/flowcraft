@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type Role string
@@ -142,7 +143,31 @@ func LastByRole(msgs []Message, role Role) (Message, bool) {
 
 // NewTextMessage builds a message carrying a single text part.
 func NewTextMessage(role Role, text string) Message {
-	return Message{Role: role, Content: Content{Parts: []Part{TextPart{Text: text}}}}
+	return Message{Role: role, Content: NewTextContent(text)}
+}
+
+// NewTextContent builds a content carrying a single text part. It is the
+// canonical way to express the "plain string result" that text-only
+// producers and wire formats still deal in.
+func NewTextContent(text string) Content {
+	return Content{Parts: []Part{TextPart{Text: text}}}
+}
+
+// NewJSONContent builds a content carrying one structured data part.
+// A JSON object result is data, not prose: keeping it typed lets
+// middleware redact and bound it like any other part, while drivers
+// that lack a structured surface render the same JSON text the model
+// saw before. Values that are not JSON objects are rejected — see
+// [DataPart.Validate].
+func NewJSONContent(value []byte) (Content, error) {
+	part := DataPart{
+		MediaType: "application/json",
+		Value:     json.RawMessage(bytes.Clone(bytes.TrimSpace(value))),
+	}
+	if err := part.Validate(); err != nil {
+		return Content{}, err
+	}
+	return Content{Parts: []Part{part}}, nil
 }
 
 // Content is an ordered collection of canonical parts. Intent deliberately
@@ -157,7 +182,7 @@ func (c Content) Clone() Content {
 	}
 	cloned := Content{Parts: make([]Part, len(c.Parts))}
 	for i, part := range c.Parts {
-		if !isNilValue(part) {
+		if !ptr.IsNil(part) {
 			normalized, _ := NormalizePart(part)
 			cloned.Parts[i] = normalized.Clone()
 		}
@@ -239,22 +264,6 @@ func (c Content) Text() string {
 		}
 	}
 	return b.String()
-}
-
-// isNilValue reports whether value is a typed nil (e.g. (*Part)(nil))
-// sitting behind an any. reflection.Value.IsNil only works on
-// chan/func/interface/map/pointer/slice; this is the safe equivalent
-// for an any that may carry one.
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	switch v := reflect.ValueOf(value); v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	}
-	return false
 }
 
 func decodeStrict(data []byte, dst any) error {

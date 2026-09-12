@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // TestRedeclaredBuiltinKeepsReasoning locks the delta overlay contract:
@@ -28,7 +29,7 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["doubao-seed-2-1-pro"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("redeclaration must inherit reasoning toggle, got %q",
 			entry.capabilities.Reasoning.Kind)
 	}
@@ -97,7 +98,7 @@ func TestPublishedToggleCompilesReasoningOff(t *testing.T) {
 	checked := 0
 	for name, entry := range models {
 		if entry.kind != kindGenerate ||
-			entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+			entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 			continue
 		}
 		checked++

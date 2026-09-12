@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -36,17 +37,17 @@ func compileVideoRequest(
 
 func compileVideoWire(
 	t *testing.T,
-	model string,
+	name string,
 	request inference.GenerateRequest,
 ) (videoWire, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[model]
+	entry, ok := catalog[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", model)
+		t.Fatalf("catalog model %q missing", name)
 	}
 	compiled, err := compileVideo("ep-test", entry)(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: model}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,
 		inference.GenerateExecutionUnary,
 	)

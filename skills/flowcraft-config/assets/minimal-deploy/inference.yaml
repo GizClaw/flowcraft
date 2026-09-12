@@ -1,8 +1,39 @@
-# inference.Provider/deepseek settings (referenced via
+# inference.Provider/openai settings (referenced via
 # resources.provider.settings.file in deploy.yaml).
+#
+# One driver serves the whole OpenAI wire family: endpoint says where the API
+# is and how it authenticates, wire says which dialect it speaks, catalog says
+# which models exist. A declared catalog is required for endpoints that have
+# no OpenAI line-up, so deployment names never inherit built-in facts.
 id: deepseek
 spec:
-  api: chat
+  api: responses
+  endpoint:
+    base_url: https://api.deepseek.com
+  # deepseek-flash returns the trace as plain reasoning text (there is no
+  # summary or encrypted payload to round-trip).
+  wire:
+    reasoning_channel: text
+  catalog: declared
+  models:
+    - name: deepseek-flash
+      kind: generate
+      capabilities:
+        inputs: [text, image, data, tool_call, tool_result]
+        outputs: [text]
+        reasoning:
+          # reasoning.effort="none" disables thinking on the Responses
+          # surface; low/high/max are the depth levels.
+          kind: toggle
+          effort_map:
+            minimal: low
+            low: low
+            medium: high
+            high: high
+            xhigh: max
+      limits:
+        max_input_tokens: 1000000
+        max_output_tokens: 384000
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}

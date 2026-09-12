@@ -42,7 +42,7 @@ func TestResponsesStreamMetadataCapturesRequestID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	stream, err := transportGenerateStream(client)(context.Background(), compiled.Wire)
+	stream, err := transportGenerateStream(client, nil)(context.Background(), compiled.Wire)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}

@@ -69,7 +69,7 @@ the core schema. Agent hooks use factory kind `hook.<slot>`.
 | `event.Bus` | `memory` | `core/event` |
 | `workspace.Workspace` | `local` | `core/workspace` |
 | `sandbox.Runner` | `local`, `bwrap`, `seatbelt` | `core/sandbox/{local,bwrap,seatbelt}` |
-| `inference.Provider` | `openai`, `deepseek`, `qwen`, ... | core contract; impls registered from provider drivers |
+| `inference.Provider` | `openai`, `anthropic`, `bytedance`, `minimax` | core contract; `openai` serves the whole OpenAI wire family (OpenAI, Azure, DeepSeek, Kimi, gateways) and `anthropic` the whole Messages family (Anthropic, MiniMax text, compatible endpoints) through their endpoint/wire/catalog settings |
 | `inference.Assembly` | `unified` | `core/inference` |
 | `inference.Router` | `unified` | `core/inference/route` |
 | `tool.Registry` | `memory` | `core/tool` |
@@ -107,7 +107,7 @@ resources:
       generate:
         - tier: fast
           targets:
-            - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+            - model: {id: {provider: deepseek, name: deepseek-flash}}
               score: {speed: 0.9}
         - tier: capable
           targets:

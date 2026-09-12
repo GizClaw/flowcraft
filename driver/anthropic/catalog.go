@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -14,14 +14,17 @@ import (
 // kinds and the reasoning control capability (switch kind plus the
 // canonical-to-wire effort map).
 type catalogEntry struct {
-	capabilities inference.ModelCapabilities
-	deprecated   bool
-	replacement  string
+	capabilities model.ModelCapabilities
 	// limits carries the model's context/output windows in tokens. Nil
 	// leaves are undeclared. Values mirror the context window and maximum
 	// output published on https://platform.claude.com/docs/en/about-claude/
 	// models.
-	limits inference.ModelLimits
+	limits model.ModelLimits
+	// videoInput mirrors Spec.Wire.VideoInput: the endpoint accepts video
+	// blocks. Sending one still requires the model to declare video input.
+	videoInput  bool
+	deprecated  bool
+	replacement string
 }
 
 // validate enforces the generate family contract: Claude compilers only
@@ -38,8 +41,8 @@ func (e catalogEntry) validate() error {
 
 // generateChatCapabilities is the common capability declaration for the
 // Claude text compiler family.
-func generateChatCapabilities() inference.ModelCapabilities {
-	return inference.ModelCapabilities{
+func generateChatCapabilities() model.ModelCapabilities {
+	return model.ModelCapabilities{
 		Inputs: []message.PartKind{
 			message.PartText,
 			message.PartData,
@@ -54,12 +57,12 @@ func generateChatCapabilities() inference.ModelCapabilities {
 // Claude model that accepts effort levels, aligned with the
 // adaptive-thinking effort parameter (low/medium/high/xhigh; "max" is a
 // model-side extra beyond the canonical ladder and is never mapped to).
-var claudeEffortMap = map[inference.ReasoningEffort]string{
-	inference.ReasoningMinimal: string(inference.ReasoningLow),
-	inference.ReasoningLow:     string(inference.ReasoningLow),
-	inference.ReasoningMedium:  string(inference.ReasoningMedium),
-	inference.ReasoningHigh:    string(inference.ReasoningHigh),
-	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
+var claudeEffortMap = map[model.ReasoningEffort]string{
+	model.ReasoningMinimal: string(model.ReasoningLow),
+	model.ReasoningLow:     string(model.ReasoningLow),
+	model.ReasoningMedium:  string(model.ReasoningMedium),
+	model.ReasoningHigh:    string(model.ReasoningHigh),
+	model.ReasoningXHigh:   string(model.ReasoningXHigh),
 }
 
 // catalog is the built-in model list, aligned with the Claude lineup of
@@ -69,9 +72,9 @@ var catalog = map[string]catalogEntry{
 	"claude-fable-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningAlways).
+			WithReasoning(model.ReasoningAlways).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -81,45 +84,45 @@ var catalog = map[string]catalogEntry{
 	"claude-mythos-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningAlways).
+			WithReasoning(model.ReasoningAlways).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-opus-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-sonnet-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-haiku-4-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(200_000).
 			WithMaxOutputTokens(64_000),
 	},
 	"claude-haiku-4-5-20251001": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(200_000).
 			WithMaxOutputTokens(64_000),
 	},
@@ -127,50 +130,50 @@ var catalog = map[string]catalogEntry{
 	"claude-opus-4-8": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-opus-4-7": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-sonnet-4-6": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-sonnet-5",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_000_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"claude-sonnet-4-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-sonnet-5",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(200_000).
 			WithMaxOutputTokens(64_000),
 	},
 	"claude-opus-4-1": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(200_000).
 			WithMaxOutputTokens(32_000),
 	},
@@ -184,26 +187,34 @@ var catalog = map[string]catalogEntry{
 // conservative zero base.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
-	maps.Copy(models, catalog)
-	for _, model := range spec.Models {
+	// A declared catalog starts empty: a compatible endpoint's model names
+	// must never inherit Claude facts just because they collide.
+	if spec.catalogMode() == catalogBuiltinDeclared {
+		maps.Copy(models, catalog)
+	}
+	for _, declared := range spec.Models {
 		entry := catalogEntry{}
-		if builtin, exists := models[model.Name]; exists {
-			entry.capabilities = model.Capabilities.Apply(builtin.capabilities)
+		if builtin, exists := models[declared.Name]; exists {
+			entry.capabilities = declared.Capabilities.Apply(builtin.capabilities)
 			entry.limits = builtin.limits.Clone()
 		} else {
-			entry.capabilities = model.Capabilities.Apply(
-				inference.ModelCapabilities{},
+			entry.capabilities = declared.Capabilities.Apply(
+				model.ModelCapabilities{},
 			)
 		}
-		if model.Limits.MaxInputTokens != nil {
-			value := *model.Limits.MaxInputTokens
+		if declared.Limits.MaxInputTokens != nil {
+			value := *declared.Limits.MaxInputTokens
 			entry.limits.MaxInputTokens = &value
 		}
-		if model.Limits.MaxOutputTokens != nil {
-			value := *model.Limits.MaxOutputTokens
+		if declared.Limits.MaxOutputTokens != nil {
+			value := *declared.Limits.MaxOutputTokens
 			entry.limits.MaxOutputTokens = &value
 		}
-		models[model.Name] = entry
+		models[declared.Name] = entry
+	}
+	for name, entry := range models {
+		entry.videoInput = spec.Wire.VideoInput
+		models[name] = entry
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {
@@ -216,15 +227,15 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 // descriptorFor lowers one catalog entry into its public discovery
 // descriptor under id. buildProvider and Catalog share this lowering so
 // offline catalog views cannot drift from deployed provider models.
-func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDescriptor {
-	descriptor := inference.ModelDescriptor{
+func descriptorFor(id model.ModelID, entry catalogEntry) model.ModelDescriptor {
+	descriptor := model.ModelDescriptor{
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
 	if entry.deprecated {
-		descriptor.Lifecycle.Status = inference.ModelStatusDeprecated
+		descriptor.Lifecycle.Status = model.ModelStatusDeprecated
 		if entry.replacement != "" {
-			replacement := inference.ModelID{
+			replacement := model.ModelID{
 				Provider: id.Provider,
 				Name:     entry.replacement,
 			}
@@ -240,7 +251,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 // lifecycle; Operations stay empty because the inference assembly derives them
 // from the model's openers after deployment. Provider IDs are a deployment
 // property, so callers supply the identity that appears in each descriptor.
-func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+func Catalog(provider string) ([]model.ModelDescriptor, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("catalog: provider is required")
 	}
@@ -249,10 +260,10 @@ func Catalog(provider string) ([]inference.ModelDescriptor, error) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	descriptors := make([]inference.ModelDescriptor, 0, len(catalog))
+	descriptors := make([]model.ModelDescriptor, 0, len(catalog))
 	for _, name := range names {
 		descriptor := descriptorFor(
-			inference.ModelID{Provider: provider, Name: name},
+			model.ModelID{Provider: provider, Name: name},
 			catalog[name],
 		)
 		descriptors = append(descriptors, descriptor)

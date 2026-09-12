@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // TestRedeclaredBuiltinKeepsReasoning locks the delta overlay contract:
@@ -27,7 +28,7 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["claude-sonnet-5"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("redeclaration must inherit reasoning toggle, got %q",
 			entry.capabilities.Reasoning.Kind)
 	}
@@ -43,8 +44,8 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("toggle model rejected reasoning off: %v", err)
 	}
-	if compiled.Wire.thinking == nil || *compiled.Wire.thinking {
-		t.Fatalf("wire thinking = %v, want disabled", compiled.Wire.thinking)
+	if compiled.Wire.Thinking.OfDisabled == nil {
+		t.Fatalf("wire thinking = %+v, want disabled", compiled.Wire.Thinking)
 	}
 	if compiled.Report.Rejects(inference.FieldGenerateIntentReasoningEnabled) {
 		t.Fatal("toggle model rejected on the reasoning_enabled field")
@@ -70,7 +71,7 @@ func TestRedeclaredBuiltinRemovesReasoning(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["claude-sonnet-5"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningNone {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningNone {
 		t.Fatalf("reasoning kind = %q, want none", entry.capabilities.Reasoning.Kind)
 	}
 	if len(entry.capabilities.Reasoning.EffortMap) != 0 {
@@ -92,7 +93,7 @@ func TestPublishedToggleCompilesReasoningOff(t *testing.T) {
 	}
 	checked := 0
 	for name, entry := range models {
-		if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+		if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 			continue
 		}
 		checked++

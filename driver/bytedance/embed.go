@@ -7,30 +7,24 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
-// Embed has two native shapes on Ark: the batched text embeddings endpoint
-// and the multimodal endpoint, which fuses one item's text and image inputs
-// into a single vector per call. The compiler picks the shape from the
-// model's declared capabilities; the wire carries one entry per canonical
-// item either way.
+// Embed has two native shapes on Ark: the batched text embeddings endpoint and
+// the multimodal endpoint, which fuses one item's text and image inputs into a
+// single vector per call. The compiler picks the shape from the model's
+// declared capabilities, so exactly one half of embedRequest is set.
 
-type embedWire struct {
-	model      string
-	multimodal bool
-	texts      []string       // text path: one entry per item
-	items      [][]embedInput // multimodal path: input list per item
-	dimensions *int
-}
-
-type embedInput struct {
-	kind string // text | image
-	text string
-	uri  string
+// embedRequest is one compiled embeddings call: the text endpoint's batched
+// request (text non-nil), or one multimodal request per canonical item (text
+// nil). Exactly one half is used, and the shape never changes within a call.
+type embedRequest struct {
+	text       *arkmodel.EmbeddingRequestStrings
+	multimodal []arkmodel.MultiModalEmbeddingRequest
 }
 
 type embedRaw struct {
@@ -38,47 +32,45 @@ type embedRaw struct {
 	inputTokens int64
 }
 
-var embedPartFields = map[message.PartKind]inference.FieldID{
-	message.PartText:       inference.FieldEmbedItemText,
-	message.PartImage:      inference.FieldEmbedItemImage,
-	message.PartAudio:      inference.FieldEmbedItemAudio,
-	message.PartVideo:      inference.FieldEmbedItemVideo,
-	message.PartFile:       inference.FieldEmbedItemFile,
-	message.PartData:       inference.FieldEmbedItemData,
-	message.PartToolCall:   inference.FieldEmbedItemToolCall,
-	message.PartToolResult: inference.FieldEmbedItemToolResult,
-}
-
 func compileEmbed(
 	endpoint string,
 	entry catalogEntry,
-) inference.Compiler[inference.EmbedRequest, embedWire] {
+) inference.Compiler[inference.EmbedRequest, *embedRequest] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.EmbedRequest,
-	) (inference.Compiled[embedWire], error) {
-		ledger := newLedger(inference.OperationEmbed, request.ActiveFields())
-		wire := embedWire{
-			model:      endpoint,
-			multimodal: slices.Contains(entry.capabilities.Inputs, message.PartImage),
-			dimensions: request.Dimensions,
+	) (inference.Compiled[*embedRequest], error) {
+		ledger := inference.NewLedger(
+			model.OperationEmbed,
+			providerID,
+			request.ActiveFields(),
+		)
+		multimodal := slices.Contains(entry.capabilities.Inputs, message.PartImage)
+		compiled := &embedRequest{}
+		if request.Dimensions != nil {
+			if !entry.capabilities.CustomEmbedDimensions {
+				ledger.Reject(
+					inference.FieldEmbedDimensions,
+					"model does not accept custom dimensions",
+				)
+			}
 		}
-		if request.Dimensions != nil && !entry.capabilities.CustomEmbedDimensions {
-			ledger.reject(
-				inference.FieldEmbedDimensions,
-				"model does not accept custom dimensions",
-			)
-		}
+
+		texts := make([]string, 0, len(request.Items))
 		for _, item := range request.Items {
 			var text strings.Builder
 			textParts := 0
-			var inputs []embedInput
+			inputs := make([]arkmodel.MultimodalEmbeddingInput, 0, len(item.Content.Parts))
 			flushText := func() {
 				if text.Len() == 0 {
 					return
 				}
-				inputs = append(inputs, embedInput{kind: "text", text: text.String()})
+				value := text.String()
+				inputs = append(inputs, arkmodel.MultimodalEmbeddingInput{
+					Type: arkmodel.MultiModalEmbeddingInputTypeText,
+					Text: &value,
+				})
 				text.Reset()
 			}
 			for _, part := range item.Content.Parts {
@@ -95,23 +87,26 @@ func compileEmbed(
 					}
 					text.WriteString(string(value.Value))
 				case message.ImagePart:
-					if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
-						ledger.reject(
+					if !multimodal {
+						ledger.Reject(
 							inference.FieldEmbedItemImage,
 							"model embeds text only",
 						)
 						continue
 					}
 					flushText()
-					inputs = append(inputs, embedInput{
-						kind: "image",
-						uri:  sourceURI(value.Source),
+					url := sourceURI(value.Source)
+					inputs = append(inputs, arkmodel.MultimodalEmbeddingInput{
+						Type: arkmodel.MultiModalEmbeddingInputTypeImageURL,
+						ImageURL: &arkmodel.MultimodalEmbeddingImageURL{
+							URL: url,
+						},
 					})
 				case message.AudioPart, message.VideoPart,
 					message.FilePart,
 					message.ToolCallPart, message.ToolResultPart:
-					ledger.reject(
-						embedPartFields[part.Kind()],
+					ledger.Reject(
+						embedPartField(part.Kind()),
 						fmt.Sprintf("%s parts cannot be embedded", part.Kind()),
 					)
 				}
@@ -120,83 +115,105 @@ func compileEmbed(
 			if len(inputs) == 0 {
 				continue
 			}
-			if wire.multimodal {
-				wire.items = append(wire.items, inputs)
+			if multimodal {
+				fused := arkmodel.MultiModalEmbeddingRequest{
+					Model: endpoint,
+					Input: inputs,
+				}
+				if request.Dimensions != nil {
+					dimensions := *request.Dimensions
+					fused.Dimensions = &dimensions
+				}
+				compiled.multimodal = append(compiled.multimodal, fused)
 				continue
 			}
 			// The text endpoint embeds one string per item; a multi-part item
 			// cannot be represented without silently concatenating parts.
 			if textParts > 1 || len(inputs) > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldEmbedItemMultiPart,
 					"text embedding accepts one text part per item",
 				)
 				continue
 			}
-			if inputs[0].kind != "text" {
-				ledger.reject(
-					inference.FieldEmbedItemImage,
-					"model embeds text only",
-				)
-				continue
-			}
-			wire.texts = append(wire.texts, inputs[0].text)
+			texts = append(texts, *inputs[0].Text)
 		}
 		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "bytedance embed supports no extensions")
+			ledger.Reject(field, "bytedance embed supports no extensions")
 		}
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[embedWire]{Report: report}, ledger.err()
+		if !multimodal {
+			compiled.text = &arkmodel.EmbeddingRequestStrings{
+				Input:          texts,
+				Model:          endpoint,
+				EncodingFormat: arkmodel.EmbeddingEncodingFormatFloat,
+			}
+			if request.Dimensions != nil {
+				compiled.text.Dimensions = *request.Dimensions
+			}
 		}
-		if wire.multimodal && len(wire.items) != len(request.Items) {
+
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[*embedRequest]{Report: report}, ledger.Err()
+		}
+		embedded := len(compiled.multimodal)
+		if compiled.text != nil {
+			embedded = len(compiled.text.Input)
+		}
+		if embedded != len(request.Items) {
 			// Cannot happen without a rejection above; guard the invariant.
-			return inference.Compiled[embedWire]{Report: report}, inference.NewError(
+			return inference.Compiled[*embedRequest]{Report: report}, inference.NewError(
 				inference.UnsupportedFeature,
-				inference.OperationEmbed,
+				model.OperationEmbed,
 				inference.FieldEmbedItems,
 				fmt.Errorf("bytedance: embedding item lost during compile"),
 			)
 		}
-		return inference.Compiled[embedWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[*embedRequest]{Wire: compiled, Report: report}, nil
 	}
 }
 
 func transportEmbed(
 	client *arkruntime.Client,
-) inference.Transport[embedWire, embedRaw] {
-	return func(ctx context.Context, wire embedWire) (embedRaw, error) {
+	options []arkruntime.RequestOption,
+) inference.Transport[*embedRequest, embedRaw] {
+	return func(ctx context.Context, request *embedRequest) (embedRaw, error) {
 		var raw embedRaw
 		var err error
-		if wire.multimodal {
-			raw, err = transportEmbedMultimodal(ctx, client, wire)
+		if request.text != nil {
+			raw, err = transportEmbedText(ctx, client, *request.text, options)
 		} else {
-			raw, err = transportEmbedText(ctx, client, wire)
+			raw, err = transportEmbedMultimodal(ctx, client, request.multimodal, options)
 		}
 		if err != nil {
-			logInferenceCall(ctx, "embed", wire.model, err, "", "")
+			inference.LogProviderCall(ctx, providerID, "embed", embeddingModel(request), err, "", "")
 			return raw, err
 		}
-		logInferenceCall(ctx, "embed", wire.model, nil, "", "")
+		inference.LogProviderCall(ctx, providerID, "embed", embeddingModel(request), nil, "", "")
 		return raw, nil
 	}
+}
+
+// embeddingModel names the model for telemetry: every item of one compile
+// shares the endpoint.
+func embeddingModel(request *embedRequest) string {
+	if request.text != nil {
+		return request.text.Model
+	}
+	if len(request.multimodal) == 0 {
+		return ""
+	}
+	return request.multimodal[0].Model
 }
 
 func transportEmbedText(
 	ctx context.Context,
 	client *arkruntime.Client,
-	wire embedWire,
+	request arkmodel.EmbeddingRequestStrings,
+	options []arkruntime.RequestOption,
 ) (embedRaw, error) {
-	request := arkmodel.EmbeddingRequestStrings{
-		Input:          wire.texts,
-		Model:          wire.model,
-		EncodingFormat: arkmodel.EmbeddingEncodingFormatFloat,
-	}
-	if wire.dimensions != nil {
-		request.Dimensions = *wire.dimensions
-	}
-	response, err := client.CreateEmbeddings(ctx, request)
+	response, err := client.CreateEmbeddings(ctx, request, options...)
 	if err != nil {
 		return embedRaw{}, classifyError(err)
 	}
@@ -218,29 +235,14 @@ func transportEmbedText(
 func transportEmbedMultimodal(
 	ctx context.Context,
 	client *arkruntime.Client,
-	wire embedWire,
+	requests []arkmodel.MultiModalEmbeddingRequest,
+	options []arkruntime.RequestOption,
 ) (embedRaw, error) {
 	// The multimodal endpoint fuses one item's inputs into a single vector
 	// per call, so items are embedded one request at a time.
-	raw := embedRaw{vectors: make([][]float32, 0, len(wire.items))}
-	for _, inputs := range wire.items {
-		request := arkmodel.MultiModalEmbeddingRequest{
-			Model:      wire.model,
-			Dimensions: wire.dimensions,
-		}
-		for _, input := range inputs {
-			entry := arkmodel.MultimodalEmbeddingInput{}
-			switch input.kind {
-			case "text":
-				entry.Type = arkmodel.MultiModalEmbeddingInputTypeText
-				entry.Text = &input.text
-			case "image":
-				entry.Type = arkmodel.MultiModalEmbeddingInputTypeImageURL
-				entry.ImageURL = &arkmodel.MultimodalEmbeddingImageURL{URL: input.uri}
-			}
-			request.Input = append(request.Input, entry)
-		}
-		response, err := client.CreateMultiModalEmbeddings(ctx, request)
+	raw := embedRaw{vectors: make([][]float32, 0, len(requests))}
+	for _, request := range requests {
+		response, err := client.CreateMultiModalEmbeddings(ctx, request, options...)
 		if err != nil {
 			return embedRaw{}, classifyError(err)
 		}
@@ -277,7 +279,7 @@ func openEmbed(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.EmbedDriver, error) {
 	ark, err := cls.requireArk(profile)
@@ -286,7 +288,7 @@ func openEmbed(
 	}
 	return inference.BindEmbed(
 		compileEmbed(cls.endpoint(id.Name), entry),
-		transportEmbed(ark),
+		transportEmbed(ark, cls.arkRequestOptions),
 		decodeEmbed,
 	)
 }

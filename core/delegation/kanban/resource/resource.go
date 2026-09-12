@@ -5,7 +5,6 @@ package resource
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	res "github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -114,7 +114,7 @@ func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
 
 	if value, ok := in.Dep(EventBusDep); ok {
 		bus, ok := value.(event.Bus)
-		if !ok || isNilBus(bus) {
+		if !ok || ptr.IsNil(bus) {
 			return nil, errdefs.Validationf(
 				"delegation kanban resource: dep %q is %T, want event.Bus",
 				EventBusDep, value)
@@ -122,20 +122,6 @@ func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
 		options = append(options, kanban.WithBus(bus))
 	}
 	return kanban.New(scopeID, options...), nil
-}
-
-func isNilBus(bus event.Bus) bool {
-	if bus == nil {
-		return true
-	}
-	value := reflect.ValueOf(bus)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }
 
 // Register adds the kanban-memory backend factory to r.

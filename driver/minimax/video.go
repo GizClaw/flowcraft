@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -84,17 +85,18 @@ func compileVideo(
 ) inference.GenerateCompiler[videoWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		ref model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[videoWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := videoWire{model: endpoint}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"video generation is a unary task on this provider",
 			)
@@ -103,7 +105,7 @@ func compileVideo(
 		prompt, images, videos, audios := collectTaskParts(request, ledger)
 		wire.prompt = strings.Join(prompt, "\n")
 
-		compileVideoInputs(&wire, images, videos, audios, entry, model, ledger)
+		compileVideoInputs(&wire, images, videos, audios, entry, ref, ledger)
 		limit, label := 2000, "minimax v1 prompts"
 		if entry.videoV2 {
 			limit, label = 7000, "MiniMax-H3 prompts"
@@ -119,11 +121,11 @@ func compileVideo(
 			// The v2 schema requires a non-empty text item in content.
 			reason := fmt.Sprintf("%s requires a non-empty text prompt", endpoint)
 			if len(prompt) > 0 {
-				ledger.reject(inference.FieldGenerateInputText, reason)
+				ledger.Reject(inference.FieldGenerateInputText, reason)
 			} else if intent := request.Input.Content.Intent; intent.Video != nil {
-				ledger.reject(inference.FieldGenerateIntentVideo, reason)
+				ledger.Reject(inference.FieldGenerateIntentVideo, reason)
 			} else {
-				ledger.reject(inference.FieldGenerateInputRole, reason)
+				ledger.Reject(inference.FieldGenerateInputRole, reason)
 			}
 		}
 		if entry.videoI2VOnly && wire.firstFrame == "" {
@@ -136,9 +138,9 @@ func compileVideo(
 				endpoint,
 			)
 			if intent := request.Input.Content.Intent; intent.Video != nil {
-				ledger.reject(inference.FieldGenerateIntentVideo, reason)
+				ledger.Reject(inference.FieldGenerateIntentVideo, reason)
 			} else {
-				ledger.reject(inference.FieldGenerateInputRole, reason)
+				ledger.Reject(inference.FieldGenerateInputRole, reason)
 			}
 		}
 
@@ -149,19 +151,19 @@ func compileVideo(
 				"the task API has no sampling controls",
 				"video models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"video models do not produce text",
 			)
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"video models do not produce images",
 			)
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"video models do not synthesize standalone audio",
 			)
@@ -169,13 +171,13 @@ func compileVideo(
 		if video := intent.Video; video != nil {
 			compileVideoIntent(&wire, video, entry, endpoint, ledger)
 		}
-		options, other := operationExtensions[VideoOptions](request.Extensions)
+		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
 		compileVideoOptions(&wire, options, entry, endpoint, ledger)
-		rejectOtherExtensions("video generation", other, ledger)
+		ledger.RejectExtensions("video generation", other)
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[videoWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[videoWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[videoWire]{Wire: wire, Report: report}, nil
 	}
@@ -187,17 +189,17 @@ func compileVideo(
 // Both the video and H3-Context-IR compilers share it.
 func collectTaskParts(
 	request inference.GenerateRequest,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) (prompt []string, images, videos, audios []string) {
-	collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+	collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 		for _, part := range parts {
 			switch value := part.(type) {
 			case message.TextPart:
 				prompt = append(prompt, value.Text)
 			case message.ImagePart:
 				if value.Source.Kind() == media.SourceStream {
-					ledger.reject(
-						fields[message.PartImage],
+					ledger.Reject(
+						fields(message.PartImage),
 						"stream media sources must be materialized before generate",
 					)
 					continue
@@ -205,8 +207,8 @@ func collectTaskParts(
 				images = append(images, videoImageValue(value.Source))
 			case message.VideoPart:
 				if value.Source.Kind() == media.SourceStream {
-					ledger.reject(
-						fields[message.PartVideo],
+					ledger.Reject(
+						fields(message.PartVideo),
 						"stream media sources must be materialized before generate",
 					)
 					continue
@@ -214,16 +216,16 @@ func collectTaskParts(
 				videos = append(videos, videoSourceURI(value.Source))
 			case message.AudioPart:
 				if value.Source.Kind() == media.SourceStream {
-					ledger.reject(
-						fields[message.PartAudio],
+					ledger.Reject(
+						fields(message.PartAudio),
 						"stream media sources must be materialized before generate",
 					)
 					continue
 				}
 				audios = append(audios, audioSourceURI(value.Source))
 			default:
-				ledger.reject(
-					fields[part.Kind()],
+				ledger.Reject(
+					fields(part.Kind()),
 					fmt.Sprintf(
 						"the task accepts text, image, video, and audio parts, not %s",
 						part.Kind(),
@@ -234,15 +236,15 @@ func collectTaskParts(
 	}
 	for _, turn := range request.Context {
 		if turn.Role != message.RoleUser {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateContextRole,
 				"task generation keeps user context only; assistant, system, and tool turns have no native channel",
 			)
 			continue
 		}
-		collect(turn.Content.Parts, contextPartFields)
+		collect(turn.Content.Parts, contextPartField)
 	}
-	collect(request.Input.Content.Parts, inputPartFields)
+	collect(request.Input.Content.Parts, inputPartField)
 	return
 }
 
@@ -252,7 +254,7 @@ func collectTaskParts(
 // otherwise the input role.
 func rejectPromptLength(
 	request inference.GenerateRequest,
-	ledger *ledger,
+	ledger *inference.Ledger,
 	length, limit int,
 	reason string,
 ) {
@@ -260,16 +262,16 @@ func rejectPromptLength(
 		return
 	}
 	if containsTextPart(request.Input.Content.Parts) {
-		ledger.reject(inference.FieldGenerateInputText, reason)
+		ledger.Reject(inference.FieldGenerateInputText, reason)
 		return
 	}
 	for _, turn := range request.Context {
 		if containsTextPart(turn.Content.Parts) {
-			ledger.reject(inference.FieldGenerateContextText, reason)
+			ledger.Reject(inference.FieldGenerateContextText, reason)
 			return
 		}
 	}
-	ledger.reject(inference.FieldGenerateInputRole, reason)
+	ledger.Reject(inference.FieldGenerateInputRole, reason)
 }
 
 func containsTextPart(parts []message.Part) bool {
@@ -289,8 +291,8 @@ func compileVideoInputs(
 	wire *videoWire,
 	images, videos, audios []string,
 	entry catalogEntry,
-	model inference.ModelRef,
-	ledger *ledger,
+	model model.ModelRef,
+	ledger *inference.Ledger,
 ) {
 	if entry.videoV2 {
 		compileV2Inputs(&wire.v2Content, images, videos, audios, ledger)
@@ -303,7 +305,7 @@ func compileVideoInputs(
 		wire.firstFrame, wire.lastFrame = images[0], images[1]
 	case len(images) > 0:
 		if entry.videoLastFrame {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputImage,
 				fmt.Sprintf(
 					"%s accepts a first-frame and a last-frame image, not %d",
@@ -311,7 +313,7 @@ func compileVideoInputs(
 				),
 			)
 		} else {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputImage,
 				fmt.Sprintf(
 					"%s accepts a single first-frame image, not %d",
@@ -321,13 +323,13 @@ func compileVideoInputs(
 		}
 	}
 	if len(videos) > 0 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputVideo,
 			fmt.Sprintf("%s does not accept reference-video input", model.ID.Name),
 		)
 	}
 	if len(audios) > 0 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputAudio,
 			fmt.Sprintf("%s does not accept reference-audio input", model.ID.Name),
 		)
@@ -342,12 +344,12 @@ func compileVideoInputs(
 func compileV2Inputs(
 	wire *v2Content,
 	images, videos, audios []string,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	firstLast := len(images) == 1 || len(images) == 2
 	reference := len(images) > 2 || len(videos) > 0 || len(audios) > 0
 	if firstLast && reference {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputImage,
 			"MiniMax-H3 treats first/last-frame input and reference inputs as mutually exclusive",
 		)
@@ -359,7 +361,7 @@ func compileV2Inputs(
 	case len(images) == 2:
 		wire.firstFrame, wire.lastFrame = images[0], images[1]
 	case len(images) > 9:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputImage,
 			"MiniMax-H3 accepts at most 9 reference images",
 		)
@@ -367,7 +369,7 @@ func compileV2Inputs(
 		wire.referenceImages = images
 	}
 	if len(videos) > 3 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputVideo,
 			"MiniMax-H3 accepts at most 3 reference videos",
 		)
@@ -375,7 +377,7 @@ func compileV2Inputs(
 		wire.referenceVideos = videos
 	}
 	if len(audios) > 3 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateInputAudio,
 			"MiniMax-H3 accepts at most 3 reference audio clips",
 		)
@@ -391,12 +393,12 @@ func compileVideoIntent(
 	video *inference.VideoIntent,
 	entry catalogEntry,
 	endpoint string,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	if video.DurationMillis != nil {
 		millis := *video.DurationMillis
 		if millis%1000 != 0 {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideoDuration,
 				fmt.Sprintf("minimax video durations are whole seconds, not %dms", millis),
 			)
@@ -404,7 +406,7 @@ func compileVideoIntent(
 			seconds := int(millis / 1000)
 			if entry.videoV2 {
 				if seconds < 4 || seconds > 15 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						fmt.Sprintf("MiniMax-H3 durations are 4-15s, not %ds", seconds),
 					)
@@ -416,14 +418,14 @@ func compileVideoIntent(
 				case seconds == 6:
 					wire.duration = &seconds
 				case seconds == 10 && !entry.video10s:
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						fmt.Sprintf("%s serves 6-second videos only", endpoint),
 					)
 				case seconds == 10:
 					wire.duration = &seconds
 				default:
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						fmt.Sprintf("minimax video durations are 6s or 10s, not %ds", seconds),
 					)
@@ -443,7 +445,7 @@ func compileVideoIntent(
 			wire.resolution = "768P"
 		case "2K":
 			if !entry.videoV2 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
 				)
@@ -452,12 +454,12 @@ func compileVideoIntent(
 			}
 		case "1080P":
 			if entry.videoV2 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/2K tiers, not %q", endpoint, video.Resolution),
 				)
 			} else if !entry.videoHD {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P only", endpoint),
 				)
@@ -470,7 +472,7 @@ func compileVideoIntent(
 			// Text-to-video and first/last-frame (fl2v) tasks cap at
 			// 768P/1080P per the official docs.
 			if !entry.video512P || wire.firstFrame == "" || wire.lastFrame != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
 				)
@@ -482,7 +484,7 @@ func compileVideoIntent(
 			if entry.videoV2 {
 				tiers = "768P/2K"
 			}
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideoResolution,
 				fmt.Sprintf("%s serves %s tiers, not %q", endpoint, tiers, video.Resolution),
 			)
@@ -493,7 +495,7 @@ func compileVideoIntent(
 	}
 	if !entry.videoV2 && wire.duration != nil && *wire.duration == 10 &&
 		wire.resolution == "1080P" {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentVideoDuration,
 			"10-second videos require 768P",
 		)
@@ -501,12 +503,12 @@ func compileVideoIntent(
 
 	if video.AspectRatio != "" {
 		if !entry.videoV2 {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideoAspectRatio,
 				"the v1 task API has no aspect-ratio control; resolution tiers are fixed-ratio",
 			)
 		} else if !v2RatioValues[string(video.AspectRatio)] {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideoAspectRatio,
 				fmt.Sprintf(
 					"MiniMax-H3 ratios are adaptive/21:9/16:9/4:3/1:1/3:4/9:16, not %q",
@@ -522,13 +524,13 @@ func compileVideoIntent(
 		wire.ratio = "16:9"
 	}
 	if entry.videoV2 && wire.ratio == "adaptive" && v2TextOnly(&wire.v2Content) {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentVideoAspectRatio,
 			"text-to-video requires an explicit ratio; adaptive is not allowed",
 		)
 	}
 	if video.Seed != nil {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentVideoSeed,
 			"the minimax task APIs have no seed control",
 		)
@@ -551,7 +553,7 @@ func compileVideoOptions(
 	options VideoOptions,
 	entry catalogEntry,
 	endpoint string,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
@@ -559,7 +561,7 @@ func compileVideoOptions(
 	wire.callbackURL = options.CallbackURL
 	if options.PromptOptimizer != nil {
 		if entry.videoV2 {
-			ledger.reject(
+			ledger.Reject(
 				field("prompt_optimizer"),
 				fmt.Sprintf("%s does not support prompt_optimizer; the v2 API has no prompt optimizer", endpoint),
 			)
@@ -569,7 +571,7 @@ func compileVideoOptions(
 	}
 	if options.FastPretreatment != nil {
 		if entry.videoV2 {
-			ledger.reject(
+			ledger.Reject(
 				field("fast_pretreatment"),
 				fmt.Sprintf("%s does not support fast_pretreatment; the v2 API has no prompt optimizer", endpoint),
 			)
@@ -579,12 +581,12 @@ func compileVideoOptions(
 	}
 	if options.LastFrameOnly != nil && *options.LastFrameOnly {
 		if !entry.videoV2 {
-			ledger.reject(
+			ledger.Reject(
 				field("last_frame_only"),
 				fmt.Sprintf("%s does not support last_frame_only; the v1 API has no last-frame-only task", endpoint),
 			)
 		} else if wire.firstFrame == "" || wire.lastFrame != "" {
-			ledger.reject(
+			ledger.Reject(
 				field("last_frame_only"),
 				"last_frame_only requires exactly one input image",
 			)
@@ -921,7 +923,7 @@ func openVideo(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	var transport inference.Transport[videoWire, videoRaw]
 	if entry.videoV2 {
