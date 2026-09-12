@@ -249,15 +249,16 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 // as reasoning_text content without the encrypted-payload include, and the
 // decoder reads it back.
 func TestReasoningTextChannelRoundTrip(t *testing.T) {
-	entry := catalog["gpt-5.6-sol"]
+	entry := scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol")
 	entry.dialect.reasoningChannel = channelText
 	entry.dialect.omitReasoningPayload = true
+	scope := entry.reasoningScope
 
 	request := simpleTextRequest("current")
 	request.Context = []message.Message{{
 		Role: message.RoleAssistant,
 		Content: message.Content{Parts: []message.Part{
-			message.ReasoningPart{Text: "plain trace", ID: "rs_1"},
+			message.ReasoningPart{Text: "plain trace", ID: "rs_1", Source: scope},
 			message.TextPart{Text: "answer"},
 		}},
 	}}

@@ -327,7 +327,7 @@ func compileMessage(
 				),
 			)
 		case message.ReasoningPart:
-			compileReasoning(params, role, value, fields, ledger)
+			compileReasoning(params, role, value, entry, fields, ledger)
 		}
 	}
 }
@@ -337,16 +337,33 @@ func compileMessage(
 // round-trip, so unsigned reasoning cannot be forwarded honestly and is
 // dropped with the reason on the ledger; redacted traces (empty text)
 // round-trip through the opaque data slot.
+//
+// Provenance is checked first: Anthropic verifies a signature against the
+// model and account that produced it, so a trace another deployment stamped —
+// including an OpenAI encrypted payload, which also carries a signature — is
+// dropped instead of sent as a signature this endpoint would reject.
 func compileReasoning(
 	params *anthropicgo.MessageNewParams,
 	role anthropicgo.MessageParamRole,
 	part message.ReasoningPart,
+	entry catalogEntry,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
 	field := fields(message.PartReasoning)
 	if role != anthropicgo.MessageParamRoleAssistant {
 		ledger.Reject(field, "reasoning parts belong to assistant context")
+		return
+	}
+	if part.Source == "" {
+		ledger.Drop(field, "reasoning trace carries no provenance")
+		return
+	}
+	if part.Source != entry.reasoningScope {
+		ledger.Drop(field, fmt.Sprintf(
+			"reasoning trace was verified by scope %q, not %q",
+			part.Source, entry.reasoningScope,
+		))
 		return
 	}
 	if part.Signature == "" {

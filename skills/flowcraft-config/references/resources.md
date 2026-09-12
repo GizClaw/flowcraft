@@ -21,6 +21,7 @@ spec:
     scheme: header      # "bearer" (default), "header", or "none" (no credential)
     header: Api-Key
   wire:                 # dialect this endpoint speaks
+    reasoning_scope: openai-prod-shared   # optional: one verification scope for this deployment's reasoning traces
     video_input: true   # requires api: chat; with a model declaring video input, carries video_url parts
     extra_body:         # unmodeled body fields applied to every request (sjson paths, raw JSON)
       thinking: {type: enabled}
@@ -146,6 +147,16 @@ deployment value, a nested path updates the object it wrote. The metadata
 envelope field cannot be written by either, and a `catalog: declared`
 deployment with no generate model is rejected — `extra_body` rides the
 generate surfaces, so it would otherwise never apply.
+
+`wire.reasoning_scope` declares the verification scope of this deployment's
+reasoning traces (the Anthropic driver takes it in `wire` too; Bytedance takes
+`reasoning_scope` at the top level of `spec`, since its spec is flat). Drivers
+stamp every trace they produce and replay a stored one only when the target's
+scope matches; the derived default is `provider/model/profile`, so nothing
+crosses a model or an account by accident. Set the key when you have verified
+that several models or credentials accept each other's traces: reasoning
+payloads are verified against the model and account that minted them, and a
+mismatch is a provider 400 that no retry can repair.
 
 ## inference assembly
 

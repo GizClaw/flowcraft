@@ -510,6 +510,12 @@ func compileMessage(
 // compileReasoning lowers an assistant reasoning trace into the round-trip
 // shape the surface speaks. A trace the surface or its channel cannot express
 // drops with the reason on the ledger, never silently.
+//
+// Provenance comes first among the shape checks: a provider rejects a payload
+// another model or account cannot decrypt, and no retry or fallback repairs
+// that while the trace stays in the conversation. A trace this deployment did
+// not produce — or one stored before drivers stamped their traces — is
+// dropped instead of sent.
 func compileReasoning(
 	sink generateSink,
 	role string,
@@ -525,6 +531,17 @@ func compileReasoning(
 	}
 	if entry.capabilities.Reasoning.Kind == model.ReasoningNone {
 		ledger.Drop(field, "model has no reasoning channel")
+		return
+	}
+	if part.Source == "" {
+		ledger.Drop(field, "reasoning trace carries no provenance")
+		return
+	}
+	if part.Source != entry.reasoningScope {
+		ledger.Drop(field, fmt.Sprintf(
+			"reasoning trace was verified by scope %q, not %q",
+			part.Source, entry.reasoningScope,
+		))
 		return
 	}
 	if entry.dialect.api == apiChat {

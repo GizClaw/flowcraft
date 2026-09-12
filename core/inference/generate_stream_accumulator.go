@@ -34,6 +34,7 @@ type generatePartAccumulator struct {
 
 	reasoningSignature string
 	reasoningID        string
+	reasoningSource    string
 }
 
 type decodedGenerateStream[RawEvent any] struct {
@@ -324,6 +325,9 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 		if value.ID != "" {
 			p.reasoningID = value.ID
 		}
+		if value.Source != "" {
+			p.reasoningSource = value.Source
+		}
 	default:
 		return fmt.Errorf("unsupported generate part delta %T", delta)
 	}
@@ -461,6 +465,7 @@ func (p *generatePartAccumulator) result() (message.Part, error) {
 			Text:      p.text.String(),
 			Signature: p.reasoningSignature,
 			ID:        p.reasoningID,
+			Source:    p.reasoningSource,
 		}
 		if err := part.Validate(); err != nil {
 			return nil, err

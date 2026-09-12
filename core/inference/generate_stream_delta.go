@@ -62,16 +62,22 @@ func (ToolCallDelta) inferencePartDelta()          {}
 // last delta for a part carries the opaque verification payload and the
 // provider-issued trace identifier. The accumulator concatenates Text and
 // keeps the latest Signature and ID.
+//
+// Source is the same terminal-only stamp as Signature: the verification scope
+// the driver producing this stream stamps on every reasoning delta (see
+// [ReasoningScope]), which the accumulator carries onto the assembled part.
 type ReasoningDelta struct {
 	Text      string `json:"text,omitempty"`
 	Signature string `json:"signature,omitempty"`
 	ID        string `json:"id,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 func (ReasoningDelta) Kind() message.PartKind { return message.PartReasoning }
 func (d ReasoningDelta) validateGenerateDelta() error {
-	if d.Text == "" && d.Signature == "" && d.ID == "" {
-		return fmt.Errorf("reasoning delta carries neither text, signature, nor id")
+	if d.Text == "" && d.Signature == "" && d.ID == "" && d.Source == "" {
+		return fmt.Errorf(
+			"reasoning delta carries neither text, signature, id, nor source")
 	}
 	return nil
 }

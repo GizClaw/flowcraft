@@ -168,6 +168,55 @@ missing or approximate count would be worse than none. Hosts that own the
 conversation history can read the declared input window from
 `InspectModel` and enforce it where they already trim context.
 
+## Reasoning provenance
+
+Reasoning models return a trace — thinking text plus a signature or an
+encrypted payload — that providers expect back in later turns, and they verify
+it against the model and account that produced it. OpenAI validates a
+reasoning item's id and encrypted content; Anthropic validates a thinking
+block's signature. A payload minted elsewhere is rejected with a provider 400
+that no retry and no fallback repairs, because the trace stays in the
+conversation.
+
+Drivers therefore stamp every trace they produce with a **verification scope**
+(`message.ReasoningPart.Source`) and replay a stored trace only when the
+target's scope matches:
+
+| Trace | Compile outcome |
+| --- | --- |
+| stamped with this target's scope | replayed, subject to the surface's own rules (id + encrypted payload, signature, ...) |
+| stamped with another scope | dropped, with both scopes named in the compile report |
+| unstamped (stored before drivers stamped, or built by hand) | dropped as unattributable |
+
+The derived scope is the address that produced the trace — provider, model,
+and the credential profile when the reference names one:
+
+```
+openai/gpt-5.6-luna/default
+```
+
+Switching models inside one deployment therefore drops the previous model's
+traces. That is what Anthropic requires (a thinking signature is bound to the
+model), and it is what an endpoint that does not document cross-model
+verification cannot be trusted with. A deployment that *has* verified a set of
+models or credentials accept each other's traces declares one shared scope and
+every model of that deployment uses it:
+
+```yaml
+spec:
+  wire:
+    reasoning_scope: openai-prod-shared   # OpenAI and Anthropic drivers
+```
+
+Bytedance uses the same key at the top level of `spec` (`reasoning_scope`),
+because its spec is flat. Ark consumes no reasoning input today, so the stamp
+only keeps its traces attributable when a conversation moves elsewhere.
+
+**Upgrading:** a transcript stored before this rule carries unstamped traces,
+so those traces are dropped instead of replayed. The assistant text is
+untouched — only thinking continuity is lost — and the conversation no longer
+risks a provider rejection it cannot recover from.
+
 ## Routing
 
 Optional target selection is an `inference.Router` resource. It consumes

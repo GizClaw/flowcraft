@@ -64,6 +64,13 @@ type catalogEntry struct {
 	// entry in one deployment. mergedCatalog stamps it so compilers read the
 	// deployment facts here instead of reaching back into the Spec.
 	dialect dialect
+	// reasoningScope is the verification scope of the model this entry was
+	// opened for: the deployment's declared token when it has one, otherwise
+	// the address that produced the trace. The opener fills it in (the
+	// profile is per reference, so the scope cannot be stamped at merge
+	// time); the compiler and the decode wrapper both read it, which is what
+	// keeps the stamp and the comparison identical.
+	reasoningScope string
 }
 
 // validate enforces the family contract: the compiler bound by kind can only

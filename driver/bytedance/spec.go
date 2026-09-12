@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -46,6 +47,13 @@ type Spec struct {
 	// so it lives in the deployment Spec, not in a per-request extension.
 	// Unset defaults to defaultVideoPollInterval.
 	VideoPollIntervalMillis *resource.Int64 `json:"video_poll_interval_millis,omitempty"`
+	// ReasoningScope declares the verification scope this deployment's
+	// reasoning traces belong to. Ark emits traces but consumes none today, so
+	// the scope is what makes a trace attributable when a conversation moves
+	// to a target that would replay one: it replaces the derived scope —
+	// provider, model, and credential profile — and unset keeps that
+	// conservative default.
+	ReasoningScope string `json:"reasoning_scope,omitempty"`
 	// Models declares additional models beyond the built-in catalog or
 	// overrides catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
@@ -115,6 +123,9 @@ func (s Spec) Validate() error {
 	}
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("http_retries must not be negative")
+	}
+	if err := validateReasoningScope(s.ReasoningScope); err != nil {
+		return err
 	}
 	for name, value := range map[string]string{
 		"base_url": s.BaseURL,
@@ -188,4 +199,34 @@ func decodeProfileSpec(ctx context.Context, raw []byte) (ProfileSpec, error) {
 		return ProfileSpec{}, fmt.Errorf("bytedance profile spec: %w", err)
 	}
 	return spec, nil
+}
+
+// maxReasoningScopeLen bounds the declared scope token: it lands in a
+// compile-report reason, so it stays short and printable.
+const maxReasoningScopeLen = 128
+
+// validateReasoningScope checks the declared verification scope. The token is
+// opaque to the driver, but the comparison is exact, so surrounding
+// whitespace and control characters are rejected rather than normalized.
+func validateReasoningScope(scope string) error {
+	if scope == "" {
+		return nil
+	}
+	if strings.TrimSpace(scope) != scope {
+		return fmt.Errorf(
+			"reasoning_scope must not have surrounding whitespace")
+	}
+	if len(scope) > maxReasoningScopeLen {
+		return fmt.Errorf(
+			"reasoning_scope is %d bytes, at most %d are allowed",
+			len(scope), maxReasoningScopeLen,
+		)
+	}
+	for _, char := range scope {
+		if unicode.IsControl(char) {
+			return fmt.Errorf(
+				"reasoning_scope must not contain control characters")
+		}
+	}
+	return nil
 }

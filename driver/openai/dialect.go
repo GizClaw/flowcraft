@@ -103,6 +103,7 @@ type dialect struct {
 	azureDeployment         bool
 	videoInput              bool
 	extraBody               []bodyField
+	reasoningScopeDeclared  string
 	requestMetadataEnvelope string
 	// chatStreamIncludeUsage / Obfuscation carry the explicit chat streaming
 	// policy; nil keeps the OpenAI default.
@@ -122,6 +123,7 @@ func (s Spec) dialect() dialect {
 		azureDeployment:              s.routing() == routingAzureDeployment,
 		videoInput:                   s.Wire.VideoInput,
 		extraBody:                    sortedBodyFields(s.Wire.ExtraBody),
+		reasoningScopeDeclared:       s.Wire.ReasoningScope,
 		requestMetadataEnvelope:      s.requestMetadataEnvelope(),
 		chatStreamIncludeUsage:       s.chatStreamIncludeUsage(),
 		chatStreamIncludeObfuscation: s.chatStreamIncludeObfuscation(),

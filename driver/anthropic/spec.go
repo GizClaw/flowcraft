@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -43,6 +44,14 @@ type WireSpec struct {
 	// VideoInput allows video content blocks, a compatible-endpoint
 	// extension: Anthropic's own schema has no video block.
 	VideoInput bool `json:"video_input,omitempty"`
+	// ReasoningScope declares the verification scope this deployment's
+	// thinking traces belong to. It replaces the derived scope — provider,
+	// model, and credential profile — so an operator who has verified that
+	// several models or credentials accept each other's signed traces says so
+	// once. Unset keeps the conservative derived scope, which never replays a
+	// trace across a model or an account; Anthropic verifies thinking
+	// signatures per model, so that default is what the API requires.
+	ReasoningScope string `json:"reasoning_scope,omitempty"`
 }
 
 // catalogMode selects which model namespace one provider instance serves.
@@ -98,6 +107,9 @@ func (s Spec) Validate() error {
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("anthropic: http_retries must not be negative")
 	}
+	if err := validateReasoningScope(s.Wire.ReasoningScope); err != nil {
+		return err
+	}
 	seen := make(map[string]bool, len(s.Models))
 	for _, model := range s.Models {
 		if model.Name == "" || strings.ContainsAny(model.Name, " /") {
@@ -139,6 +151,36 @@ func (s Spec) Validate() error {
 type ProfileSpec struct{}
 
 func (ProfileSpec) Validate() error { return nil }
+
+// maxReasoningScopeLen bounds the declared scope token: it lands in a
+// compile-report reason, so it stays short and printable.
+const maxReasoningScopeLen = 128
+
+// validateReasoningScope checks the declared verification scope. The token is
+// opaque to the driver, but the comparison is exact, so surrounding
+// whitespace and control characters are rejected rather than normalized.
+func validateReasoningScope(scope string) error {
+	if scope == "" {
+		return nil
+	}
+	if strings.TrimSpace(scope) != scope {
+		return fmt.Errorf(
+			"anthropic: wire.reasoning_scope must not have surrounding whitespace")
+	}
+	if len(scope) > maxReasoningScopeLen {
+		return fmt.Errorf(
+			"anthropic: wire.reasoning_scope is %d bytes, at most %d are allowed",
+			len(scope), maxReasoningScopeLen,
+		)
+	}
+	for _, char := range scope {
+		if unicode.IsControl(char) {
+			return fmt.Errorf(
+				"anthropic: wire.reasoning_scope must not contain control characters")
+		}
+	}
+	return nil
+}
 
 func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {
 	spec, err := resource.DecodeTyped[Spec](ctx, raw)

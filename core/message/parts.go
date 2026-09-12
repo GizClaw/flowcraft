@@ -155,7 +155,8 @@ func MarshalPart(part Part) ([]byte, error) {
 			Text      string   `json:"text,omitempty"`
 			Signature string   `json:"signature,omitempty"`
 			ID        string   `json:"id,omitempty"`
-		}{PartReasoning, value.Text, value.Signature, value.ID}
+			Source    string   `json:"source,omitempty"`
+		}{PartReasoning, value.Text, value.Signature, value.ID, value.Source}
 	default:
 		return nil, fmt.Errorf("unsupported content part %T", part)
 	}
@@ -262,12 +263,14 @@ func UnmarshalPart(data []byte) (Part, error) {
 			Text      string   `json:"text,omitempty"`
 			Signature string   `json:"signature,omitempty"`
 			ID        string   `json:"id,omitempty"`
+			Source    string   `json:"source,omitempty"`
 		}
 		if err := decodeStrict(data, &item); err != nil {
 			return nil, fmt.Errorf("content part: %w", err)
 		}
 		return ReasoningPart{
 			Text: item.Text, Signature: item.Signature, ID: item.ID,
+			Source: item.Source,
 		}, nil
 	default:
 		return nil, fmt.Errorf("content part has unknown type %q", header.Type)
@@ -411,10 +414,19 @@ func (ToolResultPart) messagePart()      {}
 // provider-issued trace identifier (OpenAI reasoning item ids); providers
 // that address traces by id require it on round-trip, and providers
 // without item ids (Anthropic thinking blocks) leave it empty.
+//
+// Source is opaque provenance: the verification scope the driver that
+// produced the trace stamped on it, naming what can verify it (a deployment,
+// its model, and the credential profile that minted the payload — see the
+// driver's spec). A driver replays a trace only to a target whose own scope
+// matches, because a provider rejects a payload another account or model
+// cannot decrypt or verify; the comparison is the driver's, so the value is
+// never interpreted here.
 type ReasoningPart struct {
 	Text      string `json:"text,omitempty"`
 	Signature string `json:"signature,omitempty"`
 	ID        string `json:"id,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 func (ReasoningPart) Kind() PartKind { return PartReasoning }

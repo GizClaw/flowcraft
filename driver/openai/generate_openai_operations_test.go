@@ -1102,6 +1102,14 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 		reasoning.ID != "rs_1" {
 		t.Fatalf("reasoning part = %#v", parts[0])
 	}
+	// The decoder stamps what this deployment produced: the scope names the
+	// provider, model, and credential profile the trace belongs to, and it is
+	// what the compiler requires before replaying the part.
+	if want := inference.ReasoningScope(
+		"", providerID, "gpt-5.6-sol", "default",
+	); reasoning.Source != want {
+		t.Fatalf("reasoning source = %q, want %q", reasoning.Source, want)
+	}
 	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "answer" {
 		t.Fatalf("text part = %#v", parts[1])
 	}

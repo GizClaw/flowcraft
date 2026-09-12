@@ -98,6 +98,22 @@ func openaiModel(name string) model.ModelRef {
 	}
 }
 
+// reasoningScopeFor is the verification scope the opener derives for one model
+// of this driver addressed with the default profile. Tests that build a
+// catalog entry directly (instead of going through openGenerate) stamp their
+// traces with it, because the compiler requires the scope an opened model
+// carries.
+func reasoningScopeFor(name string) string {
+	return inference.ReasoningScope("", providerID, name, "default")
+}
+
+// scopedEntry returns the entry an opener would hand to the compiler: the
+// same catalog entry with the verification scope filled in.
+func scopedEntry(entry catalogEntry, name string) catalogEntry {
+	entry.reasoningScope = reasoningScopeFor(name)
+	return entry
+}
+
 func simpleTextRequest(text string) inference.GenerateRequest {
 	return inference.GenerateRequest{
 		Input: inference.GenerateInput{
@@ -389,7 +405,9 @@ func compileTextRequest(
 	request inference.GenerateRequest,
 ) *responsesRequest {
 	t.Helper()
-	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponses(
+		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -716,11 +734,14 @@ func TestCompileResponsesReasoningItem(t *testing.T) {
 				Text:      "joined summary",
 				Signature: "enc-1",
 				ID:        "rs_1",
+				Source:    reasoningScopeFor("gpt-5.6-sol"),
 			},
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponses(
+		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -767,11 +788,17 @@ func TestCompileResponsesReasoningItemWithoutSummary(t *testing.T) {
 	request.Context = []message.Message{{
 		Role: message.RoleAssistant,
 		Content: message.Content{Parts: []message.Part{
-			message.ReasoningPart{Signature: "enc-1", ID: "rs_1"},
+			message.ReasoningPart{
+				Signature: "enc-1",
+				ID:        "rs_1",
+				Source:    reasoningScopeFor("gpt-5.6-sol"),
+			},
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponses(
+		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -828,14 +855,20 @@ func assertEmptySummaryField(t *testing.T, reasoning *responses.ResponseReasonin
 
 func TestCompileReasoningDispositions(t *testing.T) {
 	model := openaiModel("gpt-5.6-sol")
-	compile := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])
+	compile := compileResponses(
+		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	)
 
 	t.Run("reasoning without id drops with reason", func(t *testing.T) {
 		request := simpleTextRequest("hi")
 		request.Context = []message.Message{{
 			Role: message.RoleAssistant,
 			Content: message.Content{Parts: []message.Part{
-				message.ReasoningPart{Text: "trace", Signature: "enc"},
+				message.ReasoningPart{
+					Text:      "trace",
+					Signature: "enc",
+					Source:    reasoningScopeFor("gpt-5.6-sol"),
+				},
 				message.TextPart{Text: "answer"},
 			}},
 		}}
