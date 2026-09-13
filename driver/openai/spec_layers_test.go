@@ -17,7 +17,7 @@ import (
 )
 
 // TestSpecValidationLayers locks the three-layer config contract: endpoint
-// carries transport only, wire carries the dialect, catalog selects the model
+// carries transport only, wire carries the dialect, models carries the model
 // namespace. Cross-layer contradictions must fail at decode time.
 func TestSpecValidationLayers(t *testing.T) {
 	cases := []struct {
@@ -59,7 +59,9 @@ func TestSpecValidationLayers(t *testing.T) {
 			raw: `{"wire":{"reasoning_channel":"plain"}}`, ok: false},
 		{name: "text channel cannot include payload",
 			raw: `{"wire":{"reasoning_channel":"text","include_reasoning_payload":true}}`, ok: false},
-		{name: "declared catalog", raw: `{"catalog":"declared"}`, ok: true},
+		{name: "retired catalog key", raw: `{"catalog":"declared"}`, ok: false},
+		{name: "retired built-in catalog",
+			raw: `{"catalog":"builtin_declared"}`, ok: false},
 		{name: "unknown catalog", raw: `{"catalog":"builtin"}`, ok: false},
 	}
 	for _, tc := range cases {
@@ -87,9 +89,9 @@ func TestResponsesStore(t *testing.T) {
 
 	compile := func(t *testing.T, store storePolicy) responses.ResponseNewParams {
 		t.Helper()
-		entry := catalog["gpt-5.6-sol"]
+		entry := declarations["gpt-5.6-sol"]
 		entry.dialect.store = store
-		compiled, err := compileResponses("gpt-5.6-sol", entry)(
+		compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 			context.Background(),
 			openaiModel("gpt-5.6-sol"),
 			simpleTextRequest("hi"),
@@ -154,36 +156,57 @@ func TestStoreSettingDecodesBoolAndOmit(t *testing.T) {
 	}
 }
 
-// TestCatalogDeclaredMode covers the namespace switch: the declared mode must
-// not hand a third-party deployment the built-in OpenAI facts.
-func TestCatalogDeclaredMode(t *testing.T) {
+// TestCatalogKeyShipsNoLineUp covers the retired namespace switch: the driver
+// publishes the models a deployment declares and nothing else, so the
+// migration from the built-in line-up fails loudly instead of silently
+// serving a smaller provider.
+func TestCatalogKeyShipsNoLineUp(t *testing.T) {
 	declared, err := decodeSpec(context.Background(), []byte(
-		`{"catalog":"declared","models":[{"name":"gpt-5.6-sol","kind":"generate",`+
+		`{"models":[{"name":"gpt-5.6-sol","kind":"generate",`+
 			`"capabilities":{"inputs":["text"],"outputs":["text"]}}]}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(declared)
+	models, err := resolveModelsForTest(t, declared)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	if len(models) != 1 {
-		t.Fatalf("declared catalog built %d models, want 1", len(models))
+		t.Fatalf("declared models built %d entries, want 1", len(models))
 	}
 	entry := models["gpt-5.6-sol"]
-	if len(entry.capabilities.Inputs) != 1 ||
-		entry.capabilities.Inputs[0] != message.PartText {
-		t.Fatalf("built-in capabilities leaked into the declared catalog: %+v",
-			entry.capabilities.Inputs)
+	if len(entry.spec.Capabilities.Inputs) != 1 ||
+		entry.spec.Capabilities.Inputs[0] != message.PartText {
+		t.Fatalf("the line-up leaked into the declaration: %+v",
+			entry.spec.Capabilities.Inputs)
+	}
+	if len(entry.spec.Capabilities.Outputs) != 1 ||
+		entry.spec.Capabilities.Outputs[0] != message.PartText {
+		t.Fatalf("the line-up leaked into the declaration: %+v",
+			entry.spec.Capabilities.Outputs)
 	}
 
 	inherited, err := decodeSpec(context.Background(), []byte(`{}`))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	if _, ok := mustMerged(t, inherited)["gpt-5.6-sol"]; !ok {
-		t.Fatal("builtin_declared must keep the built-in line-up")
+	if models := mustMerged(t, inherited); len(models) != 0 {
+		t.Fatalf("an empty spec built %d models, want none", len(models))
+	}
+
+	for _, raw := range []string{
+		`{"catalog":"declared"}`,
+		`{"catalog":"builtin_declared"}`,
+		`{"catalog":"builtin"}`,
+	} {
+		_, err = decodeSpec(context.Background(), []byte(raw))
+		if err == nil {
+			t.Fatalf("decodeSpec(%s) accepted a retired catalog key", raw)
+		}
+		if !strings.Contains(err.Error(), "must be declared in models") {
+			t.Fatalf("error = %v, want the migration path", err)
+		}
 	}
 }
 
@@ -195,20 +218,20 @@ func TestCatalogDeclaredMode(t *testing.T) {
 func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 	for _, kind := range []string{"audio", "file"} {
 		spec, err := decodeSpec(context.Background(), []byte(fmt.Sprintf(
-			`{"catalog":"declared","models":[{"name":"m","kind":"generate",`+
+			`{"models":[{"name":"m","kind":"generate",`+
 				`"capabilities":{"inputs":["text","%s"],"outputs":["text"]}}]}`,
 			kind,
 		)))
 		if err != nil {
 			t.Fatalf("decodeSpec(%s): %v", kind, err)
 		}
-		if _, err := mergedCatalog(spec); err == nil {
-			t.Fatalf("declaring %s input must fail the catalog build", kind)
+		if _, err := resolveModelsForTest(t, spec); err == nil {
+			t.Fatalf("declaring %s input must fail the provider build", kind)
 		}
 	}
 
 	videoSpec := func(extra string) []byte {
-		return []byte(`{"catalog":"declared",` + extra +
+		return []byte(`{` + extra +
 			`"models":[{"name":"m","kind":"generate",` +
 			`"capabilities":{"inputs":["text","video"],"outputs":["text"]}}]}`)
 	}
@@ -218,7 +241,7 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	if _, err := mergedCatalog(withoutFact); err == nil {
+	if _, err := resolveModelsForTest(t, withoutFact); err == nil {
 		t.Fatal("declaring video input without the endpoint fact must fail")
 	} else if !strings.Contains(err.Error(), "spec.wire.video_input") {
 		t.Fatalf("error = %v, want it to name the endpoint fact", err)
@@ -231,16 +254,16 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(withFact)
+	models, err := resolveModelsForTest(t, withFact)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry, ok := models["m"]
 	if !ok {
-		t.Fatal("declared model is missing from the catalog")
+		t.Fatal("declared model is missing from the provider")
 	}
-	if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
-		t.Fatalf("inputs = %v, want the video declaration kept", entry.capabilities.Inputs)
+	if !slices.Contains(entry.spec.Capabilities.Inputs, message.PartVideo) {
+		t.Fatalf("inputs = %v, want the video declaration kept", entry.spec.Capabilities.Inputs)
 	}
 }
 
@@ -249,10 +272,10 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 // as reasoning_text content without the encrypted-payload include, and the
 // decoder reads it back.
 func TestReasoningTextChannelRoundTrip(t *testing.T) {
-	entry := scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol")
-	entry.dialect.reasoningChannel = channelText
-	entry.dialect.omitReasoningPayload = true
-	scope := entry.reasoningScope
+	entry := scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol")
+	entry.dialect.reasoning.channel = channelText
+	entry.dialect.reasoning.payload = false
+	scope := entry.scope
 
 	request := simpleTextRequest("current")
 	request.Context = []message.Message{{
@@ -262,7 +285,7 @@ func TestReasoningTextChannelRoundTrip(t *testing.T) {
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -351,11 +374,11 @@ func TestEndpointAuthHeaderQueryAndStaticHeaders(t *testing.T) {
 	}
 }
 
-func mustMerged(t *testing.T, spec Spec) map[string]catalogEntry {
+func mustMerged(t *testing.T, spec Spec) map[string]testTarget {
 	t.Helper()
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	return models
 }

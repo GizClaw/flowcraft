@@ -120,7 +120,9 @@ var (
 // in the ledger with a precise reason.
 func compileGenerate(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 ) inference.GenerateCompiler[anthropicgo.MessageNewParams] {
 	return func(
 		_ context.Context,
@@ -151,21 +153,29 @@ func compileGenerate(
 			case message.RoleSystem:
 				compileSystem(&params, turn.Content.Parts, contextPartField, ledger)
 			case message.RoleTool:
-				compileToolResults(&params, turn.Content.Parts, entry, contextPartField, ledger)
+				compileToolResults(
+					&params, turn.Content.Parts, declared, contextPartField, ledger)
 			default: // user / assistant
-				compileMessage(&params, turnRole(turn.Role), turn.Content.Parts, entry, contextPartField, ledger)
+				compileMessage(
+					&params, turnRole(turn.Role), turn.Content.Parts,
+					declared, wire, scope, contextPartField, ledger,
+				)
 			}
 		}
 
 		// Current input.
 		switch request.Input.Role {
 		case inference.InputRoleTool:
-			compileToolResults(&params, request.Input.Content.Parts, entry, inputPartField, ledger)
+			compileToolResults(
+				&params, request.Input.Content.Parts, declared, inputPartField, ledger)
 		default:
-			compileMessage(&params, anthropicgo.MessageParamRoleUser, request.Input.Content.Parts, entry, inputPartField, ledger)
+			compileMessage(
+				&params, anthropicgo.MessageParamRoleUser, request.Input.Content.Parts,
+				declared, wire, scope, inputPartField, ledger,
+			)
 		}
 
-		compileIntent(&params, request.Input.Content.Intent, entry, ledger)
+		compileIntent(&params, request.Input.Content.Intent, declared, ledger)
 
 		// No provider extensions exist yet; anything attached is rejected
 		// truthfully rather than dropped.
@@ -269,7 +279,9 @@ func compileMessage(
 	params *anthropicgo.MessageNewParams,
 	role anthropicgo.MessageParamRole,
 	parts []message.Part,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -278,7 +290,7 @@ func compileMessage(
 		case message.TextPart:
 			appendBlock(params, role, textBlock(value.Text))
 		case message.ImagePart:
-			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
 				ledger.Reject(fields(message.PartImage), "model does not accept image input")
 				continue
 			}
@@ -287,12 +299,12 @@ func compileMessage(
 			ledger.Reject(fields(message.PartAudio), "audio input is not supported by claude models")
 		case message.VideoPart:
 			switch {
-			case !entry.videoInput:
+			case !wire.videoInput:
 				ledger.Reject(
 					fields(message.PartVideo),
 					"endpoint does not accept video blocks (set spec.wire.video_input)",
 				)
-			case !slices.Contains(entry.capabilities.Inputs, message.PartVideo):
+			case !slices.Contains(declared.Capabilities.Inputs, message.PartVideo):
 				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
 			case value.Source.Kind() == media.SourceStream:
 				ledger.Reject(
@@ -320,14 +332,14 @@ func compileMessage(
 					value.Result.CallID,
 					compileToolResultContent(
 						value.Result.Content,
-						entry,
+						declared,
 						fields(message.PartToolResult),
 						ledger,
 					),
 				),
 			)
 		case message.ReasoningPart:
-			compileReasoning(params, role, value, entry, fields, ledger)
+			compileReasoning(params, role, value, declared, scope, fields, ledger)
 		}
 	}
 }
@@ -346,7 +358,8 @@ func compileReasoning(
 	params *anthropicgo.MessageNewParams,
 	role anthropicgo.MessageParamRole,
 	part message.ReasoningPart,
-	entry catalogEntry,
+	declared ModelSpec,
+	scope string,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -359,10 +372,10 @@ func compileReasoning(
 		ledger.Drop(field, "reasoning trace carries no provenance")
 		return
 	}
-	if part.Source != entry.reasoningScope {
+	if part.Source != scope {
 		ledger.Drop(field, fmt.Sprintf(
 			"reasoning trace was verified by scope %q, not %q",
-			part.Source, entry.reasoningScope,
+			part.Source, scope,
 		))
 		return
 	}
@@ -382,7 +395,7 @@ func compileReasoning(
 func compileToolResults(
 	params *anthropicgo.MessageNewParams,
 	parts []message.Part,
-	entry catalogEntry,
+	declared ModelSpec,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -402,7 +415,7 @@ func compileToolResults(
 				result.Result.CallID,
 				compileToolResultContent(
 					result.Result.Content,
-					entry,
+					declared,
 					fields(message.PartToolResult),
 					ledger,
 				),
@@ -420,11 +433,11 @@ func compileToolResults(
 // the loss lands on the ledger.
 func compileToolResultContent(
 	content message.Content,
-	entry catalogEntry,
+	declared ModelSpec,
 	field inference.FieldID,
 	ledger *inference.Ledger,
 ) []anthropicgo.ToolResultBlockParamContentUnion {
-	vision := slices.Contains(entry.capabilities.Inputs, message.PartImage)
+	vision := slices.Contains(declared.Capabilities.Inputs, message.PartImage)
 	out := make([]anthropicgo.ToolResultBlockParamContentUnion, 0, len(content.Parts))
 	omitted := make([]string, 0, len(content.Parts))
 	for _, part := range content.Parts {
@@ -582,7 +595,7 @@ func videoBlock(source media.VideoSource) anthropicgo.ContentBlockParamUnion {
 func compileIntent(
 	params *anthropicgo.MessageNewParams,
 	intent inference.Intent,
-	entry catalogEntry,
+	declared ModelSpec,
 	ledger *inference.Ledger,
 ) {
 	// thinking and effort are collected first: the Messages API carries one
@@ -647,12 +660,12 @@ func compileIntent(
 	}
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case entry.capabilities.Reasoning.Kind == model.ReasoningAlways &&
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -665,12 +678,12 @@ func compileIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+		case len(declared.Capabilities.Reasoning.EffortMap) == 0:
 			// The platform's thinking is binary: the level cannot be
 			// honored, but the request for reasoning itself is — turn
 			// thinking on and report the loss.
@@ -681,7 +694,7 @@ func compileIntent(
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
 		default:
-			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+			mode, _ := declared.Capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
 			)
 			effort = mode

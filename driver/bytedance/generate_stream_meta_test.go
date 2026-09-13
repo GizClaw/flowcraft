@@ -30,9 +30,9 @@ func TestResponsesStreamMetadataCapturesRequestID(t *testing.T) {
 		"test-key",
 		arkruntime.WithBaseUrl(server.URL),
 	)
-	compiled, err := compileGenerate(
+	compiled, err := compileGenerateFor(
 		"doubao-seed-2-0-lite",
-		catalog["doubao-seed-2-0-lite"],
+		declarations["doubao-seed-2-0-lite"],
 	)(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-lite"),

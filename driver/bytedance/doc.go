@@ -1,7 +1,7 @@
 // Package bytedance implements the ByteDance (Volcengine Ark) provider for
-// the unified inference runtime. It owns the provider's model catalog, strict
-// Spec decoding, and all request lowering; core/inference never sees ByteDance
-// concepts.
+// the unified inference runtime. It owns strict Spec decoding, the model
+// line-up a deployment declares, and all request lowering; core/inference
+// never sees ByteDance concepts.
 //
 // Operation coverage:
 //
@@ -61,10 +61,10 @@
 //	assembly, _ := builder.NewAssembly(ctx, document) // Runtime + Router
 //
 // The provider Spec in the document redirects transport (base_url), declares
-// extra models (models), and tunes Seedance task polling
+// the models it serves (models), and tunes Seedance task polling
 // (video_poll_interval_millis). Profile Specs carry the account-scoped
 // settings: the endpoints map binding model names to that account's Ark
-// endpoint IDs (ep-xxx). Unmapped models are addressed by their catalog name.
+// endpoint IDs (ep-xxx). Unmapped models are addressed by their declared name.
 // See integration_test.go for a worked example.
 //
 // # Retries

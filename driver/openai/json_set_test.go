@@ -41,13 +41,13 @@ func TestJSONSetRidesTheChatBody(t *testing.T) {
 	})
 	defer server.Close()
 
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
 	request := jsonSetRequest(map[string]json.RawMessage{
 		"enable_thinking": json.RawMessage(`false`),
 		"thinking.keep":   json.RawMessage(`"all"`),
 	})
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -101,7 +101,7 @@ func TestJSONSetRidesTheResponsesBody(t *testing.T) {
 	request := jsonSetRequest(map[string]json.RawMessage{
 		"thinking": json.RawMessage(`{"type":"enabled","budget_tokens":8192}`),
 	})
-	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", declarations["gpt-5.6-sol"])(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -254,9 +254,9 @@ func TestJSONSetCloneIsDeep(t *testing.T) {
 // Native decision the report names, so the ledger never claims a setting the
 // request did not carry.
 func TestJSONSetIsLedgerNative(t *testing.T) {
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		jsonSetRequest(map[string]json.RawMessage{
@@ -284,14 +284,14 @@ func TestJSONSetIsLedgerNative(t *testing.T) {
 // metadata owns its envelope field, so json_set writing that name is rejected
 // rather than silently racing the metadata patch.
 func TestJSONSetCannotWriteTheMetadataEnvelope(t *testing.T) {
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
-	entry.dialect.requestMetadataEnvelope = "request_fields"
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
+	entry.dialect.body.metadataField = "request_fields"
 	request := jsonSetRequest(map[string]json.RawMessage{
 		"request_fields":  json.RawMessage(`{"conversation":"42"}`),
 		"enable_thinking": json.RawMessage(`false`),
 	})
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -340,13 +340,10 @@ func TestExtraBodyRidesEveryRequest(t *testing.T) {
 	})
 	defer server.Close()
 
-	entryWith := func(t *testing.T, raw string) catalogEntry {
+	entryWith := func(t *testing.T, body string) testTarget {
 		t.Helper()
-		spec, err := decodeSpec(context.Background(), []byte(raw))
-		if err != nil {
-			t.Fatalf("decodeSpec: %v", err)
-		}
-		entry := catalog["gpt-5.6-sol"]
+		spec := decodeSpecWithModels(t, body, "gpt-5.6-sol")
+		entry := declarations["gpt-5.6-sol"]
 		entry.dialect = spec.dialect()
 		return entry
 	}
@@ -369,8 +366,8 @@ func TestExtraBodyRidesEveryRequest(t *testing.T) {
 
 	t.Run("chat", func(t *testing.T) {
 		entry := entryWith(t,
-			`{"api":"chat","wire":{"extra_body":{"thinking":{"type":"enabled"}}}}`)
-		compiled, err := compileChat("gpt-5.6-sol", entry)(
+			`"api":"chat","wire":{"extra_body":{"thinking":{"type":"enabled"}}}`)
+		compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 			context.Background(),
 			openaiModel("gpt-5.6-sol"),
 			simpleTextRequest("hi"),
@@ -389,8 +386,8 @@ func TestExtraBodyRidesEveryRequest(t *testing.T) {
 
 	t.Run("responses", func(t *testing.T) {
 		entry := entryWith(t,
-			`{"wire":{"extra_body":{"thinking":{"type":"enabled"}}}}`)
-		compiled, err := compileResponses("gpt-5.6-sol", entry)(
+			`"wire":{"extra_body":{"thinking":{"type":"enabled"}}}`)
+		compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 			context.Background(),
 			openaiModel("gpt-5.6-sol"),
 			simpleTextRequest("hi"),
@@ -422,21 +419,19 @@ func TestJSONSetWinsOverExtraBody(t *testing.T) {
 	})
 	defer server.Close()
 
-	spec, err := decodeSpec(context.Background(), []byte(
-		`{"api":"chat","wire":{"extra_body":`+
-			`{"thinking":{"type":"enabled","keep":"all"},"enable_thinking":false}}}`,
-	))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	entry := catalog["gpt-5.6-sol"]
+	spec := decodeSpecWithModels(t,
+		`"api":"chat","wire":{"extra_body":`+
+			`{"thinking":{"type":"enabled","keep":"all"},"enable_thinking":false}}`,
+		"gpt-5.6-sol",
+	)
+	entry := declarations["gpt-5.6-sol"]
 	entry.dialect = spec.dialect()
 
 	request := jsonSetRequest(map[string]json.RawMessage{
 		"thinking.keep":   json.RawMessage(`"none"`),
 		"enable_thinking": json.RawMessage(`true`),
 	})
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -476,13 +471,17 @@ func TestExtraBodyValidation(t *testing.T) {
 		raw     string
 		wantErr bool
 	}{
-		{name: "plain field", raw: `{"wire":{"extra_body":{"enable_thinking":false}}}`},
-		{name: "nested path", raw: `{"wire":{"extra_body":{"thinking.keep":"all"}}}`},
+		{name: "plain field",
+			raw: `{"wire":{"extra_body":{"enable_thinking":false}},` +
+				`"models":[{"name":"m","kind":"generate","capabilities":{"outputs":["text"]}}]}`},
+		{name: "nested path",
+			raw: `{"wire":{"extra_body":{"thinking.keep":"all"}},` +
+				`"models":[{"name":"m","kind":"generate","capabilities":{"outputs":["text"]}}]}`},
 		{name: "generate model declared",
-			raw: `{"catalog":"declared","wire":{"extra_body":{"enable_thinking":false}},` +
+			raw: `{"wire":{"extra_body":{"enable_thinking":false}},` +
 				`"models":[{"name":"m","kind":"generate"}]}`},
 		{name: "no generate surface",
-			raw: `{"catalog":"declared","wire":{"extra_body":{"enable_thinking":false}},` +
+			raw: `{"wire":{"extra_body":{"enable_thinking":false}},` +
 				`"models":[{"name":"m","kind":"image"}]}`, wantErr: true},
 		{name: "reserved key",
 			raw: `{"wire":{"extra_body":{"messages":[]}}}`, wantErr: true},

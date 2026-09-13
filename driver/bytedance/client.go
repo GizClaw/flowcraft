@@ -45,7 +45,7 @@ type clients struct {
 	// every transport replays this list.
 	arkRequestOptions []arkruntime.RequestOption
 	// endpoints binds model names to this account's deployment addresses
-	// (ProfileSpec.Endpoints); empty maps resolve to the catalog name.
+	// (ProfileSpec.Endpoints); empty maps resolve to the declared name.
 	endpoints map[string]string
 	// Raw request support: the pinned SDK cannot encode every official
 	// parameter (the image background field), so the image transport falls
@@ -56,8 +56,8 @@ type clients struct {
 	httpClient *http.Client
 }
 
-// endpoint resolves the wire address for one catalog model within this
-// profile's account: the mapped endpoint when present, the catalog name
+// endpoint resolves the wire address for one declared model within this
+// profile's account: the mapped endpoint when present, the declared name
 // otherwise.
 func (c *clients) endpoint(name string) string {
 	if endpoint, ok := c.endpoints[name]; ok {

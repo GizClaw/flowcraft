@@ -32,7 +32,7 @@ func conformanceGenerateDriversOpenAI(
 	t.Helper()
 	model := "gpt-5.6-sol"
 	operations, err := inference.BindGenerateOperations(
-		compileResponses(model, catalog[model]),
+		compileResponsesFor(model, declarations[model]),
 		countingTransport(calls, func(_ context.Context, request *responsesRequest) (*responsesRequest, error) {
 			return request, nil
 		}),
@@ -84,7 +84,7 @@ func TestConformanceEmbedUnary(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "text-embedding-3-large"
 	driver, err := inference.BindEmbed(
-		compileEmbed(model, catalog[model]),
+		compileEmbedFor(model, declarations[model]),
 		countingTransport(calls, func(_ context.Context, params openai.EmbeddingNewParams) (openai.EmbeddingNewParams, error) {
 			return params, nil
 		}),
@@ -124,7 +124,7 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "gpt-5.6-sol"
 	driver, err := inference.BindGenerateStream(
-		compileResponses(model, catalog[model]),
+		compileResponsesFor(model, declarations[model]),
 		countingTransport(calls, func(_ context.Context, _ *responsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingOpenAIStream{}, nil
 		}),

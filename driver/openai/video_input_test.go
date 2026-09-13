@@ -12,14 +12,14 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
-// videoEntry is one chat-surface catalog entry that declares video input, the
+// videoEntry is one chat-surface declaration that states video input, the
 // shape a compatible endpoint publishes with spec.wire.video_input.
-func videoEntry() catalogEntry {
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
-	entry.dialect.videoInput = true
-	entry.capabilities.Inputs = append(
-		append([]message.PartKind(nil), entry.capabilities.Inputs...),
+func videoEntry() testTarget {
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
+	entry.dialect.video = true
+	entry.spec.Capabilities.Inputs = append(
+		append([]message.PartKind(nil), entry.spec.Capabilities.Inputs...),
 		message.PartVideo,
 	)
 	return entry
@@ -84,7 +84,7 @@ func TestChatVideoPartLowersToVideoURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVideoURL: %v", err)
 	}
-	compiled, err := compileChat("gpt-5.6-sol", videoEntry())(
+	compiled, err := compileChatFor("gpt-5.6-sol", videoEntry())(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		videoRequest(t, source),
@@ -143,7 +143,7 @@ func TestChatInlineVideoBecomesDataURI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVideoBytes: %v", err)
 	}
-	compiled, err := compileChat("gpt-5.6-sol", videoEntry())(
+	compiled, err := compileChatFor("gpt-5.6-sol", videoEntry())(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		videoRequest(t, source),
@@ -184,13 +184,13 @@ func TestVideoRejectionsAreReported(t *testing.T) {
 
 	declared := videoEntry()
 	undeclared := videoEntry()
-	undeclared.capabilities.Inputs = []message.PartKind{
+	undeclared.spec.Capabilities.Inputs = []message.PartKind{
 		message.PartText, message.PartData,
 	}
 	noEndpointFact := videoEntry()
-	noEndpointFact.dialect.videoInput = false
+	noEndpointFact.dialect.video = false
 	responsesSurface := videoEntry()
-	responsesSurface.dialect.api = apiResponses
+	responsesSurface.dialect.surface.api = apiResponses
 
 	assistantVideo := videoRequest(t, urlSource)
 	assistantVideo.Context = []message.Message{{
@@ -210,7 +210,7 @@ func TestVideoRejectionsAreReported(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		entry   catalogEntry
+		entry   testTarget
 		request inference.GenerateRequest
 		field   inference.FieldID
 		reason  string
@@ -259,7 +259,7 @@ func TestVideoRejectionsAreReported(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			compiled, err := compileChat("gpt-5.6-sol", tc.entry)(
+			compiled, err := compileChatFor("gpt-5.6-sol", tc.entry)(
 				context.Background(),
 				openaiModel("gpt-5.6-sol"),
 				tc.request,
@@ -301,10 +301,10 @@ func TestChatAssistantImageIsRejectedNotDropped(t *testing.T) {
 			message.ImagePart{Source: image},
 		}},
 	}}
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
 
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -349,7 +349,7 @@ func TestChatVideoKeepsPartOrder(t *testing.T) {
 		message.VideoPart{Source: source},
 		message.TextPart{Text: "after"},
 	}
-	compiled, err := compileChat("gpt-5.6-sol", videoEntry())(
+	compiled, err := compileChatFor("gpt-5.6-sol", videoEntry())(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,

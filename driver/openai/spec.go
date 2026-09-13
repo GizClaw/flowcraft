@@ -15,16 +15,16 @@ import (
 
 // Spec is the provider-level configuration for the OpenAI wire family. It is
 // credential-free — strict decoding rejects unknown keys and credentials live
-// only in profile secrets — and split into three orthogonal layers:
+// only in profile secrets — and split into orthogonal layers:
 //
 //   - Endpoint: where requests go and how they authenticate. Transport only,
 //     safe to configure freely.
 //   - Wire: what the endpoint accepts on the wire. Every leaf here narrows
-//     behavior the compiler would otherwise derive, so each combination is
-//     cross-checked against the catalog's capability declarations at build
-//     time.
-//   - Catalog: which models exist and whether the built-in OpenAI line-up is
-//     inherited.
+//     behavior the compiler would otherwise derive; the leaves that interact
+//     with a model's declaration (video input, the reasoning round trip) are
+//     cross-checked against it at build time.
+//   - Models: the line-up this deployment serves. The driver ships none, so
+//     a model exists exactly because a declaration states it.
 type Spec struct {
 	// API selects the generate surface: "responses" (default) or
 	// "chat" (Chat Completions). Chat mode is provider-wide and only
@@ -38,9 +38,11 @@ type Spec struct {
 	// Wire declares the dialect the endpoint speaks. Empty keeps the OpenAI
 	// defaults.
 	Wire WireSpec `json:"wire,omitempty"`
-	// Catalog selects the model namespace: "builtin_declared" (default)
-	// merges spec.models over the built-in OpenAI line-up, "declared" starts
-	// from an empty catalog so deployment names never inherit OpenAI facts.
+	// Catalog is retired and carries no behavior: the driver ships no model
+	// line-up, so every model a deployment serves must be declared in
+	// Models. Any value is rejected with the migration path rather than
+	// silently accepted, because the key used to select a namespace that no
+	// longer exists.
 	Catalog string `json:"catalog,omitempty"`
 	// HTTPRetries bounds wire-level retries inside one logical inference
 	// attempt, including the first. Zero disables SDK-internal retries so
@@ -54,8 +56,8 @@ type Spec struct {
 	// and "client_metadata" uses the Codex-style passthrough, but other
 	// names are allowed for gateways.
 	RequestMetadata *RequestMetadataSpec `json:"request_metadata,omitempty"`
-	// Models declares additional models beyond the built-in catalog or
-	// overrides catalog entries by name.
+	// Models declares the line-up this deployment serves. It is the only
+	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
@@ -96,8 +98,8 @@ type AuthSpec struct {
 }
 
 // WireSpec declares the dialect an endpoint accepts. Each leaf narrows a
-// derived default, so the driver cross-checks the combination against the
-// catalog's capability declarations before serving any request.
+// derived default; the driver resolves them once per provider into the
+// dialect its compilers read.
 type WireSpec struct {
 	// ReasoningScope declares the verification scope this deployment's
 	// reasoning traces belong to. It replaces the derived scope — provider,
@@ -217,24 +219,29 @@ func (s RequestMetadataSpec) Validate() error {
 	return nil
 }
 
-// ModelSpec declares a model outside the built-in catalog, or a delta over a
-// same-named, same-kind built-in catalog entry. Capabilities is a patch with
-// field-presence semantics: every leaf it names replaces that leaf of the
-// entry it overrides, and leaves it does not name are inherited — so
-// redeclaring a built-in to tweak one channel keeps every other declared
-// fact, including the reasoning effort map and custom embed output
-// dimensions. Reasoning off needs no separate declaration: "toggle" on the
-// Responses surface means this model honors reasoning.effort="none", and
-// models whose endpoint cannot disable reasoning publish "always".
+// ModelSpec declares one model this deployment serves. The driver ships no
+// line-up, so the declaration is complete: what it states is what the model
+// promises, and a leaf it leaves out is undeclared rather than inherited.
+// Reasoning off needs no separate flag: "toggle" on the Responses surface
+// means this model honors reasoning.effort="none", and models whose endpoint
+// cannot disable reasoning declare "always".
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the capability leaves this model changes.
-	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
-	// Limits declares numeric capacity limits for the model. Overriding a
-	// built-in catalog entry by name keeps the catalog limit for any field
-	// left nil; declaring a value replaces it.
+	// Capabilities declares what this model accepts and produces. It is the
+	// declaration itself, not a patch: the driver ships no line-up, so there
+	// is no base to inherit from and nothing a declaration could leave to a
+	// same-named entry.
+	Capabilities model.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares the model's numeric capacity limits. Undeclared leaves
+	// claim no bound rather than a zero one.
 	Limits model.ModelLimits `json:"limits,omitempty"`
+	// Lifecycle declares the model's discovery metadata: deprecation,
+	// retirement time, and the model that replaces it. Empty means active.
+	// The replacement is a full model identity, so it can name a model this
+	// deployment serves or one served elsewhere; validation runs when the
+	// model is published, where its own identity is known.
+	Lifecycle model.ModelLifecycle `json:"lifecycle,omitzero"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. OpenAI addresses
@@ -287,13 +294,10 @@ func (s Spec) Validate() error {
 			}
 		}
 	}
-	// extra_body rides the generate surfaces. A declared catalog that has no
+	// extra_body rides the generate surfaces. A deployment that declares no
 	// generate model can never use it, and a setting that can never apply is a
-	// configuration error rather than a silent no-op. (builtin_declared always
-	// inherits the built-in generate line-up, so it is never in that state.)
-	if len(s.Wire.ExtraBody) > 0 &&
-		s.catalogMode() == catalogDeclared &&
-		!s.declaresGenerateModel() {
+	// configuration error rather than a silent no-op.
+	if len(s.Wire.ExtraBody) > 0 && !s.declaresGenerateModel() {
 		return fmt.Errorf(
 			"wire.extra_body applies to the generate surfaces; " +
 				"this deployment declares no generate model",
@@ -405,10 +409,13 @@ func (s Spec) Validate() error {
 			"wire.include_reasoning_payload requires wire.reasoning_channel \"summary\"",
 		)
 	}
-	switch s.catalogMode() {
-	case catalogBuiltinDeclared, catalogDeclared:
-	default:
-		return fmt.Errorf("catalog must be \"builtin_declared\" or \"declared\"")
+	if s.Catalog != "" {
+		return fmt.Errorf(
+			"catalog %q is not supported: the driver ships no built-in "+
+				"model line-up, so every model must be declared in models "+
+				"(remove the key)",
+			s.Catalog,
+		)
 	}
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("http_retries must not be negative")
@@ -441,10 +448,7 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
-	if m.Capabilities != nil &&
-		m.Capabilities.CustomEmbedDimensions != nil &&
-		*m.Capabilities.CustomEmbedDimensions &&
-		kind != kindEmbed {
+	if m.Capabilities.CustomEmbedDimensions && kind != kindEmbed {
 		return fmt.Errorf(
 			"model %q sets custom_embed_dimensions on kind %q",
 			m.Name,

@@ -14,7 +14,7 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "bytedance",
-			"spec": {},
+			"spec": {"models": `+fixtureModelsJSON(t, "doubao-seed-2-0-lite")+`},
 			"profiles": [{
 				"id": "default",
 				"secrets": {"api_key": "${env:BYTEDANCE_TEST_KEY}"}

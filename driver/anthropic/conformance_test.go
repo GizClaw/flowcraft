@@ -98,7 +98,7 @@ func TestConformanceGenerateConcurrent(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	unary, stream := conformanceGenerateDrivers(
 		t,
-		compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"]),
+		compileGenerateFor("claude-sonnet-5", declarations["claude-sonnet-5"]),
 		calls,
 	)
 	inferencetest.RunGenerateConcurrent(t, inferencetest.GenerateConcurrentSuite{
@@ -122,7 +122,7 @@ func (*failingStream) Close() error { return nil }
 func TestConformanceGenerateStreamFailureProvider(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	operations, err := inference.BindGenerateStream(
-		compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"]),
+		compileGenerateFor("claude-sonnet-5", declarations["claude-sonnet-5"]),
 		countingTransport(calls, func(_ context.Context, _ anthropicgo.MessageNewParams) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingStream{}, nil
 		}),

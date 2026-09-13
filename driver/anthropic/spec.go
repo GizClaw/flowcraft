@@ -14,10 +14,11 @@ import (
 type Spec struct {
 	// Endpoint locates the Messages API. Transport only.
 	Endpoint EndpointSpec `json:"endpoint,omitempty"`
-	// Catalog selects the model namespace: "builtin_declared" (default)
-	// merges spec.models over the built-in Claude line-up, "declared" starts
-	// from an empty catalog so a compatible endpoint's model names never
-	// inherit Claude facts.
+	// Catalog is retired and carries no behavior: the driver ships no model
+	// line-up, so every model a deployment serves is declared in Models. Any
+	// value is rejected with the migration path rather than silently
+	// accepted, because the key used to select a namespace that no longer
+	// exists.
 	Catalog string `json:"catalog,omitempty"`
 	// Wire declares provider extensions this endpoint accepts on top of the
 	// Messages protocol. Empty leaves every extension off.
@@ -25,7 +26,8 @@ type Spec struct {
 	// HTTPRetries bounds wire-level retries inside one logical inference
 	// attempt, including the first.
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
-	// Models declares custom models or overrides built-in catalog entries.
+	// Models declares the line-up this deployment serves. It is the only
+	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
@@ -54,40 +56,26 @@ type WireSpec struct {
 	ReasoningScope string `json:"reasoning_scope,omitempty"`
 }
 
-// catalogMode selects which model namespace one provider instance serves.
-type catalogMode string
-
-const (
-	// catalogBuiltinDeclared merges spec.models over the built-in line-up.
-	catalogBuiltinDeclared catalogMode = "builtin_declared"
-	// catalogDeclared starts from an empty catalog.
-	catalogDeclared catalogMode = "declared"
-)
-
-// catalogMode returns the normalized catalog mode.
-func (s Spec) catalogMode() catalogMode {
-	if s.Catalog == "" {
-		return catalogBuiltinDeclared
-	}
-	return catalogMode(s.Catalog)
-}
-
-// ModelSpec declares one catalog overlay entry: a leaf-level patch over the
-// same-named built-in model (or a fresh declaration for unknown names).
-// Capability leaves the entry does not name are inherited from the built-in
-// entry, so tweaking one channel cannot silently revoke the rest.
+// ModelSpec declares one model this deployment serves. The driver ships no
+// line-up, so the declaration is complete: what it states is what the model
+// promises, and a leaf it leaves out is undeclared rather than inherited.
 type ModelSpec struct {
 	Name string `json:"name"`
 	// Kind declares the operation family. Messages models generate text, so
 	// "generate" is the default; any other kind is rejected because the
 	// Messages protocol has no channel for it.
 	Kind string `json:"kind,omitempty"`
-	// Capabilities declares the capability leaves this model changes.
-	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
-	// Limits declares numeric capacity limits for the model. Overriding a
-	// built-in catalog entry by name keeps the catalog limit for any field
-	// left nil; declaring a value replaces it.
+	// Capabilities declares what this model accepts and produces.
+	Capabilities model.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares the model's numeric capacity limits. Undeclared leaves
+	// claim no bound rather than a zero one.
 	Limits model.ModelLimits `json:"limits,omitempty"`
+	// Lifecycle declares the model's discovery metadata: deprecation,
+	// retirement time, and the model that replaces it. Empty means active.
+	// The replacement is a full model identity, so it can name a model this
+	// deployment serves or one served elsewhere; validation runs when the
+	// model is published, where its own identity is known.
+	Lifecycle model.ModelLifecycle `json:"lifecycle,omitzero"`
 }
 
 func (s Spec) Validate() error {
@@ -99,10 +87,12 @@ func (s Spec) Validate() error {
 			s.Endpoint.BaseURL,
 		)
 	}
-	switch s.catalogMode() {
-	case catalogBuiltinDeclared, catalogDeclared:
-	default:
-		return fmt.Errorf("anthropic: catalog must be \"builtin_declared\" or \"declared\"")
+	if s.Catalog != "" {
+		return fmt.Errorf(
+			"anthropic: catalog %q is not supported: the driver ships no model "+
+				"line-up, so every model must be declared in models (remove the key)",
+			s.Catalog,
+		)
 	}
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("anthropic: http_retries must not be negative")
@@ -132,8 +122,7 @@ func (s Spec) Validate() error {
 		if err := model.Capabilities.Validate(); err != nil {
 			return fmt.Errorf("anthropic: model %q: %w", model.Name, err)
 		}
-		if model.Capabilities != nil &&
-			model.Capabilities.CustomEmbedDimensions != nil {
+		if model.Capabilities.CustomEmbedDimensions {
 			return fmt.Errorf(
 				"anthropic: model %q: custom_embed_dimensions is unsupported "+
 					"(anthropic serves text generation only)",

@@ -27,7 +27,7 @@ func TestCompileGenerateAudioInputURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAudioURL: %v", err)
 	}
-	compiled, err := compileGenerate("doubao-seed-2-0-lite", catalog["doubao-seed-2-0-lite"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-0-lite", declarations["doubao-seed-2-0-lite"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-lite"),
 		audioRequest(source),
@@ -52,7 +52,7 @@ func TestCompileGenerateAudioInputInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAudioBytes: %v", err)
 	}
-	compiled, err := compileGenerate("doubao-seed-2-0-mini", catalog["doubao-seed-2-0-mini"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-0-mini", declarations["doubao-seed-2-0-mini"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-mini"),
 		audioRequest(source),
@@ -76,7 +76,7 @@ func TestCompileGenerateRejectsAudioWithoutCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAudioURL: %v", err)
 	}
-	compiled, err := compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-1-pro", declarations["doubao-seed-2-1-pro"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-1-pro"),
 		audioRequest(source),

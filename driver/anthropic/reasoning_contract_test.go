@@ -9,33 +9,24 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
-// TestRedeclaredBuiltinKeepsReasoning locks the delta overlay contract:
-// redeclaring claude-sonnet-5 to tweak one channel must keep the built-in
-// reasoning kind and effort map, so a published toggle still compiles
-// reasoning_enabled=false.
-func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{
-		"models": [{
-			"name": "claude-sonnet-5",
-			"capabilities": {"outputs": ["text"]}
-		}]
-	}`))
+// TestDeclaredToggleKeepsItsEffortMap locks the declaration contract: the
+// capabilities block is the whole fact, so a toggle that names an effort map
+// keeps it, and the published toggle compiles reasoning_enabled=false.
+func TestDeclaredToggleKeepsItsEffortMap(t *testing.T) {
+	spec := decodeSpecWithModels(t, "", "claude-sonnet-5")
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry := models["claude-sonnet-5"]
-	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
-		t.Fatalf("redeclaration must inherit reasoning toggle, got %q",
-			entry.capabilities.Reasoning.Kind)
+	if entry.spec.Capabilities.Reasoning.Kind != model.ReasoningToggle {
+		t.Fatalf("declaration must state reasoning toggle, got %q",
+			entry.spec.Capabilities.Reasoning.Kind)
 	}
-	if len(entry.capabilities.Reasoning.EffortMap) == 0 {
-		t.Fatal("redeclaration must inherit the built-in effort map")
+	if len(entry.spec.Capabilities.Reasoning.EffortMap) == 0 {
+		t.Fatal("declaration must state the effort map")
 	}
-	compiled, err := compileGenerate("claude-sonnet-5", entry)(
+	compiled, err := compileGenerateFor("claude-sonnet-5", entry)(
 		context.Background(),
 		conformanceModel("claude-sonnet-5"),
 		inferencetest.ReasoningOffProbe(),
@@ -52,52 +43,55 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 	}
 }
 
-// TestRedeclaredBuiltinRemovesReasoning locks the removal contract: the
-// legacy `reasoning: ""` leaf strips a built-in's reasoning kind and the
-// effort map inherited with it, leaving a coherent none capability that
-// still passes merged-catalog validation.
-func TestRedeclaredBuiltinRemovesReasoning(t *testing.T) {
+// TestDeclaredWithoutReasoningRejectsTheSwitch locks the other side: a model
+// that declares no reasoning control has no switch to compile, so the request
+// is rejected rather than silently accepted.
+func TestDeclaredWithoutReasoningRejectsTheSwitch(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(`{
 		"models": [{
-			"name": "claude-sonnet-5",
-			"capabilities": {"reasoning": ""}
+			"name": "claude-plain",
+			"capabilities": {"inputs": ["text"], "outputs": ["text"]}
 		}]
 	}`))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
-	entry := models["claude-sonnet-5"]
-	if entry.capabilities.Reasoning.Kind != model.ReasoningNone {
-		t.Fatalf("reasoning kind = %q, want none", entry.capabilities.Reasoning.Kind)
+	entry := models["claude-plain"]
+	compiled, err := compileGenerateFor("claude-plain", entry)(
+		context.Background(),
+		conformanceModel("claude-plain"),
+		inferencetest.ReasoningOffProbe(),
+		inference.GenerateExecutionUnary,
+	)
+	if err == nil {
+		t.Fatal("model without a reasoning channel accepted the switch")
 	}
-	if len(entry.capabilities.Reasoning.EffortMap) != 0 {
-		t.Fatalf("removed reasoning must drop the inherited effort map, got %v",
-			entry.capabilities.Reasoning.EffortMap)
+	if !compiled.Report.Rejects(inference.FieldGenerateIntentReasoningEnabled) {
+		t.Fatalf("decisions = %+v, want a reasoning_enabled rejection",
+			compiled.Report.Decisions)
 	}
 }
 
 // TestPublishedToggleCompilesReasoningOff is the generic conformance
-// contract for every built-in model that publishes toggle.
+// contract: every declared model that publishes toggle must compile the
+// shared reasoning-off probe.
 func TestPublishedToggleCompilesReasoningOff(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{}`))
+	spec := decodeSpecWithModels(t, "", fixtureNames...)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	checked := 0
 	for name, entry := range models {
-		if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
+		if entry.spec.Capabilities.Reasoning.Kind != model.ReasoningToggle {
 			continue
 		}
 		checked++
-		compiled, err := compileGenerate(name, entry)(
+		compiled, err := compileGenerateFor(name, entry)(
 			context.Background(),
 			conformanceModel(name),
 			inferencetest.ReasoningOffProbe(),

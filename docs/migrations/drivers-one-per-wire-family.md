@@ -14,7 +14,7 @@ modules that are now gone.
 | Removed module | Use instead | How the new driver is pointed |
 | --- | --- | --- |
 | `driver/azure` | `driver/openai` | `spec.endpoint.routing: azure_deployment`, with the resource URL as `spec.endpoint.base_url`. The SDK's Azure mode then owns the parts that are easy to get wrong: the `Api-Key` header, the `api-version` query (default `2025-04-01-preview`, overridable through `spec.endpoint.query["api-version"]`), and the deployment-path rewriting for the routes its rewrite table covers — `/chat/completions`, `/embeddings`, `/images/generations`, `/images/edits`, `/audio/speech`, `/audio/transcriptions`, `/audio/translations`. `api: responses` is *not* in that table: it is posted to `<base_url>/openai/responses` with the deployment id only in the body, while Azure documents the deployment-scoped `/openai/deployments/{deployment}/responses`. Verify that route against your resource before moving an Azure deployment to the Responses surface |
-| `driver/deepseek` | `driver/openai` | `spec.endpoint.base_url` for the compatible surface, `spec.wire` for its dialect differences, `spec.catalog: declared` so its model names never inherit OpenAI facts |
+| `driver/deepseek` | `driver/openai` | `spec.endpoint.base_url` for the compatible surface, `spec.wire` for its dialect differences, and a complete `spec.models` declaration: the OpenAI driver ships no line-up, so nothing is inherited from a name |
 | `driver/kimi` | `driver/openai` | same shape: `base_url` plus `api: chat`, which is the only surface Moonshot serves |
 | `driver/qwen` | — | no replacement: there is no DashScope environment to verify a driver against, so the module was removed rather than carried untested |
 | `driver/minimax`, `kind: generate` | `driver/anthropic` | `spec.endpoint.base_url` pointing at the `/anthropic` Messages surface |
@@ -27,7 +27,7 @@ modules that are now gone.
 The old drivers took flat settings (`base_url`, or `endpoint` and
 `api_version` for Azure). The new ones split the provider into layers:
 `spec.endpoint` (where), `spec.auth` (how the key rides), `spec.wire` (what the
-endpoint accepts) and `spec.catalog` (which model namespace it starts from).
+endpoint accepts) and `spec.models` (the line-up this deployment serves).
 
 Before, a DeepSeek provider was its own module:
 
@@ -59,7 +59,6 @@ provider:
         base_url: https://api.deepseek.com
       wire:
         reasoning_channel: text   # DeepSeek streams plain reasoning text
-      catalog: declared
       models:
         - name: deepseek-flash
           kind: generate
@@ -70,6 +69,10 @@ provider:
       - secrets:
           api_key: ${env:DEEPSEEK_API_KEY}
 ```
+
+The declaration is the whole fact rather than a patch over a built-in entry:
+the OpenAI driver ships no model line-up, so a generate model has to state its
+`outputs: [text]` and every other capability it promises.
 
 `impl:` names the driver module; `id:` names the deployment. Requests keep
 addressing the deployment, so a graph or route that says

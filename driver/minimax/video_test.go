@@ -41,11 +41,11 @@ func compileVideoWire(
 	request inference.GenerateRequest,
 ) (videoWire, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[name]
+	entry, ok := declarations[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", name)
+		t.Fatalf("fixture model %q missing", name)
 	}
-	compiled, err := compileVideo("ep-test", entry)(
+	compiled, err := compileVideoFor(name, entry)(
 		context.Background(),
 		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,

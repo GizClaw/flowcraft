@@ -21,7 +21,7 @@ func TestToolResultVideoBecomesPlaceholder(t *testing.T) {
 		toolResultVideo(t),
 		message.TextPart{Text: "after"},
 	)
-	compiled, err := compileGenerate("m", entry)(
+	compiled, err := compileGenerateFor("m", entry)(
 		context.Background(),
 		conformanceModel("m"),
 		request,

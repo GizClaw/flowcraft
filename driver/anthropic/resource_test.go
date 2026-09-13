@@ -14,7 +14,7 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "anthropic",
-			"spec": {},
+			"spec": {"models": `+fixtureModelsJSON(t, "claude-sonnet-5")+`},
 			"profiles": [{
 				"id": "default",
 				"secrets": {"api_key": "${env:ANTHROPIC_TEST_KEY}"}

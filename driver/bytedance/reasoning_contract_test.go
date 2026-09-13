@@ -9,34 +9,24 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
-// TestRedeclaredBuiltinKeepsReasoning locks the delta overlay contract:
-// redeclaring doubao-seed-2-1-pro to tweak one channel must keep the
-// built-in reasoning kind and effort map, so a published toggle still
-// compiles reasoning_enabled=false.
-func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{
-		"models": [{
-			"name": "doubao-seed-2-1-pro",
-			"kind": "generate",
-			"capabilities": {"outputs": ["text"]}
-		}]
-	}`))
+// TestDeclaredToggleKeepsItsEffortMap locks the declaration contract: the
+// capabilities block is the whole fact, so a toggle that names an effort map
+// keeps it, and the published toggle compiles reasoning_enabled=false.
+func TestDeclaredToggleKeepsItsEffortMap(t *testing.T) {
+	spec := decodeSpecWithModels(t, "", "doubao-seed-2-1-pro")
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry := models["doubao-seed-2-1-pro"]
-	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
-		t.Fatalf("redeclaration must inherit reasoning toggle, got %q",
-			entry.capabilities.Reasoning.Kind)
+	if entry.spec.Capabilities.Reasoning.Kind != model.ReasoningToggle {
+		t.Fatalf("declaration must state reasoning toggle, got %q",
+			entry.spec.Capabilities.Reasoning.Kind)
 	}
-	if len(entry.capabilities.Reasoning.EffortMap) == 0 {
-		t.Fatal("redeclaration must inherit the built-in effort map")
+	if len(entry.spec.Capabilities.Reasoning.EffortMap) == 0 {
+		t.Fatal("declaration must state the effort map")
 	}
-	compiled, err := compileGenerate("doubao-seed-2-1-pro", entry)(
+	compiled, err := compileGenerateFor("doubao-seed-2-1-pro", entry)(
 		context.Background(),
 		conformanceModel("doubao-seed-2-1-pro"),
 		inferencetest.ReasoningOffProbe(),
@@ -50,59 +40,67 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 	}
 }
 
-// TestRedeclaredBuiltinKeepsControlFlags locks flag inheritance for embed
-// and video entries (dimensions, max resolution) on same-kind redeclare.
-func TestRedeclaredBuiltinKeepsControlFlags(t *testing.T) {
+// TestVideoParamsDeclarationRoundTrip locks the control-fact vocabulary a
+// video declaration carries: the deployment states the parameter matrix and
+// the resolution cap, and the resolved model honors exactly that, with
+// undeclared parameters left to the endpoint's own validation.
+func TestVideoParamsDeclarationRoundTrip(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(`{
-		"models": [
-			{"name": "doubao-embedding-large", "kind": "embed"},
-			{"name": "doubao-seedance-2-5", "kind": "video"}
-		]
+		"models": [{
+			"name": "my-seedance",
+			"kind": "video",
+			"capabilities": {
+				"inputs": ["text", "image"],
+				"outputs": ["video"]
+			},
+			"max_resolution": "1080p",
+			"video": {
+				"generate_audio": true,
+				"duration_min_seconds": 4,
+				"duration_max_seconds": 12,
+				"reference_image": 2
+			}
+		}]
 	}`))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
-	embed := models["doubao-embedding-large"]
-	in, _ := embed.limits.Values()
-	if !embed.capabilities.CustomEmbedDimensions ||
-		in != 4_095 {
-		t.Fatalf("redeclared embed lost control facts: dims=%v in=%d",
-			embed.capabilities.CustomEmbedDimensions, in)
+	declared := models["my-seedance"].spec
+	if declared.MaxResolution != "1080p" {
+		t.Fatalf("max_resolution = %q, want 1080p", declared.MaxResolution)
 	}
-	video := models["doubao-seedance-2-5"]
-	builtin := catalog["doubao-seedance-2-5"]
-	if video.maxResolution != builtin.maxResolution {
-		t.Fatalf("redeclared video max_resolution = %q, want built-in %q",
-			video.maxResolution, builtin.maxResolution)
+	video := declared.Video
+	if !video.GenerateAudio || video.ReferenceImage != 2 ||
+		video.DurationMin == nil || *video.DurationMin != 4 ||
+		video.DurationMax == nil || *video.DurationMax != 12 {
+		t.Fatalf("video params = %+v", video)
 	}
-	if video.video != builtin.video {
-		t.Fatal("redeclared video lost the built-in parameter matrix")
+	if video.Seed || video.Priority || video.OutputFormat {
+		t.Fatalf("undeclared parameters appeared: %+v", video)
 	}
 }
 
 // TestPublishedToggleCompilesReasoningOff is the generic conformance
-// contract for every built-in model that publishes toggle.
+// contract: every declared model that publishes toggle must compile the
+// shared reasoning-off probe.
 func TestPublishedToggleCompilesReasoningOff(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{}`))
+	spec := decodeSpecWithModels(t, "", fixtureNames...)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	checked := 0
 	for name, entry := range models {
-		if entry.kind != kindGenerate ||
-			entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
+		if modelKind(entry.spec.Kind) != kindGenerate ||
+			entry.spec.Capabilities.Reasoning.Kind != model.ReasoningToggle {
 			continue
 		}
 		checked++
-		compiled, err := compileGenerate(name, entry)(
+		compiled, err := compileGenerateFor(name, entry)(
 			context.Background(),
 			conformanceModel(name),
 			inferencetest.ReasoningOffProbe(),

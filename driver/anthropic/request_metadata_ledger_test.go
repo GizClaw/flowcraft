@@ -22,7 +22,7 @@ func TestRequestMetadataDroppedByLedger(t *testing.T) {
 		},
 		RequestMetadata: map[string]string{"session_id": "s-1"},
 	}
-	compiled, err := compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"])(
+	compiled, err := compileGenerateFor("claude-sonnet-5", declarations["claude-sonnet-5"])(
 		context.Background(),
 		model.ModelRef{ID: model.ModelID{Provider: "anthropic", Name: "claude-sonnet-5"}},
 		request,

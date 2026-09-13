@@ -9,8 +9,8 @@ Active workloads are `Generate`, `Embed`, and `Transcription`; they are
 enumerated once, by `model.Operations()` in `core/inference/model`.
 
 The model declaration vocabulary — identity, descriptor, capabilities,
-limits, lifecycle, and the catalog patch language — lives in
-`core/inference/model`. `core/inference` re-exports it through deprecated
+limits, and lifecycle — lives in `core/inference/model`. `core/inference`
+re-exports it through deprecated
 aliases (`inference.ModelRef` and friends) so existing callers keep
 compiling; new code should import `core/inference/model` directly.
 
@@ -51,7 +51,6 @@ resources:
           base_url: https://api.deepseek.com
         wire:
           reasoning_channel: text   # DeepSeek streams plain reasoning text
-        catalog: declared
         models:
           - name: deepseek-flash
             kind: generate
@@ -77,9 +76,9 @@ reg.MustRegister(inference.Factory{})
 ```
 
 The provider `spec` is layered — `endpoint` (where the API is and how the key
-rides), `wire` (which dialect the endpoint speaks), `catalog` (which model
-namespace it starts from) — and `core/inference` treats every provider
-through the same declaration vocabulary. The full key reference, including
+rides), `wire` (which dialect the endpoint speaks), `models` (the line-up this
+deployment serves) — and `core/inference` treats every provider through the
+same declaration vocabulary. The full key reference, including
 `wire.store` (`false` by default, or `"omit"` to keep the retention field off
 the request entirely for endpoints whose schema does not know it) and
 `wire.video_input` (a compatible-endpoint extension that, together with a
@@ -137,16 +136,15 @@ stay open.
 
 ## Model declarations
 
-Providers expose built-in model catalogs that deployments extend or
-override through the provider spec's `models` list. Declarations are
-leaf-level patches against the same-named, same-kind built-in entry: a
-capability leaf that is written replaces that leaf, while unstated
-capability leaves, numeric limits, and driver control facts are inherited —
-redeclaring a model to tweak one channel cannot silently revoke the rest,
-and removal is explicit (`hosted_web_search: false`, an empty inputs or
-outputs list, or reasoning kind `none`). Compatible endpoints configured
-through the OpenAI and Anthropic drivers follow the same leaf semantics,
-and custom embed dimensions stay tied to the built-in size whitelist.
+Every published model comes from the provider spec's `models` list: no
+driver ships a line-up, so a model exists because the deployment declares it
+and the declaration is the whole fact. Nothing is inherited from a
+same-named model, which is why a generate model has to state its text output
+and every published capability has to be written out; the `catalog` key that
+used to select a namespace is retired and rejected with the migration path.
+Driver control facts that no capability kind expresses are declared per
+model too (Bytedance's `max_resolution` and `video` parameter matrix,
+MiniMax's `wire_model` and `video` surface).
 
 Capability declarations are promises validated per provider surface: a
 model published with reasoning kind `toggle` must compile
@@ -396,7 +394,7 @@ The difference between the two is scope and reporting, not shape: `extra_body`
 is deployment configuration and, like `store` or `endpoint.headers`, carries no
 per-request decision; `json_set` is a request decision and appears in the
 compile report key by key. Both reach the generate surfaces only, so a
-deployment whose declared catalog has no generate model is rejected at build
+deployment whose declared line-up has no generate model is rejected at build
 time rather than carrying a field that can never apply.
 
 ### Component notes

@@ -75,7 +75,7 @@ func TestGenerateOptionsWebSearchRejectedWithoutCapability(t *testing.T) {
 	request.Extensions = inference.Extensions{
 		GenerateOptions{WebSearch: &GenerateWebSearch{}},
 	}
-	_, err := compileResponses("gpt-4.1-nano", catalog["gpt-4.1-nano"])(
+	_, err := compileResponsesFor("gpt-4.1-nano", declarations["gpt-4.1-nano"])(
 		context.Background(),
 		openaiModel("gpt-4.1-nano"),
 		request,

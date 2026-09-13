@@ -19,22 +19,18 @@ import (
 // traces readable: without it the API returns the encrypted payload and no
 // summary text at all.
 func TestReasoningSummaryReachesTheWire(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(
-		`{"wire":{"reasoning_summary":"detailed"}}`,
-	))
+	spec := decodeSpecWithModels(t,
+		`"wire":{"reasoning_summary":"detailed"}`, "gpt-5.6-sol")
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
 	request := simpleTextRequest("hi")
 	request.Input.Content.Intent.Text = &inference.TextIntent{
 		ReasoningEffort: model.ReasoningHigh,
 	}
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -50,7 +46,7 @@ func TestReasoningSummaryReachesTheWire(t *testing.T) {
 	}
 
 	// A summary alone (no explicit effort) must still reach the request.
-	compiled, err = compileResponses("gpt-5.6-sol", entry)(
+	compiled, err = compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),
@@ -71,24 +67,24 @@ func TestReasoningSummaryReachesTheWire(t *testing.T) {
 func TestPromptCacheKeyRidesTheExtension(t *testing.T) {
 	options := GenerateOptions{PromptCacheKey: "conversation-42"}
 
-	responsesEntry := catalog["gpt-5.6-sol"]
-	responses := newResponsesRequest("gpt-5.6-sol", responsesEntry)
-	compileGenerateTuning(responses, options, responsesEntry,
+	responsesEntry := declarations["gpt-5.6-sol"]
+	responses := newResponsesRequestFor("gpt-5.6-sol", responsesEntry)
+	compileGenerateTuningFor(responses, options, responsesEntry,
 		inference.NewLedger(model.OperationGenerate, providerID, nil))
 	if responses.params.PromptCacheKey.Value != "conversation-42" {
 		t.Fatalf("responses params = %+v", responses.params.PromptCacheKey)
 	}
 
-	chatEntry := catalog["gpt-5.6-sol"]
-	chatEntry.dialect.api = apiChat
-	chat := newChatRequest("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
-	compileGenerateTuning(chat, options, chatEntry,
+	chatEntry := declarations["gpt-5.6-sol"]
+	chatEntry.dialect.surface.api = apiChat
+	chat := newChatRequestFor("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
+	compileGenerateTuningFor(chat, options, chatEntry,
 		inference.NewLedger(model.OperationGenerate, providerID, nil))
 	if chat.params.PromptCacheKey.Value != "conversation-42" {
 		t.Fatalf("chat params = %+v", chat.params.PromptCacheKey)
 	}
 
-	unset := newChatRequest("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
+	unset := newChatRequestFor("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
 	if unset.params.PromptCacheKey.Value != "" {
 		t.Fatalf("unset key leaked: %+v", unset.params.PromptCacheKey)
 	}
@@ -110,10 +106,10 @@ func TestGenerateTuningExtensions(t *testing.T) {
 	if err := options.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	entry := catalog["gpt-5.6-sol"]
-	request := newResponsesRequest("gpt-5.6-sol", entry)
+	entry := declarations["gpt-5.6-sol"]
+	request := newResponsesRequestFor("gpt-5.6-sol", entry)
 	ledger := inference.NewLedger(model.OperationGenerate, providerID, nil)
-	compileGenerateTuning(request, options, entry, ledger)
+	compileGenerateTuningFor(request, options, entry, ledger)
 	params := request.params
 	if string(params.ServiceTier) != "priority" ||
 		params.ParallelToolCalls.Value ||
@@ -134,11 +130,11 @@ func TestGenerateTuningChatGaps(t *testing.T) {
 	for _, field := range options.ActiveFields() {
 		active = append(active, field.Qualify(options))
 	}
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
 	ledger := inference.NewLedger(model.OperationGenerate, providerID, active)
-	request := newChatRequest("gpt-5.6-sol", entry, inference.GenerateExecutionUnary)
-	compileGenerateTuning(request, options, entry, ledger)
+	request := newChatRequestFor("gpt-5.6-sol", entry, inference.GenerateExecutionUnary)
+	compileGenerateTuningFor(request, options, entry, ledger)
 	if string(request.params.Verbosity) != "high" {
 		t.Fatalf("chat verbosity = %q, want high", request.params.Verbosity)
 	}
@@ -165,24 +161,20 @@ func TestGenerateTuningChatGaps(t *testing.T) {
 // overflow policy rides the raw-JSON option path, and the timeout reaches the
 // HTTP client.
 func TestTruncationAndTimeout(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(
-		`{"endpoint":{"timeout":"90s"},"wire":{"truncation":"auto"}}`,
-	))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
+	spec := decodeSpecWithModels(t,
+		`"endpoint":{"timeout":"90s"},"wire":{"truncation":"auto"}`, "gpt-5.6-sol")
 	if spec.endpointTimeout().Seconds() != 90 {
 		t.Fatalf("timeout = %v", spec.endpointTimeout())
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
 	if entry.dialect.truncation != truncationAuto {
 		t.Fatalf("truncation = %q", entry.dialect.truncation)
 	}
-	request := newResponsesRequest("gpt-5.6-sol", entry)
+	request := newResponsesRequestFor("gpt-5.6-sol", entry)
 	if request.params.Truncation != responses.ResponseNewParamsTruncationAuto {
 		t.Fatalf("truncation param = %q", request.params.Truncation)
 	}

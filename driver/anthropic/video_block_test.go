@@ -10,15 +10,15 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
-// declaredVideoEntry builds a one-model declared catalog, optionally opening
+// declaredVideoEntry builds a one-model declaration, optionally opening
 // the endpoint's video extension. The model always declares video input, so
 // the two gates can be toggled independently.
-func declaredVideoEntry(t *testing.T, wireVideo bool) catalogEntry {
+func declaredVideoEntry(t *testing.T, wireVideo bool) testTarget {
 	t.Helper()
-	raw := `{"catalog":"declared","models":[{"name":"m",` +
+	raw := `{"models":[{"name":"m",` +
 		`"capabilities":{"inputs":["text","video"],"outputs":["text"]}}]}`
 	if wireVideo {
-		raw = `{"wire":{"video_input":true},"catalog":"declared",` +
+		raw = `{"wire":{"video_input":true},` +
 			`"models":[{"name":"m",` +
 			`"capabilities":{"inputs":["text","video"],"outputs":["text"]}}]}`
 	}
@@ -26,9 +26,9 @@ func declaredVideoEntry(t *testing.T, wireVideo bool) catalogEntry {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	return models["m"]
 }
@@ -71,7 +71,7 @@ func videoRequest(t *testing.T) inference.GenerateRequest {
 func TestVideoBlockNeedsBothGates(t *testing.T) {
 	request := videoRequest(t)
 
-	if _, err := compileGenerate("m", declaredVideoEntry(t, true))(
+	if _, err := compileGenerateFor("m", declaredVideoEntry(t, true))(
 		context.Background(),
 		conformanceModel("m"),
 		request,
@@ -80,7 +80,7 @@ func TestVideoBlockNeedsBothGates(t *testing.T) {
 		t.Fatalf("both gates open must compile: %v", err)
 	}
 
-	compiled, err := compileGenerate("m", declaredVideoEntry(t, false))(
+	compiled, err := compileGenerateFor("m", declaredVideoEntry(t, false))(
 		context.Background(),
 		conformanceModel("m"),
 		request,
@@ -97,18 +97,18 @@ func TestVideoBlockNeedsBothGates(t *testing.T) {
 // declared video input.
 func TestVideoBlockNeedsModelCapability(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(
-		`{"wire":{"video_input":true},"catalog":"declared",`+
+		`{"wire":{"video_input":true},`+
 			`"models":[{"name":"m",`+
 			`"capabilities":{"inputs":["text"],"outputs":["text"]}}]}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
-	compiled, err := compileGenerate("m", models["m"])(
+	compiled, err := compileGenerateFor("m", models["m"])(
 		context.Background(),
 		conformanceModel("m"),
 		videoRequest(t),

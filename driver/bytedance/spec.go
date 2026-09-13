@@ -54,34 +54,41 @@ type Spec struct {
 	// provider, model, and credential profile — and unset keeps that
 	// conservative default.
 	ReasoningScope string `json:"reasoning_scope,omitempty"`
-	// Models declares additional models beyond the built-in catalog or
-	// overrides catalog entries by name.
+	// Models declares the line-up this deployment serves. It is the only
+	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model outside the built-in catalog, or a delta over
-// a same-named, same-kind built-in catalog entry. Capabilities is a patch
-// with field-presence semantics: leaves it names replace that leaf of the
-// entry it overrides and leaves it does not name are inherited. Custom
-// embed output dimensions live in capabilities.custom_embed_dimensions;
-// max_resolution is a control fact that no capability kind expresses and
-// stays a separate flag — nil inherits the overridden built-in value, an
-// explicit empty string declares resolution unconstrained. Addressing a
-// custom model at a deployment endpoint works exactly like catalog models:
-// map its name in Spec.Endpoints.
+// ModelSpec declares one model this deployment serves. The driver ships no
+// line-up, so the declaration is complete: what it states is what the model
+// promises, and a leaf it leaves out is undeclared rather than inherited.
+// Driver control facts that no capability kind expresses (the video
+// parameter matrix, the resolution cap) are stated here too. Addressing a
+// model at a deployment endpoint works by mapping its name in
+// Spec.Endpoints.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the capability leaves this model changes.
-	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
-	// Limits declares numeric capacity limits for the model. Overriding a
-	// built-in catalog entry by name keeps the catalog limit for any field
-	// left nil; declaring a value replaces it.
+	// Capabilities declares what this model accepts and produces. Custom
+	// embed output dimensions live in capabilities.custom_embed_dimensions.
+	Capabilities model.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares the model's numeric capacity limits. Undeclared leaves
+	// claim no bound rather than a zero one.
 	Limits model.ModelLimits `json:"limits,omitempty"`
+	// Lifecycle declares the model's discovery metadata: deprecation,
+	// retirement time, and the model that replaces it. Empty means active.
+	// The replacement is a full model identity, so it can name a model this
+	// deployment serves or one served elsewhere; validation runs when the
+	// model is published, where its own identity is known.
+	Lifecycle model.ModelLifecycle `json:"lifecycle,omitzero"`
 	// MaxResolution (video) caps the supported resolution tier, e.g. "720p"
-	// or "4k". Nil inherits the built-in value; an explicit empty string
-	// declares resolution unconstrained.
-	MaxResolution *string `json:"max_resolution,omitempty"`
+	// or "4k". Empty leaves resolution unconstrained.
+	MaxResolution string `json:"max_resolution,omitempty"`
+	// Video declares the Seedance task-parameter support matrix this model
+	// honors. Undeclared parameters compile with syntax-only validation: the
+	// driver rejects a parameter only where the deployment said the model
+	// does not take it.
+	Video VideoParams `json:"video,omitempty"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. Endpoint IDs
@@ -89,9 +96,9 @@ type ModelSpec struct {
 // level: two profiles backed by different Volcengine accounts bind the same
 // logical model to different addresses.
 type ProfileSpec struct {
-	// Endpoints maps catalog model names to this account's deployment
+	// Endpoints maps declared model names to this account's deployment
 	// addresses: Ark inference endpoint IDs (ep-xxx). Unmapped models are
-	// addressed by their catalog name.
+	// addressed by their declared name.
 	Endpoints map[string]string `json:"endpoints,omitempty"`
 }
 
@@ -160,9 +167,7 @@ func (m ModelSpec) Validate() error {
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
 	kind := modelKind(m.Kind)
-	if m.Capabilities != nil &&
-		m.Capabilities.CustomEmbedDimensions != nil &&
-		*m.Capabilities.CustomEmbedDimensions &&
+	if m.Capabilities.CustomEmbedDimensions &&
 		kind != kindEmbed {
 		return fmt.Errorf(
 			"model %q sets custom_embed_dimensions on kind %q",
@@ -170,8 +175,11 @@ func (m ModelSpec) Validate() error {
 			m.Kind,
 		)
 	}
-	if m.MaxResolution != nil && kind != kindVideo {
+	if m.MaxResolution != "" && kind != kindVideo {
 		return fmt.Errorf("model %q sets max_resolution on kind %q", m.Name, m.Kind)
+	}
+	if m.Video != (VideoParams{}) && kind != kindVideo {
+		return fmt.Errorf("model %q sets video parameters on kind %q", m.Name, m.Kind)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

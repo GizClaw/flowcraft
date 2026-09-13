@@ -6,13 +6,14 @@ import (
 )
 
 // openGenerate binds the generate pipeline (Messages API, unary + stream)
-// for one catalog model. The provider owns its kernel: the compile,
+// for one declared model. The provider owns its kernel: the compile,
 // transport, and decode stages live in this package, and openGenerate
 // wires them with the model's capability declaration. Anthropic serves the
 // effort dialect, so the reasoning intent compiles to output_config.effort.
 func openGenerate(
 	cls *clients,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
@@ -22,10 +23,9 @@ func openGenerate(
 	// model, so the derived default refuses to cross a model or an account
 	// unless the deployment declared a shared scope.
 	scope := inference.ReasoningScope(
-		entry.reasoningScopeDeclared, id.Provider, id.Name, profile)
-	entry.reasoningScope = scope
+		wire.scopeDeclared, id.Provider, id.Name, profile)
 	return inference.BindGenerateOperations(
-		compileGenerate(id.Name, entry),
+		compileGenerate(id.Name, declared, wire, scope),
 		transportGenerate(cls.api),
 		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(cls.api),

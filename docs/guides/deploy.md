@@ -26,7 +26,6 @@ resources:
       spec:
         endpoint: {base_url: https://api.deepseek.com}
         wire: {reasoning_channel: text}
-        catalog: declared
         models:
           - {name: deepseek-flash, kind: generate,
              capabilities: {inputs: [text, image, data, tool_call, tool_result], outputs: [text]}}

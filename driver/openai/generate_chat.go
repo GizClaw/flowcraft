@@ -27,12 +27,16 @@ import (
 // compileChat lowers a canonical request into Chat Completions params.
 func compileChat(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 ) inference.GenerateCompiler[*chatRequest] {
 	return compileGenerate(
-		entry,
+		declared,
+		wire,
+		scope,
 		func(shape inference.GenerateExecutionShape) *chatRequest {
-			return newChatRequest(modelName, entry, shape)
+			return newChatRequest(modelName, declared, wire, shape)
 		},
 	)
 }
@@ -74,7 +78,8 @@ type chatVideoURLPart struct {
 // newChatRequest seeds the provider-wide policy of one Chat Completions call.
 func newChatRequest(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	shape inference.GenerateExecutionShape,
 ) *chatRequest {
 	request := &chatRequest{
@@ -83,7 +88,7 @@ func newChatRequest(
 	// The driver states the retention decision instead of leaving it to a
 	// provider default, exactly as the Responses surface does — unless the
 	// deployment asked for the field to be omitted.
-	switch entry.dialect.store {
+	switch wire.store {
 	case storeEnabled:
 		request.params.Store = param.NewOpt(true)
 	case storeDisabled:
@@ -98,11 +103,11 @@ func newChatRequest(
 	// some compatible endpoints reject it outright.
 	options := openai.ChatCompletionStreamOptionsParam{}
 	set := false
-	if entry.dialect.chatStreamUsage() {
+	if wire.chat.usage {
 		options.IncludeUsage = openai.Bool(true)
 		set = true
 	}
-	if obfuscation := entry.dialect.chatObfuscation(); obfuscation != nil {
+	if obfuscation := wire.chat.obfuscation; obfuscation != nil {
 		options.IncludeObfuscation = openai.Bool(*obfuscation)
 		set = true
 	}

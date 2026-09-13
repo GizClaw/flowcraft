@@ -53,15 +53,14 @@ builds the deployment with its own factory registry, or at runtime.
     field is reported `dropped` in the compile report. Inspect
     `response.metadata.decisions` (or `Explain`) when metadata seems
     missing upstream — host build/runtime.
-17. Model declarations are leaf patches: redeclaring a built-in model by
-    name and kind inherits every capability leaf, limit, and driver control
-    fact the declaration does not state. Do not re-state the full catalog
-    entry, and do not assume an omitted leaf is removed — write
-    `hosted_web_search: false` or an explicit list to express removal.
-    Compatible endpoints configured through the OpenAI driver accept the
-    same leaf patches; embed dimension sizes still come from each entry's
-    built-in whitelist, so `custom_embed_dimensions` can only be restated
-    on those entries, never granted elsewhere — host build.
+17. No driver ships a built-in line-up, so a model declaration is the whole
+    fact: an omitted leaf is undeclared, never inherited from a same-named
+    model. A generate model must state `outputs: [text]`, and the `catalog`
+    key that used to select a namespace is rejected with the migration path.
+    Driver control facts without a capability kind of their own are
+    declaration leaves too (Bytedance `max_resolution`/`video`, MiniMax
+    `wire_model`/`video`); leave one out and the endpoint's own validation
+    decides instead of the driver rejecting locally — host build.
 18. `effort_none` (OpenAI/Azure) and the top-level `dimensions:` key
     (OpenAI/Azure/Bytedance) were removed: strict decoding reports them as
     unknown fields. OpenAI-family reasoning off is implied by

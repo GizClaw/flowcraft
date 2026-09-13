@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -70,21 +72,31 @@ func Register(r *resource.Registry) error {
 	return r.Register(deployFactory{})
 }
 
+// modelKind classifies a declared model by the compiler family that serves it.
+// It is an implementation discriminator — which wire compiler to bind — not a
+// capability declaration: the content kinds a model serves are declared
+// explicitly in its capabilities and validated against the family contract in
+// validateModel.
+type modelKind string
+
+const (
+	kindGenerate modelKind = "generate"
+	kindEmbed    modelKind = "embed"
+	kindImage    modelKind = "image"
+	kindTTS      modelKind = "tts"
+)
+
 // buildProvider builds the OpenAI provider definition from one
-// deployment provider config. It validates the provider Spec, merges
-// the model catalog, resolves every credential profile, and binds each
-// catalog model to the openers its kind serves. Unknown models fail
-// closed: only catalog models (built-in or declared via Spec.Models)
-// are exposed.
+// deployment provider config. It validates the provider Spec, resolves
+// every credential profile, and binds each declared model to the openers its
+// kind serves. Unknown models fail closed: only models the deployment
+// declares are exposed.
 func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {
 	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		return inference.ProviderDefinition{}, err
-	}
+	wire := spec.dialect()
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
 		material, err := newProfileMaterial(ctx, profile, secrets)
@@ -117,31 +129,98 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			},
 		)
 	}
-	names := make([]string, 0, len(models))
-	for name := range models {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		entry := models[name]
-		id := model.ModelID{Provider: settings.ID, Name: name}
-		descriptor := descriptorFor(id, entry)
+	declared := append([]ModelSpec(nil), spec.Models...)
+	slices.SortFunc(declared, func(left, right ModelSpec) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	for _, modelSpec := range declared {
+		kind := modelKind(modelSpec.Kind)
+		if err := validateModel(kind, modelSpec, wire); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
+		modelSpec = wire.narrowModel(kind, modelSpec)
+		id := model.ModelID{Provider: settings.ID, Name: modelSpec.Name}
+		if err := modelSpec.Lifecycle.ValidateFor(id); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
-			Descriptor: descriptor,
-			Openers:    openersFor(spec, entry, profiles, id),
+			Descriptor: model.ModelDescriptor{
+				ID:           id,
+				Capabilities: modelSpec.Capabilities.Clone(),
+				Limits:       modelSpec.Limits.Clone(),
+				Lifecycle:    modelSpec.Lifecycle.Clone(),
+			},
+			Openers: openersFor(spec, wire, kind, modelSpec, profiles, id),
 		})
 	}
 	return provider, nil
 }
 
-// openersFor binds one catalog model to the operation openers its kind
+// validateModel enforces the family contract: the compiler bound by kind can
+// only serve the output modalities it produces, and a declared input kind must
+// be one this wire can carry. It runs once per model at build time, before any
+// request reaches the compiler.
+func validateModel(kind modelKind, declared ModelSpec, wire dialect) error {
+	if err := declared.Capabilities.Validate(); err != nil {
+		return err
+	}
+	for _, input := range declared.Capabilities.Inputs {
+		switch input {
+		case message.PartAudio:
+			return fmt.Errorf(
+				"the OpenAI wire has no audio input; drop it from capabilities.inputs",
+			)
+		case message.PartVideo:
+			// Video is a compatible-endpoint extension: the family carries it
+			// only when the deployment states the endpoint fact (and the spec
+			// requires that fact to be on the chat surface, the one with a
+			// lowering).
+			if !wire.video {
+				return fmt.Errorf(
+					"the endpoint does not accept video input; " +
+						"set spec.wire.video_input on a chat-surface deployment, " +
+						"or drop it from capabilities.inputs",
+				)
+			}
+		case message.PartFile:
+			return fmt.Errorf(
+				"the OpenAI wire has no file input; drop it from capabilities.inputs",
+			)
+		}
+	}
+	switch kind {
+	case kindGenerate:
+		if !slices.Contains(declared.Capabilities.Outputs, message.PartText) {
+			return fmt.Errorf("generate family must declare text output")
+		}
+	case kindImage:
+		if !slices.Contains(declared.Capabilities.Outputs, message.PartImage) {
+			return fmt.Errorf("image family must declare image output")
+		}
+	case kindTTS:
+		if !slices.Contains(declared.Capabilities.Outputs, message.PartAudio) {
+			return fmt.Errorf("tts family must declare audio output")
+		}
+	case kindEmbed:
+		if len(declared.Capabilities.Outputs) != 0 {
+			return fmt.Errorf("embed family declares no generate output")
+		}
+	}
+	return declared.Limits.Validate()
+}
+
+// openersFor binds one declared model to the operation openers its kind
 // serves. Each opener resolves the credential profile from ModelRef.Profile,
 // builds service clients for it, and returns the driver set for the model's
 // operation family. Transcription/realtime kinds are intentionally absent
 // until core/inference exposes those operation surfaces.
 func openersFor(
 	spec Spec,
-	entry catalogEntry,
+	wire dialect,
+	kind modelKind,
+	declared ModelSpec,
 	profiles map[string]profileMaterial,
 	id model.ModelID,
 ) inference.Openers {
@@ -158,7 +237,7 @@ func openersFor(
 		}
 		return material.newClients(ctx, spec)
 	}
-	switch entry.kind {
+	switch kind {
 	case kindGenerate:
 		return inference.Openers{
 			Generate: func(
@@ -169,7 +248,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openGenerate(cls, entry, id, model.Profile)
+				return openGenerate(cls, declared, wire, id, model.Profile)
 			},
 		}
 	case kindEmbed:
@@ -182,7 +261,7 @@ func openersFor(
 				if err != nil {
 					return nil, err
 				}
-				return openEmbed(cls, entry, id, model.Profile)
+				return openEmbed(cls, declared, wire, id, model.Profile)
 			},
 		}
 	case kindImage:
@@ -195,7 +274,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openImage(cls, entry, id, model.Profile)
+				return openImage(cls, declared, wire, id, model.Profile)
 			},
 		}
 	case kindTTS:

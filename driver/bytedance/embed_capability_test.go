@@ -31,11 +31,16 @@ func embedDimensionRequest() inference.EmbedRequest {
 // the published capability reject the dimensions field, and models that
 // publish it compile it through.
 func TestEmbedDimensionsGate(t *testing.T) {
-	fixed := catalogEntry{
-		kind:         kindEmbed,
-		capabilities: model.ModelCapabilities{}.WithInputs(message.PartText),
+	fixed := testTarget{
+		spec: ModelSpec{
+			Name: "fixed",
+			Kind: "embed",
+			Capabilities: model.ModelCapabilities{}.
+				WithInputs(message.PartText),
+		},
+		wire: defaultWire,
 	}
-	compiled, err := compileEmbed("fixed", fixed)(
+	compiled, err := compileEmbedFor("fixed", fixed)(
 		context.Background(),
 		conformanceModel("fixed"),
 		embedDimensionRequest(),
@@ -47,9 +52,9 @@ func TestEmbedDimensionsGate(t *testing.T) {
 		t.Fatal("dimensions request was not rejected on the dimensions field")
 	}
 
-	compiled, err = compileEmbed(
+	compiled, err = compileEmbedFor(
 		"doubao-embedding-large",
-		catalog["doubao-embedding-large"],
+		declarations["doubao-embedding-large"],
 	)(
 		context.Background(),
 		conformanceModel("doubao-embedding-large"),
@@ -127,9 +132,9 @@ func TestEmbedCompileToTransportText(t *testing.T) {
 		},
 		Dimensions: &dimensions,
 	}
-	compiled, err := compileEmbed(
+	compiled, err := compileEmbedFor(
 		"doubao-embedding-large",
-		catalog["doubao-embedding-large"],
+		declarations["doubao-embedding-large"],
 	)(context.Background(), conformanceModel("doubao-embedding-large"), request)
 	if err != nil {
 		t.Fatalf("compileEmbed: %v", err)
@@ -200,9 +205,9 @@ func TestEmbedCompileToTransportMultimodal(t *testing.T) {
 			}},
 		}},
 	}
-	compiled, err := compileEmbed(
+	compiled, err := compileEmbedFor(
 		"doubao-embedding-vision",
-		catalog["doubao-embedding-vision"],
+		declarations["doubao-embedding-vision"],
 	)(context.Background(), conformanceModel("doubao-embedding-vision"), request)
 	if err != nil {
 		t.Fatalf("compileEmbed: %v", err)

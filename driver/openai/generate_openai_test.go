@@ -100,7 +100,7 @@ func openaiModel(name string) model.ModelRef {
 
 // reasoningScopeFor is the verification scope the opener derives for one model
 // of this driver addressed with the default profile. Tests that build a
-// catalog entry directly (instead of going through openGenerate) stamp their
+// declaration directly (instead of going through openGenerate) stamp their
 // traces with it, because the compiler requires the scope an opened model
 // carries.
 func reasoningScopeFor(name string) string {
@@ -108,9 +108,9 @@ func reasoningScopeFor(name string) string {
 }
 
 // scopedEntry returns the entry an opener would hand to the compiler: the
-// same catalog entry with the verification scope filled in.
-func scopedEntry(entry catalogEntry, name string) catalogEntry {
-	entry.reasoningScope = reasoningScopeFor(name)
+// same declaration with the verification scope filled in.
+func scopedEntry(entry testTarget, name string) testTarget {
+	entry.scope = reasoningScopeFor(name)
 	return entry
 }
 
@@ -293,7 +293,8 @@ func TestEscapedEnvSecretSurvivesFactoryDecode(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
-			"spec": {"endpoint": {"base_url": "`+server.URL+`"}},
+			"spec": {"endpoint": {"base_url": "`+server.URL+`"}, "models": `+
+			fixtureModelsJSON(t, fixtureNames...)+`},
 			"profiles": [{"id": "default", "secrets": {"api_key": "\\${env:OPENAI_TEST_KEY}"}}]
 		}`), resource.ExpandEnv())
 	if err != nil {
@@ -334,7 +335,8 @@ func TestFactoryBuild(t *testing.T) {
 	input := ResourceSettings{
 		ID: "openai",
 		Spec: json.RawMessage(
-			`{"endpoint":{"organization":"org-1","project":"proj-1"}}`,
+			`{"endpoint":{"organization":"org-1","project":"proj-1"},"models":` +
+				fixtureModelsJSON(t, fixtureNames...) + `}`,
 		),
 		Profiles: []ProfileSettings{{
 			ID:         "default",
@@ -352,8 +354,8 @@ func TestFactoryBuild(t *testing.T) {
 	if len(provider.Profiles) != 1 || provider.Profiles[0].ID != "default" {
 		t.Fatalf("profiles = %+v", provider.Profiles)
 	}
-	if len(provider.Models) != len(catalog) {
-		t.Fatalf("models = %d, want %d", len(provider.Models), len(catalog))
+	if len(provider.Models) != len(fixtureNames) {
+		t.Fatalf("models = %d, want %d", len(provider.Models), len(fixtureNames))
 	}
 	byName := make(map[string]inference.ModelImplementation, len(provider.Models))
 	for _, model := range provider.Models {
@@ -405,8 +407,8 @@ func compileTextRequest(
 	request inference.GenerateRequest,
 ) *responsesRequest {
 	t.Helper()
-	compiled, err := compileResponses(
-		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	compiled, err := compileResponsesFor(
+		"gpt-5.6-sol", scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol"),
 	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -566,7 +568,7 @@ func TestCompileRejectsAssistantContextImage(t *testing.T) {
 			}},
 		},
 	}
-	_, err = compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	_, err = compileResponsesFor("gpt-5.6-sol", declarations["gpt-5.6-sol"])(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -656,7 +658,7 @@ func TestClassifyError(t *testing.T) {
 			})
 			defer server.Close()
 			cls := testClients(t, server)
-			operations, err := openGenerate(cls, catalog["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
+			operations, err := openGenerateFor(cls, declarations["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
 			if err != nil {
 				t.Fatalf("openGenerate: %v", err)
 			}
@@ -687,9 +689,9 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	})
 	defer server.Close()
 	cls := testClients(t, server)
-	operations, err := openGenerate(
+	operations, err := openGenerateFor(
 		cls,
-		catalog["gpt-5.6-sol"],
+		declarations["gpt-5.6-sol"],
 		openaiModel("gpt-5.6-sol").ID,
 		"default",
 	)
@@ -739,8 +741,8 @@ func TestCompileResponsesReasoningItem(t *testing.T) {
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileResponses(
-		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	compiled, err := compileResponsesFor(
+		"gpt-5.6-sol", scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol"),
 	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -796,8 +798,8 @@ func TestCompileResponsesReasoningItemWithoutSummary(t *testing.T) {
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileResponses(
-		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	compiled, err := compileResponsesFor(
+		"gpt-5.6-sol", scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol"),
 	)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -855,8 +857,8 @@ func assertEmptySummaryField(t *testing.T, reasoning *responses.ResponseReasonin
 
 func TestCompileReasoningDispositions(t *testing.T) {
 	model := openaiModel("gpt-5.6-sol")
-	compile := compileResponses(
-		"gpt-5.6-sol", scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol"),
+	compile := compileResponsesFor(
+		"gpt-5.6-sol", scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol"),
 	)
 
 	t.Run("reasoning without id drops with reason", func(t *testing.T) {
@@ -904,9 +906,9 @@ func TestCompileReasoningDispositions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decodeSpec: %v", err)
 		}
-		models, err := mergedCatalog(spec)
+		models, err := resolveModelsForTest(t, spec)
 		if err != nil {
-			t.Fatalf("mergedCatalog: %v", err)
+			t.Fatalf("resolveModels: %v", err)
 		}
 		request := simpleTextRequest("hi")
 		request.Context = []message.Message{{
@@ -915,7 +917,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 				message.ReasoningPart{Text: "trace", Signature: "enc", ID: "rs_1"},
 			}},
 		}}
-		compiled, err := compileResponses("my-plain-model", models["my-plain-model"])(
+		compiled, err := compileResponsesFor("my-plain-model", models["my-plain-model"])(
 			context.Background(),
 			openaiModel("my-plain-model"),
 			request,

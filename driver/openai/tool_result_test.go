@@ -47,14 +47,14 @@ func toolResultImageParts(t *testing.T) message.Content {
 // speaks and returns the request the transport would post.
 func compileToolResult(
 	t *testing.T,
-	entry catalogEntry,
+	entry testTarget,
 	content message.Content,
 ) inference.Compiled[*responsesRequest] {
 	t.Helper()
-	if entry.dialect.api == apiChat {
+	if entry.dialect.surface.api == apiChat {
 		t.Fatal("chat entries compile through compileChatToolResult")
 	}
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		toolResultRequest(t, content),
@@ -68,11 +68,11 @@ func compileToolResult(
 
 func compileChatToolResult(
 	t *testing.T,
-	entry catalogEntry,
+	entry testTarget,
 	content message.Content,
 ) inference.Compiled[*chatRequest] {
 	t.Helper()
-	compiled, err := compileChat("gpt-5.6-sol", entry)(
+	compiled, err := compileChatFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		toolResultRequest(t, content),
@@ -88,7 +88,7 @@ func compileChatToolResult(
 // model receives the tool's image in the function_call_output content list,
 // in the order the tool produced it.
 func TestToolResultMultimodalCarriesImage(t *testing.T) {
-	compiled := compileToolResult(t, catalog["gpt-5.6-sol"], toolResultImageParts(t))
+	compiled := compileToolResult(t, declarations["gpt-5.6-sol"], toolResultImageParts(t))
 	if compiled.Report.Dropped(inference.FieldGenerateContextToolResult) {
 		t.Fatalf("multimodal tool result must compile native: %+v", compiled.Report.Decisions)
 	}
@@ -114,8 +114,8 @@ func TestToolResultMultimodalCarriesImage(t *testing.T) {
 // model cannot consume is replaced where it stood, so the surrounding text
 // keeps its meaning, and the loss is reported on the ledger.
 func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
-	entry := catalog["gpt-5.6-sol"]
-	entry.capabilities.Inputs = []message.PartKind{
+	entry := declarations["gpt-5.6-sol"]
+	entry.spec.Capabilities.Inputs = []message.PartKind{
 		message.PartText,
 		message.PartData,
 		message.PartToolCall,
@@ -157,8 +157,8 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 // Completions contract: tool messages carry text only, so an image becomes an
 // in-place placeholder with a ledger reason instead of vanishing.
 func TestToolResultChatImagesAreReportedNotSilentlyDropped(t *testing.T) {
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.api = apiChat
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.api = apiChat
 	content := message.Content{Parts: []message.Part{
 		message.TextPart{Text: "before"},
 		message.ImagePart{Source: mustImageSource(t)},

@@ -178,7 +178,7 @@ func bytesClone(raw []byte) []byte {
 // are rejected in the ledger with a precise reason.
 func compileGenerate(
 	endpoint string,
-	entry catalogEntry,
+	declared ModelSpec,
 ) inference.GenerateCompiler[*arkresponses.ResponsesRequest] {
 	return func(
 		_ context.Context,
@@ -225,7 +225,7 @@ func compileGenerate(
 			case message.RoleTool:
 				compileToolResults(ark, turn.Content.Parts, contextPartField, ledger)
 			default: // user / assistant
-				compileMessage(ark, string(turn.Role), turn.Content.Parts, entry, contextPartField, ledger)
+				compileMessage(ark, string(turn.Role), turn.Content.Parts, declared, contextPartField, ledger)
 			}
 		}
 		if instructions := strings.Join(system, "\n\n"); instructions != "" {
@@ -237,16 +237,16 @@ func compileGenerate(
 		case inference.InputRoleTool:
 			compileToolResults(ark, request.Input.Content.Parts, inputPartField, ledger)
 		default:
-			compileMessage(ark, "user", request.Input.Content.Parts, entry, inputPartField, ledger)
+			compileMessage(ark, "user", request.Input.Content.Parts, declared, inputPartField, ledger)
 		}
 
-		compileIntent(ark, request.Input.Content.Intent, entry, ledger)
+		compileIntent(ark, request.Input.Content.Intent, declared, ledger)
 
 		// Provider options: GenerateOptions fields lower onto the request one
 		// by one; extensions for other operations are rejected wholesale.
 		options, other := inference.ExtensionFor[GenerateOptions](request.Extensions)
 		ledger.RejectExtensions("generate", other)
-		compileGenerateOptions(ark, options, entry, ledger)
+		compileGenerateOptions(ark, options, declared, ledger)
 
 		report := ledger.Report()
 		if ledger.Rejected() {
@@ -260,7 +260,7 @@ func compileGenerate(
 func compileGenerateOptions(
 	ark *arkresponses.ResponsesRequest,
 	options GenerateOptions,
-	entry catalogEntry,
+	declared ModelSpec,
 	ledger *inference.Ledger,
 ) {
 	if options.ServiceTier != "" {
@@ -302,7 +302,7 @@ func compileGenerateOptions(
 		ark.SafetyIdentifier = &identifier
 	}
 	if options.WebSearch != nil {
-		if !entry.capabilities.HostedWebSearch {
+		if !declared.Capabilities.HostedWebSearch {
 			ledger.Reject(
 				inference.ExtensionField("web_search").Qualify(options),
 				"model does not support hosted web search",
@@ -320,7 +320,7 @@ func compileMessage(
 	ark *arkresponses.ResponsesRequest,
 	role string,
 	parts []message.Part,
-	entry catalogEntry,
+	declared ModelSpec,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -337,19 +337,19 @@ func compileMessage(
 		case message.TextPart:
 			content = append(content, arkContentText(value.Text))
 		case message.ImagePart:
-			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
 				ledger.Reject(fields(message.PartImage), "model does not accept image input")
 				continue
 			}
 			content = append(content, arkContentImage(sourceURI(value.Source)))
 		case message.VideoPart:
-			if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartVideo) {
 				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
 				continue
 			}
 			content = append(content, arkContentVideo(videoSourceURI(value.Source)))
 		case message.AudioPart:
-			if !slices.Contains(entry.capabilities.Inputs, message.PartAudio) {
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartAudio) {
 				ledger.Reject(fields(message.PartAudio), "model does not accept audio input")
 				continue
 			}
@@ -453,7 +453,7 @@ func compileToolResultContent(
 func compileIntent(
 	ark *arkresponses.ResponsesRequest,
 	intent inference.Intent,
-	entry catalogEntry,
+	declared ModelSpec,
 	ledger *inference.Ledger,
 ) {
 	if text := intent.Text; text != nil {
@@ -503,12 +503,12 @@ func compileIntent(
 	ark.TopP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		case entry.capabilities.Reasoning.Kind == model.ReasoningAlways &&
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -520,12 +520,12 @@ func compileIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+		case len(declared.Capabilities.Reasoning.EffortMap) == 0:
 			// Spec-declared reasoning models without a dial: honor the
 			// request for reasoning itself and report the lost level.
 			on := true
@@ -535,7 +535,7 @@ func compileIntent(
 				"model's thinking is binary; no effort dial exists",
 			)
 		default:
-			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+			mode, _ := declared.Capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
 			)
 			setArkThinking(ark, text.ReasoningEnabled, mode)

@@ -29,26 +29,37 @@ type Spec struct {
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// VideoPollIntervalMillis paces video task polling; defaults to 5000.
 	VideoPollIntervalMillis resource.Int `json:"video_poll_interval_millis,omitempty"`
-	// Models declares models outside the built-in catalog or overrides
-	// catalog entries by name.
+	// Models declares the line-up this deployment serves. It is the only
+	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves, or a delta over a
-// same-named, same-kind built-in catalog entry. Capabilities is a patch
-// with field-presence semantics: leaves it names replace that leaf of the
-// entry it overrides and leaves it does not name are inherited, so
-// redeclaring a built-in to tweak one channel keeps every other declared
-// fact.
+// ModelSpec declares one model this deployment serves. The driver ships no
+// line-up, so the declaration is complete: what it states is what the model
+// promises, and a leaf it leaves out is undeclared rather than inherited.
+// Driver control facts that no capability kind expresses (the video API
+// generation and its support flags, the wire token an alias addresses) are
+// stated here too.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the capability leaves this model changes.
-	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
-	// Limits declares numeric capacity limits for the model. Overriding a
-	// built-in catalog entry by name keeps the catalog limit for any field
-	// left nil; declaring a value replaces it.
+	// Capabilities declares what this model accepts and produces.
+	Capabilities model.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares the model's numeric capacity limits. Undeclared leaves
+	// claim no bound rather than a zero one.
 	Limits model.ModelLimits `json:"limits,omitempty"`
+	// Lifecycle declares the model's discovery metadata: deprecation,
+	// retirement time, and the model that replaces it. Empty means active.
+	// The replacement is a full model identity, so it can name a model this
+	// deployment serves or one served elsewhere; validation runs when the
+	// model is published, where its own identity is known.
+	Lifecycle model.ModelLifecycle `json:"lifecycle,omitzero"`
+	// WireModel overrides the model token sent to the API when the
+	// deployment name is an alias (e.g. MiniMax-H3-Context-IR still speaks
+	// to the MiniMax-H3 model). Empty sends the declared name.
+	WireModel string `json:"wire_model,omitempty"`
+	// Video declares the video-surface facts for a kind "video" model.
+	Video VideoParams `json:"video,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -70,12 +81,29 @@ func (m ModelSpec) Validate() error {
 			m.Kind,
 		)
 	}
-	if m.Capabilities != nil && m.Capabilities.CustomEmbedDimensions != nil {
+	if m.Capabilities.CustomEmbedDimensions {
 		return fmt.Errorf(
 			"model %q declares custom_embed_dimensions, but minimax has "+
 				"no embed family",
 			m.Name,
 		)
+	}
+	switch m.Video.API {
+	case "", videoAPIV2:
+	default:
+		return fmt.Errorf(
+			"model %q declares video.api %q, want %q",
+			m.Name,
+			m.Video.API,
+			videoAPIV2,
+		)
+	}
+	if m.Video != (VideoParams{}) && modelKind(m.Kind) != kindVideo {
+		return fmt.Errorf(
+			"model %q sets video parameters on kind %q", m.Name, m.Kind)
+	}
+	if m.WireModel != "" && !modelNamePattern.MatchString(m.WireModel) {
+		return fmt.Errorf("model %q has invalid wire_model %q", m.Name, m.WireModel)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

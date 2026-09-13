@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
@@ -63,10 +64,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		return inference.ProviderDefinition{}, err
-	}
+	wire := spec.dialect()
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
 		material, err := newProfileMaterial(ctx, profile, secrets)
@@ -99,28 +97,39 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			},
 		)
 	}
-	names := make([]string, 0, len(models))
-	for name := range models {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		entry := models[name]
-		id := model.ModelID{Provider: settings.ID, Name: name}
-		descriptor := descriptorFor(id, entry)
+	declared := append([]ModelSpec(nil), spec.Models...)
+	slices.SortFunc(declared, func(left, right ModelSpec) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	for _, modelSpec := range declared {
+		if err := validateModel(modelSpec); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
+		id := model.ModelID{Provider: settings.ID, Name: modelSpec.Name}
+		if err := modelSpec.Lifecycle.ValidateFor(id); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
-			Descriptor: descriptor,
-			Openers:    openersFor(spec, entry, profiles, id),
+			Descriptor: model.ModelDescriptor{
+				ID:           id,
+				Capabilities: modelSpec.Capabilities.Clone(),
+				Limits:       modelSpec.Limits.Clone(),
+				Lifecycle:    modelSpec.Lifecycle.Clone(),
+			},
+			Openers: openersFor(spec, modelSpec, wire, profiles, id),
 		})
 	}
 	return provider, nil
 }
 
-// openersFor binds one catalog model to the operation openers its kind
+// openersFor binds one declared model to the operation openers its kind
 // serves.
 func openersFor(
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	profiles map[string]profileMaterial,
 	id model.ModelID,
 ) inference.Openers {
@@ -135,7 +144,7 @@ func openersFor(
 		}
 		return material.newClients(ctx, spec)
 	}
-	switch entry.kind {
+	switch modelKind(declared.Kind) {
 	case kindGenerate:
 		return inference.Openers{
 			Generate: func(
@@ -146,7 +155,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openGenerate(cls, spec, entry, id, model.Profile)
+				return openGenerate(cls, spec, declared, wire, id, model.Profile)
 			},
 		}
 	case kindEmbed:
@@ -159,7 +168,7 @@ func openersFor(
 				if err != nil {
 					return nil, err
 				}
-				return openEmbed(cls, spec, entry, id, model.Profile)
+				return openEmbed(cls, spec, declared, id, model.Profile)
 			},
 		}
 	case kindImage:
@@ -185,7 +194,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openVideo(cls, spec, entry, id, model.Profile)
+				return openVideo(cls, spec, declared, id, model.Profile)
 			},
 		}
 	}

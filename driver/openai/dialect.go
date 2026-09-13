@@ -9,7 +9,7 @@ import (
 
 // This file owns the driver's dialect vocabulary: the normalized enums the
 // compiler reads, and the one value that carries every provider-wide wire
-// decision a catalog entry needs. Spec holds what the deployment writes;
+// decision a model's compiler needs. Spec holds what the deployment writes;
 // dialect holds what the driver concluded from it.
 
 // apiMode selects the generate wire surface for one provider instance.
@@ -64,7 +64,7 @@ type bodyField struct {
 }
 
 // sortedBodyFields orders one body-field map by path. It is derived once per
-// provider instance (the dialect is stamped onto every catalog entry), so the
+// provider instance (the dialect is shared by every model's compiler), so the
 // request path only copies the slice.
 func sortedBodyFields(entries map[string]json.RawMessage) []bodyField {
 	if len(entries) == 0 {
@@ -89,44 +89,83 @@ const (
 	storeOmitted
 )
 
-// dialect is one provider instance's wire policy. Every catalog entry carries
-// the same value, stamped once by mergedCatalog: it is deployment
-// configuration, not a model fact, and the compiler reads it here instead of
-// reaching back into the Spec.
+// dialect is one provider instance's wire policy: what the deployment decided
+// that is not about a single model. It is derived from the Spec once per
+// provider and shared by every model's compiler, and every optional is
+// already resolved — the compiler reads decisions, never config defaults.
+//
+// Contracts with more than one leaf are grouped by the layer they come from,
+// so a read says where the deployment wrote it: the surface being spoken, the
+// reasoning round trip, the body fields the driver does not model, and the
+// chat-only streaming policy. A leaf that carries one decision stays at the
+// top level.
 type dialect struct {
-	api                     apiMode
-	store                   storePolicy
-	omitReasoningPayload    bool
-	reasoningChannel        reasoningChannel
-	reasoningSummary        reasoningSummaryPolicy
-	truncation              truncationMode
-	azureDeployment         bool
-	videoInput              bool
-	extraBody               []bodyField
-	reasoningScopeDeclared  string
-	requestMetadataEnvelope string
-	// chatStreamIncludeUsage / Obfuscation carry the explicit chat streaming
-	// policy; nil keeps the OpenAI default.
-	chatStreamIncludeUsage       *bool
-	chatStreamIncludeObfuscation *bool
+	surface    surfaceDialect
+	reasoning  reasoningDialect
+	body       bodyDialect
+	chat       chatDialect
+	store      storePolicy
+	truncation truncationMode
+	video      bool
+}
+
+// surfaceDialect is where requests go: which API family, and whether the path
+// addresses a deployment like Azure.
+type surfaceDialect struct {
+	api             apiMode
+	azureDeployment bool
+}
+
+// reasoningDialect is the reasoning contract this endpoint speaks: the
+// round-trip shape, the readable summary policy, whether the encrypted payload
+// rides along, and the verification scope its traces belong to.
+type reasoningDialect struct {
+	channel       reasoningChannel
+	summary       reasoningSummaryPolicy
+	payload       bool
+	scopeDeclared string
+}
+
+// bodyDialect is what the driver forwards without modelling: the deployment's
+// own body fields (already ordered) and the envelope that carries canonical
+// request metadata.
+type bodyDialect struct {
+	extra         []bodyField
+	metadataField string
+}
+
+// chatDialect is the Chat Completions streaming policy. usage is resolved
+// (the OpenAI default is to send it); obfuscation stays a tri-state because
+// the wire has three states: send true, send false, or leave the field off.
+type chatDialect struct {
+	usage       bool
+	obfuscation *bool
 }
 
 // dialect derives the provider-wide wire policy from the spec.
 func (s Spec) dialect() dialect {
 	return dialect{
-		api:                          s.apiMode(),
-		store:                        s.store(),
-		omitReasoningPayload:         !s.includeReasoningPayload(),
-		reasoningChannel:             s.reasoningChannel(),
-		reasoningSummary:             s.reasoningSummaryPolicy(),
-		truncation:                   s.truncation(),
-		azureDeployment:              s.routing() == routingAzureDeployment,
-		videoInput:                   s.Wire.VideoInput,
-		extraBody:                    sortedBodyFields(s.Wire.ExtraBody),
-		reasoningScopeDeclared:       s.Wire.ReasoningScope,
-		requestMetadataEnvelope:      s.requestMetadataEnvelope(),
-		chatStreamIncludeUsage:       s.chatStreamIncludeUsage(),
-		chatStreamIncludeObfuscation: s.chatStreamIncludeObfuscation(),
+		surface: surfaceDialect{
+			api:             s.apiMode(),
+			azureDeployment: s.routing() == routingAzureDeployment,
+		},
+		reasoning: reasoningDialect{
+			channel:       s.reasoningChannel(),
+			summary:       s.reasoningSummaryPolicy(),
+			payload:       s.includeReasoningPayload(),
+			scopeDeclared: s.Wire.ReasoningScope,
+		},
+		body: bodyDialect{
+			extra:         sortedBodyFields(s.Wire.ExtraBody),
+			metadataField: s.requestMetadataEnvelope(),
+		},
+		chat: chatDialect{
+			usage:       s.chatStreamUsage(),
+			obfuscation: s.chatStreamIncludeObfuscation(),
+		},
+		store:      s.store(),
+		truncation: s.truncation(),
+		video:      s.Wire.VideoInput,
 	}
 }
 
@@ -134,26 +173,15 @@ func (s Spec) dialect() dialect {
 // toggle declaration cannot survive on a surface whose implementation has no
 // "off" channel, so the published capability becomes always-on. Endpoints
 // whose protocol does have an off token keep their declaration — that is an
-// endpoint fact the catalog states, not something the driver guesses from the
-// reasoning channel.
-func (d dialect) narrow(entry catalogEntry) catalogEntry {
-	if entry.kind == kindGenerate &&
-		entry.capabilities.Reasoning.Kind == model.ReasoningToggle &&
-		d.api == apiChat {
-		entry.capabilities.Reasoning.Kind = model.ReasoningAlways
+// endpoint fact the deployment states, not something the driver guesses from
+// the reasoning channel.
+func (d dialect) narrowModel(kind modelKind, declared ModelSpec) ModelSpec {
+	if kind == kindGenerate &&
+		declared.Capabilities.Reasoning.Kind == model.ReasoningToggle &&
+		d.surface.api == apiChat {
+		declared.Capabilities.Reasoning.Kind = model.ReasoningAlways
 	}
-	return entry
-}
-
-// chatStreamUsage resolves the chat streaming usage policy to a wire decision.
-func (d dialect) chatStreamUsage() bool {
-	return d.chatStreamIncludeUsage == nil || *d.chatStreamIncludeUsage
-}
-
-// chatObfuscation returns the explicit stream obfuscation policy, or nil when
-// the OpenAI default applies.
-func (d dialect) chatObfuscation() *bool {
-	return d.chatStreamIncludeObfuscation
+	return declared
 }
 
 // apiMode returns the normalized generate API mode.
@@ -219,12 +247,12 @@ func (s Spec) requestMetadataEnvelope() string {
 }
 
 // chatStreamIncludeUsage returns the provider policy for chat streaming,
-// or nil when the driver default (include usage) should apply.
-func (s Spec) chatStreamIncludeUsage() *bool {
-	if s.Wire.ChatStreamOptions == nil {
-		return nil
+// resolved: the OpenAI default is to include the usage chunk.
+func (s Spec) chatStreamUsage() bool {
+	if s.Wire.ChatStreamOptions == nil || s.Wire.ChatStreamOptions.IncludeUsage == nil {
+		return true
 	}
-	return s.Wire.ChatStreamOptions.IncludeUsage
+	return *s.Wire.ChatStreamOptions.IncludeUsage
 }
 
 // chatStreamIncludeObfuscation returns the provider policy for chat stream
