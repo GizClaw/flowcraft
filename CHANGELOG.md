@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.3.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.0` - 2026-09-14
+
+### Changed
+
+- feat(core/inference)!: own the model vocabulary as a leaf package and close the declaration loop — core/inference/model carries identity, descriptor, capabilities, limits, lifecycle, reasoning and operations with deprecated re-exports from core/inference, the CapabilitiesPatch/ReasoningPatch overlay vocabulary is deleted because a declaration is the whole fact, generate requests are checked against the model's declared output budget and input kinds before any provider work (both rejections stay fallback-eligible), and tool results become multimodal (message.Content through tool execution, middleware redaction and result limits, MCP, delegation and the script bridge); feat(core/inference): a compiled attempt becomes a value — Binding opens a model's drivers once, Prepared compiles one request against them, the graph inference node and script bridge reuse an LRU BindingCache, route keeps one attempt engine, and shared helpers (Ledger, ExtensionFor, RejectExtensions, LogProvider, ClassifyStatus, ptr) replace the per-driver copies; fix(core/inference): stamp reasoning traces with a verification scope and replay a stored trace only where the target can verify it, name the failed contract check in Error.Detail, classify 402/403/405, treat an interim streamed image snapshot as a contract violation, and keep result budgets exact with non-text tool results bounded by default
 
 ## `core/v0.3.1` - 2026-09-09
 
