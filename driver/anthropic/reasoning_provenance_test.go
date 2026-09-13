@@ -10,14 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// scopedEntry returns the entry the opener hands to the compiler: the catalog
-// entry with the verification scope of one addressed model filled in.
-func scopedEntry(entry catalogEntry, provider, name, profile string) catalogEntry {
-	entry.reasoningScope = inference.ReasoningScope(
-		entry.reasoningScopeDeclared, provider, name, profile)
-	return entry
-}
-
 // decisionFor returns the report entry for one field.
 func decisionFor(
 	decisions []inference.Decision,
@@ -51,8 +43,8 @@ func reasoningHistoryRequest(trace message.ReasoningPart) inference.GenerateRequ
 // that no retry can repair. Provenance turns that into a reported drop.
 func TestForeignReasoningSignatureIsDroppedNotSent(t *testing.T) {
 	entry := scopedEntry(
-		catalog["claude-fable-5"], "minimax", "minimax-m3", "default")
-	compiled, err := compileGenerate("minimax-m3", entry)(
+		declarations["claude-fable-5"], "minimax", "minimax-m3", "default")
+	compiled, err := compileGenerateFor("minimax-m3", entry)(
 		context.Background(),
 		model.ModelRef{
 			ID:      model.ModelID{Provider: "minimax", Name: "minimax-m3"},
@@ -93,8 +85,8 @@ func TestForeignReasoningSignatureIsDroppedNotSent(t *testing.T) {
 // deployment produced still round-trips as a thinking block.
 func TestOwnReasoningSignatureIsSent(t *testing.T) {
 	entry := scopedEntry(
-		catalog["claude-fable-5"], "anthropic", "claude-fable-5", "default")
-	compiled, err := compileGenerate("claude-fable-5", entry)(
+		declarations["claude-fable-5"], "anthropic", "claude-fable-5", "default")
+	compiled, err := compileGenerateFor("claude-fable-5", entry)(
 		context.Background(),
 		model.ModelRef{
 			ID:      model.ModelID{Provider: "anthropic", Name: "claude-fable-5"},
@@ -121,8 +113,8 @@ func TestOwnReasoningSignatureIsSent(t *testing.T) {
 // drivers stamped their traces.
 func TestReasoningWithoutProvenanceIsDropped(t *testing.T) {
 	entry := scopedEntry(
-		catalog["claude-fable-5"], "anthropic", "claude-fable-5", "default")
-	compiled, err := compileGenerate("claude-fable-5", entry)(
+		declarations["claude-fable-5"], "anthropic", "claude-fable-5", "default")
+	compiled, err := compileGenerateFor("claude-fable-5", entry)(
 		context.Background(),
 		model.ModelRef{
 			ID:      model.ModelID{Provider: "anthropic", Name: "claude-fable-5"},
@@ -148,21 +140,17 @@ func TestReasoningWithoutProvenanceIsDropped(t *testing.T) {
 // TestDeclaredReasoningScopeSharesTraces pins the escape hatch for a
 // compatible endpoint that verifies the same signatures across models.
 func TestDeclaredReasoningScopeSharesTraces(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(
-		`{"wire":{"reasoning_scope":"gateway-shared"}}`,
-	))
+	spec := decodeSpecWithModels(t,
+		`"wire":{"reasoning_scope":"gateway-shared"}`, "claude-fable-5")
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	entry := scopedEntry(models["claude-fable-5"], "gw", "claude-other", "default")
-	if entry.reasoningScope != "gateway-shared" {
-		t.Fatalf("scope = %q, want the declared token", entry.reasoningScope)
+	if entry.scope != "gateway-shared" {
+		t.Fatalf("scope = %q, want the declared token", entry.scope)
 	}
-	compiled, err := compileGenerate("claude-other", entry)(
+	compiled, err := compileGenerateFor("claude-other", entry)(
 		context.Background(),
 		model.ModelRef{
 			ID:      model.ModelID{Provider: "gw", Name: "claude-other"},

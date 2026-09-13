@@ -40,8 +40,8 @@ func reasoningDecision(t *testing.T, report inference.CompileReport) inference.D
 // cannot verify it, so sending it is a provider error no retry can repair. It
 // is dropped instead.
 func TestReasoningFromAnotherScopeIsDroppedNotSent(t *testing.T) {
-	entry := scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol")
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	entry := scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol")
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		reasoningContextRequest(message.ReasoningPart{
@@ -70,8 +70,8 @@ func TestReasoningFromAnotherScopeIsDroppedNotSent(t *testing.T) {
 // drivers stamped their traces: unattributable reasoning is not replayed,
 // because nothing says the target can verify it.
 func TestReasoningWithoutProvenanceIsDropped(t *testing.T) {
-	entry := scopedEntry(catalog["gpt-5.6-sol"], "gpt-5.6-sol")
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	entry := scopedEntry(declarations["gpt-5.6-sol"], "gpt-5.6-sol")
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		reasoningContextRequest(message.ReasoningPart{
@@ -103,17 +103,17 @@ func TestDeclaredReasoningScopeSharesTraces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	entry := catalog["gpt-5.6-sol"]
+	entry := declarations["gpt-5.6-sol"]
 	entry.dialect = spec.dialect()
-	entry.reasoningScope = inference.ReasoningScope(
-		entry.dialect.reasoningScopeDeclared,
+	entry.scope = inference.ReasoningScope(
+		entry.dialect.reasoning.scopeDeclared,
 		"openai", "gpt-5.6-sol", "default",
 	)
-	if entry.reasoningScope != "openai-prod-shared" {
-		t.Fatalf("scope = %q, want the declared token", entry.reasoningScope)
+	if entry.scope != "openai-prod-shared" {
+		t.Fatalf("scope = %q, want the declared token", entry.scope)
 	}
 
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		reasoningContextRequest(message.ReasoningPart{
@@ -149,8 +149,8 @@ func TestReasoningModelSwitchDropsTraces(t *testing.T) {
 		ID:        "rs_luna",
 		Source:    reasoningScopeFor("gpt-5.6-luna"),
 	}
-	entry := scopedEntry(catalog["gpt-5.6-terra"], "gpt-5.6-terra")
-	compiled, err := compileResponses("gpt-5.6-terra", entry)(
+	entry := scopedEntry(declarations["gpt-5.6-terra"], "gpt-5.6-terra")
+	compiled, err := compileResponsesFor("gpt-5.6-terra", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-terra"),
 		reasoningContextRequest(trace),

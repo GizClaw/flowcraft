@@ -39,11 +39,11 @@ func compileContextIRWire(
 	request inference.GenerateRequest,
 ) (contextIRWire, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[name]
+	entry, ok := declarations[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", name)
+		t.Fatalf("fixture model %q missing", name)
 	}
-	compiled, err := compileContextIR(wireModel(name, entry), entry)(
+	compiled, err := compileContextIRFor(name, entry)(
 		context.Background(),
 		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,

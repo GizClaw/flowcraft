@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 // TestRouterFallsBackOnDeclaredOutputLimit is the end-to-end pin for the
@@ -91,5 +92,104 @@ func TestRouterFallsBackOnDeclaredOutputLimit(t *testing.T) {
 	}
 	if trace.Executed != large {
 		t.Fatalf("executed = %+v, want the large target", trace.Executed)
+	}
+}
+
+// TestRouterFallsBackOnUndeclaredInputKind is the same pin for the input half
+// of the declaration check: a request carrying a part the selected model does
+// not declare never opens that model's drivers, and the router falls back to a
+// target that declares it.
+func TestRouterFallsBackOnUndeclaredInputKind(t *testing.T) {
+	driver, err := inference.BindGenerate(
+		routeCompiler(),
+		routeTransport(false),
+		routeDecode(),
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	textOnly := model.ModelRef{ID: model.ModelID{Provider: "textonly", Name: "model-1"}}
+	vision := model.ModelRef{ID: model.ModelID{Provider: "vision", Name: "model-1"}}
+
+	var textOpens, visionOpens atomic.Int64
+	provider := func(
+		id string,
+		inputs []message.PartKind,
+		opens *atomic.Int64,
+	) inference.ProviderDefinition {
+		return inference.ProviderDefinition{
+			ID: id,
+			Models: []inference.ModelImplementation{{
+				Descriptor: model.ModelDescriptor{
+					ID: model.ModelID{Provider: id, Name: "model-1"},
+					Capabilities: model.ModelCapabilities{
+						Inputs:  inputs,
+						Outputs: []message.PartKind{message.PartText},
+					},
+				},
+				Openers: inference.Openers{
+					Generate: func(
+						context.Context, model.ModelRef,
+					) (inference.GenerateOperations, error) {
+						opens.Add(1)
+						return inference.GenerateOperations{Unary: driver}, nil
+					},
+				},
+			}},
+		}
+	}
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.textonly": provider(
+			"textonly", []message.PartKind{message.PartText}, &textOpens),
+		"provider.vision": provider(
+			"vision",
+			[]message.PartKind{message.PartText, message.PartImage},
+			&visionOpens,
+		),
+	})
+	policy := Policy{Generate: []Pool{
+		{Tier: "text", Targets: []Target{{Model: textOnly}}},
+		{Tier: "vision", Targets: []Target{{Model: vision}}},
+	}}
+	router, err := New(assembly, policy.Selectors(assembly))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	source, err := media.NewImageURL("https://cdn.example.com/shot.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	request := routeRequest()
+	request.Input.Content.Parts = []message.Part{
+		message.TextPart{Text: "what is this?"},
+		message.ImagePart{Source: source},
+	}
+
+	response, trace, err := router.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.FinishReason != inference.FinishCompleted {
+		t.Fatalf("FinishReason = %q", response.FinishReason)
+	}
+	if textOpens.Load() != 0 {
+		t.Fatalf("the text-only target was opened %d times", textOpens.Load())
+	}
+	if visionOpens.Load() == 0 {
+		t.Fatal("the vision target was never opened")
+	}
+	if trace.Decision.Selected != textOnly {
+		t.Fatalf("selected = %+v, want the text-only target", trace.Decision.Selected)
+	}
+	if len(trace.Fallbacks) != 1 {
+		t.Fatalf("fallbacks = %+v, want one hop", trace.Fallbacks)
+	}
+	if hop := trace.Fallbacks[0]; hop.From != textOnly || hop.To != vision ||
+		hop.Reason != string(inference.UnsupportedFeature) {
+		t.Fatalf("fallback hop = %+v", hop)
+	}
+	if trace.Executed != vision {
+		t.Fatalf("executed = %+v, want the vision target", trace.Executed)
 	}
 }

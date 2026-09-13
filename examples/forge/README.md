@@ -95,10 +95,11 @@ Provider credentials are read from environment variables declared by the
 `inference.yaml` secret resolvers (`resolver: env`). The demo loads `.env` from
 the forge directory at startup. Only `DEEPSEEK_API_KEY` is required: every
 scenario routes to `deepseek-flash`. Three more providers are declared and
-ready to use — `gpt-5.6-luna` through the OpenAI line-up (`OPENAI_API_KEY`),
-`glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
+ready to use — `gpt-5.6-luna`, declared in full on the OpenAI endpoint
+(`OPENAI_API_KEY`), `glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
 (`ZHIPU_API_KEY`), `MiniMax-M3` through MiniMax's Anthropic-compatible
-Messages endpoint, which the anthropic driver serves with a declared catalog
+Messages endpoint, which the anthropic driver serves under the deployment's
+own declaration
 (`MINIMAX_API_KEY`), and `doubao-seed-2-0-lite` on ByteDance's Ark Responses
 API through the bytedance driver, whose profile binds the account's dated
 deployment address (`ARK_API_KEY`) — and their references are lazy, so a missing key only
@@ -149,7 +150,7 @@ its own labelled block, and tool invocations appear as separate
   bundled JS runtime (`core/agent/scriptrt/jsrt`).
 - Simulated tools are a `tool.Source` resource registered from
   `internal/simtools`; the DeepSeek provider is a `driver/openai` instance
-  pointed at `https://api.deepseek.com` with a declared catalog.
+  pointed at `https://api.deepseek.com` with its model declared in full.
 - `WithHostFactory` wraps the session host so every LLM call's token usage is
   mirrored onto the app for TUI display.
 

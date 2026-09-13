@@ -15,9 +15,9 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 		"turn_id":    "t-1",
 	}
 
-	typed := catalog["gpt-5.6-sol"]
-	typed.dialect.requestMetadataEnvelope = "metadata"
-	compiled, err := compileResponses("gpt-5.6-sol", typed)(
+	typed := declarations["gpt-5.6-sol"]
+	typed.dialect.body.metadataField = "metadata"
+	compiled, err := compileResponsesFor("gpt-5.6-sol", typed)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -35,9 +35,9 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 		t.Fatalf("metadata disposition = %q, want native", disposition)
 	}
 
-	client := catalog["gpt-5.6-sol"]
-	client.dialect.requestMetadataEnvelope = "client_metadata"
-	compiled, err = compileResponses("gpt-5.6-sol", client)(
+	client := declarations["gpt-5.6-sol"]
+	client.dialect.body.metadataField = "client_metadata"
+	compiled, err = compileResponsesFor("gpt-5.6-sol", client)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -53,9 +53,9 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 		t.Fatalf("metadata disposition = %q, want native", disposition)
 	}
 
-	custom := catalog["gpt-5.6-sol"]
-	custom.dialect.requestMetadataEnvelope = "request_fields"
-	compiled, err = compileResponses("gpt-5.6-sol", custom)(
+	custom := declarations["gpt-5.6-sol"]
+	custom.dialect.body.metadataField = "request_fields"
+	compiled, err = compileResponsesFor("gpt-5.6-sol", custom)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -68,8 +68,8 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 		t.Fatalf("custom envelope options = %d, want 1", len(options))
 	}
 
-	disabled := catalog["gpt-5.6-sol"]
-	compiled, err = compileResponses("gpt-5.6-sol", disabled)(
+	disabled := declarations["gpt-5.6-sol"]
+	compiled, err = compileResponsesFor("gpt-5.6-sol", disabled)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
@@ -104,9 +104,9 @@ func TestRequestMetadataClientForwardedUnaryBody(t *testing.T) {
 		})))
 	})
 	cls := testClients(t, server)
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.requestMetadataEnvelope = "client_metadata"
-	operations, err := openGenerate(
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.body.metadataField = "client_metadata"
+	operations, err := openGenerateFor(
 		cls,
 		entry,
 		openaiModel("gpt-5.6-sol").ID,

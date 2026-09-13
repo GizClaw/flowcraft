@@ -34,7 +34,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 	})
 	defer server.Close()
 	cls := testClients(t, server)
-	operations, err := openGenerate(cls, catalog["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
+	operations, err := openGenerateFor(cls, declarations["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
 	if err != nil {
 		t.Fatalf("openGenerate: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEmbedTransport(t *testing.T) {
 	defer server.Close()
 	cls := testClients(t, server)
 
-	compiled, err := compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"])(
+	compiled, err := compileEmbedFor("text-embedding-3-large", declarations["text-embedding-3-large"])(
 		context.Background(),
 		openaiModel("text-embedding-3-large"),
 		inference.EmbedRequest{
@@ -1075,7 +1075,7 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 	})
 	defer server.Close()
 	cls := testClients(t, server)
-	operations, err := openGenerate(cls, catalog["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
+	operations, err := openGenerateFor(cls, declarations["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
 	if err != nil {
 		t.Fatalf("openGenerate: %v", err)
 	}
@@ -1165,7 +1165,7 @@ func TestGenerateStreamReasoning(t *testing.T) {
 	})
 	defer server.Close()
 	cls := testClients(t, server)
-	operations, err := openGenerate(cls, catalog["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
+	operations, err := openGenerateFor(cls, declarations["gpt-5.6-sol"], openaiModel("gpt-5.6-sol").ID, "default")
 	if err != nil {
 		t.Fatalf("openGenerate: %v", err)
 	}

@@ -11,7 +11,8 @@ import (
 func openGenerate(
 	cls *clients,
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
@@ -24,10 +25,9 @@ func openGenerate(
 	// would replay one. The scope is the deployment's declared token, or the
 	// address that produced the trace.
 	scope := inference.ReasoningScope(
-		entry.reasoningScopeDeclared, id.Provider, id.Name, profile)
-	entry.reasoningScope = scope
+		wire.scopeDeclared, id.Provider, id.Name, profile)
 	return inference.BindGenerateOperations(
-		compileGenerate(cls.endpoint(id.Name), entry),
+		compileGenerate(cls.endpoint(id.Name), declared),
 		transportGenerate(ark, cls.arkRequestOptions),
 		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(ark, cls.arkRequestOptions),

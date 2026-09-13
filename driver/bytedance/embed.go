@@ -34,7 +34,7 @@ type embedRaw struct {
 
 func compileEmbed(
 	endpoint string,
-	entry catalogEntry,
+	declared ModelSpec,
 ) inference.Compiler[inference.EmbedRequest, *embedRequest] {
 	return func(
 		_ context.Context,
@@ -46,10 +46,10 @@ func compileEmbed(
 			providerID,
 			request.ActiveFields(),
 		)
-		multimodal := slices.Contains(entry.capabilities.Inputs, message.PartImage)
+		multimodal := slices.Contains(declared.Capabilities.Inputs, message.PartImage)
 		compiled := &embedRequest{}
 		if request.Dimensions != nil {
-			if !entry.capabilities.CustomEmbedDimensions {
+			if !declared.Capabilities.CustomEmbedDimensions {
 				ledger.Reject(
 					inference.FieldEmbedDimensions,
 					"model does not accept custom dimensions",
@@ -278,7 +278,7 @@ func decodeEmbed(
 func openEmbed(
 	cls *clients,
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
 	id model.ModelID,
 	profile string,
 ) (inference.EmbedDriver, error) {
@@ -287,7 +287,7 @@ func openEmbed(
 		return nil, err
 	}
 	return inference.BindEmbed(
-		compileEmbed(cls.endpoint(id.Name), entry),
+		compileEmbed(cls.endpoint(id.Name), declared),
 		transportEmbed(ark, cls.arkRequestOptions),
 		decodeEmbed,
 	)

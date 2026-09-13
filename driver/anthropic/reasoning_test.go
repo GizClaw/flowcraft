@@ -9,7 +9,7 @@ import (
 )
 
 func TestClaudeReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
-	compile := compileGenerate("claude-fable-5", catalog["claude-fable-5"])
+	compile := compileGenerateFor("claude-fable-5", declarations["claude-fable-5"])
 	ref := conformanceModel("claude-fable-5")
 	field := inference.FieldGenerateIntentReasoningEffort
 
@@ -52,11 +52,16 @@ func TestClaudeReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 }
 
 func TestBinaryThinkingEffortDropsAndEnablesThinking(t *testing.T) {
-	entry := catalogEntry{
-		capabilities: generateChatCapabilities().
-			WithReasoning(model.ReasoningToggle),
+	entry := testTarget{
+		spec: ModelSpec{
+			Name: "binary",
+			Kind: "generate",
+			Capabilities: generateChatCapabilities().
+				WithReasoning(model.ReasoningToggle),
+		},
+		wire: defaultWire,
 	}
-	compile := compileGenerate("binary", entry)
+	compile := compileGenerateFor("binary", entry)
 	request := conformanceTextRequest()
 	request.Input.Content.Intent.Text = &inference.TextIntent{
 		ReasoningEffort: model.ReasoningHigh,

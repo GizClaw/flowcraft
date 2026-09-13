@@ -27,7 +27,8 @@ var embedPartField = partField(inference.EmbedItemPartField)
 
 func compileEmbed(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 ) inference.Compiler[inference.EmbedRequest, openai.EmbeddingNewParams] {
 	return func(
 		_ context.Context,
@@ -37,7 +38,7 @@ func compileEmbed(
 		ledger := inference.NewLedger(model.OperationEmbed, providerID, request.ActiveFields())
 		params := openai.EmbeddingNewParams{Model: modelName}
 		if request.Dimensions != nil {
-			if !entry.capabilities.CustomEmbedDimensions {
+			if !declared.Capabilities.CustomEmbedDimensions {
 				ledger.Reject(
 					inference.FieldEmbedDimensions,
 					"model does not accept custom dimensions",
@@ -168,12 +169,13 @@ func decodeEmbed(
 
 func openEmbed(
 	cls *clients,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	id model.ModelID,
 	_ string,
 ) (inference.EmbedDriver, error) {
 	return inference.BindEmbed(
-		compileEmbed(id.Name, entry),
+		compileEmbed(id.Name, declared, wire),
 		transportEmbed(cls.api),
 		decodeEmbed,
 	)

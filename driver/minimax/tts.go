@@ -327,7 +327,7 @@ func transportTTSStream(
 
 func openTTS(
 	cls *clients,
-	_ catalogEntry,
+	_ ModelSpec,
 	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(

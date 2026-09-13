@@ -23,7 +23,7 @@ import (
 // Scope: the text-to-music models (music-3.0/2.6 and their -free tiers).
 // music-cover needs a reference audio plus the two-step cover_feature_id
 // preprocessing flow, which has no canonical surface — it stays out of the
-// catalog rather than being approximated.
+// declaration rather than being approximated.
 
 type musicWire struct {
 	model        string
@@ -334,7 +334,7 @@ func transportMusicStream(
 
 func openMusic(
 	cls *clients,
-	_ catalogEntry,
+	_ ModelSpec,
 	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(

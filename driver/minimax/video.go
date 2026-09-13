@@ -81,7 +81,7 @@ var v2RatioValues = map[string]bool{
 
 func compileVideo(
 	endpoint string,
-	entry catalogEntry,
+	declared ModelSpec,
 ) inference.GenerateCompiler[videoWire] {
 	return func(
 		_ context.Context,
@@ -105,9 +105,9 @@ func compileVideo(
 		prompt, images, videos, audios := collectTaskParts(request, ledger)
 		wire.prompt = strings.Join(prompt, "\n")
 
-		compileVideoInputs(&wire, images, videos, audios, entry, ref, ledger)
+		compileVideoInputs(&wire, images, videos, audios, declared, ref, ledger)
 		limit, label := 2000, "minimax v1 prompts"
-		if entry.videoV2 {
+		if declared.videoV2() {
 			limit, label = 7000, "MiniMax-H3 prompts"
 		}
 		rejectPromptLength(
@@ -117,7 +117,7 @@ func compileVideo(
 			limit,
 			fmt.Sprintf("%s are at most %d characters, not %d", label, limit, len(wire.prompt)),
 		)
-		if entry.videoV2 && wire.prompt == "" {
+		if declared.videoV2() && wire.prompt == "" {
 			// The v2 schema requires a non-empty text item in content.
 			reason := fmt.Sprintf("%s requires a non-empty text prompt", endpoint)
 			if len(prompt) > 0 {
@@ -128,7 +128,7 @@ func compileVideo(
 				ledger.Reject(inference.FieldGenerateInputRole, reason)
 			}
 		}
-		if entry.videoI2VOnly && wire.firstFrame == "" {
+		if declared.Video.ImageToVideoOnly && wire.firstFrame == "" {
 			// A missing first frame is a required-input absence, so no part
 			// field is active to reject; the rejection lands on the closest
 			// active field — the video intent when present, the input role
@@ -169,10 +169,10 @@ func compileVideo(
 			)
 		}
 		if video := intent.Video; video != nil {
-			compileVideoIntent(&wire, video, entry, endpoint, ledger)
+			compileVideoIntent(&wire, video, declared, endpoint, ledger)
 		}
 		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
-		compileVideoOptions(&wire, options, entry, endpoint, ledger)
+		compileVideoOptions(&wire, options, declared, endpoint, ledger)
 		ledger.RejectExtensions("video generation", other)
 
 		report := ledger.Report()
@@ -290,21 +290,21 @@ func containsTextPart(parts []message.Part) bool {
 func compileVideoInputs(
 	wire *videoWire,
 	images, videos, audios []string,
-	entry catalogEntry,
+	declared ModelSpec,
 	model model.ModelRef,
 	ledger *inference.Ledger,
 ) {
-	if entry.videoV2 {
+	if declared.videoV2() {
 		compileV2Inputs(&wire.v2Content, images, videos, audios, ledger)
 		return
 	}
 	switch {
 	case len(images) == 1:
 		wire.firstFrame = images[0]
-	case len(images) == 2 && entry.videoLastFrame:
+	case len(images) == 2 && declared.Video.LastFrame:
 		wire.firstFrame, wire.lastFrame = images[0], images[1]
 	case len(images) > 0:
-		if entry.videoLastFrame {
+		if declared.Video.LastFrame {
 			ledger.Reject(
 				inference.FieldGenerateInputImage,
 				fmt.Sprintf(
@@ -391,7 +391,7 @@ func compileV2Inputs(
 func compileVideoIntent(
 	wire *videoWire,
 	video *inference.VideoIntent,
-	entry catalogEntry,
+	declared ModelSpec,
 	endpoint string,
 	ledger *inference.Ledger,
 ) {
@@ -404,7 +404,7 @@ func compileVideoIntent(
 			)
 		} else {
 			seconds := int(millis / 1000)
-			if entry.videoV2 {
+			if declared.videoV2() {
 				if seconds < 4 || seconds > 15 {
 					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
@@ -417,7 +417,7 @@ func compileVideoIntent(
 				switch {
 				case seconds == 6:
 					wire.duration = &seconds
-				case seconds == 10 && !entry.video10s:
+				case seconds == 10 && !declared.Video.TenSeconds:
 					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						fmt.Sprintf("%s serves 6-second videos only", endpoint),
@@ -432,7 +432,7 @@ func compileVideoIntent(
 				}
 			}
 		}
-	} else if entry.videoV2 {
+	} else if declared.videoV2() {
 		// The v2 schema requires duration; the driver defaults to the same
 		// 6s the v1 API uses when the intent leaves it open.
 		seconds := 6
@@ -444,7 +444,7 @@ func compileVideoIntent(
 		case "768P":
 			wire.resolution = "768P"
 		case "2K":
-			if !entry.videoV2 {
+			if !declared.videoV2() {
 				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
@@ -453,12 +453,12 @@ func compileVideoIntent(
 				wire.resolution = "2K"
 			}
 		case "1080P":
-			if entry.videoV2 {
+			if declared.videoV2() {
 				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/2K tiers, not %q", endpoint, video.Resolution),
 				)
-			} else if !entry.videoHD {
+			} else if !declared.Video.HD {
 				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P only", endpoint),
@@ -471,7 +471,7 @@ func compileVideoIntent(
 			// MiniMax-Hailuo-02 only: single-first-frame tasks only.
 			// Text-to-video and first/last-frame (fl2v) tasks cap at
 			// 768P/1080P per the official docs.
-			if !entry.video512P || wire.firstFrame == "" || wire.lastFrame != "" {
+			if !declared.Video.P512 || wire.firstFrame == "" || wire.lastFrame != "" {
 				ledger.Reject(
 					inference.FieldGenerateIntentVideoResolution,
 					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
@@ -481,7 +481,7 @@ func compileVideoIntent(
 			}
 		default:
 			tiers := "768P/1080P"
-			if entry.videoV2 {
+			if declared.videoV2() {
 				tiers = "768P/2K"
 			}
 			ledger.Reject(
@@ -489,11 +489,11 @@ func compileVideoIntent(
 				fmt.Sprintf("%s serves %s tiers, not %q", endpoint, tiers, video.Resolution),
 			)
 		}
-	} else if entry.videoV2 {
+	} else if declared.videoV2() {
 		// The v2 schema requires resolution; 768P is the default tier.
 		wire.resolution = "768P"
 	}
-	if !entry.videoV2 && wire.duration != nil && *wire.duration == 10 &&
+	if !declared.videoV2() && wire.duration != nil && *wire.duration == 10 &&
 		wire.resolution == "1080P" {
 		ledger.Reject(
 			inference.FieldGenerateIntentVideoDuration,
@@ -502,7 +502,7 @@ func compileVideoIntent(
 	}
 
 	if video.AspectRatio != "" {
-		if !entry.videoV2 {
+		if !declared.videoV2() {
 			ledger.Reject(
 				inference.FieldGenerateIntentVideoAspectRatio,
 				"the v1 task API has no aspect-ratio control; resolution tiers are fixed-ratio",
@@ -518,12 +518,12 @@ func compileVideoIntent(
 		} else {
 			wire.ratio = string(video.AspectRatio)
 		}
-	} else if entry.videoV2 && v2TextOnly(&wire.v2Content) {
+	} else if declared.videoV2() && v2TextOnly(&wire.v2Content) {
 		// Text-only tasks require an explicit non-adaptive ratio; 16:9 is
 		// the driver default.
 		wire.ratio = "16:9"
 	}
-	if entry.videoV2 && wire.ratio == "adaptive" && v2TextOnly(&wire.v2Content) {
+	if declared.videoV2() && wire.ratio == "adaptive" && v2TextOnly(&wire.v2Content) {
 		ledger.Reject(
 			inference.FieldGenerateIntentVideoAspectRatio,
 			"text-to-video requires an explicit ratio; adaptive is not allowed",
@@ -551,7 +551,7 @@ func v2TextOnly(content *v2Content) bool {
 func compileVideoOptions(
 	wire *videoWire,
 	options VideoOptions,
-	entry catalogEntry,
+	declared ModelSpec,
 	endpoint string,
 	ledger *inference.Ledger,
 ) {
@@ -560,7 +560,7 @@ func compileVideoOptions(
 	}
 	wire.callbackURL = options.CallbackURL
 	if options.PromptOptimizer != nil {
-		if entry.videoV2 {
+		if declared.videoV2() {
 			ledger.Reject(
 				field("prompt_optimizer"),
 				fmt.Sprintf("%s does not support prompt_optimizer; the v2 API has no prompt optimizer", endpoint),
@@ -570,7 +570,7 @@ func compileVideoOptions(
 		}
 	}
 	if options.FastPretreatment != nil {
-		if entry.videoV2 {
+		if declared.videoV2() {
 			ledger.Reject(
 				field("fast_pretreatment"),
 				fmt.Sprintf("%s does not support fast_pretreatment; the v2 API has no prompt optimizer", endpoint),
@@ -580,7 +580,7 @@ func compileVideoOptions(
 		}
 	}
 	if options.LastFrameOnly != nil && *options.LastFrameOnly {
-		if !entry.videoV2 {
+		if !declared.videoV2() {
 			ledger.Reject(
 				field("last_frame_only"),
 				fmt.Sprintf("%s does not support last_frame_only; the v1 API has no last-frame-only task", endpoint),
@@ -922,17 +922,17 @@ func decodeVideo(
 func openVideo(
 	cls *clients,
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
 	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	var transport inference.Transport[videoWire, videoRaw]
-	if entry.videoV2 {
+	if declared.videoV2() {
 		transport = transportVideoV2(cls.media, spec.videoPollInterval())
 	} else {
 		transport = transportVideoV1(cls.media, spec.videoPollInterval())
 	}
 	unary, err := inference.BindGenerate(
-		compileVideo(wireModel(id.Name, entry), entry),
+		compileVideo(wireModel(id.Name, declared), declared),
 		transport,
 		decodeVideo,
 	)

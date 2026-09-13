@@ -119,7 +119,7 @@ func (*conformanceStream) Close() error { return nil }
 func TestConformanceGenerateConcurrent(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "doubao-seed-2-0-lite"
-	unary, stream := conformanceGenerateDrivers(t, compileGenerate(model, catalog[model]), calls)
+	unary, stream := conformanceGenerateDrivers(t, compileGenerateFor(model, declarations[model]), calls)
 	inferencetest.RunGenerateConcurrent(t, inferencetest.GenerateConcurrentSuite{
 		Model:      conformanceModel(model),
 		Request:    conformanceTextRequest,
@@ -142,7 +142,7 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "doubao-seed-2-0-lite"
 	driver, err := inference.BindGenerateStream(
-		compileGenerate(model, catalog[model]),
+		compileGenerateFor(model, declarations[model]),
 		countingTransport(calls, func(_ context.Context, _ *arkresponses.ResponsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingStream{}, nil
 		}),
@@ -171,7 +171,7 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 func TestConformanceEmbedUnary(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	model := "doubao-embedding-large"
-	driver := conformanceEmbedDriver(t, compileEmbed(model, catalog[model]), calls)
+	driver := conformanceEmbedDriver(t, compileEmbedFor(model, declarations[model]), calls)
 	inferencetest.RunEmbedUnary(t, inferencetest.EmbedUnarySuite{
 		Model: conformanceModel(model),
 		Request: func() inference.EmbedRequest {

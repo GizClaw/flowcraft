@@ -2,9 +2,9 @@
 // responsibility:
 //
 //   - Model vocabulary: model_alias.go re-exports core/inference/model
-//     (identity, descriptor, capabilities, limits, lifecycle, reasoning,
-//     the catalog patch language) so existing callers keep compiling.
-//     New code imports core/inference/model directly.
+//     (identity, descriptor, capabilities, limits, lifecycle, reasoning) so
+//     existing callers keep compiling. New code imports
+//     core/inference/model directly.
 //   - Shared contract: usage.go, decision.go, errors.go, extension.go,
 //     extension_registry.go, extension_dispatch.go, metadata.go,
 //     internal_helpers.go
@@ -16,7 +16,8 @@
 //     provider_definition.go (ProviderDefinition / Openers),
 //     generate_driver.go, prepared.go (a compiled attempt), binding.go
 //     (opened drivers), binding_cache.go (the host-side reuse cache),
-//     declaration.go (declared-limit preflight), provider_log.go
+//     declaration.go (declared output-budget and input-kind preflight),
+//     provider_log.go
 //   - Generate domain: generate_request.go, generate_input.go,
 //     generate_intent.go, generate_output.go, generate_response.go,
 //     generate_stream.go, generate_stream_accumulator.go,

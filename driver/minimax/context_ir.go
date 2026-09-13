@@ -46,7 +46,7 @@ type contextIRRaw struct {
 
 func compileContextIR(
 	endpoint string,
-	entry catalogEntry,
+	declared ModelSpec,
 ) inference.GenerateCompiler[contextIRWire] {
 	return func(
 		_ context.Context,
@@ -281,11 +281,11 @@ func decodeContextIR(
 func openContextIR(
 	cls *clients,
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
 	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	unary, err := inference.BindGenerate(
-		compileContextIR(wireModel(id.Name, entry), entry),
+		compileContextIR(wireModel(id.Name, declared), declared),
 		transportContextIR(cls.media, spec.videoPollInterval()),
 		decodeContextIR,
 	)

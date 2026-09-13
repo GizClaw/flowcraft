@@ -25,11 +25,18 @@ import (
 // compileResponses lowers a canonical request into Responses params.
 func compileResponses(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 ) inference.GenerateCompiler[*responsesRequest] {
-	return compileGenerate(entry, func(inference.GenerateExecutionShape) *responsesRequest {
-		return newResponsesRequest(modelName, entry)
-	})
+	return compileGenerate(
+		declared,
+		wire,
+		scope,
+		func(inference.GenerateExecutionShape) *responsesRequest {
+			return newResponsesRequest(modelName, declared, wire)
+		},
+	)
 }
 
 // responsesRequest is one compiled Responses call: the SDK params the
@@ -49,7 +56,8 @@ type responsesRequest struct {
 // decide before the request is read.
 func newResponsesRequest(
 	modelName string,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 ) *responsesRequest {
 	request := &responsesRequest{
 		params: responses.ResponseNewParams{Model: modelName},
@@ -57,7 +65,7 @@ func newResponsesRequest(
 	// The OpenAI default is store: true, which retains the response for at
 	// least 30 days. FlowCraft replays context itself, so the driver states
 	// the decision instead of inheriting it.
-	switch entry.dialect.store {
+	switch wire.store {
 	case storeEnabled:
 		request.params.Store = param.NewOpt(true)
 	case storeDisabled:
@@ -66,18 +74,18 @@ func newResponsesRequest(
 	}
 	// Summaries are opt-in: without this the provider returns the encrypted
 	// payload and no readable trace.
-	if summary := entry.dialect.reasoningSummary; summary != "" {
+	if summary := wire.reasoning.summary; summary != "" {
 		request.params.Reasoning.Summary = shared.ReasoningSummary(summary)
 	}
-	if mode := entry.dialect.truncation; mode != "" {
+	if mode := wire.truncation; mode != "" {
 		request.params.Truncation = responses.ResponseNewParamsTruncation(mode)
 	}
 	// Reasoning traces are worthless to consumers without their encrypted
 	// payload: without it the reasoning cannot round-trip into later context,
 	// which breaks agent loops silently. Only reasoning models accept the
 	// include; Azure rejects it on plain chat deployments.
-	if entry.capabilities.Reasoning.Kind != model.ReasoningNone &&
-		!entry.dialect.omitReasoningPayload {
+	if declared.Capabilities.Reasoning.Kind != model.ReasoningNone &&
+		wire.reasoning.payload {
 		request.params.Include = []responses.ResponseIncludable{
 			responses.ResponseIncludableReasoningEncryptedContent,
 		}

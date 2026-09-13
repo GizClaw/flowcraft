@@ -10,7 +10,7 @@ import (
 func TestRequestMetadataDroppedByLedger(t *testing.T) {
 	request := conformanceTextRequest()
 	request.RequestMetadata = map[string]string{"session_id": "s-1"}
-	compiled, err := compileGenerate("doubao-seed-2-0-lite", catalog["doubao-seed-2-0-lite"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-0-lite", declarations["doubao-seed-2-0-lite"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-lite"),
 		request,

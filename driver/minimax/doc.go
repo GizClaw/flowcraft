@@ -46,16 +46,12 @@
 //     MusicOptions extension. music-cover stays out: its reference-audio
 //     plus two-step cover_feature_id flow has no canonical surface.
 //
-// # Catalog
+// # Models
 //
-// The built-in catalog covers the Anthropic-endpoint lineup as of
-// 2026-07: MiniMax-M3 (1M context, image input) and the M2.x series
-// (M2.7, M2.5, M2.1 and their highspeed twins, plus M2 — 204,800
-// context, text-only), the speech-2.8/2.6/02 speech models, image-01 and
-// image-01-live, the Hailuo video trio plus MiniMax-H3, the
-// MiniMax-H3-Context-IR prompt-enhancement task, and the music-3.0/2.6
-// music models. Custom models declare
-// through the spec's models list; unknown channels stay fail closed.
+// The driver ships no model line-up: every media model is declared through
+// the spec's models list, and a kind the driver does not serve stays fail
+// closed. Text generation moved to the anthropic driver, which serves
+// MiniMax's Messages surface with the same declaration shape.
 //
 // # Behavior mapping
 //

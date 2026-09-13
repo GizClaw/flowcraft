@@ -51,7 +51,7 @@ func findToolResult(t *testing.T, request *arkresponses.ResponsesRequest) string
 // function_call_output is a string, and a text-only result is preserved.
 func TestToolResultTextRidesVerbatim(t *testing.T) {
 	request := toolResultRequest(t, message.TextPart{Text: "found it"})
-	compiled, err := compileGenerate("doubao-seed-2-0-lite", catalog["doubao-seed-2-0-lite"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-0-lite", declarations["doubao-seed-2-0-lite"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-lite"),
 		request,
@@ -77,7 +77,7 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 		toolResultImage(t),
 		message.TextPart{Text: "after"},
 	)
-	compiled, err := compileGenerate("doubao-seed-2-0-lite", catalog["doubao-seed-2-0-lite"])(
+	compiled, err := compileGenerateFor("doubao-seed-2-0-lite", declarations["doubao-seed-2-0-lite"])(
 		context.Background(),
 		conformanceModel("doubao-seed-2-0-lite"),
 		request,

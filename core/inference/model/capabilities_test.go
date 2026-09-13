@@ -9,41 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-func reasoningPatchCapabilities() ModelCapabilities {
-	return ModelCapabilities{
-		Inputs: []message.PartKind{
-			message.PartText,
-			message.PartImage,
-			message.PartToolCall,
-			message.PartToolResult,
-		},
-		Outputs: []message.PartKind{message.PartText},
-		Reasoning: ReasoningCapability{
-			Kind: ReasoningToggle,
-			EffortMap: map[ReasoningEffort]string{
-				ReasoningMinimal: "minimal",
-				ReasoningLow:     "low",
-				ReasoningMedium:  "medium",
-				ReasoningHigh:    "high",
-				ReasoningXHigh:   "xhigh",
-			},
-		},
-		HostedWebSearch: true,
-	}
-}
-
-func decodePatch(t *testing.T, raw string) *CapabilitiesPatch {
-	t.Helper()
-	var patch CapabilitiesPatch
-	if err := json.Unmarshal([]byte(raw), &patch); err != nil {
-		t.Fatalf("decode patch: %v", err)
-	}
-	if err := patch.Validate(); err != nil {
-		t.Fatalf("validate patch: %v", err)
-	}
-	return &patch
-}
-
 func TestModelCapabilitiesValidate(t *testing.T) {
 	capabilities := ModelCapabilities{
 		Inputs:  []message.PartKind{message.PartText, message.PartImage},
@@ -133,107 +98,17 @@ func TestModelCapabilitiesBuilders(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesPatchAbsentLeavesInherit(t *testing.T) {
-	patch := decodePatch(t, `{"inputs":["text"],"hosted_web_search":false}`)
-	got := patch.Apply(reasoningPatchCapabilities())
-	if len(got.Inputs) != 1 || got.Inputs[0] != message.PartText {
-		t.Fatalf("inputs = %v, want text only", got.Inputs)
-	}
-	if got.HostedWebSearch {
-		t.Fatal("hosted_web_search: false must replace the base true")
-	}
-	if got.Reasoning.Kind != ReasoningToggle {
-		t.Fatalf("reasoning kind = %q, want inherited toggle", got.Reasoning.Kind)
-	}
-	if len(got.Reasoning.EffortMap) != 5 {
-		t.Fatalf("reasoning effort map must be inherited, got %v", got.Reasoning.EffortMap)
-	}
-	if len(got.Outputs) != 1 || got.Outputs[0] != message.PartText {
-		t.Fatalf("outputs = %v, want inherited text", got.Outputs)
-	}
-}
-
-func TestCapabilitiesPatchWholeDeclarationOverZeroBase(t *testing.T) {
-	patch := decodePatch(t, `{"outputs":["text"],"hosted_web_search":true}`)
-	got := patch.Apply(ModelCapabilities{})
-	if len(got.Inputs) != 0 {
-		t.Fatalf("inputs = %v, want conservative zero", got.Inputs)
-	}
-	if len(got.Outputs) != 1 || got.Outputs[0] != message.PartText {
-		t.Fatalf("outputs = %v, want text", got.Outputs)
-	}
-	if !got.HostedWebSearch {
-		t.Fatal("hosted web search must be declared")
-	}
-	if got.Reasoning.Kind != ReasoningNone {
-		t.Fatalf("reasoning = %q, want conservative none", got.Reasoning.Kind)
-	}
-	if err := got.Validate(); err != nil {
-		t.Fatalf("merged capabilities invalid: %v", err)
-	}
-}
-
-func TestCapabilitiesPatchValidation(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{"duplicate inputs", `{"inputs":["text","text"]}`, "duplicate input"},
-		{"invalid output modality", `{"outputs":["tool_call"]}`, "not a representable output modality"},
-		{"invalid kind", `{"reasoning":{"kind":"maybe"}}`, "unknown reasoning kind"},
-		{"none with map", `{"reasoning":{"kind":"","effort_map":{"minimal":"minimal","low":"low","medium":"medium","high":"high","xhigh":"xhigh"}}}`, "cannot declare an effort map"},
-		{"map misses level", `{"reasoning":{"kind":"toggle","effort_map":{"low":"low"}}}`, "misses canonical level"},
-		{"non-canonical key", `{"reasoning":{"kind":"toggle","effort_map":{"low":"low","medium":"medium","high":"high","minimal":"minimal","xhigh":"xhigh","none":"none"}}}`, "non-canonical key"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var patch CapabilitiesPatch
-			if err := json.Unmarshal([]byte(tc.raw), &patch); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			err := patch.Validate()
-			if err == nil {
-				t.Fatal("patch unexpectedly valid")
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %q, want substring %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestCapabilitiesPatchEmptyLeafIsExplicit(t *testing.T) {
-	var patch CapabilitiesPatch
-	if err := json.Unmarshal([]byte(`{"inputs":[]}`), &patch); err != nil {
+func TestCustomEmbedDimensionsLeaf(t *testing.T) {
+	var capabilities ModelCapabilities
+	if err := json.Unmarshal([]byte(
+		`{"inputs":["text"],"custom_embed_dimensions":true}`), &capabilities); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if patch.Inputs == nil || len(*patch.Inputs) != 0 {
-		t.Fatalf("inputs = %#v, want explicit empty list", patch.Inputs)
-	}
-	got := patch.Apply(reasoningPatchCapabilities())
-	if len(got.Inputs) != 0 {
-		t.Fatalf("inputs = %v, want cleared", got.Inputs)
-	}
-}
-
-func TestCustomEmbedDimensionsLeaf(t *testing.T) {
-	base := reasoningPatchCapabilities()
-	if base.CustomEmbedDimensions {
-		t.Fatal("test base unexpectedly declares custom embed dimensions")
-	}
-	on := decodePatch(t, `{"custom_embed_dimensions":true}`).Apply(base)
-	if !on.CustomEmbedDimensions {
+	if !capabilities.CustomEmbedDimensions {
 		t.Fatal("custom_embed_dimensions: true must set the capability")
 	}
-	declared := reasoningPatchCapabilities()
-	declared.CustomEmbedDimensions = true
-	off := decodePatch(t, `{"custom_embed_dimensions":false}`).Apply(declared)
-	if off.CustomEmbedDimensions {
-		t.Fatal("custom_embed_dimensions: false must clear the base capability")
-	}
-	inherited := decodePatch(t, `{"outputs":["text"]}`).Apply(declared)
-	if !inherited.CustomEmbedDimensions {
-		t.Fatal("absent leaf must inherit the base capability")
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }
 

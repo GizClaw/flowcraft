@@ -10,7 +10,7 @@ import (
 )
 
 func TestDoubaoReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
-	compile := compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"])
+	compile := compileGenerateFor("doubao-seed-2-1-pro", declarations["doubao-seed-2-1-pro"])
 	ref := conformanceModel("doubao-seed-2-1-pro")
 	field := inference.FieldGenerateIntentReasoningEffort
 
@@ -55,11 +55,16 @@ func TestDoubaoReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 }
 
 func TestSpecBinaryReasoningEffortDropsAndEnablesThinking(t *testing.T) {
-	entry := catalogEntry{
-		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
+	entry := testTarget{
+		spec: ModelSpec{
+			Name: "spec-binary",
+			Kind: "generate",
+			Capabilities: generateChatCapabilities().
+				WithReasoning(model.ReasoningToggle),
+		},
+		wire: defaultWire,
 	}
-	compile := compileGenerate("spec-binary", entry)
+	compile := compileGenerateFor("spec-binary", entry)
 	request := conformanceTextRequest()
 	request.Input.Content.Intent.Text = &inference.TextIntent{
 		ReasoningEffort: model.ReasoningHigh,

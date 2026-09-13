@@ -67,16 +67,6 @@ type ModelLimits = model.ModelLimits
 // Deprecated: use model.ModelDescriptor from core/inference/model.
 type ModelDescriptor = model.ModelDescriptor
 
-// CapabilitiesPatch declares capability changes relative to a base model.
-//
-// Deprecated: use model.CapabilitiesPatch from core/inference/model.
-type CapabilitiesPatch = model.CapabilitiesPatch
-
-// ReasoningPatch is the reasoning leaf of a CapabilitiesPatch.
-//
-// Deprecated: use model.ReasoningPatch from core/inference/model.
-type ReasoningPatch = model.ReasoningPatch
-
 // Deprecated: use model.OperationGenerate.
 const OperationGenerate = model.OperationGenerate
 

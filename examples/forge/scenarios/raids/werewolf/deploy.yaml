@@ -39,7 +39,6 @@ resources:
         # support include: [reasoning.encrypted_content].
         wire:
           reasoning_channel: text
-        catalog: declared
         models:
           - name: deepseek-flash
             kind: generate
@@ -62,8 +61,8 @@ resources:
       profiles:
         - secrets:
             api_key: ${env:DEEPSEEK_API_KEY}
-  # The same driver serves every OpenAI-wire endpoint; the built-in line-up is
-  # inherited unless the provider declares `catalog: declared`.
+  # The same driver serves every OpenAI-wire endpoint, and it ships no model
+  # line-up: a model exists because the deployment declares it, facts and all.
   provider-openai:
     kind: inference.Provider
     impl: openai
@@ -77,7 +76,25 @@ resources:
         wire:
           store: false
         models:
-          - {name: gpt-5.6-luna, kind: generate}
+          - name: gpt-5.6-luna
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
+              hosted_web_search: true
+              reasoning:
+                # reasoning.effort="none" disables thinking on the Responses
+                # surface, so the off switch is real.
+                kind: toggle
+                effort_map:
+                  minimal: minimal
+                  low: low
+                  medium: medium
+                  high: high
+                  xhigh: xhigh
+            limits:
+              max_input_tokens: 1050000
+              max_output_tokens: 128000
       profiles:
         - secrets:
             api_key: ${secret:OPENAI_API_KEY}
@@ -92,7 +109,6 @@ resources:
         api: chat
         endpoint:
           base_url: https://open.bigmodel.cn/api/paas/v4
-        catalog: declared
         models:
           - name: glm-5.3-flash
             kind: generate
@@ -114,9 +130,9 @@ resources:
         - secrets:
             api_key: ${secret:ZHIPU_API_KEY}
   # MiniMax's Messages surface is Anthropic-compatible, so the anthropic
-  # driver serves it; `catalog: declared` keeps MiniMax model names from
-  # inheriting Claude facts. MiniMax-M3 is natively multimodal (text, image,
-  # video) with a 1M-token context and a binary thinking switch.
+  # driver serves it. MiniMax-M3 is natively multimodal (text, image, video)
+  # with a 1M-token context and a binary thinking switch, and the declaration
+  # is the whole fact: the anthropic driver ships no Claude line-up.
   provider-minimax:
     kind: inference.Provider
     impl: anthropic
@@ -125,7 +141,6 @@ resources:
       spec:
         endpoint:
           base_url: https://api.minimaxi.com/anthropic
-        catalog: declared
         wire:
           video_input: true
         models:
@@ -142,14 +157,33 @@ resources:
       profiles:
         - secrets:
             api_key: ${secret:MINIMAX_API_KEY}
-  # ByteDance's Ark Responses API. The built-in catalog already carries the
-  # seed models; the profile binds this account's dated deployment address,
-  # which is what Ark actually routes on.
+  # ByteDance's Ark Responses API. Ark routes on this account's dated
+  # deployment address, so the profile binds it, and the model itself is
+  # declared in full.
   provider-bytedance:
     kind: inference.Provider
     impl: bytedance
     settings:
       id: bytedance
+      spec:
+        models:
+          - name: doubao-seed-2-0-lite
+            kind: generate
+            capabilities:
+              inputs: [text, image, video, audio, data, tool_call, tool_result]
+              outputs: [text]
+              hosted_web_search: true
+              reasoning:
+                kind: toggle
+                effort_map:
+                  minimal: low
+                  low: low
+                  medium: medium
+                  high: high
+                  xhigh: high
+            limits:
+              max_input_tokens: 256000
+              max_output_tokens: 128000
       profiles:
         - secrets:
             api_key: ${secret:ARK_API_KEY}

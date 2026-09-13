@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -17,7 +19,7 @@ const ResourceKind = "inference.Provider"
 
 // providerID is this driver's provider identity: it labels the compile errors
 // the ledger builds and tags telemetry, matching the model.ModelID.Provider
-// values the catalog publishes.
+// values the deployment's declarations publish.
 const providerID = "anthropic"
 
 // ResourceSettings is the settings subtree of one Anthropic provider
@@ -68,10 +70,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		return inference.ProviderDefinition{}, err
-	}
+	wire := spec.dialect()
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
 		material, err := newProfileMaterial(ctx, profile, secrets)
@@ -91,27 +90,51 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			},
 		)
 	}
-	names := make([]string, 0, len(models))
-	for name := range models {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		entry := models[name]
-		id := model.ModelID{Provider: settings.ID, Name: name}
-		descriptor := descriptorFor(id, entry)
+	declared := append([]ModelSpec(nil), spec.Models...)
+	slices.SortFunc(declared, func(left, right ModelSpec) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	for _, modelSpec := range declared {
+		if err := validateModel(modelSpec); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
+		id := model.ModelID{Provider: settings.ID, Name: modelSpec.Name}
+		if err := modelSpec.Lifecycle.ValidateFor(id); err != nil {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"model %q: %w", modelSpec.Name, err)
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
-			Descriptor: descriptor,
-			Openers:    openersFor(spec, entry, profiles, id),
+			Descriptor: model.ModelDescriptor{
+				ID:           id,
+				Capabilities: modelSpec.Capabilities.Clone(),
+				Limits:       modelSpec.Limits.Clone(),
+				Lifecycle:    modelSpec.Lifecycle.Clone(),
+			},
+			Openers: openersFor(spec, modelSpec, wire, profiles, id),
 		})
 	}
 	return provider, nil
 }
 
-// openersFor binds one catalog model to the generate openers.
+// validateModel enforces the family contract: the Messages compiler serves
+// text output, so a declaration that promises anything else is a build error
+// rather than a per-request rejection.
+func validateModel(declared ModelSpec) error {
+	if err := declared.Capabilities.Validate(); err != nil {
+		return err
+	}
+	if !slices.Contains(declared.Capabilities.Outputs, message.PartText) {
+		return fmt.Errorf("generate family must declare text output")
+	}
+	return declared.Limits.Validate()
+}
+
+// openersFor binds one declared model to the generate openers.
 func openersFor(
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	profiles map[string]profileMaterial,
 	id model.ModelID,
 ) inference.Openers {
@@ -135,7 +158,7 @@ func openersFor(
 			if err != nil {
 				return inference.GenerateOperations{}, err
 			}
-			return openGenerate(cls, entry, id, model.Profile)
+			return openGenerate(cls, declared, wire, id, model.Profile)
 		},
 	}
 }

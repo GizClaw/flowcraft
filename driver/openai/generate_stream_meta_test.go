@@ -25,14 +25,14 @@ func TestResponsesStreamTransportCapturesRequestID(t *testing.T) {
 	})
 	defer server.Close()
 
-	entry := catalogEntry{
+	entry := testTarget{
 		kind: kindGenerate,
-
-		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
+		spec: testSpec(kindGenerate, generateChatCapabilities().WithReasoning(model.ReasoningToggle)),
 		dialect: dialect{
-			api: apiResponses,
-		}}
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+			surface: surfaceDialect{api: apiResponses},
+		},
+	}
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),

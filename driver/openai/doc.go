@@ -1,6 +1,7 @@
 // Package openai implements the OpenAI provider for the unified inference
-// runtime. It owns the provider's model catalog, strict Spec decoding, and
-// all request lowering; core/inference never sees OpenAI concepts.
+// runtime. It owns strict Spec decoding, the model line-up a deployment
+// declares, and all request lowering; core/inference never sees OpenAI
+// concepts.
 //
 // Operation coverage:
 //
@@ -16,12 +17,11 @@
 //     "toggle" on the Responses surface (gpt-5.1+ models per the OpenAI
 //     docs) and rejects at compile time for models published as reasoning
 //     "always". Descriptors stay truthful per surface: the chat surface
-//     cannot express reasoning off, so chat catalogs publish reasoning
-//     "always" even for models that toggle on Responses. A spec that
-//     redeclares a built-in model by name and kind is a leaf-level patch:
-//     capability leaves it omits (including custom_embed_dimensions) and
-//     numeric limits are inherited, so redeclaring gpt-5.6-sol to adjust
-//     one channel cannot silently revoke the built-in toggle route.
+//     cannot express reasoning off, so chat deployments publish reasoning
+//     "always" even for models declared as "toggle". The driver ships no
+//     model line-up: a declaration is the whole fact, so a leaf the spec
+//     omits (including custom_embed_dimensions) is undeclared rather than
+//     inherited, and nothing is patched over a same-named model.
 //     Reasoning items decode into canonical reasoning parts (summary text,
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always
@@ -48,8 +48,9 @@
 //
 // Credentials come exclusively from config profiles: `api_key` authenticates
 // every OpenAI surface. The provider Spec redirects transport (base_url),
-// scopes requests (organization, project), and declares extra models
-// (models). Chat Completions streams request the usage chunk by default;
+// scopes requests (organization, project), and declares the models this
+// deployment serves (models). Chat Completions streams request the usage
+// chunk by default;
 // `chat_stream_options: {include_usage: false}` opts out for compatible
 // endpoints that reject or ignore stream_options (usage is then absent
 // from chat stream results), and `include_obfuscation: false` disables
@@ -59,7 +60,7 @@
 // Two dialect facts describe what a compatible endpoint accepts beyond the
 // OpenAI schema. `wire.video_input: true` (chat surface only) lets a model
 // that declares video input carry video content parts, lowered as the
-// `video_url` element those endpoints define; without the fact the catalog
+// `video_url` element those endpoints define; without the fact the build
 // refuses the declaration, so a descriptor never promises a part the compiler
 // would reject. GenerateOptions.JSONSet carries any other unmodeled body field
 // per request, at a bounded cost and with one ledger decision per key: it is

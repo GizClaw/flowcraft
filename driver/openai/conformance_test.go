@@ -44,7 +44,7 @@ func instrumentedGenerateDrivers(
 	t.Helper()
 	cls := testClients(t, server)
 	operations, err := inference.BindGenerateOperations(
-		compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
+		compileResponsesFor("gpt-5.6-sol", declarations["gpt-5.6-sol"]),
 		countingTransport(calls, transportGenerate(cls.api)),
 		decodeGenerate,
 		countingTransport(calls, transportGenerateStream(cls.api)),
@@ -168,7 +168,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"]),
+		Compile: compileResponsesFor("gpt-5.6-sol", declarations["gpt-5.6-sol"]),
 		AssertWire: func(t *testing.T, request *responsesRequest) {
 			if request.params.Model != "gpt-5.6-sol" {
 				t.Fatalf("compiled model = %q", request.params.Model)
@@ -241,7 +241,7 @@ func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
 		MediaType: "application/vnd.example",
 		Value:     json.RawMessage(`{"k":1}`),
 	})
-	compiled, err := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+	compiled, err := compileResponsesFor("gpt-5.6-sol", declarations["gpt-5.6-sol"])(
 		context.Background(), openaiModel("gpt-5.6-sol"), request,
 		inference.GenerateExecutionUnary,
 	)
@@ -274,9 +274,9 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	image, err := media.NewImageURL("https://example.com/i.png", "image/png")
 	if err != nil {
@@ -290,7 +290,7 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileResponses("my-plain-model", models["my-plain-model"]),
+		Compile: compileResponsesFor("my-plain-model", models["my-plain-model"]),
 		AssertWire: func(t *testing.T, request *responsesRequest) {
 			if request.params.Model != "my-plain-model" {
 				t.Fatalf("compiled model = %q", request.params.Model)
@@ -345,7 +345,7 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 		Fields: func(request inference.EmbedRequest) []inference.FieldID {
 			return request.ActiveFields()
 		},
-		Compile: compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"]),
+		Compile: compileEmbedFor("text-embedding-3-large", declarations["text-embedding-3-large"]),
 		AssertWire: func(t *testing.T, params openai.EmbeddingNewParams) {
 			if params.Model != "text-embedding-3-large" ||
 				len(params.Input.OfArrayOfStrings) != 1 {
@@ -401,7 +401,7 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 		Fields: func(request inference.EmbedRequest) []inference.FieldID {
 			return request.ActiveFields()
 		},
-		Compile: compileEmbed("text-embedding-ada-002", catalog["text-embedding-ada-002"]),
+		Compile: compileEmbedFor("text-embedding-ada-002", declarations["text-embedding-ada-002"]),
 		AssertWire: func(t *testing.T, params openai.EmbeddingNewParams) {
 			if params.Model != "text-embedding-ada-002" {
 				t.Fatalf("params = %+v", params)
@@ -427,7 +427,7 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 	})
 
 	// Dimensions compile through on the text-embedding-3 family.
-	compiled, err := compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"])(
+	compiled, err := compileEmbedFor("text-embedding-3-large", declarations["text-embedding-3-large"])(
 		context.Background(),
 		openaiModel("text-embedding-3-large"),
 		inference.EmbedRequest{
@@ -457,7 +457,7 @@ func TestConformanceEmbedDataPartLowersToText(t *testing.T) {
 			},
 		}},
 	}}}
-	compiled, err := compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"])(
+	compiled, err := compileEmbedFor("text-embedding-3-large", declarations["text-embedding-3-large"])(
 		context.Background(), openaiModel("text-embedding-3-large"), request,
 	)
 	if err != nil {

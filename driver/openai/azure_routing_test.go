@@ -99,10 +99,11 @@ func TestAzureRoutingChatRewritesDeploymentPath(t *testing.T) {
 	})
 	defer server.Close()
 
-	request, err := compileChat("gpt-5.6-sol", catalogEntry{
-		kind:    kindGenerate,
-		dialect: dialect{api: apiChat, azureDeployment: true},
-	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
+	wire := chatWire()
+	wire.surface.azureDeployment = true
+	request, err := compileChatFor(
+		"gpt-5.6-sol", testTargetWith("gpt-5.6-sol", wire),
+	)(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +138,9 @@ func TestAzureRoutingResponsesPath(t *testing.T) {
 	})
 	defer server.Close()
 
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.azureDeployment = true
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
+	entry := declarations["gpt-5.6-sol"]
+	entry.dialect.surface.azureDeployment = true
+	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),
@@ -240,10 +241,11 @@ func TestAzureRoutingHonorsConfiguredAPIVersion(t *testing.T) {
 	})
 	defer server.Close()
 
-	request, err := compileChat("gpt-5.6-sol", catalogEntry{
-		kind:    kindGenerate,
-		dialect: dialect{api: apiChat, azureDeployment: true},
-	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
+	wire := chatWire()
+	wire.surface.azureDeployment = true
+	request, err := compileChatFor(
+		"gpt-5.6-sol", testTargetWith("gpt-5.6-sol", wire),
+	)(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
 	if err != nil {
 		t.Fatal(err)
 	}

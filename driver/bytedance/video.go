@@ -33,6 +33,49 @@ import (
 // 2.0 series and 2.5 support. First/last-frame input and reference inputs
 // are mutually exclusive, mirroring the official task scenarios.
 
+// VideoParams declares the Seedance task-parameter support matrix for one
+// video model, transcribed from the official create-task API documentation
+// (https://www.volcengine.com/docs/82379/1520757): each field mirrors one
+// parameter's documented "model support" column, so the compiler can reject
+// parameters the strong-validation endpoint would otherwise fault on. Zero
+// values mean "undeclared": the parameter is not checked locally and the
+// endpoint's own validation decides.
+type VideoParams struct {
+	// Seed reports that the model supports seed.
+	Seed bool `json:"seed,omitempty"`
+	// CameraFixed reports that the model supports camera_fixed.
+	CameraFixed bool `json:"camera_fixed,omitempty"`
+	// FlexTier reports that the model supports service_tier=flex.
+	FlexTier bool `json:"flex_tier,omitempty"`
+	// GenerateAudio reports that the model supports generate_audio.
+	GenerateAudio bool `json:"generate_audio,omitempty"`
+	// Priority reports that the model supports priority.
+	Priority bool `json:"priority,omitempty"`
+	// OutputFormat reports that the model supports output_format.
+	OutputFormat bool `json:"output_format,omitempty"`
+	// OmniReference reports that the model supports omni_reference_task_type.
+	OmniReference bool `json:"omni_reference_task_type,omitempty"`
+	// DurationMin and DurationMax bound the accepted clip length in seconds.
+	// Nil leaves the bound to the endpoint.
+	DurationMin *int64 `json:"duration_min_seconds,omitempty"`
+	DurationMax *int64 `json:"duration_max_seconds,omitempty"`
+	// DurationAuto reports that the model supports duration=-1, i.e. the
+	// model picking the length.
+	DurationAuto bool `json:"duration_auto,omitempty"`
+	// AudioOnly allows audio-only input (2.5); other reference-capable models
+	// require at least one image or video alongside audio.
+	AudioOnly bool `json:"audio_only,omitempty"`
+	// FrameRatioAdaptiveOnly restricts first/last-frame tasks to
+	// ratio=adaptive (2.5); explicit ratios are rejected for them.
+	FrameRatioAdaptiveOnly bool `json:"frame_ratio_adaptive_only,omitempty"`
+	// ReferenceImage, ReferenceVideo and ReferenceAudio cap the reference
+	// inputs the model takes; 0 means the model accepts none (image counts
+	// above the first/last-frame pair are rejected).
+	ReferenceImage int `json:"reference_image,omitempty"`
+	ReferenceVideo int `json:"reference_video,omitempty"`
+	ReferenceAudio int `json:"reference_audio,omitempty"`
+}
+
 type videoRaw struct {
 	videoURL         string
 	completionTokens int64
@@ -52,7 +95,7 @@ const statusExpired = "expired"
 
 func compileVideo(
 	endpoint string,
-	entry catalogEntry,
+	declared ModelSpec,
 ) inference.GenerateCompiler[*arkmodel.CreateContentGenerationTaskRequest] {
 	return func(
 		_ context.Context,
@@ -141,7 +184,7 @@ func compileVideo(
 				itemImage(images[1], "last_frame"),
 			)
 		case len(images) > 2:
-			if entry.video.referenceImage == 0 {
+			if declared.Video.ReferenceImage == 0 {
 				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
@@ -149,12 +192,12 @@ func compileVideo(
 						ref.ID.Name,
 					),
 				)
-			} else if len(images) > entry.video.referenceImage {
+			} else if len(images) > declared.Video.ReferenceImage {
 				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
 						"model %s supports at most %d reference images",
-						ref.ID.Name, entry.video.referenceImage,
+						ref.ID.Name, declared.Video.ReferenceImage,
 					),
 				)
 			} else {
@@ -164,17 +207,17 @@ func compileVideo(
 			}
 		}
 		switch {
-		case len(videos) > 0 && entry.video.referenceVideo == 0:
+		case len(videos) > 0 && declared.Video.ReferenceVideo == 0:
 			ledger.Reject(
 				inference.FieldGenerateInputVideo,
 				fmt.Sprintf("model %s does not support video-reference input", ref.ID.Name),
 			)
-		case len(videos) > entry.video.referenceVideo:
+		case len(videos) > declared.Video.ReferenceVideo:
 			ledger.Reject(
 				inference.FieldGenerateInputVideo,
 				fmt.Sprintf(
 					"model %s supports at most %d reference videos",
-					ref.ID.Name, entry.video.referenceVideo,
+					ref.ID.Name, declared.Video.ReferenceVideo,
 				),
 			)
 		default:
@@ -183,17 +226,17 @@ func compileVideo(
 			}
 		}
 		switch {
-		case len(audios) > 0 && entry.video.referenceAudio == 0:
+		case len(audios) > 0 && declared.Video.ReferenceAudio == 0:
 			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf("model %s does not support audio-reference input", ref.ID.Name),
 			)
-		case len(audios) > entry.video.referenceAudio:
+		case len(audios) > declared.Video.ReferenceAudio:
 			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
 					"model %s supports at most %d reference audio clips",
-					ref.ID.Name, entry.video.referenceAudio,
+					ref.ID.Name, declared.Video.ReferenceAudio,
 				),
 			)
 		default:
@@ -202,7 +245,7 @@ func compileVideo(
 			}
 		}
 		if len(audios) > 0 && len(images) == 0 && len(videos) == 0 &&
-			!entry.video.audioOnly {
+			!declared.Video.AudioOnly {
 			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
@@ -223,13 +266,13 @@ func compileVideo(
 					)
 				} else {
 					seconds := millis / 1000
-					if min := entry.video.durationMin; min != nil && seconds < *min {
+					if min := declared.Video.DurationMin; min != nil && seconds < *min {
 						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
 							fmt.Sprintf("model %s requires a duration of at least %ds", ref.ID.Name, *min),
 						)
 					}
-					if max := entry.video.durationMax; max != nil && seconds > *max {
+					if max := declared.Video.DurationMax; max != nil && seconds > *max {
 						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
 							fmt.Sprintf("model %s caps duration at %ds", ref.ID.Name, *max),
@@ -241,7 +284,7 @@ func compileVideo(
 			if video.Resolution != "" {
 				resolution := strings.ToLower(video.Resolution)
 				ark.Resolution = &resolution
-				if cap := entry.maxResolution; cap != "" && !resolutionWithin(resolution, cap) {
+				if cap := declared.MaxResolution; cap != "" && !resolutionWithin(resolution, cap) {
 					ledger.Reject(
 						inference.FieldGenerateIntentVideoResolution,
 						fmt.Sprintf("model %s caps resolution at %s", ref.ID.Name, cap),
@@ -256,7 +299,7 @@ func compileVideo(
 						inference.FieldGenerateIntentVideoAspectRatio,
 						fmt.Sprintf("unsupported video ratio %q", ratio),
 					)
-				} else if entry.video.frameRatioAdaptiveOnly &&
+				} else if declared.Video.FrameRatioAdaptiveOnly &&
 					(hasContentRole(ark, "first_frame") ||
 						hasContentRole(ark, "last_frame")) &&
 					ratio != "adaptive" {
@@ -270,7 +313,7 @@ func compileVideo(
 				}
 			}
 			ark.Seed = ptr.Clone(video.Seed)
-			if ark.Seed != nil && !entry.video.seed {
+			if ark.Seed != nil && !declared.Video.Seed {
 				ledger.Reject(
 					inference.FieldGenerateIntentVideoSeed,
 					fmt.Sprintf("model %s does not support seed", ref.ID.Name),
@@ -285,7 +328,7 @@ func compileVideo(
 		}
 		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
 		ledger.RejectExtensions("video generation", other)
-		compileVideoOptions(ark, options, entry, ledger, ref.ID.Name)
+		compileVideoOptions(ark, options, declared, ledger, ref.ID.Name)
 
 		if text := intent.Text; text != nil {
 			// Specific control rejections precede the wholesale text
@@ -327,55 +370,55 @@ func compileVideo(
 
 // compileVideoOptions lowers VideoOptions onto the task request and rejects
 // extension settings the model does not support, per the official
-// documentation's per-model support matrix (catalogEntry.video).
+// documentation's per-model support matrix (ModelSpec.Video).
 func compileVideoOptions(
 	ark *arkmodel.CreateContentGenerationTaskRequest,
 	options VideoOptions,
-	entry catalogEntry,
+	declared ModelSpec,
 	ledger *inference.Ledger,
 	modelName string,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
 	}
-	if options.CameraFixed != nil && !entry.video.cameraFixed {
+	if options.CameraFixed != nil && !declared.Video.CameraFixed {
 		ledger.Reject(
 			field("camera_fixed"),
 			fmt.Sprintf("model %s does not support camera_fixed", modelName),
 		)
 	}
-	if options.GenerateAudio != nil && !entry.video.generateAudio {
+	if options.GenerateAudio != nil && !declared.Video.GenerateAudio {
 		ledger.Reject(
 			field("generate_audio"),
 			fmt.Sprintf("model %s does not support generate_audio", modelName),
 		)
 	}
-	if options.ServiceTier == "flex" && !entry.video.flexTier {
+	if options.ServiceTier == "flex" && !declared.Video.FlexTier {
 		ledger.Reject(
 			field("service_tier"),
 			fmt.Sprintf("model %s does not support service_tier=flex", modelName),
 		)
 	}
-	if options.Priority != nil && !entry.video.priority {
+	if options.Priority != nil && !declared.Video.Priority {
 		ledger.Reject(
 			field("priority"),
 			fmt.Sprintf("model %s does not support priority", modelName),
 		)
 	}
-	if options.OutputFormat != nil && !entry.video.outputFormat {
+	if options.OutputFormat != nil && !declared.Video.OutputFormat {
 		ledger.Reject(
 			field("output_format"),
 			fmt.Sprintf("model %s does not support output_format", modelName),
 		)
 	}
-	if options.OmniReferenceTaskType != nil && !entry.video.omniReference {
+	if options.OmniReferenceTaskType != nil && !declared.Video.OmniReference {
 		ledger.Reject(
 			field("omni_reference_task_type"),
 			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
 		)
 	}
 	if options.WebSearch != nil && *options.WebSearch &&
-		!entry.capabilities.HostedWebSearch {
+		!declared.Capabilities.HostedWebSearch {
 		ledger.Reject(
 			field("web_search"),
 			fmt.Sprintf("model %s does not support web_search", modelName),
@@ -596,7 +639,7 @@ func decodeVideo(
 func openVideo(
 	cls *clients,
 	spec Spec,
-	entry catalogEntry,
+	declared ModelSpec,
 	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
@@ -605,7 +648,7 @@ func openVideo(
 		return inference.GenerateOperations{}, err
 	}
 	unary, err := inference.BindGenerate(
-		compileVideo(cls.endpoint(id.Name), entry),
+		compileVideo(cls.endpoint(id.Name), declared),
 		transportVideo(ark, spec.videoPollInterval(), cls.arkRequestOptions),
 		decodeVideo,
 	)

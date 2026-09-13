@@ -30,13 +30,14 @@ spec:
     include_reasoning_payload: true
     reasoning_summary: detailed  # optional "auto"/"concise"/"detailed"; opt in to readable traces
     truncation: auto    # optional "auto"/"disabled": context-overflow policy (responses)
-  catalog: declared     # "builtin_declared" (default) or "declared"
+  # No driver ships a model line-up: every model below is declared in full,
+  # and the retired `catalog` key is rejected with the migration path.
   request_metadata:     # optional; supported by the openai wire family
     envelope: request_fields   # any non-empty top-level body field; empty disables
-  models:               # optional: declare/override catalog models
+  models:               # the line-up this deployment serves
     - name: deepseek-flash
       kind: generate
-      capabilities:     # optional: capability leaves (see "Model declarations" below)
+      capabilities:     # what the model accepts and produces (see "Model declarations")
         inputs: [text, image, data, tool_call, tool_result]
         outputs: [text]
         reasoning:
@@ -49,6 +50,13 @@ spec:
             xhigh: max
         # hosted_web_search: false — DeepSeek ignores server-side tools other
         # than function calls, so claiming hosted search would be a lie.
+      limits:           # optional numeric capacity the model claims
+        max_input_tokens: 1000000
+        max_output_tokens: 384000
+      # lifecycle:      # optional discovery metadata: {"status": "deprecated",
+      #                 # "replacement": {"provider": id, "name": other-model}}
+      # video:          # bytedance/minimax control facts (see "Model declarations")
+      # wire_model:     # minimax only: the token an alias addresses
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}
@@ -65,29 +73,31 @@ application from provider driver modules (outside `core/`).
 
 ## Model declarations
 
-`spec.models` entries extend a provider's built-in catalog or override an
-entry by name. An entry that names a built-in model under the same kind is
-a **leaf-level patch**: capability leaves the entry writes replace only
-those leaves, and everything unstated — other capability leaves, numeric
-limits, and driver control facts such as Bytedance's `max_resolution` —
-is inherited from the built-in entry. Unknown names start from the
-conservative zero base, so every published capability must be stated.
-Compatible endpoints configured through the OpenAI and Anthropic drivers
-follow the same leaf semantics.
+`spec.models` is the deployment's line-up. No driver ships a built-in
+line-up, so an entry states the whole model: a fact it omits is undeclared
+rather than inherited, which is why a generate model must state
+`outputs: [text]` and why a compatible endpoint (DeepSeek, GLM, a gateway, a
+MiniMax Messages surface) carries a complete declaration per model.
+
+Driver control facts that no capability kind expresses are declaration
+leaves: Bytedance declares `max_resolution` and the Seedance `video`
+parameter matrix per video model, and MiniMax declares `wire_model` (the
+token an alias addresses) and its `video` surface (task API, duration and
+resolution tiers, frame roles). A control fact the deployment leaves out
+compiles with syntax-only validation instead of a driver-side assumption.
 
 Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
 compiles on that provider surface; models whose wire cannot turn reasoning
 off publish `always` instead. OpenAI-family reasoning off is
 `reasoning.effort: "none"` and needs no per-model knob (`effort_none` was
-removed); OpenAI `api: chat` catalogs always publish `always` because the
-chat surface has no off route.
+removed); OpenAI `api: chat` deployments always publish `always` because
+the chat surface has no off route.
 
 Embed models that accept custom output dimensions declare the capability
 leaf `custom_embed_dimensions` (OpenAI, Azure, Bytedance). The old
 top-level `dimensions:` key is gone, drivers without an embed family reject
-the leaf, and accepted sizes come from the built-in catalog whitelist — a
-declaration can restate the leaf on a whitelisted entry but cannot grant it
-to a model without one.
+the leaf, and a family that constrains sizes still validates the requested
+value against its own facts at compile time.
 
 Routing prefers targets whose declared outputs cover the request intent
 and skips declared-incompatible tiers.
@@ -104,7 +114,7 @@ lowering) and only takes effect for models whose capabilities declare `video`
 input. With both in place a chat request lowers a video part to
 `{"type":"video_url","video_url":{"url":...}}`, linked sources as their URL and
 inline sources as a data URI. Declaring `video` input without the endpoint
-fact fails the catalog build, and video on a turn the surface lowers to text
+fact fails the provider build, and video on a turn the surface lowers to text
 (assistant, system) is reported as rejected rather than dropped.
 
 Provider knobs no SDK models (Kimi's `thinking`, Qwen's `enable_thinking` /
@@ -144,9 +154,9 @@ Same keys, same bounds, same rejections, but applied to every request the
 deployment serves and reported as configuration rather than as a request
 decision. A request's `json_set` wins over it: an identical path replaces the
 deployment value, a nested path updates the object it wrote. The metadata
-envelope field cannot be written by either, and a `catalog: declared`
-deployment with no generate model is rejected — `extra_body` rides the
-generate surfaces, so it would otherwise never apply.
+envelope field cannot be written by either, and a deployment with no generate
+model is rejected — `extra_body` rides the generate surfaces, so it would
+otherwise never apply.
 
 `wire.reasoning_scope` declares the verification scope of this deployment's
 reasoning traces (the Anthropic driver takes it in `wire` too; Bytedance takes

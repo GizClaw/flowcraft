@@ -14,7 +14,7 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "minimax",
-			"spec": {},
+			"spec": {"models": `+fixtureModelsJSON(t, "MiniMax-H3")+`},
 			"profiles": [{
 				"id": "default",
 				"secrets": {"api_key": "${env:MINIMAX_TEST_KEY}"}

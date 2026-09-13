@@ -43,11 +43,11 @@ func compileVideoWire(
 	request inference.GenerateRequest,
 ) (*arkmodel.CreateContentGenerationTaskRequest, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[name]
+	entry, ok := declarations[name]
 	if !ok {
 		t.Fatalf("catalog model %q missing", name)
 	}
-	compiled, err := compileVideo("ep-test", entry)(
+	compiled, err := compileVideoFor(name, entry)(
 		context.Background(),
 		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,
@@ -524,64 +524,64 @@ func TestCompileVideoFrameRatioRestriction(t *testing.T) {
 	}
 }
 
-func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
-	// Transcription guard: catalogEntry.video mirrors the official
+func TestFixtureVideoParamsMatchOfficialMatrix(t *testing.T) {
+	// Transcription guard: the fixture declarations mirror the official
 	// create-task API per-model support columns. Any drift here means the
 	// compiler gates the wrong model set.
-	checks := map[string]videoParams{
+	checks := map[string]VideoParams{
 		"doubao-seedance-2-5": {
-			generateAudio:          true,
-			priority:               true,
-			outputFormat:           true,
-			omniReference:          true,
-			durationMin:            videoSeconds(4),
-			durationMax:            videoSeconds(30),
-			durationAuto:           true,
-			audioOnly:              true,
-			frameRatioAdaptiveOnly: true,
-			referenceImage:         30,
-			referenceVideo:         10,
-			referenceAudio:         10,
+			GenerateAudio:          true,
+			Priority:               true,
+			OutputFormat:           true,
+			OmniReference:          true,
+			DurationMin:            videoSeconds(4),
+			DurationMax:            videoSeconds(30),
+			DurationAuto:           true,
+			AudioOnly:              true,
+			FrameRatioAdaptiveOnly: true,
+			ReferenceImage:         30,
+			ReferenceVideo:         10,
+			ReferenceAudio:         10,
 		},
 		"doubao-seedance-2-0": {
-			generateAudio:  true,
-			priority:       true,
-			durationMin:    videoSeconds(4),
-			durationMax:    videoSeconds(15),
-			durationAuto:   true,
-			referenceImage: 9,
-			referenceVideo: 3,
-			referenceAudio: 3,
+			GenerateAudio:  true,
+			Priority:       true,
+			DurationMin:    videoSeconds(4),
+			DurationMax:    videoSeconds(15),
+			DurationAuto:   true,
+			ReferenceImage: 9,
+			ReferenceVideo: 3,
+			ReferenceAudio: 3,
 		},
 		"doubao-seedance-2-0-fast": {
-			generateAudio:  true,
-			priority:       true,
-			durationMin:    videoSeconds(4),
-			durationMax:    videoSeconds(15),
-			durationAuto:   true,
-			referenceImage: 9,
-			referenceVideo: 3,
-			referenceAudio: 3,
+			GenerateAudio:  true,
+			Priority:       true,
+			DurationMin:    videoSeconds(4),
+			DurationMax:    videoSeconds(15),
+			DurationAuto:   true,
+			ReferenceImage: 9,
+			ReferenceVideo: 3,
+			ReferenceAudio: 3,
 		},
 		"doubao-seedance-1-5-pro": {
-			seed:          true,
-			cameraFixed:   true,
-			flexTier:      true,
-			generateAudio: true,
-			durationMin:   videoSeconds(4),
-			durationMax:   videoSeconds(12),
-			durationAuto:  true,
+			Seed:          true,
+			CameraFixed:   true,
+			FlexTier:      true,
+			GenerateAudio: true,
+			DurationMin:   videoSeconds(4),
+			DurationMax:   videoSeconds(12),
+			DurationAuto:  true,
 		},
 		"doubao-seedance-1-0-pro": {
-			seed:        true,
-			cameraFixed: true,
-			flexTier:    true,
-			durationMin: videoSeconds(2),
-			durationMax: videoSeconds(12),
+			Seed:        true,
+			CameraFixed: true,
+			FlexTier:    true,
+			DurationMin: videoSeconds(2),
+			DurationMax: videoSeconds(12),
 		},
 	}
 	for name, want := range checks {
-		if got := catalog[name].video; !reflect.DeepEqual(got, want) {
+		if got := declarations[name].spec.Video; !reflect.DeepEqual(got, want) {
 			t.Errorf("model %q: video params = %+v, want %+v", name, got, want)
 		}
 	}

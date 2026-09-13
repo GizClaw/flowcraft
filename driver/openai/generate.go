@@ -199,7 +199,9 @@ var (
 // rejected on the ledger with a precise reason, and the sink only ever sees
 // what the ledger already accounted for.
 func compileGenerate[W generateSink](
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 	newSink func(inference.GenerateExecutionShape) W,
 ) inference.GenerateCompiler[W] {
 	return func(
@@ -216,7 +218,7 @@ func compileGenerate[W generateSink](
 		sink := newSink(shape)
 
 		if len(request.RequestMetadata) > 0 {
-			envelope := entry.dialect.requestMetadataEnvelope
+			envelope := wire.body.metadataField
 			if envelope == "" {
 				ledger.Drop(
 					inference.FieldGenerateRequestMetadata,
@@ -233,27 +235,35 @@ func compileGenerate[W generateSink](
 		for _, turn := range request.Context {
 			switch turn.Role {
 			case message.RoleTool:
-				compileToolResults(sink, turn.Content.Parts, entry, contextPartField, ledger)
+				compileToolResults(
+					sink, turn.Content.Parts, declared, wire, contextPartField, ledger)
 			default: // system / user / assistant
-				compileMessage(sink, string(turn.Role), turn.Content.Parts, entry, contextPartField, ledger)
+				compileMessage(
+					sink, string(turn.Role), turn.Content.Parts,
+					declared, wire, scope, contextPartField, ledger,
+				)
 			}
 		}
 
 		// Current input.
 		switch request.Input.Role {
 		case inference.InputRoleTool:
-			compileToolResults(sink, request.Input.Content.Parts, entry, inputPartField, ledger)
+			compileToolResults(
+				sink, request.Input.Content.Parts, declared, wire, inputPartField, ledger)
 		default:
-			compileMessage(sink, "user", request.Input.Content.Parts, entry, inputPartField, ledger)
+			compileMessage(
+				sink, "user", request.Input.Content.Parts,
+				declared, wire, scope, inputPartField, ledger,
+			)
 		}
 
-		compileIntent(sink, request.Input.Content.Intent, entry, ledger)
+		compileIntent(sink, request.Input.Content.Intent, declared, wire, ledger)
 
 		// Provider options: GenerateOptions fields lower onto the request one
 		// by one; extensions for other operations are rejected wholesale.
 		options, other := inference.ExtensionFor[GenerateOptions](request.Extensions)
 		ledger.RejectExtensions("generate", other)
-		compileGenerateOptions(sink, options, entry, ledger)
+		compileGenerateOptions(sink, options, declared, wire, ledger)
 
 		report := ledger.Report()
 		if ledger.Rejected() {
@@ -267,21 +277,22 @@ func compileGenerate[W generateSink](
 func compileGenerateOptions(
 	sink generateSink,
 	options GenerateOptions,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	ledger *inference.Ledger,
 ) {
-	compileGenerateTuning(sink, options, entry, ledger)
+	compileGenerateTuning(sink, options, declared, wire, ledger)
 	if options.WebSearch == nil {
 		return
 	}
-	if entry.dialect.api == apiChat {
+	if wire.surface.api == apiChat {
 		ledger.Reject(
 			inference.ExtensionField("web_search").Qualify(options),
 			"chat completions does not support hosted web search",
 		)
 		return
 	}
-	if !entry.capabilities.HostedWebSearch {
+	if !declared.Capabilities.HostedWebSearch {
 		ledger.Reject(
 			inference.ExtensionField("web_search").Qualify(options),
 			"model does not support hosted web search",
@@ -299,7 +310,8 @@ func compileGenerateOptions(
 func compileGenerateTuning(
 	sink generateSink,
 	options GenerateOptions,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	ledger *inference.Ledger,
 ) {
 	if tier := options.ServiceTier; tier != "" {
@@ -316,7 +328,7 @@ func compileGenerateTuning(
 	if calls := options.MaxToolCalls; calls != nil {
 		field := inference.ExtensionField("max_tool_calls").Qualify(options)
 		switch {
-		case entry.dialect.api == apiChat:
+		case wire.surface.api == apiChat:
 			ledger.Reject(field, "chat completions has no max tool call budget")
 		case *calls <= 0:
 			ledger.Reject(field, "max_tool_calls must be positive")
@@ -338,7 +350,7 @@ func compileGenerateTuning(
 	if key := options.PromptCacheKey; key != "" {
 		sink.setPromptCacheKey(key)
 	}
-	compileGenerateBodyFields(sink, options, entry, ledger)
+	compileGenerateBodyFields(sink, options, declared, wire, ledger)
 }
 
 // compileGenerateBodyFields applies the two sources of unmodeled body fields
@@ -362,16 +374,17 @@ func compileGenerateTuning(
 func compileGenerateBodyFields(
 	sink generateSink,
 	options GenerateOptions,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	ledger *inference.Ledger,
 ) {
-	for _, field := range entry.dialect.extraBody {
+	for _, field := range wire.body.extra {
 		sink.setJSONField(field.path, field.value)
 	}
 	if len(options.JSONSet) == 0 {
 		return
 	}
-	envelope := entry.dialect.requestMetadataEnvelope
+	envelope := wire.body.metadataField
 	for _, field := range sortedBodyFields(options.JSONSet) {
 		if envelope != "" && jsonSetRoot(field.path) == envelope {
 			ledger.Reject(
@@ -409,7 +422,9 @@ func compileMessage(
 	sink generateSink,
 	role string,
 	parts []message.Part,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -426,14 +441,14 @@ func compileMessage(
 		case message.TextPart:
 			content = append(content, contentPart{kind: contentText, text: value.Text})
 		case message.ImagePart:
-			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
 				ledger.Reject(fields(message.PartImage), "model does not accept image input")
 				continue
 			}
 			// Rejecting on a role the surface lowers to text keeps the ledger
 			// honest: appending the part and letting the sink drop it would
 			// report a decision the request never carried.
-			if reason := mediaRoleReason(entry.dialect.api, role); reason != "" {
+			if reason := mediaRoleReason(wire.surface.api, role); reason != "" {
 				ledger.Reject(fields(message.PartImage), reason)
 				continue
 			}
@@ -445,14 +460,14 @@ func compileMessage(
 			ledger.Reject(fields(message.PartAudio), "audio input is not supported by generate models")
 		case message.VideoPart:
 			switch {
-			case !entry.dialect.videoInput:
+			case !wire.video:
 				ledger.Reject(
 					fields(message.PartVideo),
 					"endpoint does not accept video input "+
 						"(declare it with spec.wire.video_input on api \"chat\")",
 				)
 				continue
-			case entry.dialect.api != apiChat:
+			case wire.surface.api != apiChat:
 				// Unreachable through Spec validation, which keeps the fact on
 				// the chat surface; kept for entries built directly.
 				ledger.Reject(
@@ -460,7 +475,7 @@ func compileMessage(
 					"the responses surface has no video input lowering",
 				)
 				continue
-			case !slices.Contains(entry.capabilities.Inputs, message.PartVideo):
+			case !slices.Contains(declared.Capabilities.Inputs, message.PartVideo):
 				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
 				continue
 			case value.Source.Kind() == media.SourceStream:
@@ -470,7 +485,7 @@ func compileMessage(
 				)
 				continue
 			}
-			if reason := mediaRoleReason(entry.dialect.api, role); reason != "" {
+			if reason := mediaRoleReason(wire.surface.api, role); reason != "" {
 				ledger.Reject(fields(message.PartVideo), reason)
 				continue
 			}
@@ -494,14 +509,15 @@ func compileMessage(
 				value.Result.CallID,
 				compileToolResultContent(
 					value.Result.Content,
-					entry,
+					declared,
+					wire,
 					fields(message.PartToolResult),
 					ledger,
 				),
 			)
 		case message.ReasoningPart:
 			flush()
-			compileReasoning(sink, role, value, entry, fields, ledger)
+			compileReasoning(sink, role, value, declared, wire, scope, fields, ledger)
 		}
 	}
 	flush()
@@ -520,7 +536,9 @@ func compileReasoning(
 	sink generateSink,
 	role string,
 	part message.ReasoningPart,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
+	scope string,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -529,7 +547,7 @@ func compileReasoning(
 		ledger.Reject(field, "reasoning parts belong to assistant context")
 		return
 	}
-	if entry.capabilities.Reasoning.Kind == model.ReasoningNone {
+	if declared.Capabilities.Reasoning.Kind == model.ReasoningNone {
 		ledger.Drop(field, "model has no reasoning channel")
 		return
 	}
@@ -537,21 +555,21 @@ func compileReasoning(
 		ledger.Drop(field, "reasoning trace carries no provenance")
 		return
 	}
-	if part.Source != entry.reasoningScope {
+	if part.Source != scope {
 		ledger.Drop(field, fmt.Sprintf(
 			"reasoning trace was verified by scope %q, not %q",
-			part.Source, entry.reasoningScope,
+			part.Source, scope,
 		))
 		return
 	}
-	if entry.dialect.api == apiChat {
+	if wire.surface.api == apiChat {
 		// Chat Completions has no standardized reasoning round-trip: the
 		// trace cannot ride along, so the drop is reported rather than the
 		// assistant turn silently losing it.
 		ledger.Drop(field, "chat completions does not replay reasoning items")
 		return
 	}
-	if entry.dialect.reasoningChannel == channelText {
+	if wire.reasoning.channel == channelText {
 		if part.Text == "" {
 			ledger.Drop(
 				field,
@@ -562,7 +580,7 @@ func compileReasoning(
 		sink.reasoning(part, true)
 		return
 	}
-	if entry.dialect.omitReasoningPayload {
+	if !wire.reasoning.payload {
 		ledger.Drop(
 			field,
 			"endpoint does not return reasoning payloads "+
@@ -587,7 +605,8 @@ func compileReasoning(
 func compileToolResults(
 	sink generateSink,
 	parts []message.Part,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	fields func(message.PartKind) inference.FieldID,
 	ledger *inference.Ledger,
 ) {
@@ -604,7 +623,8 @@ func compileToolResults(
 			result.Result.CallID,
 			compileToolResultContent(
 				result.Result.Content,
-				entry,
+				declared,
+				wire,
 				fields(message.PartToolResult),
 				ledger,
 			),
@@ -621,12 +641,13 @@ func compileToolResults(
 // loss lands on the ledger.
 func compileToolResultContent(
 	content message.Content,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	field inference.FieldID,
 	ledger *inference.Ledger,
 ) []contentPart {
-	vision := slices.Contains(entry.capabilities.Inputs, message.PartImage)
-	chatSurface := entry.dialect.api == apiChat
+	vision := slices.Contains(declared.Capabilities.Inputs, message.PartImage)
+	chatSurface := wire.surface.api == apiChat
 	out := make([]contentPart, 0, len(content.Parts))
 	omitted := make([]string, 0, len(content.Parts))
 	notes := make([]inference.ComponentNote, 0, len(content.Parts))
@@ -722,7 +743,8 @@ func toolResultPlaceholder(reason string) contentPart {
 func compileIntent(
 	sink generateSink,
 	intent inference.Intent,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	ledger *inference.Ledger,
 ) {
 	if text := intent.Text; text != nil {
@@ -777,24 +799,24 @@ func compileIntent(
 	}
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no reasoning to switch",
 			)
-		case entry.capabilities.Reasoning.Kind == model.ReasoningAlways &&
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"openai reasoning models cannot disable reasoning",
 			)
-		case entry.capabilities.Reasoning.Kind == model.ReasoningToggle &&
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningToggle &&
 			!*text.ReasoningEnabled:
 			// Toggle is only published where the surface can express off:
 			// Responses lowers it to reasoning.effort "none", while chat
 			// entries are lowered to always at merge time. The chat guard
 			// stays as compiler-level defense for direct entry misuse.
-			if entry.dialect.api != apiChat {
+			if wire.surface.api != apiChat {
 				sink.setReasoningEffort("none")
 				break
 			}
@@ -807,18 +829,18 @@ func compileIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning.Kind == model.ReasoningNone:
+		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
 			ledger.Reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+		case len(declared.Capabilities.Reasoning.EffortMap) == 0:
 			// Spec-declared reasoning models without an explicit map keep
 			// the legacy pass-through behavior: OpenAI's reasoning.effort
 			// accepts the canonical effort tokens verbatim.
 			sink.setReasoningEffort(string(text.ReasoningEffort))
 		default:
-			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+			mode, _ := declared.Capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
 			)
 			sink.setReasoningEffort(mode)

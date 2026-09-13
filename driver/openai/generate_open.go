@@ -6,12 +6,13 @@ import (
 )
 
 // openGenerate binds the generate pipeline (unary + stream) for one
-// catalog model. The provider owns its kernel: the compile/transport/decode
+// declared model. The provider owns its kernel: the compile/transport/decode
 // stages live in this package, and openGenerate wires them for the model's
 // API mode (Responses by default, Chat Completions when spec.api is chat).
 func openGenerate(
 	cls *clients,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
@@ -20,11 +21,10 @@ func openGenerate(
 	// so a trace never crosses a deployment, a model, or an account unless
 	// the deployment declared a shared scope.
 	scope := inference.ReasoningScope(
-		entry.dialect.reasoningScopeDeclared, id.Provider, id.Name, profile)
-	entry.reasoningScope = scope
-	if entry.dialect.api == apiChat {
+		wire.reasoning.scopeDeclared, id.Provider, id.Name, profile)
+	if wire.surface.api == apiChat {
 		return inference.BindGenerateOperations(
-			compileChat(id.Name, entry),
+			compileChat(id.Name, declared, wire, scope),
 			transportChatGenerate(cls.api),
 			inference.WithReasoningSource(decodeGenerate, scope),
 			transportChatGenerateStream(cls.api),
@@ -32,7 +32,7 @@ func openGenerate(
 		)
 	}
 	return inference.BindGenerateOperations(
-		compileResponses(id.Name, entry),
+		compileResponses(id.Name, declared, wire, scope),
 		transportGenerate(cls.api),
 		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(cls.api),

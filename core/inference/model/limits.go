@@ -29,7 +29,7 @@ func (l ModelLimits) Clone() ModelLimits {
 
 // WithMaxInputTokens returns limits declaring the input-context window.
 // Values at or below zero leave the window undeclared (the conservative
-// zero declaration), matching the built-in catalog convention.
+// zero declaration).
 func (l ModelLimits) WithMaxInputTokens(value int) ModelLimits {
 	if value > 0 {
 		l.MaxInputTokens = &value

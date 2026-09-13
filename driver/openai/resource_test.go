@@ -14,7 +14,8 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
-			"spec": {"endpoint": {"organization": "org-1"}},
+			"spec": {"endpoint": {"organization": "org-1"}, "models": `+
+			fixtureModelsJSON(t, fixtureNames...)+`},
 			"profiles": [{
 				"id": "default",
 				"operations": ["generate", "embed"],
@@ -33,7 +34,7 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
 	}
 	if provider.ID != "openai" || len(provider.Profiles) != 1 ||
-		len(provider.Models) != len(catalog) {
+		len(provider.Models) != len(fixtureNames) {
 		t.Fatalf("provider = %+v", provider)
 	}
 }

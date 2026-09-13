@@ -316,7 +316,7 @@ func decodeImage(
 
 func openImage(
 	cls *clients,
-	_ catalogEntry,
+	_ ModelSpec,
 	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	unary, err := inference.BindGenerate(

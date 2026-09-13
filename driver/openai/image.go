@@ -740,12 +740,13 @@ func streamImagePart(
 
 func openImage(
 	cls *clients,
-	entry catalogEntry,
+	declared ModelSpec,
+	wire dialect,
 	id model.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
-		compileImage(id.Name, entry.dialect.azureDeployment),
+		compileImage(id.Name, wire.surface.azureDeployment),
 		transportImage(cls.api),
 		decodeImage,
 		transportImageStream(cls.api),

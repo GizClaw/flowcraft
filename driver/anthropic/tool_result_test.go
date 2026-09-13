@@ -10,20 +10,20 @@ import (
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 )
 
-// declaredEntry builds a one-model declared catalog carrying the given
-// capability leaves.
-func declaredEntry(t *testing.T, capabilities string) catalogEntry {
+// declaredEntry builds the one-model declaration carrying the given
+// capabilities.
+func declaredEntry(t *testing.T, capabilities string) testTarget {
 	t.Helper()
 	spec, err := decodeSpec(context.Background(), []byte(
-		`{"catalog":"declared","models":[{"name":"m","capabilities":`+
+		`{"models":[{"name":"m","capabilities":`+
 			capabilities+`}]}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	models, err := mergedCatalog(spec)
+	models, err := resolveModelsForTest(t, spec)
 	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
+		t.Fatalf("resolveModels: %v", err)
 	}
 	return models["m"]
 }
@@ -72,7 +72,7 @@ func TestToolResultCarriesMultimodalBlocks(t *testing.T) {
 		toolResultImage(t),
 		message.TextPart{Text: "after"},
 	)
-	compiled, err := compileGenerate("m", entry)(
+	compiled, err := compileGenerateFor("m", entry)(
 		context.Background(),
 		conformanceModel("m"),
 		request,
@@ -103,7 +103,7 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 		toolResultImage(t),
 		message.TextPart{Text: "after"},
 	)
-	compiled, err := compileGenerate("m", entry)(
+	compiled, err := compileGenerateFor("m", entry)(
 		context.Background(),
 		conformanceModel("m"),
 		request,
@@ -131,7 +131,7 @@ func TestToolResultTextKeepsStringForm(t *testing.T) {
 	entry := declaredEntry(t,
 		`{"inputs":["text","tool_call","tool_result"],"outputs":["text"]}`)
 	request := toolResultRequest(t, message.TextPart{Text: "found"})
-	compiled, err := compileGenerate("m", entry)(
+	compiled, err := compileGenerateFor("m", entry)(
 		context.Background(),
 		conformanceModel("m"),
 		request,
