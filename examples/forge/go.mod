@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/examples/forge
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.3.0
-	github.com/GizClaw/flowcraft/driver/openai v0.2.0
+	github.com/GizClaw/flowcraft/core v0.4.0
+	github.com/GizClaw/flowcraft/driver/openai v0.3.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -12,19 +12,25 @@ require (
 )
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
+	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
+	github.com/volcengine/volcengine-go-sdk v1.2.52 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 )
 
 require (
-	github.com/GizClaw/flowcraft/driver/anthropic v0.2.5
-	github.com/GizClaw/flowcraft/driver/bytedance v0.2.5
+	github.com/GizClaw/flowcraft/driver/anthropic v0.3.0
+	github.com/GizClaw/flowcraft/driver/bytedance v0.3.0
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
