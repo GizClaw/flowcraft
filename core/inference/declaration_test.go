@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 // declarationAssembly builds a one-model generate provider whose descriptor
@@ -17,14 +18,25 @@ func declarationAssembly(
 	opens *atomic.Int64,
 ) *Assembly {
 	t.Helper()
+	return declarationAssemblyFor(t, ModelDescriptor{
+		ID:     ModelID{Provider: "limited", Name: "model-1"},
+		Limits: limits,
+	}, opens)
+}
+
+// declarationAssemblyFor builds the same one-model provider for an explicit
+// descriptor, so a test can declare capabilities as well as limits.
+func declarationAssemblyFor(
+	t *testing.T,
+	descriptor ModelDescriptor,
+	opens *atomic.Int64,
+) *Assembly {
+	t.Helper()
 	return &Assembly{providers: map[string]ProviderDefinition{
 		"limited": {
 			ID: "limited",
 			Models: []ModelImplementation{{
-				Descriptor: ModelDescriptor{
-					ID:     ModelID{Provider: "limited", Name: "model-1"},
-					Limits: limits,
-				},
+				Descriptor: descriptor,
 				Openers: Openers{
 					Generate: func(
 						context.Context, ModelRef,
@@ -149,5 +161,188 @@ func TestGenerateWithoutTextIntentSkipsDeclarationCheck(t *testing.T) {
 	}}
 	if _, err := assembly.Generate(context.Background(), declarationModel, request); err != nil {
 		t.Fatalf("Generate: %v", err)
+	}
+}
+
+// generateRequestWithParts is a plain text request whose current input carries
+// extra content parts.
+func generateRequestWithParts(parts ...message.Part) GenerateRequest {
+	request := generateRequestWithMaxOutput(0)
+	request.Input.Content.Intent.Text.MaxOutputTokens = nil
+	request.Input.Content.Parts = append(
+		[]message.Part{message.TextPart{Text: "hi"}},
+		parts...,
+	)
+	return request
+}
+
+// imagePart is one URL-backed image a request can carry.
+func imagePart(t *testing.T) message.Part {
+	t.Helper()
+	source, err := media.NewImageURL("https://cdn.example.com/shot.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	return message.ImagePart{Source: source}
+}
+
+// TestGenerateRejectsUndeclaredInputKind pins the input half of the
+// declaration check: a request carrying a content kind the model does not
+// declare is rejected before the driver is opened — the same decision the
+// driver's compiler would make, but without constructing a provider client
+// first — with a field and detail the report can name.
+func TestGenerateRejectsUndeclaredInputKind(t *testing.T) {
+	var opens atomic.Int64
+	assembly := declarationAssemblyFor(t, ModelDescriptor{
+		ID: ModelID{Provider: "limited", Name: "model-1"},
+		Capabilities: ModelCapabilities{
+			Inputs: []message.PartKind{message.PartText},
+		},
+	}, &opens)
+
+	_, err := assembly.Generate(
+		context.Background(), declarationModel,
+		generateRequestWithParts(imagePart(t)),
+	)
+	if err == nil {
+		t.Fatal("Generate accepted an undeclared image input")
+	}
+	if !IsKind(err, UnsupportedFeature) {
+		t.Fatalf("kind = %v, want %v", err, UnsupportedFeature)
+	}
+	var inferenceErr *Error
+	if !errors.As(err, &inferenceErr) {
+		t.Fatalf("error is not an *Error: %v", err)
+	}
+	if inferenceErr.Field != FieldGenerateInputImage {
+		t.Fatalf("field = %q, want %q", inferenceErr.Field, FieldGenerateInputImage)
+	}
+	if want := declarationDetailInputPrefix + string(message.PartImage); inferenceErr.Detail != want {
+		t.Fatalf("detail = %q, want %q", inferenceErr.Detail, want)
+	}
+	if opens.Load() != 0 {
+		t.Fatalf("driver opened %d times for a request rejected on declaration", opens.Load())
+	}
+}
+
+// TestGenerateInputDeclarationBoundaries pins exactly which requests the input
+// check does and does not reject, including the two deliberate exceptions.
+func TestGenerateInputDeclarationBoundaries(t *testing.T) {
+	toolResult := message.ToolResultPart{Result: message.NewTextToolResult(
+		"c1", "tool output",
+	)}
+	cases := []struct {
+		name     string
+		declared []message.PartKind
+		parts    []message.Part
+		context  []message.Part
+		rejected bool
+		field    FieldID
+	}{
+		{
+			name:     "declared image passes",
+			declared: []message.PartKind{message.PartText, message.PartImage},
+			parts:    []message.Part{imagePart(t)},
+		},
+		{
+			name:     "undeclared image is rejected",
+			declared: []message.PartKind{message.PartText},
+			parts:    []message.Part{imagePart(t)},
+			rejected: true,
+			field:    FieldGenerateInputImage,
+		},
+		{
+			name:     "context image is rejected with the context field",
+			declared: []message.PartKind{message.PartText},
+			context:  []message.Part{imagePart(t)},
+			rejected: true,
+			field:    FieldGenerateContextImage,
+		},
+		{
+			name:  "undeclared list is unknown, not empty",
+			parts: []message.Part{imagePart(t)},
+		},
+		{
+			// Text is the baseline every compiler lowers; a declaration that
+			// omits it does not turn text requests into rejections.
+			name:     "text is never gated",
+			declared: []message.PartKind{message.PartImage},
+		},
+		{
+			// Structural parts keep their role and surface rules in the
+			// driver, which may drop rather than reject them.
+			name:     "tool results stay with the compiler",
+			declared: []message.PartKind{message.PartText},
+			parts:    []message.Part{toolResult},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opens atomic.Int64
+			assembly := declarationAssemblyFor(t, ModelDescriptor{
+				ID:           ModelID{Provider: "limited", Name: "model-1"},
+				Capabilities: ModelCapabilities{Inputs: tc.declared},
+			}, &opens)
+			request := generateRequestWithParts(tc.parts...)
+			if len(tc.context) > 0 {
+				request.Context = []message.Message{{
+					Role:    message.RoleUser,
+					Content: message.Content{Parts: tc.context},
+				}}
+			}
+			_, err := assembly.Generate(
+				context.Background(), declarationModel, request,
+			)
+			switch {
+			case tc.rejected && err == nil:
+				t.Fatal("Generate accepted the request, want a declaration rejection")
+			case !tc.rejected && err != nil:
+				t.Fatalf("Generate: %v", err)
+			}
+			if !tc.rejected {
+				if opens.Load() == 0 {
+					t.Fatal("the driver was never opened for an accepted request")
+				}
+				return
+			}
+			var inferenceErr *Error
+			if !errors.As(err, &inferenceErr) {
+				t.Fatalf("error is not an *Error: %v", err)
+			}
+			if inferenceErr.Field != tc.field {
+				t.Fatalf("field = %q, want %q", inferenceErr.Field, tc.field)
+			}
+			if opens.Load() != 0 {
+				t.Fatalf("driver opened %d times, want none", opens.Load())
+			}
+		})
+	}
+}
+
+// TestBindingPrepareRejectsUndeclaredInputKind pins the second entry point: a
+// binding applies the same declaration check when it compiles, so a prepared
+// attempt never reaches a driver that would reject it.
+func TestBindingPrepareRejectsUndeclaredInputKind(t *testing.T) {
+	var opens atomic.Int64
+	assembly := declarationAssemblyFor(t, ModelDescriptor{
+		ID: ModelID{Provider: "limited", Name: "model-1"},
+		Capabilities: ModelCapabilities{
+			Inputs: []message.PartKind{message.PartText},
+		},
+	}, &opens)
+	binding, err := assembly.Bind(context.Background(), declarationModel)
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	_, err = binding.PrepareGenerate(
+		context.Background(), generateRequestWithParts(imagePart(t)),
+	)
+	if err == nil {
+		t.Fatal("PrepareGenerate accepted an undeclared image input")
+	}
+	var inferenceErr *Error
+	if !errors.As(err, &inferenceErr) ||
+		inferenceErr.Field != FieldGenerateInputImage {
+		t.Fatalf("error = %v, want a declaration rejection naming the image field", err)
 	}
 }

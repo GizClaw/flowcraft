@@ -2,7 +2,6 @@ package model
 
 import (
 	"encoding/json"
-	"maps"
 	"strings"
 	"testing"
 )
@@ -79,49 +78,6 @@ func TestReasoningCapabilityJSONBackwardCompat(t *testing.T) {
 	}
 }
 
-func decodeReasoningPatch(t *testing.T, raw string) *ReasoningPatch {
-	t.Helper()
-	var patch ReasoningPatch
-	if err := json.Unmarshal([]byte(raw), &patch); err != nil {
-		t.Fatalf("decode reasoning patch: %v", err)
-	}
-	if err := patch.Validate(); err != nil {
-		t.Fatalf("validate reasoning patch: %v", err)
-	}
-	return &patch
-}
-
-func TestReasoningPatchSubLeavesAndLegacyString(t *testing.T) {
-	base := reasoningPatchCapabilities().Reasoning
-
-	kindOnly := decodeReasoningPatch(t, `"toggle"`)
-	got := kindOnly.Apply(base)
-	if got.Kind != ReasoningToggle || len(got.EffortMap) != 5 {
-		t.Fatalf("legacy string must keep base map, got kind %q map %v", got.Kind, got.EffortMap)
-	}
-
-	mapOnly := decodeReasoningPatch(t, `{"effort_map":{}}`)
-	got = mapOnly.Apply(base)
-	if got.Kind != ReasoningToggle {
-		t.Fatalf("kind = %q, want inherited toggle", got.Kind)
-	}
-	if len(got.EffortMap) != 0 {
-		t.Fatalf("effort_map: {} must clear the base dial, got %v", got.EffortMap)
-	}
-
-	nonePatch := decodeReasoningPatch(t, `""`)
-	if nonePatch.Kind == nil || *nonePatch.Kind != ReasoningNone {
-		t.Fatalf("legacy empty string must mean kind none, got %#v", nonePatch.Kind)
-	}
-	got = nonePatch.Apply(base)
-	if got.Kind != ReasoningNone || len(got.EffortMap) != 0 {
-		t.Fatalf("none patch = %#v, want kind none with no effort map", got)
-	}
-	if err := got.Validate(); err != nil {
-		t.Fatalf("removed reasoning must stay valid, got %v", err)
-	}
-}
-
 func TestReasoningCapabilityEmptyMapSemantics(t *testing.T) {
 	empty := map[ReasoningEffort]string{}
 	for name, capability := range map[string]ReasoningCapability{
@@ -136,37 +92,4 @@ func TestReasoningCapabilityEmptyMapSemantics(t *testing.T) {
 			t.Fatalf("%s unexpectedly invalid: %v", name, err)
 		}
 	}
-}
-
-func TestReasoningPatchJSONRoundTrip(t *testing.T) {
-	for _, raw := range []string{
-		`"toggle"`,
-		`"always"`,
-		`{"kind":"toggle","effort_map":{"minimal":"minimal","low":"low","medium":"medium","high":"high","xhigh":"xhigh"}}`,
-	} {
-		var patch ReasoningPatch
-		if err := json.Unmarshal([]byte(raw), &patch); err != nil {
-			t.Fatalf("decode %s: %v", raw, err)
-		}
-		encoded, err := json.Marshal(patch)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var decoded ReasoningPatch
-		if err := json.Unmarshal(encoded, &decoded); err != nil {
-			t.Fatalf("re-decode %s: %v", encoded, err)
-		}
-		if (decoded.Kind == nil) != (patch.Kind == nil) ||
-			(decoded.Kind != nil && *decoded.Kind != *patch.Kind) ||
-			!maps.Equal(nonNilMap(decoded.EffortMap), nonNilMap(patch.EffortMap)) {
-			t.Fatalf("round trip %s = %#v, want %#v", raw, decoded, patch)
-		}
-	}
-}
-
-func nonNilMap(m *map[ReasoningEffort]string) map[ReasoningEffort]string {
-	if m == nil {
-		return map[ReasoningEffort]string{}
-	}
-	return *m
 }

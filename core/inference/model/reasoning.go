@@ -3,7 +3,6 @@ package model
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"unicode"
 )
 
@@ -177,101 +176,6 @@ func (r ReasoningCapability) MarshalJSON() ([]byte, error) {
 	}
 	type alias ReasoningCapability
 	return json.Marshal(alias(r))
-}
-
-// ReasoningPatch is the reasoning leaf of a CapabilitiesPatch. Absent
-// fields inherit the base reasoning capability; present fields replace
-// that leaf only.
-type ReasoningPatch struct {
-	// Kind replaces the reasoning kind when present. An explicit empty
-	// string (ReasoningNone) removes reasoning control from a base that
-	// declares it, dropping the inherited effort map with it (a none kind
-	// cannot carry a dial); the legacy `reasoning: ""` string form spells
-	// this.
-	Kind *ReasoningKind `json:"kind,omitempty"`
-	// EffortMap replaces the canonical-to-wire effort map when present. An
-	// empty map clears a base dial, leaving binary thinking with no depth
-	// control.
-	EffortMap *map[ReasoningEffort]string `json:"effort_map,omitempty"`
-}
-
-// Apply returns the base reasoning capability with every named leaf
-// replaced.
-func (p *ReasoningPatch) Apply(base ReasoningCapability) ReasoningCapability {
-	out := base
-	if base.EffortMap != nil {
-		out.EffortMap = maps.Clone(base.EffortMap)
-	}
-	if p == nil {
-		return out
-	}
-	if p.Kind != nil {
-		out.Kind = *p.Kind
-	}
-	if p.EffortMap != nil {
-		out.EffortMap = maps.Clone(*p.EffortMap)
-	}
-	if out.Kind == ReasoningNone && p.EffortMap == nil {
-		// None cannot carry a dial: removing the reasoning capability with
-		// the legacy empty-string kind must also drop any inherited effort
-		// map, or the merged capability fails validation downstream.
-		out.EffortMap = nil
-	}
-	return out
-}
-
-// Validate checks the named leaves: a named kind must be valid and a named
-// effort map, when non-empty, must cover all five canonical levels with
-// well-formed wire tokens.
-func (p *ReasoningPatch) Validate() error {
-	if p == nil {
-		return nil
-	}
-	if p.Kind != nil {
-		if err := p.Kind.Validate(); err != nil {
-			return err
-		}
-		if *p.Kind == ReasoningNone &&
-			p.EffortMap != nil && len(*p.EffortMap) > 0 {
-			return fmt.Errorf(
-				"reasoning kind none cannot declare an effort map",
-			)
-		}
-	}
-	if p.EffortMap != nil {
-		return validateReasoningEffortMap(*p.EffortMap)
-	}
-	return nil
-}
-
-// UnmarshalJSON accepts both the legacy string form ("toggle", meaning
-// "override the kind only") and the object form so existing deployment
-// specs keep decoding and existing redeclarations keep the base effort map
-// unless the object names one.
-func (p *ReasoningPatch) UnmarshalJSON(data []byte) error {
-	var kind ReasoningKind
-	if err := json.Unmarshal(data, &kind); err == nil {
-		*p = ReasoningPatch{Kind: &kind}
-		return nil
-	}
-	type alias ReasoningPatch
-	var decoded alias
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	*p = ReasoningPatch(decoded)
-	return nil
-}
-
-// MarshalJSON keeps the legacy string form when the patch names only a
-// kind, so a deployment that decoded `reasoning: "toggle"` re-serializes to
-// the same string instead of leaking the object shape.
-func (p ReasoningPatch) MarshalJSON() ([]byte, error) {
-	if p.Kind != nil && p.EffortMap == nil {
-		return json.Marshal(*p.Kind)
-	}
-	type alias ReasoningPatch
-	return json.Marshal(alias(p))
 }
 
 // validateEffortToken checks that a wire-level token is well-formed:

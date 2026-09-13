@@ -1,9 +1,9 @@
 // Package model is the model declaration vocabulary: identity (ModelID,
 // ModelRef), the discovery surface (ModelDescriptor, ModelCapabilities,
-// ModelLimits, ModelLifecycle), the reasoning contract (ReasoningKind,
-// ReasoningCapability, ReasoningEffort), and the catalog patch language
-// (CapabilitiesPatch, ReasoningPatch) deployments use to redeclare built-in
-// entries.
+// ModelLimits, ModelLifecycle), and the reasoning contract (ReasoningKind,
+// ReasoningCapability, ReasoningEffort). A provider spec declares a model by
+// filling these types in: the vocabulary carries no overlay or patch form,
+// because a declaration is the whole fact.
 //
 // This is the only home of that vocabulary: core/inference re-exports it
 // through deprecated aliases (see core/inference/model_alias.go) so existing
@@ -12,9 +12,9 @@
 //
 // # Boundary
 //
-// In scope: everything a provider catalog and a deployment spec must name to
-// describe a model, plus the Operation enum those declarations are written
-// against. The package depends on core/message and on core/utils/ptr — a leaf
+// In scope: everything a provider spec must name to describe a model, plus
+// the Operation enum those declarations are written against. The package
+// depends on core/message and on core/utils/ptr — a leaf
 // that imports nothing beyond the standard library — for the shared
 // defensive-copy helper its Clone methods use; it never imports the inference
 // contract that re-exports it.
@@ -33,15 +33,13 @@
 //	identity.go     ModelID, ModelRef
 //	lifecycle.go    ModelStatus, ModelLifecycle
 //	reasoning.go    ReasoningKind, ReasoningEffort, ReasoningCapability,
-//	                ReasoningPatch, and the effort validation
-//	capabilities.go ModelCapabilities, CapabilitiesPatch, and part-kind
-//	                validation
+//	                and the effort validation
+//	capabilities.go ModelCapabilities and part-kind validation
 //	limits.go       ModelLimits
 //	descriptor.go   ModelDescriptor
 //
-// Each declaration's patch form lives with the declaration it overrides:
-// adding a capability leaf means touching one file, not two. The original
-// model_patch.go is therefore dissolved rather than mirrored.
+// The declaration types are the same ones descriptors publish, so a driver
+// projects a declaration onto discovery metadata without a second DTO.
 //
 // Out of scope, and deliberately left in core/inference:
 //
