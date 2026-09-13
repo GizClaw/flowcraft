@@ -2,10 +2,7 @@ module github.com/GizClaw/flowcraft/driver/minimax
 
 go 1.25.0
 
-require (
-	github.com/GizClaw/flowcraft/core v0.3.0
-	go.opentelemetry.io/otel/log v0.19.0
-)
+require github.com/GizClaw/flowcraft/core v0.4.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -22,6 +19,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0 // indirect
+	go.opentelemetry.io/otel/log v0.19.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk/log v0.19.0 // indirect
