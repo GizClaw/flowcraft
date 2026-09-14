@@ -4,6 +4,7 @@ package windows
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -151,11 +152,11 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 	if err != nil {
 		return errdefs.Internal(fmt.Errorf("windows: get dacl of %s: %w", path, err))
 	}
-	// GetNamedSecurityInfo allocates the descriptor with LocalAlloc; the
-	// caller owns it and must free it once every ACL derived from it has
-	// been applied. dacl points into sd, so the free is deferred past the
-	// SetNamedSecurityInfo call below.
-	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(sd))) }()
+	// x/sys already frees the LocalAlloc'd descriptor and hands back a
+	// Go-heap self-relative copy: freeing sd here would pass a Go pointer
+	// to LocalFree and corrupt the Windows heap. dacl points into that
+	// copy, so keep it alive until the merged ACL has been applied.
+	defer runtime.KeepAlive(sd)
 
 	// BOOL is 4 bytes; a Go bool is 1. Passing *bool made the API write
 	// three bytes past each variable (both escape to the heap).
