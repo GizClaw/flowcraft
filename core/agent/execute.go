@@ -91,6 +91,31 @@ func Execute(
 
 	rc := applyOptions(ag, opts)
 
+	// Run-level wall clock. Unlike an engine's per-Execute timeout
+	// (which restarts on every attempt), this budget spans the whole
+	// call: seeder, every revise attempt, Referees and Committers. The
+	// shorter of this deadline and the caller's context wins, and
+	// engines that bound themselves keep their own (typically tighter)
+	// limits.
+	runTimeout := rc.runTimeout
+	if runTimeout == 0 && ag.Policy.RunTimeout != "" {
+		parsed, err := time.ParseDuration(ag.Policy.RunTimeout)
+		if err != nil {
+			return nil, errdefs.Validationf(
+				"agent: policy.run_timeout %q: %v", ag.Policy.RunTimeout, err)
+		}
+		if parsed <= 0 {
+			return nil, errdefs.Validationf(
+				"agent: policy.run_timeout %q must be a positive duration", ag.Policy.RunTimeout)
+		}
+		runTimeout = parsed
+	}
+	if runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, runTimeout)
+		defer cancel()
+	}
+
 	runID := req.RunID
 	// Resume MUST execute under the original run id so the engine's
 	// Resumer.CanResume sees ExecID == Run.RunID. Honour the
@@ -607,6 +632,7 @@ type execConfig struct {
 	resumeFrom         *Checkpoint
 	parentRunID        string
 	maxRevise          int
+	runTimeout         time.Duration
 	artifactChannels   []string
 }
 
@@ -797,6 +823,30 @@ func WithMaxRevise(n int) ExecuteOption {
 			n = 0
 		}
 		rc.maxRevise = n
+	}
+}
+
+// WithRunTimeout bounds the wall-clock duration of one [Execute] call
+// — seeder, every revise attempt, Referees and Committers included.
+//
+// Use it when an engine's own timeout is per-Execute: that budget
+// restarts on every attempt, so with a revise budget of N the logical
+// run can take up to N × engine-timeout. WithRunTimeout caps the sum.
+// The engine timeout still applies; the shorter deadline wins.
+//
+//   - d > 0 installs the bound;
+//   - d <= 0 is a no-op (no run-level bound; the caller's context
+//     rules). This is the default.
+//
+// A resume is a separate Execute call and therefore gets a fresh
+// window; [Policy.RunTimeout] declares the same bound on the document
+// form and is overridden by this option.
+func WithRunTimeout(d time.Duration) ExecuteOption {
+	return func(rc *execConfig) {
+		if d <= 0 {
+			return
+		}
+		rc.runTimeout = d
 	}
 }
 

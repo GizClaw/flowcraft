@@ -22,10 +22,13 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	res "github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Stable dependency names used by deployment documents.
@@ -182,7 +185,29 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return coregraph.Build(definition, registry, options...)
+	built, err := coregraph.Build(definition, registry, options...)
+	if err != nil {
+		return nil, err
+	}
+	logBuildWarnings(ctx, definition.Name, built.Warnings())
+	return built, nil
+}
+
+// logBuildWarnings surfaces the graph's non-fatal topology findings
+// (unreachable nodes, unguarded cycles, missing default branches, …).
+// Build never fails on them, so without this the deployment path —
+// the only production caller of the factory — dropped them on the
+// floor: a graph whose sole exit is the iteration guard deployed
+// silently and only surfaced as a budget error under load.
+func logBuildWarnings(ctx context.Context, name string, warnings []coregraph.Warning) {
+	for _, w := range warnings {
+		telemetry.Warn(ctx, "graph build warning",
+			otellog.String(telemetry.AttrGraphName, name),
+			otellog.String("graph.warning.kind", string(w.Kind)),
+			otellog.String(telemetry.AttrNodeID, w.NodeID),
+			otellog.String("graph.warning.message", w.Message),
+		)
+	}
 }
 
 // Register adds the graph engine factory to r.
@@ -577,9 +602,10 @@ func (b BuildSettings) options() ([]coregraph.BuildOption, error) {
 		if *b.MaxIterations < 0 {
 			return nil, errdefs.Validationf("graph engine: build.max_iterations must be >= 0")
 		}
-		if *b.MaxIterations > 0 {
-			options = append(options, coregraph.WithMaxIterations(*b.MaxIterations))
-		}
+		// 0 is meaningful, not "unset": it lifts the loop guard. The
+		// option must therefore be applied whenever the key is present
+		// — an absent key keeps the engine default (100).
+		options = append(options, coregraph.WithMaxIterations(*b.MaxIterations))
 	}
 	if b.Timeout != nil {
 		timeout, err := parseDuration("build.timeout", *b.Timeout)

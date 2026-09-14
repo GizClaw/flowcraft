@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -52,6 +53,18 @@ func (d Definition) Validate() error {
 		return errdefs.Validationf(
 			"agent: policy.max_revise must not be negative")
 	}
+	if d.Policy != nil && d.Policy.RunTimeout != "" {
+		duration, err := time.ParseDuration(d.Policy.RunTimeout)
+		if err != nil {
+			return errdefs.Validationf(
+				"agent: policy.run_timeout %q: %v", d.Policy.RunTimeout, err)
+		}
+		if duration <= 0 {
+			return errdefs.Validationf(
+				"agent: policy.run_timeout %q must be a positive duration",
+				d.Policy.RunTimeout)
+		}
+	}
 	for _, list := range []struct {
 		slot  string
 		hooks []Hook
@@ -77,6 +90,11 @@ type Policy struct {
 	// MaxRevise bounds how many times a Referee may ask Execute to
 	// re-invoke the engine. Zero means one attempt (no revise).
 	MaxRevise int `json:"max_revise,omitempty"`
+	// RunTimeout, when set, bounds the wall clock of one Execute call
+	// (every revise attempt included) as a Go duration string, e.g.
+	// "10m". Empty means no run-level bound. Engines keep their own
+	// per-Execute timeouts; the shorter deadline wins.
+	RunTimeout string `json:"run_timeout,omitempty"`
 	// ArtifactChannels names board channels collected into
 	// Result.Artifacts.
 	ArtifactChannels []string `json:"artifact_channels,omitempty"`

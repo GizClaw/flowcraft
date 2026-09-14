@@ -64,7 +64,7 @@ type Stats struct {
 	Nodes           int
 	Edges           int
 	NodeTypes       int
-	MaxIterations   int
+	MaxIterations   int // 0 means the loop guard is disabled (unlimited)
 	ParallelEnabled bool
 }
 

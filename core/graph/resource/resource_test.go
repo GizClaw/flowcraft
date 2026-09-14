@@ -90,6 +90,76 @@ func TestFactoryBuildsGraphEngine(t *testing.T) {
 	}
 }
 
+// TestFactoryMaxIterationsSemantics pins the deployment knob's
+// three-way meaning: absent keeps the engine default (100), an
+// explicit 0 lifts the loop guard, and a positive value caps it.
+func TestFactoryMaxIterationsSemantics(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	def := inferenceGraphWithoutBuildSettings(t)
+	for _, tc := range []struct {
+		name     string
+		settings string
+		want     int
+	}{
+		{"absent keeps default", `{"graph": ` + string(def) + `}`, 100},
+		{"explicit zero is unlimited", `{"graph": ` + string(def) + `, "build": {"max_iterations": 0}}`, 0},
+		{"positive caps", `{"graph": ` + string(def) + `, "build": {"max_iterations": 7}}`, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
+				Settings: []byte(tc.settings),
+				Deps:     map[string]any{"inference": fake.Assembly(t)},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			g, ok := value.(*coregraph.Graph)
+			if !ok {
+				t.Fatalf("New returned %T, want *coregraph.Graph", value)
+			}
+			if got := g.Stats().MaxIterations; got != tc.want {
+				t.Errorf("MaxIterations = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFactoryRejectsNegativeMaxIterations(t *testing.T) {
+	def := inferenceGraphWithoutBuildSettings(t)
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
+		Settings: []byte(`{"graph": ` + string(def) + `, "build": {"max_iterations": -1}}`),
+		Deps:     map[string]any{"inference": (&inferencetest.GenerateFake{}).Assembly(t)},
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("New error = %v, want validation", err)
+	}
+}
+
+// inferenceGraphWithoutBuildSettings is a one-node graph pinned to the
+// fake provider, so build-setting tests exercise option handling
+// rather than dependency resolution.
+func inferenceGraphWithoutBuildSettings(t *testing.T) []byte {
+	t.Helper()
+	def, err := json.Marshal(map[string]any{
+		"name":  "g",
+		"entry": "n1",
+		"nodes": []any{map[string]any{
+			"id":   "n1",
+			"type": "inference",
+			"config": map[string]any{
+				"model": map[string]any{
+					"id": map[string]any{"provider": "fake", "name": "echo"},
+				},
+			},
+		}},
+		"edges": []any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal graph: %v", err)
+	}
+	return def
+}
+
 // graphTestExtension is a canned provider extension riding the fake
 // provider definition, proving graph yaml extensions reach the runtime.
 type graphTestExtension struct {

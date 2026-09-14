@@ -226,6 +226,9 @@ func mergePolicy(base, override *agent.Policy) *agent.Policy {
 	if override.MaxRevise != 0 {
 		policy.MaxRevise = override.MaxRevise
 	}
+	if override.RunTimeout != "" {
+		policy.RunTimeout = override.RunTimeout
+	}
 	if override.ArtifactChannels != nil {
 		policy.ArtifactChannels = append([]string(nil), override.ArtifactChannels...)
 	}

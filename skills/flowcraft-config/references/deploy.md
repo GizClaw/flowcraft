@@ -56,11 +56,17 @@ Refs have at most one slash and are validated by `core/resource`.
   observe: [{type, deps, settings}]
   referees: [{type, deps, settings}]
   commit: [{type, deps, settings}]
-  policy: {max_revise: N, artifact_channels: [...]}
+  policy: {max_revise: N, run_timeout: 10m, artifact_channels: [...]}
 ```
 
 Engine dependencies are under `engine.deps`; top-level `deps` is not part of
 the core schema. Agent hooks use factory kind `hook.<slot>`.
+
+`policy.run_timeout` (whole-run wall clock, revise attempts included) needs a
+core release that carries it; a deployment pinned to an older core rejects the
+unknown field at strict decode. `build.max_iterations: 0` is accepted by older
+cores too, but there it reads as "use the default 100" rather than
+"unlimited" — check the pin before relying on either.
 
 ## First-party core kinds
 

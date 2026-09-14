@@ -76,12 +76,12 @@ The deployment-facing factory is `core/graph/resource`. Its settings subtree:
 | -------------------------------- | ------------------------------------------------------------------------------ |
 | `graph`                          | graph definition: literal content, `{file: ...}`, or `{embed: ...}` (required) |
 | `script_runtime_name`            | name of the `agent.ScriptRuntime` dep bound to script nodes; default `js`      |
-| `build.max_iterations`           | cap on total node invocations per run                                          |
-| `build.timeout`                  | wall-clock bound for one `Execute` call (Go duration string, e.g. `1h`)        |
-| `build.run_end_publish_timeout`  | deadline for publishing run-end lifecycle events                               |
+| `build.max_iterations`           | cap on nodes routed per `Execute`; default `100`, `0` lifts the guard          |
+| `build.timeout`                  | wall-clock bound for one `Execute` call (Go duration string, e.g. `1h`); `0` means no engine-level bound |
+| `build.run_end_publish_timeout`  | deadline for publishing terminal run events; default `5s`, must be `> 0`       |
 | `build.max_node_retries`         | retries per node before the run fails                                          |
 | `build.parallel.enabled`         | enable parallel waves                                                          |
-| `build.parallel.branch_timeout`  | per-branch wall-clock bound                                                    |
+| `build.parallel.branch_timeout`  | per-branch wall-clock bound; `0` means none                                    |
 | `build.parallel.max_concurrency` | max concurrent branches                                                        |
 | `build.parallel.max_branches`    | max total branches per wave                                                    |
 | `build.parallel.merge_strategy`  | `first_write_wins` or `last_write_wins`                                        |
@@ -90,6 +90,57 @@ Engine deps are derived from the definition: an inference node needs the
 `inference` dep (explicit `model`) and/or `router` dep (no `model`), a tool
 node needs `tools`, a script node needs `script_runtime`. `workspace` and
 `sandbox` are optional and unlock the script `fs` / `shell` globals (below).
+
+### Budgets and timeouts
+
+Three independent budgets bound a graph run; they compose with whatever the
+host layers on top.
+
+- **Iteration guard** (`build.max_iterations`, default `100`, `0` = unlimited)
+  counts *nodes routed*, not nodes invoked: a node whose skip condition fires
+  still routes along its edges and still consumes budget, which is what keeps a
+  cycle of skipped nodes from spinning forever. The check runs once per wave,
+  so the counter never exceeds the cap, but a wave that no longer fits fails
+  outright instead of running partially. The kernel also injects the counter
+  into edge conditions as `__iterations`, the supported way to soft-exit a loop
+  (`"__iterations < 10"`) instead of tripping the guard. Conditions are
+  evaluated after a wave, so a wide wave can overshoot the threshold by its own
+  size.
+- **Wall clock** (`build.timeout`, `build.parallel.branch_timeout`) —
+  `build.timeout` bounds one `Execute` call, run-start publish and checkpoints
+  included; `0` disables it. `branch_timeout` bounds each parallel branch; a
+  branch that times out fails the whole wave. Context cancellation is
+  cooperative: a handler that ignores its context can run past the deadline, so
+  scripts that must be cut off need `max_exec_time` and shell calls need the
+  sandbox timeout.
+- **Publish window** (`build.run_end_publish_timeout`, default `5s`, must be
+  `> 0`) bounds the terminal events, which are published on a detached context
+  so they still go out after a timeout. A failed terminal publish fails the run
+  (`agent.RunEndPublishError`), so keep it above the bus's normal latency;
+  `Execute` can take up to `build.timeout + run_end_publish_timeout` in the
+  worst case.
+
+All three are per `Execute`, not per agent run: a revise attempt or a resume is
+a new `Execute` call and gets a fresh window. Bound the whole run from the agent
+layer with `policy.run_timeout` (a Go duration string, e.g. `10m`) or
+`agent.WithRunTimeout`; that single deadline wraps every attempt, Referee and
+Committer, and the shorter of it and the engine's own timeout wins.
+
+`max_iterations` is a loop guard, not a cost guard: node retries
+(`build.max_node_retries`) and provider calls made inside one node (a script
+looping over `inference.generate`, say) do not advance the counter. Enforce
+cross-attempt token or cost limits through the host's usage budget —
+`agent.Host.ReportUsage` returning `errdefs.BudgetExceeded`.
+
+A failed engine call surfaces as `BudgetExceeded` (HTTP 429) or, once a
+deadline fires, as a timeout (HTTP 504). Both end the run, neither is retried by
+`build.max_node_retries`, and a non-completed attempt never consumes the revise
+budget. Timeouts raised *inside* a node by its provider or tool are retried like
+any other transient failure.
+
+Build-time topology findings (unreachable nodes, cycles with no conditional
+exit, missing default branches) never fail the build; the resource factory logs
+each one as a `graph build warning`.
 
 ## Script runtimes
 

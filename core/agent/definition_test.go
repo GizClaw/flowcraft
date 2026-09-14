@@ -32,6 +32,26 @@ func TestDefinitionValidate(t *testing.T) {
 	}
 }
 
+// TestDefinitionValidatesPolicyRunTimeout asserts the document form
+// rejects a malformed or non-positive run budget at validation time
+// rather than at the first Execute call.
+func TestDefinitionValidatesPolicyRunTimeout(t *testing.T) {
+	def := agent.Definition{
+		Card:   agent.AgentCard{Name: "Researcher"},
+		Policy: &agent.Policy{RunTimeout: "10m"},
+	}
+	if err := def.Validate(); err != nil {
+		t.Fatalf("valid policy.run_timeout rejected: %v", err)
+	}
+	for _, raw := range []string{"soon", "-1s", "0s"} {
+		bad := def
+		bad.Policy = &agent.Policy{RunTimeout: raw}
+		if err := bad.Validate(); !errdefs.IsValidation(err) {
+			t.Errorf("policy.run_timeout %q error = %v, want validation", raw, err)
+		}
+	}
+}
+
 func TestHookValidate(t *testing.T) {
 	if err := (agent.Hook{Type: "recall"}).Validate(); err != nil {
 		t.Fatalf("valid hook rejected: %v", err)

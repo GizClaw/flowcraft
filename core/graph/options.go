@@ -18,8 +18,9 @@ type buildOptions struct {
 }
 
 const (
-	// defaultMaxIterations is the built-in loop guard: a run may invoke at
-	// most this many nodes before Execute fails with a validation error.
+	// defaultMaxIterations is the built-in loop guard: a run may route at
+	// most this many nodes before Execute fails with a budget error.
+	// WithMaxIterations(0) lifts the guard for graphs known to terminate.
 	defaultMaxIterations        = 100
 	defaultRunEndPublishTimeout = 5 * time.Second
 )
@@ -31,14 +32,21 @@ func defaultBuildOptions() buildOptions {
 	}
 }
 
-// WithMaxIterations caps the total number of node invocations per run
-// — the loop guard for cyclic graphs. Values <= 0 keep the default.
+// WithMaxIterations caps how many nodes one run may route — the loop
+// guard for cyclic graphs.
+//
+//   - n > 0 caps the run at n routed nodes. A skipped node still
+//     routes (execution continues along its outgoing edges), so it
+//     consumes budget: a cycle whose nodes are all skipped still
+//     terminates instead of spinning forever.
+//   - n == 0 lifts the guard entirely. The run is bounded only by its
+//     context and by whatever exit conditions the definition carries,
+//     so only use it for graphs known to terminate.
+//   - n < 0 fails [Build] with a validation error.
+//
+// Omitting the option keeps [defaultMaxIterations].
 func WithMaxIterations(n int) BuildOption {
-	return func(o *buildOptions) {
-		if n > 0 {
-			o.maxIterations = n
-		}
-	}
+	return func(o *buildOptions) { o.maxIterations = n }
 }
 
 // WithTimeout bounds the wall-clock duration of a single Execute call.
@@ -68,6 +76,9 @@ func WithMaxNodeRetries(n int) BuildOption {
 }
 
 func (o *buildOptions) validate() error {
+	if o.maxIterations < 0 {
+		return errdefs.Validationf("graph: max iterations must be >= 0")
+	}
 	if o.timeout < 0 {
 		return errdefs.Validationf("graph: timeout must be >= 0")
 	}
