@@ -16,10 +16,14 @@ const (
 	VarToolCalls = "__tool_calls"
 
 	// VarIterations is the kernel-injected condition environment name
-	// holding the number of node invocations executed so far (the same
-	// counter WithMaxIterations budgets against; continuous across
-	// resume). A loop back-edge can soft-exit with "__iterations < 10".
-	// It lives in the reserved "__" namespace (see vars.go); the kernel
-	// value shadows any same-named board var as a second line of defense.
+	// holding the number of nodes routed so far (the same counter
+	// WithMaxIterations budgets against; continuous across resume).
+	// Skipped nodes count: they still route, and counting them is what
+	// keeps a skip-only cycle from spinning forever. A loop back-edge
+	// can soft-exit with "__iterations < 10" — the check runs after a
+	// wave, so a multi-node wave can overshoot the threshold by up to
+	// its own size. It lives in the reserved "__" namespace (see
+	// vars.go); the kernel value shadows any same-named board var as a
+	// second line of defense.
 	VarIterations = "__iterations"
 )

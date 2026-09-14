@@ -3,6 +3,8 @@ package graph
 import (
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 func TestBuildRejectsNonPositiveRunEndPublishTimeout(t *testing.T) {
@@ -16,6 +18,21 @@ func TestBuildRejectsNonPositiveRunEndPublishTimeout(t *testing.T) {
 		if _, err := Build(def, reg, WithRunEndPublishTimeout(timeout)); err == nil {
 			t.Fatalf("run-end publish timeout %s accepted", timeout)
 		}
+	}
+}
+
+// TestBuildRejectsNegativeMaxIterations pins the option boundary: 0 is
+// meaningful (unlimited), so a negative value must fail loudly instead
+// of being folded into the default.
+func TestBuildRejectsNegativeMaxIterations(t *testing.T) {
+	reg := newTestRegistry(t)
+	_, err := Build(&GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+	}, reg, WithMaxIterations(-1))
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Build error = %v, want validation", err)
 	}
 }
 

@@ -1398,6 +1398,77 @@ func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
 	}
 }
 
+// TestRun_RunTimeoutSpansReviseAttempts asserts WithRunTimeout bounds
+// the whole Execute call rather than one engine invocation: with a
+// Referee that always asks to revise, the run stops at the deadline
+// instead of spending the full revise budget.
+func TestRun_RunTimeoutSpansReviseAttempts(t *testing.T) {
+	var calls atomic.Int32
+	eng := agent.EngineFunc(func(ctx context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		calls.Add(1)
+		select {
+		case <-ctx.Done():
+			return b, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+		b.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "ok"))
+		return b, nil
+	})
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithReferee(&reviseDecider{}), // always asks for revise
+		agent.WithMaxRevise(20),
+		agent.WithRunTimeout(80*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if got := calls.Load(); got >= 20 {
+		t.Errorf("engine calls = %d, want fewer than the revise budget (20)", got)
+	}
+	if res.Status != agent.StatusCanceled {
+		t.Errorf("Status = %v, want %v (run deadline)", res.Status, agent.StatusCanceled)
+	}
+	if !errors.Is(res.Err, context.DeadlineExceeded) {
+		t.Errorf("Err = %v, want context.DeadlineExceeded", res.Err)
+	}
+}
+
+// TestRun_PolicyRunTimeout asserts the document-form policy installs
+// the same bound as the per-call option.
+func TestRun_PolicyRunTimeout(t *testing.T) {
+	eng := agent.EngineFunc(func(ctx context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		<-ctx.Done()
+		return b, ctx.Err()
+	})
+	start := time.Now()
+	res, err := agent.Execute(context.Background(),
+		agent.Agent{ID: "a", Policy: agent.Policy{RunTimeout: "40ms"}}, eng, newReq("hi"))
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if res.Status != agent.StatusCanceled {
+		t.Errorf("Status = %v, want %v", res.Status, agent.StatusCanceled)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("run took %s; policy.run_timeout did not fire", elapsed)
+	}
+}
+
+// TestRun_PolicyRunTimeoutRejectsBadDuration asserts a malformed or
+// non-positive policy duration fails fast instead of silently running
+// without a bound.
+func TestRun_PolicyRunTimeoutRejectsBadDuration(t *testing.T) {
+	eng := completedEngine("ok")
+	for _, raw := range []string{"soon", "-1s", "0s"} {
+		_, err := agent.Execute(context.Background(),
+			agent.Agent{ID: "a", Policy: agent.Policy{RunTimeout: raw}}, eng, newReq("hi"))
+		if !errdefs.IsValidation(err) {
+			t.Errorf("run_timeout %q error = %v, want validation", raw, err)
+		}
+	}
+}
+
 // TestRun_Revise_ObserverReceivesPrevResultAndNextAttempt asserts
 // the OnRunRevise hook fires once per revise transition with the
 // pre-replacement Result and the next attempt index.

@@ -105,6 +105,66 @@ func TestExecuteMaxIterationsBudget(t *testing.T) {
 	if !errdefs.IsBudgetExceeded(err) {
 		t.Fatalf("expected budget-exceeded, got %v", err)
 	}
+	// The failure has to be actionable: how much was spent, how much
+	// the rejected wave needed, and where the loop guard lives.
+	for _, want := range []string{"max iterations (5)", "nodes routed", "unguarded cycle"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("budget error %q does not mention %q", err.Error(), want)
+		}
+	}
+}
+
+// TestExecuteMaxIterationsZeroLiftsTheGuard proves 0 disables the loop
+// guard instead of silently falling back to the engine default: a
+// graph that needs more waves than the default 100 still completes.
+func TestExecuteMaxIterationsZeroLiftsTheGuard(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo", Config: []byte(`{"message": "a"}`)}},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "a", Condition: "__iterations < 150"},
+			{From: "a", To: END},
+		},
+	}, reg, WithMaxIterations(0))
+
+	if stats := g.Stats(); stats.MaxIterations != 0 {
+		t.Fatalf("Stats().MaxIterations = %d, want 0 (unlimited)", stats.MaxIterations)
+	}
+	board := mustRun(t, g, agent.NewBoard())
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 150 {
+		t.Fatalf("invocations = %d, want 150 (guard lifted)", len(msgs))
+	}
+}
+
+// TestExecuteSkipOnlyCycleExhaustsBudget pins the liveness half of the
+// budget contract: a skipped node still routes, so it still consumes
+// budget. Without that rule a cycle whose nodes are all skipped would
+// spin until the caller's context fired.
+func TestExecuteSkipOnlyCycleExhaustsBudget(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{
+			ID:            "a",
+			Type:          "echo",
+			SkipCondition: "true",
+			Config:        []byte(`{"set_var": "ran", "set_val": true}`),
+		}},
+		Edges: []EdgeDefinition{{From: "a", To: "a"}},
+	}, reg, WithMaxIterations(4))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	board, err := g.Execute(ctx, testRun(), agent.NoopHost{}, agent.NewBoard())
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("skipped-node cycle error = %v, want budget exceeded", err)
+	}
+	if v, _ := board.GetVar("ran"); v != nil {
+		t.Fatalf("skipped node ran: ran = %v", v)
+	}
 }
 
 func TestExecuteInterrupt(t *testing.T) {

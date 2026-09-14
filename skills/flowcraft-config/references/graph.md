@@ -50,12 +50,12 @@ builds the graph engine.
 | --- | --- |
 | `graph` | graph definition: literal content, `{file: ...}`, or `{embed: ...}` (required) |
 | `script_runtime_name` | name of the `agent.ScriptRuntime` dep bound to script nodes; default `js` |
-| `build.max_iterations` | cap on total node invocations per run |
-| `build.timeout` | wall-clock bound for one execute call (e.g. `1h`) |
-| `build.run_end_publish_timeout` | deadline for run-end lifecycle events |
+| `build.max_iterations` | cap on nodes routed per execute; default `100`, `0` = unlimited |
+| `build.timeout` | wall-clock bound for one execute call (e.g. `1h`); `0` = none |
+| `build.run_end_publish_timeout` | deadline for run-end lifecycle events; default `5s`, must be `> 0` |
 | `build.max_node_retries` | per-node retries before the run fails |
 | `build.parallel.enabled` | enable parallel waves |
-| `build.parallel.branch_timeout` | per-branch wall-clock bound |
+| `build.parallel.branch_timeout` | per-branch wall-clock bound; `0` = none |
 | `build.parallel.max_concurrency` | max concurrent branches |
 | `build.parallel.max_branches` | max total branches per wave |
 | `build.parallel.merge_strategy` | `first_write_wins` or `last_write_wins` |
@@ -64,6 +64,16 @@ Engine deps are derived from the definition: inference needs `inference`
 (explicit `model`) and/or `router` (no `model`), tool nodes need `tools`,
 script nodes need `script_runtime`. `workspace` and `sandbox` are optional
 and unlock the script `fs` / `shell` globals.
+
+Those budgets are per execute call, not per agent run: revise attempts and
+resumes get a fresh window. `policy.run_timeout: 10m` on the agent bounds the
+whole run (every attempt) instead. `max_iterations` counts *routed* nodes —
+skipped nodes consume budget too, and a wave that does not fit fails as a
+whole — and is a loop guard, not a cost guard: node retries and provider calls
+made inside a node do not advance it. Use the host usage budget for token or
+cost limits. A loop's ordinary exit is a condition on `__iterations`; the
+guard itself only fires on an unbounded (or mis-guarded) cycle and surfaces as
+HTTP 429. Build-time topology findings are logged as `graph build warning`.
 
 ## Node types
 

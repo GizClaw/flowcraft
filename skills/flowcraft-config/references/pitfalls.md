@@ -71,6 +71,19 @@ builds the deployment with its own factory registry, or at runtime.
     is rejected at host build; omit it from `exposures` (it is forced to
     `always`) or set it explicitly. `tool_search` no longer accepts a
     `select` argument — matching tools auto-expose from the query hits.
+20. `build.max_iterations: 0` means *unlimited*, not "use the default": omit
+    the key for the default `100`. The cap counts nodes *routed*, so a skipped
+    node still consumes budget, and a wave that no longer fits fails as a
+    whole (HTTP 429) rather than running partially — raise the cap or exit the
+    loop with a condition on `__iterations` — host build/runtime.
+21. `build.timeout` and `build.max_iterations` are per execute call: with
+    `policy.max_revise: N` the worst case is N × that budget. Set
+    `policy.run_timeout` (e.g. `10m`) to bound the whole run, attempts
+    included — host build/runtime.
+22. `max_iterations` is a loop guard, not a cost guard: `max_node_retries`
+    attempts and provider calls made inside one node (a script looping over
+    `inference.generate`) do not advance it. Cross-attempt token/cost limits
+    belong in the host usage budget (`agent.Host.ReportUsage`) — runtime.
 
 ## Error map
 

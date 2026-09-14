@@ -36,6 +36,7 @@ import (
 //  4. The loop ends when the frontier is empty (all branches reached
 //     END or produced no outgoing edge); exceeding MaxIterations fails
 //     the run with an [errdefs.IsBudgetExceeded]-classified error.
+//     MaxIterations == 0 disables the guard.
 //
 // Cooperative interrupts are polled between waves; an interrupt
 // records [VarInterruptedNode] on the board and returns an
@@ -177,9 +178,15 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		}
 		wave := dedupIDs(frontier)
 		if g.maxIterations > 0 && iterations+len(wave) > g.maxIterations {
+			span.SetAttributes(
+				attribute.Int("graph.iterations", iterations),
+				attribute.Int("graph.max_iterations", g.maxIterations),
+			)
 			return retBoard, errdefs.BudgetExceededf(
-				"graph %q exceeded max iterations (%d) — possible cycle",
-				g.name, g.maxIterations)
+				"graph %q exceeded max iterations (%d): %d nodes routed, "+
+					"this wave needs %d more — possible unguarded cycle "+
+					"(raise build.max_iterations, or exit via a condition on %s)",
+				g.name, g.maxIterations, iterations, len(wave), VarIterations)
 		}
 		if err := g.executeWave(ctx, run, host, board, wave, iterations); err != nil {
 			return retBoard, err
@@ -191,6 +198,10 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 			board.SetVar(VarInterruptedNode, wave[len(wave)-1])
 			return retBoard, agent.Interrupted(intr)
 		}
+		// Budget accounting is per routed node, not per invoked node:
+		// skipped nodes still route along their edges and therefore
+		// still consume budget. That is what guarantees termination
+		// for a cycle whose nodes are all skipped.
 		iterations += len(wave)
 		g.stampCheckpoint(ctx, host, run, board, wave, iterations, originalStartedAt)
 		next, err := g.resolveNext(board, wave, iterations)
@@ -718,6 +729,10 @@ func classifyContextError(ctx context.Context, graphName, nodeID string) error {
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		if deadline, ok := ctx.Deadline(); ok {
+			return errdefs.Timeoutf("%s execution timed out (deadline %s)",
+				where, deadline.UTC().Format(time.RFC3339Nano))
+		}
 		return errdefs.Timeoutf("%s execution timed out", where)
 	case errors.Is(ctx.Err(), context.Canceled):
 		return errdefs.Abortedf("%s execution aborted", where)

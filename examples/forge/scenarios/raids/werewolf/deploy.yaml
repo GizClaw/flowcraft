@@ -232,7 +232,24 @@ agents:
       settings:
         graph: {file: ./graphs/assistant.yaml}
         build:
+          # Loop guard: nodes routed per turn. Loops should soft-exit on an
+          # edge condition over "__iterations"; this is the backstop that
+          # turns a runaway cycle into HTTP 429 instead of a hung turn.
           max_iterations: 120
+          # One Execute — publish and checkpoints included. Generous for a
+          # cold local model; 0 disables the bound.
+          timeout: 30m
+          # Terminal-event delivery window (the default, shown explicitly;
+          # a publish that misses it fails the run). Must be > 0.
+          run_end_publish_timeout: 5s
+          # Retries per node for transient provider/tool failures.
+          max_node_retries: 2
+    # Whole-run wall clock across revise attempts (build.timeout restarts
+    # per Execute). Needs a core newer than the v0.4.0 this example is
+    # pinned to, whose strict decoder rejects the field, so it stays
+    # commented until the pin moves — see docs/guides/graph.md.
+    # policy:
+    #   run_timeout: 30m
 
 runtime:
   event_bus: events
