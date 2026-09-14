@@ -7,11 +7,18 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	xwin "golang.org/x/sys/windows"
 )
+
+// aclBufferSize is the room the mandatory-label ACL gets: the 8-byte
+// ACL header plus one SYSTEM_MANDATORY_LABEL_ACE (header, access mask
+// and a 12-byte SID), with headroom.
+const aclBufferSize = 256
 
 // labelLowIntegrity sets the mandatory integrity label of path (and
 // every existing child, recursively) to Low with NO_WRITE_UP. A
@@ -39,15 +46,23 @@ func labelLowIntegrityOne(path string, aceFlags uint32) error {
 	if err != nil {
 		return err
 	}
-	var acl xwin.ACL
-	if err := initializeAcl(&acl, 256); err != nil {
+	// xwin.ACL is only the 8-byte ACL header. InitializeAcl/AddMandatoryAce
+	// build a real ACL behind it, so the storage the length claims must
+	// actually exist — declaring a bare xwin.ACL and telling InitializeAcl
+	// it owns 256 bytes made AddMandatoryAce append its ACE past an 8-byte
+	// heap object.
+	buf := make([]byte, aclBufferSize)
+	acl := (*xwin.ACL)(unsafe.Pointer(&buf[0]))
+	if err := initializeAcl(acl, uint32(len(buf))); err != nil {
 		return errdefs.Internal(fmt.Errorf("windows: init label acl: %w", err))
 	}
-	if err := addMandatoryAce(&acl, aceFlags, systemMandatoryLabelNoWriteUp, lowSID); err != nil {
+	if err := addMandatoryAce(acl, aceFlags, systemMandatoryLabelNoWriteUp, lowSID); err != nil {
 		return errdefs.Internal(fmt.Errorf("windows: add mandatory ace for %s: %w", path, err))
 	}
-	if err := xwin.SetNamedSecurityInfo(path, xwin.SE_FILE_OBJECT,
-		xwin.LABEL_SECURITY_INFORMATION, nil, nil, nil, &acl); err != nil {
+	err = xwin.SetNamedSecurityInfo(path, xwin.SE_FILE_OBJECT,
+		xwin.LABEL_SECURITY_INFORMATION, nil, nil, nil, acl)
+	runtime.KeepAlive(buf)
+	if err != nil {
 		return errdefs.Internal(fmt.Errorf("windows: set low integrity label on %s: %w", path, err))
 	}
 	return nil

@@ -151,7 +151,15 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 	if err != nil {
 		return errdefs.Internal(fmt.Errorf("windows: get dacl of %s: %w", path, err))
 	}
-	var present, defaulted bool
+	// GetNamedSecurityInfo allocates the descriptor with LocalAlloc; the
+	// caller owns it and must free it once every ACL derived from it has
+	// been applied. dacl points into sd, so the free is deferred past the
+	// SetNamedSecurityInfo call below.
+	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(sd))) }()
+
+	// BOOL is 4 bytes; a Go bool is 1. Passing *bool made the API write
+	// three bytes past each variable (both escape to the heap).
+	var present, defaulted int32
 	var dacl *xwin.ACL
 	r1, _, e1 := procGetSecurityDescriptorDacl.Call(
 		uintptr(unsafe.Pointer(sd)),
