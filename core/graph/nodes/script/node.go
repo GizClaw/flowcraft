@@ -2,6 +2,7 @@ package script
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -17,7 +18,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ScriptConfig is the config of the "script" node type. Decoding is
@@ -101,16 +104,21 @@ func NewNode(deps ScriptNodeDeps) graph.NodeType[ScriptConfig] {
 	}
 }
 
-// RunScript assembles a fresh script environment with the standard
-// bridges — board, expr, host, run, tools, inference, node, stream,
-// parallel — plus the opt-in fs/shell globals when deps wire
-// Workspace/CommandRunner, executes source, and maps control signals
-// to Go errors via agent.SignalToError.
+// RunScript assembles the script environment for one invocation,
+// executes source, and maps control signals to Go errors via
+// agent.SignalToError.
+//
+// The environment comes from the invocation's engine-level provider
+// ([graph.ExecutionContext.ScriptBindings], wired by
+// [graph.WithScriptBindings]) when one is present. Otherwise it comes
+// from [StandardBindings] over deps — board, expr, host, run, tools,
+// inference, node, stream, parallel, plus the opt-in fs/shell globals
+// when deps wire Workspace/CommandRunner and the late runtime global.
 //
 // It is shared by the built-in "script" node and script-backed custom
 // node types (core/graph/resource's graph.NodeType/script), so custom
-// nodes get exactly the same bridge surface as the built-in script
-// node.
+// nodes get exactly the same surface as the built-in script node: both
+// read the provider off the execution context.
 func RunScript(ec graph.ExecutionContext, board *agent.Board, deps ScriptNodeDeps, runtime agent.ScriptRuntime, name, source string, config map[string]any) error {
 	info, _ := agent.RunInfoFromContext(ec.Context)
 
@@ -121,22 +129,33 @@ func RunScript(ec graph.ExecutionContext, board *agent.Board, deps ScriptNodeDep
 	execCtx, cleanups := withStreamCleanup(ec.Context)
 	defer cleanups.flush()
 
-	env := bindings.NewEnvBuilder(config).
-		Add(
-			bindings.NewBoardBridge(board),
-			bindings.NewExprBridge(),
-			bindings.NewHostBridge(ec.Host, name, scriptEmitter{ec}),
-			bindings.NewRunInfoBridge(),
-			bindings.NewToolBridge(deps.ToolDispatcher, deps.ToolCatalog, deps.ToolOptions...),
-			bindings.NewInferenceBridge(deps.InferenceAssembly, deps.InferenceRouter, deps.InferenceOptions...),
-			newNodeBridge(ec.NodeID, ec.NodeType),
-			newStreamBridge(info.RunID, ec.Host),
-			newParallelBridge(),
-		).
-		AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace, deps.FSOptions...)).
-		AddIf(deps.CommandRunner != nil, bindings.NewShellBridge(deps.CommandRunner, deps.ShellOptions...)).
-		AddLate(bindings.NewRuntimeBridge(runtime)).
-		Build(execCtx)
+	provider := ec.ScriptBindings
+	bindingsSource := "engine"
+	if provider == nil {
+		provider = StandardBindings(deps)
+		bindingsSource = "standard"
+	}
+	inv := bindings.Invocation{
+		Context:  execCtx,
+		Board:    board,
+		Host:     ec.Host,
+		Name:     name,
+		NodeID:   ec.NodeID,
+		NodeType: ec.NodeType,
+		GraphID:  ec.GraphID,
+		RunInfo:  info,
+		Runtime:  runtime,
+		Emit:     ec.EmitStreamDelta,
+	}
+	env, err := bindings.Assemble(inv, config, provider)
+	if err != nil {
+		return err
+	}
+	// Which surface this execution got — the engine's provider or the
+	// node type's own standard bindings. Assemble reports the globals
+	// themselves; this attribute says where they came from.
+	trace.SpanFromContext(execCtx).SetAttributes(
+		attribute.String("script.bindings.source", bindingsSource))
 
 	sig, err := runtime.Exec(execCtx, name, source, env)
 	if err != nil {
@@ -171,32 +190,42 @@ func decodeScriptConfig(raw json.RawMessage) (ScriptConfig, error) {
 // so publish failures are dropped here — matching the emitter's void
 // contract. Known event types whose payload fails to decode are
 // skipped entirely rather than published as empty deltas.
-type scriptEmitter struct{ ec graph.ExecutionContext }
+type scriptEmitter struct {
+	// nodeID and ctx label publish-failure logs.
+	nodeID string
+	ctx    context.Context
+	// emit is the kernel's per-node publisher; nil (a library invocation
+	// without a host) makes emission a no-op.
+	emit func(agent.StreamDeltaPayload) error
+}
 
-func (e scriptEmitter) emit(delta agent.StreamDeltaPayload) {
-	if err := e.ec.EmitStreamDelta(delta); err != nil {
-		telemetry.WarnErr(e.ec.Context, "script node: stream delta publish failed", err,
-			otellog.String(telemetry.AttrNodeID, e.ec.NodeID))
+func (e scriptEmitter) emitDelta(delta agent.StreamDeltaPayload) {
+	if e.emit == nil {
+		return
+	}
+	if err := e.emit(delta); err != nil {
+		telemetry.WarnErr(e.ctx, "script node: stream delta publish failed", err,
+			otellog.String(telemetry.AttrNodeID, e.nodeID))
 	}
 }
 
 func (e scriptEmitter) Emit(eventType string, payload any) {
 	switch eventType {
 	case "token":
-		e.emit(agent.StreamDeltaPayload{
+		e.emitDelta(agent.StreamDeltaPayload{
 			Type: agent.StreamDeltaPart,
 			Part: message.TextPart{Text: stringifyPayload(payload)},
 		})
 	case "tool_call":
 		if call, ok := payloadToToolCall(payload); ok {
-			e.emit(agent.StreamDeltaPayload{
+			e.emitDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolCallPart{Call: call},
 			})
 		}
 	case "tool_result":
 		if result, ok := payloadToToolResult(payload); ok {
-			e.emit(agent.StreamDeltaPayload{
+			e.emitDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolResultPart{Result: result},
 			})
@@ -206,7 +235,7 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		// object (e.g. {"type":"image","source":...}), so scripts can
 		// emit any message.Part kind.
 		if part, ok := payloadToPart(payload); ok {
-			e.emit(agent.StreamDeltaPayload{
+			e.emitDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: part,
 			})
@@ -216,13 +245,13 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		// finish delta so stream consumers see finish_reason /
 		// request_id / response_id at the top level.
 		if delta, ok := payloadToFinish(payload); ok {
-			e.emit(delta)
+			e.emitDelta(delta)
 		}
 	case "provider_outputs":
 		// Final provider-owned observational outputs, one envelope per
 		// output — the same shape the inference node emits.
 		if outputs, ok := payloadToProviderOutputs(payload); ok {
-			e.emit(agent.StreamDeltaPayload{
+			e.emitDelta(agent.StreamDeltaPayload{
 				Type:            agent.StreamDeltaProviderOutputs,
 				ProviderOutputs: outputs,
 			})
@@ -241,7 +270,7 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		if payload != nil {
 			delta.Payload = raw
 		}
-		e.emit(delta)
+		e.emitDelta(delta)
 	}
 }
 

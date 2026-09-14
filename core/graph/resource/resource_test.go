@@ -29,8 +29,26 @@ func TestRegister(t *testing.T) {
 	if spec.Kind != "agent.Engine" || spec.Impl != "graph" {
 		t.Fatalf("spec = %+v", spec)
 	}
-	if len(spec.Deps) != 7 {
-		t.Fatalf("deps = %+v, want 7", spec.Deps)
+	if len(spec.Deps) != 8 {
+		t.Fatalf("deps = %+v, want 8", spec.Deps)
+	}
+	var bindingsDep *resource.DepSpec
+	for i := range spec.Deps {
+		if spec.Deps[i].Name == "script_bindings" {
+			bindingsDep = &spec.Deps[i]
+		}
+	}
+	if bindingsDep == nil {
+		t.Fatalf("deps = %+v, want a script_bindings dep", spec.Deps)
+	}
+	if bindingsDep.Type != "agent.ScriptBindings" || bindingsDep.Many || bindingsDep.Required {
+		t.Fatalf("script_bindings dep = %+v, want optional single agent.ScriptBindings", *bindingsDep)
+	}
+	if _, ok := reg.Lookup("agent.ScriptBindings", "standard"); !ok {
+		t.Fatal("agent.ScriptBindings/standard factory not registered")
+	}
+	if _, ok := reg.Lookup("agent.ScriptBindings", "none"); !ok {
+		t.Fatal("agent.ScriptBindings/none factory not registered")
 	}
 }
 

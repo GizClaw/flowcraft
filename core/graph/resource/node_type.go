@@ -106,20 +106,10 @@ func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (any, error)
 			"graph node type %q: requires dep %q", settings.Type, DepScriptRuntime)
 	}
 
-	scriptDeps := scriptnode.ScriptNodeDeps{
-		Workspace:     deps.workspace,
-		CommandRunner: deps.sandbox,
-	}
-	if deps.inference != nil {
-		scriptDeps.InferenceAssembly = deps.inference
-	}
-	if deps.router != nil {
-		scriptDeps.InferenceRouter = deps.router
-	}
-	if deps.tools != nil {
-		scriptDeps.ToolDispatcher = deps.tools
-		scriptDeps.ToolCatalog = deps.tools.Catalog()
-	}
+	// The node type carries its own deps as the fallback surface; an
+	// engine-level "script_bindings" provider replaces it (see
+	// scriptnode.RunScript).
+	scriptDeps := scriptNodeDeps(deps, nil)
 
 	desc := settings.Desc
 	if desc == "" {

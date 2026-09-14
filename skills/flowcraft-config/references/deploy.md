@@ -82,6 +82,7 @@ cores too, but there it reads as "use the default 100" rather than
 | `tool.Source` | app/provider-specific | host/app |
 | `tool.Assembly` | `memory`, `middleware` | `core/tool`, `core/tool/middleware` |
 | `agent.ScriptRuntime` | `js`, `lua` | `core/agent/scriptrt/{jsrt,luart}` |
+| `agent.ScriptBindings` | `standard`, `none` | `core/graph/resource` (standard), host build (custom impls) |
 | `agent.Engine` | `graph` | `core/graph/resource` |
 | `delegation.Service` | `local` | `core/delegation` |
 | `delegation.Directory` | `local` | `core/delegation` |
@@ -92,7 +93,9 @@ The table is informational: the validator accepts any kind that fits the
 resource envelope, and only the host build can construct these factories.
 
 Engine dependencies must match the graph engine's declared dep names:
-`inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`.
+`inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`,
+`script_bindings` (an optional `agent.ScriptBindings` resource replacing the
+script surface; see [graph.md](graph.md)).
 
 ### Inference routing
 

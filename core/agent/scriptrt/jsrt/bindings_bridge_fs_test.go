@@ -16,7 +16,7 @@ func TestFSBridge_RoundTrip(t *testing.T) {
 	ws := mustFSWorkspace(t)
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewFSBridge(ws),
 	)
@@ -74,7 +74,7 @@ func TestFSBridge_ReadError_PropagatesToScript(t *testing.T) {
 	ws := mustFSWorkspace(t)
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewFSBridge(ws),
 	)
@@ -100,7 +100,7 @@ func TestFSBridge_ReadWriteLimits(t *testing.T) {
 	ws := mustFSWorkspace(t)
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewFSBridge(ws,
 			bindings.WithMaxReadBytes(4),

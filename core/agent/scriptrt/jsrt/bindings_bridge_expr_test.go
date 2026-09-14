@@ -13,7 +13,7 @@ func TestExprBridge(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr", `
 		var result = expr.eval("a + b", {a: 3, b: 4});
 		if (result !== 7) throw new Error("expected 7, got " + result);
@@ -33,7 +33,7 @@ func TestExprBridge_CachedResults(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr-cache", `
 		var r1 = expr.eval("x * 2", {x: 5});
 		var r2 = expr.eval("x * 2", {x: 10});
@@ -54,7 +54,7 @@ func TestExprBridge_InvalidExpression(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr-invalid", `
 		try {
 			expr.eval("!!!invalid", {});

@@ -286,7 +286,14 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		return false, verr
 	}
 
-	ec := ExecutionContext{Context: ctx, Host: host, NodeID: nodeID, NodeType: slot.def.Type, GraphID: g.name}
+	ec := ExecutionContext{
+		Context:        ctx,
+		Host:           host,
+		NodeID:         nodeID,
+		NodeType:       slot.def.Type,
+		GraphID:        g.name,
+		ScriptBindings: g.scriptBindings,
+	}
 	publishStepStarted(ctx, host, g, info, nodeID)
 	preInvoke := channelLengths(board, slot.writes)
 

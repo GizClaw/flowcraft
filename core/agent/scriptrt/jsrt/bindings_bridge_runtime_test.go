@@ -24,17 +24,22 @@ import (
 // envWithRuntime builds a parent agent.ScriptEnv containing every
 // supplied bridge plus a "runtime" binding wired to the same runtime,
 // mimicking what the script node does internally.
-func envWithRuntime(ctx context.Context, rt agent.ScriptRuntime, fns ...bindings.BindingFunc) *agent.ScriptEnv {
-	return bindings.NewEnvBuilder(nil).
-		Add(fns...).
-		AddLate(bindings.NewRuntimeBridge(rt)).
-		Build(ctx)
+func envWithRuntime(t *testing.T, ctx context.Context, rt agent.ScriptRuntime, fns ...bindings.BindingFunc) *agent.ScriptEnv {
+	t.Helper()
+	env, err := bindings.Assemble(bindings.Invocation{Context: ctx}, nil,
+		bindings.NewBuilder().
+			Add(fns...).
+			AddLate(bindings.NewRuntimeBridge(rt)))
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	return env
 }
 
 func TestRuntimeBinding_ChildInheritsParentBindings(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(2))
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	_, err := rt.Exec(context.Background(), "parent", `
 		// Child script touches the inherited "board" global to prove
@@ -53,7 +58,7 @@ func TestRuntimeBinding_ChildInheritsParentBindings(t *testing.T) {
 func TestRuntimeBinding_ChildSignalSurfaces(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(2))
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	// goja exposes Go struct fields by their Go name (no FieldNameMapper is
 	// installed in jsrt), so agent.ScriptSignal.Type/Message are accessed as
@@ -76,7 +81,7 @@ func TestRuntimeBinding_ChildSignalSurfaces(t *testing.T) {
 func TestRuntimeBinding_ChildErrorPropagates(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(2))
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	_, err := rt.Exec(context.Background(), "parent", `
 		try {
@@ -101,7 +106,7 @@ func TestRuntimeBinding_ChildErrorPropagates(t *testing.T) {
 func TestRuntimeBinding_ChildReceivesConfig(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(2))
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	_, err := rt.Exec(context.Background(), "parent", `
 		runtime.execScript(
@@ -120,7 +125,7 @@ func TestRuntimeBinding_ChildReceivesConfig(t *testing.T) {
 func TestRuntimeBinding_PoolSizeOneRejectsNestedExec(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	_, err := rt.Exec(context.Background(), "parent", `
 		var sig = runtime.execScript('board.setVar("from_child", 99);', null);
@@ -144,7 +149,7 @@ func TestRuntimeBinding_LuaPoolSizeOneRejectsNestedExec(t *testing.T) {
 	rt := luart.New(luart.WithPoolSize(1))
 	t.Cleanup(func() { _ = rt.Close() })
 	board := agent.NewBoard()
-	env := envWithRuntime(context.Background(), rt, bindings.NewBoardBridge(board))
+	env := envWithRuntime(t, context.Background(), rt, bindings.NewBoardBridge(board))
 
 	_, err := rt.Exec(context.Background(), "parent", `
 		local sig = runtime.execScript('board.setVar("from_child", 99)', nil)
@@ -168,7 +173,7 @@ func TestRuntimeBinding_ConcurrentParentsFailFastWhenPoolBusy(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(2))
 	board := agent.NewBoard()
 	barrier := newRuntimeBarrier(2)
-	env := envWithRuntime(
+	env := envWithRuntime(t,
 		context.Background(),
 		rt,
 		bindings.NewBoardBridge(board),
