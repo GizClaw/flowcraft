@@ -12,6 +12,7 @@ package windows
 import (
 	"crypto/rand"
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -287,6 +288,13 @@ type wfpCondition struct {
 	field xwin.GUID
 	match wfpMatchType
 	value wfpConditionValue
+
+	// keep holds the Go value value points at, when there is one. A
+	// uintptr is invisible to the garbage collector and to escape
+	// analysis, so without this reference a mask could be collected —
+	// or stay a stack temporary of its constructor — before
+	// FwpmFilterAdd0 copies it.
+	keep any
 }
 
 func sidCondition(sid *xwin.SID) wfpCondition {
@@ -301,16 +309,18 @@ func v4AddrCondition(addr uint32) wfpCondition {
 	return wfpCondition{
 		field: fwpmConditionIPRemoteAddr,
 		value: wfpConditionValue{Type: wfpDataTypeV4AddrMask, Value: uintptr(unsafe.Pointer(mask))},
+		keep:  mask,
 	}
 }
 
 func v6LoopbackCondition() wfpCondition {
-	var mask wfpV6AddrAndMask
+	mask := &wfpV6AddrAndMask{}
 	mask.Addr[15] = 1 // ::1
 	mask.PrefixLength = 128
 	return wfpCondition{
 		field: fwpmConditionIPRemoteAddr,
-		value: wfpConditionValue{Type: wfpDataTypeV6AddrMask, Value: uintptr(unsafe.Pointer(&mask))},
+		value: wfpConditionValue{Type: wfpDataTypeV6AddrMask, Value: uintptr(unsafe.Pointer(mask))},
+		keep:  mask,
 	}
 }
 
@@ -362,8 +372,9 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 		}
 	}
 	// FWP_VALUE0 carries FWP_UINT64 as a pointer to the value (not the
-	// value itself); the engine dereferences it while copying the
-	// filter, so the stack slot stays valid for the call below.
+	// value itself). The pointer is smuggled through a uintptr, so the
+	// slot is only guaranteed for as long as weightValue is live: the
+	// KeepAlive after the call is what pins it.
 	weightValue := weight
 	var condsPtr *wfpFilterCondition
 	if len(cconds) > 0 {
@@ -382,6 +393,7 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 	var id uint64
 	r1, _, e1 := procFwpmFilterAdd0.Call(
 		uintptr(w.engine), uintptr(unsafe.Pointer(filter)), 0, uintptr(unsafe.Pointer(&id)))
+	runtime.KeepAlive(weightValue)
 	if r1 != 0 {
 		return errdefs.Internal(fmt.Errorf("windows: FwpmFilterAdd0(%s): 0x%x (%v)", name, r1, e1))
 	}

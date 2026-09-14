@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -82,9 +81,12 @@ func (n *netIsolation) verifyFence() error {
 		Token:         syscall.Token(n.token),
 	}
 	cmd.Env = n.env(os.Environ())
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	// Keep the two streams apart: the probe result is a stdout line,
+	// while PowerShell may emit CLIXML progress records on stderr.
+	// Reporting them separately is what makes a mismatch diagnosable.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := enableCreateProcessAsUserPrivileges(); err != nil {
 		return err
 	}
@@ -100,36 +102,46 @@ func (n *netIsolation) verifyFence() error {
 		_ = cmd.Process.Kill()
 		<-done
 		return errdefs.Internal(fmt.Errorf(
-			"windows: fence probe timed out (partial output %q, want %q)",
-			strings.TrimSpace(out.String()), want))
+			"windows: fence probe timed out (stdout %q, stderr %q, want %q)",
+			stdout.String(), stderr.String(), want))
 	case err := <-done:
 		if err != nil {
 			// A probe that cannot run must not be treated as a pass.
-			return errdefs.Internal(fmt.Errorf("windows: fence probe exit: %w", err))
+			return errdefs.Internal(fmt.Errorf(
+				"windows: fence probe exit: %w (stdout %q, stderr %q)",
+				err, stdout.String(), stderr.String()))
 		}
 	}
-	// PowerShell may interleave progress records (serialized as
-	// CLIXML) with the probe result even with $ProgressPreference
-	// silenced, so match the machine-readable line instead of the
-	// whole buffer.
-	m := probeResultRE.FindStringSubmatch(out.String())
-	if m == nil {
+	if !probeOutputMatches(stdout.String(), want) {
 		return errdefs.Internal(fmt.Errorf(
-			"windows: WFP fence verify failed: unexpected probe output %q, want %q",
-			strings.TrimSpace(out.String()), want))
-	}
-	got := m[1]
-	if got != want {
-		return errdefs.Internal(fmt.Errorf(
-			"windows: WFP fence verify failed: got %q, want %q", got, want))
+			"windows: WFP fence verify failed: unexpected probe output stdout=%q stderr=%q want=%q",
+			stdout.String(), stderr.String(), want))
 	}
 	return nil
 }
 
-// probeResultRE matches the single machine-readable probe result line
-// ("blocked,blocked" or "blocked,blocked,ok"), ignoring PowerShell
-// CLIXML noise.
-var probeResultRE = regexp.MustCompile(`(?m)^(blocked(?:,blocked)?(?:,ok)?)[\r\n]*$`)
+// probeOutputMatches reports whether output carries the machine-readable
+// probe result line for want ("blocked,blocked" or
+// "blocked,blocked,ok").
+//
+// Each line is trimmed before comparison: a CRLF ending, or a stray
+// trailing space/tab/vertical tab from the PowerShell pipeline, is
+// formatting, not evidence that the fence failed. The previous version
+// matched the raw buffer with `[\r\n]*$` while printing a trimmed copy,
+// so such a probe failed with an error that read "got X, want X" and
+// told the reader nothing.
+//
+// Lines that are not the result (PowerShell CLIXML progress records,
+// blank lines) are ignored, but want must appear exactly: anything else
+// fails closed rather than passing a probe on partial output.
+func probeOutputMatches(output, want string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
 
 // encodeCommand wraps a PowerShell script in an -EncodedCommand blob
 // (UTF-16LE base64), avoiding argument-quoting fragility entirely.

@@ -1,0 +1,39 @@
+name: Windows sandbox stress
+
+# Nightly stress lane for the Windows sandbox's isolation paths.
+#
+# These tests create AppContainer profiles, grant DACLs, install WFP
+# filters and run a behavioral fence probe concurrently — the code path
+# that produced the rare heap corruption in issue #542. The merge-gate
+# lane runs them once (`-count=1`, no race detector); this lane repeats
+# them under the race detector so a flake or a memory-safety regression
+# shows up on a schedule instead of on a release.
+#
+# GODEBUG makes the garbage collector clobber freed objects and check
+# pointer validity, which turns latent mis-sized or dangling writes into
+# loud failures. The lane is diagnostic: it is not a required check.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 18:10 UTC — 02:10 Asia/Shanghai.
+    - cron: "10 18 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Stress core/sandbox/windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Race + repeat
+        working-directory: core/sandbox
+        env:
+          GODEBUG: invalidptr=1,clobberfree=1
+        run: go test -race -count=3 -timeout 900s ./windows/...
