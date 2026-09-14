@@ -6,17 +6,14 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
-	"unsafe"
 )
 
 // utf16BlockEntries decodes a UTF-16, double-NUL-terminated block (as
 // used by CreateProcess) into its entries.
-func utf16BlockEntries(p *uint16) []string {
+func utf16BlockEntries(block []uint16) []string {
 	var entries []string
 	cur := make([]uint16, 0, 32)
-	for {
-		c := *p
-		p = (*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + unsafe.Sizeof(uint16(0))))
+	for _, c := range block {
 		if c != 0 {
 			cur = append(cur, c)
 			continue
@@ -27,6 +24,7 @@ func utf16BlockEntries(p *uint16) []string {
 		entries = append(entries, string(utf16.Decode(cur)))
 		cur = cur[:0]
 	}
+	return entries
 }
 
 func TestBuildEnvBlock(t *testing.T) {
