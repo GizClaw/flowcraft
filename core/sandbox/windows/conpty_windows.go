@@ -156,7 +156,8 @@ func (c *conpty) spawn(argv []string, dir string, env []string) (xwin.Handle, in
 	if env != nil {
 		// An empty (non-nil) env means "inherit nothing", matching
 		// exec.Cmd semantics; nil inherits the parent environment.
-		envBlock = buildEnvBlock(dedupEnvCase(env))
+		block := buildEnvBlock(dedupEnvCase(env))
+		envBlock = &block[0]
 		flags |= xwin.CREATE_UNICODE_ENVIRONMENT
 	}
 
@@ -234,16 +235,17 @@ func (e *ttyExitError) Error() string {
 func (e *ttyExitError) ExitCode() int { return e.code }
 
 // buildEnvBlock converts env into a UTF-16, double-NUL terminated
-// environment block for CreateProcess.
-func buildEnvBlock(env []string) *uint16 {
+// environment block for CreateProcess. It returns the block itself so
+// callers (and tests) never have to walk the buffer with pointer
+// arithmetic, which checkptr rejects when the package runs under -race.
+func buildEnvBlock(env []string) []uint16 {
 	var b strings.Builder
 	for _, kv := range env {
 		b.WriteString(kv)
 		b.WriteByte(0)
 	}
 	b.WriteByte(0)
-	u := utf16.Encode([]rune(b.String()))
-	return &u[0]
+	return utf16.Encode([]rune(b.String()))
 }
 
 // dedupEnvCase drops duplicate environment keys case-insensitively,
