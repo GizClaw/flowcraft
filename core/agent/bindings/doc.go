@@ -3,7 +3,7 @@
 // # Architecture
 //
 // Scripts never reach the outer Go context directly; instead the host
-// assembles an [agent.ScriptEnv] (built by [EnvBuilder]) whose
+// assembles an [agent.ScriptEnv] (built by [Assemble]) whose
 // Bindings map provides named globals. Each binding is a
 // [BindingFunc] returning (name, value), where value is usually a
 // map[string]any of script-callable functions and scalars.
@@ -50,6 +50,30 @@
 //     context_id / parent_run_id), sourced from the ambient RunInfo
 //     in the context (see NewRunInfoBridge)
 //
+// # Providers
+//
+// A script host contributes bindings either through [NewBuilder], which
+// adapts bridge funcs ([BindingFunc] / [LateBindingFunc]) to a
+// [Provider], or by implementing [Provider] directly — the shape the
+// graph engine wires as the "agent.ScriptBindings" deployment resource.
+// A provider is built once and shared across runs, so per-execution
+// state (the run's board, node identity, host, executing runtime and
+// per-node emitter) arrives through [Invocation] on every Bind call.
+// [Assemble] is the single assembly path: it runs the ordinary
+// bindings, then an optional [LateProvider] phase that observes the
+// environment built so far (the "runtime" global needs it, so nested
+// sub-scripts inherit the final map), rejects a name bound twice, and
+// rejects a name a script could not reference — every global must be an
+// identifier that is not a JavaScript or Lua keyword. [Chain] composes
+// providers, which is how a host extends the standard surface.
+//
+// The assembled surface is observable: [Assemble] sets a
+// "script.bindings.count" attribute on the caller's span and, when
+// debug logging is enabled, emits a "script bindings assembled" record
+// carrying the node identity and the global names. The graph script
+// node adds "script.bindings.source" ("engine" or "standard") to the
+// node span, so a deployment can tell which surface an execution got.
+//
 // # Interpolation
 //
 // Config values that carry ${board:<path>} references are expanded by
@@ -68,7 +92,7 @@
 //
 //   - config: the raw node config map the script was given
 //   - bindings: merged results of every registered binding, with the
-//     ordinary-first / late-second order the EnvBuilder enforces
+//     ordinary-first / late-second order [Assemble] enforces
 //
 // Bindings intentionally share one board view so an expression can
 // read what a previous script wrote, and write_copies are tracked so

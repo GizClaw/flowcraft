@@ -8,7 +8,7 @@ import (
 
 // NewRunInfoBridge exposes read-only run identity to scripts as
 // global "run". The identity is AMBIENT: it is read from the context
-// the EnvBuilder was built with (agent.WithRunInfo), not wired as a
+// the environment was assembled with (agent.WithRunInfo), not wired as a
 // constructor parameter — the script node simply builds the env with
 // the node's execution context and the bridge finds the identity
 // there.

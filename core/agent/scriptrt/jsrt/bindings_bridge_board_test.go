@@ -14,7 +14,7 @@ func TestBoardBridge(t *testing.T) {
 	board := agent.NewBoard()
 	board.SetVar("x", 10)
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "board", `
 		var val = board.getVar("x");
 		if (val !== 10) throw new Error("expected 10, got " + val);
@@ -39,7 +39,7 @@ func TestBoardBridge_Channel_ReadAfterAppendChannel(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "channel-append", `
 		// empty channel reads as empty list (never null)
 		var initial = board.channel("main");
@@ -67,7 +67,7 @@ func TestBoardBridge_Channel_RoundTripViaSetChannel(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "channel-roundtrip", `
 		// Build a multimodal message (text + image), set it on the channel,
 		// then re-read and verify nothing was lost.
@@ -95,7 +95,7 @@ func TestBoardBridge_Channel_AppendChannel_ValidationError_ThrowsToScript(t *tes
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "channel-append-bad", `
 		// "parts" at the top level is not a Message field (the wire format
 		// nests it under "content") — the strict decoder must throw and
@@ -123,7 +123,7 @@ func TestBoardBridge_Channel_SetChannel_RejectsUnknownPartField(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "channel-set-typo", `
 		try {
 			board.setChannel("main", [
@@ -152,7 +152,7 @@ func TestBoardBridge_Channel_NamedChannelsAreIsolated(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "channel-named", `
 		board.appendChannel("main",   { role: "user", content: { parts: [{ type: "text", text: "a" }] } });
 		board.appendChannel("scratch",{ role: "user", content: { parts: [{ type: "text", text: "b" }] } });

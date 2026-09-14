@@ -128,7 +128,7 @@ func TestShellBridge_AllowList_Allowed(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo", "cat")),
 	)
@@ -152,7 +152,7 @@ func TestShellBridge_AllowList_Blocked(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
 	)
@@ -176,7 +176,7 @@ func TestShellBridge_NoAllowList(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner),
 	)
@@ -198,7 +198,7 @@ func TestShellBridge_NilRunner(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(nil),
 	)
@@ -221,7 +221,7 @@ func TestShellBridge_AllowList_FullPath(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
 	)
@@ -247,7 +247,7 @@ func TestShellBridge_EmptyCommand(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner),
 	)
@@ -277,7 +277,7 @@ func TestShellBridge_RunnerError_SurfacedAsExitMinusOne(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner),
 	)
@@ -300,7 +300,7 @@ func TestShellBridge_AllowList_FullPath_Blocked(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()
 
-	env := bindings.BuildEnv(context.Background(), nil,
+	env := buildEnv(t, nil,
 		bindings.NewBoardBridge(board),
 		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
 	)

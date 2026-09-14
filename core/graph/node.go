@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
@@ -128,6 +129,14 @@ type ExecutionContext struct {
 	// invocation: which graph, which node. The kernel stamps it onto
 	// envelope headers (event.HeaderGraphID).
 	GraphID string
+
+	// ScriptBindings is the engine-level provider of script globals for
+	// every script execution of this graph (see [WithScriptBindings]).
+	// Nil means the graph carries no engine-level provider and
+	// script-running node types fall back to their own standard
+	// bindings — the library path, where a host wires a script node
+	// type directly instead of going through a deployment resource.
+	ScriptBindings bindings.Provider
 }
 
 // EmitStreamDelta publishes a stream delta on this node's behalf.

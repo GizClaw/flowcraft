@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/graph/nodes"
@@ -33,13 +34,14 @@ import (
 
 // Stable dependency names used by deployment documents.
 const (
-	DepInference     = "inference"
-	DepRouter        = "router"
-	DepTools         = "tools"
-	DepWorkspace     = "workspace"
-	DepSandbox       = "sandbox"
-	DepScriptRuntime = "script_runtime"
-	DepNodeType      = "node_type"
+	DepInference      = "inference"
+	DepRouter         = "router"
+	DepTools          = "tools"
+	DepWorkspace      = "workspace"
+	DepSandbox        = "sandbox"
+	DepScriptRuntime  = "script_runtime"
+	DepNodeType       = "node_type"
+	DepScriptBindings = "script_bindings"
 
 	defaultScriptRuntimeName = "js"
 )
@@ -93,6 +95,7 @@ func (Factory) Spec() res.Spec {
 			{Name: DepSandbox, Type: "sandbox.Runner"},
 			{Name: DepScriptRuntime, Type: "agent.ScriptRuntime"},
 			{Name: DepNodeType, Type: "graph.NodeTypeRegistrar", Many: true},
+			{Name: DepScriptBindings, Type: bindings.ResourceKind},
 		},
 	}
 }
@@ -139,15 +142,10 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 
 	registry := coregraph.NewRegistry()
 	inferenceDeps := nodes.InferenceNodeDeps{}
-	scriptDeps := scriptnode.ScriptNodeDeps{
-		Runtimes:      make(map[string]agent.ScriptRuntime),
-		Workspace:     deps.workspace,
-		CommandRunner: deps.sandbox,
-	}
+	scriptDeps := scriptNodeDeps(deps, map[string]agent.ScriptRuntime{})
 	if deps.inference != nil {
 		inferenceDeps.Assembly = deps.inference
 		inferenceDeps.Extensions = deps.inference.ExtensionDecoders()
-		scriptDeps.InferenceAssembly = deps.inference
 	}
 	if deps.router != nil {
 		inferenceDeps.Router = deps.router
@@ -156,12 +154,9 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 			// decoders of its target assembly.
 			inferenceDeps.Extensions = deps.router.Target().ExtensionDecoders()
 		}
-		scriptDeps.InferenceRouter = deps.router
 	}
 	if deps.tools != nil {
 		inferenceDeps.Catalog = deps.tools.Catalog()
-		scriptDeps.ToolDispatcher = deps.tools
-		scriptDeps.ToolCatalog = deps.tools.Catalog()
 	}
 	if deps.script != nil {
 		scriptDeps.Runtimes[runtimeName] = deps.script
@@ -184,6 +179,13 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	options, err := settings.Build.options()
 	if err != nil {
 		return nil, err
+	}
+	// The script surface is engine-level and optional: a wired
+	// "script_bindings" dep serves every script execution of this
+	// graph. Without it each script-running node type falls back to the
+	// standard bindings over its own deps — the pre-provider behaviour.
+	if deps.bindings != nil {
+		options = append(options, coregraph.WithScriptBindings(deps.bindings))
 	}
 	built, err := coregraph.Build(definition, registry, options...)
 	if err != nil {
@@ -215,7 +217,13 @@ func Register(r *res.Registry) error {
 	if err := r.Register(Factory{}); err != nil {
 		return err
 	}
-	return r.Register(ScriptNodeTypeFactory{})
+	if err := r.Register(ScriptNodeTypeFactory{}); err != nil {
+		return err
+	}
+	if err := r.Register(ScriptBindingsFactory{}); err != nil {
+		return err
+	}
+	return r.Register(ScriptBindingsNoneFactory{})
 }
 
 func loadDefinition(
@@ -335,6 +343,7 @@ type dependencies struct {
 	workspace workspace.Workspace
 	sandbox   sandbox.Runner
 	script    agent.ScriptRuntime
+	bindings  bindings.Provider
 }
 
 func decodeDependencies(raw map[string]any) (dependencies, error) {
@@ -342,6 +351,7 @@ func decodeDependencies(raw map[string]any) (dependencies, error) {
 	known := map[string]bool{
 		DepInference: true, DepRouter: true, DepTools: true,
 		DepWorkspace: true, DepSandbox: true, DepScriptRuntime: true,
+		DepScriptBindings: true,
 	}
 	for name := range raw {
 		if name == DepNodeType || strings.HasPrefix(name, DepNodeType+".") {
@@ -372,7 +382,38 @@ func decodeDependencies(raw map[string]any) (dependencies, error) {
 	if out.script, err = optionalDep[agent.ScriptRuntime](raw, DepScriptRuntime); err != nil {
 		return out, err
 	}
+	if out.bindings, err = optionalDep[bindings.Provider](raw, DepScriptBindings); err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+// scriptNodeDeps assembles the dependency bundle shared by the
+// built-in "script" node type, script-backed custom node types and the
+// standard bindings provider. runtimes carries the script runtime(s)
+// the node type may select from; the standard bindings provider passes
+// nil because it receives the executing runtime through the
+// invocation.
+func scriptNodeDeps(
+	deps dependencies,
+	runtimes map[string]agent.ScriptRuntime,
+) scriptnode.ScriptNodeDeps {
+	out := scriptnode.ScriptNodeDeps{
+		Runtimes:      runtimes,
+		Workspace:     deps.workspace,
+		CommandRunner: deps.sandbox,
+	}
+	if deps.inference != nil {
+		out.InferenceAssembly = deps.inference
+	}
+	if deps.router != nil {
+		out.InferenceRouter = deps.router
+	}
+	if deps.tools != nil {
+		out.ToolDispatcher = deps.tools
+		out.ToolCatalog = deps.tools.Catalog()
+	}
+	return out
 }
 
 type customNodeType struct {

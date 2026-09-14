@@ -63,7 +63,8 @@ builds the graph engine.
 Engine deps are derived from the definition: inference needs `inference`
 (explicit `model`) and/or `router` (no `model`), tool nodes need `tools`,
 script nodes need `script_runtime`. `workspace` and `sandbox` are optional
-and unlock the script `fs` / `shell` globals.
+and unlock the script `fs` / `shell` globals. The optional `script_bindings`
+dep replaces the engine-level script surface (see "Script bindings" below).
 
 Those budgets are per execute call, not per agent run: revise attempts and
 resumes get a fresh window. `policy.run_timeout: 10m` on the agent bounds the
@@ -170,7 +171,9 @@ strict: unknown top-level config fields are errors.
 ## Script bridges
 
 Scripts get named globals through `core/agent/bindings` (plus three
-graph-layer bridges). Availability depends on engine deps:
+graph-layer bridges). This is the *standard* surface — a deployment can
+replace it with an `agent.ScriptBindings` provider (below). Availability
+depends on engine deps:
 
 | Global | Wired when | Provides |
 | --- | --- | --- |
@@ -186,6 +189,65 @@ graph-layer bridges). Availability depends on engine deps:
 | `fs` | `workspace` dep | workspace file ops |
 | `shell` | `sandbox` dep | sandboxed command execution |
 | `runtime` | always | nested sub-script execution |
+
+### Script bindings (`agent.ScriptBindings`)
+
+The table above is the *standard* surface. One engine-level provider decides
+what a script execution actually gets, wired as the optional
+`script_bindings` dep:
+
+```yaml
+resources:
+  std:
+    kind: agent.ScriptBindings
+    impl: standard          # core's implementation of the table above
+    deps: {tools: tools, workspace: ws, inference: infer}
+
+engine:
+  kind: agent.Engine
+  impl: graph
+  deps:
+    script_runtime: js
+    script_bindings: std
+```
+
+- **Wired** — the provider serves every script execution of the graph
+  (built-in `script` and script-backed custom node types) and *replaces* the
+  standard surface: `impl: standard` with no `tools`/`workspace` dep means no
+  `tools`/`fs` global.
+- **Not wired** — each script-running node type falls back to the standard
+  bindings over its own deps, i.e. the behaviour deployments had before
+  bindings became a resource. Omitting the dep never breaks an existing
+  graph.
+- **`impl: none`** — binds nothing: scripts run with an empty scope.
+- Hosts add their own globals with another impl of the kind; a name bound
+  twice fails the execution instead of shadowing, and every global must be a
+  JS/Lua identifier that is not a keyword (`tokens`, not `tokens.estimate`).
+
+The node span records `script.bindings.count` and `script.bindings.source`
+(`engine` or `standard`); a debug log lists the global names, so a missing
+global is distinguishable from a typo in the script.
+
+`impl: standard` settings (each section needs its capability dep wired):
+
+| Setting | Meaning |
+| --- | --- |
+| `tools.allow` | exact catalog tools the surface may call; every name must exist in the wired assembly; `[]` denies all |
+| `tools.allow_all` | expose the whole catalog (trusted scripts only); conflicts with `allow` |
+| `fs.max_read_bytes` / `fs.max_write_bytes` | positive caps on one `fs.read` / `fs.write`; omitting keeps the bridge default |
+| `shell.allow` | commands `shell.exec` may run (matched as written and by base name); `[]` denies all; omitting leaves the sandbox policy |
+
+Without a `tools` policy the bridge stays fail-closed: no tool is callable.
+
+```yaml
+  std:
+    kind: agent.ScriptBindings
+    impl: standard
+    deps: {tools: tools, workspace: ws}
+    settings:
+      tools: {allow: [search, fetch]}
+      fs: {max_read_bytes: 65536}
+```
 
 ### Custom node types (`graph.NodeType`)
 
@@ -212,7 +274,8 @@ definition becomes the script's `config` global.
 
 Deps of `graph.NodeType/script`: `script_runtime` (required), plus optional
 `tools`, `inference`, `router`, `workspace`, `sandbox` enabling the same
-globals the built-in script node unlocks.
+globals the built-in script node unlocks. An engine-level `script_bindings`
+provider serves the custom type too; its own deps are the fallback.
 
 ```yaml
 resources:

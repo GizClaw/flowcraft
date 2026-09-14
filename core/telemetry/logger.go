@@ -74,6 +74,24 @@ func Debug(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
 	emit(ctx, otellog.SeverityDebug, msg, attrs...)
 }
 
+// DebugEnabled reports whether [Debug] would emit a record for ctx:
+// convenience logs are not globally disabled and the configured logger
+// accepts debug records. Callers use it to skip building expensive log
+// attributes that would be discarded.
+func DebugEnabled(ctx context.Context) bool {
+	if disabled.Load() {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	v := loggerName.Load()
+	name, _ := v.(string)
+	return Logger(name).Enabled(ctx, otellog.EnabledParameters{
+		Severity: otellog.SeverityDebug,
+	})
+}
+
 func Info(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
 	emit(ctx, otellog.SeverityInfo, msg, attrs...)
 }

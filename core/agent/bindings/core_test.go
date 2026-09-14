@@ -6,9 +6,20 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-func TestBuildEnv_OrdersBindingsAndLastWins(t *testing.T) {
+// mustBuildEnv assembles a script env for tests.
+func mustBuildEnv(t *testing.T, config map[string]any, fns ...BindingFunc) *agent.ScriptEnv {
+	t.Helper()
+	env, err := BuildEnv(context.Background(), config, fns...)
+	if err != nil {
+		t.Fatalf("BuildEnv: %v", err)
+	}
+	return env
+}
+
+func TestBuildEnv_OrdersBindingsAndPreservesConfig(t *testing.T) {
 	var order []string
 	bind := func(label, name string, value any) BindingFunc {
 		return func(context.Context) (string, any) {
@@ -18,11 +29,10 @@ func TestBuildEnv_OrdersBindingsAndLastWins(t *testing.T) {
 	}
 	config := map[string]any{"mode": "test"}
 
-	env := BuildEnv(
-		context.Background(), config,
-		bind("first", "dup", "one"),
+	env := mustBuildEnv(t, config,
+		bind("first", "board", "one"),
 		bind("second", "keep", "value"),
-		bind("third", "dup", "two"),
+		bind("third", "tools", "two"),
 	)
 
 	if !reflect.DeepEqual(order, []string{"first", "second", "third"}) {
@@ -32,48 +42,50 @@ func TestBuildEnv_OrdersBindingsAndLastWins(t *testing.T) {
 	if got := env.Config["mode"]; got != "changed" {
 		t.Fatalf("BuildEnv should preserve the config map reference, got %v", got)
 	}
-	if got := env.Bindings["dup"]; got != "two" {
-		t.Fatalf("dup = %v, want two", got)
+	if got := env.Bindings["board"]; got != "one" {
+		t.Fatalf("board = %v, want one", got)
 	}
 	if got := env.Bindings["keep"]; got != "value" {
 		t.Fatalf("keep = %v, want value", got)
 	}
 }
 
-func TestEnvBuilder_LateBindingsSeeAndCaptureFinalMap(t *testing.T) {
+func TestBuildEnv_RejectsDuplicateNames(t *testing.T) {
+	bind := func(name string) BindingFunc {
+		return func(context.Context) (string, any) { return name, "value" }
+	}
+	_, err := BuildEnv(context.Background(), nil, bind("dup"), bind("dup"))
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("BuildEnv = %v, want Validation for a duplicate global", err)
+	}
+}
+
+func TestBuilder_LateBindingsSeeAndCaptureFinalMap(t *testing.T) {
 	var captured map[string]any
 
-	env := NewEnvBuilder(nil).
-		Add(
-			func(context.Context) (string, any) { return "board", "parent-board" },
-			func(context.Context) (string, any) { return "runtime", "ordinary-runtime" },
-		).
-		AddLate(
-			func(_ context.Context, env *agent.ScriptEnv) (string, any) {
+	env, err := Assemble(Invocation{Context: context.Background()}, nil,
+		NewBuilder().
+			Add(func(context.Context) (string, any) { return "board", "parent-board" }).
+			AddLate(func(_ context.Context, env *agent.ScriptEnv) (string, any) {
 				if got := env.Bindings["board"]; got != "parent-board" {
 					t.Fatalf("late binding did not see ordinary binding: %v", got)
 				}
 				captured = env.Bindings
-				return "runtime", map[string]any{
-					"parent": env.Bindings,
-				}
-			},
-			func(context.Context, *agent.ScriptEnv) (string, any) {
+				return "runtime", map[string]any{"parent": env.Bindings}
+			}).
+			AddLate(func(context.Context, *agent.ScriptEnv) (string, any) {
 				return "extra", "late-extra"
-			},
-		).
-		Build(context.Background())
+			}))
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
 
 	runtimeBinding, ok := env.Bindings["runtime"].(map[string]any)
 	if !ok {
 		t.Fatalf("runtime binding = %T, want map[string]any", env.Bindings["runtime"])
 	}
-	parent := runtimeBinding["parent"].(map[string]any)
-	if got, ok := parent["runtime"].(string); ok && got == "ordinary-runtime" {
-		t.Fatal("late runtime binding did not overwrite ordinary runtime binding")
-	}
-	if _, ok := parent["runtime"].(map[string]any); !ok {
-		t.Fatalf("captured parent map runtime = %T, want final runtime binding", parent["runtime"])
+	if got := runtimeBinding["parent"]; !reflect.DeepEqual(got, captured) {
+		t.Fatalf("captured parent map = %v, want the env bindings", got)
 	}
 	if got := captured["extra"]; got != "late-extra" {
 		t.Fatalf("captured map did not receive later late binding: %v", got)
@@ -84,17 +96,23 @@ func TestEnvBuilder_LateBindingsSeeAndCaptureFinalMap(t *testing.T) {
 	}
 }
 
-func TestEnvBuilder_BuildReturnsIndependentBindingsMaps(t *testing.T) {
+func TestAssemble_ReturnsIndependentBindingsMaps(t *testing.T) {
 	var captures []map[string]any
-	builder := NewEnvBuilder(nil).
+	builder := NewBuilder().
 		Add(func(context.Context) (string, any) { return "base", "value" }).
 		AddLate(func(_ context.Context, env *agent.ScriptEnv) (string, any) {
 			captures = append(captures, env.Bindings)
 			return "runtime", env.Bindings
 		})
 
-	first := builder.Build(context.Background())
-	second := builder.Build(context.Background())
+	first, err := Assemble(Invocation{Context: context.Background()}, nil, builder)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	second, err := Assemble(Invocation{Context: context.Background()}, nil, builder)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
 
 	first.Bindings["only_first"] = true
 	captures[0]["captured_first"] = true

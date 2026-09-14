@@ -3,6 +3,7 @@ package graph
 import (
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
@@ -15,6 +16,7 @@ type buildOptions struct {
 	runEndPublishTimeout time.Duration
 	parallel             ParallelConfig
 	maxNodeRetries       int
+	scriptBindings       bindings.Provider
 }
 
 const (
@@ -73,6 +75,20 @@ func WithParallel(cfg ParallelConfig) BuildOption {
 // and validation errors are never retried. Zero means no retries.
 func WithMaxNodeRetries(n int) BuildOption {
 	return func(o *buildOptions) { o.maxNodeRetries = n }
+}
+
+// WithScriptBindings sets the engine-level script bindings provider:
+// one provider serves every script node of the built graph — the
+// built-in "script" type and script-backed custom node types alike —
+// and it replaces (rather than extends) the standard bindings those
+// node types would otherwise assemble from their own deps.
+//
+// The graph engine factory wires this from the optional
+// "script_bindings" deployment dep; library callers building a graph
+// directly can set it themselves. Omitting the option keeps the
+// standard script surface.
+func WithScriptBindings(provider bindings.Provider) BuildOption {
+	return func(o *buildOptions) { o.scriptBindings = provider }
 }
 
 func (o *buildOptions) validate() error {

@@ -442,6 +442,43 @@ lua:
 Script runtimes are wired into a graph engine as the `script_runtime` dep
 (see [graph.md](graph.md)).
 
+## script bindings
+
+```yaml
+std:
+  kind: agent.ScriptBindings
+  impl: standard          # core's standard script surface
+  deps:                   # each wired capability unlocks its global
+    tools: tools
+    inference: infer
+    router: router
+    workspace: ws
+    sandbox: box
+  settings:               # optional: policy of the surface's own bridges
+    tools:
+      allow: [search, fetch]   # exact catalog names; [] denies all
+      # allow_all: true        # whole catalog; trusted scripts only
+    fs:
+      max_read_bytes: 65536
+      max_write_bytes: 65536
+    shell:
+      allow: [git, ls]         # commands shell.exec may run; [] denies all
+
+empty:
+  kind: agent.ScriptBindings
+  impl: none              # binds nothing: scripts run with an empty scope
+```
+
+A bindings resource decides which globals script nodes see. It is wired into
+a graph engine as the optional `script_bindings` dep, replaces the standard
+surface for every script execution of that graph, and is built once and
+shared. Without the dep, each script-running node type falls back to the
+standard surface over its own deps. A settings section requires the
+capability dep it configures, and `tools.allow` names are checked against the
+assembly at build time, so a typo fails the deployment instead of the first
+call. Other impls are registered by the host build (see
+[graph.md](graph.md)).
+
 ## delegation
 
 ```yaml

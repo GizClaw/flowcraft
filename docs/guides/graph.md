@@ -90,6 +90,8 @@ Engine deps are derived from the definition: an inference node needs the
 `inference` dep (explicit `model`) and/or `router` dep (no `model`), a tool
 node needs `tools`, a script node needs `script_runtime`. `workspace` and
 `sandbox` are optional and unlock the script `fs` / `shell` globals (below).
+The optional `script_bindings` dep replaces the engine-level script surface;
+see "Script bindings" below.
 
 ### Budgets and timeouts
 
@@ -333,8 +335,10 @@ outlive it.
 ## Script bridges
 
 Scripts never touch the Go context directly; the node exposes named globals
-through `core/agent/bindings` (plus three graph-layer bridges). Availability
-depends on the engine's deps:
+through `core/agent/bindings` (plus three graph-layer bridges). This is the
+*standard* surface — a deployment replaces it wholesale with an
+`agent.ScriptBindings` provider (see "Script bindings" below). Its
+availability depends on the engine's deps:
 
 | Global      | Wired when                              | Provides                             |
 | ----------- | --------------------------------------- | ------------------------------------ |
@@ -350,6 +354,150 @@ depends on the engine's deps:
 | `fs`        | `workspace` dep                         | workspace file operations            |
 | `shell`     | `sandbox` dep                           | sandboxed command execution          |
 | `runtime`   | always                                  | nested sub-script execution          |
+
+### Script bindings (`agent.ScriptBindings`)
+
+The table above is the *standard* surface. Which globals a script execution
+gets is decided by one engine-level bindings provider, wired as the optional
+`script_bindings` dep:
+
+```yaml
+resources:
+  std:
+    kind: agent.ScriptBindings
+    impl: standard          # core's implementation of the table above
+    deps:
+      tools: tools          # each wired capability unlocks its global
+      workspace: ws
+      inference: infer
+
+agents:
+  assistant:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        script_runtime: js
+        script_bindings: std
+      settings:
+        graph: {file: ./graphs/assistant.yaml}
+```
+
+- **Wired** — the provider serves every script execution of the graph: the
+  built-in `script` type and script-backed custom node types alike. It
+  *replaces* the standard surface rather than extending it, so a provider
+  that binds `tokens` and nothing else leaves scripts without `board`.
+- **Not wired** — each script-running node type falls back to the standard
+  bindings over its own deps: the built-in `script` node uses the engine's
+  `tools` / `workspace` / `inference` / `sandbox` deps, a
+  `graph.NodeType/script` resource uses its own. This is the behaviour
+  deployments had before bindings became a resource, so omitting the dep
+  never breaks an existing graph.
+- **`impl: none`** — binds nothing at all: scripts still run, with an empty
+  scope. The explicit way to disable the surface for a locked-down graph.
+
+The standard impl also carries the *policy* of the bridges whose shape the
+surface owns, so a deployment configures them without touching Go:
+
+| Setting                | Meaning                                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| `tools.allow`          | the exact catalog tools the surface may call; every name must exist in the wired tool assembly, so a typo fails the build. An explicit empty list denies every tool |
+| `tools.allow_all`      | expose the whole catalog (fully trusted scripts only); conflicts with `allow`                  |
+| `fs.max_read_bytes`    | positive cap on one `fs.read`; omitting keeps the bridge default                               |
+| `fs.max_write_bytes`   | positive cap on one `fs.write`; omitting keeps the bridge default                              |
+| `shell.allow`          | commands `shell.exec` may run, matched as written and by base name; an explicit empty list denies every command, omitting leaves the sandbox policy in charge |
+
+A policy section requires the capability it configures (`tools`, `workspace`,
+`sandbox`) to be wired; asking for a policy without it fails the build.
+Omitting a section keeps the bridge default — notably, `tools` stays
+fail-closed: without `tools.allow` or `tools.allow_all` a script cannot call
+any tool. The fallback surface (no `script_bindings` dep) carries no
+document-level policy at all, so wiring the standard resource is how a
+deployment configures the script surface.
+
+```yaml
+resources:
+  std:
+    kind: agent.ScriptBindings
+    impl: standard
+    deps: {tools: tools, workspace: ws}
+    settings:
+      tools: {allow: [search, fetch]}
+      fs: {max_read_bytes: 65536}
+```
+
+Hosts extend the surface by registering their own impl of the kind:
+
+```go
+// The provider is built once per deployment: per-execution state (board,
+// node identity, executing runtime) arrives through the invocation.
+type tokensProvider struct{}
+
+func (tokensProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) {
+    return []bindings.Binding{{
+        Name: "tokens",
+        Value: map[string]any{
+            "estimate": func(text string) int { return len(text) / 4 },
+            "nodeID":   func() string { return inv.NodeID },
+        },
+    }}, nil
+}
+
+// The factory is registered on the host's resource registry.
+func (tokensFactory) Spec() resource.Spec {
+    return resource.Spec{
+        Kind: bindings.ResourceKind, Impl: "tokens",
+        // Optional: compose the deployment's other surfaces instead of
+        // replacing them.
+        Deps: []resource.DepSpec{{Name: "base", Type: bindings.ResourceKind}},
+    }
+}
+
+func (tokensFactory) New(ctx context.Context, in resource.Input) (any, error) {
+    extra := bindings.Provider(tokensProvider{})
+    base, ok := in.Dep("base")
+    if !ok {
+        return extra, nil
+    }
+    surface, ok := base.(bindings.Provider)
+    if !ok {
+        return nil, errdefs.Validationf("tokens bindings: base is %T", base)
+    }
+    return bindings.Chain(surface, extra), nil
+}
+
+registry.Register(tokensFactory{})
+```
+
+```yaml
+resources:
+  std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
+  tok: {kind: agent.ScriptBindings, impl: tokens, deps: {base: std}}
+
+agents:
+  assistant:
+    engine:
+      deps: {script_runtime: js, script_bindings: tok}
+```
+
+A provider is built once per deployment and shared across runs, so it reads
+per-execution state from the invocation it is handed: the run's board, the
+host, the node identity, the executing `agent.ScriptRuntime`, the per-node
+stream emitter, and the run identity. `bindings.Provider.Bind` returns the
+ordinary globals; an optional `bindings.LateProvider.BindLate` runs after
+them and sees the built environment — that is how `runtime` captures the
+final bindings map so nested sub-scripts inherit the same surface. A name
+bound twice fails the execution instead of silently shadowing, and every
+global name must be an identifier that is neither a JavaScript nor a Lua
+keyword (`tokens`, `db_query`; not `tokens.estimate`, `$helper`, `var`,
+`end`) — a name a script cannot reference is rejected at assembly rather
+than installed as an unreachable property.
+
+The surface is observable: the node span carries `script.bindings.count` and
+`script.bindings.source` (`engine` for a wired provider, `standard` for the
+fallback), and a debug log named "script bindings assembled" lists the node
+identity and the global names. That is what makes "the script says `board is
+not defined`" distinguishable from a typo in the script.
 
 ### Custom node types (`graph.NodeType`)
 
@@ -383,6 +531,8 @@ script writes/reads the board like any script node.
 Deps of `graph.NodeType/script`: `script_runtime` (required), plus optional
 `tools`, `inference`, `router`, `workspace`, `sandbox` enabling the same
 globals the built-in script node unlocks (`tools`, `inference`, `fs`, `shell`).
+When the engine wires a `script_bindings` dep, that engine-level provider
+serves the custom type too — the node type's own deps are the fallback.
 
 ```yaml
 resources:

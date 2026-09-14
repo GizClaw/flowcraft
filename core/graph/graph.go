@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
@@ -28,6 +29,7 @@ type Graph struct {
 	runEndPublishTimeout time.Duration
 	parallel             ParallelConfig
 	maxNodeRetries       int
+	scriptBindings       bindings.Provider
 
 	warnings []Warning
 }
@@ -120,6 +122,7 @@ func Build(def *GraphDefinition, reg *Registry, opts ...BuildOption) (*Graph, er
 		runEndPublishTimeout: options.runEndPublishTimeout,
 		parallel:             options.parallel,
 		maxNodeRetries:       options.maxNodeRetries,
+		scriptBindings:       options.scriptBindings,
 	}
 
 	for _, nd := range def.Nodes {

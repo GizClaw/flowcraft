@@ -1,7 +1,6 @@
 package bindings
 
 import (
-	"context"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -13,7 +12,7 @@ func TestBoardBridgeResolve(t *testing.T) {
 	board.SetVar("user", map[string]any{"name": "ada"})
 	board.SetVar("n", float64(3))
 
-	env := BuildEnv(context.Background(), nil, NewBoardBridge(board))
+	env := mustBuildEnv(t, nil, NewBoardBridge(board))
 	b, ok := env.Bindings["board"].(map[string]any)
 	if !ok {
 		t.Fatalf("board binding = %T", env.Bindings["board"])

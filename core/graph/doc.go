@@ -40,6 +40,16 @@
 // registered once; a *Graph is built once; concurrent runs share both
 // without locking or re-assembly.
 //
+// # Script bindings
+//
+// Script-running node types — the built-in "script" node and custom
+// script-backed node types — assemble their script globals from the
+// engine-level provider carried through [ExecutionContext]
+// ([WithScriptBindings]). Without a provider each node type falls back
+// to the standard bindings over its own deps. The provider contract
+// lives in core/agent/bindings, and the deployment-facing resource
+// kind is "agent.ScriptBindings" (see core/graph/resource).
+//
 // # Board
 //
 // The kernel operates directly on [agent.Board] — typed message
