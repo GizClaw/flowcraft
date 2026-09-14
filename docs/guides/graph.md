@@ -434,13 +434,14 @@ Hosts extend the surface by registering their own impl of the kind:
 type tokensProvider struct{}
 
 func (tokensProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) {
-    return []bindings.Binding{{
+    tokens := bindings.Binding{
         Name: "tokens",
         Value: map[string]any{
             "estimate": func(text string) int { return len(text) / 4 },
             "nodeID":   func() string { return inv.NodeID },
         },
-    }}, nil
+    }
+    return []bindings.Binding{tokens}, nil
 }
 
 // The factory is registered on the host's resource registry.
@@ -449,7 +450,9 @@ func (tokensFactory) Spec() resource.Spec {
         Kind: bindings.ResourceKind, Impl: "tokens",
         // Optional: compose the deployment's other surfaces instead of
         // replacing them.
-        Deps: []resource.DepSpec{{Name: "base", Type: bindings.ResourceKind}},
+        Deps: []resource.DepSpec{
+            {Name: "base", Type: bindings.ResourceKind},
+        },
     }
 }
 
