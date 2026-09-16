@@ -140,12 +140,16 @@ reports no write modes in `Capabilities`.
 
 For read-only auto-approval, `ClassifySafeReadOnly` implements the
 codex-rs-style heuristic (base read-only commands plus argument-aware
-checks for `find` / `rg` / `git` / `sed` / `sort`, with `sh -c` /
-`bash -lc` unwrap). `date` and `hostname` are deliberately not
-auto-approved: `date -s` changes the system clock and
-`hostname newname` changes the host name — non-file writes the OS
-sandbox cannot block. It is a caller-side helper — the host's
-`ApprovalFunc` decides:
+checks for `find` / `rg` / `git` / `sed` / `sort`, sharing the
+allowlist's shell unwrapping: a script counts only when the wrapper is
+the exact supported form (`sh -c`, `cmd.exe /c`,
+`pwsh -NoProfile -Command`) and the script is a single plain command;
+combined and abbreviated forms such as `bash -lc`, `cmd /k` or a
+PowerShell command without `-NoProfile` are never unwrapped). `date`
+and `hostname` are deliberately not auto-approved: `date -s` changes
+the system clock and `hostname newname` changes the host name —
+non-file writes the OS sandbox cannot block. It is a caller-side
+helper — the host's `ApprovalFunc` decides:
 
 ```go
 if req.Opts.Write == sandbox.WriteReadOnly && sandbox.ClassifySafeReadOnly(req.Exec) {

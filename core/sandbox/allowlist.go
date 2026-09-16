@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -32,10 +33,13 @@ type rule struct {
 // (Add/Set) while Exec calls are in flight.
 //
 // Allowlist matching is deliberately heuristic: NormaliseExec unwraps
-// "sh -c" wrappers, and scripts containing shell control characters are
-// never matched, so they fall through to the approver. Like every
-// predicate, the allowlist is the tripwire, not the wall — OS-level
-// backend enforcement remains the security boundary.
+// the shell wrappers hosts put around shell-syntax commands ("sh -c",
+// "cmd /c", "pwsh -NoProfile -Command") when the script is provably a
+// single simple command. Everything else — control characters,
+// expansions, unrecognised wrapper forms — stays raw and falls through
+// to the approver. Like every predicate, the allowlist is the tripwire,
+// not the wall — OS-level backend enforcement remains the security
+// boundary.
 type Allowlist struct {
 	mu    sync.RWMutex
 	rules []rule
@@ -169,11 +173,15 @@ func (a *Allowlist) NotAllowed() Predicate {
 	})
 }
 
-// NormaliseExec returns the token list used for allowlist matching. A
-// "sh -c <script>" invocation is unwrapped to the script's tokens when
-// the script is a simple command; complex scripts (shell control
-// characters, substitutions, redirects) are not unwrapped, so their
-// token list is the raw argv and they never match an allowlist rule.
+// NormaliseExec returns the token list used for allowlist matching.
+// A shell invocation ("sh -c <script>", "cmd /c <script>",
+// "pwsh -NoProfile -Command <script>") is unwrapped to the script's
+// tokens when the wrapper form is exactly the supported one and the
+// script is provably a single simple command under that shell's
+// grammar. Complex scripts (control characters, substitutions,
+// redirects, expansions) and unrecognised wrapper forms are not
+// unwrapped, so their token list is the raw argv and they never match
+// an allowlist rule.
 func NormaliseExec(req ExecRequest) []string {
 	if tokens, ok := unwrapShellExec(req); ok {
 		return tokens
@@ -181,36 +189,108 @@ func NormaliseExec(req ExecRequest) []string {
 	return append([]string{req.Command}, req.Args...)
 }
 
+// shellProfile describes one shell's script-wrapper form: how to
+// recognise it in argv, how to recover the script text, and how to
+// prove the script is a single simple command. Returning tokens from
+// parse is a claim that running the wrapped invocation executes
+// exactly that program with those arguments; a wrapper form or script
+// that cannot be proven stays unwrapped and needs approval.
+type shellProfile struct {
+	names []string
+	// foldName matches the program base name case-insensitively, as
+	// Windows binaries do. The POSIX shells keep their exact names: a
+	// differently-cased name is a different binary there.
+	foldName bool
+	// scriptArg recovers the script text from the wrapper's argv, or
+	// reports false when the argument shape is not exactly the
+	// supported form (combined or extra switches, extra argv).
+	scriptArg func(args []string) (string, bool)
+	// parse proves the script is one simple command, or reports false
+	// so the caller keeps the raw argv.
+	parse func(script string) ([]string, bool)
+}
+
+var shellProfiles = []shellProfile{
+	{ // sh -c <script> [name [args...]]
+		names: []string{"sh", "bash", "zsh", "dash", "ash", "ksh", "fish"},
+		scriptArg: func(args []string) (string, bool) {
+			// Only a bare "-c" is a script argument. Combined flags
+			// such as "-lc" (login shell) or "-ce" change semantics:
+			// a login shell reads startup files, so unwrapping it to
+			// the script body could auto-approve code the shell runs
+			// before the script. Combined forms therefore stay raw
+			// and never match the allowlist.
+			if len(args) >= 2 && args[0] == "-c" {
+				return args[1], true
+			}
+			return "", false
+		},
+		parse: tokenizeShellScript,
+	},
+	{ // cmd /c <script>
+		names:    []string{"cmd", "cmd.exe"},
+		foldName: true,
+		scriptArg: func(args []string) (string, bool) {
+			// cmd switches are case-insensitive, but only the bare
+			// "/c" form is claimed here: "/k" keeps the prompt open,
+			// "/s" rewrites quoting and "/v:on" enables a second
+			// expansion pass, so none of them can be proven against
+			// the script text. cmd /c also consumes the whole rest of
+			// the command line, and re-joining several argv elements
+			// under cmd's own rules is not something this profile
+			// models: the single-script form is the only provable one.
+			if len(args) == 2 && strings.EqualFold(args[0], "/c") {
+				return args[1], true
+			}
+			return "", false
+		},
+		parse: tokenizeCmdScript,
+	},
+	{ // pwsh -NoProfile -Command <script>
+		names:    []string{"powershell", "powershell.exe", "pwsh", "pwsh.exe"},
+		foldName: true,
+		scriptArg: func(args []string) (string, bool) {
+			// Only the exact, unabbreviated pair is claimed. Without
+			// -NoProfile the host runs user profiles before the
+			// script (the same reasoning that keeps "-lc" raw), and
+			// PowerShell accepts any unambiguous parameter prefix
+			// ("-c", "-nop", ...) plus -EncodedCommand, none of which
+			// this profile models. Anything else stays raw and needs
+			// approval.
+			if len(args) == 3 &&
+				strings.EqualFold(args[0], "-NoProfile") &&
+				strings.EqualFold(args[1], "-Command") {
+				return args[2], true
+			}
+			return "", false
+		},
+		parse: tokenizePowerShellScript,
+	},
+}
+
 func unwrapShellExec(req ExecRequest) ([]string, bool) {
 	if req.Command == "" || len(req.Args) < 2 {
 		return nil, false
 	}
-	if !isShellName(filepath.Base(req.Command)) || !isDashCArg(req.Args[0]) {
-		return nil, false
+	base := filepath.Base(req.Command)
+	for _, p := range shellProfiles {
+		if !p.matchName(base) {
+			continue
+		}
+		if script, ok := p.scriptArg(req.Args); ok {
+			return p.parse(script)
+		}
 	}
-	tokens, ok := tokenizeShellScript(req.Args[1])
-	if !ok {
-		return nil, false
-	}
-	return tokens, true
+	return nil, false
 }
 
-func isShellName(name string) bool {
-	switch name {
-	case "sh", "bash", "zsh", "dash", "ash", "ksh", "fish":
-		return true
-	default:
-		return false
+func (p shellProfile) matchName(base string) bool {
+	for _, name := range p.names {
+		if name == base || (p.foldName && strings.EqualFold(name, base)) {
+			return true
+		}
 	}
-}
-
-func isDashCArg(arg string) bool {
-	// Only a bare "-c" is a script argument. Combined flags such as
-	// "-lc" (login shell) or "-ce" change semantics: a login shell
-	// reads startup files, so unwrapping it to the script body could
-	// auto-approve code the shell runs before the script. Combined
-	// forms therefore stay raw and never match the allowlist.
-	return arg == "-c"
+	return false
 }
 
 // tokenizeShellScript splits a sh -c script into argument tokens and
@@ -285,6 +365,88 @@ func tokenizeShellScript(script string) ([]string, bool) {
 		return nil, false
 	}
 	return tokens, true
+}
+
+// tokenizeCmdScript splits a "cmd /c" script into argument tokens and
+// reports whether it is provably a single simple command. cmd's
+// grammar is not sh's (caret escapes, %VAR% and delayed !VAR!
+// expansion, different quoting), so this models none of it: only
+// scripts made of plain words are unwrapped. Command separators,
+// redirects, expansion markers, quotes, backslashes and newlines all
+// keep the invocation raw and approval-bound.
+func tokenizeCmdScript(script string) ([]string, bool) {
+	return tokenizePlainScript(script, isCmdWordRune)
+}
+
+// tokenizePowerShellScript is the same plain-word policy for
+// "pwsh -NoProfile -Command": variables, subexpressions, operators,
+// quotes, script blocks, splatting and array construction all keep the
+// invocation raw.
+func tokenizePowerShellScript(script string) ([]string, bool) {
+	return tokenizePlainScript(script, isPowerShellWordRune)
+}
+
+// tokenizePlainScript splits script on spaces and tabs, accepting it
+// only when every rune is a plain word rune for that shell. The
+// character gate is the whole proof: with no quoting, escaping,
+// expansion or control character present, the shell hands the words to
+// the program exactly as split here, so the token list can be matched
+// against allowlist rules.
+func tokenizePlainScript(script string, wordRune func(rune) bool) ([]string, bool) {
+	var tokens []string
+	var word strings.Builder
+	flush := func() {
+		if word.Len() > 0 {
+			tokens = append(tokens, word.String())
+			word.Reset()
+		}
+	}
+	for _, r := range script {
+		switch {
+		case r == ' ' || r == '\t':
+			flush()
+		case wordRune(r):
+			word.WriteRune(r)
+		default:
+			return nil, false
+		}
+	}
+	flush()
+	if len(tokens) == 0 {
+		return nil, false
+	}
+	return tokens, true
+}
+
+// isCmdWordRune reports whether r is an ordinary character inside a
+// cmd word. Letters and digits of any script pass; the punctuation
+// listed is inert in a plain cmd word. cmd's metacharacters — | & < >
+// ^ % ! ( ) — plus the quoting and escape characters " ' \ @ and the
+// delimiters , ; all stay outside the set on purpose.
+func isCmdWordRune(r rune) bool {
+	if isPlainWordRune(r) {
+		return true
+	}
+	return strings.ContainsRune("_./:+-=*?", r)
+}
+
+// isPowerShellWordRune is the PowerShell counterpart. Backslash is an
+// ordinary character in PowerShell (unlike sh, where it escapes), so
+// native paths stay unwrappable. Backtick, quotes, $, ( ) { } [ ] ; |
+// & @ # ~ ! , = and the redirection operators stay outside the set on
+// purpose.
+func isPowerShellWordRune(r rune) bool {
+	if isPlainWordRune(r) {
+		return true
+	}
+	return strings.ContainsRune("_./:+-\\*?", r)
+}
+
+// isPlainWordRune covers the letters and digits of any script, so
+// non-ASCII names unwrap like ASCII ones. Neither shell treats them as
+// syntax.
+func isPlainWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
 }
 
 // unsafeEnvKey reports whether a leading "NAME=value" assignment can

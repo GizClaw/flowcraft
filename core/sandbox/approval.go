@@ -31,8 +31,8 @@ type ExecRequest struct {
 //
 // Predicates are necessarily heuristic: a decorator sees the command
 // and its options, never what the process will actually do at runtime
-// ("sh -c" hides everything). They are the tripwire, not the wall —
-// OS-level enforcement by the backend remains the wall.
+// (a shell wrapper hides everything). They are the tripwire, not the
+// wall — OS-level enforcement by the backend remains the wall.
 type Predicate interface {
 	Match(req ExecRequest) (reason string, matched bool)
 }
