@@ -8,12 +8,13 @@ import (
 // ClassifySafeReadOnly reports whether req is a known read-only command
 // under the codex-rs-style heuristic: a small set of base commands
 // plus argument-aware checks for the commands whose write potential
-// depends on their flags (find / rg / git / sed / sort). "sh -c"
+// depends on their flags (find / rg / git / sed / sort). Shell
 // wrappers are unwrapped exactly like allowlist matching, so a simple
-// `sh -c "ls"` classifies as safe while any composite script falls
-// through to false. Login-shell flags ("-lc" and friends) are never
-// unwrapped: a login shell executes startup files before the script,
-// so the visible body is not the whole program.
+// `sh -c "ls"` (or `cmd /c "ls"`, `pwsh -NoProfile -Command "ls"`)
+// classifies as safe while any composite script falls through to
+// false. Wrapper forms that execute code before the script — login
+// shells ("-lc" and friends), cmd /k, PowerShell profiles — are never
+// unwrapped: the visible body is not the whole program.
 //
 // The classifier is deliberately conservative: false means "not
 // proven read-only", and should route to the human approver, never to
