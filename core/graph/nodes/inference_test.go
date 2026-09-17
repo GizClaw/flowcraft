@@ -1859,6 +1859,38 @@ func TestInferenceNode_RejectsLegacyTextKnobs(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
+// TestInferenceNode_RejectsLegacyImageAspectRatio pins the removal of the
+// image aspect-ratio intent field: a config still carrying it fails to
+// decode at invocation instead of silently dropping the shape control.
+func TestInferenceNode_RejectsLegacyImageAspectRatio(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "test-graph",
+		Entry: "n",
+		Nodes: []graph.NodeDefinition{{
+			ID:   "n",
+			Type: "inference",
+			Config: mustConfig(t, map[string]any{
+				"model": map[string]any{
+					"id": map[string]any{"provider": "fake", "name": "fake-1"},
+				},
+				"intent": map[string]any{
+					"image": map[string]any{"aspect_ratio": "16:9"},
+				},
+			}),
+		}},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	err = executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !strings.Contains(err.Error(), "unknown field") ||
+		!strings.Contains(err.Error(), "aspect_ratio") {
+		t.Fatalf("Execute error = %v, want unknown-field rejection for aspect_ratio", err)
+	}
+}
+
 // TestInferenceNode_StreamMidFailureCommitsPartial proves a stream
 // that dies mid-generation still lands its buffered text on the board
 // as one partial assistant message before the error propagates — the

@@ -156,9 +156,6 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 				FieldGenerateIntentImageSizeHeight,
 			)
 		}
-		if intent.Image.AspectRatio != "" {
-			fields = append(fields, FieldGenerateIntentImageAspectRatio)
-		}
 		if intent.Image.Count != nil {
 			fields = append(fields, FieldGenerateIntentImageCount)
 		}

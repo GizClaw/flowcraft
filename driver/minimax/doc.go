@@ -81,7 +81,9 @@
 //   - Image output is always JPEG, so other requested formats reject.
 //     Image parts compile into character subject references
 //     (image-to-image); custom sizes must be 512–2048 and divisible
-//     by 8.
+//     by 8. The API's shape-only mode (aspect_ratio, provider-chosen
+//     pixel size) rides the ImageOptions extension and conflicts with a
+//     canonical size.
 //   - Video durations are model-bound. The Hailuo trio serves 6s, and 10s
 //     at 768P on the 2.3/2.3-Fast/02 models; Hailuo-2.3-Fast is
 //     image-to-video only, and Hailuo-02 adds 512P (single-first-frame

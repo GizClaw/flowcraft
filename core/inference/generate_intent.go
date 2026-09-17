@@ -191,9 +191,13 @@ func (i TextIntent) Validate() error {
 	return nil
 }
 
+// ImageIntent requests image generation. Size is the only canonical shape
+// control: an aspect ratio is the same axis at a lower precision, so
+// providers that speak in ratios or named resolution tiers instead of
+// dimensions expose those as provider extensions rather than as a second
+// canonical encoding.
 type ImageIntent struct {
 	Size         *media.ImageSize   `json:"size,omitempty"`
-	AspectRatio  media.AspectRatio  `json:"aspect_ratio,omitempty"`
 	Count        *int               `json:"count,omitempty"`
 	Seed         *int64             `json:"seed,omitempty"`
 	OutputFormat media.ImageFormat  `json:"output_format,omitempty"`
@@ -209,16 +213,8 @@ func (i ImageIntent) Clone() ImageIntent {
 }
 
 func (i ImageIntent) Validate() error {
-	if i.Size != nil && i.AspectRatio != "" {
-		return fmt.Errorf("image size and aspect ratio are mutually exclusive")
-	}
 	if i.Size != nil {
 		if err := i.Size.Validate(); err != nil {
-			return err
-		}
-	}
-	if i.AspectRatio != "" {
-		if err := i.AspectRatio.Validate(); err != nil {
 			return err
 		}
 	}

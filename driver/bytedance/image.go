@@ -141,12 +141,6 @@ func compileImage(
 				size := fmt.Sprintf("%dx%d", image.Size.Width, image.Size.Height)
 				compiled.ark.Size = &size
 			}
-			if image.AspectRatio != "" {
-				ledger.Reject(
-					inference.FieldGenerateIntentImageAspectRatio,
-					"the images API has no aspect-ratio parameter; give an explicit size",
-				)
-			}
 			if image.Count != nil {
 				compiled.count = *image.Count
 			}
