@@ -300,14 +300,20 @@ build. It takes a `query` and an optional `limit` (default 8): matching
 Direct/Deferred tools are loaded and added to the session discovery pool
 automatically — there is no `select` step (a legacy caller that still
 passes `select` is ignored) — and their real schemas become visible from
-the next round. Executed calls refresh pool recency; entries idle beyond
+the next round, subject to the per-round `budget`. `tool_search` lists a
+hit under `exposed` only when the next round really sends it; a hit that
+loses the per-round budget comes back under `failed` with reason
+`visible_budget`, the best-ranked hit of a batch wins the cut, and an
+oversized definition is skipped rather than truncating the rest.
+Executed calls refresh pool recency; entries idle beyond
 `discovery.idle_rounds` (default 10) are evicted, and the pool never
-exceeds `discovery.max_tools` / `discovery.max_bytes` (defaults 32 /
-16 KiB), an independent byte cap. The per-round `budget` still caps what
-the model actually receives each turn; raising `discovery.max_bytes`
-above it keeps extra entries as a no-token loaded cache until they are
-used or re-searched. The legacy `selected_retention` and `recent_window`
-policy keys only seed `discovery.idle_rounds` when it is unset.
+exceeds `discovery.max_tools` / `discovery.max_bytes`, which default to
+the effective `budget.max_definitions` / `budget.max_bytes`. Set them
+explicitly to keep a different pool size; a pool kept larger than the
+per-round budget preserves extra entries as a no-token loaded cache
+until they are used or re-searched. The legacy `selected_retention` and
+`recent_window` policy keys only seed `discovery.idle_rounds` when it is
+unset.
 
 The `middleware` impl is the same assembly with a settings-declared
 middleware chain; the `memory` impl rejects the `middlewares` key:

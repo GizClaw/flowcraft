@@ -28,9 +28,10 @@ func (SearchTool) Definition() message.ToolDefinition {
 	return message.DefineSchema(
 		ToolName,
 		"Search the tool catalog for tools relevant to the current task. "+
-			"Matching tools are loaded and exposed to the model starting from the next round; "+
-			"exposed tools stay available while they are used and are evicted after idle rounds "+
-			"or when the discovery budget is full.",
+			"Matching tools are loaded and exposed to the model starting from the next round "+
+			"when they fit that round's tool budget; over-budget matches come back in failed "+
+			"with reason visible_budget. Exposed tools stay available while they are used "+
+			"and are evicted after idle rounds or when the discovery budget is full.",
 		message.ToolProperty("query", "string",
 			"natural-language or keyword query describing the capability to find"),
 		message.ToolPropertyWithDefault("limit", "integer",

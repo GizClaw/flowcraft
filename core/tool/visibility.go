@@ -28,7 +28,9 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 	}
 
 	// Deterministic pruning order: exposure rank, RequiredByName,
-	// discovery-pool recency, then name.
+	// discovery-pool recency, then name. Same-round pool entries share
+	// a lastUse, so they fall back to discovery order — the first
+	// (best-ranked) hit of a tool_search batch wins the cut.
 	sort.SliceStable(visible, func(i, j int) bool {
 		return lessPriority(visible[i], visible[j], st)
 	})
@@ -41,7 +43,12 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 	for i, c := range visible {
 		size := definitionBytes(c.def)
 		if total+size > budget.MaxBytes && i > 0 {
-			break
+			// Skip the entry that does not fit instead of stopping:
+			// one oversized definition must not starve every
+			// smaller, lower-priority candidate behind it. The
+			// highest-priority entry is always kept, so a single
+			// oversized tool stays visible rather than dead-ending.
+			continue
 		}
 		total += size
 		kept = append(kept, c)
@@ -85,6 +92,12 @@ func lessPriority(a, b candidate, st stateSnapshot) bool {
 	if aOK && bOK {
 		if ad.lastUse != bd.lastUse {
 			return ad.lastUse > bd.lastUse
+		}
+		// Same round: a tool_search batch is ranked, so its better
+		// hits win the visible cut. Separate discoveries of the same
+		// round carry rank 0 and fall back to MRU order.
+		if ad.rank != bd.rank {
+			return ad.rank < bd.rank
 		}
 		if ad.seq != bd.seq {
 			return ad.seq > bd.seq

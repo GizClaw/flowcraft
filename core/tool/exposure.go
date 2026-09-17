@@ -85,21 +85,25 @@ var DefaultBudget = Budget{
 // remembers.
 type DiscoveryPolicy struct {
 	// MaxTools caps the number of pool entries. Zero falls back to
-	// DefaultDiscoveryPolicy.MaxTools.
+	// the assembly's effective Budget.MaxDefinitions, so the default
+	// pool is never wider than the visible set; set it explicitly to
+	// keep more tools loaded than one round can show.
 	MaxTools int `json:"max_tools,omitempty"`
 	// MaxBytes caps the total serialized definition size across pool
 	// entries, measured with definitionBytes. Zero falls back to the
-	// per-round DefaultBudget.MaxBytes, so the default pool fits the
-	// default visible set.
+	// assembly's effective Budget.MaxBytes, so the default pool fits
+	// the visible set; set it explicitly to keep a larger loaded cache.
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// IdleRounds evicts an entry that has not been used or refreshed
 	// within this many rounds. Zero falls back to 10.
 	IdleRounds int `json:"idle_rounds,omitempty"`
 }
 
-// DefaultDiscoveryPolicy returns the recommended discovery pool bounds:
-// the same size as the default per-round budget, with a 10-round idle
-// horizon.
+// DefaultDiscoveryPolicy returns the recommended discovery pool bounds
+// for hosts that keep the default per-round budget: the same size as
+// that budget, with a 10-round idle horizon. Discovery fields left unset
+// are normalized against the assembly's effective Policy.Budget instead,
+// so raising budget.* raises the pool with it.
 func DefaultDiscoveryPolicy() DiscoveryPolicy {
 	return DiscoveryPolicy{
 		MaxTools:   DefaultBudget.MaxDefinitions,
@@ -162,11 +166,14 @@ func normalizePolicy(p Policy) Policy {
 	if out.Budget.MaxBytes <= 0 {
 		out.Budget.MaxBytes = DefaultBudget.MaxBytes
 	}
+	// Discovery bounds track the effective visible budget when unset:
+	// the pool must not be wider than what a round can show, otherwise
+	// pooled tools silently fall out of the model's definitions.
 	if out.Discovery.MaxTools <= 0 {
-		out.Discovery.MaxTools = DefaultDiscoveryPolicy().MaxTools
+		out.Discovery.MaxTools = out.Budget.MaxDefinitions
 	}
 	if out.Discovery.MaxBytes <= 0 {
-		out.Discovery.MaxBytes = DefaultDiscoveryPolicy().MaxBytes
+		out.Discovery.MaxBytes = out.Budget.MaxBytes
 	}
 	if out.Discovery.IdleRounds <= 0 {
 		switch {

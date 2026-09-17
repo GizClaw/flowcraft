@@ -20,11 +20,15 @@ func newSessionState() *sessionState {
 
 // discoveredEntry tracks one tool in the discovery pool. lastUse is the
 // turn of the latest use/discovery refresh; seq breaks same-turn ties in
-// deterministic MRU order. bytes is the serialized definition size used
-// for budget accounting (re-measured from live definitions each round).
+// deterministic MRU order for pool eviction. rank is the entry's
+// position inside the batch that discovered it (0 = best-ranked hit),
+// which is the tie-break the per-round visible budget uses. bytes is the
+// serialized definition size used for budget accounting (re-measured
+// from live definitions each round).
 type discoveredEntry struct {
 	lastUse uint64
 	seq     uint64
+	rank    int
 	bytes   int64
 }
 
@@ -66,12 +70,14 @@ func (s *sessionState) require(names ...string) {
 }
 
 // touch inserts or refreshes one discovery pool entry as the most
-// recently used item, recording the current definition size.
-func (s *sessionState) touch(name string, size int64) {
+// recently used item, recording the current definition size and the
+// name's position in the discovering batch (0 for a single name).
+func (s *sessionState) touch(name string, size int64, rank int) {
 	s.seq++
 	s.discovered[name] = discoveredEntry{
 		lastUse: s.turn,
 		seq:     s.seq,
+		rank:    rank,
 		bytes:   size,
 	}
 }
