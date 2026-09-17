@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.3` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.3` - 2026-09-17
+
+### Changed
+
+- feat(core/message/media): publish xhigh and max as canonical image quality tiers — media.ImageQuality gains the two tiers the newest GPT image models accept (xhigh above high, max on top) and Validate accepts them, so a generate request can name them and reach the provider that serves the model; providers with no such tier keep reporting the field per request rather than failing core validation, with bytedance and minimax still dropping any quality value with a reason
 
 ## `core/v0.4.2` - 2026-09-17
 
