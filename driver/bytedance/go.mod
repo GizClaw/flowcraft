@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/bytedance
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.4.3
+	github.com/GizClaw/flowcraft/core v0.4.4
 	github.com/volcengine/volcengine-go-sdk v1.2.52
 )
 
