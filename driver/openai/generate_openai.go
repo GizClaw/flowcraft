@@ -130,7 +130,10 @@ func (r *responsesRequest) toolCall(callID, name string, args []byte) {
 func (r *responsesRequest) toolResult(callID string, content []contentPart) {
 	r.appendItem(responses.ResponseInputItemUnionParam{
 		OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-			CallID: callID,
+			// The SDK made call_id optional in v3.61; the driver always has
+			// one to echo, so it keeps sending the field rather than letting
+			// an empty id drop out of the body.
+			CallID: param.NewOpt(callID),
 			Output: functionCallOutputParam(content),
 		},
 	})

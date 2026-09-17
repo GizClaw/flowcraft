@@ -85,11 +85,23 @@ const (
 	ImageQualityMedium ImageQuality = "medium"
 	// ImageQualityHigh is the best quality tier.
 	ImageQualityHigh ImageQuality = "high"
+	// ImageQualityXHigh is the tier above high, published by the newest GPT
+	// image models. Models that do not publish it reject the value at the
+	// provider.
+	ImageQualityXHigh ImageQuality = "xhigh"
+	// ImageQualityMax is the top quality tier, published by the same models
+	// as ImageQualityXHigh.
+	ImageQualityMax ImageQuality = "max"
 )
 
 func (q ImageQuality) Validate() error {
 	switch q {
-	case ImageQualityAuto, ImageQualityLow, ImageQualityMedium, ImageQualityHigh:
+	case ImageQualityAuto,
+		ImageQualityLow,
+		ImageQualityMedium,
+		ImageQualityHigh,
+		ImageQualityXHigh,
+		ImageQualityMax:
 		return nil
 	default:
 		return fmt.Errorf("unknown image quality %q", q)

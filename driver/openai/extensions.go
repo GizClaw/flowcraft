@@ -36,8 +36,9 @@ type GenerateOptions struct {
 	// WebSearch attaches OpenAI's hosted web_search tool.
 	WebSearch *GenerateWebSearch `json:"web_search,omitempty"`
 	// ServiceTier selects the processing tier for this call: "auto",
-	// "default", "flex", "scale", or "priority". Empty keeps the provider
-	// default.
+	// "default", "flex", "scale", "priority", or "fast". "ultrafast" is
+	// Responses-only: Chat Completions has no such tier. Empty keeps the
+	// provider default (auto).
 	ServiceTier string `json:"service_tier,omitempty"`
 	// ParallelToolCalls allows the model to issue tool calls in parallel.
 	// Nil keeps the provider default (allowed).
@@ -235,7 +236,7 @@ func (o GenerateOptions) Validate() error {
 	}
 	if o.ServiceTier != "" && !validServiceTier(o.ServiceTier) {
 		return fmt.Errorf(
-			"service_tier %q is not one of auto/default/flex/scale/priority",
+			"service_tier %q is not one of auto/default/flex/scale/priority/fast/ultrafast",
 			o.ServiceTier,
 		)
 	}
@@ -375,11 +376,10 @@ type ImageOptions struct {
 	Provider string `json:"-"`
 	// Mask is an inline PNG whose fully transparent areas (alpha zero) mark
 	// where the first reference image should be edited (local inpainting).
-	// Deployment-routed endpoints (endpoint.routing "azure_deployment") apply
-	// the mask to the first reference image only, and it must be an inline
-	// PNG with the same dimensions as that image because images/edits
-	// uploads multipart files. Plain OpenAI endpoints reject the field at
-	// compile time.
+	// images/edits applies the mask to the first reference image only and
+	// uploads it as a multipart file, so the request needs at least one
+	// inline reference image, and the mask must be a PNG smaller than 4MB
+	// with the same dimensions as that image.
 	Mask *media.ImageSource `json:"mask,omitempty"`
 	// PartialImages sets the number of progress previews streamed before
 	// the final image when the request runs in the stream execution shape.
@@ -388,6 +388,25 @@ type ImageOptions struct {
 	// Nil keeps the provider default (0). It has no effect on the unary
 	// execution shape.
 	PartialImages *int `json:"partial_images,omitempty"`
+	// Background sets the transparency policy of the generated image(s):
+	// "transparent", "opaque", or "auto". Empty keeps the provider default
+	// (auto). Transparent backgrounds need an output format that carries
+	// alpha, so "transparent" rejects a jpeg output format.
+	Background string `json:"background,omitempty"`
+	// OutputCompression is the compression level (0-100) of webp and jpeg
+	// output. Nil keeps the provider default (100). The provider applies it
+	// to those two formats only, so the request must ask for one of them.
+	OutputCompression *int `json:"output_compression,omitempty"`
+	// InputFidelity controls how much effort the model spends matching the
+	// style and features of the input images: "high" or "low". Empty keeps
+	// the provider default (low). It rides images/edits, so the request
+	// needs at least one inline reference image.
+	InputFidelity string `json:"input_fidelity,omitempty"`
+	// Moderation selects the content-moderation level for the generated
+	// images: "low" for less restrictive filtering, or "auto". Empty keeps
+	// the provider default (auto). Only the generations body carries the
+	// field, so an edit request rejects it.
+	Moderation string `json:"moderation,omitempty"`
 }
 
 func (o ImageOptions) ProviderID() string  { return extensionProvider(o.Provider) }
@@ -400,6 +419,18 @@ func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 	}
 	if o.PartialImages != nil {
 		fields = append(fields, "partial_images")
+	}
+	if o.Background != "" {
+		fields = append(fields, "background")
+	}
+	if o.OutputCompression != nil {
+		fields = append(fields, "output_compression")
+	}
+	if o.InputFidelity != "" {
+		fields = append(fields, "input_fidelity")
+	}
+	if o.Moderation != "" {
+		fields = append(fields, "moderation")
 	}
 	return fields
 }
@@ -418,6 +449,32 @@ func (o ImageOptions) Validate() error {
 			)
 		}
 	}
+	if o.Background != "" && !validImageBackground(o.Background) {
+		return fmt.Errorf(
+			"background %q is not one of transparent/opaque/auto",
+			o.Background,
+		)
+	}
+	if compression := o.OutputCompression; compression != nil {
+		if *compression < 0 || *compression > 100 {
+			return fmt.Errorf(
+				"output_compression must be between 0 and 100, not %d",
+				*compression,
+			)
+		}
+	}
+	if o.InputFidelity != "" && !validImageInputFidelity(o.InputFidelity) {
+		return fmt.Errorf(
+			"input_fidelity %q is not high/low",
+			o.InputFidelity,
+		)
+	}
+	if o.Moderation != "" && !validImageModeration(o.Moderation) {
+		return fmt.Errorf(
+			"moderation %q is not low/auto",
+			o.Moderation,
+		)
+	}
 	return nil
 }
 
@@ -427,6 +484,7 @@ func (o ImageOptions) Clone() inference.Extension {
 		o.Mask = &mask
 	}
 	o.PartialImages = ptr.Clone(o.PartialImages)
+	o.OutputCompression = ptr.Clone(o.OutputCompression)
 	return o
 }
 
@@ -467,9 +525,12 @@ func (o TTSOptions) Clone() inference.Extension {
 }
 
 // validServiceTier reports whether value names a documented processing tier.
+// "ultrafast" is published by the Responses surface only; the compiler
+// rejects it on Chat Completions, so this check stays surface-agnostic for
+// the extension-level validation pass.
 func validServiceTier(value string) bool {
 	switch value {
-	case "auto", "default", "flex", "scale", "priority":
+	case "auto", "default", "flex", "scale", "priority", "fast", "ultrafast":
 		return true
 	default:
 		return false
@@ -480,6 +541,40 @@ func validServiceTier(value string) bool {
 func validVerbosity(value string) bool {
 	switch value {
 	case "low", "medium", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+// validImageBackground reports whether value names a documented
+// transparency policy. The provider also constrains which models accept
+// "transparent"; that part is left to the provider.
+func validImageBackground(value string) bool {
+	switch value {
+	case "transparent", "opaque", "auto":
+		return true
+	default:
+		return false
+	}
+}
+
+// validImageInputFidelity reports whether value names a documented edit
+// input fidelity.
+func validImageInputFidelity(value string) bool {
+	switch value {
+	case "high", "low":
+		return true
+	default:
+		return false
+	}
+}
+
+// validImageModeration reports whether value names a documented image
+// moderation level.
+func validImageModeration(value string) bool {
+	switch value {
+	case "low", "auto":
 		return true
 	default:
 		return false

@@ -37,7 +37,12 @@
 //     GenerateResponse.ProviderOutputs (never inside Message).
 //   - Generate ImageIntent: Images API (gpt-image models), unary + SSE
 //     stream with optional partial-image previews via
-//     ImageOptions.PartialImages.
+//     ImageOptions.PartialImages. Inline reference images route to
+//     images/edits, where ImageOptions.Mask adds local inpainting and
+//     ImageOptions.InputFidelity tunes how closely the model matches the
+//     input. ImageOptions.Background and ImageOptions.OutputCompression ride
+//     either body, subject to the output format they require, and
+//     ImageOptions.Moderation lowers the generation-side content filter.
 //   - Generate AudioIntent: speech API (gpt-4o-mini-tts and friends).
 //   - Embed: embeddings API (text-embedding-3 family).
 //

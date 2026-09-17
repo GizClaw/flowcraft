@@ -109,11 +109,9 @@ type dialect struct {
 	video      bool
 }
 
-// surfaceDialect is where requests go: which API family, and whether the path
-// addresses a deployment like Azure.
+// surfaceDialect is where requests go: which API family.
 type surfaceDialect struct {
-	api             apiMode
-	azureDeployment bool
+	api apiMode
 }
 
 // reasoningDialect is the reasoning contract this endpoint speaks: the
@@ -146,8 +144,7 @@ type chatDialect struct {
 func (s Spec) dialect() dialect {
 	return dialect{
 		surface: surfaceDialect{
-			api:             s.apiMode(),
-			azureDeployment: s.routing() == routingAzureDeployment,
+			api: s.apiMode(),
 		},
 		reasoning: reasoningDialect{
 			channel:       s.reasoningChannel(),

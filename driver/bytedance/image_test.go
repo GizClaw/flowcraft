@@ -225,26 +225,39 @@ func TestCompileImageBackgroundRejects(t *testing.T) {
 }
 
 func TestCompileImageQualityDrops(t *testing.T) {
-	request := compileImageRequest(
-		[]message.Part{message.TextPart{Text: "a red circle"}},
-		ImageOptions{},
-	)
-	request.Input.Content.Intent.Image.Quality = media.ImageQualityHigh
-	_, report, err := compileImageWire(t, request)
-	if err != nil {
-		t.Fatalf("compile: %v, want quality dropped with success", err)
-	}
-	found := false
-	for _, decision := range report.Decisions {
-		if decision.Field == inference.FieldGenerateIntentImageQuality &&
-			decision.Disposition == inference.Dropped &&
-			strings.Contains(decision.Reason, "no quality parameter") {
-			found = true
+	// Every canonical tier takes the same path: seedream has no quality
+	// parameter, so the field is dropped with a reason rather than rejected,
+	// whichever tier a newer canonical enum may add.
+	for _, quality := range []media.ImageQuality{
+		media.ImageQualityAuto,
+		media.ImageQualityLow,
+		media.ImageQualityMedium,
+		media.ImageQualityHigh,
+		media.ImageQualityXHigh,
+		media.ImageQualityMax,
+	} {
+		request := compileImageRequest(
+			[]message.Part{message.TextPart{Text: "a red circle"}},
+			ImageOptions{},
+		)
+		request.Input.Content.Intent.Image.Quality = quality
+		_, report, err := compileImageWire(t, request)
+		if err != nil {
+			t.Fatalf("quality %q: compile = %v, want quality dropped with success",
+				quality, err)
 		}
-	}
-	if !found {
-		t.Fatalf("report decisions = %+v, want quality dropped with reason",
-			report.Decisions)
+		found := false
+		for _, decision := range report.Decisions {
+			if decision.Field == inference.FieldGenerateIntentImageQuality &&
+				decision.Disposition == inference.Dropped &&
+				strings.Contains(decision.Reason, "no quality parameter") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("quality %q: report decisions = %+v, want quality dropped with reason",
+				quality, report.Decisions)
+		}
 	}
 }
 

@@ -157,6 +157,62 @@ func TestGenerateTuningChatGaps(t *testing.T) {
 	}
 }
 
+// TestGenerateServiceTiers pins the tiers the SDK publishes per surface:
+// "fast" and "ultrafast" are accepted, and "ultrafast" — which the Responses
+// enum gained in openai-go v3.61 while Chat Completions never had it — is
+// rejected on chat rather than sent as a value the surface cannot carry.
+func TestGenerateServiceTiers(t *testing.T) {
+	actives := func(options GenerateOptions) []inference.FieldID {
+		fields := make([]inference.FieldID, 0, len(options.ActiveFields()))
+		for _, field := range options.ActiveFields() {
+			fields = append(fields, field.Qualify(options))
+		}
+		return fields
+	}
+	for _, tier := range []string{"fast", "ultrafast"} {
+		options := GenerateOptions{ServiceTier: tier}
+		if err := options.Validate(); err != nil {
+			t.Fatalf("service_tier %q Validate: %v", tier, err)
+		}
+		entry := declarations["gpt-5.6-sol"]
+		ledger := inference.NewLedger(
+			model.OperationGenerate, providerID, actives(options))
+		request := newResponsesRequestFor("gpt-5.6-sol", entry)
+		compileGenerateTuningFor(request, options, entry, ledger)
+		if ledger.Rejected() {
+			t.Fatalf("responses service_tier %q rejected: %+v", tier, ledger.Report().Decisions)
+		}
+		if got := string(request.params.ServiceTier); got != tier {
+			t.Fatalf("responses service_tier = %q, want %q", got, tier)
+		}
+	}
+
+	for _, tc := range []struct {
+		tier string
+		want bool
+	}{
+		{tier: "fast", want: true},
+		{tier: "ultrafast", want: false},
+	} {
+		entry := declarations["gpt-5.6-sol"]
+		entry.dialect.surface.api = apiChat
+		options := GenerateOptions{ServiceTier: tc.tier}
+		ledger := inference.NewLedger(
+			model.OperationGenerate, providerID, actives(options))
+		request := newChatRequestFor("gpt-5.6-sol", entry, inference.GenerateExecutionUnary)
+		compileGenerateTuningFor(request, options, entry, ledger)
+		field := inference.ExtensionField("service_tier").Qualify(options)
+		if got := !ledger.Report().Rejects(field); got != tc.want {
+			t.Fatalf("chat service_tier %q accepted = %v, want %v: %+v",
+				tc.tier, got, tc.want, ledger.Report().Decisions)
+		}
+		if tc.want && string(request.params.ServiceTier) != tc.tier {
+			t.Fatalf("chat service_tier = %q, want %q",
+				request.params.ServiceTier, tc.tier)
+		}
+	}
+}
+
 // TestTruncationAndTimeout pin the two deployment-level additions: the
 // overflow policy rides the raw-JSON option path, and the timeout reaches the
 // HTTP client.
