@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.2` - 2026-09-17
+
+### Changed
+
+- fix(core/sandbox): unwrap cmd and PowerShell script wrappers — NormaliseExec replaces the POSIX-only unwrap with a shell-profile table (bare /c carrying exactly one plain-word script, and the exact -NoProfile -Command pair), so Windows shell-syntax commands normalise to the underlying program for allowlist matching and read-only auto-approval on every platform while pipes, redirections, quoting, abbreviated parameters, -EncodedCommand and profile-loading wrappers stay raw and approval-bound, pinned by accept/reject matrices and differential witnesses that run the claimed tokens through a real sh and a real cmd; fix(core): bump google.golang.org/grpc to v1.83.2 past GO-2026-6348 (heap memory exhaustion via HTTP/2 DATA frame fragmentation) and its GO-2026-6443 successor, raising workspace floors for go.opentelemetry.io/otel v1.44.0, golang.org/x/net v0.58.0, x/sys v0.47.0, x/sync v0.22.0, x/text v0.41.0 and genproto 20260526163538
 
 ## `core/v0.4.1` - 2026-09-15
 
