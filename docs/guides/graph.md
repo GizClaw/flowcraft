@@ -222,10 +222,10 @@ Behavior:
   one configured target carries it; an unknown, malformed, or ambiguous
   hint falls back to the default selection. The hinted model is tried
   first; if it fails (or its declared output kinds cannot serve the
-  request), fallback continues from the head of the declared order,
-  skipping targets whose declared outputs cannot serve the request and
-  never re-attempting the hint. Hints match by provider + model name —
-  profiles are not part of a hint.
+  request), fallback continues through the declared order with the hinted
+  target omitted, skipping any target whose declared outputs cannot serve
+  the request and never re-attempting the hint. Hints match by provider +
+  model name — profiles are not part of a hint.
 - `intent` is the authoritative execution envelope and covers every
   generation modality: text controls (`response`, `max_output_tokens`,
   `tools`, `tool_choice`, `temperature`, `top_p`, `reasoning_enabled`,

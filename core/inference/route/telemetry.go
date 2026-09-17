@@ -105,6 +105,12 @@ func recordRoute(
 				attribute.String("circuit_transition", attempt.CircuitTransition),
 			)
 		}
+		if attempt.SkipReason != "" {
+			attrs = append(
+				attrs,
+				attribute.String("skip_reason", attempt.SkipReason),
+			)
+		}
 		if attempt.WireAttempts > 0 {
 			attrs = append(attrs, attribute.Int("wire_attempts", attempt.WireAttempts))
 		}

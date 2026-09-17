@@ -101,10 +101,10 @@ func (r *policyRoute) selectTarget() (Decision, error) {
 // order for the hint. The effective order places the hinted target first and
 // keeps every other target in declared order, so a hint elevates one model
 // without replacing the default chain: when the hinted target fails, fallback
-// restarts at the head of the declared order instead of continuing past the
-// hint's position. An attempt target that never came from this policy — a
-// custom selector mixed with the policy fallback — stops fallback instead of
-// guessing.
+// continues through the declared order with the hinted target omitted instead
+// of continuing past the hint's declared position. An attempt target that
+// never came from this policy — a custom selector mixed with the policy
+// fallback — stops fallback instead of guessing.
 func (r *policyRoute) nextTarget(
 	hint string,
 	attempt Attempt,
@@ -123,8 +123,10 @@ func (r *policyRoute) nextTarget(
 // preflight rejection on one target does not hand the request to an
 // incompatible one. Targets with undeclared outputs stay compatible, exactly
 // as in selection. The walk stays inside the effective fallback order, so
-// hint elevation and the never-revisit rule are unchanged.
+// hint elevation and the never-revisit rule are unchanged. Each dismissed
+// candidate is reported to the run's trace sink.
 func (r *policyRoute) nextGenerateTarget(
+	ctx context.Context,
 	hint string,
 	request inference.GenerateRequest,
 	attempt Attempt,
@@ -140,6 +142,7 @@ func (r *policyRoute) nextGenerateTarget(
 			return model.ModelRef{}, false, err
 		}
 		if !supported {
+			recordPolicySkip(ctx, target.model, AttemptSkipOutputCapability)
 			continue
 		}
 		return target.model, true, nil
@@ -308,11 +311,11 @@ func (r *policyRoute) supportsOutputs(
 }
 
 func (r *policyRoute) NextGenerate(
-	_ context.Context,
+	ctx context.Context,
 	request inference.GenerateRequest,
 	attempt Attempt,
 ) (model.ModelRef, bool, error) {
-	return r.nextGenerateTarget(request.ModelHint, request, attempt)
+	return r.nextGenerateTarget(ctx, request.ModelHint, request, attempt)
 }
 
 func (r *policyRoute) SelectEmbed(

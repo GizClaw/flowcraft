@@ -102,6 +102,10 @@ const (
 	AttemptOutcomeSkipped   AttemptOutcome = "skipped"
 )
 
+// AttemptSkipOutputCapability is the SkipReason recorded for a fallback
+// candidate whose declared outputs cannot serve the request intent.
+const AttemptSkipOutputCapability = "output_capability"
+
 // Attempt records only observable route facts. In particular, an opened
 // stream is not reported as completed because its events belong to the caller.
 type Attempt struct {
@@ -123,6 +127,10 @@ type Attempt struct {
 	// CircuitTransition records a circuit state change caused by this
 	// attempt ("open" or "closed"), empty when the state did not change.
 	CircuitTransition string `json:"circuit_transition,omitempty"`
+	// SkipReason names why a skipped candidate was not attempted. It is set
+	// for capability skips (AttemptSkipOutputCapability); circuit-open skips
+	// leave it empty and report the breaker state in Circuit.
+	SkipReason string `json:"skip_reason,omitempty"`
 	// WireAttempts records the provider-reported HTTP sends inside this
 	// logical attempt when the provider propagates the count.
 	WireAttempts int `json:"wire_attempts,omitempty"`
@@ -148,6 +156,27 @@ func (t Trace) Clone() Trace {
 	t.Fallbacks = append([]FallbackHop(nil), t.Fallbacks...)
 	t.Attempts = append([]Attempt(nil), t.Attempts...)
 	return t
+}
+
+// policySkipRecorder is the per-run sink a fallback policy reports dismissed
+// candidates through. The router binds one into the request context so a
+// candidate the policy passes over lands in the trace even though it never
+// becomes an attempt.
+type policySkipRecorder func(target model.ModelRef, reason string)
+
+type policySkipRecorderKey struct{}
+
+func withPolicySkipRecorder(ctx context.Context, record policySkipRecorder) context.Context {
+	return context.WithValue(ctx, policySkipRecorderKey{}, record)
+}
+
+// recordPolicySkip reports one dismissed candidate to the run's sink. It is a
+// no-op when no recorder is bound, so policies stay usable outside the router.
+func recordPolicySkip(ctx context.Context, target model.ModelRef, reason string) {
+	record, _ := ctx.Value(policySkipRecorderKey{}).(policySkipRecorder)
+	if record != nil {
+		record(target, reason)
+	}
 }
 
 // Router composes operation-specific selectors above an exact-target inference
@@ -350,6 +379,17 @@ func runAttempts[Req any, Result any](
 	skipPhase := plan.phase
 	if plan.prepare != nil {
 		skipPhase = AttemptPhasePreflight
+	}
+	// A fallback policy that dismisses a candidate (capability skip) reports
+	// it through this sink, in the phase the skipped attempt would have run,
+	// so the trace explains why a target was passed over.
+	if plan.fallbackNext != nil {
+		ctx = withPolicySkipRecorder(ctx, func(target model.ModelRef, reason string) {
+			trace.Attempts = append(trace.Attempts, Attempt{
+				Target: target, Phase: skipPhase, Trigger: AttemptTriggerFallback,
+				Outcome: AttemptOutcomeSkipped, SkipReason: reason,
+			})
+		})
 	}
 	var lastErr error
 	totalAttempts := 0

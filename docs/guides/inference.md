@@ -28,10 +28,10 @@ model := model.ModelRef{
 ```
 
 The runtime never picks or replaces a model. Optional routing is provided by
-`core/inference/route`. Routing consults the providers' declared model
-capabilities on both the selection and the fallback path: targets whose
-declared output kinds cannot serve the request intent are skipped, while
-models with undeclared capabilities are treated as undeclared (not
+`core/inference/route`. Generate routing consults the providers' declared
+model capabilities on both the selection and the fallback path: targets
+whose declared output kinds cannot serve the request intent are skipped,
+while models with undeclared capabilities are treated as undeclared (not
 unsupported) — preflight remains the final arbiter for those.
 
 ## Deployment config
@@ -258,22 +258,24 @@ exact `model` targets plus optional normalized `score` signals
 (`quality` / `economy` / `speed` / `reliability`, all in `[0, 1]`).
 Scores guide selection only; they never claim a request is executable.
 
-- Route routing is capability-aware on both the selection and the fallback
-  path: targets whose declared output kinds cannot serve the request intent
-  are skipped, while targets with undeclared capabilities are treated as
-  undeclared (not unsupported) — preflight remains the final arbiter. A
-  fallback that finds no compatible target left stops and surfaces the
-  failed attempt's error instead of trying an incompatible target.
+- Generate routing is capability-aware on both the selection and the
+  fallback path: targets whose declared output kinds cannot serve the
+  request intent are skipped, while targets with undeclared capabilities
+  are treated as undeclared (not unsupported) — preflight remains the final
+  arbiter. A fallback that finds no compatible target left stops and
+  surfaces the failed attempt's error instead of trying an incompatible
+  target; candidates the fallback dismisses are recorded in the trace as
+  skipped attempts (`skip_reason: output_capability`).
 - Generate selection honors an optional per-call `model_hint` on the
   request (`provider/name`, or a bare name when exactly one configured
   target carries it). The hint is a preference, not a bypass: a hinted
   target that is absent, unknown, malformed, ambiguous, or whose declared
   output kinds cannot serve the request is skipped, and selection falls
   back to the default policy. When the hinted target is chosen but fails
-  at runtime, fallback restarts at the head of the declared order and
-  skips targets whose declared output kinds cannot serve the request —
-  the hinted model is tried first and the rest of the chain keeps its
-  normal sequence, never re-attempting the failed hint. The hint matches by
+  at runtime, fallback continues through the declared order with the hinted
+  target omitted, so the rest of the chain keeps its normal sequence and
+  the failed hint is never re-attempted; targets whose declared output
+  kinds cannot serve the request are skipped on the way. The hint matches by
   provider + model name only; credential profiles are not part of the
   hint, so a model configured under several profiles cannot be
   distinguished per call (the deployment's configured profile stays
