@@ -29,7 +29,11 @@ type Session interface {
 	// swept after idle rounds. A discovered tool must be loaded before
 	// the next Definitions call, otherwise the model would see its
 	// placeholder schema — tool_search loads each name before
-	// discovering it.
+	// discovering it. Names are ranked: the first one wins when a
+	// same-round tie is pruned. DiscoverResult.Exposed reports whether
+	// the name will actually appear in the next Definitions call, so a
+	// pooled tool that loses the per-round budget comes back with
+	// Reason "visible_budget" instead of a false positive.
 	Discover(names ...string) DiscoverOutcome
 	// RecordCall records that the model called name this round,
 	// refreshing its discovery-pool recency. Always and Hidden tools
@@ -57,11 +61,15 @@ type Session interface {
 	EnsureLoaded(ctx context.Context, names ...string) error
 }
 
-// DiscoverResult reports one tool's discovery-pool outcome.
+// DiscoverResult reports one tool's discovery outcome.
 type DiscoverResult struct {
-	Name    string `json:"name"`
-	Exposed bool   `json:"exposed"`
-	Reason  string `json:"reason,omitempty"` // "unknown" | "not_discoverable" | "over_budget"
+	Name string `json:"name"`
+	// Exposed reports whether the tool will appear in the next
+	// Definitions call: pooled and within the per-round budget.
+	Exposed bool `json:"exposed"`
+	// Reason explains a name that is not exposed:
+	// "unknown" | "not_discoverable" | "over_budget" | "visible_budget".
+	Reason string `json:"reason,omitempty"`
 }
 
 // DiscoverOutcome summarizes one Discover call.
@@ -94,6 +102,19 @@ func (s *dynamicSession) Definitions() []message.ToolDefinition {
 	st := s.st.snapshot()
 	s.mu.Unlock()
 
+	visible := s.visibleSet(policy, st)
+	out := make([]message.ToolDefinition, 0, len(visible))
+	for _, cand := range visible {
+		out = append(out, cand.def)
+	}
+	return out
+}
+
+// visibleSet computes the candidates that reach the model for one state
+// and policy, applying the discovery pool cap and the per-round budget.
+// Definitions() and Discover() share it so the exposure report can never
+// drift from the definitions that are actually sent.
+func (s *dynamicSession) visibleSet(policy Policy, st stateSnapshot) []candidate {
 	all := s.catalog.Definitions()
 	sizes := make(map[string]int64, len(all))
 	cands := make([]candidate, 0, len(all))
@@ -107,12 +128,7 @@ func (s *dynamicSession) Definitions() []message.ToolDefinition {
 	}
 	st = fitDiscoveryPool(st, sizes, policy.Discovery)
 
-	visible := visibleCandidates(cands, st, policy)
-	out := make([]message.ToolDefinition, 0, len(visible))
-	for _, cand := range visible {
-		out = append(out, cand.def)
-	}
-	return out
+	return visibleCandidates(cands, st, policy)
 }
 
 // fitDiscoveryPool restricts the snapshot's discovered set to the pool
@@ -177,6 +193,7 @@ func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
 
 	reasons := make(map[string]string, len(names))
 	changed := false
+	rank := 0
 	for _, name := range names {
 		t, ok := s.catalog.Get(name)
 		if !ok {
@@ -189,7 +206,10 @@ func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
 			reasons[name] = "not_discoverable"
 			continue
 		}
-		s.st.touch(name, definitionBytes(t.Definition()))
+		// names is ranked: rank 0 is the best hit, and the per-round
+		// visible budget keeps the smaller ranks when it has to cut.
+		s.st.touch(name, definitionBytes(t.Definition()), rank)
+		rank++
 		changed = true
 	}
 
@@ -197,16 +217,29 @@ func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
 	if changed {
 		evicted = s.evictForFitLocked()
 	}
+	// Report what the next Definitions call will send, not just what the
+	// pool remembers: a freshly discovered name that loses the per-round
+	// budget must not be announced as exposed.
+	var visible map[string]struct{}
+	if changed {
+		visible = make(map[string]struct{})
+		for _, cand := range s.visibleSet(s.policy, s.st.snapshot()) {
+			visible[cand.name] = struct{}{}
+		}
+	}
 	results := make([]DiscoverResult, 0, len(names))
 	for _, name := range names {
-		_, present := s.st.discovered[name]
-		result := DiscoverResult{Name: name, Exposed: present}
-		if !present {
-			if reason, ok := reasons[name]; ok {
-				result.Reason = reason
-			} else {
-				result.Reason = "over_budget"
-			}
+		result := DiscoverResult{Name: name}
+		if reason := reasons[name]; reason != "" {
+			// Unknown or undiscoverable names keep their own reason
+			// even when an older pool entry still exists.
+			result.Reason = reason
+		} else if _, present := s.st.discovered[name]; !present {
+			result.Reason = "over_budget"
+		} else if _, ok := visible[name]; !ok {
+			result.Reason = "visible_budget"
+		} else {
+			result.Exposed = true
 		}
 		results = append(results, result)
 	}
@@ -274,7 +307,7 @@ func (s *dynamicSession) RecordCall(call message.ToolCall) {
 	if !ok {
 		return
 	}
-	s.st.touch(call.Name, definitionBytes(t.Definition()))
+	s.st.touch(call.Name, definitionBytes(t.Definition()), 0)
 	s.evictForFitLocked()
 }
 

@@ -3,6 +3,7 @@ package tool_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -288,5 +289,189 @@ func TestSearchTool_ReportsLoadFailures(t *testing.T) {
 	}
 	if contains(definitionNames(session.Definitions()), "broken") {
 		t.Fatal("failed lazy tool must not be exposed")
+	}
+}
+
+// definitionSize mirrors tool.definitionBytes so a test can size a tool
+// exactly.
+func definitionSize(d message.ToolDefinition) int {
+	return len(d.Name) + len(d.Description) + len(d.InputSchema) + 32
+}
+
+// sizedFuncTool builds a tool whose serialized definition is size bytes.
+func sizedFuncTool(name string, size int) tool.Tool {
+	const schema = `{"type":"object"}`
+	pad := size - len(name) - len(schema) - 32
+	if pad < 0 {
+		panic("sizedFuncTool: size too small for " + name)
+	}
+	return tooltest.FuncTool(name, strings.Repeat("x", pad),
+		func(context.Context, string) (string, error) { return name, nil })
+}
+
+// TestDynamicSession_DiscoverReportsPerRoundVisibility pins the contract
+// from issue #558: Discover may only report a name as exposed when the
+// next Definitions call really sends it. The byte numbers mirror the
+// host that reported the trap.
+func TestDynamicSession_DiscoverReportsPerRoundVisibility(t *testing.T) {
+	const alwaysBytes = 11260 // always-visible baseline, incl. tool_search
+	order := []string{
+		"generate_video", "generate_image", "mcp_0", "mcp_1",
+		"mcp_2", "mcp_3", "create_agent", "web_fetch",
+	}
+	sizes := map[string]int{
+		"generate_video": 2724,
+		"generate_image": 2439,
+		"mcp_0":          985,
+		"mcp_1":          985,
+		"mcp_2":          985,
+		"mcp_3":          984,
+		"create_agent":   1450,
+		"web_fetch":      773,
+	}
+
+	exposures := make(map[string]tool.Exposure, 15)
+	tools := make([]tool.Tool, 0, 15+len(order))
+	baseTotal := alwaysBytes - definitionSize(tool.NewSearchTool().Definition())
+	baseEach := baseTotal / 15
+	for i := 0; i < 15; i++ {
+		size := baseEach
+		if i == 14 {
+			size = baseTotal - baseEach*14
+		}
+		name := fmt.Sprintf("base_%02d", i)
+		exposures[name] = tool.ExposureAlways
+		tools = append(tools, sizedFuncTool(name, size))
+	}
+	for _, name := range order {
+		tools = append(tools, sizedFuncTool(name, sizes[name]))
+	}
+
+	assembly, err := tool.NewAssembly(
+		[]tool.Source{source{tools: tools}},
+		tool.WithDynamic(tool.Policy{
+			Default:   tool.ExposureDeferred,
+			Exposures: exposures,
+			Budget:    tool.DefaultBudget,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	session := assembly.NewSession()
+	outcome := session.Discover(order...)
+
+	visible := make(map[string]bool)
+	for _, def := range session.Definitions() {
+		visible[def.Name] = true
+	}
+	var dropped []string
+	for _, r := range outcome.Results {
+		switch {
+		case r.Exposed && !visible[r.Name]:
+			t.Errorf("%s reported exposed but Definitions() drops it", r.Name)
+		case !r.Exposed && visible[r.Name]:
+			t.Errorf("%s reported %q but Definitions() sends it", r.Name, r.Reason)
+		case !r.Exposed && r.Reason == "":
+			t.Errorf("%s is not exposed without a reason", r.Name)
+		}
+		if !r.Exposed {
+			dropped = append(dropped, r.Name+":"+r.Reason)
+		}
+	}
+	if len(dropped) == 0 {
+		t.Fatalf("setup no longer exercises the visible budget: %+v", outcome.Results)
+	}
+	// The first hit is the best-ranked one: it must survive the cut.
+	if !visible["generate_video"] {
+		t.Errorf("best-ranked hit lost the visible budget: dropped %v", dropped)
+	}
+	for _, want := range dropped {
+		if !strings.HasSuffix(want, ":visible_budget") {
+			t.Errorf("dropped %s without the visible_budget reason", want)
+		}
+	}
+	t.Logf("dropped %v", dropped)
+}
+
+// TestSearchTool_ReportsVisibleBudgetHits checks the model-facing
+// payload: a hit that is pooled but loses the per-round budget comes
+// back under failed with reason visible_budget instead of being listed
+// as exposed.
+func TestSearchTool_ReportsVisibleBudgetHits(t *testing.T) {
+	const budgetBytes = 4096
+	searchBytes := definitionSize(tool.NewSearchTool().Definition())
+	tools := []tool.Tool{
+		sizedFuncTool("base", budgetBytes-searchBytes-800),
+		sizedFuncTool("aaa_hit", 700),
+		sizedFuncTool("bbb_hit", 700),
+	}
+	assembly, err := tool.NewAssembly(
+		[]tool.Source{source{tools: tools}},
+		tool.WithDynamic(tool.Policy{
+			Default:   tool.ExposureDeferred,
+			Exposures: map[string]tool.Exposure{"base": tool.ExposureAlways},
+			Budget:    tool.Budget{MaxDefinitions: 8, MaxBytes: budgetBytes},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	session := assembly.NewSession()
+	ctx := tool.WithSession(context.Background(), session)
+	search, _ := assembly.Catalog().Get(tool.ToolName)
+	out, err := search.Execute(ctx, `{"query":"hit"}`)
+	if err != nil {
+		t.Fatalf("Execute tool_search: %v", err)
+	}
+	rendered := jsonOf(t, out)
+	if !strings.Contains(rendered, `"exposed":["aaa_hit"]`) {
+		t.Fatalf("tool_search output = %s, want only aaa_hit exposed", rendered)
+	}
+	if !strings.Contains(rendered, `{"name":"bbb_hit","reason":"visible_budget"}`) {
+		t.Fatalf("tool_search output = %s, want bbb_hit reported as visible_budget", rendered)
+	}
+	names := definitionNames(session.Definitions())
+	if !contains(names, "aaa_hit") || contains(names, "bbb_hit") {
+		t.Fatalf("Definitions = %v, want aaa_hit only", names)
+	}
+}
+
+// TestDynamicSession_DiscoveryDefaultsFollowVisibleBudget keeps the two
+// budgets aligned: a host that raises only budget.* must not keep a pool
+// stuck at DefaultBudget, which silently withheld discovered tools.
+func TestDynamicSession_DiscoveryDefaultsFollowVisibleBudget(t *testing.T) {
+	const (
+		count    = 20
+		toolSize = 2048 // 40 KiB total: fits a 64 KiB budget, not the 16 KiB default
+	)
+	tools := make([]tool.Tool, 0, count)
+	names := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		name := fmt.Sprintf("mcp_%02d", i)
+		names = append(names, name)
+		tools = append(tools, sizedFuncTool(name, toolSize))
+	}
+
+	assembly, err := tool.NewAssembly(
+		[]tool.Source{source{tools: tools}},
+		tool.WithDynamic(tool.Policy{
+			Default: tool.ExposureDeferred,
+			Budget:  tool.Budget{MaxDefinitions: 64, MaxBytes: 64 * 1024},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	session := assembly.NewSession()
+	outcome := session.Discover(names...)
+	if len(outcome.Evicted) != 0 {
+		t.Fatalf("evicted %v, want the pool to follow budget.max_bytes", outcome.Evicted)
+	}
+	visible := definitionNames(session.Definitions())
+	for _, name := range names {
+		if !contains(visible, name) {
+			t.Fatalf("%s missing from Definitions = %v", name, visible)
+		}
 	}
 }

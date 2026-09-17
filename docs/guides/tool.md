@@ -73,15 +73,22 @@ resources:
 `tool_search` is the discovery tool: a query plus an optional limit.
 Matching tools are loaded and added to the session's discovery pool
 automatically (no `select` step), and their real schemas become visible
-from the next round. Pool entries stay visible while they are used:
-every executed call refreshes the entry, idle entries are evicted after
+from the next round, subject to the per-round `budget`. The result
+reports only what will actually be sent: a hit that loses the per-round
+budget is not listed in `exposed`, it comes back under `failed` with
+reason `visible_budget`. Hits are ranked, so a batch's first (best) hit
+wins when the budget cuts the set, and an oversized definition is
+skipped instead of truncating everything behind it.
+
+Pool entries stay visible while they are used: every executed call
+refreshes the entry, idle entries are evicted after
 `discovery.idle_rounds`, and the pool never exceeds
-`discovery.max_tools` / `discovery.max_bytes` — the per-round
-`budget` still caps what is actually sent to the model each turn.
-`discovery.max_bytes` is independent of `budget.max_bytes`; raising it
-above the per-round budget keeps lower-priority entries as a loaded
-cache that costs no tokens; they return to the visible set when used or
-re-searched.
+`discovery.max_tools` / `discovery.max_bytes`. Those two bounds default
+to the effective `budget.max_definitions` / `budget.max_bytes`, so
+raising `budget.*` raises the pool with it; set them explicitly to keep
+a different pool size. A pool kept larger than the per-round budget acts
+as a loaded cache that costs no tokens: those entries return to the
+visible set when used or re-searched.
 `tool_search` must stay `always`; a different exposure is rejected at
 assembly build time. The legacy `selected_retention` and `recent_window`
 policy keys are deprecated and only seed `discovery.idle_rounds` when it
