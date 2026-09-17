@@ -38,7 +38,9 @@ type imageRaw struct {
 	requestID string
 }
 
-// imageAspectRatios are the ratios image_generation accepts.
+// imageAspectRatios are the ratios image_generation accepts. They ride the
+// ImageOptions extension: the canonical intent shapes images by explicit
+// size only, and the ratio is the same axis at a lower precision.
 var imageAspectRatios = map[string]bool{
 	"1:1": true, "16:9": true, "4:3": true, "3:2": true,
 	"2:3": true, "3:4": true, "9:16": true, "21:9": true,
@@ -147,16 +149,6 @@ func compileImage(
 					wire.height = size.Height
 				}
 			}
-			if ratio := string(image.AspectRatio); ratio != "" {
-				if !imageAspectRatios[ratio] {
-					ledger.Reject(
-						inference.FieldGenerateIntentImageAspectRatio,
-						fmt.Sprintf("minimax image aspect ratios are 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9, not %q", ratio),
-					)
-				} else {
-					wire.aspectRatio = ratio
-				}
-			}
 			if image.Count != nil {
 				if *image.Count > 9 {
 					ledger.Reject(
@@ -188,13 +180,49 @@ func compileImage(
 				)
 			}
 		}
-		ledger.RejectExtensions("image generation", request.Extensions)
+		options, other := inference.ExtensionFor[ImageOptions](request.Extensions)
+		compileImageOptions(&wire, options, intent.Image, ledger)
+		ledger.RejectExtensions("image generation", other)
 
 		report := ledger.Report()
 		if ledger.Rejected() {
 			return inference.Compiled[imageWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[imageWire]{Wire: wire, Report: report}, nil
+	}
+}
+
+// compileImageOptions lowers ImageOptions onto the wire. Settings that
+// collide with canonical intent fields are rejected instead of overriding:
+// the canonical channel stays the single source of truth for what it covers.
+func compileImageOptions(
+	wire *imageWire,
+	options ImageOptions,
+	image *inference.ImageIntent,
+	ledger *inference.Ledger,
+) {
+	if options.AspectRatio == "" {
+		return
+	}
+	field := func(name string) inference.FieldID {
+		return inference.ExtensionField(name).Qualify(options)
+	}
+	switch {
+	case image != nil && image.Size != nil:
+		ledger.Reject(
+			field("aspect_ratio"),
+			"the canonical size intent already selects dimensions",
+		)
+	case !imageAspectRatios[options.AspectRatio]:
+		ledger.Reject(
+			field("aspect_ratio"),
+			fmt.Sprintf(
+				"minimax image aspect ratios are 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9, not %q",
+				options.AspectRatio,
+			),
+		)
+	default:
+		wire.aspectRatio = options.AspectRatio
 	}
 }
 

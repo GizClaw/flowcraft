@@ -26,6 +26,8 @@ const providerID = "minimax"
 
 const extensionMusic = "music_options"
 
+const extensionImage = "image_options"
+
 const extensionVideo = "video_options"
 
 const extensionContextIR = "context_ir_options"
@@ -216,3 +218,42 @@ func (o ContextIROptions) Clone() inference.Extension {
 	o.DurationMillis = ptr.Clone(o.DurationMillis)
 	return o
 }
+
+// ImageOptions carries image_generation settings beyond the canonical image
+// intent. The API can shape the canvas by aspect ratio and let the provider
+// pick the pixel size, which explicit canonical dimensions cannot express;
+// the ratio is the same shape axis as the canonical size, so the two may not
+// be combined.
+type ImageOptions struct {
+	// Provider targets a deployment provider ID other than "minimax".
+	// Attempts for any other provider leave the extension inert rather
+	// than rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// AspectRatio pins the output shape instead of its dimensions:
+	// 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9. Conflicts with a canonical
+	// image size.
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+}
+
+func (o ImageOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o ImageOptions) ExtensionID() string { return extensionImage }
+
+func (o ImageOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.AspectRatio != "" {
+		fields = append(fields, "aspect_ratio")
+	}
+	return fields
+}
+
+func (o ImageOptions) Validate() error {
+	if o.AspectRatio != "" && !imageAspectRatios[o.AspectRatio] {
+		return fmt.Errorf(
+			"aspect_ratio must be one of 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9, not %q",
+			o.AspectRatio,
+		)
+	}
+	return nil
+}
+
+func (o ImageOptions) Clone() inference.Extension { return o }

@@ -79,6 +79,9 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			extensionMusic: inference.ExtensionDecoderFor(func() *MusicOptions {
 				return &MusicOptions{Provider: settings.ID}
 			}),
+			extensionImage: inference.ExtensionDecoderFor(func() *ImageOptions {
+				return &ImageOptions{Provider: settings.ID}
+			}),
 			extensionVideo: inference.ExtensionDecoderFor(func() *VideoOptions {
 				return &VideoOptions{Provider: settings.ID}
 			}),

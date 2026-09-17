@@ -102,6 +102,38 @@ func TestProviderCarriesMusicOptionsDecoder(t *testing.T) {
 	}
 }
 
+func TestProviderCarriesImageOptionsDecoder(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "minimax",
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	decoder, ok := provider.ExtensionDecoders[extensionImage]
+	if !ok {
+		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionImage)
+	}
+
+	extensions, err := inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "minimax",
+		ID:       extensionImage,
+		Fields:   json.RawMessage(`{"aspect_ratio":"21:9"}`),
+	}}, map[string]inference.ExtensionDecoder{
+		"minimax/" + extensionImage: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	options := extensions[0].(*ImageOptions)
+	if options.ProviderID() != "minimax" || options.AspectRatio != "21:9" {
+		t.Fatalf("decoded options = %#v", options)
+	}
+}
+
 func TestProviderCarriesVideoOptionsDecoder(t *testing.T) {
 	value, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{

@@ -199,12 +199,6 @@ func compileImage(modelName string) inference.GenerateCompiler[*imageRequest] {
 					)
 				}
 			}
-			if image.AspectRatio != "" {
-				ledger.Reject(
-					inference.FieldGenerateIntentImageAspectRatio,
-					"the images API has no aspect-ratio parameter; give an explicit size",
-				)
-			}
 			if image.Count != nil {
 				compiled.params.N = param.NewOpt(int64(*image.Count))
 			}

@@ -41,7 +41,6 @@ const (
 	FieldGenerateIntentImageSize             FieldID = "generate.input.content.intent.image.size"
 	FieldGenerateIntentImageSizeWidth        FieldID = "generate.input.content.intent.image.size.width"
 	FieldGenerateIntentImageSizeHeight       FieldID = "generate.input.content.intent.image.size.height"
-	FieldGenerateIntentImageAspectRatio      FieldID = "generate.input.content.intent.image.aspect_ratio"
 	FieldGenerateIntentImageCount            FieldID = "generate.input.content.intent.image.count"
 	FieldGenerateIntentImageSeed             FieldID = "generate.input.content.intent.image.seed"
 	FieldGenerateIntentImageOutputFormat     FieldID = "generate.input.content.intent.image.output_format"
