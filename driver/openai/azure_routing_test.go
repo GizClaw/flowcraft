@@ -100,7 +100,6 @@ func TestAzureRoutingChatRewritesDeploymentPath(t *testing.T) {
 	defer server.Close()
 
 	wire := chatWire()
-	wire.surface.azureDeployment = true
 	request, err := compileChatFor(
 		"gpt-5.6-sol", testTargetWith("gpt-5.6-sol", wire),
 	)(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
@@ -139,7 +138,6 @@ func TestAzureRoutingResponsesPath(t *testing.T) {
 	defer server.Close()
 
 	entry := declarations["gpt-5.6-sol"]
-	entry.dialect.surface.azureDeployment = true
 	compiled, err := compileResponsesFor("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -190,7 +188,7 @@ func TestAzureRoutingImageEditRewritesDeploymentPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewImageBytes: %v", err)
 	}
-	compiled, err := compileImage("gpt-image-2", true)(
+	compiled, err := compileImage("gpt-image-2")(
 		context.Background(),
 		openaiModel("gpt-image-2"),
 		inference.GenerateRequest{
@@ -242,7 +240,6 @@ func TestAzureRoutingHonorsConfiguredAPIVersion(t *testing.T) {
 	defer server.Close()
 
 	wire := chatWire()
-	wire.surface.azureDeployment = true
 	request, err := compileChatFor(
 		"gpt-5.6-sol", testTargetWith("gpt-5.6-sol", wire),
 	)(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)

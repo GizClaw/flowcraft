@@ -491,7 +491,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileImage("gpt-image-2", false),
+		Compile: compileImage("gpt-image-2"),
 		AssertWire: func(t *testing.T, request *imageRequest) {
 			if request.params.Model != "gpt-image-2" ||
 				request.params.Prompt != "draw a rocket" {

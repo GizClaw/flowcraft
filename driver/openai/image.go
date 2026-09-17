@@ -26,7 +26,8 @@ import (
 // Image generation runs on the images endpoint (gpt-image). Text-only
 // requests go to images/generations; requests that carry inline reference
 // images go to images/edits, which uploads the bytes as multipart files
-// (the official gpt-image-2 editing surface). URL-sourced reference images
+// (the official gpt-image-2 editing surface). A mask rides the same multipart
+// body, so inpainting needs no other endpoint. URL-sourced reference images
 // have no upload channel — callers must materialize them inline. gpt-image
 // always returns base64 payloads, so URL delivery has no native channel and
 // is rejected.
@@ -45,8 +46,8 @@ type imageRequest struct {
 	// images are inline reference images; empty means a text-only generation.
 	images []imageUpload
 	// mask is an inline PNG whose transparent areas mark where the first
-	// reference image should be edited. Deployment-routed endpoints accept
-	// it; plain OpenAI endpoints reject it at compile time.
+	// reference image should be edited. It rides the images/edits multipart
+	// body alongside that image.
 	mask imageUpload
 }
 
@@ -116,10 +117,7 @@ func imageSize(width, height int) (size, reason string) {
 	return fmt.Sprintf("%dx%d", width, height), ""
 }
 
-func compileImage(
-	modelName string,
-	azureDeployment bool,
-) inference.GenerateCompiler[*imageRequest] {
+func compileImage(modelName string) inference.GenerateCompiler[*imageRequest] {
 	return func(
 		_ context.Context,
 		_ model.ModelRef,
@@ -255,11 +253,6 @@ func compileImage(
 		if mask := options.Mask; mask != nil {
 			field := inference.ExtensionField("mask").Qualify(options)
 			switch {
-			case !azureDeployment:
-				ledger.Reject(
-					field,
-					"image masks require endpoint.routing \"azure_deployment\"",
-				)
 			case mask.Kind() != media.SourceInline:
 				ledger.Reject(
 					field,
@@ -746,7 +739,7 @@ func openImage(
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
-		compileImage(id.Name, wire.surface.azureDeployment),
+		compileImage(id.Name),
 		transportImage(cls.api),
 		decodeImage,
 		transportImageStream(cls.api),

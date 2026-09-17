@@ -375,11 +375,10 @@ type ImageOptions struct {
 	Provider string `json:"-"`
 	// Mask is an inline PNG whose fully transparent areas (alpha zero) mark
 	// where the first reference image should be edited (local inpainting).
-	// Deployment-routed endpoints (endpoint.routing "azure_deployment") apply
-	// the mask to the first reference image only, and it must be an inline
-	// PNG with the same dimensions as that image because images/edits
-	// uploads multipart files. Plain OpenAI endpoints reject the field at
-	// compile time.
+	// images/edits applies the mask to the first reference image only and
+	// uploads it as a multipart file, so the request needs at least one
+	// inline reference image, and the mask must be a PNG smaller than 4MB
+	// with the same dimensions as that image.
 	Mask *media.ImageSource `json:"mask,omitempty"`
 	// PartialImages sets the number of progress previews streamed before
 	// the final image when the request runs in the stream execution shape.
