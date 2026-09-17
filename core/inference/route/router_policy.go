@@ -13,14 +13,15 @@ import (
 
 // Selectors derives routing behavior from the policy using declared order:
 // every selector picks the first compatible target of the operation's pools,
-// and every fallback policy advances to the next declared target, crossing
-// pool boundaries. Generate selection consults assembly descriptors and skips
-// targets whose declared output capabilities cannot serve the request intent;
-// Embed/Transcribe selection stays order-based. Repeated model references
-// across tiers are collapsed at build time so fallback never returns a
-// previously attempted target. Scores remain deployment metadata for custom
-// selectors and do not affect this behavior. The Transcription pools serve
-// both the unary Transcribe selector and the transcription session selector.
+// and every fallback policy advances to the next compatible target, crossing
+// pool boundaries. Generate routing consults assembly descriptors on both the
+// selection and the fallback path and skips targets whose declared output
+// capabilities cannot serve the request intent; Embed/Transcribe routing
+// stays order-based. Repeated model references across tiers are collapsed at
+// build time so fallback never returns a previously attempted target. Scores
+// remain deployment metadata for custom selectors and do not affect this
+// behavior. The Transcription pools serve both the unary Transcribe selector
+// and the transcription session selector.
 //
 // The returned Selectors hold flattened copies of the policy's targets, so
 // later mutation of the Policy does not affect routing. An operation with no
@@ -108,17 +109,53 @@ func (r *policyRoute) nextTarget(
 	hint string,
 	attempt Attempt,
 ) (model.ModelRef, bool, error) {
-	order := r.effectiveOrder(hint)
-	for index, target := range order {
-		if target.model != attempt.Target {
-			continue
-		}
-		if index+1 < len(order) {
-			return order[index+1].model, true, nil
-		}
+	remaining := remainingTargets(r.effectiveOrder(hint), attempt)
+	if len(remaining) == 0 {
 		return model.ModelRef{}, false, nil
 	}
+	return remaining[0].model, true, nil
+}
+
+// nextGenerateTarget is nextTarget with the capability filter SelectGenerate
+// applies: it keeps advancing through the effective fallback order until a
+// candidate's declared outputs can serve the request intent, so fallback
+// never selects a target that provably cannot answer the request — a
+// preflight rejection on one target does not hand the request to an
+// incompatible one. Targets with undeclared outputs stay compatible, exactly
+// as in selection. The walk stays inside the effective fallback order, so
+// hint elevation and the never-revisit rule are unchanged.
+func (r *policyRoute) nextGenerateTarget(
+	hint string,
+	request inference.GenerateRequest,
+	attempt Attempt,
+) (model.ModelRef, bool, error) {
+	remaining := remainingTargets(r.effectiveOrder(hint), attempt)
+	if len(remaining) == 0 {
+		return model.ModelRef{}, false, nil
+	}
+	requested := request.Input.Content.Intent.OutputKinds()
+	for _, target := range remaining {
+		supported, err := r.supportsOutputs(target.model, requested)
+		if err != nil {
+			return model.ModelRef{}, false, err
+		}
+		if !supported {
+			continue
+		}
+		return target.model, true, nil
+	}
 	return model.ModelRef{}, false, nil
+}
+
+// remainingTargets returns the targets after the attempted one in order, or
+// nothing when the attempt never came from this policy's order.
+func remainingTargets(order []policyTarget, attempt Attempt) []policyTarget {
+	for index, target := range order {
+		if target.model == attempt.Target {
+			return order[index+1:]
+		}
+	}
+	return nil
 }
 
 // effectiveOrder returns the fallback order for one request: when the
@@ -275,7 +312,7 @@ func (r *policyRoute) NextGenerate(
 	request inference.GenerateRequest,
 	attempt Attempt,
 ) (model.ModelRef, bool, error) {
-	return r.nextTarget(request.ModelHint, attempt)
+	return r.nextGenerateTarget(request.ModelHint, request, attempt)
 }
 
 func (r *policyRoute) SelectEmbed(

@@ -215,11 +215,11 @@ router:
 `generate` / `embed` / `transcription` each list `tier` pools of exact
 `model` targets plus optional `score` signals (`quality` / `economy` /
 `speed` / `reliability`, all in `[0, 1]`); scores guide selection only.
-Selection skips targets whose declared output capabilities cannot serve
-the request intent; undeclared capabilities are treated as undeclared, not
-unsupported. `retry` (per-operation, requires pools) and `circuit_breaker`
-configure resilience. Build-time validation checks every target exists,
-is not retired, and exposes the operation.
+Selection and fallback skip targets whose declared output capabilities
+cannot serve the request intent; undeclared capabilities are treated as
+undeclared, not unsupported. `retry` (per-operation, requires pools) and
+`circuit_breaker` configure resilience. Build-time validation checks every
+target exists, is not retired, and exposes the operation.
 
 ## workspace
 

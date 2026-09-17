@@ -1011,6 +1011,241 @@ func TestRouterGenerateNoRouteWhenNoDeclaredTargetServesIntent(t *testing.T) {
 	}
 }
 
+func TestRouterGenerateFallbackSkipsOutputIncompatibleTargets(t *testing.T) {
+	imageA := model.ModelRef{
+		ID: model.ModelID{Provider: "image-a", Name: "model-1"},
+	}
+	textB := model.ModelRef{
+		ID: model.ModelID{Provider: "text-b", Name: "model-1"},
+	}
+	imageC := model.ModelRef{
+		ID: model.ModelID{Provider: "image-c", Name: "model-1"},
+	}
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.image-a": providerDefinitionWithOutputs(
+			t, "image-a", true,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+		"provider.text-b": providerDefinitionWithOutputs(
+			t, "text-b", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+		"provider.image-c": providerDefinitionWithOutputs(
+			t, "image-c", false,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{{
+			Tier:    "primary",
+			Targets: []Target{{Model: imageA}, {Model: textB}, {Model: imageC}},
+		}},
+		Retry: hintFallbackRetryConfig(),
+	}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := routeRequest()
+	request.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+
+	response, trace, err := router.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v, want fallback response", response.Usage)
+	}
+	if trace.Executed != imageC {
+		t.Fatalf(
+			"executed = %+v, want the later image target %+v",
+			trace.Executed, imageC,
+		)
+	}
+	if len(trace.Fallbacks) != 1 ||
+		trace.Fallbacks[0].From != imageA ||
+		trace.Fallbacks[0].To != imageC {
+		t.Fatalf("fallbacks = %+v, want one hop %+v -> %+v",
+			trace.Fallbacks, imageA, imageC)
+	}
+	for _, attempt := range trace.Attempts {
+		if attempt.Target == textB {
+			t.Fatalf(
+				"attempts = %+v, want the text-only target skipped",
+				trace.Attempts,
+			)
+		}
+	}
+}
+
+func TestRouterGenerateFallbackStopsWhenNoCompatibleTargetRemains(t *testing.T) {
+	imageA := model.ModelRef{
+		ID: model.ModelID{Provider: "image-a", Name: "model-1"},
+	}
+	textB := model.ModelRef{
+		ID: model.ModelID{Provider: "text-b", Name: "model-1"},
+	}
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.image-a": providerDefinitionWithOutputs(
+			t, "image-a", true,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+		"provider.text-b": providerDefinitionWithOutputs(
+			t, "text-b", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{{
+			Tier:    "primary",
+			Targets: []Target{{Model: imageA}, {Model: textB}},
+		}},
+		Retry: hintFallbackRetryConfig(),
+	}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := routeRequest()
+	request.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+
+	_, trace, err := router.Generate(context.Background(), request)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf(
+			"Generate = %v, want the failed image target's error (no compatible fallback)",
+			err,
+		)
+	}
+	if trace.Executed != (model.ModelRef{}) {
+		t.Fatalf("executed = %+v, want no executed target", trace.Executed)
+	}
+	if len(trace.Fallbacks) != 0 {
+		t.Fatalf("fallbacks = %+v, want none", trace.Fallbacks)
+	}
+	for _, attempt := range trace.Attempts {
+		if attempt.Target == textB {
+			t.Fatalf(
+				"attempts = %+v, want the text-only target skipped",
+				trace.Attempts,
+			)
+		}
+	}
+}
+
+func TestRouterGenerateFallbackAttemptsUndeclaredOutputs(t *testing.T) {
+	imageA := model.ModelRef{
+		ID: model.ModelID{Provider: "image-a", Name: "model-1"},
+	}
+	undeclared := model.ModelRef{
+		ID: model.ModelID{Provider: "undeclared", Name: "model-1"},
+	}
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.image-a": providerDefinitionWithOutputs(
+			t, "image-a", true,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+		"provider.undeclared": providerDefinitionWithOutputs(
+			t, "undeclared", false, nil, imageRouteDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{{
+			Tier:    "primary",
+			Targets: []Target{{Model: imageA}, {Model: undeclared}},
+		}},
+		Retry: hintFallbackRetryConfig(),
+	}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := routeRequest()
+	request.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+
+	response, trace, err := router.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v, want fallback response", response.Usage)
+	}
+	if trace.Executed != undeclared {
+		t.Fatalf(
+			"executed = %+v, want the undeclared-outputs fallback %+v",
+			trace.Executed, undeclared,
+		)
+	}
+}
+
+func TestPolicyGenerateFallbackSkipsOutputIncompatibleTargets(t *testing.T) {
+	imageA := model.ModelRef{
+		ID: model.ModelID{Provider: "image-a", Name: "model-1"},
+	}
+	textB := model.ModelRef{
+		ID: model.ModelID{Provider: "text-b", Name: "model-1"},
+	}
+	imageC := model.ModelRef{
+		ID: model.ModelID{Provider: "image-c", Name: "model-1"},
+	}
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.image-a": providerDefinitionWithOutputs(
+			t, "image-a", false,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+		"provider.text-b": providerDefinitionWithOutputs(
+			t, "text-b", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+		"provider.image-c": providerDefinitionWithOutputs(
+			t, "image-c", false,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{{
+			Tier:    "primary",
+			Targets: []Target{{Model: imageA}, {Model: textB}, {Model: imageC}},
+		}},
+	}
+	selectors := policy.Selectors(assembly)
+	request := routeRequest()
+	request.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+
+	next, ok, err := selectors.GenerateFallback.NextGenerate(
+		context.Background(), request, Attempt{Target: imageA},
+	)
+	if err != nil {
+		t.Fatalf("NextGenerate: %v", err)
+	}
+	if !ok || next != imageC {
+		t.Fatalf(
+			"NextGenerate = %+v, %v, want %+v (skip the text-only target)",
+			next, ok, imageC,
+		)
+	}
+}
+
 func TestRouterTranscribeSessionRetriesOpen(t *testing.T) {
 	retryRef := model.ModelRef{
 		ID: model.ModelID{Provider: "retry", Name: "model-1"},
