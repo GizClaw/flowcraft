@@ -49,6 +49,9 @@ type imageRequest struct {
 	// reference image should be edited. It rides the images/edits multipart
 	// body alongside that image.
 	mask imageUpload
+	// inputFidelity is the images/edits input-fidelity policy. The
+	// generations body has no such field, so it lives beside the params.
+	inputFidelity openai.ImageEditParamsInputFidelity
 }
 
 // imageUpload is one concrete inline upload: raw bytes plus the media type the
@@ -250,51 +253,7 @@ func compileImage(modelName string) inference.GenerateCompiler[*imageRequest] {
 		}
 		options, other := inference.ExtensionFor[ImageOptions](request.Extensions)
 		ledger.RejectExtensions("image generation", other)
-		if mask := options.Mask; mask != nil {
-			field := inference.ExtensionField("mask").Qualify(options)
-			switch {
-			case mask.Kind() != media.SourceInline:
-				ledger.Reject(
-					field,
-					"images/edits uploads inline bytes; URL-sourced masks have no channel",
-				)
-			case len(compiled.images) == 0:
-				ledger.Reject(
-					field,
-					"mask requires at least one inline reference image",
-				)
-			default:
-				compiled.mask = imageUpload{
-					data:      mask.Bytes(),
-					mediaType: mask.BaseMediaType(),
-				}
-			}
-		}
-		if partial := options.PartialImages; partial != nil {
-			field := inference.ExtensionField("partial_images").Qualify(options)
-			switch {
-			case shape != inference.GenerateExecutionStream:
-				ledger.Reject(
-					field,
-					"partial_images applies to the stream execution shape",
-				)
-			case *partial < 0 || *partial > 3:
-				ledger.Reject(
-					field,
-					fmt.Sprintf(
-						"partial_images must be between 0 and 3, not %d",
-						*partial,
-					),
-				)
-			default:
-				// Zero asks for no previews, which is the provider default:
-				// leaving the field out keeps the body identical to a request
-				// that never mentioned the knob.
-				if *partial > 0 {
-					compiled.params.PartialImages = param.NewOpt(int64(*partial))
-				}
-			}
-		}
+		compileImageOptions(compiled, options, shape, ledger)
 		if intent.Audio != nil {
 			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
@@ -312,6 +271,165 @@ func compileImage(modelName string) inference.GenerateCompiler[*imageRequest] {
 			return inference.Compiled[*imageRequest]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[*imageRequest]{Wire: compiled, Report: report}, nil
+	}
+}
+
+// compileImageOptions lowers the per-request images knobs that have no
+// canonical home: the inpainting mask, the stream preview count, the
+// transparency policy, the webp/jpeg compression level and the edit input
+// fidelity. Each lands only where the surface can carry it; anywhere else it
+// is rejected with a qualified field name rather than silently dropped.
+func compileImageOptions(
+	compiled *imageRequest,
+	options ImageOptions,
+	shape inference.GenerateExecutionShape,
+	ledger *inference.Ledger,
+) {
+	if mask := options.Mask; mask != nil {
+		field := inference.ExtensionField("mask").Qualify(options)
+		switch {
+		case mask.Kind() != media.SourceInline:
+			ledger.Reject(
+				field,
+				"images/edits uploads inline bytes; URL-sourced masks have no channel",
+			)
+		case len(compiled.images) == 0:
+			ledger.Reject(
+				field,
+				"mask requires at least one inline reference image",
+			)
+		default:
+			compiled.mask = imageUpload{
+				data:      mask.Bytes(),
+				mediaType: mask.BaseMediaType(),
+			}
+		}
+	}
+	if partial := options.PartialImages; partial != nil {
+		field := inference.ExtensionField("partial_images").Qualify(options)
+		switch {
+		case shape != inference.GenerateExecutionStream:
+			ledger.Reject(
+				field,
+				"partial_images applies to the stream execution shape",
+			)
+		case *partial < 0 || *partial > 3:
+			ledger.Reject(
+				field,
+				fmt.Sprintf(
+					"partial_images must be between 0 and 3, not %d",
+					*partial,
+				),
+			)
+		default:
+			// Zero asks for no previews, which is the provider default:
+			// leaving the field out keeps the body identical to a request
+			// that never mentioned the knob.
+			if *partial > 0 {
+				compiled.params.PartialImages = param.NewOpt(int64(*partial))
+			}
+		}
+	}
+	if background := options.Background; background != "" {
+		field := inference.ExtensionField("background").Qualify(options)
+		switch {
+		case !validImageBackground(background):
+			ledger.Reject(
+				field,
+				"unknown background \""+background+"\"",
+			)
+		case background == "transparent" &&
+			!alphaCapableOutputFormat(compiled.params.OutputFormat):
+			ledger.Reject(
+				field,
+				"transparent backgrounds require png or webp output",
+			)
+		default:
+			compiled.params.Background =
+				openai.ImageGenerateParamsBackground(background)
+		}
+	}
+	if compression := options.OutputCompression; compression != nil {
+		field := inference.ExtensionField("output_compression").Qualify(options)
+		switch {
+		case *compression < 0 || *compression > 100:
+			ledger.Reject(
+				field,
+				fmt.Sprintf(
+					"output_compression must be between 0 and 100, not %d",
+					*compression,
+				),
+			)
+		case !compressedOutputFormat(compiled.params.OutputFormat):
+			ledger.Reject(
+				field,
+				"output_compression applies to webp and jpeg output; "+
+					"set the image output format accordingly",
+			)
+		default:
+			compiled.params.OutputCompression = param.NewOpt(int64(*compression))
+		}
+	}
+	if fidelity := options.InputFidelity; fidelity != "" {
+		field := inference.ExtensionField("input_fidelity").Qualify(options)
+		switch {
+		case !validImageInputFidelity(fidelity):
+			ledger.Reject(
+				field,
+				"unknown input_fidelity \""+fidelity+"\"",
+			)
+		case len(compiled.images) == 0:
+			ledger.Reject(
+				field,
+				"input_fidelity requires at least one inline reference image",
+			)
+		default:
+			compiled.inputFidelity =
+				openai.ImageEditParamsInputFidelity(fidelity)
+		}
+	}
+	if moderation := options.Moderation; moderation != "" {
+		field := inference.ExtensionField("moderation").Qualify(options)
+		switch {
+		case !validImageModeration(moderation):
+			ledger.Reject(
+				field,
+				"unknown moderation \""+moderation+"\"",
+			)
+		case len(compiled.images) > 0:
+			ledger.Reject(
+				field,
+				"moderation applies to images/generations; the edits body has no such field",
+			)
+		default:
+			compiled.params.Moderation =
+				openai.ImageGenerateParamsModeration(moderation)
+		}
+	}
+}
+
+// alphaCapableOutputFormat reports whether the negotiated output format can
+// carry transparency. An unset format leaves the provider default (png), so
+// it is alpha-capable.
+func alphaCapableOutputFormat(format openai.ImageGenerateParamsOutputFormat) bool {
+	switch media.ImageFormat(format) {
+	case "", media.ImageFormatPNG, media.ImageFormatWebP:
+		return true
+	default:
+		return false
+	}
+}
+
+// compressedOutputFormat reports whether the negotiated output format honors
+// a compression level. The provider applies output_compression to webp and
+// jpeg only, and its default format is png, so an unset format has no channel
+// for the knob.
+func compressedOutputFormat(format openai.ImageGenerateParamsOutputFormat) bool {
+	switch media.ImageFormat(format) {
+	case media.ImageFormatJPEG, media.ImageFormatWebP:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -407,14 +525,17 @@ func (r *imageRequest) editParams() openai.ImageEditParams {
 		readers = append(readers, image.reader())
 	}
 	params := openai.ImageEditParams{
-		Model:         r.params.Model,
-		Prompt:        r.params.Prompt,
-		N:             r.params.N,
-		Size:          openai.ImageEditParamsSize(r.params.Size),
-		OutputFormat:  openai.ImageEditParamsOutputFormat(r.params.OutputFormat),
-		Quality:       openai.ImageEditParamsQuality(r.params.Quality),
-		PartialImages: r.params.PartialImages,
-		Image:         openai.ImageEditParamsImageUnion{OfFileArray: readers},
+		Model:             r.params.Model,
+		Prompt:            r.params.Prompt,
+		N:                 r.params.N,
+		Size:              openai.ImageEditParamsSize(r.params.Size),
+		OutputFormat:      openai.ImageEditParamsOutputFormat(r.params.OutputFormat),
+		OutputCompression: r.params.OutputCompression,
+		Background:        openai.ImageEditParamsBackground(r.params.Background),
+		Quality:           openai.ImageEditParamsQuality(r.params.Quality),
+		PartialImages:     r.params.PartialImages,
+		InputFidelity:     r.inputFidelity,
+		Image:             openai.ImageEditParamsImageUnion{OfFileArray: readers},
 	}
 	if len(r.mask.data) > 0 {
 		params.Mask = r.mask.reader()
