@@ -1,5 +1,5 @@
-github.com/GizClaw/flowcraft/core v0.4.0 h1:iMBQYaXNqT0Ul4zWaiyOhW24DaUWpUBs/KvFW35kTRk=
-github.com/GizClaw/flowcraft/core v0.4.0/go.mod h1:oM890ls+7bEtnG6LfBcDfrmKSm+hQPNzutRpQf3hscI=
+github.com/GizClaw/flowcraft/core v0.4.3 h1:i0zgBGT5wr6Jn5bJAeLZyMyokdvxpvC6PjRn+N2oTmo=
+github.com/GizClaw/flowcraft/core v0.4.3/go.mod h1:riEySUsgo6ZWFGnGoqa1d4K2/+0fPy+iHcF6KHqynQY=
 github.com/anthropics/anthropic-sdk-go v1.61.0 h1:JRTnm1tPqn5xo1xd1zfrcFDlcoWXVMvV1K68YmhpZKw=
 github.com/anthropics/anthropic-sdk-go v1.61.0/go.mod h1:3EfIfmFqxH6rbiLcIP4tPFyXL/IHakx2wDG4OU+TIEI=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=

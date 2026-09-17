@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/driver/minimax
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/core v0.4.0
+require github.com/GizClaw/flowcraft/core v0.4.3
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
