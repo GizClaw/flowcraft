@@ -2,11 +2,12 @@ module github.com/GizClaw/flowcraft/skills/flowcraft-config/scripts/validator
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/core v0.4.0
+require github.com/GizClaw/flowcraft/core v0.4.3
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/expr-lang/expr v1.17.8 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
