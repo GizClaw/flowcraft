@@ -26,6 +26,8 @@ func TestImageGeometryAndFormatValidate(t *testing.T) {
 		ImageQualityLow,
 		ImageQualityMedium,
 		ImageQualityHigh,
+		ImageQualityXHigh,
+		ImageQualityMax,
 	} {
 		if err := quality.Validate(); err != nil {
 			t.Errorf("ImageQuality(%q).Validate: %v", quality, err)

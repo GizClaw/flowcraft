@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -70,6 +72,23 @@ func (s Spec) azureAPIVersion() string {
 	return DefaultAzureAPIVersion
 }
 
+// loopbackHTTP reports whether rawURL addresses a loopback host over
+// plaintext HTTP. It mirrors the destination check the SDK applies to its
+// unsafe-HTTP opt-in: "localhost" or a literal loopback IP, nothing that
+// merely resolves to one.
+func loopbackHTTP(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "http") {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
+}
+
 // endpointTimeout returns the per-request timeout, or zero for the SDK
 // default.
 func (s Spec) endpointTimeout() time.Duration {
@@ -101,6 +120,16 @@ func (s Spec) requestOptions(apiKey string) []option.RequestOption {
 			),
 			azure.WithAPIKey(apiKey),
 		)
+		if loopbackHTTP(s.baseURL()) {
+			// Since v3.61 the SDK refuses to send the credential over
+			// plaintext HTTP unless the caller opts in, and it honors that
+			// opt-in for loopback destinations only (localhost or a loopback
+			// IP, connected directly, proxies bypassed). Local
+			// Azure-compatible emulators address themselves that way, so
+			// mirror the SDK's own policy: opt in for a loopback base URL,
+			// leave every other endpoint on the HTTPS-only default.
+			options = append(options, azure.WithUnsafeAllowHTTP())
+		}
 	default:
 		switch s.authScheme() {
 		case authNone:

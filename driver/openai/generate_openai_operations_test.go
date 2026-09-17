@@ -829,6 +829,8 @@ func TestImageCompilerQuality(t *testing.T) {
 		media.ImageQualityLow,
 		media.ImageQualityMedium,
 		media.ImageQualityHigh,
+		media.ImageQualityXHigh,
+		media.ImageQualityMax,
 	} {
 		got, err := compile(quality)
 		if err != nil {

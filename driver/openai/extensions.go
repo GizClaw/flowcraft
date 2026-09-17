@@ -36,8 +36,9 @@ type GenerateOptions struct {
 	// WebSearch attaches OpenAI's hosted web_search tool.
 	WebSearch *GenerateWebSearch `json:"web_search,omitempty"`
 	// ServiceTier selects the processing tier for this call: "auto",
-	// "default", "flex", "scale", or "priority". Empty keeps the provider
-	// default.
+	// "default", "flex", "scale", "priority", or "fast". "ultrafast" is
+	// Responses-only: Chat Completions has no such tier. Empty keeps the
+	// provider default (auto).
 	ServiceTier string `json:"service_tier,omitempty"`
 	// ParallelToolCalls allows the model to issue tool calls in parallel.
 	// Nil keeps the provider default (allowed).
@@ -235,7 +236,7 @@ func (o GenerateOptions) Validate() error {
 	}
 	if o.ServiceTier != "" && !validServiceTier(o.ServiceTier) {
 		return fmt.Errorf(
-			"service_tier %q is not one of auto/default/flex/scale/priority",
+			"service_tier %q is not one of auto/default/flex/scale/priority/fast/ultrafast",
 			o.ServiceTier,
 		)
 	}
@@ -524,9 +525,12 @@ func (o TTSOptions) Clone() inference.Extension {
 }
 
 // validServiceTier reports whether value names a documented processing tier.
+// "ultrafast" is published by the Responses surface only; the compiler
+// rejects it on Chat Completions, so this check stays surface-agnostic for
+// the extension-level validation pass.
 func validServiceTier(value string) bool {
 	switch value {
-	case "auto", "default", "flex", "scale", "priority":
+	case "auto", "default", "flex", "scale", "priority", "fast", "ultrafast":
 		return true
 	default:
 		return false

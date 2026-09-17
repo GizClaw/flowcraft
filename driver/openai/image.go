@@ -237,7 +237,9 @@ func compileImage(modelName string) inference.GenerateCompiler[*imageRequest] {
 				case media.ImageQualityAuto,
 					media.ImageQualityLow,
 					media.ImageQualityMedium,
-					media.ImageQualityHigh:
+					media.ImageQualityHigh,
+					media.ImageQualityXHigh,
+					media.ImageQualityMax:
 					compiled.params.Quality =
 						openai.ImageGenerateParamsQuality(image.Quality)
 				default:

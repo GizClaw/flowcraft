@@ -316,9 +316,12 @@ func compileGenerateTuning(
 ) {
 	if tier := options.ServiceTier; tier != "" {
 		field := inference.ExtensionField("service_tier").Qualify(options)
-		if !validServiceTier(tier) {
+		switch {
+		case !validServiceTier(tier):
 			ledger.Reject(field, "unknown service tier \""+tier+"\"")
-		} else {
+		case tier == "ultrafast" && wire.surface.api == apiChat:
+			ledger.Reject(field, "chat completions has no ultrafast service tier")
+		default:
 			sink.setServiceTier(tier)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -256,5 +257,55 @@ func TestAzureRoutingHonorsConfiguredAPIVersion(t *testing.T) {
 	}
 	if got := (*seen)[0].apiVersion; got != "2026-01-01-preview" {
 		t.Fatalf("api-version = %q, want the configured override", got)
+	}
+}
+
+// TestAzureRoutingRequiresHTTPSForRemoteEndpoints pins the security half of
+// the loopback opt-in: plaintext HTTP is tolerated only for a loopback base
+// URL, and the SDK still refuses to send the credential anywhere else.
+func TestAzureRoutingRequiresHTTPSForRemoteEndpoints(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(
+		`{"endpoint":{"base_url":"http://azure.invalid/v1",`+
+			`"routing":"azure_deployment"}}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	cls, err := profileMaterial{
+		apiKey: resource.LiteralSecret("azure-key"),
+	}.newClients(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("newClients: %v", err)
+	}
+	request, err := compileChatFor(
+		"gpt-5.6-sol", testTargetWith("gpt-5.6-sol", chatWire()),
+	)(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = transportChatGenerate(cls.api)(context.Background(), request.Wire)
+	if err == nil || !strings.Contains(err.Error(), "require HTTPS") {
+		t.Fatalf("transport error = %v, want the SDK's HTTPS requirement", err)
+	}
+}
+
+// TestLoopbackHTTP pins which base URLs may take the SDK's unsafe-HTTP
+// opt-in: plaintext HTTP on localhost or a literal loopback IP.
+func TestLoopbackHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{url: "http://127.0.0.1:8080/v1", want: true},
+		{url: "http://localhost:8080", want: true},
+		{url: "http://[::1]:8080/v1", want: true},
+		{url: "https://127.0.0.1:8443", want: false},
+		{url: "http://azure.invalid/v1", want: false},
+		{url: "http://10.0.0.7/v1", want: false},
+		{url: "://missing-scheme", want: false},
+	} {
+		if got := loopbackHTTP(tc.url); got != tc.want {
+			t.Errorf("loopbackHTTP(%q) = %v, want %v", tc.url, got, tc.want)
+		}
 	}
 }
