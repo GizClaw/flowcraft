@@ -58,6 +58,7 @@ func (r *resourceTool) Execute(ctx context.Context, arguments string) (message.C
 func (r *resourceTool) list(ctx context.Context, session *mcpsdk.ClientSession) (message.Content, error) {
 	res, err := session.ListResources(ctx, nil)
 	if err != nil {
+		r.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: list resources: %v", r.server.name, err)
 	}
@@ -85,6 +86,7 @@ func (r *resourceTool) read(ctx context.Context, session *mcpsdk.ClientSession, 
 	}
 	res, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: args.URI})
 	if err != nil {
+		r.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: read resource %q: %v", r.server.name, args.URI, err)
 	}

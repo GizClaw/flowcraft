@@ -83,6 +83,7 @@ func (a *adaptedTool) Execute(ctx context.Context, arguments string) (message.Co
 		Arguments: args,
 	})
 	if err != nil {
+		a.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: call tool %q: %v", a.server.name, a.remote, err)
 	}

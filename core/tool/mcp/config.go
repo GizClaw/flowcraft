@@ -34,6 +34,7 @@ type ServerSpec struct {
 	URL         string            `json:"url,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	HTTPTimeout *string           `json:"http_timeout,omitempty"`
+	Liveness    *string           `json:"liveness,omitempty"`
 	Prefix      *string           `json:"prefix,omitempty"`
 	Resources   resource.Bool     `json:"resources,omitempty"`
 	Required    resource.Bool     `json:"required,omitempty"`
@@ -96,7 +97,14 @@ func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
 			}
 			return nil, err
 		}
-		if err := source.AddServer(ctx, srv.Name, transport, srv.options()...); err != nil {
+		opts, err := srv.options()
+		if err != nil {
+			if cerr := source.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "mcp: close partial source after option failure", cerr)
+			}
+			return nil, err
+		}
+		if err := source.AddServer(ctx, srv.Name, transport, opts...); err != nil {
 			if cerr := source.Close(); cerr != nil {
 				telemetry.WarnErr(ctx, "mcp: close partial source after attach failure", cerr)
 			}
@@ -185,7 +193,28 @@ func (s ServerSpec) validate(index int) error {
 			"mcp: servers[%d] (%s): unknown transport %q (want %q or %q)",
 			index, s.Name, s.Transport, TransportStdio, TransportHTTP)
 	}
+	if s.Liveness != nil {
+		if _, err := parseLiveness(*s.Liveness); err != nil {
+			return errdefs.Validationf(
+				"mcp: servers[%d] (%s): liveness must be \"off\" or a positive duration",
+				index, s.Name)
+		}
+	}
 	return nil
+}
+
+// parseLiveness parses a per-server liveness setting: "off" disables
+// probing, returning zero, and any other value must be a positive
+// duration.
+func parseLiveness(raw string) (time.Duration, error) {
+	if strings.EqualFold(strings.TrimSpace(raw), "off") {
+		return 0, nil
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return 0, fmt.Errorf(`want "off" or a positive duration`)
+	}
+	return interval, nil
 }
 
 // transport builds the go-sdk transport this spec describes.
@@ -210,7 +239,7 @@ func (s ServerSpec) transport(client *http.Client) (mcpsdk.Transport, error) {
 }
 
 // options translates the declarative spec into ServerOptions.
-func (s ServerSpec) options() []ServerOption {
+func (s ServerSpec) options() ([]ServerOption, error) {
 	var opts []ServerOption
 	if s.Prefix != nil {
 		opts = append(opts, WithPrefix(*s.Prefix))
@@ -221,5 +250,12 @@ func (s ServerSpec) options() []ServerOption {
 	if s.Required {
 		opts = append(opts, WithRequired())
 	}
-	return opts
+	if s.Liveness != nil {
+		interval, err := parseLiveness(*s.Liveness)
+		if err != nil {
+			return nil, errdefs.Validationf("mcp: server %q: liveness: %v", s.Name, err)
+		}
+		opts = append(opts, WithServerLiveness(interval))
+	}
+	return opts, nil
 }

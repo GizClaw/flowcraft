@@ -373,6 +373,7 @@ sim:
         prefix: fs                  # tool namespace; default "<name>__"
         resources: true             # bridge list_resources / read_resource tools
         required: true
+        liveness: 30s               # probe interval; "off" disables pings
       - name: remote
         transport: http
         url: https://mcp.example.com/mcp
