@@ -1,0 +1,36 @@
+name: OpenAI PR review
+
+on:
+  pull_request:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open pull request to review.
+        required: true
+        type: string
+
+permissions:
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: openai-pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@0.1.2
+    with:
+      model: gpt-5.6-terra
+      effort: medium
+      review-instructions: >-
+        Review only the pull-request diff and report actionable correctness,
+        security, regression, cross-module contract, and test-coverage findings.
+      pull_request_number: ${{ inputs.pull_request_number }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
