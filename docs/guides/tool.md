@@ -118,6 +118,7 @@ resources:
           prefix: fs                  # tool namespace; default "<name>__"
           resources: true             # bridge list_resources / read_resource tools
           required: true              # host should WaitReady before serving
+          liveness: 30s               # probe interval; "off" disables pings
         - name: remote
           transport: http
           url: https://mcp.example.com/mcp
@@ -129,6 +130,12 @@ resources:
 await `Source.WaitReady` so a background give-up surfaces as an error
 instead of a silent missing tool set. Middleware lives in
 `core/tool/middleware`.
+
+`liveness` overrides the source-wide probe interval for one server
+(`WithLivenessInterval` / `WithServerLiveness` in Go). Servers on
+protocol `2026-07-28` or later are never pinged, because those revisions
+removed the method: they reconnect when their connection closes. A
+probe-less server (`"off"`) behaves the same way by choice.
 
 ## Middleware chain
 

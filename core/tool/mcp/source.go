@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -33,11 +34,19 @@ const (
 	DefaultRetryMaxBackoff = 30 * time.Second
 )
 
-// DefaultLivenessInterval is how often a connected server is pinged to
-// detect that it died. The go-sdk does not surface a peer disconnect
-// until a request fails and, on modern protocol versions, disables its
-// own keepalive, so this package probes with the standard MCP ping.
+// DefaultLivenessInterval is how often a connected server is probed for
+// liveness. The go-sdk does not surface a peer disconnect until a
+// request fails, so legacy sessions are probed with the standard MCP
+// ping. Sessions negotiated on protocol 2026-07-28 or later have no
+// ping method (SEP-2575 removed it), and a server may opt out with
+// [WithServerLiveness]; those sessions are watched through the
+// transport connection instead and this interval does not apply.
 const DefaultLivenessInterval = 15 * time.Second
+
+// protocolVersion20260728 is the first MCP revision without the ping
+// method (SEP-2575). Session versions are ISO dates, so they compare
+// lexicographically.
+const protocolVersion20260728 = "2026-07-28"
 
 // Source is a tool.Source that connects MCP servers and exposes their
 // tools as ordinary core/tool.Tool values.
@@ -198,6 +207,12 @@ type server struct {
 	clientOpts *mcpsdk.ClientOptions
 	onListErr  func(server string, err error)
 	resources  bool
+	// liveness overrides the Source-wide probe interval when non-nil;
+	// a non-positive value disables probing for this server. owner is
+	// the Source that manages the server, used by call paths that
+	// notice a dead connection before the watcher does.
+	liveness *time.Duration
+	owner    *Source
 
 	mu      sync.Mutex
 	session *mcpsdk.ClientSession
@@ -268,6 +283,7 @@ type serverConfig struct {
 	onListError func(server string, err error)
 	resources   bool
 	required    bool
+	liveness    *time.Duration
 }
 
 // WithPrefix overrides the namespace prefix applied to the server's tool
@@ -290,6 +306,19 @@ func WithClientInfo(name, version string) ServerOption {
 // WithClientOptions supplies go-sdk client options verbatim.
 func WithClientOptions(opts *mcpsdk.ClientOptions) ServerOption {
 	return func(c *serverConfig) { c.clientOpts = opts }
+}
+
+// WithServerLiveness overrides how often this server is probed for
+// liveness, taking precedence over [WithLivenessInterval]. A
+// non-positive interval disables periodic probing: the server is still
+// reconnected when its connection closes, but no ping is sent. Servers
+// negotiated on protocol 2026-07-28 or later are never pinged, because
+// those revisions removed the method (SEP-2575).
+func WithServerLiveness(d time.Duration) ServerOption {
+	return func(c *serverConfig) {
+		interval := d
+		c.liveness = &interval
+	}
 }
 
 // WithListErrorHandler installs a callback for tools/list failures that
@@ -366,6 +395,8 @@ func (s *Source) AddServer(
 		clientOpts: cfg.clientOpts,
 		onListErr:  cfg.onListError,
 		resources:  cfg.resources,
+		liveness:   cfg.liveness,
+		owner:      s,
 		ready:      make(chan struct{}),
 	}
 
@@ -763,10 +794,10 @@ func (s *Source) clearRetrying(name string) {
 	s.mu.Unlock()
 }
 
-// watch monitors srv's current session with periodic pings and
-// schedules a reconnect when the session dies on the server's side.
-// The tool projection is kept: calls fail with per-server NotAvailable
-// until the reconnection succeeds.
+// watch monitors srv's current session and schedules a reconnect when
+// the session dies on the server's side. The tool projection is kept:
+// calls fail with per-server NotAvailable until the reconnection
+// succeeds.
 func (s *Source) watch(srv *server) {
 	srv.mu.Lock()
 	session := srv.session
@@ -774,7 +805,31 @@ func (s *Source) watch(srv *server) {
 	if session == nil {
 		return
 	}
-	ticker := time.NewTicker(s.liveness)
+	interval := s.liveness
+	if srv.liveness != nil {
+		interval = *srv.liveness
+	}
+	// Modern sessions have no ping method (SEP-2575), and a server may
+	// opt out of probing entirely. Both are watched through the
+	// connection instead.
+	if interval <= 0 || usesModernProtocol(session) {
+		s.watchConnection(srv, session)
+		return
+	}
+	s.watchLegacy(srv, session, interval)
+}
+
+// usesModernProtocol reports whether session negotiated protocol
+// 2026-07-28 or later, the revisions that removed ping.
+func usesModernProtocol(session *mcpsdk.ClientSession) bool {
+	res := session.InitializeResult()
+	return res != nil && res.ProtocolVersion >= protocolVersion20260728
+}
+
+// watchLegacy probes a pre-2026-07-28 session with periodic pings, the
+// only liveness probe the protocol offers there.
+func (s *Source) watchLegacy(srv *server, session *mcpsdk.ClientSession, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -789,7 +844,7 @@ func (s *Source) watch(srv *server) {
 			return // a reconnect installed a newer session; it has its own watcher
 		}
 
-		pingCtx, cancel := context.WithTimeout(s.baseCtx, s.liveness)
+		pingCtx, cancel := context.WithTimeout(s.baseCtx, interval)
 		err := session.Ping(pingCtx, nil)
 		cancel()
 		if err == nil {
@@ -798,22 +853,73 @@ func (s *Source) watch(srv *server) {
 		if s.baseCtx.Err() != nil {
 			return
 		}
-		srv.mu.Lock()
-		stillCurrent := srv.session == session
-		if stillCurrent {
-			srv.session = nil
-		}
-		srv.mu.Unlock()
-		if !stillCurrent {
-			return // a newer session replaced the dead one
-		}
-
-		telemetry.Warn(s.baseCtx, "mcp: server connection lost, reconnecting",
-			otellog.String("server", srv.name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
-		s.scheduleRetry(srv)
+		s.sessionLost(srv, session, err)
 		return
 	}
+}
+
+// watchConnection watches a session without probing it. Modern
+// sessions cannot be pinged (SEP-2575 removed the method), and servers
+// with probing disabled asked for no periodic traffic. Connection
+// closure — the server exiting, the pipe breaking, the stream dropping
+// — is reported by Wait, which is exactly the disconnect this watchdog
+// exists to notice.
+func (s *Source) watchConnection(srv *server, session *mcpsdk.ClientSession) {
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case <-s.baseCtx.Done():
+		return
+	case err := <-done:
+		if s.baseCtx.Err() != nil {
+			return
+		}
+		s.sessionLost(srv, session, err)
+	}
+}
+
+// sessionLost tears down a session that failed its liveness probe or
+// whose connection closed, then schedules a reconnect. The slot is
+// cleared before the close so callers can never be handed a closed
+// session, and Close runs outside srv.mu: it waits for a stdio child to
+// exit (up to the transport's terminate timeout), which must not stall
+// callers reading the slot. Closing the session is what releases that
+// child; dropping the slot alone would leak the whole process tree.
+func (s *Source) sessionLost(srv *server, session *mcpsdk.ClientSession, reason error) {
+	srv.mu.Lock()
+	stillCurrent := srv.session == session
+	if stillCurrent {
+		srv.session = nil
+	}
+	srv.mu.Unlock()
+	if !stillCurrent {
+		return // a newer session replaced the dead one; its watcher owns it
+	}
+
+	attrs := []otellog.KeyValue{otellog.String("server", srv.name)}
+	if reason != nil {
+		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, reason.Error()))
+	}
+	telemetry.Warn(s.baseCtx, "mcp: server connection lost, reconnecting", attrs...)
+
+	if err := session.Close(); err != nil {
+		telemetry.WarnErr(s.baseCtx, "mcp: close dead server session failed", err,
+			otellog.String("server", srv.name))
+	}
+	s.scheduleRetry(srv)
+}
+
+// noteCallFailure tears down a session that a call found broken and
+// schedules a reconnect, without blocking the caller. Watched sessions
+// normally notice the same closure through Wait, but a transport that
+// leaves the session installed after the peer dies would otherwise
+// never be replaced. Only errors that mean the connection is gone
+// qualify; a JSON-RPC error from a live peer does not.
+func (srv *server) noteCallFailure(session *mcpsdk.ClientSession, err error) {
+	if srv.owner == nil || !errors.Is(err, mcpsdk.ErrConnectionClosed) {
+		return
+	}
+	go srv.owner.sessionLost(srv, session, err)
 }
 
 var (

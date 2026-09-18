@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -401,7 +403,8 @@ func TestSource_ReconnectsAfterServerExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helperStdio: %v", err)
 	}
-	if err := src.AddServer(context.Background(), "dying", tport); err != nil {
+	counting := &countingTransport{inner: tport}
+	if err := src.AddServer(context.Background(), "dying", counting); err != nil {
 		t.Fatalf("AddServer: %v", err)
 	}
 	waitFor(t, 5*time.Second, "first connect", func() bool {
@@ -424,23 +427,291 @@ func TestSource_ReconnectsAfterServerExit(t *testing.T) {
 		out, err := execute()
 		return err == nil && out.Text() == "ok"
 	})
+	if got := counting.closeCount(); got < 1 {
+		t.Fatal("dead session was never closed; its child was leaked")
+	}
+	// The go-sdk helper negotiates 2026-07-28, so this test exercises
+	// the modern watch path: the exit is noticed through the connection
+	// instead of a ping.
+	session, err := sourceServer(t, src, "dying").currentSession()
+	if err != nil {
+		t.Fatalf("currentSession after reconnect: %v", err)
+	}
+	if !usesModernProtocol(session) {
+		t.Fatal("helper session is not modern; the test premise is broken")
+	}
 }
 
-// countingTransport wraps a transport and counts Close calls on every
-// connection it hands out, so tests can assert exactly when sessions
-// are torn down.
+// TestSource_WatchDoesNotProbeModernSessions locks in SEP-2575: ping
+// was removed in 2026-07-28, so a conformant modern server answers it
+// with MethodNotFound. The watcher must leave such a session alone;
+// before the fix every interval tore the connection down and leaked
+// its stdio child.
+func TestSource_WatchDoesNotProbeModernSessions(t *testing.T) {
+	src := NewSource(
+		WithConnectTimeout(2*time.Second),
+		WithRetryBackoff(20*time.Millisecond, 50*time.Millisecond),
+		WithLivenessInterval(30*time.Millisecond),
+	)
+	t.Cleanup(func() { _ = src.Close() })
+
+	counting := &countingTransport{inner: newInMemoryServer(t, "modern",
+		func(tport mcpsdk.Transport) mcpsdk.Transport {
+			return &pingRejectTransport{inner: tport}
+		})}
+	if err := src.AddServer(context.Background(), "modern", counting); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	waitFor(t, 5*time.Second, "first connect", func() bool { return len(src.Tools()) == 1 })
+
+	session, err := sourceServer(t, src, "modern").currentSession()
+	if err != nil {
+		t.Fatalf("currentSession: %v", err)
+	}
+	if !usesModernProtocol(session) {
+		t.Fatal("in-memory session is not modern; the test premise is broken")
+	}
+
+	// Several liveness intervals with a healthy peer: no probe-driven
+	// teardown and no reconnect attempts.
+	time.Sleep(5 * 30 * time.Millisecond)
+	if got := counting.closeCount(); got != 0 {
+		t.Fatalf("healthy modern session Close calls = %d, want 0", got)
+	}
+	if got := counting.connectCount(); got != 1 {
+		t.Fatalf("connect attempts = %d, want 1 (probe-driven reconnect loop)", got)
+	}
+}
+
+// TestSource_WatchClosesDeadSessionBeforeRetry is the regression test
+// for the leak: a session whose liveness probe fails must be closed
+// exactly once — releasing its transport child — before the reconnect
+// is scheduled. The peer stays alive and answers with a JSON-RPC
+// error, which is what the field report observed and what kept the
+// session (and its child) alive after being dropped from the slot.
+func TestSource_WatchClosesDeadSessionBeforeRetry(t *testing.T) {
+	src := NewSource(
+		WithConnectTimeout(2*time.Second),
+		WithRetryBackoff(20*time.Millisecond, 50*time.Millisecond),
+		WithLivenessInterval(30*time.Millisecond),
+	)
+	t.Cleanup(func() { _ = src.Close() })
+
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	go func() {
+		if conn, err := serverT.Connect(context.Background()); err == nil {
+			fakeLegacyServer(conn)
+		}
+	}()
+	counting := &countingTransport{inner: &singleShotTransport{inner: clientT}}
+	if err := src.AddServer(context.Background(), "legacy", counting); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	waitFor(t, 5*time.Second, "attach to a legacy session", func() bool { return len(src.Tools()) == 1 })
+
+	srv := sourceServer(t, src, "legacy")
+	session, err := srv.currentSession()
+	if err != nil {
+		t.Fatalf("currentSession: %v", err)
+	}
+	if usesModernProtocol(session) {
+		t.Fatal("test session negotiated a modern protocol; the ping path is not exercised")
+	}
+
+	waitFor(t, 5*time.Second, "failed probe to close the dead session", func() bool {
+		return counting.closeCount() == 1
+	})
+	// The peer stays healthy, so nothing else may close it.
+	time.Sleep(150 * time.Millisecond)
+	if got := counting.closeCount(); got != 1 {
+		t.Fatalf("dead session Close calls = %d, want exactly 1", got)
+	}
+	if _, err := srv.currentSession(); err == nil {
+		t.Fatal("srv.session still points at the dead session")
+	}
+	waitFor(t, 5*time.Second, "reconnect to be scheduled", func() bool {
+		return counting.connectCount() >= 2
+	})
+}
+
+// TestSource_ServerLivenessOffDisablesProbing covers WithServerLiveness:
+// a legacy session whose peer rejects pings stays attached and is never
+// redialed, because this server opted out of probing.
+func TestSource_ServerLivenessOffDisablesProbing(t *testing.T) {
+	src := NewSource(
+		WithConnectTimeout(2*time.Second),
+		WithRetryBackoff(20*time.Millisecond, 50*time.Millisecond),
+		WithLivenessInterval(30*time.Millisecond),
+	)
+	t.Cleanup(func() { _ = src.Close() })
+
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	go func() {
+		if conn, err := serverT.Connect(context.Background()); err == nil {
+			fakeLegacyServer(conn)
+		}
+	}()
+	counting := &countingTransport{inner: clientT}
+	if err := src.AddServer(context.Background(), "quiet", counting, WithServerLiveness(0)); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	waitFor(t, 5*time.Second, "attach to a legacy session", func() bool { return len(src.Tools()) == 1 })
+
+	srv := sourceServer(t, src, "quiet")
+	session, err := srv.currentSession()
+	if err != nil {
+		t.Fatalf("currentSession: %v", err)
+	}
+	if usesModernProtocol(session) {
+		t.Fatal("test session negotiated a modern protocol; the liveness override is not exercised")
+	}
+	if srv.owner != src {
+		t.Fatal("AddServer did not wire the server owner")
+	}
+
+	// Several source-level intervals with a healthy peer: the per-server
+	// opt-out means no pings, no teardown, and no redial.
+	time.Sleep(5 * 30 * time.Millisecond)
+	if got := counting.closeCount(); got != 0 {
+		t.Fatalf("healthy probe-less session Close calls = %d, want 0", got)
+	}
+	if got := counting.connectCount(); got != 1 {
+		t.Fatalf("connect attempts = %d, want 1 (liveness override ignored)", got)
+	}
+}
+
+// captureTransport records the connection it hands to a server, so a
+// test can kill the peer side at will.
+type captureTransport struct {
+	inner mcpsdk.Transport
+	mu    sync.Mutex
+	conn  mcpsdk.Connection
+}
+
+func (t *captureTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	conn, err := t.inner.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.conn = conn
+	t.mu.Unlock()
+	return conn, nil
+}
+
+func (t *captureTransport) connection() mcpsdk.Connection {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.conn
+}
+
+// TestSource_CallFailureSchedulesReconnect covers the fallback for
+// transports that leave a dead session installed: a tool call that
+// finds the connection closed must tear the session down and schedule
+// a reconnect even when no watcher is running.
+func TestSource_CallFailureSchedulesReconnect(t *testing.T) {
+	src := NewSource(
+		WithConnectTimeout(2*time.Second),
+		WithRetryBackoff(20*time.Millisecond, 50*time.Millisecond),
+	)
+	t.Cleanup(func() { _ = src.Close() })
+
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "dying", Version: "test"}, nil)
+	mcpServer.AddTool(&mcpsdk.Tool{
+		Name:        "mem_tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
+		}, nil
+	})
+	capture := &captureTransport{inner: serverT}
+	go func() { _, _ = mcpServer.Connect(context.Background(), capture, nil) }()
+
+	counting := &countingTransport{inner: &singleShotTransport{inner: clientT}}
+	srv := &server{
+		name:       "dying",
+		prefix:     "dying" + DefaultPrefixSeparator,
+		transport:  counting,
+		cfg:        &serverConfig{prefix: "dying" + DefaultPrefixSeparator, clientName: "flowcraft", clientVer: "v1"},
+		clientName: "flowcraft",
+		clientVer:  "v1",
+		owner:      src,
+	}
+	session, err := src.connect(context.Background(), srv, srv.cfg)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := src.attachSession(context.Background(), srv, session); err != nil {
+		t.Fatalf("attachSession: %v", err)
+	}
+
+	srv.mu.Lock()
+	tools := append([]sdktool.Tool(nil), srv.tools...)
+	srv.mu.Unlock()
+	if len(tools) != 1 {
+		t.Fatalf("projected tools = %d, want 1", len(tools))
+	}
+
+	// Kill the peer with no watcher running, then wait until the client
+	// side has observed the closure.
+	waitFor(t, 5*time.Second, "server connection", func() bool { return capture.connection() != nil })
+	if err := capture.connection().Close(); err != nil {
+		t.Fatalf("close server connection: %v", err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		_ = session.Wait()
+		close(closed)
+	}()
+	waitFor(t, 5*time.Second, "client to observe the closure", func() bool {
+		select {
+		case <-closed:
+			return true
+		default:
+			return false
+		}
+	})
+
+	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := tools[0].Execute(callCtx, "{}"); err == nil {
+		t.Fatal("call on a dead session succeeded")
+	}
+	waitFor(t, 5*time.Second, "call failure to schedule a reconnect", func() bool {
+		return counting.connectCount() >= 2
+	})
+	if _, err := srv.currentSession(); err == nil {
+		t.Fatal("srv.session still points at the dead session")
+	}
+}
+
+// countingTransport wraps a transport, counts Connect attempts, and
+// counts Close calls on every connection it hands out, so tests can
+// assert exactly when sessions are dialed and torn down.
 type countingTransport struct {
-	inner  mcpsdk.Transport
-	mu     sync.Mutex
-	closes int
+	inner    mcpsdk.Transport
+	mu       sync.Mutex
+	connects int
+	closes   int
 }
 
 func (t *countingTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	t.mu.Lock()
+	t.connects++
+	t.mu.Unlock()
 	conn, err := t.inner.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &countingConn{Connection: conn, parent: t}, nil
+}
+
+func (t *countingTransport) connectCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.connects
 }
 
 func (t *countingTransport) closeCount() int {
@@ -459,6 +730,141 @@ func (c *countingConn) Close() error {
 	c.parent.closes++
 	c.parent.mu.Unlock()
 	return c.Connection.Close()
+}
+
+// singleShotTransport serves one Connect and blocks every later one
+// until its context ends, so a test can observe the first session
+// without a scheduled retry replacing it.
+type singleShotTransport struct {
+	inner mcpsdk.Transport
+	used  atomic.Bool
+}
+
+func (t *singleShotTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	if t.used.Swap(true) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return t.inner.Connect(ctx)
+}
+
+// newInMemoryServer starts an in-memory MCP server exposing mem_tool
+// and returns the client-side transport to dial it with. wrapServer may
+// wrap the server side before the connection is served; nil uses it as
+// is.
+func newInMemoryServer(t *testing.T, name string, wrapServer func(mcpsdk.Transport) mcpsdk.Transport) mcpsdk.Transport {
+	t.Helper()
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{Name: name, Version: "test"}, nil)
+	mcpServer.AddTool(&mcpsdk.Tool{
+		Name:        "mem_tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
+		}, nil
+	})
+	if wrapServer == nil {
+		wrapServer = func(t mcpsdk.Transport) mcpsdk.Transport { return t }
+	}
+	go func() { _, _ = mcpServer.Connect(context.Background(), wrapServer(serverT), nil) }()
+	return clientT
+}
+
+// fakeLegacyServer speaks just enough pre-2026-07-28 MCP on conn to
+// attach this package: it rejects server/discover (forcing the legacy
+// initialize handshake) and ping, and serves tools/list. Rejecting ping
+// with a JSON-RPC error while the connection stays healthy is exactly
+// the field failure this watch path must survive without leaking the
+// session.
+func fakeLegacyServer(conn mcpsdk.Connection) {
+	ctx := context.Background()
+	for {
+		msg, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		req, ok := msg.(*jsonrpc.Request)
+		if !ok || !req.IsCall() {
+			continue
+		}
+		var (
+			result json.RawMessage
+			rerr   error
+		)
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"fake","version":"test"}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[{"name":"mem_tool","inputSchema":{"type":"object"}}]}`)
+		case "ping":
+			rerr = &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "ping is not supported"}
+		default:
+			rerr = &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: req.Method + " is not supported"}
+		}
+		if err := conn.Write(ctx, &jsonrpc.Response{ID: req.ID, Result: result, Error: rerr}); err != nil {
+			return
+		}
+	}
+}
+
+// pingRejectTransport makes a server answer incoming pings with
+// MethodNotFound without disturbing anything else, standing in for a
+// conformant 2026-07-28 peer whose per-request metadata rules a ping
+// can never satisfy (the field failure this package must not probe
+// into a reconnect loop).
+type pingRejectTransport struct {
+	inner mcpsdk.Transport
+}
+
+func (t *pingRejectTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	conn, err := t.inner.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pingRejectConn{Connection: conn}, nil
+}
+
+type pingRejectConn struct {
+	mcpsdk.Connection
+}
+
+func (c *pingRejectConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	for {
+		msg, err := c.Connection.Read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req, ok := msg.(*jsonrpc.Request)
+		if !ok || req.Method != "ping" {
+			return msg, nil
+		}
+		// Answer the probe directly: the server handler never sees it,
+		// so the connection stays healthy, exactly like a peer that
+		// rejects the method.
+		if err := c.Write(ctx, &jsonrpc.Response{
+			ID: req.ID,
+			Error: &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: "ping is not supported",
+			},
+		}); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// sourceServer returns the attached server, failing the test when the
+// name is unknown.
+func sourceServer(t *testing.T, src *Source, name string) *server {
+	t.Helper()
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	srv := src.servers[name]
+	if srv == nil {
+		t.Fatalf("server %q is not attached", name)
+	}
+	return srv
 }
 
 // connectCountingServer spins up an in-memory MCP server and returns a
