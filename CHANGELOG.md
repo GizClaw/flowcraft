@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.4` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.5` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.5` - 2026-09-19
+
+### Changed
+
+- fix(core/tool/mcp): close dead sessions before reconnecting and stop pinging modern peers — Source.watch no longer drops a session whose liveness probe failed without closing it, so the transport (and the stdio child it spawned) is released before the reconnect is scheduled instead of leaking one process tree per interval; sessions negotiated at protocol 2026-07-28 or later are watched through the transport connection (ClientSession.Wait) instead of a ping that SEP-2575 removed, legacy sessions keep the periodic ping, a new per-server liveness override (WithServerLiveness in Go, liveness: 30s | off in the tool.Source spec) lets one server disable probing while still reconnecting when its connection closes, and tool or resource calls that fail with ErrConnectionClosed asynchronously tear the dead session down and schedule a reconnect so a transport that never surfaces closure still recovers.
 
 ## `core/v0.4.4` - 2026-09-17
 
