@@ -39,6 +39,11 @@ type Usage struct {
 	// on the same channel as token counts instead of a parallel one.
 	LatencyMs int64 `json:"latency_ms,omitempty"`
 
+	// Input carries the split of InputTokens. InputTokens is the
+	// inclusive prompt total — every prompt token, cache reads and cache
+	// writes included — because providers disagree on their wire
+	// counters, and normalizing here is what lets a host compare, budget
+	// and price a prompt without knowing which provider produced it.
 	Input  InputTokenUsage  `json:"input,omitzero"`
 	Output OutputTokenUsage `json:"output,omitzero"`
 
@@ -47,6 +52,27 @@ type Usage struct {
 	Billing   *BillingUsage         `json:"billing,omitempty"`
 }
 
+// InputTokenUsage splits Usage.InputTokens into disjoint buckets, each a
+// subset of the inclusive input total. Drivers whose wire counters are
+// exclusive normalize on the way in: Anthropic's input_tokens counts only
+// the tokens that were neither read from nor written to the cache, so its
+// canonical total is input_tokens + cache_read + cache_write and
+// UncachedTokens carries the exclusive bucket unchanged.
+//
+// Consequence for consumers: cache_read / InputTokens is a cache-hit rate
+// for every provider, and TotalTokens - OutputTokens is the prompt size.
+// InputTokens already contains the buckets, so hosts read it as the prompt
+// total and must not add cache read / write to it: that sum is the
+// arithmetic of a provider's raw, cache-exclusive wire counters, and it
+// double counts here.
+//
+// A nil counter means "zero, or not reported": drivers omit cache read /
+// write when the provider reports zero, so a missing bucket is inferred
+// from the total rather than from its siblings. A self-contradictory wire
+// counter (a cache bucket larger than the prompt, or a negative count) is
+// clamped on the way in rather than propagated, so
+// uncached + cache read + cache write == InputTokens holds whenever
+// UncachedTokens is reported.
 type InputTokenUsage struct {
 	CacheReadTokens  *int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`

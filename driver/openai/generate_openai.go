@@ -676,18 +676,32 @@ func decodeGenerate(
 }
 
 func rawUsageCanonical(raw rawUsage) inference.Usage {
+	// prompt_tokens already includes the cached tokens, so the inclusive
+	// total needs no normalization here; the uncached bucket is the
+	// remainder. Deriving it (instead of leaving it unreported) is what
+	// makes the input sub-counters partition the total on this provider
+	// too: uncached + cached + cache write == input_tokens.
 	usage := inference.Usage{
 		InputTokens:  raw.inputTokens,
 		OutputTokens: raw.outputTokens,
 		TotalTokens:  raw.totalTokens,
 	}
-	if raw.cachedTokens > 0 {
-		cached := raw.cachedTokens
-		usage.Input.CacheReadTokens = &cached
-	}
-	if raw.cacheWriteTokens > 0 {
-		write := raw.cacheWriteTokens
-		usage.Input.CacheWriteTokens = &write
+	if raw.inputTokens > 0 {
+		// A provider that reports a bucket larger than the prompt, or a
+		// negative count, contradicts itself; clamping keeps the
+		// sub-counters partitioning the total instead of exceeding it.
+		// Cache reads keep precedence, writes take what is left, and the
+		// remainder is uncached.
+		read := min(max(raw.cachedTokens, 0), raw.inputTokens)
+		write := min(max(raw.cacheWriteTokens, 0), raw.inputTokens-read)
+		if read > 0 {
+			usage.Input.CacheReadTokens = &read
+		}
+		if write > 0 {
+			usage.Input.CacheWriteTokens = &write
+		}
+		uncached := raw.inputTokens - read - write
+		usage.Input.UncachedTokens = &uncached
 	}
 	if raw.reasoningTokens > 0 {
 		reasoning := raw.reasoningTokens

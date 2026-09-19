@@ -63,6 +63,13 @@ func TestChatUsageMapsProviderDetails(t *testing.T) {
 	if usage.Input.CacheWriteTokens == nil || *usage.Input.CacheWriteTokens != 4 {
 		t.Fatalf("cache write = %+v", usage.Input)
 	}
+	if usage.Input.UncachedTokens == nil || *usage.Input.UncachedTokens != 3 {
+		t.Fatalf("uncached = %+v", usage.Input)
+	}
+	if got := *usage.Input.UncachedTokens + *usage.Input.CacheReadTokens +
+		*usage.Input.CacheWriteTokens; got != usage.InputTokens {
+		t.Fatalf("input buckets = %d, want the prompt total %d", got, usage.InputTokens)
+	}
 	if usage.Output.ReasoningTokens == nil || *usage.Output.ReasoningTokens != 5 {
 		t.Fatalf("reasoning = %+v", usage.Output)
 	}
