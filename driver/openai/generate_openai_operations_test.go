@@ -67,6 +67,10 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 		*response.Usage.Input.CacheReadTokens != 3 {
 		t.Fatalf("cached usage = %+v", response.Usage.Input)
 	}
+	if response.Usage.Input.UncachedTokens == nil ||
+		*response.Usage.Input.UncachedTokens != 9 {
+		t.Fatalf("uncached usage = %+v", response.Usage.Input)
+	}
 	if response.Usage.Output.ReasoningTokens == nil ||
 		*response.Usage.Output.ReasoningTokens != 2 {
 		t.Fatalf("reasoning usage = %+v", response.Usage.Output)

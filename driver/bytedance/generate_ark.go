@@ -517,14 +517,25 @@ func decodeGenerate(
 }
 
 func rawUsageCanonical(raw rawUsage) inference.Usage {
+	// Ark's prompt_tokens is the inclusive total (cached tokens are a
+	// subset of it), so the canonical input needs no normalization; the
+	// uncached remainder is derived so the input sub-counters partition
+	// the total on this provider too.
 	usage := inference.Usage{
 		InputTokens:  raw.inputTokens,
 		OutputTokens: raw.outputTokens,
 		TotalTokens:  raw.totalTokens,
 	}
-	if raw.cachedTokens > 0 {
-		cached := raw.cachedTokens
-		usage.Input.CacheReadTokens = &cached
+	if raw.inputTokens > 0 {
+		// A provider that reports more cached tokens than prompt tokens,
+		// or a negative count, contradicts itself; clamping keeps the
+		// sub-counters partitioning the total instead of exceeding it.
+		read := min(max(raw.cachedTokens, 0), raw.inputTokens)
+		if read > 0 {
+			usage.Input.CacheReadTokens = &read
+		}
+		uncached := raw.inputTokens - read
+		usage.Input.UncachedTokens = &uncached
 	}
 	if raw.reasoningTokens > 0 {
 		reasoning := raw.reasoningTokens

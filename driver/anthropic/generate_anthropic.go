@@ -223,17 +223,35 @@ func decodeGenerate(
 }
 
 func rawUsageCanonical(raw rawUsage) inference.Usage {
+	// Anthropic reports disjoint buckets: input_tokens counts only the
+	// tokens that were neither read from nor written to the cache, so a
+	// request served mostly from cache reports a tiny input_tokens next
+	// to a huge cache_read_input_tokens. Core's Usage.InputTokens is the
+	// inclusive prompt total (its input sub-counters are subsets of it),
+	// so the canonical value is the sum; reporting the raw bucket would
+	// size a cached conversation as if it were nearly empty.
+	//
+	// A negative wire counter is not a measurement; clamping it to zero
+	// keeps a malformed report from shrinking the inclusive prompt total.
+	uncached := max(raw.inputTokens, 0)
+	read := max(raw.cacheReadTokens, 0)
+	write := max(raw.cacheWriteTokens, 0)
+	inputTotal := uncached + read + write
 	usage := inference.Usage{
-		InputTokens:  raw.inputTokens,
+		InputTokens:  inputTotal,
 		OutputTokens: raw.outputTokens,
-		TotalTokens:  raw.inputTokens + raw.outputTokens,
+		TotalTokens:  inputTotal + raw.outputTokens,
 	}
-	if raw.cacheReadTokens > 0 {
-		read := raw.cacheReadTokens
+	if inputTotal > 0 {
+		// The exclusive bucket survives as UncachedTokens: a host that
+		// prices cached and uncached input differently needs it, and it
+		// keeps the partition checkable.
+		usage.Input.UncachedTokens = &uncached
+	}
+	if read > 0 {
 		usage.Input.CacheReadTokens = &read
 	}
-	if raw.cacheWriteTokens > 0 {
-		write := raw.cacheWriteTokens
+	if write > 0 {
 		usage.Input.CacheWriteTokens = &write
 	}
 	// Preserve the per-TTL cache-write split only when it agrees with the
@@ -253,7 +271,7 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 		})
 	}
 	if len(cacheWrites) > 0 &&
-		raw.cacheWrite5m+raw.cacheWrite1h == raw.cacheWriteTokens {
+		raw.cacheWrite5m+raw.cacheWrite1h == write {
 		usage.Input.CacheWrites = cacheWrites
 	}
 	if raw.thinkingTokens > 0 {
