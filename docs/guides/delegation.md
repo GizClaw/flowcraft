@@ -154,6 +154,22 @@ Async delegation inherits the same way, across the queue boundary:
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.
 
+## Steer and inherited hosts
+
+Host inheritance is per capability, not all-or-nothing. A delegated run
+inherits the caller's `agent.Host`, and the child engine keeps what it
+legitimately reads — `delegation.ServiceProvider` for nested delegation,
+`agent.EventBusProvider` for the inherited stream — while the caller's
+turn-owned steer queue stays behind: the service masks `agent.SteerSource`
+out of the host the child receives (`agent.HostCapabilityMask`). A delegated
+document that calls `host.drainSteer()` therefore sees `errdefs.NotAvailable`
+instead of consuming corrections addressed to the caller's board.
+
+A sub-run started against a bound `session.Manager` is the other case: it
+gets its own turn, so it owns a queue and is steerable through that turn like
+any other run — never through the parent's. See [runtime.md](runtime.md) for
+`Turn.Steer` and the queue's bounds.
+
 ## Sources of truth
 
 `core/delegation/delegation.go`, `core/delegation/service.go`,

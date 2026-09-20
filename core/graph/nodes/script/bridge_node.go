@@ -21,8 +21,8 @@ import (
 //     Re-instantiated for every node the executor invokes; visible
 //     only to scripts running inside that node.
 //   - "host" (NewHostBridge in bindings) — control plane (publish /
-//     emit / askUser / ...) wired with the agent.Host and the
-//     executor's per-node stream emitter.
+//     emit / askUser / drainSteer / ...) wired with the agent.Host and
+//     the executor's per-node stream emitter.
 //
 // Script-facing API:
 //

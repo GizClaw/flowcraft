@@ -489,9 +489,26 @@ func (s *Session) startTurnLocked(
 		epochRelease()
 		return nil, errdefs.Internalf("runtime session: HostFactory returned nil Host")
 	}
+	// The session owns the turn's steer queue: one turn, one source of
+	// truth. A HostFactory product that already implements
+	// agent.SteerSource would be shadowed by the wrapper below, so the
+	// conflict fails the start instead of silently dropping one of the
+	// two queues.
+	if _, ok := agent.SteerFromHost(host); ok {
+		turn.cancel()
+		epochRelease()
+		return nil, errdefs.Conflictf(
+			"runtime session: HostFactory host %T implements agent.SteerSource; "+
+				"the session installs the turn-owned steer source, remove the host-level implementation",
+			host)
+	}
 	if s.isEphemeral() {
 		host = ephemeralHost{Host: host}
 	}
+	// Steering is a property of the runtime's turn, not of a graph
+	// document: every turn host exposes the turn-owned queue, and
+	// agent.SteerFromHost answers discovery in one step.
+	host = steerHost{Host: host, drain: turn.DrainSteer}
 	turn.host = host
 
 	attachments := make([]*queuedSink, 0, len(config.sinks))

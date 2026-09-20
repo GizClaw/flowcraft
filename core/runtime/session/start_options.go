@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
@@ -87,3 +88,34 @@ func (h ephemeralHost) UnwrapHost() agent.Host { return h.Host }
 
 var _ agent.Checkpointer = ephemeralHost{}
 var _ agent.HostUnwrapper = ephemeralHost{}
+
+// steerHost installs the turn-owned steer queue as an
+// [agent.SteerSource] on every turn host. The session is the only
+// component that knows when a turn turns terminal, so it is the only
+// place that can answer "would this submission be delivered?"; the
+// drain closure is bound to the turn, whose queue is bounded, emptied
+// at each host.drainSteer() call and drained-counted at turn end.
+//
+// It is installed outermost, so agent.SteerFromHost finds it without
+// traversal. A HostFactory must not implement SteerSource — the session
+// rejects that product at start rather than shadowing it.
+type steerHost struct {
+	agent.Host
+	drain func() []message.Message
+}
+
+// DrainSteer implements [agent.SteerSource]. A zero-value steerHost has
+// no closure and drains nothing rather than panicking, so an inert Host
+// still satisfies the capability.
+func (h steerHost) DrainSteer() []message.Message {
+	if h.drain == nil {
+		return nil
+	}
+	return h.drain()
+}
+
+// UnwrapHost preserves every other capability of the wrapped turn Host.
+func (h steerHost) UnwrapHost() agent.Host { return h.Host }
+
+var _ agent.SteerSource = steerHost{}
+var _ agent.HostUnwrapper = steerHost{}

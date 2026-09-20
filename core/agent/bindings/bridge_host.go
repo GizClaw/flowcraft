@@ -37,10 +37,30 @@ type StreamEmitter interface {
 //	                                          composed by the caller
 //	                                          from run / node identity)
 //	host.checkInterrupt()                  -> {cause, detail} | null
+//	host.drainSteer()                      -> [{role, parts, ...}]
 //	host.askUser({ parts, schema, source, metadata })
 //	                                       -> { parts, metadata }
 //	host.reportUsage({ input, output, total })
 //	                                       -> nil
+//
+// host.drainSteer returns the messages a running turn accepted through
+// Turn.Steer and empties the queue (take-all, never the same message
+// twice). Unlike host.checkInterrupt it does not latch: a later call
+// answers with whatever arrived since, and an empty queue is []. The
+// result uses the same message wire shape host-side board.appendChannel
+// accepts, so the canonical steer node is
+//
+//	var pending = host.drainSteer();
+//	for (var i = 0; i < pending.length; i++) {
+//	    board.appendChannel(board.MAIN_CHANNEL, pending[i]);
+//	}
+//
+// A host that cannot accept steer does not implement
+// agent.SteerSource; the call then throws errdefs.NotAvailable, the
+// same classification stream.subscribe_node uses for a missing bus.
+// The runtime installs a steer source on every turn, so the error
+// surfaces a non-session embedding rather than a misconfigured
+// deployment.
 //
 // Identity (which run / which node) is intentionally NOT exposed on
 // host: it belongs on a dedicated "run" global (the run-info bridge,
@@ -139,6 +159,24 @@ func NewHostBridge(host agent.Host, source string, emitter StreamEmitter, opts .
 					"cause":  string(intr.Cause),
 					"detail": intr.Detail,
 				}
+			},
+
+			"drainSteer": func() ([]any, error) {
+				source, ok := agent.SteerFromHost(host)
+				if !ok {
+					return nil, errdefs.NotAvailablef("host.drainSteer: host does not accept steer")
+				}
+				messages, err := messagesToScript(source.DrainSteer())
+				if err != nil {
+					return nil, fmt.Errorf("host.drainSteer: %w", err)
+				}
+				if messages == nil {
+					// An empty queue is [] so scripts can loop over the
+					// result unconditionally: null would force a guard in
+					// every steer node.
+					messages = []any{}
+				}
+				return messages, nil
 			},
 
 			"askUser": func(raw any) (map[string]any, error) {
