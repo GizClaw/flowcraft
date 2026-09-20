@@ -71,10 +71,13 @@
 //
 //   - [MockHost] — a minimal Host implementation that records every
 //     interaction, lets tests inject interrupts / user replies /
-//     publish-checkpoint-usage errors, and exposes the captured
-//     envelopes / usage / checkpoints for assertion. Engines may use
-//     it directly in their own tests instead of re-implementing the
-//     full Host surface.
+//     publish-checkpoint-usage errors / steered messages, and exposes
+//     the captured envelopes / usage / checkpoints / steer queue for
+//     assertion. It implements the optional [agent.SteerSource]
+//     capability, so engine tests can assert where a script's
+//     host.drainSteer() call lands relative to the rest of the round.
+//     Engines may use it directly in their own tests instead of
+//     re-implementing the full Host surface.
 //
 // # What does NOT live here
 //

@@ -208,6 +208,11 @@ result, err := turn.Wait(ctx)
 `SinkSpec` controls streaming delivery, visibility, authority, and queue
 size. `delivery_concurrency` bounds in-flight sink callbacks.
 
+While a turn runs, `Turn.Interrupt` stops it at the next safe checkpoint
+and `Turn.Steer` hands it a message that a document node delivers at a
+boundary the document chose — see
+[Steering a running turn](#steering-a-running-turn).
+
 Delegated subagent sessions inherit the caller turn's stream sinks: the
 turn execution context carries the caller's stream policy, and the
 delegation service attaches those sinks to subagent runs as observers
@@ -255,6 +260,51 @@ prompts, or sinks; `Manager.WaitIdle(ctx)` waits without changing state;
 `Manager.Drain(ctx)` quiesces and waits. Prefer `Runtime.Drain` when the
 application owns a `Runtime`, since it serializes against
 `RegisterAgent` / `UnregisterAgent` / `Reload` / `Close`.
+
+## Steering a running turn
+
+`Turn.Steer(msg)` hands a message to a turn that is already running — the
+inbound counterpart of `Turn.Interrupt`, which can only stop a run, never
+correct it. The queue belongs to the turn (not to the host factory, not to
+the deployment document): `Turn.PendingSteer()` reports what is queued,
+`Turn.DrainSteer()` takes everything queued so far, and the session installs
+the turn's queue as the `agent.SteerSource` capability on every turn host.
+Documents read it where they choose, through the script global
+`host.drainSteer()` (see [graph.md](graph.md)); core never injects text
+mid-stream, and the graph executor's interrupt checkpoints are not delivery
+points.
+
+`Steer` always reports non-delivery instead of silently dropping:
+
+- `ErrSteerQueueFull` (budget exceeded) once 8 messages are queued — the
+  queue is a low-latency correction channel, not a second inbox, so the
+  caller keeps its message and queues it for the next turn;
+- `ErrSteerTooLarge` (budget exceeded) for one oversized message;
+- `agent.Interrupted(...)` once an interrupt was requested: the remaining
+  waves are not guaranteed to run, so accepting would promise a delivery
+  that cannot happen;
+- `ErrSteerClosed` (not available) once the turn is terminal.
+
+Draining is not delivery: a message a node drained and then failed to use
+(or that a checkpoint rollback left outside the resumed board) is gone.
+Undelivered messages are therefore observable two ways — `PendingSteer()`
+while the turn lives, and the `session.pending_steer` key on the turn result
+state for a turn that ended with messages still queued (the messages stay
+retrievable through `DrainSteer`). Steer queues are turn-scoped and never
+persisted, so a resumed run starts empty.
+
+Because one turn has exactly one queue, a `WithHostFactory` /
+`WithResultHostFactory` product that already implements `agent.SteerSource`
+fails the start with a conflict rather than being silently shadowed. Steer
+covers runs the application itself started; delegated sub-runs are owned by
+the delegation service and are not steerable through this API.
+
+The session always wraps the turn Host with its steer source (outermost, on
+top of the ephemeral wrapper), so the Host an engine receives is never the
+factory product itself: optional capabilities are reachable through
+`agent.CapabilityFromHost` — `agent.SteerFromHost`, `agent.EventBusFromHost`
+and `delegation.ServiceFromHost` are the facades over it — never by asserting
+the concrete Host type.
 
 ## Dynamic agent registry
 

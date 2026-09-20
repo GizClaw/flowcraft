@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 func TestNoopHost_SatisfiesHost(t *testing.T) {
@@ -182,6 +184,92 @@ func TestEventBusFromHost(t *testing.T) {
 		}
 		if got, ok := agent.EventBusFromHost(wrapped); ok || got != nil {
 			t.Fatalf("EventBusFromHost(custom publisher) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+}
+
+type steerSourceHost struct {
+	agent.NoopHost
+	queued []message.Message
+}
+
+func (h *steerSourceHost) DrainSteer() []message.Message {
+	out := h.queued
+	h.queued = nil
+	return out
+}
+
+// nilUnwrapHost exposes a typed-nil Host from UnwrapHost, the shape a
+// decorator produces when it forwards a capability it does not have.
+type nilUnwrapHost struct {
+	agent.NoopHost
+}
+
+func (nilUnwrapHost) UnwrapHost() agent.Host {
+	var host *steerSourceHost
+	return host
+}
+
+func TestSteerFromHost(t *testing.T) {
+	t.Run("supported", func(t *testing.T) {
+		host := &steerSourceHost{queued: []message.Message{
+			message.NewTextMessage(message.RoleUser, "use -race"),
+		}}
+		source, ok := agent.SteerFromHost(host)
+		if !ok {
+			t.Fatal("SteerFromHost = (_, false), want the host's source")
+		}
+		msgs := source.DrainSteer()
+		want := message.NewTextMessage(message.RoleUser, "use -race")
+		if len(msgs) != 1 || !reflect.DeepEqual(msgs[0], want) {
+			t.Fatalf("DrainSteer = %#v, want the queued text", msgs)
+		}
+		if queued := source.DrainSteer(); len(queued) != 0 {
+			t.Fatalf("second DrainSteer = %#v, want the queue emptied", queued)
+		}
+	})
+
+	t.Run("unsupported", func(t *testing.T) {
+		if got, ok := agent.SteerFromHost(agent.NoopHost{}); ok || got != nil {
+			t.Fatalf("SteerFromHost(NoopHost) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("typed nil host", func(t *testing.T) {
+		var host *steerSourceHost
+		if got, ok := agent.SteerFromHost(host); ok || got != nil {
+			t.Fatalf("SteerFromHost(typed nil) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("typed nil through unwrap", func(t *testing.T) {
+		if got, ok := agent.SteerFromHost(nilUnwrapHost{}); ok || got != nil {
+			t.Fatalf("SteerFromHost(typed nil unwrap) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("decorator preserves without claiming capability", func(t *testing.T) {
+		wrapped := agent.ComposeHost(&steerSourceHost{agent.NoopHost{}, nil},
+			func(inner agent.Host) agent.Host { return agent.HostFuncs{Inner: inner} },
+			agent.TracingMiddleware(),
+		)
+		if _, ok := wrapped.(agent.SteerSource); ok {
+			t.Fatal("decorated Host must not claim SteerSource directly")
+		}
+		if _, ok := agent.SteerFromHost(wrapped); !ok {
+			t.Fatal("decorators must preserve the inner SteerSource")
+		}
+	})
+
+	t.Run("HostFuncs stays unsupported", func(t *testing.T) {
+		// HostFuncs must not grow a DrainSteer field: every wrapped host
+		// would then look steerable, which is exactly what presence of
+		// the interface is meant to answer.
+		if _, ok := any(agent.HostFuncs{}).(agent.SteerSource); ok {
+			t.Fatal("HostFuncs must not implement SteerSource")
+		}
+		if got, ok := agent.SteerFromHost(agent.HostFuncs{Inner: agent.NoopHost{}}); ok || got != nil {
+			t.Fatalf("SteerFromHost(HostFuncs{NoopHost}) = (%v, %v), want (nil, false)", got, ok)
 		}
 	})
 }

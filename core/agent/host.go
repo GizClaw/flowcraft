@@ -104,6 +104,57 @@ func EventBusFromHost(h Host) (event.Bus, bool) {
 	return bus, true
 }
 
+// SteerSource is the optional Host capability for handing messages to a
+// running turn — the inbound counterpart of [Interrupter]. It is not
+// part of [Host]: the presence of this interface is exactly the answer
+// to "does this run accept steer", and a Host that never accepts steer
+// MUST NOT implement it ([NoopHost] does not, like [EventBusProvider]).
+//
+// A steered message is plain conversation content submitted while the
+// turn is running. It reaches the engine at a boundary that the
+// consuming deployment chose, never mid-stream: engines drain where
+// they are already between steps, and for the graph engine that
+// boundary is a node the graph author placed (typically
+// tools → steer → next round), via the script global host.drainSteer().
+// The graph executor itself never drains — pollInterrupt is not a
+// delivery point.
+//
+// Contract:
+//
+//   - DrainSteer returns the messages queued so far and empties the
+//     queue. It is take-all and destructive: a message is never
+//     returned twice.
+//   - It MUST NOT block and MUST be safe for concurrent callers. An
+//     empty result (nil or zero length) means "nothing queued".
+//   - Draining is single-consumer by intent. A deployment that drains
+//     from two places concurrently gets an unspecified split of the
+//     queue.
+//   - DrainSteer does NOT mean "delivered". A message a node drained
+//     and then failed to use, or that a checkpoint rollback left
+//     outside the resumed board, is gone: core guarantees the
+//     position of delivery only up to the drain call. Producers that
+//     need to report non-delivery must treat it as best-effort (see
+//     session.Turn.PendingSteer for the turn-owned queue).
+//   - Hosts that own a steer queue implement this; embedders that
+//     wrap a Host must not synthesise one. The runtime installs its
+//     own turn-owned source on every turn and rejects a HostFactory
+//     product that already implements SteerSource.
+type SteerSource interface {
+	// DrainSteer returns the messages queued for this run and empties
+	// the queue. It MUST NOT block and MUST be safe for concurrent
+	// calls; nil or empty means nothing is queued.
+	DrainSteer() []message.Message
+}
+
+// SteerFromHost returns h's steer source when h implements
+// [SteerSource], mirroring [EventBusFromHost]: nil interfaces,
+// typed-nil hosts and typed-nil capabilities all count as unsupported,
+// and built-in Host decorators are traversed without claiming
+// SteerSource themselves.
+func SteerFromHost(h Host) (SteerSource, bool) {
+	return CapabilityFromHost[SteerSource](h)
+}
+
 // Publisher emits a single event envelope.
 //
 // Subject schema is NOT owned by this package: the host decides what

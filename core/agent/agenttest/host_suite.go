@@ -28,6 +28,11 @@ package agenttest
 //   - Zero-value tolerance: zero Envelope, Checkpoint, UserPrompt,
 //     inference.Usage must not crash. Catches hosts that dereference
 //     unset fields blindly.
+//   - agent.SteerSource conformance for hosts that implement the
+//     optional capability: an empty drain returns without blocking,
+//     can be repeated, and survives concurrent callers. Hosts without
+//     the capability skip the subtest — absence is the documented
+//     "this host does not accept steer" answer.
 //
 // # Wiring
 //
@@ -93,6 +98,7 @@ func HostSuite(t *testing.T, f HostFactory, caps ...HostCapabilities) {
 	t.Run("ReportUsageZeroNoPanic", func(t *testing.T) { hostReportUsageZero(t, f, c) })
 	t.Run("InterruptsReturnsUsableChannel", func(t *testing.T) { hostInterruptsChannel(t, f) })
 	t.Run("AskUserClassification", func(t *testing.T) { hostAskUserClassification(t, f, c) })
+	t.Run("SteerSourceContract", func(t *testing.T) { hostSteerContract(t, f) })
 	t.Run("ConcurrentMethodAccess", func(t *testing.T) { hostConcurrentAccess(t, f, c) })
 }
 
@@ -165,6 +171,63 @@ func hostAskUserClassification(t *testing.T, f HostFactory, c HostCapabilities) 
 	if !errdefs.IsNotAvailable(err) {
 		t.Errorf("AskUser error must satisfy errdefs.IsNotAvailable (the UserPrompter contract reserves that class for UI-less hosts); got %v", err)
 	}
+}
+
+// hostSteerContract exercises the optional [agent.SteerSource]
+// capability. It only observes the drain side: SteerSource has no
+// producer method by design, so the suite covers exactly what a
+// consumer may rely on when the queue happens to be empty — the state
+// every fresh turn starts in.
+func hostSteerContract(t *testing.T, f HostFactory) {
+	t.Helper()
+	h := f()
+	source, ok := agent.SteerFromHost(h)
+	if !ok {
+		t.Skip("host does not implement agent.SteerSource")
+	}
+
+	// An empty drain must return promptly: consumers poll it at
+	// boundaries, so a blocking implementation would stall the run.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("DrainSteer(empty queue) panicked: %v", r)
+			}
+		}()
+		if msgs := source.DrainSteer(); len(msgs) != 0 {
+			t.Errorf("DrainSteer on a fresh host = %d messages, want none", len(msgs))
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DrainSteer blocked on an empty queue; the contract requires a non-blocking call")
+	}
+
+	// Draining is repeatable: a second call answers for the interval
+	// since the first, so "already drained" must not be sticky.
+	if msgs := source.DrainSteer(); len(msgs) != 0 {
+		t.Errorf("second DrainSteer = %d messages, want none", len(msgs))
+	}
+
+	// Any goroutine inside the engine may drain; concurrent callers
+	// must be safe (verified under -race).
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("concurrent DrainSteer panicked: %v", r)
+				}
+			}()
+			_ = source.DrainSteer()
+		}()
+	}
+	wg.Wait()
 }
 
 func hostConcurrentAccess(t *testing.T, f HostFactory, c HostCapabilities) {

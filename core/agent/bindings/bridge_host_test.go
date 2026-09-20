@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -393,5 +394,87 @@ func TestHostBridge_NilHost_FallsBackToNoop(t *testing.T) {
 	publish := api["publish"].(func(string, any) error)
 	if err := publish("foo.bar", "x"); err != nil {
 		t.Fatalf("publish on nil host returned error: %v", err)
+	}
+}
+
+// steerableHost adds the optional agent.SteerSource capability to the
+// recording stub. It stays a separate type so the unsupported case
+// (plain recordingHost) is unaffected.
+type steerableHost struct {
+	*recordingHost
+	queue []message.Message
+}
+
+func (h *steerableHost) DrainSteer() []message.Message {
+	out := h.queue
+	h.queue = nil
+	return out
+}
+
+// host.drainSteer projects the messages a running turn accepted into
+// the exact wire shape the host-side board bindings consume, so the
+// canonical steer node is "drain and appendChannel" with no mapping in
+// between.
+func TestHostBridge_DrainSteer_RoundTripsMessages(t *testing.T) {
+	host := &steerableHost{
+		recordingHost: newRecordingHost(),
+		queue: []message.Message{
+			message.NewTextMessage(message.RoleUser, "use the vendored copy"),
+			{
+				Role:    message.RoleUser,
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "and re-run the suite"}}},
+			},
+		},
+	}
+	want := append([]message.Message(nil), host.queue...)
+	_, api := invoke(host)
+	drain, ok := api["drainSteer"].(func() ([]any, error))
+	if !ok {
+		t.Fatalf("drainSteer binding = %T, want func() ([]any, error)", api["drainSteer"])
+	}
+
+	raw, err := drain()
+	if err != nil {
+		t.Fatalf("drainSteer: %v", err)
+	}
+	if len(raw) != len(want) {
+		t.Fatalf("drainSteer returned %d messages, want %d", len(raw), len(want))
+	}
+	back, err := messagesFromScript(raw, "steer")
+	if err != nil {
+		t.Fatalf("drained messages do not decode back into messages: %v", err)
+	}
+	if !reflect.DeepEqual(back, want) {
+		t.Fatalf("round trip = %#v, want %#v", back, want)
+	}
+
+	// Take-all: the queue is empty afterwards, but the call stays
+	// available and answers with a real array (not null) so scripts can
+	// keep looping over it.
+	again, err := drain()
+	if err != nil {
+		t.Fatalf("second drainSteer: %v", err)
+	}
+	if again == nil || len(again) != 0 {
+		t.Fatalf("second drainSteer = %#v, want an empty array", again)
+	}
+}
+
+func TestHostBridge_DrainSteer_NotAvailableWithoutCapability(t *testing.T) {
+	_, api := invoke(newRecordingHost())
+	drain := api["drainSteer"].(func() ([]any, error))
+	raw, err := drain()
+	if raw != nil {
+		t.Fatalf("drainSteer on a host without the capability = %#v, want nil", raw)
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("drainSteer error = %v, want errdefs.NotAvailable", err)
+	}
+
+	// The nil-host fallback (NoopHost) is not steerable either.
+	_, rawAPI := NewHostBridge(nil, "src", nil)(context.Background())
+	nilDrain := rawAPI.(map[string]any)["drainSteer"].(func() ([]any, error))
+	if _, err := nilDrain(); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("drainSteer on a no-op host = %v, want errdefs.NotAvailable", err)
 	}
 }

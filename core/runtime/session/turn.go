@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -22,6 +24,28 @@ import (
 // seeing the logical run end. Callers can distinguish this contract
 // violation from a healthy turn by checking the key.
 const finalizeErrorStateKey = "session.finalize_error"
+
+// steerPendingStateKey is recorded on the turn result state when the
+// turn reached a terminal state with messages still queued by
+// [Turn.Steer]: nothing drained them, so they are not part of the
+// conversation the turn produced. Its value is the leftover count;
+// the messages themselves stay retrievable through [Turn.DrainSteer].
+const steerPendingStateKey = "session.pending_steer"
+
+const (
+	// maxSteerQueue bounds the turn-owned steer queue. Steer is a
+	// low-latency correction to a run in flight, not a second inbox: a
+	// bounded queue lets [Turn.Steer] answer "full" at submit time
+	// instead of buffering unbounded producer work. Callers that exceed
+	// it keep their message and queue it for the next turn.
+	maxSteerQueue = 8
+
+	// maxSteerMessageBytes bounds one steered message, measured as the
+	// length of its JSON encoding (the same projection scripts and
+	// archives see). It is deliberately small: steer carries a
+	// correction, not a pasted log.
+	maxSteerMessageBytes = 32 << 10
+)
 
 // Turn is one asynchronous execution owned by a Session.
 type Turn struct {
@@ -52,6 +76,7 @@ type Turn struct {
 	result            *agent.Result
 	err               error
 	interrupt         *agent.Interrupt
+	steer             []message.Message
 	host              agent.Host
 	askUserOverride   AskUserFunc
 	prompts           map[string]*promptEntry
@@ -183,6 +208,92 @@ func (t *Turn) Interrupt(interrupt agent.Interrupt) error {
 	return nil
 }
 
+// Steer queues msg for the running turn. The message is delivered when
+// something drains the turn's steer source — for a graph deployment, a
+// node the author placed at a round boundary (host.drainSteer() in a
+// script). Steer never injects mid-stream: the queue is read at
+// boundaries the consuming document chose.
+//
+// Unlike [Turn.Interrupt], which is idempotent and silently ignores a
+// dead turn, Steer always reports non-delivery:
+//
+//   - errdefs.Validation for a malformed message;
+//   - ErrSteerTooLarge for a message over maxSteerMessageBytes;
+//   - ErrSteerQueueFull when maxSteerQueue messages are already queued;
+//   - agent.Interrupted once an interrupt was requested — the remaining
+//     waves are not guaranteed to run, so accepting would promise a
+//     delivery that cannot happen (mirrors Turn.askUser);
+//   - ErrSteerClosed once the turn is terminal.
+//
+// The message is stored as a deep copy: later mutation of msg does not
+// affect the queued content. The queue is turn-scoped and never
+// persisted, so a resumed run starts with an empty one.
+func (t *Turn) Steer(msg message.Message) error {
+	if t == nil {
+		return errdefs.Validationf("runtime session: nil Turn")
+	}
+	if err := msg.Validate(); err != nil {
+		return errdefs.Validationf("runtime session: steer: %v", err)
+	}
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		return errdefs.Validationf("runtime session: steer: message is not JSON-encodable: %v", err)
+	}
+	if len(encoded) > maxSteerMessageBytes {
+		return fmt.Errorf("%w: %d bytes exceed %d",
+			ErrSteerTooLarge, len(encoded), maxSteerMessageBytes)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.state.isTerminal() {
+		return ErrSteerClosed
+	}
+	if t.interrupt != nil {
+		return agent.Interrupted(*t.interrupt)
+	}
+	if len(t.steer) >= maxSteerQueue {
+		return ErrSteerQueueFull
+	}
+	t.steer = append(t.steer, msg.Clone())
+	return nil
+}
+
+// DrainSteer returns the messages queued for this turn and empties the
+// queue. It backs the turn's [agent.SteerSource]: non-blocking, safe for
+// concurrent callers, and destructive — a message is never returned
+// twice. A nil result means nothing was queued. It stays callable after
+// the turn is terminal so the owner can retrieve messages that were
+// never delivered ([Turn.PendingSteer] reports their count).
+func (t *Turn) DrainSteer() []message.Message {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.steer) == 0 {
+		return nil
+	}
+	out := make([]message.Message, len(t.steer))
+	for i, msg := range t.steer {
+		out[i] = msg.Clone()
+	}
+	t.steer = nil
+	return out
+}
+
+// PendingSteer reports how many steered messages are queued right now.
+// After the turn is terminal a non-zero value means those messages never
+// reached the conversation; they are also recorded on the result state
+// under [steerPendingStateKey].
+func (t *Turn) PendingSteer() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.steer)
+}
+
 // Ack cumulatively acknowledges confirmed deliveries from the authoritative
 // explicit sink. It may be called from Sink.OnDelta for the cursor currently
 // being offered to that callback.
@@ -311,12 +422,16 @@ func (t *Turn) finish(result *agent.Result, err error) {
 	t.result = result
 	t.err = err
 	t.state = terminalState(result, err)
+	pendingSteer := len(t.steer)
 	resolved := t.closePendingPromptsLocked()
 	attachments := append([]*queuedSink(nil), t.attachments...)
 	coordinator := t.coordinator
 	detachCoordinator := t.coordinatorDetach
 	t.mu.Unlock()
 
+	if pendingSteer > 0 {
+		t.recordPendingSteer(result, pendingSteer)
+	}
 	t.finishPromptActivity(len(resolved))
 	for _, r := range resolved {
 		t.publishPromptResolved(t.host, r.promptID, r.status)
@@ -378,6 +493,28 @@ func (t *Turn) recordFinalizeTimeout(result *agent.Result, finalizeErr error) {
 		"runtime session: engine did not publish run-end; turn stream drain timed out",
 		finalizeErr,
 		otellog.String(telemetry.AttrRunID, t.runID),
+	)
+}
+
+// recordPendingSteer makes undelivered steer observable after the turn
+// settles: a non-zero count on the result means those messages were
+// never drained. It is deliberately not an error — a turn that ends
+// before the document reached its steer node (or an interrupted turn)
+// is a legitimate outcome; the count is what lets a caller say "not
+// delivered" instead of guessing.
+func (t *Turn) recordPendingSteer(result *agent.Result, pending int) {
+	if result == nil {
+		return
+	}
+	if result.State == nil {
+		result.State = make(map[string]any)
+	}
+	result.State[steerPendingStateKey] = pending
+	telemetry.Debug(
+		context.WithoutCancel(t.runCtx),
+		"runtime session: turn ended with undelivered steered messages",
+		otellog.String(telemetry.AttrRunID, t.runID),
+		otellog.Int(steerPendingStateKey, pending),
 	)
 }
 

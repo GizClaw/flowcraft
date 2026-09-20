@@ -8,11 +8,17 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // MockHost is a fully-featured [agent.Host] for tests. It records
 // every interaction and lets the test inject cooperative interrupts
 // and user replies.
+//
+// It also implements the optional [agent.SteerSource] capability, so
+// engine suites can drive host.drainSteer() the way a deployment's
+// steer node would: pre-load messages with [MockHost.Steer], then
+// assert what the engine did with them.
 //
 // All methods are safe for concurrent use; any number of goroutines
 // inside the engine may call them while the test inspects state.
@@ -27,6 +33,7 @@ type MockHost struct {
 	usages      []inference.Usage
 	checkpoints []agent.Checkpoint
 	prompts     []agent.UserPrompt
+	steered     []message.Message
 
 	// reply is what AskUser returns when invoked. nil means "return a
 	// NotAvailable error" so engines can verify they propagate it.
@@ -199,5 +206,45 @@ func (h *MockHost) TotalUsage() inference.Usage {
 	return sum
 }
 
+// ---------- agent.SteerSource ----------
+
+// Steer queues msg the way a running turn receives it from Turn.Steer.
+// It never rejects: MockHost models delivery to the engine — admission
+// control (bounds, terminal state, size limits) belongs to the real
+// turn-owned queue and is tested there.
+func (h *MockHost) Steer(msg message.Message) {
+	h.mu.Lock()
+	h.steered = append(h.steered, msg.Clone())
+	h.mu.Unlock()
+}
+
+// DrainSteer implements [agent.SteerSource]: it returns everything
+// queued and empties the queue.
+func (h *MockHost) DrainSteer() []message.Message {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.steered) == 0 {
+		return nil
+	}
+	out := make([]message.Message, len(h.steered))
+	copy(out, h.steered)
+	h.steered = nil
+	return out
+}
+
+// SteeredMessages returns a copy of the messages still queued, without
+// draining them, so a test can assert delivery position and let the
+// engine drain afterwards.
+func (h *MockHost) SteeredMessages() []message.Message {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]message.Message, len(h.steered))
+	copy(out, h.steered)
+	return out
+}
+
 // Compile-time assertion that MockHost satisfies agent.Host.
 var _ agent.Host = (*MockHost)(nil)
+
+// ... and the optional steer capability engine suites assert against.
+var _ agent.SteerSource = (*MockHost)(nil)

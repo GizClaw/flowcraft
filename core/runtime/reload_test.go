@@ -329,8 +329,12 @@ func (f markerEngineFactory) New(context.Context, resource.Input) (any, error) {
 		host agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
+		// The generation decorator is found through the capability
+		// traversal, not by concrete assertion: the session always
+		// wraps the turn host with its own steer source, so an engine
+		// must not assume the host object is the factory product.
 		marker := 0
-		if m, ok := host.(generationMarker); ok {
+		if m, ok := agent.CapabilityFromHost[generationMarker](host); ok {
 			marker = m.GenerationMarker()
 		}
 		select {

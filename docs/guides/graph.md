@@ -640,6 +640,7 @@ a no-op host, so scripts can call them unconditionally.
 | `host.checkInterrupt()`                           | `{cause, detail} \| null`                             |
 | `host.askUser({parts, schema, source, metadata})` | `{parts, metadata}`                                   |
 | `host.reportUsage({input, output, total})`        | `error`                                               |
+| `host.drainSteer()`                               | `array` of wire messages — take-all, `[]` when empty   |
 
 `host.emit` event types recognized by the graph script node:
 
@@ -659,6 +660,33 @@ Payloads that do not decode into the type's required shape (e.g. a
 deltas. `finish` requires `finish_reason`; `provider_outputs` requires
 a non-empty array with `provider` / `extension` / `value` on every
 entry.
+
+**Steering a running turn.** `host.drainSteer()` returns the messages the
+run's owner submitted while the run was in flight (the turn's steer queue)
+and empties it — `[]` when nothing is queued. The result uses the same wire
+shape `board.appendChannel` accepts, so the canonical steer node is:
+
+```js
+var pending = host.drainSteer();
+for (var i = 0; i < pending.length; i++) {
+  board.appendChannel(board.MAIN_CHANNEL, pending[i]);
+}
+```
+
+The document declares *where* steer text lands by placing such a node, just
+like any other step: the usual position is a round boundary
+(`tools → steer → next round`), which puts the message after the tool result
+and before the next inference call, so the next round reads a valid
+conversation. Nothing else drains the queue — the executor's interrupt
+checkpoints are not delivery points, and core never injects text
+mid-stream. Draining is destructive and not latching: a later call answers
+with whatever arrived since. `host.drainSteer()` throws
+`errdefs.NotAvailable` when the host cannot accept steer at all (same
+classification as `stream.subscribe_node` without a bus); the runtime
+installs the queue on every turn, so a graph executed outside a runtime
+session (tests, dry runs) is the case that sees the error. Messages still
+queued when the turn ends before the node ran are never delivered — the
+turn result's state carries `session.pending_steer` with the count.
 
 ### `run`
 

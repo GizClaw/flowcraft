@@ -17,3 +17,11 @@ import (
 func TestHostSuite_PassesNoopHost(t *testing.T) {
 	agenttest.HostSuite(t, func() agent.Host { return agent.NoopHost{} })
 }
+
+// MockHost is the other in-tree host the suite must stay honest
+// against: unlike NoopHost it implements the optional SteerSource
+// capability, so SteerSourceContract actually runs here instead of
+// skipping.
+func TestHostSuite_PassesMockHost(t *testing.T) {
+	agenttest.HostSuite(t, func() agent.Host { return agenttest.NewMockHost() })
+}
