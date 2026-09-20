@@ -183,6 +183,13 @@ func TestTurn_SteerRejections(t *testing.T) {
 		if err == nil || !errdefs.IsInterrupted(err) {
 			t.Fatalf("Steer(interrupting) = %v, want an interrupted error", err)
 		}
+		// The class is pinned deliberately: a refused submission reports
+		// the pending interrupt, and callers recover it with errors.As
+		// instead of reading the message.
+		var pending agent.InterruptedError
+		if !errors.As(err, &pending) || pending.Cause != agent.CauseUserInput {
+			t.Fatalf("Steer(interrupting) = %v, want the pending interrupt recoverable", err)
+		}
 		if got := turn.PendingSteer(); got != 0 {
 			t.Fatalf("PendingSteer = %d after a rejected submit, want 0", got)
 		}

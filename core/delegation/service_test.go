@@ -3,6 +3,7 @@ package delegation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -829,6 +830,109 @@ func TestServicePropagatesContextHost(t *testing.T) {
 	}
 	if got := <-seen; got != want {
 		t.Fatalf("engine host = %T %v, want context host", got, got)
+	}
+}
+
+// steerMarkedHost is the shape the runtime hands a running turn: the
+// caller's own Host plus the turn-scoped steer queue the session
+// installs on it. A delegated run inherits the Host, never the queue.
+type steerMarkedHost struct {
+	agent.NoopHost
+	bus    event.Bus
+	mu     sync.Mutex
+	queued []message.Message
+}
+
+func (h *steerMarkedHost) EventBus() event.Bus { return h.bus }
+
+func (h *steerMarkedHost) DrainSteer() []message.Message {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := h.queued
+	h.queued = nil
+	return out
+}
+
+func (h *steerMarkedHost) Pending() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.queued)
+}
+
+// TestServiceLegacyDelegationWithholdsCallerSteerSource pins the edge a
+// manager-less (legacy) sync delegation opens: the child engine
+// inherits the caller's Host, and the caller's turn-owned steer queue
+// must not come with it. A steer node in a delegated document reads the
+// same capability host.drainSteer() does, so without the withholding
+// wrapper it would drain corrections addressed to the caller's board.
+func TestServiceLegacyDelegationWithholdsCallerSteerSource(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+	correction := "use the vendored copy"
+	caller := &steerMarkedHost{
+		bus:    bus,
+		queued: []message.Message{message.NewTextMessage(message.RoleUser, correction)},
+	}
+
+	var expected Service
+	seen := make(chan error, 1)
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		if source, ok := agent.SteerFromHost(host); ok {
+			seen <- fmt.Errorf("delegated run reaches the caller's steer source (%T)", source)
+			return board, nil
+		}
+		// Withholding one capability must not cost the child the
+		// capabilities it legitimately reads through traversal.
+		if got, ok := agent.EventBusFromHost(host); !ok || got != bus {
+			seen <- fmt.Errorf("delegated run lost the inherited event bus: (%v, %v)", got, ok)
+			return board, nil
+		}
+		if got, ok := ServiceFromHost(host); !ok || got != expected {
+			seen <- fmt.Errorf("delegated run lost the delegation service: (%v, %v)", got, ok)
+			return board, nil
+		}
+		seen <- nil
+		return board, nil
+	})
+	service, err := NewService(boundDirectory(t, engine), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	expected = service
+
+	// The caller side of the shape the runtime builds: the turn host of
+	// a session that carries the delegation service.
+	ctx := agent.ContextWithHost(context.Background(), WithService(caller, service))
+	if _, err := service.Delegate(ctx, syncRequest("writer")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-seen:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delegated engine did not run")
+	}
+
+	// Nothing in the delegated run drained the caller's queue, and the
+	// caller keeps the capability the child was denied.
+	if pending := caller.Pending(); pending != 1 {
+		t.Fatalf("caller steer queue holds %d messages after delegation, want 1", pending)
+	}
+	source, ok := agent.SteerFromHost(caller)
+	if !ok {
+		t.Fatal("the caller's own host must keep its steer source")
+	}
+	queued := source.DrainSteer()
+	if len(queued) != 1 || queued[0].Content.Text() != correction {
+		t.Fatalf("caller drained %#v, want the queued correction", queued)
 	}
 }
 

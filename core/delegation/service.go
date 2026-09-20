@@ -995,7 +995,9 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 // runAtLegacy executes a delegated run without session lifecycle: plain
 // agent.Execute with an empty ContextID unless the identity policy
 // supplied one. It keeps the historical host-propagation behavior (sync
-// inherits the caller host, async uses the worker host).
+// inherits the caller host, async uses the worker host), minus the
+// caller's turn-scoped steer source, which never crosses into a
+// delegated run.
 func (s *LocalService) runAtLegacy(
 	ctx context.Context,
 	req AsyncRequest,
@@ -1051,7 +1053,10 @@ func (s *LocalService) runAtLegacy(
 	}
 	var options []agent.ExecuteOption
 	if host, ok := agent.HostFromContext(execCtx); ok {
-		options = append(options, agent.WithHost(host))
+		// The inherited host carries the caller's turn-scoped steer
+		// source; a delegated document must not drain the caller's
+		// queue, so the capability is withheld (see inheritedHost).
+		options = append(options, agent.WithHost(inheritedHost(host)))
 	}
 	result, err := agent.Execute(execCtx, *instance, nil, agentRequest, options...)
 	if err != nil {

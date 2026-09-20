@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -62,23 +63,58 @@ type HostUnwrapper interface {
 	UnwrapHost() Host
 }
 
+// HostCapabilityMask is the opt-in contract for Host decorators that withhold
+// one optional capability from [CapabilityFromHost] while leaving the rest of
+// the chain traversable.
+//
+// [HostUnwrapper] covers the other shape: a decorator that replaces a surface
+// and therefore hides everything below it. A capability that is scoped to one
+// run rather than replaced has no such boundary — withholding it must not cost
+// consumers the capabilities they still legitimately read (delegation service,
+// event bus, …). A decorator that owns such a capability names it here, and
+// traversal keeps unwrapping while the named capability resolves as
+// unsupported.
+//
+// The mask applies to the inner chain: the decorator's own method set is
+// consulted first, exactly as for any other Host, so a decorator that means to
+// withhold a capability must not implement it itself. Masks do not cancel —
+// once a decorator withholds a capability, no decorator further inside can
+// re-expose it.
+type HostCapabilityMask interface {
+	// MaskedCapability is the optional capability type withheld from consumers
+	// reached through this decorator's inner Host, or nil when the decorator
+	// withholds nothing. Implementations name an interface type:
+	//
+	//	func (h steerlessHost) MaskedCapability() reflect.Type {
+	//		return reflect.TypeFor[SteerSource]()
+	//	}
+	MaskedCapability() reflect.Type
+}
+
 // CapabilityFromHost finds an optional capability implemented by h or by an
 // inner Host explicitly exposed through [HostUnwrapper]. Typed-nil hosts and
 // capabilities are treated as unsupported.
 //
 // Only decorators explicitly implementing HostUnwrapper are traversed. A
 // wrapper can stop traversal by returning nil when it replaces the surface
-// that authorises access.
+// that authorises access, and a wrapper that scopes exactly one capability
+// withholds it with [HostCapabilityMask] instead of taking the rest of the
+// chain down with it.
 func CapabilityFromHost[T any](h Host) (T, bool) {
 	var zero T
+	target := reflect.TypeFor[T]()
+	masked := false
 	const maxWrapperDepth = 64
 	for range maxWrapperDepth {
 		if ptr.IsNil(h) {
 			return zero, false
 		}
-		if capability, ok := any(h).(T); ok && !ptr.IsNil(capability) {
-			return capability, true
+		if !masked {
+			if capability, ok := any(h).(T); ok && !ptr.IsNil(capability) {
+				return capability, true
+			}
 		}
+		masked = masked || masksCapability(h, target)
 		unwrapper, ok := h.(HostUnwrapper)
 		if !ok || ptr.IsNil(unwrapper) {
 			return zero, false
@@ -86,6 +122,17 @@ func CapabilityFromHost[T any](h Host) (T, bool) {
 		h = unwrapper.UnwrapHost()
 	}
 	return zero, false
+}
+
+// masksCapability reports whether h withholds the capability identified by
+// target from the consumers below it.
+func masksCapability(h Host, target reflect.Type) bool {
+	mask, ok := h.(HostCapabilityMask)
+	if !ok || ptr.IsNil(mask) {
+		return false
+	}
+	masked := mask.MaskedCapability()
+	return !ptr.IsNil(masked) && masked == target
 }
 
 // EventBusFromHost returns h's borrowed event bus when h implements
@@ -109,6 +156,13 @@ func EventBusFromHost(h Host) (event.Bus, bool) {
 // part of [Host]: the presence of this interface is exactly the answer
 // to "does this run accept steer", and a Host that never accepts steer
 // MUST NOT implement it ([NoopHost] does not, like [EventBusProvider]).
+//
+// The producer is the runtime's session.Turn.Steer, which owns the
+// queue; this interface is the consumer side, and DrainSteer reads
+// that queue. A decorator that scopes a queue to one run withholds the
+// capability from its inner chain with [HostCapabilityMask] — the
+// delegation service does exactly that when a delegated run inherits
+// its caller's host, because the queue belongs to the caller's turn.
 //
 // A steered message is plain conversation content submitted while the
 // turn is running. It reaches the engine at a boundary that the

@@ -686,7 +686,9 @@ classification as `stream.subscribe_node` without a bus); the runtime
 installs the queue on every turn, so a graph executed outside a runtime
 session (tests, dry runs) is the case that sees the error. Messages still
 queued when the turn ends before the node ran are never delivered — the
-turn result's state carries `session.pending_steer` with the count.
+turn result's state carries `session.pending_steer` with the count. The
+event stream does not: the run-end envelope is published before the turn
+settles, so read that count from the turn result.
 
 ### `run`
 

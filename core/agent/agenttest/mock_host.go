@@ -218,8 +218,10 @@ func (h *MockHost) Steer(msg message.Message) {
 	h.mu.Unlock()
 }
 
-// DrainSteer implements [agent.SteerSource]: it returns everything
-// queued and empties the queue.
+// DrainSteer implements [agent.SteerSource]: it returns clones of
+// everything queued and empties the queue, the way the real
+// turn-owned queue does — the mock never hands out a message it still
+// holds.
 func (h *MockHost) DrainSteer() []message.Message {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -227,19 +229,24 @@ func (h *MockHost) DrainSteer() []message.Message {
 		return nil
 	}
 	out := make([]message.Message, len(h.steered))
-	copy(out, h.steered)
+	for i, msg := range h.steered {
+		out[i] = msg.Clone()
+	}
 	h.steered = nil
 	return out
 }
 
-// SteeredMessages returns a copy of the messages still queued, without
+// SteeredMessages returns clones of the messages still queued, without
 // draining them, so a test can assert delivery position and let the
-// engine drain afterwards.
+// engine drain afterwards. Cloning keeps a caller that mutates the
+// returned messages from changing what the next drain delivers.
 func (h *MockHost) SteeredMessages() []message.Message {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]message.Message, len(h.steered))
-	copy(out, h.steered)
+	for i, msg := range h.steered {
+		out[i] = msg.Clone()
+	}
 	return out
 }
 

@@ -293,11 +293,25 @@ state for a turn that ended with messages still queued (the messages stay
 retrievable through `DrainSteer`). Steer queues are turn-scoped and never
 persisted, so a resumed run starts empty.
 
+The event stream does not carry that count. The run-end envelope is published
+from inside `Execute` (`core/graph/execute.go`), which returns before the
+turn settles and records the key, and nothing re-publishes afterwards — so an
+embedder that only subscribes to the bus detects non-delivery by reading the
+turn result (`Turn.Wait` or the application's own result path), where the
+value is an `int` in process and a JSON number after a round trip.
+
 Because one turn has exactly one queue, a `WithHostFactory` /
 `WithResultHostFactory` product that already implements `agent.SteerSource`
-fails the start with a conflict rather than being silently shadowed. Steer
-covers runs the application itself started; delegated sub-runs are owned by
-the delegation service and are not steerable through this API.
+fails the start with a conflict rather than being silently shadowed.
+
+Delegated sub-runs are then a per-case story rather than a blanket "not
+steerable": a sub-run with its own turn (delegation against a bound
+`session.Manager`) has its own queue — steerable by whoever starts that turn,
+not by the parent; a sub-run with no turn of its own is not steerable at all,
+and in legacy mode (no manager bound) the synchronous path inherits the
+caller's Host, where the delegation service withholds `agent.SteerSource`
+from what the child engine receives, so a delegated steer node cannot drain
+the parent's queue. See [delegation.md](delegation.md).
 
 The session always wraps the turn Host with its steer source (outermost, on
 top of the ephemeral wrapper), so the Host an engine receives is never the

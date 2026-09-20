@@ -107,17 +107,35 @@ func newTestSessionManagerForResolver(
 	options ...session.ManagerOption,
 ) *session.Manager {
 	t.Helper()
+	return newTestSessionManagerDecorated(t, resolver, nil, options...)
+}
+
+// newTestSessionManagerDecorated is newTestSessionManagerForResolver with a
+// hook that decorates the HostFactory product, the shape the runtime builder
+// produces when it installs the delegation service (delegation.WithService on
+// the product, below the wrappers the session adds).
+func newTestSessionManagerDecorated(
+	t *testing.T,
+	resolver session.InstanceResolver,
+	decorate func(agent.Host) agent.Host,
+	options ...session.ManagerOption,
+) *session.Manager {
+	t.Helper()
 	bus := event.NewMemoryBus()
 	router := event.NewRouter(bus)
 	factory := session.HostFactoryFunc(func(
 		_ context.Context,
 		request session.HostRequest,
 	) (agent.Host, error) {
-		return agent.HostFuncs{
+		var product agent.Host = agent.HostFuncs{
 			Inner:        delegationTestHost{bus: bus},
 			InterruptsFn: func() <-chan agent.Interrupt { return request.Interrupts },
 			AskUserFn:    request.AskUser,
-		}, nil
+		}
+		if decorate != nil {
+			product = decorate(product)
+		}
+		return product, nil
 	})
 	manager, err := session.NewManager(
 		resolver,
@@ -137,6 +155,67 @@ func newTestSessionManagerForResolver(
 		_ = bus.Close()
 	})
 	return manager
+}
+
+// TestSessionTurnHostPreservesDelegationService pins the capability the
+// delegation path reads through the session's outermost wrapper. The runtime
+// installs the service by decorating the factory product, so the host an
+// engine receives — the session's steer wrapper on top — has to keep
+// answering with that service; a decorator that hides it disables nested
+// delegation silently.
+func TestSessionTurnHostPreservesDelegationService(t *testing.T) {
+	hosts := make(chan agent.Host, 1)
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		hosts <- host
+		return board, nil
+	})
+	service, err := NewService(boundDirectory(t, engine), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	manager := newTestSessionManagerDecorated(
+		t,
+		delegationTestResolver{result: buildResult(t, engine)},
+		func(product agent.Host) agent.Host { return WithService(product, service) },
+	)
+	ctx := context.Background()
+	lease, err := manager.GetOrCreate(ctx, session.Key{
+		AgentID: "writer", ContextID: "service-ctx",
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	defer func() { _ = lease.Close() }()
+	turn, err := lease.Session().Start(ctx, agent.Request{
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	var host agent.Host
+	select {
+	case host = <-hosts:
+	case <-time.After(time.Second):
+		t.Fatal("engine did not run")
+	}
+	if _, ok := agent.SteerFromHost(host); !ok {
+		t.Fatal("the turn host must keep the session-installed steer source")
+	}
+	got, ok := ServiceFromHost(host)
+	if !ok || got != service {
+		t.Fatalf("ServiceFromHost(turn host) = (%v, %v), want the installed service", got, ok)
+	}
 }
 
 func TestWaitTurnCancelOnDoneSurfacesInfraError(t *testing.T) {

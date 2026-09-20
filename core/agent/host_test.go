@@ -274,6 +274,113 @@ func TestSteerFromHost(t *testing.T) {
 	})
 }
 
+// steerAndBusHost carries the two capabilities a decorator has to tell
+// apart when it withholds one of them.
+type steerAndBusHost struct {
+	agent.NoopHost
+	bus event.Bus
+}
+
+func (h *steerAndBusHost) EventBus() event.Bus { return h.bus }
+
+func (h *steerAndBusHost) DrainSteer() []message.Message { return nil }
+
+// maskingHost is the shape a run-scoped capability needs: it keeps
+// unwrapping, so every capability but the named one stays reachable.
+type maskingHost struct {
+	agent.Host
+	masked reflect.Type
+}
+
+func (h maskingHost) UnwrapHost() agent.Host { return h.Host }
+
+func (h maskingHost) MaskedCapability() reflect.Type { return h.masked }
+
+func TestCapabilityFromHost_WithheldCapability(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	t.Run("withheld capability is unsupported", func(t *testing.T) {
+		host := maskingHost{
+			Host: &steerSourceHost{queued: []message.Message{
+				message.NewTextMessage(message.RoleUser, "use -race"),
+			}},
+			masked: reflect.TypeFor[agent.SteerSource](),
+		}
+		if got, ok := agent.SteerFromHost(host); ok || got != nil {
+			t.Fatalf("SteerFromHost(masked) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("every other capability stays reachable", func(t *testing.T) {
+		host := maskingHost{
+			Host:   &steerAndBusHost{bus: bus},
+			masked: reflect.TypeFor[agent.SteerSource](),
+		}
+		got, ok := agent.EventBusFromHost(host)
+		if !ok || got != bus {
+			t.Fatalf("EventBusFromHost(masked) = (%v, %v), want (%v, true)", got, ok, bus)
+		}
+	})
+
+	t.Run("mask survives an inner decorator", func(t *testing.T) {
+		host := maskingHost{
+			Host:   externalHostWrapper{Host: &steerSourceHost{}},
+			masked: reflect.TypeFor[agent.SteerSource](),
+		}
+		if got, ok := agent.SteerFromHost(host); ok || got != nil {
+			t.Fatalf("SteerFromHost(masked below) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("masking another capability withholds nothing else", func(t *testing.T) {
+		host := maskingHost{
+			Host: &steerSourceHost{queued: []message.Message{
+				message.NewTextMessage(message.RoleUser, "use -race"),
+			}},
+			masked: reflect.TypeFor[agent.EventBusProvider](),
+		}
+		if _, ok := agent.SteerFromHost(host); !ok {
+			t.Fatal("masking EventBusProvider must not withhold SteerSource")
+		}
+	})
+
+	t.Run("nil mask withholds nothing", func(t *testing.T) {
+		host := maskingHost{Host: &steerSourceHost{}}
+		if _, ok := agent.SteerFromHost(host); !ok {
+			t.Fatal("a decorator that names no capability must not withhold one")
+		}
+	})
+
+	t.Run("a masker's own surface wins", func(t *testing.T) {
+		// The mask applies to the inner chain only: a decorator that
+		// implements the capability it names still answers for itself,
+		// which is why a masker that means to withhold one must not
+		// implement it.
+		host := maskingSteerHost{maskingHost{
+			Host: &steerSourceHost{queued: []message.Message{
+				message.NewTextMessage(message.RoleUser, "inner"),
+			}},
+			masked: reflect.TypeFor[agent.SteerSource](),
+		}}
+		source, ok := agent.SteerFromHost(host)
+		if !ok || source == nil {
+			t.Fatal("a masker must still answer with its own capability")
+		}
+		if queued := source.DrainSteer(); len(queued) != 0 {
+			t.Fatalf("SteerFromHost(masker) resolved the withheld queue: %#v", queued)
+		}
+	})
+}
+
+// maskingSteerHost implements SteerSource itself while masking it for
+// the chain below.
+type maskingSteerHost struct {
+	maskingHost
+}
+
+func (maskingSteerHost) DrainSteer() []message.Message { return nil }
+
 func TestEngineFunc_NilSafe(t *testing.T) {
 	// Documented contract: a zero-value EngineFunc returns
 	// (board, nil) without panicking.

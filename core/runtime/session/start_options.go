@@ -104,7 +104,9 @@ type steerHost struct {
 	drain func() []message.Message
 }
 
-// DrainSteer implements [agent.SteerSource].
+// DrainSteer implements [agent.SteerSource]. A zero-value steerHost has
+// no closure and drains nothing rather than panicking, so an inert Host
+// still satisfies the capability.
 func (h steerHost) DrainSteer() []message.Message {
 	if h.drain == nil {
 		return nil

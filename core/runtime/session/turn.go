@@ -30,6 +30,11 @@ const finalizeErrorStateKey = "session.finalize_error"
 // [Turn.Steer]: nothing drained them, so they are not part of the
 // conversation the turn produced. Its value is the leftover count;
 // the messages themselves stay retrievable through [Turn.DrainSteer].
+//
+// The count is result state, not an event: the run-end envelope is
+// published from inside agent.Execute, before the turn settles and
+// records it, so an event-only consumer never sees the count and has
+// to read the turn result.
 const steerPendingStateKey = "session.pending_steer"
 
 const (
@@ -222,7 +227,10 @@ func (t *Turn) Interrupt(interrupt agent.Interrupt) error {
 //   - ErrSteerQueueFull when maxSteerQueue messages are already queued;
 //   - agent.Interrupted once an interrupt was requested — the remaining
 //     waves are not guaranteed to run, so accepting would promise a
-//     delivery that cannot happen (mirrors Turn.askUser);
+//     delivery that cannot happen (mirrors Turn.askUser). The error
+//     classifies as interrupted ([errdefs.IsInterrupted]) and carries
+//     the pending interrupt, so recover it with errors.As on
+//     [agent.InterruptedError];
 //   - ErrSteerClosed once the turn is terminal.
 //
 // The message is stored as a deep copy: later mutation of msg does not
@@ -235,6 +243,11 @@ func (t *Turn) Steer(msg message.Message) error {
 	if err := msg.Validate(); err != nil {
 		return errdefs.Validationf("runtime session: steer: %v", err)
 	}
+	// Validation, encoding and the size check run before the lock: none
+	// of them can succeed later, and a submission that can never be
+	// accepted should not queue behind a turn that is already shutting
+	// down. It also fixes which error wins for a message that is both
+	// oversized and addressed to a closed turn — the payload error.
 	encoded, err := json.Marshal(msg)
 	if err != nil {
 		return errdefs.Validationf("runtime session: steer: message is not JSON-encodable: %v", err)
