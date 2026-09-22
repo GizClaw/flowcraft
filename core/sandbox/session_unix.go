@@ -55,9 +55,17 @@ const (
 // sees; the caller's own mask goes back before this returns. Locking is
 // counted, so a caller that pinned itself keeps its pin.
 //
-// Reading or writing the mask can fail, or the platform may expose no
-// mask API at all; a spawn must not fail over that, so the process starts
-// either way and only the mask guarantee is lost.
+// The guarantee covers every child the sandbox spawns that can receive
+// [Session.Signal]: StartSession's two paths (pty and pipes) and anything
+// else that spawns through this seam. A new spawn site that hands its
+// process to Session.Signal has to come through here too.
+//
+// Only the spawn runs with the cleared mask - the fork and the exec - so
+// the window the calling thread spends unblocked is that spawn and
+// nothing else. Reading or writing the mask can fail, and a platform may
+// expose no mask API at all (sigmask_other_unix.go); a spawn must not fail
+// over that, so the process starts either way and only the mask guarantee
+// is lost. Linux and Darwin implement it.
 func startWithCleanSignalMask(start func() error) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

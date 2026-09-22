@@ -4,18 +4,12 @@ package sandbox
 
 import "github.com/GizClaw/flowcraft/core/errdefs"
 
-// sigintNumber is SIGINT as the kernel numbers signals. The mask helpers
-// take it in that form so their signatures stay platform-independent.
-const sigintNumber = 2
-
 // sigset is opaque here: this platform has no mask helper, so nothing
 // ever fills one in. The type exists so the spawn path stays free of
 // per-GOOS branches.
 type sigset struct{}
 
 func emptySigset() sigset { return sigset{} }
-
-func sigsetOnly(int) sigset { return sigset{} }
 
 // replaceThreadSignalMask reports that this platform exposes no mask API,
 // which leaves startWithCleanSignalMask spawning on whatever thread it is
