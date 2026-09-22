@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +41,33 @@ const (
 	// failed delivery) must not hang the caller forever.
 	sessionKillTimeout = 2 * time.Second
 )
+
+// startWithCleanSignalMask runs one process spawn from a thread whose
+// signal mask is empty.
+//
+// A child inherits the forking thread's mask, and a mask survives exec
+// while dispositions do not. Go reuses threads that entered the runtime
+// from C, and those keep the mask their thread arrived with, so a fork on
+// one of them can hand the session a child that starts with SIGINT
+// blocked: kill(2) to its group succeeds, the signal stays pending, and
+// the process runs to its own end - an interrupt that silently does
+// nothing. Pinning the goroutine makes the cleared mask the one the fork
+// sees; the caller's own mask goes back before this returns. Locking is
+// counted, so a caller that pinned itself keeps its pin.
+//
+// Reading or writing the mask can fail, or the platform may expose no
+// mask API at all; a spawn must not fail over that, so the process starts
+// either way and only the mask guarantee is lost.
+func startWithCleanSignalMask(start func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	previous, err := replaceThreadSignalMask(emptySigset())
+	if err != nil {
+		return start()
+	}
+	defer func() { _, _ = replaceThreadSignalMask(previous) }()
+	return start()
+}
 
 // StartSession launches an already-configured *exec.Cmd as a Session.
 // cmd.Dir / cmd.Env must already be resolved by the caller; StartSession
@@ -88,7 +116,12 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 	}
 
 	if spec.TTY {
-		ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+		var ptmx *os.File
+		err := startWithCleanSignalMask(func() error {
+			var startErr error
+			ptmx, startErr = pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+			return startErr
+		})
 		if err != nil {
 			return nil, classifyStartError(cmd.Path, err)
 		}
@@ -111,7 +144,7 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		// Cancel hook (which would reject a plain exec.Command), and no
 		// ctx kill — the session lives until Terminate/Close.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmd.Start(); err != nil {
+		if err := startWithCleanSignalMask(cmd.Start); err != nil {
 			if cerr := stdin.Close(); cerr != nil {
 				telemetry.WarnErr(ctx, "sandbox: close stdin pipe after start failure", cerr,
 					otellog.String("sandbox.session_id", s.id))
