@@ -622,6 +622,14 @@ header and the tail alone. Reads are detached — editing what one returned
 never edits the board — and `appendChannel` copies what it appends, so a
 batch a script built stays its own.
 
+`lastMessage` answers `null` on an empty channel, so guard the fields you
+read off it. The array form of `appendChannel` lands a whole batch under
+one lock — a concurrent reader sees all of it or none of it — and
+validates the batch before anything is appended, so a batch that fails
+lands none of it. An empty list is not an error either way: an empty batch
+appends nothing, and `setChannel` with an empty list clears the channel.
+Lua spells both as the empty table.
+
 ```js
 board.setVar("plan", "1. read files\n2. summarize");
 board.appendChannel(board.MAIN_CHANNEL, {
@@ -678,12 +686,22 @@ and empties it — `[]` when nothing is queued. The result uses the same wire
 shape `board.appendChannel` accepts, so the canonical steer node is:
 
 ```js
-board.appendChannel(board.MAIN_CHANNEL, host.drainSteer());
+var pending = host.drainSteer();
+board.appendChannel(board.MAIN_CHANNEL, pending);
 ```
 
-Passing the array appends the whole batch in one call; validation covers
-the batch, so a batch that fails lands none of it. Appending the messages
-one at a time is the same append for a batch core produced.
+Binding the drain before appending is what keeps the node portable: in
+argument position a `host.*` call expands to both of its return values
+under Lua, where the binding reads the second one as an extra argument
+(`expected 2 arguments, got 3`). Appending the array lands the whole batch
+in one call, under one lock, so a concurrent reader sees all of the
+correction or none of it — a per-message loop can expose a prefix. An
+empty queue appends nothing and is not an error.
+
+Under JS a rejected append throws. Under Lua the binding reports the same
+rejection as its return value instead — Lua has no exception to catch —
+so a Lua steer node that must not pass a bad batch silently checks it:
+`local err = board.appendChannel(...)`; `if err then error(err) end`.
 
 The document declares *where* steer text lands by placing such a node, just
 like any other step: the usual position is a round boundary
@@ -931,7 +949,7 @@ busy VM degrades to a `not_available` signal instead of panicking.
 ```js
 // nodes/finalize.js
 var last = board.lastMessage(board.MAIN_CHANNEL);
-board.setVar("summary", last.content.parts[0].text);
+if (last) board.setVar("summary", last.content.parts[0].text);
 host.emit("token", "done: " + run.get_run_id());
 ```
 

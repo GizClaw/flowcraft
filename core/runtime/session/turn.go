@@ -408,9 +408,7 @@ func sessionHistoryPreparer(history *agent.BoardSnapshot) agent.Preparer {
 		prev *agent.Board,
 	) (*agent.Board, error) {
 		board := agent.RestoreBoard(history)
-		for _, msg := range prev.Channel(agent.MainChannel) {
-			board.AppendChannelMessage(agent.MainChannel, msg)
-		}
+		board.AppendChannelMessages(agent.MainChannel, prev.ChannelView(agent.MainChannel))
 		for key, msgs := range prev.ChannelsCopy() {
 			if key == agent.MainChannel {
 				continue

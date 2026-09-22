@@ -102,6 +102,12 @@ func appendMessagesFromScript(raw any, field string) ([]message.Message, error) 
 	if list, ok := raw.([]any); ok {
 		return messagesFromScript(list, field)
 	}
+	// The empty batch. Lua has a single table type, so an empty list
+	// arrives as an empty map; without this the most common steer case —
+	// an idle queue — would fail validation as a message without a role.
+	if m, ok := raw.(map[string]any); ok && len(m) == 0 {
+		return nil, nil
+	}
 	msg, err := messageFromScript(raw, field)
 	if err != nil {
 		return nil, err
@@ -173,8 +179,15 @@ func toScriptJSON(v any, field string) (any, error) {
 	return out, nil
 }
 
-// asAnyList asserts raw is a []any (the script-side array shape).
+// asAnyList asserts raw is a []any (the script-side array shape). An
+// empty table is the empty list whatever the engine calls it: JS spells
+// it [] and Lua — one table type for lists and message objects alike —
+// arrives as an empty map, which is also the only way a Lua script can
+// spell "no messages".
 func asAnyList(raw any, field string) ([]any, error) {
+	if m, ok := raw.(map[string]any); ok && len(m) == 0 {
+		return nil, nil
+	}
 	list, ok := raw.([]any)
 	if !ok {
 		return nil, errdefs.Validationf("%s: expected an array, got %T", field, raw)

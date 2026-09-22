@@ -93,6 +93,10 @@ func TestBoardBridge_NarrowReadsAndBatchAppend(t *testing.T) {
 
 		// The projection is detached from the board: editing what a read
 		// returned must not edit the channel.
+		var whole = board.channel("main");
+		if (whole.length !== 2) throw new Error("channel(): " + whole.length);
+		whole[0].content.parts[0].text = "MUTATED";
+		if (board.channel("main")[0].content.parts[0].text !== "one") throw new Error("channel() aliased the board");
 		tail[0].content.parts[0].text = "MUTATED";
 		if (board.lastMessage("main").content.parts[0].text !== "two") throw new Error("a read aliased the board");
 

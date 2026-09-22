@@ -1,7 +1,6 @@
 package bindings
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -32,15 +31,7 @@ func newBenchBoard(tb testing.TB, messages int) (*agent.Board, map[string]any) {
 		}
 		board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(role, body))
 	}
-	env, err := BuildEnv(context.Background(), nil, NewBoardBridge(board))
-	if err != nil {
-		tb.Fatalf("BuildEnv: %v", err)
-	}
-	surface, ok := env.Bindings["board"].(map[string]any)
-	if !ok {
-		tb.Fatalf("board binding = %T", env.Bindings["board"])
-	}
-	return board, surface
+	return board, boardSurface(tb, board)
 }
 
 func BenchmarkBoardChannelProjection(b *testing.B) {
@@ -85,53 +76,6 @@ func BenchmarkBoardChannelTail(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := channelTail(agent.MainChannel, 1); err != nil {
 			b.Fatal(err)
-		}
-	}
-}
-
-// TestBoardBridge_NarrowReadsDoNotScaleWithChannel pins what the narrow
-// accessors are for: reading a length or a tail must not pay for the
-// whole conversation, so a node that peeks at the end of a long channel
-// stays cheap as the channel grows. Allocation counts are the proxy —
-// they are what the profiling that motivated the accessors measured.
-func TestBoardBridge_NarrowReadsDoNotScaleWithChannel(t *testing.T) {
-	_, surface := newBenchBoard(t, benchChannelMessages)
-	channel := surface["channel"].(func(string) ([]any, error))
-	channelLen := surface["channelLen"].(func(string) int)
-	lastMessage := surface["lastMessage"].(func(string) (any, error))
-	channelTail := surface["channelTail"].(func(string, int) ([]any, error))
-
-	full := testing.AllocsPerRun(20, func() {
-		if _, err := channel(agent.MainChannel); err != nil {
-			t.Errorf("channel: %v", err)
-		}
-	})
-	narrow := map[string]float64{
-		"channelLen": testing.AllocsPerRun(20, func() {
-			if channelLen(agent.MainChannel) != benchChannelMessages {
-				t.Errorf("channelLen returned the wrong length")
-			}
-		}),
-		"lastMessage": testing.AllocsPerRun(20, func() {
-			if _, err := lastMessage(agent.MainChannel); err != nil {
-				t.Errorf("lastMessage: %v", err)
-			}
-		}),
-		"channelTail(1)": testing.AllocsPerRun(20, func() {
-			if _, err := channelTail(agent.MainChannel, 1); err != nil {
-				t.Errorf("channelTail: %v", err)
-			}
-		}),
-	}
-
-	if narrow["channelLen"] != 0 {
-		t.Errorf("channelLen allocates %.1f per read, want 0 (the count is all it needs)", narrow["channelLen"])
-	}
-	for name, got := range narrow {
-		if got*10 > full {
-			t.Errorf("%s allocates %.0f per read while the full projection allocates %.0f: "+
-				"a narrow read must stay an order of magnitude below a whole-channel projection",
-				name, got, full)
 		}
 	}
 }

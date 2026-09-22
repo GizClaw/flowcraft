@@ -39,6 +39,15 @@ type Cloneable interface {
 // graph.Board it replaces — callers that previously held graph.Board
 // across goroutines do not need to add any new locking.
 //
+// Ownership: a message that reaches a channel is immutable from then on.
+// Every mutating path clones on the way in, and nothing in core rewrites
+// a message already on a channel, which is what lets read paths share
+// the stored value instead of paying for a defensive copy — that is how
+// [Board.ChannelView] serves its caller and what the script-side
+// channel() projection reads through. A caller that wants to keep
+// editing a message it appended, or one it read back, must clone it
+// first.
+//
 // Board is intentionally ignorant of agent concepts. It does not know
 // what "messages", "answer" or "run id" mean; those names are
 // established by callers. Per-execution metadata (ID, Attributes,

@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -261,6 +262,60 @@ func TestBoard_AppendChannelMessages(t *testing.T) {
 	b.AppendChannelMessages("fresh", nil)
 	if got := b.Channel("fresh"); got != nil {
 		t.Errorf("empty batch created channel %+v", got)
+	}
+}
+
+// TestBoard_AppendChannelMessagesLandsUnderOneLock pins the atomicity
+// the batch form buys over a loop of AppendChannelMessage: a concurrent
+// reader sees the whole batch or none of it, never a prefix.
+func TestBoard_AppendChannelMessagesLandsUnderOneLock(t *testing.T) {
+	b := agent.NewBoard()
+	const (
+		batch  = 8
+		rounds = 200
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for r := 0; r < rounds; r++ {
+			msgs := make([]message.Message, batch)
+			for i := range msgs {
+				msgs[i] = message.NewTextMessage(message.RoleUser, "batch-"+strconv.Itoa(r))
+			}
+			b.AppendChannelMessages(agent.MainChannel, msgs)
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			if got := len(b.Channel(agent.MainChannel)); got != rounds*batch {
+				t.Fatalf("final length = %d, want %d", got, rounds*batch)
+			}
+			return
+		default:
+		}
+		n := b.ChannelLen(agent.MainChannel)
+		if n%batch != 0 {
+			t.Fatalf("a concurrent reader saw %d messages, want a multiple of the %d-message batch", n, batch)
+		}
+		if n == 0 {
+			continue
+		}
+		// The tail must come from a single writer's batch: a reader that
+		// could observe a half-applied batch would find two markers in it.
+		tail := b.ChannelTail(agent.MainChannel, batch)
+		if len(tail) != batch {
+			t.Fatalf("tail = %d messages, want %d", len(tail), batch)
+		}
+		marker := tail[0].Content.Text()
+		for i, msg := range tail[1:] {
+			if got := msg.Content.Text(); got != marker {
+				t.Fatalf("a reader saw a batch split across writers: message %d carries %q, want %q",
+					n-batch+i+1, got, marker)
+			}
+		}
 	}
 }
 

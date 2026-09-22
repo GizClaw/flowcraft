@@ -99,7 +99,9 @@ func TestScriptNode_SteerTextLandsAfterTheToolResult(t *testing.T) {
 		board := env.Bindings["board"].(map[string]any)
 		main := board["MAIN_CHANNEL"].(string)
 		appendChannel := board["appendChannel"].(func(string, any) error)
-		channel := board["channel"].(func(string) ([]any, error))
+		channelLen := board["channelLen"].(func(string) int)
+		lastMessage := board["lastMessage"].(func(string) (any, error))
+		channelTail := board["channelTail"].(func(string, int) ([]any, error))
 		drainSteer := env.Bindings["host"].(map[string]any)["drainSteer"].(func() ([]any, error))
 
 		switch nodeID {
@@ -113,12 +115,14 @@ func TestScriptNode_SteerTextLandsAfterTheToolResult(t *testing.T) {
 			}
 		case "steer":
 			// The boundary this node sits on: the round ended with the
-			// tool result, the user's text has not been seen yet.
-			before, err := channel(main)
+			// tool result, the user's text has not been seen yet. The
+			// node needs one field of the last message, not the whole
+			// transcript.
+			before, err := lastMessage(main)
 			if err != nil {
 				return nil, err
 			}
-			drainedAtTool = wireRole(before[len(before)-1]) == string(message.RoleTool)
+			drainedAtTool = before != nil && wireRole(before) == string(message.RoleTool)
 
 			pending, err := drainSteer()
 			if err != nil {
@@ -127,10 +131,10 @@ func TestScriptNode_SteerTextLandsAfterTheToolResult(t *testing.T) {
 			if len(pending) != 1 {
 				t.Errorf("drainSteer returned %d messages, want 1", len(pending))
 			}
-			for _, msg := range pending {
-				if err := appendChannel(main, msg); err != nil {
-					return nil, err
-				}
+			// The canonical node: the drained queue is one batch append,
+			// so a concurrent reader sees all of the correction or none.
+			if err := appendChannel(main, pending); err != nil {
+				return nil, err
 			}
 			// Draining is take-all: the queue is empty for the next
 			// boundary.
@@ -138,7 +142,11 @@ func TestScriptNode_SteerTextLandsAfterTheToolResult(t *testing.T) {
 				t.Errorf("second drainSteer = (%v, %v), want an empty array", again, err)
 			}
 		case "observe":
-			msgs, err := channel(main)
+			if n := channelLen(main); n != 4 {
+				t.Errorf("channelLen at observe = %d, want 4", n)
+			}
+			// A count past the channel's length yields the whole channel.
+			msgs, err := channelTail(main, 8)
 			if err != nil {
 				return nil, err
 			}

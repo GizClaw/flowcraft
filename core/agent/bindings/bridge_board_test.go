@@ -11,14 +11,102 @@ import (
 // call the exposed functions directly: the VM-level contract (JS
 // arrays, numbers, null) is covered by the runtime tests next to the
 // engines.
-func boardSurface(t *testing.T, board *agent.Board) map[string]any {
-	t.Helper()
-	env := mustBuildEnv(t, nil, NewBoardBridge(board))
+func boardSurface(tb testing.TB, board *agent.Board) map[string]any {
+	tb.Helper()
+	env := mustBuildEnv(tb, nil, NewBoardBridge(board))
 	surface, ok := env.Bindings["board"].(map[string]any)
 	if !ok {
-		t.Fatalf("board binding = %T", env.Bindings["board"])
+		tb.Fatalf("board binding = %T", env.Bindings["board"])
 	}
 	return surface
+}
+
+// TestBoardBridge_EmptyBatchIsANoOp pins the shape an idle steer queue
+// arrives in. Both spellings of "nothing" are accepted: JS writes it as
+// an empty array, and Lua — which has one table type — converts an
+// empty table to an empty map at the Go boundary.
+func TestBoardBridge_EmptyBatchIsANoOp(t *testing.T) {
+	board := agent.NewBoard()
+	surface := boardSurface(t, board)
+	appendChannel := surface["appendChannel"].(func(string, any) error)
+	channelLen := surface["channelLen"].(func(string) int)
+
+	for name, raw := range map[string]any{
+		"empty array (js)":  []any{},
+		"empty table (lua)": map[string]any{},
+	} {
+		if err := appendChannel("main", raw); err != nil {
+			t.Errorf("appendChannel(%s) = %v, want a no-op", name, err)
+		}
+	}
+	if got := channelLen("main"); got != 0 {
+		t.Errorf("an empty batch appended %d messages", got)
+	}
+
+	// A non-empty map is still one message object, not a batch.
+	if err := appendChannel("main", textWire("user", "one")); err != nil {
+		t.Fatalf("appendChannel: %v", err)
+	}
+	if got := channelLen("main"); got != 1 {
+		t.Errorf("len after one message = %d, want 1", got)
+	}
+
+	// setChannel takes the same two spellings of "no messages": an empty
+	// array, or the empty table Lua sends instead.
+	setChannel := surface["setChannel"].(func(string, any) error)
+	if err := setChannel("main", map[string]any{}); err != nil {
+		t.Errorf("setChannel(empty table) = %v, want a clear", err)
+	}
+	if got := channelLen("main"); got != 0 {
+		t.Errorf("setChannel(empty table) left %d messages", got)
+	}
+}
+
+// TestBoardBridge_NarrowReadsDoNotScaleWithChannel pins what the narrow
+// accessors are for: reading a length or a tail must not pay for the
+// whole conversation, so a node that peeks at the end of a long channel
+// stays cheap as the channel grows. Allocation counts are the proxy —
+// they are what the profiling that motivated the accessors measured.
+func TestBoardBridge_NarrowReadsDoNotScaleWithChannel(t *testing.T) {
+	_, surface := newBenchBoard(t, benchChannelMessages)
+	channel := surface["channel"].(func(string) ([]any, error))
+	channelLen := surface["channelLen"].(func(string) int)
+	lastMessage := surface["lastMessage"].(func(string) (any, error))
+	channelTail := surface["channelTail"].(func(string, int) ([]any, error))
+
+	full := testing.AllocsPerRun(20, func() {
+		if _, err := channel(agent.MainChannel); err != nil {
+			t.Errorf("channel: %v", err)
+		}
+	})
+	narrow := map[string]float64{
+		"channelLen": testing.AllocsPerRun(20, func() {
+			if channelLen(agent.MainChannel) != benchChannelMessages {
+				t.Errorf("channelLen returned the wrong length")
+			}
+		}),
+		"lastMessage": testing.AllocsPerRun(20, func() {
+			if _, err := lastMessage(agent.MainChannel); err != nil {
+				t.Errorf("lastMessage: %v", err)
+			}
+		}),
+		"channelTail(1)": testing.AllocsPerRun(20, func() {
+			if _, err := channelTail(agent.MainChannel, 1); err != nil {
+				t.Errorf("channelTail: %v", err)
+			}
+		}),
+	}
+
+	if narrow["channelLen"] != 0 {
+		t.Errorf("channelLen allocates %.1f per read, want 0 (the count is all it needs)", narrow["channelLen"])
+	}
+	for name, got := range narrow {
+		if got*10 > full {
+			t.Errorf("%s allocates %.0f per read while the full projection allocates %.0f: "+
+				"a narrow read must stay an order of magnitude below a whole-channel projection",
+				name, got, full)
+		}
+	}
 }
 
 // textWire builds the script-side wire shape of a one-part text message.
