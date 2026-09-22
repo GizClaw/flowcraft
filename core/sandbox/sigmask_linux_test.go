@@ -15,10 +15,13 @@ func sigsetWordBits() int {
 	return int(unsafe.Sizeof(set.Val[0]) * 8)
 }
 
-// sigsetOnly returns a mask that blocks one signal and nothing else.
-func sigsetOnly(sig int) sigset {
+// sigsetOnly returns a mask that blocks exactly the given signals and
+// nothing else.
+func sigsetOnly(sigs ...int) sigset {
 	var set sigset
-	set.Val[(sig-1)/sigsetWordBits()] |= 1 << uint((sig-1)%sigsetWordBits())
+	for _, sig := range sigs {
+		set.Val[(sig-1)/sigsetWordBits()] |= 1 << uint((sig-1)%sigsetWordBits())
+	}
 	return set
 }
 
@@ -27,14 +30,19 @@ func sigsetBlocks(set sigset, sig int) bool {
 	return set.Val[(sig-1)/sigsetWordBits()]&(1<<uint((sig-1)%sigsetWordBits())) != 0
 }
 
-// blockThreadSignal blocks one signal on the calling thread, through the
-// kernel primitive directly. It deliberately does not go through
-// replaceThreadSignalMask: a test that plants its expectations with the
-// helper it is checking cannot tell a thread-scoped write from one that
-// reaches every thread.
-func blockThreadSignal(sig int) error {
-	set := sigsetOnly(sig)
-	return unix.PthreadSigmask(unix.SIG_SETMASK, &set, nil)
+// swapThreadSignalMask replaces the calling thread's mask with set, through
+// the kernel primitive directly, and returns the mask it replaced. It
+// deliberately does not go through replaceThreadSignalMask: a test that
+// plants its expectations with the helper it is checking cannot tell a
+// thread-scoped write from one that reaches every thread. Handing the
+// previous mask back is what lets a caller put the thread right before it
+// unpins.
+func swapThreadSignalMask(set sigset) (sigset, error) {
+	var previous sigset
+	if err := unix.PthreadSigmask(unix.SIG_SETMASK, &set, &previous); err != nil {
+		return sigset{}, err
+	}
+	return previous, nil
 }
 
 // queryThreadSignalMask reads the calling thread's mask without changing

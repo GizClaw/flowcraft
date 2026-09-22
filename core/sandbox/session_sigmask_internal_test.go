@@ -37,6 +37,25 @@ func describeMask(set sigset) string {
 		sigsetBlocks(set, int(syscall.SIGINT)), sigsetBlocks(set, workerSignal))
 }
 
+// putThreadSignalMaskBack restores set on the calling thread and confirms it
+// took. The confirmation matters because the thread is about to unpin and
+// return to the runtime's pool: a restore that silently did nothing would
+// leave the test's own block on a thread that later work inherits.
+func putThreadSignalMaskBack(set sigset) error {
+	if _, err := swapThreadSignalMask(set); err != nil {
+		return err
+	}
+	now, err := queryThreadSignalMask()
+	if err != nil {
+		return err
+	}
+	if now != set {
+		return fmt.Errorf("the mask did not come back: %s, want %s",
+			describeMask(now), describeMask(set))
+	}
+	return nil
+}
+
 // sleepCommand returns a child that would outlive the test, so an
 // interrupt that goes missing shows up as a deadline instead of a fast,
 // unremarkable exit.
@@ -60,7 +79,9 @@ func sleepCommand(t *testing.T) *exec.Cmd {
 // bystander never does. A process-wide clear drops the bystander's block;
 // a process-wide restore hands it the spawner's. Both blocks are planted
 // with the platform primitive rather than replaceThreadSignalMask, so the
-// test cannot inherit the behaviour it is checking.
+// test cannot inherit the behaviour it is checking, and both threads put
+// their mask back before they unpin: a planted block left behind rides the
+// thread into the runtime's pool and reappears in whatever runs on it next.
 func TestSpawnLeavesOtherThreadsMasksAlone(t *testing.T) {
 	for name, spec := range spawnSpecs() {
 		t.Run(name, func(t *testing.T) {
@@ -75,16 +96,24 @@ func TestSpawnLeavesOtherThreadsMasksAlone(t *testing.T) {
 			release := make(chan struct{})
 			before := make(chan report, 1)
 			after := make(chan report, 1)
+			// restored carries the bystander's own account of putting its
+			// mask back, so the subtest does not end while the thread it
+			// pinned is still dirty.
+			restored := make(chan error, 1)
 
 			go func() {
 				runtime.LockOSThread()
 				defer runtime.UnlockOSThread()
-				if err := blockThreadSignal(workerSignal); err != nil {
+				previous, err := swapThreadSignalMask(sigsetOnly(workerSignal))
+				if err != nil {
 					before <- report{err: err}
 					after <- report{err: err}
+					restored <- err
 					close(ready)
 					return
 				}
+				defer func() { restored <- putThreadSignalMaskBack(previous) }()
+
 				mask, err := queryThreadSignalMask()
 				before <- report{mask: mask, err: err}
 				close(ready)
@@ -101,9 +130,18 @@ func TestSpawnLeavesOtherThreadsMasksAlone(t *testing.T) {
 					describeMask(got.mask))
 			}
 
-			if err := blockThreadSignal(int(syscall.SIGINT)); err != nil {
+			spawnerPrevious, err := swapThreadSignalMask(sigsetOnly(int(syscall.SIGINT)))
+			if err != nil {
 				t.Fatalf("block SIGINT on the spawning thread: %v", err)
 			}
+			// Same bookkeeping as the bystander: this thread stays pinned
+			// for the whole subtest, so the block comes off before the pin
+			// drops.
+			defer func() {
+				if err := putThreadSignalMaskBack(spawnerPrevious); err != nil {
+					t.Errorf("put the spawning thread's mask back: %v", err)
+				}
+			}()
 			spawnerBefore, err := queryThreadSignalMask()
 			if err != nil {
 				t.Fatalf("read the spawner's mask: %v", err)
@@ -142,6 +180,9 @@ func TestSpawnLeavesOtherThreadsMasksAlone(t *testing.T) {
 						describeMask(got.mask))
 				}
 			}
+			if err := <-restored; err != nil {
+				t.Fatalf("put the bystander thread's mask back: %v", err)
+			}
 
 			if spawnerAfter, err := queryThreadSignalMask(); err != nil {
 				t.Fatalf("read the spawner's mask: %v", err)
@@ -171,13 +212,15 @@ func TestInterruptEndsAChildSpawnedFromABlockedMask(t *testing.T) {
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 
-			previous, err := replaceThreadSignalMask(sigsetOnly(int(syscall.SIGINT)))
+			previous, err := swapThreadSignalMask(sigsetOnly(int(syscall.SIGINT)))
 			if err != nil {
 				t.Fatalf("block SIGINT on the spawning thread: %v", err)
 			}
+			// Put back before the pin drops, so the thread does not carry
+			// the planted block into the pool.
 			defer func() {
-				if _, err := replaceThreadSignalMask(previous); err != nil {
-					t.Errorf("restore the spawning thread's mask: %v", err)
+				if err := putThreadSignalMaskBack(previous); err != nil {
+					t.Errorf("put the spawning thread's mask back: %v", err)
 				}
 			}()
 
@@ -230,7 +273,7 @@ func TestInterruptEndsAChildSpawnedFromABlockedMask(t *testing.T) {
 func TestStartWithCleanSignalMaskContract(t *testing.T) {
 	blockSigint := func(t *testing.T) sigset {
 		t.Helper()
-		previous, err := replaceThreadSignalMask(sigsetOnly(int(syscall.SIGINT)))
+		previous, err := swapThreadSignalMask(sigsetOnly(int(syscall.SIGINT)))
 		if err != nil {
 			t.Fatalf("block SIGINT on the calling thread: %v", err)
 		}
@@ -248,12 +291,29 @@ func TestStartWithCleanSignalMaskContract(t *testing.T) {
 	t.Run("the callback sees an empty mask and the caller's mask comes back", func(t *testing.T) {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		previous := blockSigint(t)
+		// Two signals, not one: the callback's mask is compared whole
+		// below, so a clear that happens to move SIGINT alone is not a
+		// clear. Planted through the primitive, so the expected mask does
+		// not depend on what this thread inherited from the pool.
+		planted := sigsetOnly(int(syscall.SIGINT), workerSignal)
+		previous, err := swapThreadSignalMask(planted)
+		if err != nil {
+			t.Fatalf("block SIGINT and SIGUSR1 on the calling thread: %v", err)
+		}
 		defer func() {
-			if _, err := replaceThreadSignalMask(previous); err != nil {
-				t.Errorf("restore the calling thread's mask: %v", err)
+			if err := putThreadSignalMaskBack(previous); err != nil {
+				t.Errorf("put the calling thread's mask back: %v", err)
 			}
 		}()
+
+		// Positive control: the callback has to be seen clearing a mask
+		// this test planted, not one the thread arrived with.
+		if now, err := queryThreadSignalMask(); err != nil {
+			t.Fatalf("read the calling thread's mask: %v", err)
+		} else if now != planted {
+			t.Fatalf("calling thread's mask before the spawn = %s, want the planted SIGINT+SIGUSR1 block",
+				describeMask(now))
+		}
 
 		var observed sigset
 		if err := startWithCleanSignalMask(func() error {
@@ -263,10 +323,18 @@ func TestStartWithCleanSignalMaskContract(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("startWithCleanSignalMask: %v", err)
 		}
-		if sigsetBlocks(observed, int(syscall.SIGINT)) {
-			t.Fatalf("the spawn callback ran with SIGINT still blocked: %s", describeMask(observed))
+		if observed != emptySigset() {
+			t.Fatalf("the spawn callback ran with a non-empty mask: %s",
+				describeMask(observed))
 		}
-		assertSigintStillBlocked(t, "after a successful spawn")
+		// The whole mask comes back, not just the signal whose clear was
+		// being watched.
+		if back, err := queryThreadSignalMask(); err != nil {
+			t.Fatalf("read the calling thread's mask: %v", err)
+		} else if back != planted {
+			t.Fatalf("calling thread's mask after a successful spawn = %s, want the planted block back",
+				describeMask(back))
+		}
 	})
 
 	t.Run("a failed spawn still restores the caller's mask", func(t *testing.T) {
@@ -275,8 +343,8 @@ func TestStartWithCleanSignalMaskContract(t *testing.T) {
 		defer runtime.UnlockOSThread()
 		previous := blockSigint(t)
 		defer func() {
-			if _, err := replaceThreadSignalMask(previous); err != nil {
-				t.Errorf("restore the calling thread's mask: %v", err)
+			if err := putThreadSignalMaskBack(previous); err != nil {
+				t.Errorf("put the calling thread's mask back: %v", err)
 			}
 		}()
 
