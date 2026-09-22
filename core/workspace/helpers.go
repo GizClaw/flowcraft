@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -62,13 +63,19 @@ type WalkFunc func(path string, entry fs.DirEntry) error
 
 // Walk recursively traverses the workspace tree rooted at dir, calling fn
 // for each file and directory. Directories are visited before their contents.
+// Paths passed to fn are slash-separated on every platform: workspace paths
+// are a portable namespace, not host filesystem paths.
 func Walk(ctx context.Context, ws Workspace, dir string, fn WalkFunc) error {
 	entries, err := ws.List(ctx, dir)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		child := filepath.Join(dir, entry.Name())
+		// Workspace paths are slash-separated on every platform; a
+		// platform separator would make the returned paths unusable for
+		// callers that build further workspace paths with path.Join or
+		// compare against "/"-rooted prefixes.
+		child := pathpkg.Join(dir, entry.Name())
 		if err := fn(child, entry); err != nil {
 			if err == filepath.SkipDir {
 				continue
@@ -96,18 +103,18 @@ func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		// filepath.Join(".", name) is already Clean, so path carries no
+		// path.Join(".", name) is already Clean, so path carries no
 		// leading "./" — it is relative to the workspace root as-is.
 		var matched bool
 		if hasDoublestar {
 			matched = matchDoublestar(pattern, foldCase(path))
 		} else {
 			var matchErr error
-			// Normalise "/" in caller patterns to the platform
-			// separator: filepath.Match on Windows treats "\" as the
-			// path separator and "/" as a literal, so a portable
-			// "src/*.go" pattern would otherwise never match.
-			matched, matchErr = filepath.Match(filepath.FromSlash(pattern), foldCase(path))
+			// Walk yields slash-separated paths on every platform, so
+			// match with path.Match: filepath.Match uses the platform
+			// separator, and on Windows a "src/*.go" pattern would never
+			// match the slash form of a nested workspace path.
+			matched, matchErr = pathpkg.Match(pattern, foldCase(path))
 			if matchErr != nil {
 				return matchErr
 			}
@@ -194,7 +201,7 @@ func matchParts(pattern, path []string) bool {
 		if len(path) == 0 {
 			return false
 		}
-		matched, _ := filepath.Match(pattern[0], path[0])
+		matched, _ := pathpkg.Match(pattern[0], path[0])
 		if !matched {
 			return false
 		}

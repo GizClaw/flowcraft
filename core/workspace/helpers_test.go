@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,9 @@ func TestWalk(t *testing.T) {
 
 	var files []string
 	err := Walk(context.Background(), ws, ".", func(path string, entry fs.DirEntry) error {
+		if strings.ContainsRune(path, '\\') {
+			t.Errorf("Walk path %q uses a platform separator, want slash-separated workspace paths", path)
+		}
 		if !entry.IsDir() {
 			files = append(files, path)
 		}
@@ -90,8 +94,14 @@ func TestWalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 3 {
-		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
+	want := []string{"a.txt", "sub/b.txt", "sub/deep/c.txt"}
+	if len(files) != len(want) {
+		t.Fatalf("expected %v, got %v", want, files)
+	}
+	for index, value := range want {
+		if files[index] != value {
+			t.Fatalf("expected %v, got %v", want, files)
+		}
 	}
 }
 
@@ -103,6 +113,9 @@ func TestWalk_SkipDir(t *testing.T) {
 
 	var visited []string
 	err := Walk(context.Background(), ws, ".", func(path string, entry fs.DirEntry) error {
+		if strings.ContainsRune(path, '\\') {
+			t.Errorf("Walk path %q uses a platform separator, want slash-separated workspace paths", path)
+		}
 		if entry.IsDir() && entry.Name() == "skip" {
 			return filepath.SkipDir
 		}
@@ -112,9 +125,13 @@ func TestWalk_SkipDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range visited {
-		if p == "skip/2.txt" || p == "skip" {
-			t.Fatalf("should have skipped %q", p)
+	want := []string{"a", "a/1.txt", "b", "b/3.txt"}
+	if len(visited) != len(want) {
+		t.Fatalf("expected %v, got %v", want, visited)
+	}
+	for index, value := range want {
+		if visited[index] != value {
+			t.Fatalf("expected %v, got %v", want, visited)
 		}
 	}
 }
@@ -176,8 +193,14 @@ func TestGlob_SingleLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 2 {
-		t.Fatalf("expected 2, got %d: %v", len(matches), matches)
+	want := []string{"src/main.go", "src/util.go"}
+	if len(matches) != len(want) {
+		t.Fatalf("expected %v, got %v", want, matches)
+	}
+	for index, value := range want {
+		if matches[index] != value {
+			t.Fatalf("expected %v, got %v", want, matches)
+		}
 	}
 }
 
