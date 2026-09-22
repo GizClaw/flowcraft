@@ -63,6 +63,58 @@ func TestBoardBridge_Channel_ReadAfterAppendChannel(t *testing.T) {
 	}
 }
 
+func TestBoardBridge_NarrowReadsAndBatchAppend(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	board := agent.NewBoard()
+
+	env := buildEnv(t, nil, bindings.NewBoardBridge(board))
+	_, err := rt.Exec(context.Background(), "channel-narrow", `
+		// One call appends a batch the script already holds.
+		board.appendChannel("main", [
+			{ role: "user", content: { parts: [{ type: "text", text: "one" }] } },
+			{ role: "user", content: { parts: [{ type: "text", text: "two" }] } }
+		]);
+		if (board.channelLen("main") !== 2) throw new Error("channelLen after batch: " + board.channelLen("main"));
+
+		var last = board.lastMessage("main");
+		if (!last) throw new Error("lastMessage returned nothing");
+		if (last.role !== "user") throw new Error("lastMessage role: " + last.role);
+		if (last.content.parts[0].text !== "two") throw new Error("lastMessage text: " + last.content.parts[0].text);
+
+		var tail = board.channelTail("main", 1);
+		if (tail.length !== 1 || tail[0].content.parts[0].text !== "two") throw new Error("channelTail(1)");
+		if (board.channelTail("main", 99).length !== 2) throw new Error("channelTail past the head should yield the whole channel");
+		if (board.channelTail("main", 0).length !== 0) throw new Error("channelTail(0) should be empty");
+
+		// Empty channels read as empty, never undefined.
+		if (board.channelLen("missing") !== 0) throw new Error("channelLen on a missing channel");
+		if (board.lastMessage("missing") !== null) throw new Error("lastMessage on a missing channel should be null");
+		if (board.channelTail("missing", 3).length !== 0) throw new Error("channelTail on a missing channel");
+
+		// The projection is detached from the board: editing what a read
+		// returned must not edit the channel.
+		tail[0].content.parts[0].text = "MUTATED";
+		if (board.lastMessage("main").content.parts[0].text !== "two") throw new Error("a read aliased the board");
+
+		// A batch validates as a whole: a bad message lands none of it.
+		var before = board.channelLen("main");
+		var threw = false;
+		try {
+			board.appendChannel("main", [
+				{ role: "user", content: { parts: [{ type: "text", text: "three" }] } },
+				{ role: "bogus", content: { parts: [{ type: "text", text: "four" }] } }
+			]);
+		} catch (e) {
+			threw = true;
+		}
+		if (!threw) throw new Error("a bad batch should throw");
+		if (board.channelLen("main") !== before) throw new Error("a failed batch appended messages");
+	`, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestBoardBridge_Channel_RoundTripViaSetChannel(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
 	board := agent.NewBoard()

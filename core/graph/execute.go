@@ -372,7 +372,7 @@ func (g *Graph) validateReads(board *agent.Board, slot *nodeSlot) error {
 					g.name, slot.def.ID, r.Key)
 			}
 		case RoleMessages:
-			if r.Required && len(board.Channel(r.Key)) == 0 {
+			if r.Required && board.ChannelLen(r.Key) == 0 {
 				return errdefs.Validationf(
 					"graph %q node %q: required channel %q is empty",
 					g.name, slot.def.ID, r.Key)
@@ -394,7 +394,7 @@ func (g *Graph) validateWrites(board *agent.Board, slot *nodeSlot, preInvoke map
 					g.name, slot.def.ID, w.Key)
 			}
 		case RoleMessages:
-			if w.Required && len(board.Channel(w.Key)) <= preInvoke[w.Key] {
+			if w.Required && board.ChannelLen(w.Key) <= preInvoke[w.Key] {
 				return errdefs.Validationf(
 					"graph %q node %q: handler did not append to required channel %q",
 					g.name, slot.def.ID, w.Key)
@@ -795,7 +795,7 @@ func channelLengths(board *agent.Board, roles []resolvedRole) map[string]int {
 	lengths := map[string]int{}
 	for _, w := range roles {
 		if w.Kind == RoleMessages {
-			lengths[w.Key] = len(board.Channel(w.Key))
+			lengths[w.Key] = board.ChannelLen(w.Key)
 		}
 	}
 	return lengths

@@ -598,8 +598,11 @@ Direct read/write of the engine board.
 | `board.resolve(str)`             | `any` — typed `${board:*}` expansion                              |
 | `board.resolveString(str)`       | `string` — text `${board:*}` expansion                            |
 | `board.channel(name)`            | `array` of message objects (never null)                           |
+| `board.channelLen(name)`         | `number` — message count                                          |
+| `board.lastMessage(name)`        | last message object, or `null` when the channel is empty          |
+| `board.channelTail(name, count)` | `array` — the last `count` message objects, in channel order      |
 | `board.setChannel(name, msgs)`   | throws on validation errors                                       |
-| `board.appendChannel(name, msg)` | throws on validation errors                                       |
+| `board.appendChannel(name, msg)` | throws on validation errors; `msg` is one message or an array     |
 | `board.MAIN_CHANNEL`             | the reserved default channel name (use it instead of the literal) |
 
 `resolve` / `resolveString` run the same `${board:*}` expansion the
@@ -610,6 +613,14 @@ Messages use the inference wire format: `{role, content: {parts: [...]}}`
 with parts like `{"type": "text", "text": "..."}` or
 `{"type": "image", "source": {...}}`. Decoding is strict, so typos surface
 as errors.
+
+`channel` projects every message into a fresh object, so a node that only
+needs the size or the tail of a long conversation should read through the
+narrow accessors instead: `channelLen` is a count, `lastMessage` is the
+tail, `channelTail` is the last `count` messages. They touch the channel
+header and the tail alone. Reads are detached — editing what one returned
+never edits the board — and `appendChannel` copies what it appends, so a
+batch a script built stays its own.
 
 ```js
 board.setVar("plan", "1. read files\n2. summarize");
@@ -667,11 +678,12 @@ and empties it — `[]` when nothing is queued. The result uses the same wire
 shape `board.appendChannel` accepts, so the canonical steer node is:
 
 ```js
-var pending = host.drainSteer();
-for (var i = 0; i < pending.length; i++) {
-  board.appendChannel(board.MAIN_CHANNEL, pending[i]);
-}
+board.appendChannel(board.MAIN_CHANNEL, host.drainSteer());
 ```
+
+Passing the array appends the whole batch in one call; validation covers
+the batch, so a batch that fails lands none of it. Appending the messages
+one at a time is the same append for a batch core produced.
 
 The document declares *where* steer text lands by placing such a node, just
 like any other step: the usual position is a round boundary
@@ -918,7 +930,7 @@ busy VM degrades to a `not_available` signal instead of panicking.
 
 ```js
 // nodes/finalize.js
-var last = board.channel(board.MAIN_CHANNEL).at(-1);
+var last = board.lastMessage(board.MAIN_CHANNEL);
 board.setVar("summary", last.content.parts[0].text);
 host.emit("token", "done: " + run.get_run_id());
 ```
