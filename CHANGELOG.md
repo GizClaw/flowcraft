@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.6` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.7` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.7` - 2026-09-22
+
+### Changed
+
+- feat(core): add narrow board channel reads for hot script paths — Board.ChannelLen(name) reads the count from the channel header without allocating, Board.LastMessage(name) returns one message as (message.Message, bool) matching PopChannelMessage, Board.ChannelTail(name, count) returns the last count messages in channel order, Board.ChannelView(name) hands out a private slice over the shared messages so Channel projects through it and drops the defensive deep copy it paid before, and Board.AppendChannelMessages(name, msgs) lands a batch under one lock (AppendChannelMessage is now its one-message case) so a concurrent reader sees all of the batch or none of it; "a message on a channel is immutable" is now the Board type's contract rather than a note on ChannelView, so core must never mutate a message the board holds and a middleware that skips a copy is a documented violation instead of a surprise; core/agent/bindings adds board.channelLen(name) (must not allocate), board.lastMessage(name) (null on an empty channel) and board.channelTail(name, count) to the script surface, board.appendChannel(name, msg) accepts a message object or an array of them validated as a whole so a bad entry lands none of it, an empty table is the empty list under Lua (its single table type spells a batch and a message alike), so appendChannel(name, {}) is an empty batch instead of a message without a role and setChannel(name, {}) can clear a channel — without which a Lua script had no way to say "no messages" at all — a rejected append throws under JS while Lua reads the reason from the return value, and board.channel() stays detached from the board; call sites that only measured a channel read it through ChannelLen (core/graph execute.go seed length, validateReads / validateWrites / channelLengths) and core/runtime/session's sessionHistoryPreparer appends through the batch API over ChannelView, dropping a copy it paid before; docs/guides/graph.md and the flowcraft-config skill reference document the new surface, including that the canonical steer node binds host.drainSteer() before appending — a host.* call in argument position expands to both of its return values under Lua ("expected 2 arguments, got 3") — and what each runtime does with a rejected append.
 
 ## `core/v0.4.6` - 2026-09-20
 
