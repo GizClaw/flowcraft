@@ -39,6 +39,15 @@ type Cloneable interface {
 // graph.Board it replaces — callers that previously held graph.Board
 // across goroutines do not need to add any new locking.
 //
+// Ownership: a message that reaches a channel is immutable from then on.
+// Every mutating path clones on the way in, and nothing in core rewrites
+// a message already on a channel, which is what lets read paths share
+// the stored value instead of paying for a defensive copy — that is how
+// [Board.ChannelView] serves its caller and what the script-side
+// channel() projection reads through. A caller that wants to keep
+// editing a message it appended, or one it read back, must clone it
+// first.
+//
 // Board is intentionally ignorant of agent concepts. It does not know
 // what "messages", "answer" or "run id" mean; those names are
 // established by callers. Per-execution metadata (ID, Attributes,
@@ -202,6 +211,70 @@ func (b *Board) Channel(name string) []message.Message {
 	return message.CloneMessages(msgs)
 }
 
+// ChannelLen returns the number of messages on a channel without
+// copying them. Callers that only need the count should use it:
+// [Board.Channel] deep-copies the whole channel, which a len() check
+// pays for nothing.
+func (b *Board) ChannelLen(name string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.channels[name])
+}
+
+// LastMessage returns a copy of the last message on a channel. The
+// boolean is false for an empty or missing channel, matching
+// [Board.PopChannelMessage]. Use it instead of reading the whole
+// channel to look at its tail.
+func (b *Board) LastMessage(name string) (message.Message, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	msgs := b.channels[name]
+	if len(msgs) == 0 {
+		return message.Message{}, false
+	}
+	return msgs[len(msgs)-1].Clone(), true
+}
+
+// ChannelTail returns a copy of the last count messages of a channel,
+// in channel order. A non-positive count, an empty channel and a
+// missing channel all yield nil; a count past the channel's length
+// yields the whole channel. Only the tail is copied, so inspecting the
+// end of a long channel does not pay for its head.
+func (b *Board) ChannelTail(name string, count int) []message.Message {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	msgs := b.channels[name]
+	if count <= 0 || len(msgs) == 0 {
+		return nil
+	}
+	if count < len(msgs) {
+		msgs = msgs[len(msgs)-count:]
+	}
+	return message.CloneMessages(msgs)
+}
+
+// ChannelView returns a read-only view of a channel's messages: the
+// returned slice belongs to the caller (assigning, reordering and
+// slicing its elements is safe), while the messages and their parts
+// are shared with the Board and must never be mutated.
+//
+// It exists for read paths that hand the messages straight to a
+// projection (encoding, marshalling, size accounting) where
+// [Board.Channel]'s deep copy is pure overhead. Anything that retains
+// what it reads, mutates it, or hands it to third-party callers must
+// use [Board.Channel] instead.
+func (b *Board) ChannelView(name string) []message.Message {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	msgs := b.channels[name]
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]message.Message, len(msgs))
+	copy(out, msgs)
+	return out
+}
+
 // SetChannel replaces the entire message list for a channel. The input
 // slice is copied; later mutations by the caller do not affect the
 // Board.
@@ -217,11 +290,27 @@ func (b *Board) SetChannel(name string, msgs []message.Message) {
 // AppendChannelMessage appends a message to a channel, creating the
 // channel on demand.
 func (b *Board) AppendChannelMessage(name string, msg message.Message) {
+	b.AppendChannelMessages(name, []message.Message{msg})
+}
+
+// AppendChannelMessages appends msgs to a channel in order, creating
+// the channel on demand. The batch lands under one lock, so a
+// concurrent reader sees either none of it or all of it, and every
+// message is copied: later mutations by the caller do not affect the
+// Board.
+func (b *Board) AppendChannelMessages(name string, msgs []message.Message) {
+	if len(msgs) == 0 {
+		return
+	}
 	b.mu.Lock()
 	if b.channels == nil {
 		b.channels = map[string][]message.Message{}
 	}
-	b.channels[name] = append(b.channels[name], msg.Clone())
+	msgsOut := b.channels[name]
+	for _, msg := range msgs {
+		msgsOut = append(msgsOut, msg.Clone())
+	}
+	b.channels[name] = msgsOut
 	b.mu.Unlock()
 }
 

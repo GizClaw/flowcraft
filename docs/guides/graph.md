@@ -598,8 +598,11 @@ Direct read/write of the engine board.
 | `board.resolve(str)`             | `any` — typed `${board:*}` expansion                              |
 | `board.resolveString(str)`       | `string` — text `${board:*}` expansion                            |
 | `board.channel(name)`            | `array` of message objects (never null)                           |
+| `board.channelLen(name)`         | `number` — message count                                          |
+| `board.lastMessage(name)`        | last message object, or `null` when the channel is empty          |
+| `board.channelTail(name, count)` | `array` — the last `count` message objects, in channel order      |
 | `board.setChannel(name, msgs)`   | throws on validation errors                                       |
-| `board.appendChannel(name, msg)` | throws on validation errors                                       |
+| `board.appendChannel(name, msg)` | throws on validation errors; `msg` is one message or an array     |
 | `board.MAIN_CHANNEL`             | the reserved default channel name (use it instead of the literal) |
 
 `resolve` / `resolveString` run the same `${board:*}` expansion the
@@ -610,6 +613,22 @@ Messages use the inference wire format: `{role, content: {parts: [...]}}`
 with parts like `{"type": "text", "text": "..."}` or
 `{"type": "image", "source": {...}}`. Decoding is strict, so typos surface
 as errors.
+
+`channel` projects every message into a fresh object, so a node that only
+needs the size or the tail of a long conversation should read through the
+narrow accessors instead: `channelLen` is a count, `lastMessage` is the
+tail, `channelTail` is the last `count` messages. They touch the channel
+header and the tail alone. Reads are detached — editing what one returned
+never edits the board — and `appendChannel` copies what it appends, so a
+batch a script built stays its own.
+
+`lastMessage` answers `null` on an empty channel, so guard the fields you
+read off it. The array form of `appendChannel` lands a whole batch under
+one lock — a concurrent reader sees all of it or none of it — and
+validates the batch before anything is appended, so a batch that fails
+lands none of it. An empty list is not an error either way: an empty batch
+appends nothing, and `setChannel` with an empty list clears the channel.
+Lua spells both as the empty table.
 
 ```js
 board.setVar("plan", "1. read files\n2. summarize");
@@ -668,10 +687,21 @@ shape `board.appendChannel` accepts, so the canonical steer node is:
 
 ```js
 var pending = host.drainSteer();
-for (var i = 0; i < pending.length; i++) {
-  board.appendChannel(board.MAIN_CHANNEL, pending[i]);
-}
+board.appendChannel(board.MAIN_CHANNEL, pending);
 ```
+
+Binding the drain before appending is what keeps the node portable: in
+argument position a `host.*` call expands to both of its return values
+under Lua, where the binding reads the second one as an extra argument
+(`expected 2 arguments, got 3`). Appending the array lands the whole batch
+in one call, under one lock, so a concurrent reader sees all of the
+correction or none of it — a per-message loop can expose a prefix. An
+empty queue appends nothing and is not an error.
+
+Under JS a rejected append throws. Under Lua the binding reports the same
+rejection as its return value instead — Lua has no exception to catch —
+so a Lua steer node that must not pass a bad batch silently checks it:
+`local err = board.appendChannel(...)`; `if err then error(err) end`.
 
 The document declares *where* steer text lands by placing such a node, just
 like any other step: the usual position is a round boundary
@@ -918,8 +948,8 @@ busy VM degrades to a `not_available` signal instead of panicking.
 
 ```js
 // nodes/finalize.js
-var last = board.channel(board.MAIN_CHANNEL).at(-1);
-board.setVar("summary", last.content.parts[0].text);
+var last = board.lastMessage(board.MAIN_CHANNEL);
+if (last) board.setVar("summary", last.content.parts[0].text);
 host.emit("token", "done: " + run.get_run_id());
 ```
 

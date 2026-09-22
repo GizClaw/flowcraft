@@ -207,7 +207,7 @@ func Execute(
 		}
 		// Messages at or before this index are seed/context, never output
 		// of this attempt. The engine's appended messages start after it.
-		seedLen = len(board.Channel(MainChannel))
+		seedLen = board.ChannelLen(MainChannel)
 
 		// Run is rebuilt each attempt: ResumeFrom is honoured
 		// for attempt 1 only (revise is not "resume", it is a fresh

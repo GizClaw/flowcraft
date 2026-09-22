@@ -10,7 +10,7 @@ import (
 )
 
 // mustBuildEnv assembles a script env for tests.
-func mustBuildEnv(t *testing.T, config map[string]any, fns ...BindingFunc) *agent.ScriptEnv {
+func mustBuildEnv(t testing.TB, config map[string]any, fns ...BindingFunc) *agent.ScriptEnv {
 	t.Helper()
 	env, err := BuildEnv(context.Background(), config, fns...)
 	if err != nil {

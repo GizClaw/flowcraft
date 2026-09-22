@@ -93,21 +93,55 @@ func messagesFromScript(raw any, field string) ([]message.Message, error) {
 	return msgs, nil
 }
 
+// appendMessagesFromScript converts what appendChannel accepts: one
+// message object, or an array of them. A script that already holds a
+// batch (a drained steer queue, a list it just built) lands it in one
+// call instead of reading the channel back per item; validation covers
+// the whole batch before any of it is appended.
+func appendMessagesFromScript(raw any, field string) ([]message.Message, error) {
+	if list, ok := raw.([]any); ok {
+		return messagesFromScript(list, field)
+	}
+	// The empty batch. Lua has a single table type, so an empty list
+	// arrives as an empty map; without this the most common steer case —
+	// an idle queue — would fail validation as a message without a role.
+	if m, ok := raw.(map[string]any); ok && len(m) == 0 {
+		return nil, nil
+	}
+	msg, err := messageFromScript(raw, field)
+	if err != nil {
+		return nil, err
+	}
+	return []message.Message{msg}, nil
+}
+
+// messageToScript projects one message into a script-facing object.
+// field prefixes the error path.
+func messageToScript(m message.Message, field string) (map[string]any, error) {
+	buf, err := json.Marshal(m)
+	if err != nil {
+		return nil, errdefs.Internalf("%s: message is not JSON-encodable: %v", field, err)
+	}
+	var mm map[string]any
+	if err := json.Unmarshal(buf, &mm); err != nil {
+		return nil, errdefs.Internalf("%s: %v", field, err)
+	}
+	return mm, nil
+}
+
 // messagesToScript projects messages into script-facing objects. Nil
-// stays nil so scripts can distinguish "no messages" from "empty".
+// stays nil so scripts can distinguish "no messages" from "empty". The
+// projection never aliases its input, so callers may read the messages
+// through Board.ChannelView rather than paying for a defensive copy.
 func messagesToScript(msgs []message.Message) ([]any, error) {
 	if msgs == nil {
 		return nil, nil
 	}
 	out := make([]any, len(msgs))
 	for i, m := range msgs {
-		buf, err := json.Marshal(m)
+		mm, err := messageToScript(m, "messages["+itoa(i)+"]")
 		if err != nil {
-			return nil, errdefs.Internalf("messages[%d]: message is not JSON-encodable: %v", i, err)
-		}
-		var mm map[string]any
-		if err := json.Unmarshal(buf, &mm); err != nil {
-			return nil, errdefs.Internalf("messages[%d]: %v", i, err)
+			return nil, err
 		}
 		out[i] = mm
 	}
@@ -145,8 +179,15 @@ func toScriptJSON(v any, field string) (any, error) {
 	return out, nil
 }
 
-// asAnyList asserts raw is a []any (the script-side array shape).
+// asAnyList asserts raw is a []any (the script-side array shape). An
+// empty table is the empty list whatever the engine calls it: JS spells
+// it [] and Lua — one table type for lists and message objects alike —
+// arrives as an empty map, which is also the only way a Lua script can
+// spell "no messages".
 func asAnyList(raw any, field string) ([]any, error) {
+	if m, ok := raw.(map[string]any); ok && len(m) == 0 {
+		return nil, nil
+	}
 	list, ok := raw.([]any)
 	if !ok {
 		return nil, errdefs.Validationf("%s: expected an array, got %T", field, raw)

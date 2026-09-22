@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -135,6 +136,186 @@ func TestBoard_ChannelDeepCopiesMessagePartsOnRead(t *testing.T) {
 	}
 	if url := again[0].Content.Parts[1].(message.ImagePart).Source.URL(); url != "https://img.example.com/x.png" {
 		t.Errorf("Channel leaked media mutation: %q", url)
+	}
+}
+
+func TestBoard_ChannelLen(t *testing.T) {
+	b := agent.NewBoard()
+	if got := b.ChannelLen(agent.MainChannel); got != 0 {
+		t.Errorf("empty MainChannel len = %d, want 0", got)
+	}
+	if got := b.ChannelLen("missing"); got != 0 {
+		t.Errorf("missing channel len = %d, want 0", got)
+	}
+
+	b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "a"))
+	b.AppendChannelMessages("alt", []message.Message{
+		message.NewTextMessage(message.RoleUser, "b"),
+		message.NewTextMessage(message.RoleAssistant, "c"),
+	})
+
+	if got := b.ChannelLen(agent.MainChannel); got != 1 {
+		t.Errorf("MainChannel len = %d, want 1", got)
+	}
+	if got := b.ChannelLen("alt"); got != 2 {
+		t.Errorf("alt len = %d, want 2", got)
+	}
+}
+
+func TestBoard_LastMessage(t *testing.T) {
+	b := agent.NewBoard()
+	if _, ok := b.LastMessage(agent.MainChannel); ok {
+		t.Error("empty channel should report no last message")
+	}
+	b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "first"))
+	b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "second"))
+
+	got, ok := b.LastMessage(agent.MainChannel)
+	if !ok || got.Role != message.RoleAssistant || got.Content.Text() != "second" {
+		t.Fatalf("LastMessage = (%q, %v), want assistant/second/true", got.Content.Text(), ok)
+	}
+
+	// The result is a copy: mutating it must not reach the board.
+	got.Content.Parts[0] = message.TextPart{Text: "MUTATED"}
+	again, _ := b.LastMessage(agent.MainChannel)
+	if text := again.Content.Parts[0].(message.TextPart).Text; text != "second" {
+		t.Errorf("LastMessage leaked part mutation: %q", text)
+	}
+}
+
+func TestBoard_ChannelTail(t *testing.T) {
+	b := agent.NewBoard()
+	for _, text := range []string{"a", "b", "c"} {
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, text))
+	}
+
+	for _, tt := range []struct {
+		count int
+		want  int
+	}{{2, 2}, {3, 3}, {5, 3}, {0, 0}, {-1, 0}} {
+		if got := b.ChannelTail(agent.MainChannel, tt.count); len(got) != tt.want {
+			t.Errorf("ChannelTail(%d) len = %d, want %d", tt.count, len(got), tt.want)
+		}
+	}
+	if got := b.ChannelTail("missing", 2); got != nil {
+		t.Errorf("ChannelTail on missing channel = %+v, want nil", got)
+	}
+
+	// The tail keeps channel order and ends at the channel's last message.
+	got := b.ChannelTail(agent.MainChannel, 2)
+	if got[0].Content.Text() != "b" || got[1].Content.Text() != "c" {
+		t.Fatalf("ChannelTail = [%q %q], want [b c]", got[0].Content.Text(), got[1].Content.Text())
+	}
+	got[1].Content.Parts[0] = message.TextPart{Text: "MUTATED"}
+	again := b.ChannelTail(agent.MainChannel, 2)
+	if text := again[1].Content.Parts[0].(message.TextPart).Text; text != "c" {
+		t.Errorf("ChannelTail leaked part mutation: %q", text)
+	}
+}
+
+func TestBoard_ChannelViewIsPrivateSliceOverSharedMessages(t *testing.T) {
+	b := agent.NewBoard()
+	b.AppendChannelMessage("alt", message.NewTextMessage(message.RoleUser, "x"))
+
+	view := b.ChannelView("alt")
+	if len(view) != 1 || view[0].Content.Text() != "x" {
+		t.Fatalf("ChannelView = %+v, want [x]", view)
+	}
+	// The slice belongs to the caller: replacing an element is local.
+	view[0] = message.NewTextMessage(message.RoleUser, "MUTATED")
+	if again := b.ChannelView("alt"); again[0].Content.Text() != "x" {
+		t.Errorf("ChannelView exposed the board's slice: %q", again[0].Content.Text())
+	}
+	if missing := b.ChannelView("missing"); missing != nil {
+		t.Errorf("ChannelView on missing channel = %+v, want nil", missing)
+	}
+}
+
+func TestBoard_AppendChannelMessages(t *testing.T) {
+	b := agent.NewBoard()
+	b.AppendChannelMessage("alt", message.NewTextMessage(message.RoleUser, "seed"))
+
+	in := []message.Message{
+		message.NewTextMessage(message.RoleUser, "a"),
+		message.NewTextMessage(message.RoleAssistant, "b"),
+	}
+	b.AppendChannelMessages("alt", in)
+
+	got := b.Channel("alt")
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (batch appended in order)", len(got))
+	}
+	if got[1].Content.Text() != "a" || got[2].Content.Text() != "b" {
+		t.Fatalf("batch order = [%q %q], want [a b]", got[1].Content.Text(), got[2].Content.Text())
+	}
+
+	// Caller-side mutation of the input does not reach the board.
+	in[1] = message.NewTextMessage(message.RoleAssistant, "MUTATED")
+	in[0].Content.Parts[0] = message.TextPart{Text: "MUTATED"}
+	again := b.Channel("alt")
+	if again[1].Content.Text() != "a" || again[2].Content.Text() != "b" {
+		t.Errorf("AppendChannelMessages leaked caller mutation: [%q %q]",
+			again[1].Content.Text(), again[2].Content.Text())
+	}
+
+	// An empty batch is a no-op, not a channel-creating event.
+	b.AppendChannelMessages("fresh", nil)
+	if got := b.Channel("fresh"); got != nil {
+		t.Errorf("empty batch created channel %+v", got)
+	}
+}
+
+// TestBoard_AppendChannelMessagesLandsUnderOneLock pins the atomicity
+// the batch form buys over a loop of AppendChannelMessage: a concurrent
+// reader sees the whole batch or none of it, never a prefix.
+func TestBoard_AppendChannelMessagesLandsUnderOneLock(t *testing.T) {
+	b := agent.NewBoard()
+	const (
+		batch  = 8
+		rounds = 200
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for r := 0; r < rounds; r++ {
+			msgs := make([]message.Message, batch)
+			for i := range msgs {
+				msgs[i] = message.NewTextMessage(message.RoleUser, "batch-"+strconv.Itoa(r))
+			}
+			b.AppendChannelMessages(agent.MainChannel, msgs)
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			if got := len(b.Channel(agent.MainChannel)); got != rounds*batch {
+				t.Fatalf("final length = %d, want %d", got, rounds*batch)
+			}
+			return
+		default:
+		}
+		n := b.ChannelLen(agent.MainChannel)
+		if n%batch != 0 {
+			t.Fatalf("a concurrent reader saw %d messages, want a multiple of the %d-message batch", n, batch)
+		}
+		if n == 0 {
+			continue
+		}
+		// The tail must come from a single writer's batch: a reader that
+		// could observe a half-applied batch would find two markers in it.
+		tail := b.ChannelTail(agent.MainChannel, batch)
+		if len(tail) != batch {
+			t.Fatalf("tail = %d messages, want %d", len(tail), batch)
+		}
+		marker := tail[0].Content.Text()
+		for i, msg := range tail[1:] {
+			if got := msg.Content.Text(); got != marker {
+				t.Fatalf("a reader saw a batch split across writers: message %d carries %q, want %q",
+					n-batch+i+1, got, marker)
+			}
+		}
 	}
 }
 

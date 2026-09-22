@@ -328,12 +328,24 @@ closure capturing the resource's deps).
   `hasVar(key)`
 - `resolve(str)` → `any`, `resolveString(str)` → `string` — typed / text
   `${board.*}` expansion (missing references error unless a default is given)
-- `channel(name)` → message objects (never null); `setChannel(name, msgs)`,
-  `appendChannel(name, msg)` throw on validation errors
+- `channel(name)` → message objects (never null); `channelLen(name)` → count;
+  `lastMessage(name)` → the last message, or `null` when the channel is
+  empty; `channelTail(name, count)` → the last `count` messages, in order.
+  The narrow reads avoid projecting the whole channel.
+- `setChannel(name, msgs)`, `appendChannel(name, msg)` throw on validation
+  errors; `msg` is one message object or an array of them, appended as one
+  batch (validated as a whole: a failing batch lands none of it). An empty
+  list appends nothing and clears the channel under `setChannel`
 - `MAIN_CHANNEL` — the reserved default channel constant
 
 Messages use the inference wire format `{role, content: {parts: [...]}}`;
 decoding is strict, so typos surface as errors.
+
+`host.drainSteer()` returns the steer queue's messages in the same wire
+shape, so the canonical steer node binds the drain before appending it:
+`var pending = host.drainSteer(); board.appendChannel(board.MAIN_CHANNEL,
+pending);`. Binding first keeps the node portable (under Lua a `host.*`
+call in argument position expands to both of its return values).
 
 ### `expr`
 
