@@ -204,6 +204,16 @@ jobs:
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
+      # core/sandbox carries per-GOOS files the linux lane never compiles, so
+      # a darwin syscall or an other-unix stub can be wrong or stop building
+      # without any check going red. Cross-compile them here: same runner,
+      # no extra cost.
+      - name: Vet the unix variants
+        if: matrix.module == 'core'
+        run: |
+          GOOS=darwin go vet ./...
+          GOOS=freebsd go vet ./...
+        working-directory: ${{ matrix.module }}
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}
