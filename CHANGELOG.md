@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.7` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.8` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.8` - 2026-09-22
+
+### Changed
+
+- fix(core/sandbox): spawn sessions from a clean signal mask — Session.Signal(Interrupt) could succeed and do nothing, because a child inherits the forking thread's signal mask and a mask survives execve while dispositions do not, so a fork on a thread that entered the runtime from C (needm) handed the session a child started with SIGINT blocked and the signal stayed pending forever — first seen downstream as a five-second wait after signal: context deadline exceeded under -race on Linux and macOS; StartSession now clears the mask on a thread pinned with runtime.LockOSThread around the spawn and restores the caller's mask afterwards (the pin is counted, so a caller that pinned itself keeps its own), both spawn paths — pty and pipes — go through startWithCleanSignalMask and bwrap/seatbelt share the same seam; the per-platform helpers are sigmask_linux.go (unix.PthreadSigmask), sigmask_darwin.go (__pthread_sigmask, syscall 329 — sigprocmask(48) ends in set_procsigmask() and writes the mask to every thread, which would have broadcast the spawner's mask onto unrelated threads) and sigmask_other_unix.go (no-op, so a platform without a helper spawns as before and loses only the guarantee), while Windows is untouched as core/sandbox/windows already refuses Signal and stops sessions with Terminate; tests pin both directions — TestInterruptEndsAChildSpawnedFromABlockedMask spawns from a thread with SIGINT blocked over pty and pipes with a positive control and exit classification, and TestSpawnLeavesOtherThreadsMasksAlone blocks a signal on a pinned bystander thread that must come back holding its own mask — with expectations planted through the platform primitive instead of the helper under test, and CI now cross-compiles the per-GOOS files (GOOS=darwin/freebsd go vet); fix(core/workspace): yield slash-separated paths from Walk and Glob — Walk joins child paths with path.Join and Glob matches with path.Match, so the workspace's portable /-separated namespace is what callers receive on every platform and the compensating filepath.FromSlash goes away with them, which leaves behaviour on Unix unchanged (path and path/filepath agree on relative paths there) and makes Windows match what the package already promised elsewhere, where splitPath/matchParts are segment-based and LocalWorkspace keeps filepath.ToSlash and os.Root at its own OS-facing edge; the walk tests now pin the exact slash-separated results (a.txt, sub/b.txt, sub/deep/c.txt) instead of counting entries and TestGlob_SingleLevel pins src/main.go / src/util.go, so a path that arrives backslash-separated fails the suite rather than reaching a caller that builds a further path with path.Join or matches a src/*.go pattern.
 
 ## `core/v0.4.7` - 2026-09-22
 
