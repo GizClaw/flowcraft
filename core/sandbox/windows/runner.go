@@ -13,6 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 
@@ -60,6 +61,7 @@ type Runner struct {
 	sessions     *sandbox.SessionRegistry
 	registryOnce sync.Once
 	lowTemp      string
+	journal      *journal.Journal
 }
 
 // New constructs a Runner rooted at rootDir. The root is resolved via
@@ -90,6 +92,20 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 			return nil, err
 		}
 	}
+	if r.cfg.journal != nil {
+		// Explicitly configured and unavailable is an error, not a
+		// degradation: this constructor can report it, and a deployment
+		// that asked for a journal must not end up with a runner that
+		// silently watches nothing.
+		journalCfg := *r.cfg.journal
+		journalCfg.Root = real
+		journalCfg.ExtraRoots = r.cfg.writable
+		j, err := journal.New(journalCfg)
+		if err != nil {
+			return nil, err
+		}
+		r.journal = j
+	}
 	return r, nil
 }
 
@@ -97,7 +113,8 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 // job-object resource caps are always enforced; filesystem write
 // bounds are enforced when the runner was constructed with
 // WithWriteConfinement. TTY sessions are supported through ConPTY;
-// signal and event features are not.
+// signal and event features are not. A journal is reported when the
+// runner was constructed with one.
 func (r *Runner) Capabilities() sandbox.Capabilities {
 	policy := sandbox.Enforcement{
 		EnvAllowList: true,
@@ -117,6 +134,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{
 		Policy:   policy,
 		Features: sandbox.SessionFeatures{TTY: true},
+		Journal:  r.journal.Capabilities(),
 	}
 }
 
@@ -147,6 +165,11 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 // the runner never started anything.
 func (r *Runner) Close() error {
 	err := r.registry().Close()
+	if r.journal != nil {
+		if jerr := r.journal.Close(); jerr != nil && err == nil {
+			err = jerr
+		}
+	}
 	if r.lowTemp != "" {
 		if rerr := os.RemoveAll(r.lowTemp); rerr != nil {
 			telemetry.WarnErr(context.Background(),
@@ -156,6 +179,19 @@ func (r *Runner) Close() error {
 		r.lowTemp = ""
 	}
 	return err
+}
+
+// OpenJournal implements core/sandbox.JournalProvider. It fails with
+// errdefs.NotAvailable when the runner was built without a journal.
+func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.journal == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox/windows: no file journal is attached to this runner")
+	}
+	return r.journal.Open()
 }
 
 // registry returns the session registry, initialising it lazily so a
@@ -387,3 +423,6 @@ func sanitizeEnv(env []string) []string {
 	}
 	return out
 }
+
+var _ sandbox.Runner = (*Runner)(nil)
+var _ sandbox.JournalProvider = (*Runner)(nil)

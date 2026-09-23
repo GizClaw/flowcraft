@@ -244,8 +244,9 @@ box:
     root: ./sandbox
 ```
 
-The local runner is no-isolation and takes only `root`. The isolation
-backends (`bwrap`, `seatbelt`) share a larger settings surface:
+The local runner is no-isolation and takes `root` plus the optional
+`journal:` block below. The isolation backends (`bwrap`, `seatbelt`)
+share that surface and add their own options:
 
 ```yaml
 box:
@@ -257,6 +258,11 @@ box:
     writable_paths: [./out]   # optional; paths the sandbox may write
     readonly_root: true       # optional; keep the runner root read-only
     extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
+    journal:                  # optional; report writes as events (Linux, macOS, Windows)
+      exclude: [.git, node_modules]     # root-relative subtrees never watched
+      ops: [create, rename, remove]     # empty = every class
+      retention: 4096                   # events kept readable for replay
+      max_watch_set: 20000              # watch budget; past it, a capacity gap
 ```
 
 `readonly_root` keeps the runner root read-only for every exec; explicit
@@ -269,6 +275,44 @@ host code narrows a single call to read-only without changing settings;
 `readonly_root: true`: the host build rejects the combination instead of
 silently dropping the entry (without `readonly_root` such an entry is
 redundant and ignored).
+
+`journal` attaches a file journal: host code reads write events
+(`sandbox.OpenJournal` → cursor-based `Read`) instead of scanning trees
+before and after a turn. It reports net state changes — one `create` for
+"created and written", one `rename` for a move, nothing for a read or a
+`chmod` — with paths relative to the root (absolute for a
+`writable_paths` entry outside it). Events under `exclude` are never
+watched, and an unknown `ops` name fails the host build. The journal is
+an observation stream, not a boundary: it reports what the sandbox
+already allowed.
+
+`max_watch_set` counts watches in the platform's own unit: directories
+on Linux (inotify), entries — directories and files — on macOS, where
+kqueue charges one descriptor per watched entry and the journal raises
+the process's soft descriptor limit toward the budget while it can, and
+directories on Windows (ReadDirectoryChangesW), where a watch also owns
+a 16 KiB change buffer that the kernel keeps pinned while its read is
+pending — the default budget of 4096 is 64 MiB of buffers, so it is the
+one platform where writing the number down is worth it. A watch set that
+exceeds the budget is a reported `capacity` gap, never a quiet subset. A
+note there also costs a re-read of the directory that reported it, so
+the price of a change is the width of the directory it landed in — a
+wide flat directory is the shape `exclude` is for. On macOS and Windows
+there is also no close edge: an appearance or a content change is
+reported once it settles (a few hundred milliseconds) rather than at the
+writer's close. Configuring `journal:` on a platform without a source
+(the BSDs today) fails the host build with `NotAvailable` rather than
+producing a runner that reports nothing.
+
+The numbers: with `max_watch_set` unset, the budget is a quarter of
+`/proc/sys/fs/inotify/max_user_watches` clamped to 4096–65536 on Linux
+(16384 when the file cannot be read), a quarter of the descriptor
+ceiling clamped to 1024–16384 on macOS, and 4096 on Windows. `retention`
+is validated against a 1048576-event cap and `max_watch_set` against a
+1048576-watch cap; a larger value fails the host build instead of setting
+the ambition to the OS limit. The `journal:` block needs a core release
+that carries it; a deployment pinned to an older core (the validator in
+this skill pins v0.4.4) rejects the unknown key at strict decode.
 
 ## tool source / assembly
 

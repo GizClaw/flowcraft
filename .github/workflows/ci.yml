@@ -237,6 +237,61 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
+      # Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, which leaves bubblewrap failing with "setting up uid
+      # map: Permission denied" before it can mount anything (the runner
+      # image ships, but does not load, the profile that allows it). The
+      # journal integration tests below need a real namespace, so make
+      # one available and prove it.
+      - name: Make bubblewrap usable
+        run: |
+          set -euo pipefail
+          # A fresh mount namespace starts with an empty root, so the
+          # probe binds the host root read-only exactly like the
+          # runner's own filesystem flags do: without that, bwrap fails
+          # on a missing /bin/true before it ever reaches the namespace
+          # setup under test.
+          probe_log=$(mktemp)
+          probe() {
+            bwrap --ro-bind / / --unshare-pid --die-with-parent -- /bin/true 2>"$probe_log"
+          }
+          report() { sed 's/^/  /' "$probe_log"; }
+
+          if probe; then
+            echo "bwrap can create a namespace"
+            exit 0
+          fi
+          echo "bwrap cannot create a namespace:"
+          report
+
+          # The profile the bubblewrap package ships re-allows exactly
+          # bwrap's own user-namespace creation; write it when the
+          # installed package predates the profile, then reload.
+          sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap || true
+          if probe; then
+            echo "bwrap works with the AppArmor profile loaded"
+            exit 0
+          fi
+          echo "still failing with the profile loaded:"
+          report
+
+          # Hosts whose AppArmor has nothing to load take the blunt
+          # route: lift the restriction for this runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if probe; then
+            echo "bwrap works with the unprivileged-userns restriction lifted"
+            exit 0
+          fi
+          echo "bwrap still cannot create a namespace:"
+          report
+          exit 1
       - name: Test
         run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
         working-directory: core/sandbox
@@ -271,10 +326,28 @@ jobs:
         working-directory: core/sandbox
         run: go test -count=1 -timeout 180s ./windows/...
 
+  test-sandbox-macos:
+    name: Integration core/sandbox (darwin)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # The kqueue source, the cross-backend journal contract suite and
+      # the seatbelt backend only run where the platform primitives
+      # exist; the cross-vet lanes prove they compile, this proves they
+      # work — under the race detector, because this is the only lane
+      # that executes the kqueue source and its leaf watches. sandbox-exec
+      # ships with macOS, so nothing is installed.
+      - name: Test
+        working-directory: core/sandbox
+        run: go test -count=1 -race -timeout 300s ./...
+
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, compute-matrix, lint, test, test-sandbox-bwrap, test-core-windows, test-sandbox-windows]
+    needs: [release-intent, gofmt, compute-matrix, lint, test, test-sandbox-bwrap, test-core-windows, test-sandbox-windows, test-sandbox-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -288,6 +361,7 @@ jobs:
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \
+            "${{ needs.test-sandbox-macos.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

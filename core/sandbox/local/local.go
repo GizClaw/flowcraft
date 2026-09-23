@@ -13,7 +13,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -32,6 +34,32 @@ func WithMaxOutputBytes(n int64) Option {
 		} else {
 			r.defaultMaxOutput = n
 		}
+	}
+}
+
+// WithFileJournal attaches a file journal to the runner: every write
+// under the runner root becomes a readable event (see the
+// core/sandbox/journal package). The journal is an observation stream,
+// never a boundary — sandbox/local has no filesystem confinement, so
+// this reports what happened rather than preventing anything.
+//
+// The root is taken from the runner, so the option only carries what to
+// watch and how much to keep. A journal that cannot start leaves the
+// runner usable but reports
+// sandbox.JournalCapabilities.Enabled = false and fails
+// sandbox.OpenJournal with the reason; deployments configure the
+// journal through the resource settings, which fail the build instead.
+func WithFileJournal(opts sandbox.JournalOptions) Option {
+	return WithFileJournalConfig(journal.Config{Options: opts})
+}
+
+// WithFileJournalConfig is [WithFileJournal] for a caller that already
+// resolved a [journal.Config] — the resource factory, which validates
+// the deployment settings before the runner exists.
+func WithFileJournalConfig(cfg journal.Config) Option {
+	return func(r *Runner) {
+		requested := cfg
+		r.journalReq = &requested
 	}
 }
 
@@ -63,6 +91,12 @@ type Runner struct {
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	registryOnce     sync.Once
+	// journalReq is the requested journal, resolved in New once the
+	// root is known. Exactly one of journal / journalErr is set when a
+	// journal was asked for.
+	journalReq *journal.Config
+	journal    *journal.Journal
+	journalErr error
 }
 
 // New constructs a Runner rooted at rootDir. The root is resolved via
@@ -79,9 +113,29 @@ func New(rootDir string, opts ...Option) *Runner {
 	for _, o := range opts {
 		o(r)
 	}
+	if r.journalReq != nil {
+		cfg := *r.journalReq
+		cfg.Root = r.rootDir
+		r.journalReq = nil
+		// New has no error to return, so a journal that cannot start is
+		// recorded rather than fatal: the runner still runs commands,
+		// and Capabilities/OpenJournal report the honest reason
+		// instead of claiming a journal that is not there.
+		if j, err := newJournalEngine(cfg); err != nil {
+			r.journalErr = err
+		} else {
+			r.journal = j
+		}
+	}
 	r.sessions = sandbox.NewSessionRegistry(r.spawnProcess)
 	return r
 }
+
+// newJournalEngine builds the platform watch engine. It is a package
+// variable so the factory tests can exercise the "settings accepted,
+// engine refused" path without exhausting the host's own watch
+// resources.
+var newJournalEngine = journal.New
 
 // Capabilities declares Runner's honest surface: the env
 // allow-list is honoured, memory/cpu caps are enforced by the group
@@ -100,6 +154,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			CPUCap:       sandbox.GroupCapsSupported(),
 		},
 		Features: features,
+		Journal:  r.journal.Capabilities(),
 	}
 }
 
@@ -131,8 +186,37 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 // started through this runner. Safe to call more than once and when the
 // runner never started anything.
 func (r *Runner) Close() error {
-	return r.registry().Close()
+	err := r.registry().Close()
+	if r.journal != nil {
+		// The journal stops with the runner it belongs to, and the
+		// events it already holds stay readable for the readers that
+		// were opened before.
+		if jerr := r.journal.Close(); jerr != nil && err == nil {
+			err = jerr
+		}
+	}
+	return err
 }
+
+// OpenJournal implements core/sandbox.JournalProvider. It fails with
+// errdefs.NotAvailable when no journal was attached; a journal that was
+// requested but could not start reports its construction error instead,
+// so the reason is visible rather than flattened into "none".
+func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.journal == nil {
+		if r.journalErr != nil {
+			return nil, r.journalErr
+		}
+		return nil, errdefs.NotAvailablef(
+			"sandbox/local: no file journal is attached to this runner")
+	}
+	return r.journal.Open()
+}
+
+var _ sandbox.JournalProvider = (*Runner)(nil)
 
 // registry returns the session registry, initialising it lazily so a
 // zero-value Runner still answers with NotAvailable instead of

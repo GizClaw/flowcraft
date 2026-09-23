@@ -3,6 +3,8 @@ package seatbelt
 import (
 	"crypto/x509"
 
+	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/utils/net"
 )
 
@@ -16,6 +18,7 @@ type runnerConfig struct {
 	binFrom      string   // raw value supplied to WithBinary, "" if defaulted
 	writable     []string // extra writable paths, resolved at construction
 	readOnlyRoot bool     // keep the runner root read-only for every exec
+	journal      *journal.Config
 	decision     func(net.ProxyDecision)
 	hooks        net.MITMHooks
 	roots        *x509.CertPool
@@ -53,6 +56,36 @@ func WithWritablePaths(paths ...string) RunnerOption {
 func WithReadOnlyRoot() RunnerOption {
 	return func(c *runnerConfig) {
 		c.readOnlyRoot = true
+	}
+}
+
+// WithFileJournal attaches a file journal to the runner: every write
+// under the runner root and under the explicitly writable paths becomes
+// a readable event (see the core/sandbox/journal package).
+//
+// The journal watches host-side paths, which is exactly what the
+// Seatbelt profile exposes to the sandbox: the root and the writable
+// paths are opened at their own absolute paths, so a write inside the
+// sandbox is a write to the same host path. Events under the root are
+// reported relative to it; events under a writable path outside the
+// root carry that absolute path.
+//
+// The journal is an observation stream, not a boundary — the write
+// confinement the profile enforces decides what is allowed, and the
+// journal reports what happened. On this platform the watch costs one
+// descriptor per watched entry rather than per directory, which is what
+// [sandbox.JournalCapabilities.WatchBudget] counts.
+func WithFileJournal(opts sandbox.JournalOptions) RunnerOption {
+	return WithFileJournalConfig(journal.Config{Options: opts})
+}
+
+// WithFileJournalConfig is [WithFileJournal] for a caller that already
+// resolved a [journal.Config] — the resource factory, which validates
+// the deployment settings before the runner exists.
+func WithFileJournalConfig(cfg journal.Config) RunnerOption {
+	return func(c *runnerConfig) {
+		requested := cfg
+		c.journal = &requested
 	}
 }
 

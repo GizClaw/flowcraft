@@ -1,6 +1,11 @@
 package windows
 
-import "math"
+import (
+	"math"
+
+	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
+)
 
 // Option configures a Runner at construction time.
 type Option func(*runnerConfig)
@@ -12,6 +17,7 @@ type runnerConfig struct {
 	defaultMaxOutput int64
 	writeConfine     bool
 	writable         []string // extra writable paths (write confinement)
+	journal          *journal.Config
 }
 
 // WithMaxOutputBytes sets the default per-call MaxOutputBytes used
@@ -51,5 +57,35 @@ func WithWriteConfinement() Option {
 func WithWritablePaths(paths ...string) Option {
 	return func(c *runnerConfig) {
 		c.writable = append(c.writable, paths...)
+	}
+}
+
+// WithFileJournal attaches a file journal to the runner: every write
+// under the runner root and under the explicitly writable paths becomes
+// a readable event (see the core/sandbox/journal package).
+//
+// The source is the host's ReadDirectoryChangesW, so what it reports is
+// what the filesystem recorded, whoever recorded it: the Low-integrity
+// labeling of [WithWriteConfinement] decides what is allowed, and the
+// journal reports what happened — including writes from outside the
+// sandbox, which land in the same tree. Events under the root are
+// reported relative to it; events under a writable path outside the
+// root carry that absolute path.
+//
+// On this platform the watch costs one directory watch plus its
+// kernel-pinned change buffer, which is what
+// [sandbox.JournalCapabilities.WatchBudget] counts: the budget buys
+// memory here rather than a kernel watch limit.
+func WithFileJournal(opts sandbox.JournalOptions) Option {
+	return WithFileJournalConfig(journal.Config{Options: opts})
+}
+
+// WithFileJournalConfig is [WithFileJournal] for a caller that already
+// resolved a [journal.Config] — the resource factory, which validates
+// the deployment settings before the runner exists.
+func WithFileJournalConfig(cfg journal.Config) Option {
+	return func(c *runnerConfig) {
+		requested := cfg
+		c.journal = &requested
 	}
 }

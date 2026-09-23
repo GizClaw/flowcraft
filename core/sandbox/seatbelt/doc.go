@@ -36,6 +36,15 @@
 //	Resources.DiskBytes         errdefs.NotAvailable (no quota mechanism)
 //	Resources.MaxOutputBytes    truncated in Go (limitedBuffer)
 //
+// # File journal
+//
+// A runner can be built with [WithFileJournal] to report the writes made
+// under its root and its explicitly writable paths (see
+// core/sandbox/journal and [WithFileJournal]): the writes happen at host
+// paths, so the host-side kqueue source sees them without any
+// cooperation from the sandboxed process. It is an observation stream,
+// never a boundary — the profile still decides what is allowed.
+//
 // # Blast-radius policy shape
 //
 // The generated profile reads as "allow everything, deny all writes,

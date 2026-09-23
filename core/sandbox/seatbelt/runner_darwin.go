@@ -16,6 +16,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
@@ -35,6 +36,7 @@ type Runner struct {
 	decision         func(corenet.ProxyDecision)
 	hooks            corenet.MITMHooks
 	outboundRoots    *x509.CertPool
+	journal          *journal.Journal
 }
 
 // New constructs a Seatbelt Runner rooted at rootDir.
@@ -96,6 +98,20 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		outboundRoots:    cfg.roots,
 	}
 	runner.sessions = sandbox.NewSessionRegistry(runner.spawnProcess)
+	if cfg.journal != nil {
+		// Explicitly configured and unavailable is an error, not a
+		// degradation: this constructor can report it, and a deployment
+		// that asked for a journal must not end up with a runner that
+		// silently watches nothing.
+		journalCfg := *cfg.journal
+		journalCfg.Root = root
+		journalCfg.ExtraRoots = extraWritable
+		j, err := journal.New(journalCfg)
+		if err != nil {
+			return nil, err
+		}
+		runner.journal = j
+	}
 	return runner, nil
 }
 
@@ -118,6 +134,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			Signal: true,
 			Events: true,
 		},
+		Journal: r.journal.Capabilities(),
 	}
 }
 
@@ -149,7 +166,26 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 // Close implements core/sandbox.Runner: it terminates every session
 // started through this runner. Safe to call more than once.
 func (r *Runner) Close() error {
-	return r.sessions.Close()
+	err := r.sessions.Close()
+	if r.journal != nil {
+		if jerr := r.journal.Close(); jerr != nil && err == nil {
+			err = jerr
+		}
+	}
+	return err
+}
+
+// OpenJournal implements core/sandbox.JournalProvider. It fails with
+// errdefs.NotAvailable when the runner was built without a journal.
+func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.journal == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox/seatbelt: no file journal is attached to this runner")
+	}
+	return r.journal.Open()
 }
 
 // spawnProcess is the core sandbox SessionStarter.
@@ -432,3 +468,4 @@ func dedupe(paths []string) []string {
 }
 
 var _ sandbox.Runner = (*Runner)(nil)
+var _ sandbox.JournalProvider = (*Runner)(nil)

@@ -239,6 +239,14 @@ func (r *approvalRunner) Close() error {
 	return r.inner.Close()
 }
 
+// OpenJournal forwards to the inner runner: approval gates whether a
+// call runs, not what the backend watches afterwards, so the decorated
+// runner exposes exactly the inner journal (or NotAvailable when there
+// is none).
+func (r *approvalRunner) OpenJournal(ctx context.Context) (FileJournal, error) {
+	return OpenJournal(ctx, r.inner)
+}
+
 // CommandPatterns returns a predicate that matches when the command's
 // base name glob-matches any of the patterns (e.g. "rm", "dd",
 // "git"). It inspects the command string only — a shell invocation

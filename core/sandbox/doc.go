@@ -69,14 +69,28 @@
 // interface itself; unsupported operations return
 // errdefs.NotAvailable rather than failing at discovery time.
 //
+// # File journal
+//
+// A runner can also report the writes that happen inside its boundary:
+// [OpenJournal] returns a cursor-based, replayable stream of net state
+// changes — one create for "created and written", one rename for a move,
+// nothing for a chmod or a read — with bounded retention and an explicit
+// [JournalGap] whenever coverage is incomplete. It is opt-in per runner,
+// costs nothing when it is not requested, and is an observation stream
+// rather than a boundary: enforcement stays with the backend. The
+// concrete engine lives in core/sandbox/journal; the contract (types,
+// semantics, deployment settings) lives in journal.go.
+//
 // # Files
 //
-//   - Contract: contract.go (Runner / Capabilities), process.go (Session /
-//     SessionSpec / SessionExit / event types), session_registry.go
+//   - Contract: contract.go (Runner / Capabilities), session.go (Session /
+//     SessionSpec / SessionExit / event types), session_registry.go,
+//     journal.go (FileJournal / WriteEvent / JournalGap)
 //   - Policy: policy.go (env / net / resource limits), enforcement.go
 //   - Sessions: session_unix.go / session_other.go
 //   - Local backend: local/ (core/sandbox/local)
 //   - Resource watcher: watcher_unix.go / watcher_other.go
+//   - File journal engine: journal/ (core/sandbox/journal)
 //   - One-shot view: exec.go (Exec / ExecOptions / ExecResult)
 //   - Composition: decorator.go, approval.go, compose.go
 //   - Resource: local/resource.go (sandbox.Runner/local)
