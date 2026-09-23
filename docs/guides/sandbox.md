@@ -186,7 +186,7 @@ source reports in the unit its kernel charges for:
 
 | Backend | Source | Cost of one watch | Rename pairing | Identity (`Dev`/`Ino`) |
 |---|---|---|---|---|
-| `local` | inotify (Linux) / kqueue (macOS) | per directory / per entry | yes | yes |
+| `local` | inotify (Linux) / kqueue (macOS) / ReadDirectoryChangesW (Windows) | per directory / per entry / per directory + its change buffer | yes (within one directory on Windows) | yes on the unices, no on Windows |
 | `bwrap` | inotify (Linux) | per directory | yes | yes |
 | `seatbelt` | kqueue (macOS) | per entry | yes | yes |
 | `windows` | ReadDirectoryChangesW (Windows) | per directory + its change buffer | within one directory | no |
@@ -198,10 +198,10 @@ data-correctness bug.
 
 The source in that table is the platform's; the backend in front of it
 is what a deployment configures. All four attach theirs: `local`
-(inotify, kqueue), `bwrap` (inotify), `seatbelt` (kqueue) and `windows`
-(ReadDirectoryChangesW) — so a platform without a source (the BSDs
-today) fails the host build when `journal:` is configured, instead of
-producing a runner that reports nothing.
+(inotify, kqueue, ReadDirectoryChangesW), `bwrap` (inotify), `seatbelt`
+(kqueue) and `windows` (ReadDirectoryChangesW) — so a platform without
+a source (the BSDs today) fails the host build when `journal:` is
+configured, instead of producing a runner that reports nothing.
 
 It is opt-in per resource — an absent `journal:` key costs nothing (no
 file descriptor, no goroutine, no watch):
@@ -312,7 +312,7 @@ data-correctness bug.
 
 ```go
 j, err := sandbox.OpenJournal(ctx, runner) // errdefs.NotAvailable when there is none
-if err != nil { /* not enabled, or this platform has no watch source */ }
+if err != nil { /* not enabled, no watch source, or the attached journal's own reason */ }
 defer j.Close()
 
 cursor := int64(0)

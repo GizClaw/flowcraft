@@ -244,8 +244,9 @@ box:
     root: ./sandbox
 ```
 
-The local runner is no-isolation and takes only `root`. The isolation
-backends (`bwrap`, `seatbelt`) share a larger settings surface:
+The local runner is no-isolation and takes `root` plus the optional
+`journal:` block below. The isolation backends (`bwrap`, `seatbelt`)
+share that surface and add their own options:
 
 ```yaml
 box:
@@ -302,6 +303,16 @@ reported once it settles (a few hundred milliseconds) rather than at the
 writer's close. Configuring `journal:` on a platform without a source
 (the BSDs today) fails the host build with `NotAvailable` rather than
 producing a runner that reports nothing.
+
+The numbers: with `max_watch_set` unset, the budget is a quarter of
+`/proc/sys/fs/inotify/max_user_watches` clamped to 4096–65536 on Linux
+(16384 when the file cannot be read), a quarter of the descriptor
+ceiling clamped to 1024–16384 on macOS, and 4096 on Windows. `retention`
+is validated against a 1048576-event cap and `max_watch_set` against a
+1048576-watch cap; a larger value fails the host build instead of setting
+the ambition to the OS limit. The `journal:` block needs a core release
+that carries it; a deployment pinned to an older core (the validator in
+this skill pins v0.4.4) rejects the unknown key at strict decode.
 
 ## tool source / assembly
 

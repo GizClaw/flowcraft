@@ -96,11 +96,14 @@ builds the deployment with its own factory registry, or at runtime.
     journal is attached) and ReadDirectoryChangesW (Windows, one watch
     per directory plus the 16 KiB change buffer the kernel pins for its
     pending read — the budget there buys memory, so `max_watch_set` is
-    worth setting); on macOS and Windows there is no close edge, so an
-    appearance or a content change is reported once it settles rather
-    than at the writer's close. Configuring `journal:` on a platform
-    without a source (the BSDs today) fails the host build with
-    NotAvailable instead of watching nothing — host build/runtime.
+    worth setting; it is validated against a 1048576-watch cap, as
+    `retention` is against 1048576 events, so a typo fails the host
+    build rather than the host); on macOS and Windows there is no close
+    edge, so an appearance or a content change is reported once it
+    settles rather than at the writer's close. Configuring `journal:`
+    on a platform without a source (the BSDs today) fails the host
+    build with NotAvailable instead of watching nothing — host
+    build/runtime.
 
 ## Error map
 
