@@ -83,6 +83,10 @@ type WriteEvent struct {
 	// Path is the changed path; see the type doc for its shape.
 	Path string
 	// OldPath is the previous path of a FileOpRename, empty otherwise.
+	// Both paths are host path strings, bounded by the platform
+	// rather than by this contract — the batch limit bounds event
+	// count, not bytes — so a consumer that renders them applies its
+	// own byte cap.
 	OldPath string
 	// IsDir marks directory events. Directory creates are reported so
 	// a consumer learns a whole subtree appeared; per-file events
@@ -288,7 +292,9 @@ type JournalProvider interface {
 // It fails with errdefs.NotAvailable when the runner has no journal —
 // either the deployment did not enable one or the platform has no watch
 // source — which is a contract-level answer, not an error to work
-// around with a directory scan.
+// around with a directory scan. A runner whose attached journal could
+// not start reports that construction failure instead of flattening it
+// into NotAvailable.
 func OpenJournal(ctx context.Context, r Runner) (FileJournal, error) {
 	if r == nil {
 		return nil, errdefs.Validationf("sandbox: OpenJournal: nil runner")

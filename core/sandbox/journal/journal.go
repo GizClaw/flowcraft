@@ -94,6 +94,13 @@ func (j *Journal) Capabilities() sandbox.JournalCapabilities {
 	}
 	caps := Capabilities()
 	caps.Enabled = true
+	// WatchBudget is an instance fact too: a deployment that set
+	// max_watch_set registers that many watches before it reports
+	// capacity gaps, so the declaration has to carry the budget in
+	// force rather than the platform default.
+	if j.budget > 0 {
+		caps.WatchBudget = j.budget
+	}
 	return caps
 }
 

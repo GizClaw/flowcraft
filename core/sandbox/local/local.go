@@ -121,7 +121,7 @@ func New(rootDir string, opts ...Option) *Runner {
 		// recorded rather than fatal: the runner still runs commands,
 		// and Capabilities/OpenJournal report the honest reason
 		// instead of claiming a journal that is not there.
-		if j, err := journal.New(cfg); err != nil {
+		if j, err := newJournalEngine(cfg); err != nil {
 			r.journalErr = err
 		} else {
 			r.journal = j
@@ -130,6 +130,12 @@ func New(rootDir string, opts ...Option) *Runner {
 	r.sessions = sandbox.NewSessionRegistry(r.spawnProcess)
 	return r
 }
+
+// newJournalEngine builds the platform watch engine. It is a package
+// variable so the factory tests can exercise the "settings accepted,
+// engine refused" path without exhausting the host's own watch
+// resources.
+var newJournalEngine = journal.New
 
 // Capabilities declares Runner's honest surface: the env
 // allow-list is honoured, memory/cpu caps are enforced by the group
@@ -193,8 +199,9 @@ func (r *Runner) Close() error {
 }
 
 // OpenJournal implements core/sandbox.JournalProvider. It fails with
-// errdefs.NotAvailable when no journal was attached, or when the
-// attached one could not start.
+// errdefs.NotAvailable when no journal was attached; a journal that was
+// requested but could not start reports its construction error instead,
+// so the reason is visible rather than flattened into "none".
 func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -5,6 +5,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
 
+// maxWatchSet bounds the watch set a settings document can ask for.
+// Like maxRetention it is a resource commitment, so a typo has to fail
+// the build rather than set the journal's ambition to the OS limit —
+// on Windows every watch also pins a 16 KiB change buffer.
+const maxWatchSet = 1 << 20
+
 // Settings is the deployment shape of the `journal:` subtree. Every
 // backend that can watch for writes embeds it under the same key, so
 // switching a resource from bwrap to local does not change the
@@ -27,7 +33,8 @@ type Settings struct {
 	Retention int `json:"retention,omitempty"`
 	// MaxWatchSet caps how many directories are watched, turning an
 	// unaffordable watch set into a reported capacity gap instead of a
-	// silent hole. Zero uses the platform default.
+	// silent hole. Zero uses the platform default; values above the
+	// engine's cap are rejected at build time.
 	MaxWatchSet int `json:"max_watch_set,omitempty"`
 }
 
@@ -55,6 +62,10 @@ func (s Settings) Build(root string, extraRoots []string) (Config, error) {
 	if s.MaxWatchSet < 0 {
 		return Config{}, errdefs.Validationf(
 			"sandbox journal: max_watch_set %d must not be negative", s.MaxWatchSet)
+	}
+	if s.MaxWatchSet > maxWatchSet {
+		return Config{}, errdefs.Validationf(
+			"sandbox journal: max_watch_set %d exceeds the %d watch limit", s.MaxWatchSet, maxWatchSet)
 	}
 	cfg.Options.MaxWatchSet = s.MaxWatchSet
 	cfg.Options.Exclude = s.Exclude

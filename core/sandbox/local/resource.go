@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -56,7 +57,23 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 		}
 		opts = append(opts, WithFileJournalConfig(cfg))
 	}
-	return New(settings.Root, opts...), nil
+	runner := New(settings.Root, opts...)
+	if settings.Journal != nil && runner.journal == nil {
+		// Build resolved the document, so this is the platform
+		// refusing to start the engine rather than a configuration
+		// error. The factory fails: a deployment that asked for a
+		// journal must not end up with a runner that silently watches
+		// nothing, which is the same promise the other backends keep
+		// by returning from their constructors.
+		err := runner.journalErr
+		_ = runner.Close()
+		if err == nil {
+			err = errdefs.NotAvailablef(
+				"sandbox/local: journal settings were accepted but no journal is attached")
+		}
+		return nil, fmt.Errorf("sandbox/local: journal: %w", err)
+	}
+	return runner, nil
 }
 
 // Register adds the local runner factory to r.

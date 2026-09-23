@@ -153,11 +153,16 @@ func (s *linuxSource) Remove(h Handle) error {
 	}
 	delete(s.wdOf, h)
 	delete(s.byWd, wd)
-	s.pending[wd] = true
-	// EINVAL means the kernel already dropped the watch (a deleted or
-	// unmounted directory). The ignored event is still expected, so the
-	// bookkeeping above stays.
-	_, _ = unix.InotifyRmWatch(s.fd, uint32(wd))
+	// EINVAL means the kernel already dropped the watch on its own (a
+	// deleted or unmounted directory), so its IN_IGNORED has already
+	// been queued or consumed and no second one will arrive. Recording
+	// an expectation anyway would leave pending[wd] set forever, and a
+	// later watch that reuses the descriptor would have its own
+	// IN_IGNORED taken for the engine's removal — the silently
+	// unwatched subtree this package exists to report.
+	if _, err := unix.InotifyRmWatch(s.fd, uint32(wd)); err == nil {
+		s.pending[wd] = true
+	}
 	return nil
 }
 
@@ -242,46 +247,52 @@ func (s *linuxSource) parseLocked(buf []byte, out []rawEvent) []rawEvent {
 			offset += nameLen
 		}
 
-		switch {
-		case mask&unix.IN_Q_OVERFLOW != 0:
-			// The wd is -1 on an overflow event: nothing to resolve.
-			out = append(out, rawEvent{Op: rawOverflow, Handle: -1})
-			continue
-		case mask&unix.IN_IGNORED != 0:
-			if s.pending[wd] {
-				// A removal the engine asked for: the events queued
-				// before it describe a tree that is gone.
-				delete(s.pending, wd)
-				continue
-			}
-			if h, ok := s.byWd[wd]; ok {
-				out = append(out, rawEvent{Op: rawIgnored, Handle: h})
-			}
-			continue
-		case mask&unix.IN_DELETE_SELF != 0:
-			out = append(out, rawEvent{Op: rawDeleteSelf, Handle: s.handle(wd)})
-			continue
-		case mask&unix.IN_MOVE_SELF != 0:
-			out = append(out, rawEvent{Op: rawMoveSelf, Handle: s.handle(wd)})
-			continue
-		}
+		out = s.decodeLocked(wd, mask, cookie, name, out)
+	}
+	return out
+}
 
-		h := s.handle(wd)
-		isDir := mask&unix.IN_ISDIR != 0
-		switch {
-		case mask&unix.IN_CREATE != 0:
-			out = append(out, rawEvent{Op: rawCreate, Handle: h, Name: name, IsDir: isDir})
-		case mask&unix.IN_MODIFY != 0:
-			out = append(out, rawEvent{Op: rawModify, Handle: h, Name: name})
-		case mask&unix.IN_CLOSE_WRITE != 0:
-			out = append(out, rawEvent{Op: rawCloseWrite, Handle: h, Name: name})
-		case mask&unix.IN_DELETE != 0:
-			out = append(out, rawEvent{Op: rawDelete, Handle: h, Name: name, IsDir: isDir})
-		case mask&unix.IN_MOVED_FROM != 0:
-			out = append(out, rawEvent{Op: rawMovedFrom, Handle: h, Name: name, Cookie: cookie, IsDir: isDir})
-		case mask&unix.IN_MOVED_TO != 0:
-			out = append(out, rawEvent{Op: rawMovedTo, Handle: h, Name: name, Cookie: cookie, IsDir: isDir})
+// decodeLocked maps one inotify record onto the raw events the engine
+// consumes. It is split out of parseLocked so the record classes the
+// kernel emits only under pressure — a queue overflow, a watch it
+// dropped on its own — are testable without provoking the kernel.
+func (s *linuxSource) decodeLocked(wd int32, mask, cookie uint32, name string, out []rawEvent) []rawEvent {
+	switch {
+	case mask&unix.IN_Q_OVERFLOW != 0:
+		// The wd is -1 on an overflow event: nothing to resolve.
+		return append(out, rawEvent{Op: rawOverflow, Handle: -1})
+	case mask&unix.IN_IGNORED != 0:
+		if s.pending[wd] {
+			// A removal the engine asked for: the events queued
+			// before it describe a tree that is gone.
+			delete(s.pending, wd)
+			return out
 		}
+		if h, ok := s.byWd[wd]; ok {
+			return append(out, rawEvent{Op: rawIgnored, Handle: h})
+		}
+		return out
+	case mask&unix.IN_DELETE_SELF != 0:
+		return append(out, rawEvent{Op: rawDeleteSelf, Handle: s.handle(wd)})
+	case mask&unix.IN_MOVE_SELF != 0:
+		return append(out, rawEvent{Op: rawMoveSelf, Handle: s.handle(wd)})
+	}
+
+	h := s.handle(wd)
+	isDir := mask&unix.IN_ISDIR != 0
+	switch {
+	case mask&unix.IN_CREATE != 0:
+		out = append(out, rawEvent{Op: rawCreate, Handle: h, Name: name, IsDir: isDir})
+	case mask&unix.IN_MODIFY != 0:
+		out = append(out, rawEvent{Op: rawModify, Handle: h, Name: name})
+	case mask&unix.IN_CLOSE_WRITE != 0:
+		out = append(out, rawEvent{Op: rawCloseWrite, Handle: h, Name: name})
+	case mask&unix.IN_DELETE != 0:
+		out = append(out, rawEvent{Op: rawDelete, Handle: h, Name: name, IsDir: isDir})
+	case mask&unix.IN_MOVED_FROM != 0:
+		out = append(out, rawEvent{Op: rawMovedFrom, Handle: h, Name: name, Cookie: cookie, IsDir: isDir})
+	case mask&unix.IN_MOVED_TO != 0:
+		out = append(out, rawEvent{Op: rawMovedTo, Handle: h, Name: name, Cookie: cookie, IsDir: isDir})
 	}
 	return out
 }
