@@ -14,7 +14,10 @@ import (
 // Lifecycle is part of the contract, not a convention: Close releases
 // every resource the runner owns — active sessions, forked daemons,
 // sockets, backend state. Decorators MUST forward Close to their inner
-// runner so wrapping never hides the backend's cleanup.
+// runner so wrapping never hides the backend's cleanup, and they MUST
+// forward [JournalProvider.OpenJournal] the same way: a decorator that
+// swallows the journal while [Capabilities] keeps advertising it makes
+// the declaration a lie.
 //
 // Capabilities is mandatory: it is the explicit, wire-safe declaration
 // of what this backend can do. Callers and tools never discover
@@ -40,6 +43,12 @@ type Runner interface {
 type Capabilities struct {
 	Policy   Enforcement
 	Features SessionFeatures
+	// Journal is the file-journal surface of this runner instance.
+	// The zero value means "no journal": OpenJournal fails with
+	// errdefs.NotAvailable. It travels with the rest of Capabilities,
+	// and the decorators forward the journal itself so the two never
+	// disagree.
+	Journal JournalCapabilities
 }
 
 // SessionFeatures lists the session capabilities a backend can provide.

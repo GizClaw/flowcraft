@@ -257,6 +257,11 @@ box:
     writable_paths: [./out]   # optional; paths the sandbox may write
     readonly_root: true       # optional; keep the runner root read-only
     extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
+    journal:                  # optional; report writes as events (Linux, macOS)
+      exclude: [.git, node_modules]     # root-relative subtrees never watched
+      ops: [create, rename, remove]     # empty = every class
+      retention: 4096                   # events kept readable for replay
+      max_watch_set: 20000              # watch budget; past it, a capacity gap
 ```
 
 `readonly_root` keeps the runner root read-only for every exec; explicit
@@ -269,6 +274,34 @@ host code narrows a single call to read-only without changing settings;
 `readonly_root: true`: the host build rejects the combination instead of
 silently dropping the entry (without `readonly_root` such an entry is
 redundant and ignored).
+
+`journal` attaches a file journal: host code reads write events
+(`sandbox.OpenJournal` → cursor-based `Read`) instead of scanning trees
+before and after a turn. It reports net state changes — one `create` for
+"created and written", one `rename` for a move, nothing for a read or a
+`chmod` — with paths relative to the root (absolute for a
+`writable_paths` entry outside it). Events under `exclude` are never
+watched, and an unknown `ops` name fails the host build. The journal is
+an observation stream, not a boundary: it reports what the sandbox
+already allowed.
+
+`max_watch_set` counts watches in the platform's own unit: directories
+on Linux (inotify), entries — directories and files — on macOS, where
+kqueue charges one descriptor per watched entry and the journal raises
+the process's soft descriptor limit toward the budget while it can, and
+directories on Windows (ReadDirectoryChangesW), where a watch also owns
+a 16 KiB change buffer that the kernel keeps pinned while its read is
+pending — the default budget of 4096 is 64 MiB of buffers, so it is the
+one platform where writing the number down is worth it. A watch set that
+exceeds the budget is a reported `capacity` gap, never a quiet subset. A
+note there also costs a re-read of the directory that reported it, so
+the price of a change is the width of the directory it landed in — a
+wide flat directory is the shape `exclude` is for. On macOS and Windows
+there is also no close edge: an appearance or a content change is
+reported once it settles (a few hundred milliseconds) rather than at the
+writer's close. Configuring `journal:` on a platform without a source
+(the BSDs today) fails the host build with `NotAvailable` rather than
+producing a runner that reports nothing.
 
 ## tool source / assembly
 

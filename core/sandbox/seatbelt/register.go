@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 )
 
 // ResourceKind is the deployment resource kind implemented by this
@@ -21,6 +22,10 @@ type settings struct {
 	Binary        string   `json:"binary,omitempty"`
 	WritablePaths []string `json:"writable_paths,omitempty"`
 	ReadOnlyRoot  bool     `json:"readonly_root,omitempty"`
+	// Journal attaches a file journal when present; see
+	// core/sandbox/journal. Writes are reported for the root and for
+	// the writable paths above.
+	Journal *journal.Settings `json:"journal,omitempty"`
 }
 
 type factory struct{}
@@ -59,6 +64,17 @@ func (factory) New(ctx context.Context, in resource.Input) (any, error) {
 	}
 	if s.ReadOnlyRoot {
 		options = append(options, WithReadOnlyRoot())
+	}
+	if s.Journal != nil {
+		// Resolve and validate at build time: a deployment that asked
+		// for a journal with settings the engine cannot honour fails
+		// here rather than producing a runner that quietly reports
+		// nothing.
+		cfg, err := s.Journal.Build(s.Root, writable)
+		if err != nil {
+			return nil, err
+		}
+		options = append(options, WithFileJournalConfig(cfg))
 	}
 	runner, err := New(s.Root, options...)
 	if err != nil {
