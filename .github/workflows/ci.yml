@@ -337,10 +337,12 @@ jobs:
       # The kqueue source, the cross-backend journal contract suite and
       # the seatbelt backend only run where the platform primitives
       # exist; the cross-vet lanes prove they compile, this proves they
-      # work. sandbox-exec ships with macOS, so nothing is installed.
+      # work — under the race detector, because this is the only lane
+      # that executes the kqueue source and its leaf watches. sandbox-exec
+      # ships with macOS, so nothing is installed.
       - name: Test
         working-directory: core/sandbox
-        run: go test -count=1 -timeout 300s ./...
+        run: go test -count=1 -race -timeout 300s ./...
 
   ci-pass:
     name: CI

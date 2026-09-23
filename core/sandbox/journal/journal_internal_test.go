@@ -991,3 +991,51 @@ func TestJournalCapabilitiesMatchThePlatform(t *testing.T) {
 		t.Fatal("Enabled is an instance fact; Capabilities must not claim it")
 	}
 }
+
+// TestJournalCapabilitiesReportTheConfiguredBudget keeps the instance
+// declaration honest: WatchBudget is what this journal registers before
+// it reports capacity gaps, so a deployment that set max_watch_set must
+// read that number back rather than the platform default.
+func TestJournalCapabilitiesReportTheConfiguredBudget(t *testing.T) {
+	h := newHarness(t, sandbox.JournalOptions{MaxWatchSet: 512})
+	if got := h.j.Capabilities().WatchBudget; got != 512 {
+		t.Fatalf("WatchBudget = %d, want the configured 512", got)
+	}
+}
+
+// TestJournalDeleteSelfReportsTheRootAndRetiresNestedDirectories covers
+// the engine's half of IN_DELETE_SELF. A nested directory's removal was
+// already reported by its parent watch, so the engine retires the
+// subtree silently; a watch root has no parent watch, so its deletion
+// is the only report there is.
+func TestJournalDeleteSelfReportsTheRootAndRetiresNestedDirectories(t *testing.T) {
+	h := newHarness(t, sandbox.JournalOptions{})
+	h.createDir("sub")
+	h.waitEvents(1)
+
+	h.src.inject(rawEvent{Op: rawDeleteSelf, Handle: h.src.handle(t, h.abs("sub"))})
+	if events := h.waitSettled(1); len(events) != 1 {
+		t.Fatalf("events = %v, want only the create before the nested delete", eventPaths(events))
+	}
+
+	h.src.inject(rawEvent{Op: rawDeleteSelf, Handle: h.src.handle(t, h.root)})
+	events := h.waitEvents(2)
+	wantEventPaths(t, events, "create sub", "remove .")
+}
+
+// TestJournalVanishedExtraRootIsACapacityGap covers the write-boundary
+// path: a runner built with a writable path that is gone by the time
+// the journal starts must still come up, watch what it can, and report
+// incomplete coverage instead of quietly covering less.
+func TestJournalVanishedExtraRootIsACapacityGap(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	h := newHarness(t, sandbox.JournalOptions{}, gone)
+
+	batch := h.read(0, 16)
+	if batch.Gap == nil || batch.Gap.Reason != sandbox.JournalGapCapacity {
+		t.Fatalf("gap = %+v, want a capacity gap for the unusable extra root", batch.Gap)
+	}
+	h.createFile("a.md")
+	events := h.waitEvents(1)
+	wantEventPaths(t, events, "create a.md")
+}

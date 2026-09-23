@@ -411,6 +411,12 @@ func waitEvents(t *testing.T, j sandbox.FileJournal, want int, timeout time.Dura
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
+		if batch.Gap != nil {
+			// "It arrived" cannot be asserted over an unknown window:
+			// a backend that cannot watch, or dropped events, must
+			// fail here instead of passing on a partial list.
+			t.Fatalf("gap %+v while waiting for %d events (have %v)", batch.Gap, want, describe(batch.Events))
+		}
 		last = batch.Events
 		if len(last) >= want {
 			return last
@@ -432,6 +438,11 @@ func settle(t *testing.T, j sandbox.FileJournal, seen []sandbox.WriteEvent, d ti
 	batch, err := j.Read(context.Background(), 0, 512)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+	}
+	if batch.Gap != nil {
+		// The window the silence is asserted over is unknown, which is
+		// exactly the failure this suite exists to catch.
+		t.Fatalf("gap %+v: nothing else cannot be asserted over an unknown window", batch.Gap)
 	}
 	if len(batch.Events) < len(seen) {
 		t.Fatalf("events went backwards: %v after %v", describe(batch.Events), describe(seen))

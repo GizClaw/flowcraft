@@ -18,42 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// pollUntil collects raw events until want of them have been seen, the
-// predicate is satisfied, or the deadline passes. It returns everything
-// it collected.
-func pollUntil(t *testing.T, src Source, want int, timeout time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var events []rawEvent
-	for time.Now().Before(deadline) {
-		batch, err := src.Poll(20 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		events = append(events, batch...)
-		if len(events) >= want {
-			return events
-		}
-	}
-	return events
-}
-
-// pollQuiet drains for the given time and returns whatever showed up:
-// how "and nothing else" gets asserted.
-func pollQuiet(t *testing.T, src Source, d time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	var events []rawEvent
-	for time.Now().Before(deadline) {
-		batch, err := src.Poll(20 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		events = append(events, batch...)
-	}
-	return events
-}
-
 // darwinSource opens this platform's source together with its leaf
 // half: it is one object with two faces, and the tests need both.
 func darwinSource(t *testing.T) (Source, leafSource) {
@@ -68,14 +32,6 @@ func darwinSource(t *testing.T) (Source, leafSource) {
 		t.Fatal("the darwin source does not watch leaves")
 	}
 	return src, leaf
-}
-
-func describeRaw(events []rawEvent) []string {
-	out := make([]string, len(events))
-	for i, ev := range events {
-		out[i] = ev.Op.String() + " " + ev.Name
-	}
-	return out
 }
 
 func wantRaw(t *testing.T, events []rawEvent, want ...string) {
@@ -130,7 +86,7 @@ func TestDarwinSourceSeesContentChanges(t *testing.T) {
 	if err := os.WriteFile(file, []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wantLeafRaw(t, pollUntil(t, src, 1, 3*time.Second), leafHandle, "modify")
+	wantLeafRaw(t, collect(t, src, 1, 3*time.Second), leafHandle, "modify")
 
 	if err := os.Chmod(file, 0o600); err != nil {
 		t.Fatal(err)
@@ -139,7 +95,7 @@ func TestDarwinSourceSeesContentChanges(t *testing.T) {
 	if err := os.Chtimes(file, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if events := pollQuiet(t, src, 300*time.Millisecond); len(events) != 0 {
+	if events := settle(t, src, 300*time.Millisecond); len(events) != 0 {
 		t.Fatalf("chmod and utimes produced %v; attribute changes are not writes", describeRaw(events))
 	}
 
@@ -148,7 +104,7 @@ func TestDarwinSourceSeesContentChanges(t *testing.T) {
 	if err := os.Truncate(file, 0); err != nil {
 		t.Fatal(err)
 	}
-	wantLeafRaw(t, pollUntil(t, src, 1, 3*time.Second), leafHandle, "modify")
+	wantLeafRaw(t, collect(t, src, 1, 3*time.Second), leafHandle, "modify")
 }
 
 // TestDarwinSourceReportsDeletesAndRenamesApart covers the evidence the
@@ -173,7 +129,7 @@ func TestDarwinSourceReportsDeletesAndRenamesApart(t *testing.T) {
 	if err := os.Rename(from, to); err != nil {
 		t.Fatal(err)
 	}
-	events := pollUntil(t, src, 2, 3*time.Second)
+	events := collect(t, src, 2, 3*time.Second)
 	wantRaw(t, events, "moved_from from.md", "moved_to to.md")
 	if events[0].Cookie == 0 || events[0].Cookie != events[1].Cookie {
 		t.Fatalf("cookies = %d and %d, want one shared non-zero cookie",
@@ -189,7 +145,7 @@ func TestDarwinSourceReportsDeletesAndRenamesApart(t *testing.T) {
 	if err := os.Remove(to); err != nil {
 		t.Fatal(err)
 	}
-	wantRaw(t, pollUntil(t, src, 1, 3*time.Second), "delete to.md")
+	wantRaw(t, collect(t, src, 1, 3*time.Second), "delete to.md")
 }
 
 // TestDarwinSourceHoldsAnUnclaimedMoveOnePoll covers the cross-directory
@@ -218,7 +174,7 @@ func TestDarwinSourceHoldsAnUnclaimedMoveOnePoll(t *testing.T) {
 	// set, so its diff will never come, and the next poll reports the
 	// move source. The fold then turns it into a removal at its own
 	// deadline, exactly like an unmatched inotify MOVED_FROM.
-	wantRaw(t, pollUntil(t, src, 1, 3*time.Second), "moved_from leaving.md")
+	wantRaw(t, collect(t, src, 1, 3*time.Second), "moved_from leaving.md")
 }
 
 // TestDarwinSourceRefusesEntriesWithoutContent is the regression guard
@@ -255,7 +211,7 @@ func TestDarwinSourceRefusesEntriesWithoutContent(t *testing.T) {
 	if err := os.Remove(fifo); err != nil {
 		t.Fatal(err)
 	}
-	wantRaw(t, pollUntil(t, src, 1, 3*time.Second), "delete pipe")
+	wantRaw(t, collect(t, src, 1, 3*time.Second), "delete pipe")
 }
 
 // TestDarwinSourceReadsThroughTheDescriptor covers the reason reads go
@@ -282,12 +238,12 @@ func TestDarwinSourceReadsThroughTheDescriptor(t *testing.T) {
 	if err := os.Rename(before, after); err != nil {
 		t.Fatal(err)
 	}
-	pollUntil(t, src, 2, 3*time.Second)
+	collect(t, src, 2, 3*time.Second)
 
 	if err := os.WriteFile(filepath.Join(after, "inside.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	events := pollUntil(t, src, 1, 3*time.Second)
+	events := collect(t, src, 1, 3*time.Second)
 	if len(events) != 1 || events[0].Op != rawCreate || events[0].Handle != handle || events[0].Name != "inside.md" {
 		t.Fatalf("events = %v, want one create inside the moved directory", describeRaw(events))
 	}

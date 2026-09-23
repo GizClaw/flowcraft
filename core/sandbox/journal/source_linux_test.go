@@ -5,7 +5,6 @@ package journal
 import (
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 	"time"
 
@@ -21,49 +20,6 @@ func newSource(t *testing.T) *linuxSource {
 	}
 	t.Cleanup(func() { _ = src.Close() })
 	return src.(*linuxSource)
-}
-
-// collect polls until want events have been seen or the deadline
-// expires, and returns everything it saw.
-func collect(t *testing.T, src *linuxSource, want int, timeout time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var seen []rawEvent
-	for time.Now().Before(deadline) {
-		events, err := src.Poll(5 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		seen = append(seen, events...)
-		if len(seen) >= want {
-			return seen
-		}
-	}
-	t.Fatalf("saw %d events (%v), want %d", len(seen), describeRaw(seen), want)
-	return nil
-}
-
-// settle polls for a while and asserts that nothing arrives.
-func settle(t *testing.T, src *linuxSource, d time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	var seen []rawEvent
-	for time.Now().Before(deadline) {
-		events, err := src.Poll(5 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		seen = append(seen, events...)
-	}
-	return seen
-}
-
-func describeRaw(events []rawEvent) []string {
-	out := make([]string, len(events))
-	for i, ev := range events {
-		out[i] = ev.Op.String() + " " + ev.Name
-	}
-	return out
 }
 
 func TestSourceReportsWriteLifecycle(t *testing.T) {
@@ -300,14 +256,80 @@ func TestDefaultBudgetIsSane(t *testing.T) {
 	}
 }
 
-func containsAll(haystack []string, needles ...string) bool {
-	sorted := append([]string(nil), haystack...)
-	sort.Strings(sorted)
-	for _, needle := range needles {
-		idx := sort.SearchStrings(sorted, needle)
-		if idx >= len(sorted) || sorted[idx] != needle {
-			return false
+// TestLinuxSourceDecodesTheRecordsTheKernelEmitsRarely drives the two
+// record classes that need no filesystem to happen through the same
+// decode path Poll uses: a queue overflow and the IN_IGNORED of a
+// watch the kernel dropped.
+func TestLinuxSourceDecodesTheRecordsTheKernelEmitsRarely(t *testing.T) {
+	src := &linuxSource{
+		byWd:    map[int32]Handle{7: 3},
+		wdOf:    map[Handle]int32{3: 7},
+		pending: map[int32]bool{},
+	}
+
+	// An overflow record carries no watch descriptor.
+	events := src.decodeLocked(-1, unix.IN_Q_OVERFLOW, 0, "", nil)
+	if len(events) != 1 || events[0].Op != rawOverflow {
+		t.Fatalf("overflow decoded to %v, want one rawOverflow", describeRaw(events))
+	}
+
+	// A watch the kernel dropped without being asked is reported...
+	events = src.decodeLocked(7, unix.IN_IGNORED, 0, "", nil)
+	if len(events) != 1 || events[0].Op != rawIgnored || events[0].Handle != 3 {
+		t.Fatalf("ignored decoded to %v, want rawIgnored for handle 3", describeRaw(events))
+	}
+
+	// ... while one the engine asked for is consumed and its
+	// expectation cleared.
+	src.pending[7] = true
+	events = src.decodeLocked(7, unix.IN_IGNORED, 0, "", nil)
+	if len(events) != 0 {
+		t.Fatalf("engine-requested removal decoded to %v, want nothing", describeRaw(events))
+	}
+	if src.pending[7] {
+		t.Fatal("the engine-requested removal left its expectation behind")
+	}
+}
+
+// TestLinuxSourceDroppedWatchLeavesNoPendingIgnored is the regression
+// test for descriptor reuse: once the kernel has dropped a watch on its
+// own, the engine's Remove has nothing left to remove and must not
+// record an expectation for a second IN_IGNORED. That expectation would
+// outlive the watch and later swallow the IN_IGNORED of a watch
+// reusing the same descriptor — a silently unwatched subtree.
+func TestLinuxSourceDroppedWatchLeavesNoPendingIgnored(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := newSource(t)
+	h, err := src.Add(dir)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	wd := src.wdOf[h]
+
+	// The kernel drops the watch itself when the directory goes away:
+	// one IN_DELETE_SELF and one IN_IGNORED reach the engine.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	events := collect(t, src, 2, 2*time.Second)
+	sawIgnored := false
+	for _, ev := range events {
+		if ev.Op == rawIgnored {
+			sawIgnored = true
 		}
 	}
-	return true
+	if !sawIgnored {
+		t.Fatalf("events = %v, want the kernel-dropped watch reported", describeRaw(events))
+	}
+
+	if err := src.Remove(h); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if src.pending[wd] {
+		t.Fatal("Remove recorded a pending IN_IGNORED the kernel had already sent; " +
+			"a watch reusing the descriptor would lose its own IN_IGNORED silently")
+	}
 }

@@ -220,6 +220,11 @@ func TestJournalSettingsBuild(t *testing.T) {
 			if !runner.Capabilities().Journal.Enabled {
 				t.Fatal("a valid journal setting produced a runner without a journal")
 			}
+			// The declaration follows the settings: this document
+			// set max_watch_set, so that is the budget in force.
+			if got := runner.Capabilities().Journal.WatchBudget; got != 128 {
+				t.Fatalf("WatchBudget = %d, want the configured 128", got)
+			}
 		})
 	}
 }

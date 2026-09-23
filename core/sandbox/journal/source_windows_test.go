@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 	"time"
 
@@ -23,62 +22,6 @@ func newSource(t *testing.T) *winSource {
 	}
 	t.Cleanup(func() { _ = src.Close() })
 	return src.(*winSource)
-}
-
-// collect polls until want events have been seen or the deadline
-// expires, and returns everything it saw.
-func collect(t *testing.T, src *winSource, want int, timeout time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var seen []rawEvent
-	for time.Now().Before(deadline) {
-		events, err := src.Poll(5 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		seen = append(seen, events...)
-		if len(seen) >= want {
-			return seen
-		}
-	}
-	t.Fatalf("saw %d events (%v), want %d", len(seen), describeRaw(seen), want)
-	return nil
-}
-
-// settle polls for a while and returns whatever showed up: how "and
-// nothing else" gets asserted.
-func settle(t *testing.T, src *winSource, d time.Duration) []rawEvent {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	var seen []rawEvent
-	for time.Now().Before(deadline) {
-		events, err := src.Poll(5 * time.Millisecond)
-		if err != nil {
-			t.Fatalf("Poll: %v", err)
-		}
-		seen = append(seen, events...)
-	}
-	return seen
-}
-
-func describeRaw(events []rawEvent) []string {
-	out := make([]string, len(events))
-	for i, ev := range events {
-		out[i] = ev.Op.String() + " " + ev.Name
-	}
-	return out
-}
-
-func containsAll(haystack []string, needles ...string) bool {
-	sorted := append([]string(nil), haystack...)
-	sort.Strings(sorted)
-	for _, needle := range needles {
-		idx := sort.SearchStrings(sorted, needle)
-		if idx >= len(sorted) || sorted[idx] != needle {
-			return false
-		}
-	}
-	return true
 }
 
 // opsNamed lists the operations reported for one name, so a test can
