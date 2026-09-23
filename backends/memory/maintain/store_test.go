@@ -16,6 +16,7 @@ func testStore(t *testing.T) (*Store, storage.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	kv, err := storage.NewWorkspaceKV(ws)
 	if err != nil {
 		t.Fatal(err)

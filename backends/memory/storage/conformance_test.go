@@ -15,6 +15,7 @@ func TestWorkspaceDriverConformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	logStore, err := storage.NewWorkspaceLog(ws)
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -735,7 +736,22 @@ func mustWorkspace() workspace.Workspace {
 	if err != nil {
 		panic(err)
 	}
+	fixtureWorkspaces = append(fixtureWorkspaces, ws)
 	return ws
+}
+
+// fixtureWorkspaces tracks the root handles opened for package-level fixtures.
+// A local workspace pins its root with an os.Root, so the test binary would hold
+// a directory open for its whole life (and leak the directory) unless TestMain
+// releases them.
+var fixtureWorkspaces []io.Closer
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	for _, ws := range fixtureWorkspaces {
+		_ = ws.Close()
+	}
+	os.Exit(code)
 }
 
 type countingKV struct {

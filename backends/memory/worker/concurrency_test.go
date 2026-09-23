@@ -143,6 +143,7 @@ func newTestProcessorWith(t *testing.T, messages MessageReader, checkpoints Chec
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	logStore, err := storage.NewWorkspaceLog(ws)
 	if err != nil {
 		t.Fatal(err)
