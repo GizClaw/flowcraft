@@ -59,6 +59,8 @@ func main() {
 		"questions processed in parallel (1 = sequential); only the schedule changes, never the prompts or the report order")
 	prepareAll := flag.Bool("prepare-all", false,
 		"ingest every scenario, run one derivation pass, then answer: lets derive.concurrency fan out across all conversations")
+	skipDerive := flag.Bool("skip-derive", false,
+		"answer from the derivation the workspace already holds: no ingest, no derive pass")
 	baselinePath := flag.String("baseline", "", "compare the run against this baseline JSON and fail on regression")
 	baselineTolerance := flag.Float64("baseline-tolerance", 2.0, "allowed regression in percentage points")
 	out := flag.String("out", "", "write full reports JSON here")
@@ -67,6 +69,9 @@ func main() {
 	flag.Parse()
 	if *envFile != "" {
 		loadEnvFile(*envFile)
+	}
+	if *skipDerive && *prepareAll {
+		must(fmt.Errorf("memory eval: -skip-derive answers from the stored derivation, so it cannot run -prepare-all's ingest and derive pass"))
 	}
 
 	raw, err := os.ReadFile(*dataset)
@@ -209,6 +214,10 @@ func main() {
 			"rerank_policy":        rerank.AlgorithmVersion,
 			"judge_prompt":         evalanswer.JudgePromptVersion,
 			"schedule":             scheduleName(*prepareAll),
+			// A run that answers from the stored derivation measures a
+			// different thing than one that derives first, so the fingerprint
+			// keeps the two apart (and -resume refuses to mix them).
+			"derive": deriveMode(*skipDerive),
 			// The assembly settings the policy digest does not cover (recent
 			// window, retrieval toggles) live in the deploy document, so its
 			// digest pins them. Without this, editing deploy.yaml would change
@@ -239,7 +248,7 @@ func main() {
 		}
 		completed = previous.Reports
 	}
-	if *prepareAll {
+	if *prepareAll && !*skipDerive {
 		if err := prepareAllScenarios(context.Background(), deployment.Memory, scenarios, completed); err != nil {
 			must(err)
 		}
@@ -254,7 +263,7 @@ func main() {
 		var report eval.Report
 		var err error
 		for attempt := 1; attempt <= 3; attempt++ {
-			if *prepareAll {
+			if *prepareAll || *skipDerive {
 				report, err = eval.Answer(context.Background(), deployment.Memory, scenario, options)
 			} else {
 				report, err = eval.RunWithOptions(context.Background(), deployment.Memory, scenario, options)
@@ -449,6 +458,15 @@ func scheduleName(prepareAll bool) string {
 		return "prepare-all"
 	}
 	return "per-scenario"
+}
+
+// deriveMode names whether the run derived in this process or answered from
+// the derivation the workspace already held.
+func deriveMode(skipDerive bool) string {
+	if skipDerive {
+		return "reused"
+	}
+	return "fresh"
 }
 
 // answerPromptVersion names the answering policy the run used.

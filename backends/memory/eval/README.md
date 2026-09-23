@@ -146,6 +146,14 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   so the pass retries up to three times. The schedule is recorded in the
   fingerprint, and both schedules have been checked to retrieve identical items
   for a conversation with `MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/`.
+- `-skip-derive`: answer from the derivation the workspace already holds —
+  no ingest, no derive pass, retrieval and answering only. This is the cheap
+  way to compare two **answering** models against one frozen memory: both runs
+  read the same recalled context, so a difference is the model's, not the
+  derivation's. It is not a way to change what is remembered: facts, summaries
+  and projections are whatever the last derivation left behind, and the
+  fingerprint records `derive=reused` so a report from this mode cannot be
+  mistaken for a full run (or resumed into one).
 
 ### Reproducibility
 
