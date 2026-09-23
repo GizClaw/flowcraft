@@ -43,6 +43,7 @@ func newTestAssembly(t *testing.T, settings string) (*Assembly, workspace.Worksp
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	return newTestAssemblyOn(t, ws, settings), ws
 }
 
@@ -55,6 +56,7 @@ func newTestAssemblyWith(t *testing.T, settings string, options ...Option) (*Ass
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	return newTestAssemblyOn(t, ws, settings, options...), ws
 }
 
@@ -464,6 +466,7 @@ func TestFactoryRejectsInvalidSettings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = ws.Close() })
 			_, err = NewFactory().New(context.Background(), resource.Input{
 				Settings: []byte(settings),
 				Deps:     map[string]any{"workspace": ws},
@@ -483,6 +486,7 @@ func TestFactoryDefaultsStorageToWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	value, err := NewFactory().New(context.Background(), resource.Input{
 		Settings: []byte(`{"scopes":[{"runtime_id":"memories"}],"interval":"0"}`),
 		Deps:     map[string]any{"workspace": ws},
@@ -678,6 +682,7 @@ func TestVectorLaneCalibrationRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	value, err := NewFactory(
 		WithClock(func() time.Time { return testNow }),
 		WithDeriver(fakeDeriver{}),
@@ -781,6 +786,7 @@ func TestSQLiteStorageDrivers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	build := func() *Assembly {
 		value, err := NewFactory(
 			WithClock(func() time.Time { return testNow }),

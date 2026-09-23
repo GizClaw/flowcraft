@@ -116,6 +116,7 @@ func TestRunAgainstAssembly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	settings := `{
 	  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
 	  "scopes": [{"runtime_id": "memories"}],

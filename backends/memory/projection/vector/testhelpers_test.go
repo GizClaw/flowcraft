@@ -17,6 +17,7 @@ func newTestWorkspace(t *testing.T) workspace.Workspace {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	return ws
 }
 
