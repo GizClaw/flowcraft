@@ -129,6 +129,13 @@ func (POSIX) Noise(name string) string {
 // must never report. Paths are written backslash-separated because
 // that is what cmd's own parser expects; turning them back into the
 // journal's "/"-separated form is part of what the suite checks.
+//
+// The scripts carry no quotes either: the host hands cmd one command
+// line, and a quote inside a script argument reaches it backslash-
+// escaped, which cmd — no backslash escapes for it — takes literally.
+// A rendering that needs to name a path with spaces has to say so
+// another way (a relative path, or a batch file whose own parsing
+// never goes through argv).
 type Cmd struct{}
 
 // Argv implements Shell.

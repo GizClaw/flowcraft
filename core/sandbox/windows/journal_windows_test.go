@@ -86,9 +86,22 @@ func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
 	defer func() { _ = reader.Close() }()
 
 	// The workdir stays inside the root (the runner rejects an
-	// out-of-root workdir); the writable path is reachable by its own
-	// absolute path, which is where the journal has to see the write.
-	script := `echo x>"` + filepath.Join(outside, "artifact.md") + `"`
+	// out-of-root workdir), so the write reaches the writable path from
+	// there: one ".." step, the two temp directories being siblings.
+	//
+	// It is spelled relatively because a cmd script cannot carry a
+	// quoted absolute path: argv is joined into one command line with
+	// the C runtime's quoting and cmd, reading that line its own way,
+	// takes the backslash of an escaped quote literally — `echo
+	// x>"C:\..."` arrives as `echo x>\"C:\..."` and fails with "The
+	// filename, directory name, or volume label syntax is incorrect".
+	// A relative target needs no quoting at all, whatever the host's
+	// temp directory happens to be called.
+	rel, err := filepath.Rel(root, filepath.Join(outside, "artifact.md"))
+	if err != nil {
+		t.Fatalf("Rel(%q, %q): %v", root, outside, err)
+	}
+	script := "echo x>" + rel
 	result, err := sandbox.Exec(context.Background(), runner, "cmd",
 		[]string{"/c", script}, sandbox.ExecOptions{WorkDir: root})
 	if err != nil {

@@ -53,6 +53,17 @@ func (h *foldHarness) reparent(old, new string) {
 
 func (h *foldHarness) forget(prefix string) { h.f.Forget(hostPath(prefix)) }
 
+// seed drives the readdir pass the engine runs after registering a new
+// directory. The entries it hands over are absolute host paths like
+// every other path the fold sees, so the seed has to be host-flavored
+// too: the fold keys its table by the path it was given.
+func (h *foldHarness) seed(path string, isDir bool) *foldHarness {
+	var out []change
+	h.f.Seed(&out, hostPath(path), isDir, h.now)
+	h.out = append(h.out, out...)
+	return h
+}
+
 func (h *foldHarness) create(path string, isDir bool) *foldHarness {
 	h.route(rawEvent{Op: rawCreate, IsDir: isDir}, path)
 	return h
@@ -272,10 +283,8 @@ func TestFoldSeedReportsEntriesFoundInANewDirectory(t *testing.T) {
 	h := newFoldHarness(t)
 	// The readdir pass after registering a new directory: these files
 	// were written between mkdir and the watch being installed.
-	var out []change
-	h.f.Seed(&out, "/w/out", true, h.now)
-	h.f.Seed(&out, "/w/out/a.md", false, h.now)
-	h.out = append(h.out, out...)
+	h.seed("/w/out", true)
+	h.seed("/w/out/a.md", false)
 	wantChanges(t, h.take(), "create /w/out/")
 
 	// A seeded file is not flushed immediately: the kernel's own
@@ -298,9 +307,7 @@ func TestFoldSeedReportsEntriesFoundInANewDirectory(t *testing.T) {
 
 func TestFoldSeededDirectoryIsReportedOnce(t *testing.T) {
 	h := newFoldHarness(t)
-	var out []change
-	h.f.Seed(&out, "/w/out/sub", true, h.now)
-	h.out = append(h.out, out...)
+	h.seed("/w/out/sub", true)
 	wantChanges(t, h.take(), "create /w/out/sub/")
 
 	// The inotify create for the same directory merges into the
