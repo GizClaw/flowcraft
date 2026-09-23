@@ -35,8 +35,11 @@ jobs:
 
           def module_dirs():
               dirs = ["core", "examples/forge"]
-              dirs += [str(p.parent) for p in pathlib.Path("backends").glob("*/go.mod")]
-              dirs += [str(p.parent) for p in pathlib.Path("driver").glob("*/go.mod")]
+              for base in ("backends", "driver"):
+                  for path in pathlib.Path(base).rglob("go.mod"):
+                      if "vendor" in path.parts or "testdata" in path.parts:
+                          continue
+                      dirs.append(str(path.parent))
               return sorted(set(dirs))
 
           dirs = module_dirs()
@@ -218,6 +221,46 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}
 
+  test-memory-postgres:
+    name: Test backends/memory (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Test
+        working-directory: backends/memory
+        env:
+          FC_PG_DSN: postgres://test:test@127.0.0.1:5432/test?sslmode=disable
+        run: go test -count=1 -race ./storage/postgres/...
+
+  test-memory-windows:
+    name: Test backends/memory (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Test
+        working-directory: backends/memory
+        run: go test -count=1 ./...
+
   test-sandbox-bwrap:
     name: Integration core/sandbox/bwrap
     runs-on: ubuntu-latest
@@ -347,7 +390,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, compute-matrix, lint, test, test-sandbox-bwrap, test-core-windows, test-sandbox-windows, test-sandbox-macos]
+    needs: [release-intent, gofmt, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-sandbox-windows, test-sandbox-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -358,6 +401,8 @@ jobs:
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \
             "${{ needs.test.result }}" \
+            "${{ needs.test-memory-postgres.result }}" \
+            "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \

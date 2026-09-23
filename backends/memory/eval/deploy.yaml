@@ -1,0 +1,153 @@
+version: v1
+
+# Eval deployment document: workspace + inference + memory assembly.
+# Fill the key in run/.env (DEEPSEEK_API_KEY) or switch the provider block to
+# the endpoint you actually have.
+resources:
+  ws:
+    kind: workspace.Workspace
+    impl: local
+    settings:
+      root: ./workspace
+
+  secrets:
+    kind: secret.Store
+    impl: env
+    settings:
+      id: env
+      default: true
+
+  deepseek:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: deepseek
+      spec:
+        # The chat surface rejects json_schema response formats at runtime
+        # (the fact extractor asks for one), so drive the responses surface.
+        api: responses
+        endpoint:
+          base_url: https://api.deepseek.com
+        wire:
+          reasoning_channel: text
+        models:
+          # This endpoint serves exactly two models; anything else (deepseek-chat,
+          # deepseek-reasoner, ...) is silently substituted with deepseek-flash.
+          # Verified: POST /models lists these two, and /chat/completions echoes
+          # the served model back.
+          - name: deepseek-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image]
+              outputs: [text]
+          - name: deepseek-v4-pro
+            kind: generate
+            capabilities:
+              inputs: [text]
+              outputs: [text]
+      profiles:
+        - secrets:
+            api_key: ${env:DEEPSEEK_API_KEY}
+
+  infer:
+    kind: inference.Assembly
+    impl: unified
+    deps:
+      provider.deepseek: deepseek
+      provider.bytedance: bytedance
+      provider.openai: openai
+
+  # OpenAI provider: an alternative generation backend (gpt-4o-mini). Selected per
+  # run with -answer-provider openai -answer-model gpt-4o-mini, or by pointing
+  # memories.settings.generate at it. gpt-4o-mini is multimodal (text + image in,
+  # text out), so the declaration carries image input: a run whose model is this
+  # one must not have its turns' pictures rejected as unsupported.
+  openai:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: openai
+      spec:
+        # The responses surface, for the same reason the deepseek provider above
+        # uses it: the fact extractor asks for a json_schema response format, and
+        # the chat surface rejects it at runtime.
+        api: responses
+        endpoint:
+          base_url: https://api.openai.com/v1
+        # FlowCraft replays context itself, so nothing needs to be retained
+        # server-side; the OpenAI default (store: true, 30-day retention) is
+        # stated off explicitly. The driver default is already false, and the
+        # setting is written out so the deployment says what it means rather
+        # than inheriting it.
+        wire:
+          store: false
+        models:
+          - name: gpt-4o-mini
+            kind: generate
+            capabilities:
+              inputs: [text, image]
+              outputs: [text]
+            limits:
+              max_input_tokens: 128000
+              max_output_tokens: 16384
+      profiles:
+        - secrets:
+            api_key: ${env:OPENAI_API_KEY}
+
+  # Embeddings for the vector lane. DeepSeek has no embedding API, so this is
+  # a separate ByteDance (Volcengine Ark) provider. doubao-embedding-vision is
+  # the multimodal model: the memory vector lane passes text and image parts
+  # through, and Ark fuses them into one vector per item — one HTTP request
+  # per item, since the multimodal endpoint does not batch. The declared name
+  # is the logical name the deployment (and the memory settings) reference;
+  # the profile pins the account's dated snapshot — Ark also lists
+  # doubao-embedding-vision-250615, and an account endpoint ID (ep-xxx) works
+  # here too.
+  bytedance:
+    kind: inference.Provider
+    impl: bytedance
+    settings:
+      id: bytedance
+      spec:
+        models:
+          - name: doubao-embedding-vision
+            kind: embed
+            capabilities:
+              inputs: [text, image]
+              custom_embed_dimensions: true
+            limits:
+              max_input_tokens: 8191
+      profiles:
+        - secrets:
+            api_key: ${env:ARK_API_KEY}
+          spec:
+            endpoints:
+              doubao-embedding-vision: doubao-embedding-vision-251215
+
+  memories:
+    kind: memory.Assembly
+    impl: flowcraft
+    deps:
+      workspace: ws
+      inference: infer
+    settings:
+      storage:
+        log: {driver: workspace}
+        kv: {driver: workspace}
+      generate: {provider: deepseek, name: deepseek-flash}
+      embed: {provider: bytedance, name: doubao-embedding-vision}
+      scopes:
+        - {runtime_id: memories}
+      interval: "0"
+      recent: {max_items: 8}
+      # Derive conversations four at a time. The worker fans out over the
+      # conversations that have pending commits, so this only pays off together
+      # with -prepare-all (a per-scenario run only ever has one stream ready).
+      # What a conversation derives is unchanged: it keeps its own watermark and
+      # commit order, and every artifact id is content-derived.
+      derive: {concurrency: 4}
+      # A fact is a paraphrase, so surface details (a book title, a quoted
+      # number, the exact activities of a trip) only exist in the turn it came
+      # from. Pull one source message along with each fact hit so the answer
+      # model sees the wording the conversation actually used.
+      retrieval: {source_quotes: 3}

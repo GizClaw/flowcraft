@@ -5,7 +5,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod))
+BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod backends/*/*/go.mod))
 DRIVER_MODULES := $(patsubst %/go.mod,%,$(wildcard driver/*/go.mod))
 
 MODULES_WORK := core $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge
@@ -88,3 +88,11 @@ release-preflight-write:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
+
+# Live probes: the credentialed measurement lanes of the memory eval module.
+# They need backends/memory/eval/.env (or a repo-root .env) and spend model
+# calls, so they are opt-in rather than part of `make ci`.
+memory-eval-probes:
+	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
+		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval)' \
+		-timeout 60m
