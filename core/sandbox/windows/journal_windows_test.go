@@ -1,10 +1,9 @@
-//go:build linux && integration_bwrap
-
-package bwrap
+package windows
 
 import (
 	"context"
-	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -14,20 +13,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 )
 
-// TestJournalContract runs the cross-backend journal contract against a
-// real bubblewrap namespace.
-//
-// It is the test that validates the whole host-side design: because
-// bwrap bind-mounts the root and the writable paths at their own
-// absolute paths, a write made inside the namespace is a write to the
-// same host path, and the host-side watcher sees it without any
-// cooperation from the sandboxed process.
+// TestJournalContract is the cross-backend contract, run against the
+// windows backend: real processes, real files, the host's
+// ReadDirectoryChangesW.
 func TestJournalContract(t *testing.T) {
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skipf("bwrap is not installed: %v", err)
-	}
 	if !journal.Available() {
-		t.Skip("no file-watch source on this platform")
+		t.Skipf("no file-watch source on %s", runtime.GOOS)
 	}
 	journaltest.Run(t, buildJournalHarness)
 }
@@ -36,13 +27,13 @@ func buildJournalHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions
 	t.Helper()
 	root := t.TempDir()
 
-	var runnerOpts []RunnerOption
+	var runnerOpts []Option
 	if enabled {
 		runnerOpts = append(runnerOpts, WithFileJournal(opts))
 	}
 	runner, err := New(root, runnerOpts...)
 	if err != nil {
-		t.Fatalf("bwrap New: %v", err)
+		t.Fatalf("windows New: %v", err)
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
@@ -50,14 +41,16 @@ func buildJournalHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions
 		t.Fatalf("Journal.Enabled = %v, want %v", got, want)
 	}
 
+	shell := journaltest.Cmd{}
 	return journaltest.Harness{
 		Runner: runner,
 		Root:   root,
-		Shell:  journaltest.POSIX{},
+		Shell:  shell,
 		Exec: func(t *testing.T, script string) {
 			t.Helper()
-			result, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
-				[]string{"-c", script}, sandbox.ExecOptions{WorkDir: root})
+			argv := shell.Argv(script)
+			result, err := sandbox.Exec(context.Background(), runner, argv[0],
+				argv[1:], sandbox.ExecOptions{WorkDir: root})
 			if err != nil {
 				t.Fatalf("exec %q: %v", script, err)
 			}
@@ -69,14 +62,13 @@ func buildJournalHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions
 }
 
 // TestJournalCoversWritablePathsOutsideTheRoot covers the other half of
-// the watch set: a path granted with writable_paths is not under the
-// root, so its events carry absolute paths.
+// the watch set: a path granted with WithWritablePaths is not under the
+// root, so its events carry absolute paths. Without write confinement
+// there is no write boundary to enforce, but the journal still has to
+// cover the paths a deployment declared writable.
 func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skipf("bwrap is not installed: %v", err)
-	}
 	if !journal.Available() {
-		t.Skip("no file-watch source on this platform")
+		t.Skipf("no file-watch source on %s", runtime.GOOS)
 	}
 
 	root := t.TempDir()
@@ -96,9 +88,9 @@ func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
 	// The workdir stays inside the root (the runner rejects an
 	// out-of-root workdir); the writable path is reachable by its own
 	// absolute path, which is where the journal has to see the write.
-	script := "printf x > " + outside + "/artifact.md"
-	result, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
-		[]string{"-c", script}, sandbox.ExecOptions{WorkDir: root})
+	script := `echo x>"` + filepath.Join(outside, "artifact.md") + `"`
+	result, err := sandbox.Exec(context.Background(), runner, "cmd",
+		[]string{"/c", script}, sandbox.ExecOptions{WorkDir: root})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -106,7 +98,14 @@ func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
 		t.Fatalf("exec: exit %d: %s", result.ExitCode, result.Stderr)
 	}
 
-	wanted := outside + "/artifact.md"
+	// The journal resolves the writable path before watching it (the
+	// runner resolves its root the same way), so the event carries the
+	// resolved path — and the platform's separators, not the source's.
+	resolved, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", outside, err)
+	}
+	wanted := filepath.ToSlash(filepath.Join(resolved, "artifact.md"))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		batch, err := reader.Read(context.Background(), 0, 64)
@@ -123,16 +122,19 @@ func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
 	t.Fatalf("no event carried the absolute writable path %s", wanted)
 }
 
+// TestOpenJournalWithoutAJournalIsNotAvailable keeps the degraded path
+// honest: a runner built without a journal reports no journal and
+// refuses to open one, instead of handing out an empty stream.
 func TestOpenJournalWithoutAJournalIsNotAvailable(t *testing.T) {
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skipf("bwrap is not installed: %v", err)
-	}
 	runner, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = runner.Close() }()
 
+	if caps := runner.Capabilities().Journal; caps.Enabled {
+		t.Fatal("Capabilities claims a journal that was never attached")
+	}
 	if _, err := sandbox.OpenJournal(context.Background(), runner); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("OpenJournal = %v, want NotAvailable", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -402,8 +403,15 @@ func TestJournalReportsOneCreateForCreateAndWrite(t *testing.T) {
 	if events[0].Size != 1 {
 		t.Fatalf("Size = %d, want 1 (stat'ed at emission)", events[0].Size)
 	}
-	if events[0].Dev == 0 || events[0].Ino == 0 {
-		t.Fatalf("identity = %d/%d, want a device and inode", events[0].Dev, events[0].Ino)
+	// Identity is a platform promise: a source that cannot report it
+	// must leave it at the zero value rather than guess one.
+	if caps := Capabilities(); caps.FileIdentity {
+		if events[0].Dev == 0 || events[0].Ino == 0 {
+			t.Fatalf("identity = %d/%d, want a device and inode", events[0].Dev, events[0].Ino)
+		}
+	} else if events[0].Dev != 0 || events[0].Ino != 0 {
+		t.Fatalf("identity = %d/%d, want none on a source without file identity",
+			events[0].Dev, events[0].Ino)
 	}
 	if events[0].Session != "" {
 		t.Fatalf("Session = %q, want empty: inotify cannot name the writer", events[0].Session)
@@ -595,7 +603,10 @@ func TestJournalExcludeSkipsSubtrees(t *testing.T) {
 
 func TestJournalExcludeOutsideTheRootIsRejected(t *testing.T) {
 	root := t.TempDir()
-	for _, bad := range []string{"../elsewhere", "/etc", "."} {
+	// An absolute path outside the root, spelled the host's way: the
+	// rejection has to hold for a Windows drive path too.
+	outside := filepath.Join(filepath.Dir(root), "elsewhere")
+	for _, bad := range []string{"../elsewhere", outside, "."} {
 		if _, err := newWithSource(Config{
 			Root:    root,
 			Options: sandbox.JournalOptions{Exclude: []string{bad}},
@@ -960,8 +971,15 @@ func TestJournalRejectsUnusableConfiguration(t *testing.T) {
 func TestJournalCapabilitiesMatchThePlatform(t *testing.T) {
 	caps := Capabilities()
 	if Available() {
-		if !caps.RenamePairing || !caps.FileIdentity {
-			t.Fatalf("capabilities = %+v, want rename pairing and identity on a platform with a source", caps)
+		if !caps.RenamePairing {
+			t.Fatalf("capabilities = %+v, want rename pairing on a platform with a source", caps)
+		}
+		// ReadDirectoryChangesW notes carry no file identity, so the
+		// one source that cannot report it must not claim it — and
+		// every other source must.
+		wantIdentity := runtime.GOOS != "windows"
+		if caps.FileIdentity != wantIdentity {
+			t.Fatalf("FileIdentity = %v on %s, want %v", caps.FileIdentity, runtime.GOOS, wantIdentity)
 		}
 		if caps.WatchBudget <= 0 {
 			t.Fatalf("WatchBudget = %d, want a positive budget", caps.WatchBudget)

@@ -54,6 +54,7 @@ func buildJournalHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions
 	return journaltest.Harness{
 		Runner: runner,
 		Root:   root,
+		Shell:  journaltest.POSIX{},
 		Exec: func(t *testing.T, script string) {
 			t.Helper()
 			result, err := sandbox.Exec(context.Background(), runner, "/bin/sh",

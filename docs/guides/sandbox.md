@@ -51,10 +51,8 @@ Platform backends are registered from core subpackages:
 
 Every backend that watches also takes a `journal:` settings subtree; see
 [File journal](#file-journal) for what it reports and on which
-platforms. The `windows` factory does not accept the key yet — it
-rejects unknown settings rather than ignoring them, so asking for a
-journal there fails the build until that backend attaches the source it
-has.
+platforms. The backends are decoded strictly, so asking for a journal a
+platform cannot provide fails the host build rather than being ignored.
 
 The bwrap and seatbelt backends share the same settings shape:
 
@@ -199,9 +197,11 @@ cannot name it at all, and a guess from timing would be a
 data-correctness bug.
 
 The source in that table is the platform's; the backend in front of it
-is what a deployment configures. `local`, `bwrap` and `seatbelt` attach
-theirs today, which is why the `windows` row names a source its backend
-does not offer yet.
+is what a deployment configures. All four attach theirs: `local`
+(inotify, kqueue), `bwrap` (inotify), `seatbelt` (kqueue) and `windows`
+(ReadDirectoryChangesW) — so a platform without a source (the BSDs
+today) fails the host build when `journal:` is configured, instead of
+producing a runner that reports nothing.
 
 It is opt-in per resource — an absent `journal:` key costs nothing (no
 file descriptor, no goroutine, no watch):
@@ -210,7 +210,7 @@ file descriptor, no goroutine, no watch):
 resources:
   box:
     kind: sandbox.Runner
-    impl: bwrap            # or local, seatbelt
+    impl: bwrap            # or local, seatbelt, windows
     settings:
       root: .
       writable_paths: [./out]

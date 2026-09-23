@@ -257,7 +257,7 @@ box:
     writable_paths: [./out]   # optional; paths the sandbox may write
     readonly_root: true       # optional; keep the runner root read-only
     extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
-    journal:                  # optional; report writes as events (Linux, macOS)
+    journal:                  # optional; report writes as events (Linux, macOS, Windows)
       exclude: [.git, node_modules]     # root-relative subtrees never watched
       ops: [create, rename, remove]     # empty = every class
       retention: 4096                   # events kept readable for replay

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -30,10 +31,27 @@ func (h *foldHarness) at(offset time.Duration) *foldHarness {
 	return h
 }
 
+// hostPath rewrites one of the suite's "/"-flavored literals into the
+// shape the engine actually hands the fold: an absolute host path,
+// whose separators are the platform's own. The fold's subtree checks
+// are prefix checks on exactly those paths, so a literal that is only
+// right on a "/"-separated host would test the wrong thing.
+func hostPath(path string) string { return filepath.FromSlash(path) }
+
 func (h *foldHarness) route(ev rawEvent, path string) {
 	h.t.Helper()
-	h.out = append(h.out, h.f.Observe(ev, path, h.now)...)
+	h.out = append(h.out, h.f.Observe(ev, hostPath(path), h.now)...)
 }
+
+// resolveMove, reparent and forget drive the fold's engine-side entry
+// points with the same host-flavored paths.
+func (h *foldHarness) resolveMove(path string) { h.f.ResolveMove(hostPath(path)) }
+
+func (h *foldHarness) reparent(old, new string) {
+	h.f.Reparent(hostPath(old), hostPath(new))
+}
+
+func (h *foldHarness) forget(prefix string) { h.f.Forget(hostPath(prefix)) }
 
 func (h *foldHarness) create(path string, isDir bool) *foldHarness {
 	h.route(rawEvent{Op: rawCreate, IsDir: isDir}, path)
@@ -96,12 +114,12 @@ func (h *foldHarness) take() []change {
 func describe(changes []change) []string {
 	out := make([]string, len(changes))
 	for i, c := range changes {
-		s := c.op.String() + " " + c.path
+		s := c.op.String() + " " + filepath.ToSlash(c.path)
 		if c.isDir {
 			s += "/"
 		}
 		if c.oldPath != "" {
-			s += " <- " + c.oldPath
+			s += " <- " + filepath.ToSlash(c.oldPath)
 		}
 		out[i] = s
 	}
@@ -305,7 +323,7 @@ func TestFoldMoveSelfResolvedByAPairingIsSilent(t *testing.T) {
 	h := newFoldHarness(t)
 	h.moveSelf("/w/a")
 	h.movedFrom("/w/a", 5, true).movedTo("/w/b", 5, true)
-	h.f.ResolveMove("/w/a")
+	h.resolveMove("/w/a")
 	h.at(300 * time.Millisecond).sweep()
 	if len(h.gaps) != 0 {
 		t.Fatalf("gaps = %v, want none for an in-tree move", h.gaps)
@@ -337,7 +355,7 @@ func TestFoldFlushSkipsTombstones(t *testing.T) {
 func TestFoldReparentRewritesTheSubtree(t *testing.T) {
 	h := newFoldHarness(t)
 	h.create("/w/old/f.md", false).modify("/w/old/f.md")
-	h.f.Reparent("/w/old", "/w/new")
+	h.reparent("/w/old", "/w/new")
 	h.at(400 * time.Millisecond).sweep()
 	wantChanges(t, h.take(), "create /w/new/f.md")
 }
@@ -345,7 +363,7 @@ func TestFoldReparentRewritesTheSubtree(t *testing.T) {
 func TestFoldForgetDropsTheSubtree(t *testing.T) {
 	h := newFoldHarness(t)
 	h.create("/w/gone/f.md", false).modify("/w/gone/f.md")
-	h.f.Forget("/w/gone")
+	h.forget("/w/gone")
 	h.at(400 * time.Millisecond).sweep()
 	wantChanges(t, h.take())
 }

@@ -237,6 +237,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
+      # Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, which leaves bubblewrap failing with "setting up uid
+      # map: Permission denied" before it can mount anything (the runner
+      # image ships, but does not load, the profile that allows it). The
+      # journal integration tests below need a real namespace, so make
+      # one available and prove it.
+      - name: Make bubblewrap usable
+        run: |
+          set -euo pipefail
+          probe() { bwrap --unshare-pid --die-with-parent -- /bin/true 2>/dev/null; }
+          if probe; then
+            echo "bwrap can create a namespace"
+            exit 0
+          fi
+
+          # The profile the bubblewrap package ships re-allows exactly
+          # bwrap's own user-namespace creation; write it when the
+          # installed package predates the profile, then reload.
+          sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap || true
+          if probe; then
+            echo "bwrap works with the AppArmor profile loaded"
+            exit 0
+          fi
+
+          # Hosts whose AppArmor has nothing to load take the blunt
+          # route: lift the restriction for this runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          probe
       - name: Test
         run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
         working-directory: core/sandbox

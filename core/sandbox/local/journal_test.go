@@ -34,13 +34,19 @@ func buildHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions) journ
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
+	// The local runner is the portable one, so the harness follows the
+	// platform's shell: the suite's promises have to hold for a
+	// cmd.exe write on Windows exactly as they do for a sh one.
+	shell := journaltest.ForPlatform()
 	return journaltest.Harness{
 		Runner: runner,
 		Root:   root,
+		Shell:  shell,
 		Exec: func(t *testing.T, script string) {
 			t.Helper()
-			result, err := sandbox.Exec(context.Background(), runner, "sh",
-				[]string{"-c", script}, sandbox.ExecOptions{WorkDir: root})
+			argv := shell.Argv(script)
+			result, err := sandbox.Exec(context.Background(), runner, argv[0],
+				argv[1:], sandbox.ExecOptions{WorkDir: root})
 			if err != nil {
 				t.Fatalf("exec %q: %v", script, err)
 			}
@@ -56,6 +62,9 @@ func buildHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions) journ
 func TestJournalContract(t *testing.T) {
 	if !journal.Available() {
 		t.Skipf("no file-watch source on %s", runtime.GOOS)
+	}
+	if !localSessionsSupported {
+		t.Skipf("the local backend spawns no sessions on %s", runtime.GOOS)
 	}
 	journaltest.Run(t, buildHarness)
 }
@@ -220,6 +229,9 @@ func TestJournalSettingsBuild(t *testing.T) {
 func TestJournalSeesWritesMadeByTheRunnerProcess(t *testing.T) {
 	if !journal.Available() {
 		t.Skipf("no file-watch source on %s", runtime.GOOS)
+	}
+	if !localSessionsSupported {
+		t.Skipf("the local backend spawns no sessions on %s", runtime.GOOS)
 	}
 	h := buildHarness(t, true, sandbox.JournalOptions{})
 	j, err := sandbox.OpenJournal(context.Background(), h.Runner)

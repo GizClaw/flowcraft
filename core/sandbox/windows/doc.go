@@ -103,6 +103,20 @@
 //	                              SessionBudgetExceeded via the job
 //	                              object's completion-port messages.
 //
+// # File journal
+//
+// A runner can be built with [WithFileJournal] to report the writes made
+// under its root and its explicitly writable paths (see
+// core/sandbox/journal): the source is the host's
+// ReadDirectoryChangesW, so the host-side watch sees a sandboxed
+// process's writes without any cooperation from it, and sees the host
+// process's writes into the same tree too. It is an observation stream,
+// never a boundary — write confinement still decides what is allowed,
+// and the journal reports what happened. On this platform a watch costs
+// one directory watch plus the change buffer the kernel pins for its
+// pending read, which is what
+// [sandbox.JournalCapabilities.WatchBudget] counts here.
+//
 // # Write confinement notes
 //
 // WithWriteConfinement, the runner root (plus WithWritablePaths
@@ -136,5 +150,7 @@
 //   - Job objects: job_windows.go
 //   - Sessions: session_windows.go
 //   - ConPTY: conpty_windows.go
+//   - File journal: journal_windows_test.go (contract suite),
+//     journal_settings_test.go (deployment settings)
 //   - Deployment resource: register.go
 package windows

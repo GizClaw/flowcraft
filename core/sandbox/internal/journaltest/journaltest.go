@@ -10,6 +10,7 @@ package journaltest
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,9 @@ type Harness struct {
 	// their working directory, so a relative path in a script is a path
 	// inside the watched tree.
 	Root string
+	// Shell renders the suite's file operations in the commands of one
+	// platform's shell.
+	Shell Shell
 	// Exec runs a shell script in the sandbox and fails the test if it
 	// does not exit cleanly. It must run the command *inside* the
 	// sandbox: the point of the suite is to check what a real sandboxed
@@ -39,6 +43,147 @@ type Harness struct {
 // call must return a runner over a fresh directory.
 type Builder func(t *testing.T, enabled bool, opts sandbox.JournalOptions) Harness
 
+// Shell renders the file operations this suite needs as the commands of
+// one platform's shell, and wraps a rendered script in that shell's own
+// argv.
+//
+// The suite asserts the journal's promises, not a shell's syntax: a
+// backend hands over the commands its sandboxes actually run, so the
+// same promise is checked the same way on inotify, kqueue and
+// ReadDirectoryChangesW — each in its platform's own words.
+type Shell interface {
+	// Argv wraps script in this shell's argv, ready for sandbox.Exec.
+	Argv(script string) []string
+	// Create makes a new file name with content "x".
+	Create(name string) string
+	// CreateAll makes several new files in one command, in order.
+	CreateAll(names ...string) string
+	// Append adds content to an existing name: the content-change shape
+	// that must arrive as one write, not as a second create.
+	Append(name, content string) string
+	// Move renames from to: the shape that must arrive as one rename.
+	Move(from, to string) string
+	// MakeDirTree creates dir (with its parents) and then file inside
+	// it: two directory creates and a file create, in that order.
+	MakeDirTree(dir, file string) string
+	// TouchAndRemove creates name and removes it again within one
+	// command, leaving nothing behind: the shape of a lock file or of
+	// an install-in-progress temp file.
+	TouchAndRemove(name string) string
+	// Noise reads name and changes its attributes — the changes a
+	// journal must never report.
+	Noise(name string) string
+}
+
+// POSIX is the /bin/sh rendering: the commands the local, bwrap and
+// seatbelt sandboxes have always run in this suite.
+type POSIX struct{}
+
+// Argv implements Shell.
+func (POSIX) Argv(script string) []string { return []string{"sh", "-c", script} }
+
+// Create implements Shell.
+func (POSIX) Create(name string) string { return "printf x > " + name }
+
+// CreateAll implements Shell.
+func (POSIX) CreateAll(names ...string) string {
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, "printf x > "+name)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// Append implements Shell.
+func (POSIX) Append(name, content string) string {
+	return "printf " + content + " >> " + name
+}
+
+// Move implements Shell.
+func (POSIX) Move(from, to string) string { return "mv " + from + " " + to }
+
+// MakeDirTree implements Shell.
+func (POSIX) MakeDirTree(dir, file string) string {
+	return "mkdir -p " + dir + " && printf x > " + file
+}
+
+// TouchAndRemove implements Shell: the descriptor stays open across the
+// removal, which is the POSIX close-edge shape.
+func (POSIX) TouchAndRemove(name string) string {
+	return "exec 3>" + name + "; rm -f " + name + "; exec 3>&-"
+}
+
+// Noise implements Shell.
+func (POSIX) Noise(name string) string {
+	return "cat " + name + " > /dev/null; chmod 600 " + name
+}
+
+// Cmd is the cmd.exe rendering, for the windows backend and for local
+// runs on Windows.
+//
+// cmd has no close edge to lean on — ReadDirectoryChangesW reports a
+// change when the filesystem records it, not when a writer closes the
+// file — so [Cmd.TouchAndRemove] expresses that promise (a transient
+// entry leaves nothing behind) with the tools the platform has, and an
+// attribute change stands in for the POSIX mode change [Cmd.Noise]
+// must never report. Paths are written backslash-separated because
+// that is what cmd's own parser expects; turning them back into the
+// journal's "/"-separated form is part of what the suite checks.
+type Cmd struct{}
+
+// Argv implements Shell.
+func (Cmd) Argv(script string) []string { return []string{"cmd", "/c", script} }
+
+// cmdPath rewrites one of the suite's "/"-separated paths for cmd.
+func cmdPath(name string) string { return strings.ReplaceAll(name, "/", `\`) }
+
+// Create implements Shell.
+func (Cmd) Create(name string) string { return "echo x>" + cmdPath(name) }
+
+// CreateAll implements Shell.
+func (Cmd) CreateAll(names ...string) string {
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, "echo x>"+cmdPath(name))
+	}
+	return strings.Join(parts, " & ")
+}
+
+// Append implements Shell.
+func (Cmd) Append(name, content string) string {
+	return "echo " + content + ">>" + cmdPath(name)
+}
+
+// Move implements Shell.
+func (Cmd) Move(from, to string) string {
+	return "move /y " + cmdPath(from) + " " + cmdPath(to)
+}
+
+// MakeDirTree implements Shell.
+func (Cmd) MakeDirTree(dir, file string) string {
+	return "mkdir " + cmdPath(dir) + " & echo x>" + cmdPath(file)
+}
+
+// TouchAndRemove implements Shell.
+func (Cmd) TouchAndRemove(name string) string {
+	return "echo x>" + cmdPath(name) + " & del " + cmdPath(name)
+}
+
+// Noise implements Shell: a read, and a hidden-attribute change.
+func (Cmd) Noise(name string) string {
+	return "type " + cmdPath(name) + " >nul & attrib +h " + cmdPath(name)
+}
+
+// ForPlatform returns the shell the tests are running on: cmd.exe on
+// Windows, /bin/sh everywhere else. A backend whose runner is itself
+// portable (local) uses it so its harness and its scripts agree.
+func ForPlatform() Shell {
+	if runtime.GOOS == "windows" {
+		return Cmd{}
+	}
+	return POSIX{}
+}
+
 // Run exercises the contract. Backends call it from their own test file
 // so failures point at the backend that broke.
 func Run(t *testing.T, build Builder) {
@@ -48,10 +193,11 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{})
 		j := open(t, h)
 
-		h.Exec(t, "printf x > a.md")
-		h.Exec(t, "mv a.md b.md")
-		// Noise the journal must never report: a read and a chmod.
-		h.Exec(t, "cat b.md > /dev/null; chmod 600 b.md")
+		h.Exec(t, h.Shell.Create("a.md"))
+		h.Exec(t, h.Shell.Move("a.md", "b.md"))
+		// Noise the journal must never report: a read and an
+		// attribute change.
+		h.Exec(t, h.Shell.Noise("b.md"))
 
 		events := waitEvents(t, j, 2, 3*time.Second)
 		events = settle(t, j, events, 400*time.Millisecond)
@@ -73,7 +219,7 @@ func Run(t *testing.T, build Builder) {
 		// Open, unlink, close: the entry is gone before the writer is
 		// done with it, so nothing was produced. This is the same
 		// shape as a lock file or an install-in-progress temp file.
-		h.Exec(t, "exec 3>tmp.lock; rm -f tmp.lock; exec 3>&-")
+		h.Exec(t, h.Shell.TouchAndRemove("tmp.lock"))
 
 		events := settle(t, j, nil, 400*time.Millisecond)
 		wantEvents(t, events)
@@ -87,11 +233,11 @@ func Run(t *testing.T, build Builder) {
 		// another. A write that follows a reported create must not be
 		// swallowed by the create's de-duplication window — the bytes
 		// changed after the consumer was told about the file.
-		h.Exec(t, "printf x > f.md")
+		h.Exec(t, h.Shell.Create("f.md"))
 		events := waitEvents(t, j, 1, 3*time.Second)
 		wantEvents(t, events, "create f.md")
 
-		h.Exec(t, "printf yy >> f.md")
+		h.Exec(t, h.Shell.Append("f.md", "yy"))
 		events = waitEvents(t, j, 2, 3*time.Second)
 		events = settle(t, j, events, 400*time.Millisecond)
 		wantEvents(t, events, "create f.md", "write f.md")
@@ -101,7 +247,7 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{})
 		j := open(t, h)
 
-		h.Exec(t, "mkdir -p out/deep && printf x > out/deep/f.md")
+		h.Exec(t, h.Shell.MakeDirTree("out/deep", "out/deep/f.md"))
 
 		events := waitEvents(t, j, 3, 3*time.Second)
 		events = settle(t, j, events, 400*time.Millisecond)
@@ -120,9 +266,9 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{Ops: []sandbox.FileOp{sandbox.FileOpCreate}})
 		j := open(t, h)
 
-		h.Exec(t, "printf x > existing.md")
+		h.Exec(t, h.Shell.Create("existing.md"))
 		waitEvents(t, j, 1, 3*time.Second)
-		h.Exec(t, "printf yy >> existing.md")
+		h.Exec(t, h.Shell.Append("existing.md", "yy"))
 
 		events := settle(t, j, nil, 400*time.Millisecond)
 		wantEvents(t, events, "create existing.md")
@@ -139,7 +285,7 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{Retention: 2})
 		j := open(t, h)
 
-		h.Exec(t, "printf x > a.md; printf x > b.md; printf x > c.md; printf x > d.md; printf x > e.md")
+		h.Exec(t, h.Shell.CreateAll("a.md", "b.md", "c.md", "d.md", "e.md"))
 
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
@@ -168,7 +314,7 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{})
 		j := open(t, h)
 
-		h.Exec(t, "printf x > a.md")
+		h.Exec(t, h.Shell.Create("a.md"))
 		waitEvents(t, j, 1, 3*time.Second)
 
 		second, err := sandbox.OpenJournal(context.Background(), h.Runner)
@@ -200,7 +346,7 @@ func Run(t *testing.T, build Builder) {
 		h := build(t, true, sandbox.JournalOptions{})
 		j := open(t, h)
 
-		h.Exec(t, "printf x > a.md")
+		h.Exec(t, h.Shell.Create("a.md"))
 		waitEvents(t, j, 1, 3*time.Second)
 
 		if err := h.Runner.Close(); err != nil {
@@ -232,7 +378,7 @@ func Run(t *testing.T, build Builder) {
 			t.Fatalf("OpenJournal = %v, want NotAvailable", err)
 		}
 		// ... and the runner still runs commands.
-		h.Exec(t, "printf x > a.md")
+		h.Exec(t, h.Shell.Create("a.md"))
 	})
 }
 
