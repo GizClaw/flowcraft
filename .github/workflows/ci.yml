@@ -246,11 +246,23 @@ jobs:
       - name: Make bubblewrap usable
         run: |
           set -euo pipefail
-          probe() { bwrap --unshare-pid --die-with-parent -- /bin/true 2>/dev/null; }
+          # A fresh mount namespace starts with an empty root, so the
+          # probe binds the host root read-only exactly like the
+          # runner's own filesystem flags do: without that, bwrap fails
+          # on a missing /bin/true before it ever reaches the namespace
+          # setup under test.
+          probe_log=$(mktemp)
+          probe() {
+            bwrap --ro-bind / / --unshare-pid --die-with-parent -- /bin/true 2>"$probe_log"
+          }
+          report() { sed 's/^/  /' "$probe_log"; }
+
           if probe; then
             echo "bwrap can create a namespace"
             exit 0
           fi
+          echo "bwrap cannot create a namespace:"
+          report
 
           # The profile the bubblewrap package ships re-allows exactly
           # bwrap's own user-namespace creation; write it when the
@@ -267,11 +279,19 @@ jobs:
             echo "bwrap works with the AppArmor profile loaded"
             exit 0
           fi
+          echo "still failing with the profile loaded:"
+          report
 
           # Hosts whose AppArmor has nothing to load take the blunt
           # route: lift the restriction for this runner.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          probe
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if probe; then
+            echo "bwrap works with the unprivileged-userns restriction lifted"
+            exit 0
+          fi
+          echo "bwrap still cannot create a namespace:"
+          report
+          exit 1
       - name: Test
         run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
         working-directory: core/sandbox
