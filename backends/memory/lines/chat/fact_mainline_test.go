@@ -61,9 +61,9 @@ func TestFactExtractorNoneSkipsAndSimpleBatchesOnceWithRuneTail(t *testing.T) {
 	}
 
 	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[
-		{"text":"ALICE　likes  Tea","entities":[" Alice ","TEA"]},
-		{"text":"alice likes tea","entities":["alice"]},
-		{"text":"Bob lives in Paris","entities":["Bob","Paris"]}
+		{"text":"ALICE　likes  Tea","entities":[" Alice ","TEA"],"event_time":""},
+		{"text":"alice likes tea","entities":["alice"],"event_time":""},
+		{"text":"Bob lives in Paris","entities":["Bob","Paris"],"event_time":""}
 	]}`)}
 	config = DefaultConfig()
 	config.Runtime = fake.Assembly(t)
@@ -93,7 +93,7 @@ func TestFactExtractorNoneSkipsAndSimpleBatchesOnceWithRuneTail(t *testing.T) {
 
 func TestFactExtractorRichSchemaMalformedAndCaps(t *testing.T) {
 	model := inferencetest.DefaultFakeModel
-	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"Alice works at Acme","entities":["Alice","Acme"],"predicate":"works_at","temporal_detail":"since 2020"}]}`)}
+	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"Alice works at Acme","entities":["Alice","Acme"],"event_time":"","predicate":"works_at","temporal_detail":"since 2020"}]}`)}
 	config := DefaultConfig()
 	config.Strategy = StrategyRich
 	config.Runtime = fake.Assembly(t)
@@ -136,8 +136,8 @@ func TestFactExtractorRichSchemaMalformedAndCaps(t *testing.T) {
 		response string
 		want     string
 	}{
-		"too_many": {`{"facts":[{"text":"one"},{"text":"two"}]}`, "one"},
-		"too_long": {`{"facts":[{"text":"12345"}]}`, "1234"},
+		"too_many": {`{"facts":[{"text":"one","entities":[],"event_time":""},{"text":"two","entities":[],"event_time":""}]}`, "one"},
+		"too_long": {`{"facts":[{"text":"12345","entities":[],"event_time":""}]}`, "1234"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			local := DefaultConfig()
@@ -347,7 +347,7 @@ func associationRuntime(t *testing.T) (*inference.Assembly, model.ModelRef, mode
 			return inference.Compiled[string]{Wire: "wire", Report: inferencetest.NativeReport(model.OperationGenerate, request.ActiveFieldsFor(shape)...)}, nil
 		},
 		func(context.Context, string) (string, error) {
-			return `{"facts":[{"text":"existing duplicate","entities":["Alice"]},{"text":"new fact"},{"text":"batch peer"}]}`, nil
+			return `{"facts":[{"text":"existing duplicate","entities":["Alice"],"event_time":""},{"text":"new fact","entities":[],"event_time":""},{"text":"batch peer","entities":[],"event_time":""}]}`, nil
 		},
 		func(_ context.Context, raw string) (inference.GenerateResponse, error) {
 			return jsonResponse(raw)(inference.GenerateRequest{}), nil

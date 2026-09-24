@@ -39,7 +39,10 @@ const (
 	// whenever the extractor prompt or parsing logic changes: prompt text is
 	// not part of the policy digest, so without a bump existing workspaces
 	// would keep facts derived by the previous prompt.
-	AlgorithmVersion          = "1.2.0"
+	// 1.3.0: the response schema requires every property (strict structured
+	// outputs reject optional keys), so the prompt now spells out [] and "" for
+	// absent details. Existing workspaces must re-derive.
+	AlgorithmVersion          = "1.3.0"
 	LinkAlgorithmVersion      = "fact-link-vector-v2"
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
 	TransformSignatureSimple  = "fact-extract-simple-v1"
@@ -653,10 +656,16 @@ func CanonicalFactHash(text string) string { return factview.CanonicalHash(text)
 
 func schemaFor(strategy FactStrategy) json.RawMessage {
 	properties := `"text":{"type":"string"},"entities":{"type":"array","items":{"type":"string"}},"event_time":{"type":"string"}`
-	required := `["text"]`
+	// Every property is required, including the ones a turn may leave empty:
+	// strict structured outputs (OpenAI's json_schema mode; the same rule is
+	// spreading) reject a schema whose optional properties are absent from
+	// required. A missing detail is expressed as [] or "", never as an omitted
+	// key, and the prompt says so. DeepSeek accepts both shapes, so this also
+	// keeps one schema for every provider.
+	required := `["text","entities","event_time"]`
 	if strategy == StrategyRich {
 		properties += `,"predicate":{"type":"string"},"temporal_detail":{"type":"string"}`
-		required = `["text","predicate","temporal_detail"]`
+		required = `["text","entities","event_time","predicate","temporal_detail"]`
 	}
 	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["facts"],"properties":{"facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":` + required + `,"properties":{` + properties + `}}}}}`)
 }
