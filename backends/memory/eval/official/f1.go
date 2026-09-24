@@ -7,24 +7,35 @@ package official
 
 import (
 	"strings"
-	"unicode"
 
 	"github.com/reiver/go-porterstemmer"
 )
 
-// Normalize mirrors the reference harness's normalize_answer: lowercase, drop
-// punctuation and the articles/connectives it removes, then collapse spaces.
-func Normalize(value string) string {
+// asciiPunctuation is string.punctuation from the reference implementation.
+const asciiPunctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+
+// normalizeAnswer mirrors normalize_answer from the reference harness exactly:
+//
+//	s = s.replace(',', "")
+//	remove_punc: delete ASCII punctuation (it is dropped, not split)
+//	remove_articles: a, an, the, and
+//	lower, then collapse whitespace
+//
+// The deletion matters: it is what makes "Caroline's" one token ("carolines")
+// rather than two, and "1,000" one token ("1000"). Replacing punctuation with a
+// space instead -- which this scorer used to do -- quietly scored every
+// possessive, hyphenated name and grouped number differently from the
+// published numbers.
+func normalizeAnswer(value string) string {
 	lowered := strings.ToLower(value)
+	lowered = strings.ReplaceAll(lowered, ",", "")
 	var builder strings.Builder
 	builder.Grow(len(lowered))
 	for _, r := range lowered {
-		switch {
-		case unicode.IsPunct(r), unicode.IsSymbol(r):
-			builder.WriteByte(' ')
-		default:
-			builder.WriteRune(r)
+		if r < 128 && strings.ContainsRune(asciiPunctuation, r) {
+			continue
 		}
+		builder.WriteRune(r)
 	}
 	fields := strings.Fields(builder.String())
 	kept := fields[:0]
@@ -33,6 +44,22 @@ func Normalize(value string) string {
 		case "a", "an", "the", "and":
 			continue
 		}
+		kept = append(kept, field)
+	}
+	return strings.Join(kept, " ")
+}
+
+// Normalize is what F1 scores on: normalize_answer followed by Porter stemming
+// of every token, which is the order the reference harness uses.
+//
+// One divergence remains and is deliberate: the reference stems with NLTK's
+// PorterStemmer, this uses reiver/go-porterstemmer. They agree on ordinary
+// words but not on every edge case ("may" is one we have measured), so treat a
+// difference in the last decimal as a stemmer artefact rather than a result.
+func Normalize(value string) string {
+	fields := strings.Fields(normalizeAnswer(value))
+	kept := fields[:0]
+	for _, field := range fields {
 		kept = append(kept, porterstemmer.StemString(field))
 	}
 	return strings.Join(kept, " ")

@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+// TestNormalizeMatchesTheReferenceSpelling pins the exact cases where this
+// normalizer used to diverge from normalize_answer in the reference harness:
+// punctuation is deleted, not replaced by a space, and commas go first.
+func TestNormalizeMatchesTheReferenceSpelling(t *testing.T) {
+	cases := map[string]string{
+		// Punctuation is removed, so a possessive stays one word.
+		"Caroline's book": "carolines book",
+		// The comma rule runs before punctuation deletion: 1,000 is one token.
+		"1,000 dollars": "1000 dollars",
+		// Hyphens disappear the same way.
+		"gpt-4o": "gpt4o",
+		// Articles and the connective "and" are dropped after punctuation.
+		"The camping trip, and the fire": "camping trip fire",
+		// Non-ASCII punctuation is kept, exactly like the reference.
+		"“quoted”": "“quoted”",
+	}
+	for value, want := range cases {
+		if got := normalizeAnswer(value); got != want {
+			t.Errorf("normalizeAnswer(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
 func TestF1MatchesTheReferenceSemantics(t *testing.T) {
 	for _, test := range []struct {
 		name       string
