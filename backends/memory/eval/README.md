@@ -213,6 +213,7 @@ stays offline and free).
 | probe | answers |
 | --- | --- |
 | `TestConfiguredModelsExistInCatalog` | is every model named in `deploy.yaml` actually served? |
+| `TestExtractionModelAB` | is a candidate generate model good enough to extract? (failures, facts/turn, surface coverage, unsupported facts) |
 | `TestAnswerContextSize` | how much context reaches the answer prompt |
 | `TestEvidenceFidelity` | how much of the recalled evidence is raw text vs a fact paraphrase |
 | `TestRetrievalBudgetSweep` | what evidence coverage each item budget buys |

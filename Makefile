@@ -94,5 +94,5 @@ release-changelog:
 # calls, so they are opt-in rather than part of `make ci`.
 memory-eval-probes:
 	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
-		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval)' \
+		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB)' \
 		-timeout 60m
