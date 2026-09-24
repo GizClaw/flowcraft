@@ -20,17 +20,17 @@ func (searcher *Searcher) Search(ctx context.Context, request component.SearchRe
 	if searcher == nil || searcher.Store == nil || conversationID == "" {
 		return []component.Candidate{}, nil
 	}
-	manifest, found, err := searcher.Store.LoadActive(ctx, request.Scope, conversationID)
+	// One locked read: the generation label and the records have to come from
+	// the same manifest, and a publish between two calls would mix them.
+	manifest, records, found, err := searcher.Store.ActiveSnapshot(ctx, request.Scope, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return []component.Candidate{}, nil
 	}
-	records, err := searcher.Store.ListActive(ctx, request.Scope, conversationID,
-		ListOptions{GenerationID: request.Metadata["generation_id"]})
-	if err != nil {
-		return nil, err
+	if generation := request.Metadata["generation_id"]; generation != "" && generation != manifest.GenerationID {
+		return []component.Candidate{}, nil
 	}
 	query := terms(request.Query)
 	result := make([]component.Candidate, 0, len(records))

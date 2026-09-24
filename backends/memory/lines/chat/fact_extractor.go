@@ -51,15 +51,28 @@ var factPromptFS embed.FS
 
 var (
 	factSystemTmpl = template.Must(template.ParseFS(factPromptFS, "prompts/fact_system.tmpl"))
-	factSystem     = mustRenderFactSystem()
+	factSystem     = mustRenderFactSystem(false)
+	// The rich schema asks for two fields the simple one does not, so the
+	// prompt has to describe them: a strict provider would otherwise reject
+	// the request or invent values for keys nobody explained.
+	factSystemRich = mustRenderFactSystem(true)
 )
 
-func mustRenderFactSystem() string {
+func mustRenderFactSystem(rich bool) string {
 	var builder strings.Builder
-	if err := factSystemTmpl.Execute(&builder, nil); err != nil {
+	if err := factSystemTmpl.Execute(&builder, struct{ Rich bool }{Rich: rich}); err != nil {
 		panic(err)
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+// factSystemFor selects the prompt that matches the strategy's response
+// schema.
+func factSystemFor(strategy FactStrategy) string {
+	if strategy == StrategyRich {
+		return factSystemRich
+	}
+	return factSystem
 }
 
 // FactStrategy controls extraction detail without changing the one-call batch contract.
@@ -288,7 +301,14 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		metadata := cloneMetadata(input.Metadata)
 		metadata["canonical_hash"] = hash
 		metadata["entities"] = encodeStrings(entities)
-		metadata["event_time"] = itemTime.Format(time.RFC3339Nano)
+		// Absent stays absent: the fact view defaults a missing timestamp to
+		// the record's creation time, which is honest, where the epoch is a
+		// claim the extractor cannot support.
+		if !itemTime.IsZero() {
+			metadata["event_time"] = itemTime.Format(time.RFC3339Nano)
+		} else {
+			delete(metadata, "event_time")
+		}
 		metadata["source_digest"] = sourceDigest
 		metadata["transform_signature"] = signature
 		if extractor.config.Strategy == StrategyRich {
@@ -319,7 +339,7 @@ func extractionRequest(content string, schema bool, strategy FactStrategy) infer
 	return inference.GenerateRequest{
 		Context: []coremessage.Message{{
 			Role:    coremessage.RoleSystem,
-			Content: coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: factSystem}}},
+			Content: coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: factSystemFor(strategy)}}},
 		}},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
@@ -662,13 +682,18 @@ func factID(hash string) string {
 	return "fact-" + parts[len(parts)-1]
 }
 
+// artifactEventTime returns the artifact's authoritative time, or the zero
+// time when it carries none. A missing timestamp must stay missing: the epoch
+// is a real instant, so defaulting to it made untimestamped facts look
+// simultaneous (the five-minute linking window) and pushed them to the decay
+// floor in maintenance. Consumers fall back to the record's creation time.
 func artifactEventTime(input component.Artifact) time.Time {
 	if value := input.Metadata["event_time"]; value != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
 			return parsed.UTC()
 		}
 	}
-	return time.Unix(0, 0).UTC()
+	return time.Time{}
 }
 
 func artifactAddress(metadata corememory.Metadata) (corememory.Scope, string, bool) {

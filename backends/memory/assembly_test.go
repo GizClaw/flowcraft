@@ -87,6 +87,38 @@ func testScope() corememory.Scope {
 	return corememory.Scope{RuntimeID: "memories", UserID: "u1"}
 }
 
+// TestAssemblyCloseBeforeWireIsFinal pins the lifecycle gap: closing an
+// unwired assembly used to be a silent no-op after which Wire could still
+// start a runner over pools Close had already released. Close is now final
+// (and idempotent), and Wire refuses to run afterwards.
+func TestAssemblyCloseBeforeWireIsFinal(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	value, err := NewFactory(WithClock(func() time.Time { return testNow })).New(
+		context.Background(),
+		resource.Input{Settings: []byte(testSettings), Deps: map[string]any{"workspace": ws}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, ok := value.(*Assembly)
+	if !ok {
+		t.Fatalf("factory returned %T, want *Assembly", value)
+	}
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if err := assembly.Wire(context.Background()); err == nil {
+		t.Fatal("Wire after Close succeeded, want a closed-assembly error")
+	}
+}
+
 func textMessage(role coremessage.Role, text string) coremessage.Message {
 	return coremessage.Message{
 		Role:    role,
@@ -515,7 +547,7 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 		Chunk:      ChunkSettings{MaxRunes: 1600, OverlapRunes: 160},
 		Projection: "facts",
 	}
-	baseDigest, err := policyDigest(base)
+	baseDigest, err := policyDigest(base, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +560,7 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 	operational.Lanes = LanesSettings{BM25: LaneSettings{Weight: 0.9}}
 	operational.Interval = "10s"
 	operational.Scopes = []ScopeSettings{{RuntimeID: "other"}}
-	operationalDigest, err := policyDigest(operational)
+	operationalDigest, err := policyDigest(operational, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,13 +569,37 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 	}
 	derivation := base
 	derivation.Fact.MaxFacts = 32
-	if digest, err := policyDigest(derivation); err != nil || digest == baseDigest {
+	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
 		t.Fatalf("fact settings must change the digest (err=%v)", err)
 	}
 	derivation = base
 	derivation.Projection = "facts-v2"
-	if digest, err := policyDigest(derivation); err != nil || digest == baseDigest {
+	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
 		t.Fatalf("projection namespace must change the digest (err=%v)", err)
+	}
+}
+
+// TestCustomDeriverChangesPolicyDigest pins the gap the review found: the
+// watermarks that decide what has been derived are keyed by the policy digest,
+// so a host that replaces the deriver without changing the digest keeps
+// scopes looking up to date and they are never re-derived. A caller-supplied
+// deriver therefore contributes a policy name -- its version when it names
+// one, a conservative marker otherwise.
+func TestCustomDeriverChangesPolicyDigest(t *testing.T) {
+	build := func(t *testing.T, options ...Option) string {
+		t.Helper()
+		assembly, _ := newTestAssemblyWith(t, "", options...)
+		return assembly.PolicyDigest()
+	}
+	base := build(t)
+	if versioned := build(t, WithDeriver(fakeDeriver{}), WithDeriverVersion("fake-deriver-v1")); versioned == base {
+		t.Fatal("a versioned custom deriver left the policy digest unchanged")
+	} else if unnamed := build(t, WithDeriver(fakeDeriver{})); unnamed == base || unnamed == versioned {
+		t.Fatalf("an unversioned custom deriver must still change the digest (base=%s versioned=%s unnamed=%s)",
+			base[:8], versioned[:8], unnamed[:8])
+	}
+	if unnamed := build(t, WithDeriver(fakeDeriver{})); unnamed != build(t, WithDeriver(fakeDeriver{})) {
+		t.Fatal("the same custom deriver must produce a stable digest")
 	}
 }
 

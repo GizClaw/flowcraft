@@ -132,6 +132,8 @@ func TestAnswerContextSize(t *testing.T) {
 					}
 					used := 0
 					count := 0
+					cappedHere := 0
+					var tokensHere []int
 					for _, item := range result.Items {
 						text := strings.TrimSpace(item.Content.Text())
 						if text == "" {
@@ -140,15 +142,17 @@ func TestAnswerContextSize(t *testing.T) {
 						runes := len([]rune(text))
 						if used+runes > renderLimitRunes {
 							runes = renderLimitRunes - used
-							capped++
+							cappedHere++
 						}
 						used += runes
 						count++
-						tokens = append(tokens, item.TokenCount)
+						tokensHere = append(tokensHere, item.TokenCount)
 					}
 					mu.Lock()
 					items = append(items, count)
 					rendered = append(rendered, used)
+					capped += cappedHere
+					tokens = append(tokens, tokensHere...)
 					sampled++
 					mu.Unlock()
 				}

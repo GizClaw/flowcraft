@@ -169,3 +169,70 @@ func TestProviderBoundsOversizedNewestTurn(t *testing.T) {
 		t.Fatalf("content = %d runes, want a non-empty bounded prefix", len([]rune(text)))
 	}
 }
+
+// TestProviderKeepsNewestTurnWhenOlderSiblingsFillTheBudget pins the second
+// half of the same promise: an older turn in the same class must not push the
+// newest one out. The recent lane budget here is larger than the request
+// budget, so the lane hands all three turns to the packer and the packer
+// decides -- admitting oldest-first would spend the class share and then the
+// global budget on the older turns and drop the newest one.
+func TestProviderKeepsNewestTurnWhenOlderSiblingsFillTheBudget(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	messages := newMessageStore(t, newTestWorkspace(t))
+	older := strings.Repeat("a", 160)  // ~40 tokens
+	middle := strings.Repeat("b", 160) // ~40 tokens
+	newest := strings.Repeat("z", 240) // ~60 tokens
+	if _, err := messages.Append(ctx, messagesource.AppendRequest{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
+		Messages: []coremessage.Message{
+			coremessage.NewTextMessage(coremessage.RoleUser, older),
+			coremessage.NewTextMessage(coremessage.RoleAssistant, middle),
+			coremessage.NewTextMessage(coremessage.RoleUser, newest),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
+		return nil, errors.New("lane unavailable")
+	})
+	fusor, err := fusion.New([]fusion.Lane{
+		{Name: "vector", Searcher: failed, Weight: 1, Calibrator: fusion.MinMax{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := NewProviderWithConfig(ProviderConfig{
+		Fusion: fusor, Messages: messages, Hydrator: &hydrate.Composite{Messages: messages},
+		Packer: pack.New(nil), Recent: RecentConfig{MaxItems: 8, MaxTokens: 300},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Context(ctx, corememory.ContextRequest{
+		Scope: scope, ConversationID: "conversation",
+		Budget: corememory.Budget{MaxItems: 3, MaxTokens: 100},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newestPresent := false
+	for _, item := range result.Items {
+		switch {
+		case strings.Contains(item.Content.Text(), "zz"):
+			newestPresent = true
+		case item.SourceClass != corememory.ContextSourceRecent:
+			t.Fatalf("item %q has source class %q, want recent", item.ID, item.SourceClass)
+		}
+	}
+	if !newestPresent {
+		ids := make([]string, 0, len(result.Items))
+		for _, item := range result.Items {
+			ids = append(ids, item.ID)
+		}
+		t.Fatalf("packed items %v dropped the newest turn", ids)
+	}
+	if !result.Truncated {
+		t.Fatal("result must report truncation: the newer turn won the budget over older ones")
+	}
+}

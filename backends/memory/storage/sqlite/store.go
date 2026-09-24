@@ -304,10 +304,17 @@ func (store *Store) ListStreams(ctx context.Context, prefix string) ([]string, e
 			return nil, err
 		}
 	}
-	rows, err := store.db.QueryContext(ctx,
-		`SELECT DISTINCT stream FROM log_events
-		 WHERE stream = ? OR stream LIKE ? ESCAPE '\' ORDER BY stream ASC`,
-		prefix, likePrefix(prefix))
+	// An empty prefix means "every stream" (the workspace driver reads it that
+	// way, and the post-filter below keeps that meaning): the LIKE arm cannot
+	// express it, since "/%" matches no stream name.
+	query := `SELECT DISTINCT stream FROM log_events
+		 WHERE stream = ? OR stream LIKE ? ESCAPE '\' ORDER BY stream ASC`
+	arguments := []any{prefix, likePrefix(prefix)}
+	if prefix == "" {
+		query = `SELECT DISTINCT stream FROM log_events ORDER BY stream ASC`
+		arguments = nil
+	}
+	rows, err := store.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("storage sqlite: list streams: %w", err)
 	}

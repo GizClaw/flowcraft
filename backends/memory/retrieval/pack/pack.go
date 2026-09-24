@@ -22,6 +22,10 @@ const (
 	// DefaultMaxTokens is the token cap applied when a budget leaves
 	// MaxTokens unset.
 	DefaultMaxTokens = 4096
+	// Reservation classes, in budget order: recent, mid/long-term, summary.
+	classRecent  = 0
+	classMidLong = 1
+	classSummary = 2
 )
 
 type TokenCounter interface {
@@ -162,10 +166,29 @@ func (packer *Deterministic) Pack(ctx context.Context, items []corememory.Contex
 		usedByClass[value.class] += value.tokens
 		itemsByClass[value.class]++
 	}
+	// The newest recent turn goes in first, before any class pass can spend
+	// its budget. It is already bounded to the lane and total budget by the
+	// provider (recentTokenLimit), so admitting it up front is what makes
+	// "the newest turn is never dropped" true when an older sibling would
+	// otherwise fill the recent class and the global budget in the passes
+	// below -- those passes only add, they never rebalance.
+	newestRecent := -1
+	for index, value := range prepared {
+		if value.class != classRecent {
+			continue
+		}
+		if newestRecent < 0 || value.item.Sequence >= prepared[newestRecent].item.Sequence {
+			newestRecent = index
+		}
+	}
+	if newestRecent >= 0 && fitsGlobal(prepared[newestRecent]) {
+		add(newestRecent)
+	}
 	// First pass enforces the 0.6/0.3/0.1 reservations for both tokens and
 	// item slots.
 	for index, value := range prepared {
-		if itemsByClass[value.class] < itemCaps[value.class] &&
+		if !selected[index] &&
+			itemsByClass[value.class] < itemCaps[value.class] &&
 			usedByClass[value.class]+value.tokens <= caps[value.class] && fitsGlobal(value) {
 			add(index)
 		}
@@ -267,11 +290,11 @@ type preparedItem struct {
 func budgetClass(item corememory.ContextItem) int {
 	switch item.SourceClass {
 	case corememory.ContextSourceRecent:
-		return 0
+		return classRecent
 	case corememory.ContextSourceLongTerm:
-		return 1
+		return classMidLong
 	case corememory.ContextSourceSummary:
-		return 2
+		return classSummary
 	default:
 		panic(fmt.Sprintf("pack: invalid validated context source class %q", item.SourceClass))
 	}

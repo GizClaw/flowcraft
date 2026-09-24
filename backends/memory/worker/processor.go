@@ -641,6 +641,13 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact) factvi
 	addScopeMetadata(metadata, commit.Scope)
 	metadata["commit_version"] = strconv.FormatUint(commit.Version, 10)
 	eventTime, _ := time.Parse(time.RFC3339Nano, artifact.Metadata["event_time"])
+	if eventTime.IsZero() {
+		// A deriver that could not date the fact leaves event_time unset; the
+		// fact view requires one, and the commit's creation time is the only
+		// timestamp we actually know. Dating it 1970 would make it look
+		// simultaneous with every other undated fact and decay it to nothing.
+		eventTime = commit.CreatedAt.UTC()
+	}
 	return factview.AddRequest{
 		ID: artifact.ID, Scope: commit.Scope, ConversationID: commit.ConversationID,
 		Content: artifact.Content, Provenance: artifact.Sources, Metadata: metadata,

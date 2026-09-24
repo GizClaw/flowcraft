@@ -60,8 +60,11 @@ type Log interface {
 	// non-positive n means all events.
 	ReadLatest(ctx context.Context, stream string, n int) ([]Event, error)
 	// ListStreams returns every stream inside the prefix area (name ==
-	// prefix or name starts with prefix + "/"), in lexicographic order. A
-	// missing or empty prefix area returns an empty slice, not an error.
+	// prefix or name starts with prefix + "/"), in lexicographic order. An
+	// empty prefix means every stream, which is what the workspace driver
+	// does; a prefix that matches nothing returns an empty slice, not an
+	// error. Every driver implements both cases (the shared conformance
+	// suite pins them).
 	ListStreams(ctx context.Context, prefix string) ([]string, error)
 }
 

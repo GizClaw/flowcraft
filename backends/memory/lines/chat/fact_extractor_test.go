@@ -214,3 +214,27 @@ func failingRuntime(t *testing.T) (*inference.Assembly, model.ModelRef) {
 	}})
 	return runtime, ref
 }
+
+// TestRichPromptDocumentsRichSchemaFields pins the review's schema/prompt
+// mismatch: StrategyRich requires "predicate" and "temporal_detail" in the
+// response schema, so the prompt for that strategy has to describe them. The
+// simple prompt must stay free of them.
+func TestRichPromptDocumentsRichSchemaFields(t *testing.T) {
+	for _, field := range []string{"predicate", "temporal_detail"} {
+		if !strings.Contains(factSystemRich, `"`+field+`"`) {
+			t.Fatalf("rich prompt does not document %q", field)
+		}
+		if strings.Contains(factSystem, `"`+field+`"`) {
+			t.Fatalf("simple prompt documents rich-only field %q", field)
+		}
+	}
+	if !strings.Contains(factSystemRich, `"predicate":"attended"`) {
+		t.Fatal("rich prompt example does not carry the rich keys")
+	}
+	if got := factSystemFor(StrategyRich); got != factSystemRich {
+		t.Fatal("the rich strategy does not use the rich prompt")
+	}
+	if got := factSystemFor(StrategySimple); got != factSystem {
+		t.Fatal("the simple strategy does not use the simple prompt")
+	}
+}

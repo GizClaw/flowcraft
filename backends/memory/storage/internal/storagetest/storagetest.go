@@ -107,6 +107,26 @@ func testLogCommitsAndStreams(t *testing.T, log storage.Log) {
 	if err != nil || len(all) != 3 {
 		t.Fatalf("all streams = %v, %v", all, err)
 	}
+	// An empty prefix lists every stream, like the workspace driver: the
+	// drivers disagreed here silently until this case existed.
+	every, err := log.ListStreams(ctx, "")
+	if err != nil {
+		t.Fatalf("list every stream: %v", err)
+	}
+	// The suite shares one store across subtests, so the listing may carry
+	// streams written earlier: require every expected stream, not an exact set.
+	present := make(map[string]bool, len(every))
+	for index, stream := range every {
+		present[stream] = true
+		if index > 0 && every[index-1] > stream {
+			t.Fatalf("ListStreams(\"\") = %v, want lexicographic order", every)
+		}
+	}
+	for _, stream := range append(append([]string(nil), want...), "conformance/streams/beta/c") {
+		if !present[stream] {
+			t.Fatalf("ListStreams(\"\") = %v, missing %q", every, stream)
+		}
+	}
 	commitLog, ok := log.(storage.CommitLog)
 	if !ok {
 		return

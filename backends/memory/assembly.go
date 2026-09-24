@@ -44,6 +44,11 @@ type Assembly struct {
 	wireErr  error
 	cancel   context.CancelFunc
 	done     chan struct{}
+	// lifecycleMu guards closed and the cancel/done pair it publishes, so a
+	// concurrent Wire and Close cannot race on them and Close-before-Wire
+	// cannot be followed by a runner started over closed pools.
+	lifecycleMu sync.Mutex
+	closed      bool
 }
 
 var (
@@ -110,6 +115,12 @@ func (assembly *Assembly) Wire(ctx context.Context) error {
 				return
 			}
 		}
+		assembly.lifecycleMu.Lock()
+		defer assembly.lifecycleMu.Unlock()
+		if assembly.closed {
+			assembly.wireErr = errors.New("memory assembly: closed")
+			return
+		}
 		if assembly.processor == nil || assembly.interval <= 0 {
 			// The derivation loop is optional.
 		} else {
@@ -122,16 +133,26 @@ func (assembly *Assembly) Wire(ctx context.Context) error {
 	return assembly.wireErr
 }
 
-// Close stops the derivation runner. The workspace and inference dependencies
-// are borrowed and are not closed here.
+// Close stops the derivation runner and releases the pools the assembly opened.
+// The workspace and inference dependencies are borrowed and are not closed
+// here. Close is idempotent, and a Wire after Close fails instead of starting a
+// runner over closed pools.
 func (assembly *Assembly) Close() error {
 	if assembly == nil {
 		return nil
 	}
 	var failures []error
-	if assembly.cancel != nil {
-		assembly.cancel()
-		<-assembly.done
+	assembly.lifecycleMu.Lock()
+	if assembly.closed {
+		assembly.lifecycleMu.Unlock()
+		return nil
+	}
+	assembly.closed = true
+	cancel, done := assembly.cancel, assembly.done
+	assembly.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
 	}
 	for index := len(assembly.closers) - 1; index >= 0; index-- {
 		if err := assembly.closers[index].Close(); err != nil {
@@ -172,9 +193,13 @@ func (assembly *Assembly) runLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			// Failures stay in the canonical log; the next tick retries from
-			// the unchanged watermark. The error itself is available through
-			// Diagnostics and the runner's LastError.
-			_ = assembly.RunOnce(ctx)
+			// the unchanged watermark. Record the error as well: the
+			// processor stores its own derivation failures, but an early
+			// failure such as listing the scope catalog would otherwise be
+			// dropped here and never reach Diagnostics.
+			if err := assembly.RunOnce(ctx); err != nil && assembly.processor != nil {
+				assembly.processor.RecordError(err)
+			}
 		}
 	}
 }

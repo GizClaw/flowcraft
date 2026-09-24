@@ -23,6 +23,24 @@ const DefaultSchema = "flowcraft_memory"
 
 var schemaPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
+// NormalizeSchema resolves the schema a config asks for into the one the store
+// will use: an omitted schema means DefaultSchema.
+func NormalizeSchema(schema string) string {
+	if schema == "" {
+		return DefaultSchema
+	}
+	return schema
+}
+
+// PoolKey identifies one PostgreSQL connection pool: the DSN plus the
+// normalized schema. Callers share a pool by comparing this against
+// Store.DSNKey, which is why the schema is normalized here rather than at the
+// call site -- a config that omits "schema" and one that names DefaultSchema
+// describe the same pool and must compare equal.
+func PoolKey(dsn, schema string) string {
+	return dsn + "\x00" + NormalizeSchema(schema)
+}
+
 // Store implements the storage contracts on one PostgreSQL schema.
 type Store struct {
 	pool   *pgxpool.Pool
@@ -44,9 +62,7 @@ func Open(ctx context.Context, dsn, schema string) (*Store, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("storage postgres: dsn is required")
 	}
-	if schema == "" {
-		schema = DefaultSchema
-	}
+	schema = NormalizeSchema(schema)
 	if !schemaPattern.MatchString(schema) {
 		return nil, fmt.Errorf("storage postgres: invalid schema %q", schema)
 	}
@@ -58,7 +74,7 @@ func Open(ctx context.Context, dsn, schema string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("storage postgres: ping: %w", err)
 	}
-	store := &Store{pool: pool, schema: schema, key: dsn + "\x00" + schema}
+	store := &Store{pool: pool, schema: schema, key: PoolKey(dsn, schema)}
 	if err := store.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, err
@@ -289,10 +305,17 @@ func (store *Store) ListStreams(ctx context.Context, prefix string) ([]string, e
 			return nil, err
 		}
 	}
-	rows, err := store.pool.Query(ctx,
-		`SELECT DISTINCT stream FROM `+store.table("log_events")+
-			` WHERE stream = $1 OR stream LIKE $2 ESCAPE '\' ORDER BY stream ASC`,
-		prefix, likePrefix(prefix))
+	// An empty prefix means "every stream" (the workspace driver reads it that
+	// way, and the post-filter below keeps that meaning): the LIKE arm cannot
+	// express it, since "/%" matches no stream name.
+	query := `SELECT DISTINCT stream FROM ` + store.table("log_events") +
+		` WHERE stream = $1 OR stream LIKE $2 ESCAPE '\' ORDER BY stream ASC`
+	arguments := []any{prefix, likePrefix(prefix)}
+	if prefix == "" {
+		query = `SELECT DISTINCT stream FROM ` + store.table("log_events") + ` ORDER BY stream ASC`
+		arguments = nil
+	}
+	rows, err := store.pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("storage postgres: list streams: %w", err)
 	}

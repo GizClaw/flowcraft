@@ -294,6 +294,12 @@ func (store *MessageStore) commitByKey(ctx context.Context, scope corememory.Sco
 }
 
 func (store *MessageStore) readRecords(ctx context.Context, scope corememory.Scope, conversationID, stream string, first, last uint64) ([]Record, error) {
+	// An inverted or empty range is a corrupt commit marker, not a request for
+	// a negative count: last-first+1 wraps in uint64, and the length check
+	// below would then let an empty read through to records[0] in the callers.
+	if first == 0 || last < first {
+		return nil, fmt.Errorf("message source: commit records %d..%d are invalid", first, last)
+	}
 	events, err := store.log.Read(ctx, stream, first-1, int(last-first+1))
 	if err != nil {
 		return nil, err

@@ -49,8 +49,24 @@ const Impl = "flowcraft"
 type Option func(*factoryOptions)
 
 type factoryOptions struct {
-	clock   func() time.Time
-	deriver component.Deriver
+	clock          func() time.Time
+	deriver        component.Deriver
+	deriverVersion string
+}
+
+// deriverPolicy is the policy contribution of a caller-supplied deriver. The
+// built-in settings-driven extractor contributes nothing (its algorithm
+// versions are already part of the digest); any override contributes at least
+// a marker, so swapping the deriver re-derives instead of trusting watermarks
+// written by the previous one.
+func (options factoryOptions) deriverPolicy() string {
+	if options.deriver == nil {
+		return ""
+	}
+	if version := strings.TrimSpace(options.deriverVersion); version != "" {
+		return version
+	}
+	return "custom-deriver"
 }
 
 // WithClock replaces the clock used for record timestamps.
@@ -67,6 +83,18 @@ func WithClock(clock func() time.Time) Option {
 func WithDeriver(deriver component.Deriver) Option {
 	return func(options *factoryOptions) {
 		options.deriver = deriver
+	}
+}
+
+// WithDeriverVersion names the derivation policy a caller-supplied deriver
+// implements. The name folds into the assembly's policy digest, which keys the
+// worker watermarks: replacing the deriver without it would leave existing
+// scopes looking up to date and they would never be re-derived. Omitting the
+// version keeps the conservative default ("custom-deriver"), which invalidates
+// watermarks written by the built-in deriver.
+func WithDeriverVersion(version string) Option {
+	return func(options *factoryOptions) {
+		options.deriverVersion = version
 	}
 }
 
@@ -168,7 +196,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: scope catalog: %w", err))
 	}
-	digest, err := policyDigest(settings)
+	digest, err := policyDigest(settings, f.options.deriverPolicy())
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: policy digest: %w", err))
 	}
@@ -517,14 +545,16 @@ type policyInput struct {
 	Summary    SummarySettings `json:"summary,omitempty"`
 	Chunk      ChunkSettings   `json:"chunk,omitempty"`
 	Projection string          `json:"projection,omitempty"`
+	Deriver    string          `json:"deriver,omitempty"`
 	Algorithms []string        `json:"algorithms,omitempty"`
 }
 
-func policyDigest(settings Settings) (string, error) {
+func policyDigest(settings Settings, deriverPolicy string) (string, error) {
 	encoded, err := json.Marshal(policyInput{
 		Generate: settings.Generate, Embed: settings.Embed,
 		Fact: settings.Fact, Summary: settings.Summary, Chunk: settings.Chunk,
 		Projection: settings.Projection,
+		Deriver:    deriverPolicy,
 		Algorithms: []string{
 			chat.AlgorithmVersion, chat.LinkAlgorithmVersion, chat.CanonicalAlgorithmVersion,
 			knowledge.AlgorithmVersion, summaryderive.AlgorithmVersion,

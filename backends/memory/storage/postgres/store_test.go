@@ -138,3 +138,17 @@ func TestKVContract(t *testing.T) {
 		t.Fatalf("batch list = %d entries, err=%v", len(values), err)
 	}
 }
+
+// TestPoolKeyNormalizesSchema pins the dedupe identity the memory drivers
+// compare against Store.DSNKey: a config that omits "schema" describes the
+// same pool as one that names DefaultSchema, so log and kv share one pool
+// instead of opening two.
+func TestPoolKeyNormalizesSchema(t *testing.T) {
+	const dsn = "postgres://user@host:5432/db?sslmode=disable"
+	if got, want := PoolKey(dsn, ""), PoolKey(dsn, DefaultSchema); got != want {
+		t.Fatalf("PoolKey(omitted) = %q, want %q", got, want)
+	}
+	if got, want := PoolKey(dsn, "other"), dsn+"\x00other"; got != want {
+		t.Fatalf("PoolKey(other) = %q, want %q", got, want)
+	}
+}

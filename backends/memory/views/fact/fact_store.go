@@ -674,9 +674,12 @@ func validateMergeEvent(event mergeEvent, fact Fact) error {
 }
 
 func stateContains(current, candidate Fact) bool {
-	if candidate.SourceDigest != current.SourceDigest && !sourcesContain(current.Provenance, candidate.Provenance) {
-		return false
-	}
+	// Provenance containment is the whole test: the summary of this function
+	// used to open with a source-digest comparison that could never change the
+	// outcome, because the final sourcesContain below has to hold anyway. The
+	// digest is deliberately not part of containment -- two events may describe
+	// the same state via different source digests as long as the candidate's
+	// provenance is already covered.
 	return stringsContain(current.Entities, candidate.Entities) &&
 		stringsContain(current.LinkedMemoryIDs, normalizeIDs(candidate.LinkedMemoryIDs, current.ID)) &&
 		sourcesContain(current.Provenance, candidate.Provenance)
