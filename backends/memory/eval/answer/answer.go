@@ -77,7 +77,7 @@ func (model *Model) WithMaxContextRunes(runes int) *Model {
 // WithAnswerStyle selects the answering protocol. Unknown values keep the
 // current style.
 func (model *Model) WithAnswerStyle(style AnswerStyle) *Model {
-	if model != nil && (style == AnswerStyleLong || style == AnswerStyleShort) {
+	if model != nil && (style == AnswerStyleLong || style == AnswerStyleShort || style == AnswerStyleEvidence) {
 		model.answerStyle = style
 	}
 	return model
@@ -86,8 +86,13 @@ func (model *Model) WithAnswerStyle(style AnswerStyle) *Model {
 // System returns the answering prompt this model uses, so a run can record its
 // version in the fingerprint.
 func (model *Model) System() string {
-	if model != nil && model.answerStyle == AnswerStyleShort {
-		return answerShortSystem
+	if model != nil {
+		switch model.answerStyle {
+		case AnswerStyleShort:
+			return answerShortSystem
+		case AnswerStyleEvidence:
+			return answerEvidenceSystem
+		}
 	}
 	return answerSystem
 }
@@ -121,9 +126,14 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 		return "", errors.New("memory eval answer: question is required")
 	}
 	prompt := answerUser(question, renderContext(items, model.maxContextRunes))
-	if model.answerStyle == AnswerStyleShort {
+	switch model.answerStyle {
+	case AnswerStyleShort:
 		// The official protocol cues brevity with a trailing "Short answer:".
 		prompt += "\n\nShort answer:"
+	case AnswerStyleEvidence:
+		// The evidence protocol asks for the quoting step first; the answer
+		// itself is everything after the "Short answer:" marker.
+		prompt += "\n\nQuotes:"
 	}
 	request := generateRequest(model.System(), prompt, nil)
 	response, err := model.runtime.Generate(ctx, model.ref, request)
@@ -132,11 +142,33 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 	}
 	model.record(response)
 	answer := strings.TrimSpace(response.Message.Content.Text())
+	if model.answerStyle == AnswerStyleEvidence {
+		answer = evidenceAnswer(answer)
+	}
 	if answer == "" {
 		return "", errors.New("memory eval answer: model returned an empty answer")
 	}
 	return answer, nil
 
+}
+
+// evidenceAnswer keeps only the answering half of an evidence-style reply, so
+// the token-F1 scorer and the judges grade the answer rather than the quoted
+// scratch work. A reply without the marker is used as-is (minus a leading
+// "Quotes:" section), because failing the question over a formatting slip
+// would measure the parser, not the memory.
+func evidenceAnswer(value string) string {
+	trimmed := strings.TrimSpace(value)
+	lowered := strings.ToLower(trimmed)
+	if index := strings.LastIndex(lowered, "short answer:"); index >= 0 {
+		return strings.TrimSpace(trimmed[index+len("short answer:"):])
+	}
+	if index := strings.Index(lowered, "quotes:"); index == 0 {
+		if line := strings.IndexByte(trimmed, '\n'); line >= 0 {
+			return strings.TrimSpace(trimmed[line+1:])
+		}
+	}
+	return trimmed
 }
 
 // Judge grades one generated answer against the question's expectations.
@@ -292,11 +324,21 @@ type AnswerStyle string
 const (
 	AnswerStyleLong  AnswerStyle = "long"
 	AnswerStyleShort AnswerStyle = "short"
+	// AnswerStyleEvidence asks for the supporting memory lines first and the
+	// short answer second; the answerer returns only the second half. It exists
+	// to test whether quoting before answering helps the categories that lose
+	// most of their questions while the gold evidence is already in context
+	// (multi-hop and open-domain), without changing the short protocol that the
+	// official token-F1 number is measured with.
+	AnswerStyleEvidence AnswerStyle = "evidence"
 )
 
 // AnswerShortPromptVersion names the short-answer prompt; it is recorded in the
 // run fingerprint like the long-answer policy.
 const AnswerShortPromptVersion = "answer-short-v1"
+
+// AnswerEvidencePromptVersion names the evidence-first prompt.
+const AnswerEvidencePromptVersion = "answer-evidence-v1"
 
 // JudgePromptVersion names the grading prompts. v2 hands the question to the
 // judge: the strict rubric rejects an answer that "answers a different
@@ -317,6 +359,36 @@ const JudgePromptVersion = "judge-v2"
 // answerShortSystem mirrors the official LoCoMo answering prompt, which is the
 // protocol its token-F1 metric grades.
 const answerShortSystem = `Write an answer in the form of a short phrase, using exact words from the memories whenever possible. Reply with the short answer only: no explanation, no full sentences, no restating the question.`
+
+// answerEvidenceSystem keeps the short-answer shape the metric grades, but
+// makes the model quote its evidence first and spell the quoting rules out:
+// the two categories that lose the most questions with full evidence
+// (multi-hop, open-domain inference) are the ones where the answer hinges on
+// combining or interpreting lines rather than copying one.
+const answerEvidenceSystem = `Answer the question from the memories below in two steps.
+
+Step 1 - evidence: quote the memory lines that bear on the question, exactly as
+they are written. Keep names, dates, places, titles and numbers verbatim. Write
+"none" when nothing in the memories is relevant.
+
+Step 2 - answer: answer the question in a short phrase built from those quotes.
+
+Rules for the answer:
+- Ground every claim about the people and events in the memories. You may use
+  general knowledge to interpret them (what a date falls on, what a game or a
+  term is); do not invent facts about these people.
+- When the quotes support a likely conclusion without stating it, give that
+  conclusion. Do not answer "not mentioned" or "I don't know" while relevant
+  evidence is present.
+- For a list question (activities, events, items, books, places, people), name
+  every item the memories mention, in their concrete words rather than a
+  general category.
+- Answer with the short phrase only: no full sentences, no restating the
+  question.
+
+Reply with exactly these two lines:
+Quotes: <the quoted lines, or none>
+Short answer: <the short phrase>`
 
 const answerSystem = `Answer the question from the memories below.
 
