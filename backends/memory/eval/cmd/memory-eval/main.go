@@ -54,7 +54,7 @@ func main() {
 	judgeModel := flag.String("judge-model", "", "name of the judge model (default: answer model)")
 	judgeStyle := flag.String("judge-style", "strict", "judge prompt style: strict | locomo | both")
 	answerStyle := flag.String("answer-style", "long",
-		"answering protocol: long (product, used for strict/lenient) or short (official LoCoMo protocol, for token-F1)")
+		"answering protocol: long (product, used for strict/lenient), short (official LoCoMo protocol, for token-F1), or evidence (short, but the model quotes its evidence first)")
 	answerConcurrency := flag.Int("answer-concurrency", 4,
 		"questions processed in parallel (1 = sequential); only the schedule changes, never the prompts or the report order")
 	prepareAll := flag.Bool("prepare-all", false,
@@ -471,8 +471,11 @@ func deriveMode(skipDerive bool) string {
 
 // answerPromptVersion names the answering policy the run used.
 func answerPromptVersion(style string) string {
-	if style == string(evalanswer.AnswerStyleShort) {
+	switch style {
+	case string(evalanswer.AnswerStyleShort):
 		return evalanswer.AnswerShortPromptVersion
+	case string(evalanswer.AnswerStyleEvidence):
+		return evalanswer.AnswerEvidencePromptVersion
 	}
 	return evalanswer.AnswerPromptVersion
 }
