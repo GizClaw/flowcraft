@@ -16,7 +16,7 @@ import (
 )
 
 func TestFactExtractorStableIDProvenancePromptAndClone(t *testing.T) {
-	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"  Alice   likes tea "},{"text":"\t"}]}`)}
+	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"  Alice   likes tea ","entities":[],"event_time":""},{"text":"\t","entities":[],"event_time":""}]}`)}
 	runtime := fake.Assembly(t)
 	model := inferencetest.DefaultFakeModel
 	extractor, err := NewFactExtractor(runtime, &model)
@@ -78,7 +78,7 @@ func TestFactExtractorMalformedEmptyAndWrongKind(t *testing.T) {
 	if _, err := extractor.Derive(context.Background(), rawMessageArtifact()); err == nil {
 		t.Fatal("malformed JSON accepted")
 	}
-	emptyRuntime := (&inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"  "}]}`)}).Assembly(t)
+	emptyRuntime := (&inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"  ","entities":[],"event_time":""}]}`)}).Assembly(t)
 	extractor, _ = NewFactExtractor(emptyRuntime, &model)
 	got, err := extractor.Derive(context.Background(), rawMessageArtifact())
 	if err != nil || !reflect.DeepEqual(got, []component.Artifact{}) {
