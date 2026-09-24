@@ -33,6 +33,11 @@ type Diagnostic struct {
 // malformed or adversarial hierarchies.
 const maxParentDepth = 32
 
+// maxQuoteTexts bounds the process-lifetime source-quote cache. Reaching the
+// bound clears the map: the entries are pure cache, so a cleared map costs one
+// point read per source on the next request instead of unbounded growth.
+const maxQuoteTexts = 4096
+
 type Provider struct {
 	Fusion        *fusion.Fusion
 	Messages      *messagesource.MessageStore
@@ -53,11 +58,17 @@ type Provider struct {
 
 	mu          sync.RWMutex
 	diagnostics []Diagnostic
-	// quoteTexts caches canonical message texts by "conversation/message" id.
-	// Messages are immutable, so a cached text can never go stale, and folding
-	// source quotes used to issue one serial point read per source per request
-	// (≈60 reads for a 20-fact context) against a store that serialises every
-	// read behind one mutex.
+	// quoteTexts caches canonical message texts by hard partition key plus
+	// "conversation/message" id. Messages are immutable, so a cached text can
+	// never go stale, and folding source quotes used to issue one serial point
+	// read per source per request (≈60 reads for a 20-fact context) against a
+	// store that serialises every read behind one mutex.
+	//
+	// The scope is part of the key because message ids are per-stream sequence
+	// numbers ("msg-…0001"): two scopes that use the same conversation id name
+	// the same source id, and the cache must not hand one scope the other's
+	// text. The map is bounded by maxQuoteTexts; message text is a cache, not
+	// state, so dropping it costs one store read and never correctness.
 	quoteMu    sync.Mutex
 	quoteTexts map[string]string
 	// stage totals attribute latency inside Context() even when requests run
@@ -722,8 +733,9 @@ func (provider *Provider) quoteText(
 	scope corememory.Scope,
 	sourceID, conversationID, messageID string,
 ) (string, bool) {
+	key := scope.HardPartitionKey() + "\x00" + sourceID
 	provider.quoteMu.Lock()
-	if text, ok := provider.quoteTexts[sourceID]; ok {
+	if text, ok := provider.quoteTexts[key]; ok {
 		provider.quoteMu.Unlock()
 		return text, text != ""
 	}
@@ -734,10 +746,13 @@ func (provider *Provider) quoteText(
 	}
 	text := strings.TrimSpace(record.Message.Content.Text())
 	provider.quoteMu.Lock()
-	if provider.quoteTexts == nil {
+	switch {
+	case provider.quoteTexts == nil:
+		provider.quoteTexts = make(map[string]string)
+	case len(provider.quoteTexts) >= maxQuoteTexts:
 		provider.quoteTexts = make(map[string]string)
 	}
-	provider.quoteTexts[sourceID] = text
+	provider.quoteTexts[key] = text
 	provider.quoteMu.Unlock()
 	return text, text != ""
 }

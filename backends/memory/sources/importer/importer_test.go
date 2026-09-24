@@ -18,7 +18,7 @@ func TestBlockedAddressCoversReservedRanges(t *testing.T) {
 		"224.0.0.1", "239.0.0.1", "239.255.255.255", "::1", "fe80::1", "fc00::1", "ff02::1",
 	}
 	for _, value := range blocked {
-		if !blockedAddress(net.ParseIP(value)) {
+		if !blockedAddress(net.ParseIP(value), false) {
 			t.Errorf("blockedAddress(%s) = false, want blocked", value)
 		}
 	}
@@ -27,8 +27,20 @@ func TestBlockedAddressCoversReservedRanges(t *testing.T) {
 		"100.63.255.255", "100.128.0.0", "198.17.255.255",
 	}
 	for _, value := range allowed {
-		if blockedAddress(net.ParseIP(value)) {
+		if blockedAddress(net.ParseIP(value), false) {
 			t.Errorf("blockedAddress(%s) = true, want allowed", value)
+		}
+	}
+	// AllowLoopback relaxes loopback only: everything else the flag's
+	// documentation does not promise stays blocked.
+	for _, value := range []string{"127.0.0.1", "::1", "127.5.5.5"} {
+		if blockedAddress(net.ParseIP(value), true) {
+			t.Errorf("blockedAddress(%s, allowLoopback) = true, want allowed", value)
+		}
+	}
+	for _, value := range []string{"10.0.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "198.18.0.1", "240.0.0.1", "fe80::1", "fc00::1"} {
+		if !blockedAddress(net.ParseIP(value), true) {
+			t.Errorf("blockedAddress(%s, allowLoopback) = false, want still blocked", value)
 		}
 	}
 }

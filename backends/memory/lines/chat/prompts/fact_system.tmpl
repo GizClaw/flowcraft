@@ -41,8 +41,13 @@ Return only JSON matching the schema. Each fact object uses exactly these keys:
 - "text" (string, required): the fact as a complete, self-contained sentence.
 - "entities" (array of strings, optional): the atomic named entities described above.
 - "event_time" (string, optional): the fact's authoritative time as an RFC3339 UTC timestamp, for example "2023-05-07T00:00:00Z". When only a date is known use midnight UTC. Never use natural-language or slash-formatted dates.
+{{if .Rich}}- "predicate" (string, required): the fact's relation as a short verb phrase, lower case, no subject or object, for example "attended", "moved to", "plans to visit". Use the same phrase for the same relation across facts.
+- "temporal_detail" (string, required): the fact's time expression exactly as the turn stated it, for example "in the week before 9 June 2023", "last summer", "on 2 July 2023". Repeat the wording rather than normalising it, and use an empty string when the turn gives no time expression at all.
+{{end}}
 
 Example response:
-{"facts":[{"text":"On 7 May 2023, Caroline went to an LGBTQ support group and found it powerful.","entities":["Caroline"],"event_time":"2023-05-07T00:00:00Z"}]}
+{{if .Rich}}{"facts":[{"text":"On 7 May 2023, Caroline went to an LGBTQ support group and found it powerful.","entities":["Caroline"],"event_time":"2023-05-07T00:00:00Z","predicate":"attended","temporal_detail":"On 7 May 2023"}]}
+{{else}}{"facts":[{"text":"On 7 May 2023, Caroline went to an LGBTQ support group and found it powerful.","entities":["Caroline"],"event_time":"2023-05-07T00:00:00Z"}]}
+{{end}}
 
 The response must be a JSON object with a single key "facts" whose value is an array of fact objects.

@@ -52,7 +52,10 @@ func openStores(
 	var shared *sqlitestore.Store
 	var sharedPG *postgresstore.Store
 	postgresKey := func(config postgresDriverSettings) string {
-		return config.DSN + "\x00" + config.Schema
+		// PoolKey normalizes the schema the same way postgresstore.Open does,
+		// so a config that omits "schema" still matches the pool it opened
+		// instead of opening a second one.
+		return postgresstore.PoolKey(config.DSN, config.Schema)
 	}
 	openSQLite := func(driver DriverSettings, name string) (*sqlitestore.Store, error) {
 		config, err := resource.DecodeTyped[sqliteDriverSettings](ctx, driver.Settings)

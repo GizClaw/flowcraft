@@ -25,6 +25,10 @@ type Policy struct {
 	// MaxBytes caps the response body. Zero selects 8 MiB.
 	MaxBytes int64
 	// AllowLoopback permits loopback targets (tests and local development).
+	// It relaxes loopback only: private, CGNAT, link-local (including the
+	// cloud metadata address) and reserved ranges stay blocked, because a
+	// caller asking for a local test server is not asking to reach the
+	// host's other networks.
 	AllowLoopback bool
 	// Timeout bounds the whole fetch. Zero selects 30s.
 	Timeout time.Duration
@@ -131,7 +135,7 @@ func dialPolicy(policy Policy) func(context.Context, string, string) (net.Conn, 
 			return nil, fmt.Errorf("memory importer: resolve %q: no addresses", host)
 		}
 		for _, resolved := range addresses {
-			if !policy.AllowLoopback && blockedAddress(resolved.IP) {
+			if blockedAddress(resolved.IP, policy.AllowLoopback) {
 				return nil, fmt.Errorf("memory importer: address %s is not allowed", resolved.IP)
 			}
 		}
@@ -147,8 +151,16 @@ func dialPolicy(policy Policy) func(context.Context, string, string) (net.Conn, 
 	}
 }
 
-func blockedAddress(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+// blockedAddress reports whether the importer refuses to dial ip.
+// allowLoopback relaxes the loopback range only: every other blocked range
+// (private, CGNAT, link-local and the cloud metadata address, benchmarking,
+// reserved) stays blocked even for local development, so the flag cannot be
+// used to reach the host's other networks by accident.
+func blockedAddress(ip net.IP, allowLoopback bool) bool {
+	if ip.IsLoopback() {
+		return !allowLoopback
+	}
+	if ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
 		return true
 	}

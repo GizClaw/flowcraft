@@ -241,6 +241,43 @@ func (store *SummaryStore) ListActive(
 	return result, nil
 }
 
+// ActiveSnapshot returns the active manifest and its records under one lock.
+// Callers that need both -- a search that scores records but labels them with
+// the manifest's generation -- must use this instead of LoadActive followed by
+// ListActive: a publish between those two calls would hand back records from
+// one generation labelled with another (and a filtered ListActive could even
+// return nothing).
+func (store *SummaryStore) ActiveSnapshot(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) (Manifest, []Record, bool, error) {
+	if ctx == nil {
+		return Manifest{}, nil, false, errors.New("summary view: context is required")
+	}
+	if err := validateAddress(scope, conversationID); err != nil {
+		return Manifest{}, nil, false, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	manifest, found, err := store.loadActiveLocked(ctx, scope, conversationID)
+	if err != nil || !found {
+		return Manifest{}, nil, false, err
+	}
+	result := make([]Record, 0, len(manifest.RecordIDs))
+	for _, id := range manifest.RecordIDs {
+		record, ok, readErr := store.read(ctx, scope, conversationID, id)
+		if readErr != nil {
+			return Manifest{}, nil, false, readErr
+		}
+		if !ok {
+			return Manifest{}, nil, false, fmt.Errorf("summary view: active record %q is missing", id)
+		}
+		result = append(result, record)
+	}
+	return manifest.Clone(), result, true, nil
+}
+
 // Get returns one immutable record by ID.
 func (store *SummaryStore) Get(ctx context.Context, scope corememory.Scope, conversationID, id string) (Record, bool, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
@@ -378,6 +415,14 @@ func (store *SummaryStore) putImmutable(ctx context.Context, key string, data []
 }
 
 func equivalentRecord(left, right Record) bool {
+	// Identity, creation time and generation are not part of the comparison.
+	// The id is a content address (StableID covers scope, conversation, level,
+	// inputs, source digest and transform), and a generation is a property of
+	// the manifest that publishes a record, not of the record's content: the
+	// same summary legitimately reappears under a later generation, and Add
+	// returns the stored record -- with the generation that first created it --
+	// instead of conflicting. Generation-filtered reads therefore compare
+	// against the manifest, never against a record's own GenerationID.
 	left.ID, right.ID = "", ""
 	left.CreatedAt, right.CreatedAt = time.Time{}, time.Time{}
 	left.GenerationID, right.GenerationID = "", ""

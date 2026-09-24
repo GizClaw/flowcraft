@@ -97,15 +97,20 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 	lenientJudge := newJudge(evalanswer.JudgeLocoMo)
 
 	type job struct {
-		scenario  string
-		question  eval.Question
-		answer    string
-		fullEvi   bool
-		strict    bool
-		strictV2  bool
-		lenientV2 bool
-		ungraded  bool
-		lastErr   string
+		scenario string
+		question eval.Question
+		answer   string
+		fullEvi  bool
+		strict   bool
+		lenient  bool
+		// lenientStored marks a job whose stored report carries a lenient
+		// verdict: without it the judge-v1 line would report a rate over
+		// answers that were never graded leniently as if they had failed.
+		lenientStored bool
+		strictV2      bool
+		lenientV2     bool
+		ungraded      bool
+		lastErr       string
 	}
 	jobs := make([]job, 0, 1600)
 	for _, report := range baseline.Reports {
@@ -131,6 +136,7 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 					WantContains: source[index].WantContains,
 				},
 				answer: question.Answer, fullEvi: question.Hit, strict: question.AnswerHit,
+				lenient: question.LenientHit, lenientStored: question.LenientGraded,
 			})
 		}
 	}
@@ -177,10 +183,16 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 	group.Wait()
 
 	rows := make([]rejudgedQuestion, 0, len(jobs))
-	var strictHits, lenientHits, strictV2Hits, lenientV2Hits, ungraded int
+	var strictHits, lenientHits, lenientStored, strictV2Hits, lenientV2Hits, ungraded int
 	for _, current := range jobs {
 		if current.strict {
 			strictHits++
+		}
+		if current.lenientStored {
+			lenientStored++
+			if current.lenient {
+				lenientHits++
+			}
 		}
 		if current.lenientV2 {
 			lenientV2Hits++
@@ -205,9 +217,14 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 	if err := writeRejudged(outPath, rows); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("judge-v1 (stored): strict=%d/%d (%.4f) lenient=%d/%d (%.4f)",
-		strictHits, len(rows), float64(strictHits)/float64(len(rows)),
-		lenientHits, len(rows), float64(lenientHits)/float64(len(rows)))
+	t.Logf("judge-v1 (stored): strict=%d/%d (%.4f)",
+		strictHits, len(rows), float64(strictHits)/float64(len(rows)))
+	if lenientStored == 0 {
+		t.Logf("judge-v1 (stored): lenient=n/a (the stored report carries no lenient verdicts)")
+	} else {
+		t.Logf("judge-v1 (stored): lenient=%d/%d (%.4f)",
+			lenientHits, lenientStored, float64(lenientHits)/float64(lenientStored))
+	}
 	t.Logf("judge-v2:          strict=%d/%d (%.4f) lenient=%d/%d (%.4f) ungraded=%d",
 		strictV2Hits, len(rows), float64(strictV2Hits)/float64(len(rows)),
 		lenientV2Hits, len(rows), float64(lenientV2Hits)/float64(len(rows)), ungraded)

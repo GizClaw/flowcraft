@@ -167,16 +167,18 @@ func truncateRunes(value string, max int) string {
 }
 
 // AlgorithmVersion names the rerank policy. Bump it with the prompt: it goes
-// into the run fingerprint.
+// into the run fingerprint, and the label has to name what actually runs.
 //
-// v2 (coverage-aware ordering: strongest first, then still-missing pieces,
-// repeats last) was measured on the 282 multi-hop questions and lost accuracy
-// (strict 0.546 -> 0.535, lenient 0.848 -> 0.833) without changing evidence
-// coverage at all, so v1 stays. Together with the diversity-packing experiment
-// (coverage +15.6pp, accuracy -1.1/-2.1pp) it says the answering model does
-// best with the most similar items in similarity order; the multi-hop gap is
-// not reachable by re-arranging this candidate pool.
-const AlgorithmVersion = "rerank-v2"
+// v1 (this one) keeps the order the model returned, mapped straight onto the
+// packer's score. A v2 experiment (coverage-aware ordering: strongest first,
+// then still-missing pieces, repeats last) was measured on the 282 multi-hop
+// questions and lost accuracy (strict 0.546 -> 0.535, lenient 0.848 -> 0.833)
+// without changing evidence coverage at all, so it was not kept. Together with
+// the diversity-packing experiment (coverage +15.6pp, accuracy -1.1/-2.1pp) it
+// says the answering model does best with the most similar items in similarity
+// order; the multi-hop gap is not reachable by re-arranging this candidate
+// pool.
+const AlgorithmVersion = "rerank-v1"
 
 const rerankSystem = `You rank memory candidates by how much they help answer the question.
 

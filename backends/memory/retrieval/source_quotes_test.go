@@ -87,3 +87,62 @@ func TestWithSourceQuotesFoldsTheSourceTurnIntoTheFact(t *testing.T) {
 		t.Fatalf("SourceQuotes=0 still rewrote the fact: %q", got)
 	}
 }
+
+// TestSourceQuoteCacheIsScoped pins the leak the quote cache used to have: a
+// message id is a per-stream sequence number ("msg-…0001"), so two scopes that
+// use the same conversation id name the same source. The cache is keyed by the
+// hard partition key as well, so one scope can never be handed another's text.
+func TestSourceQuoteCacheIsScoped(t *testing.T) {
+	ctx := context.Background()
+	scopeA := corememory.Scope{RuntimeID: "memories", UserID: "alice"}
+	scopeB := corememory.Scope{RuntimeID: "memories", UserID: "bob"}
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := messagesource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendTurn := func(scope corememory.Scope, text string) corememory.SourceRef {
+		t.Helper()
+		records, err := messages.Append(ctx, messagesource.AppendRequest{
+			Scope: scope, ConversationID: "conv-1", IdempotencyKey: "turn-1",
+			Messages: []coremessage.Message{coremessage.NewTextMessage(coremessage.RoleUser, text)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return corememory.SourceRef{Kind: corememory.SourceMessage, ID: records[0].ConversationID + "/" + records[0].ID}
+	}
+	sourceA := appendTurn(scopeA, "Alice discussed her pottery class.")
+	sourceB := appendTurn(scopeB, "Bob discussed his car restoration.")
+	if sourceA.ID != sourceB.ID {
+		t.Fatalf("precondition: message ids differ (%q vs %q), so the test no longer covers id reuse", sourceA.ID, sourceB.ID)
+	}
+	fact := func(id string, source corememory.SourceRef) corememory.ContextItem {
+		return corememory.ContextItem{
+			ID: id, Kind: corememory.ContextFact, SourceClass: corememory.ContextSourceLongTerm,
+			Content: coremessage.NewTextContent("a paraphrase"),
+			Sources: []corememory.SourceRef{source},
+		}
+	}
+	provider := &Provider{Messages: messages, SourceQuotes: 1}
+	first := provider.withSourceQuotes(ctx, scopeA, []corememory.ContextItem{fact("fact-a", sourceA)})
+	if text := first[0].Content.Text(); !strings.Contains(text, "pottery") {
+		t.Fatalf("scope A did not fold its own turn: %q", text)
+	}
+	second := provider.withSourceQuotes(ctx, scopeB, []corememory.ContextItem{fact("fact-b", sourceB)})
+	text := second[0].Content.Text()
+	if strings.Contains(text, "pottery") {
+		t.Fatalf("scope B was handed scope A's message text: %q", text)
+	}
+	if !strings.Contains(text, "car restoration") {
+		t.Fatalf("scope B did not fold its own turn: %q", text)
+	}
+}
