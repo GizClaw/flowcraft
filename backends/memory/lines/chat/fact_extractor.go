@@ -42,7 +42,13 @@ const (
 	// 1.3.0: the response schema requires every property (strict structured
 	// outputs reject optional keys), so the prompt now spells out [] and "" for
 	// absent details. Existing workspaces must re-derive.
-	AlgorithmVersion          = "1.3.0"
+	// 1.4.0: the worked examples were rewritten. The previous ones were lifted
+	// from a benchmark conversation -- names, dates and the "LGBTQ support
+	// group" fact came from LoCoMo, and one example even carried a gold answer
+	// string -- so the prompt was partly tuned to one dataset. The examples now
+	// describe the same rules with invented people and dates. Existing
+	// workspaces must re-derive.
+	AlgorithmVersion          = "1.4.0"
 	LinkAlgorithmVersion      = "fact-link-vector-v2"
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
 	TransformSignatureSimple  = "fact-extract-simple-v1"

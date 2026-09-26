@@ -228,7 +228,10 @@ func TestRichPromptDocumentsRichSchemaFields(t *testing.T) {
 			t.Fatalf("simple prompt documents rich-only field %q", field)
 		}
 	}
-	if !strings.Contains(factSystemRich, `"predicate":"attended"`) {
+	// The example response has to carry the rich keys with values, not just the
+	// field names the loop above checked.
+	if !strings.Contains(factSystemRich, `"predicate":"joined"`) ||
+		!strings.Contains(factSystemRich, `"temporal_detail":"On 12 March 2023"`) {
 		t.Fatal("rich prompt example does not carry the rich keys")
 	}
 	if got := factSystemFor(StrategyRich); got != factSystemRich {
