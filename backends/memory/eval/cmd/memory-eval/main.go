@@ -55,6 +55,9 @@ func main() {
 	judgeStyle := flag.String("judge-style", "strict", "judge prompt style: strict | locomo | both")
 	answerStyle := flag.String("answer-style", "long",
 		"answering protocol: long (product, used for strict/lenient), short (official LoCoMo protocol, for token-F1), or evidence (short, but the model quotes its evidence first)")
+	temporalHint := flag.Bool("temporal-hint", false,
+		"append the reference harness's category-2 suffix (\"Use DATE of CONVERSATION to answer with an approximate date.\") "+
+			"to temporal questions; off by default, because it routes on the dataset's category label")
 	answerConcurrency := flag.Int("answer-concurrency", 4,
 		"questions processed in parallel (1 = sequential); only the schedule changes, never the prompts or the report order")
 	prepareAll := flag.Bool("prepare-all", false,
@@ -151,7 +154,8 @@ func main() {
 		})
 		must(err)
 		answerer = answerer.WithMaxContextRunes(*answerContextRunes).
-			WithAnswerStyle(evalanswer.AnswerStyle(*answerStyle))
+			WithAnswerStyle(evalanswer.AnswerStyle(*answerStyle)).
+			WithTemporalHint(*temporalHint)
 		options.Answerer = answerer
 		usageModels = append(usageModels, answerer)
 		if *judgeProvider == "" {
@@ -209,6 +213,7 @@ func main() {
 			"answer_model":         *answerProvider + "/" + *answerModel,
 			"answer_prompt":        answerPromptVersion(*answerStyle),
 			"answer_style":         *answerStyle,
+			"temporal_hint":        strconv.FormatBool(*temporalHint),
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
 			"rerank_policy":        rerank.AlgorithmVersion,
