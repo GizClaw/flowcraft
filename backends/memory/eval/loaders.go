@@ -60,6 +60,13 @@ type LoaderStats struct {
 // categories and drops this one explicitly.
 const adversarialCategory = 5
 
+// TemporalCategory is LoCoMo's category 2: questions that ask for a date. It is
+// exported because the answering stage needs the same numbering to reproduce
+// the reference harness's category-2 question suffix (see
+// answer.WithTemporalHint), and the label is the only thing the two stages
+// share -- the category never reaches retrieval.
+const TemporalCategory = 2
+
 // LoadLoCoMo converts snap-research/locomo locomo10.json into scenarios.
 // Images are folded into a text annotation; gold answers become
 // want_contains expectations graded against recalled context.

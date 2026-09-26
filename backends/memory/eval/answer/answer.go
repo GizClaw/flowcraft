@@ -32,6 +32,7 @@ type Model struct {
 	maxContextRunes int
 	judgeStyle      JudgeStyle
 	answerStyle     AnswerStyle
+	temporalHint    bool
 	calls           atomic.Int64
 	inputTokens     atomic.Int64
 	outputTokens    atomic.Int64
@@ -83,6 +84,17 @@ func (model *Model) WithAnswerStyle(style AnswerStyle) *Model {
 	return model
 }
 
+// WithTemporalHint appends the reference harness's category-2 suffix to every
+// temporal question. It is off by default: the suffix routes on the dataset's
+// category label, so it belongs to protocol reproduction rather than to
+// product behaviour.
+func (model *Model) WithTemporalHint(enabled bool) *Model {
+	if model != nil {
+		model.temporalHint = enabled
+	}
+	return model
+}
+
 // System returns the answering prompt this model uses, so a run can record its
 // version in the fingerprint.
 func (model *Model) System() string {
@@ -125,7 +137,7 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 	if strings.TrimSpace(question.Query) == "" {
 		return "", errors.New("memory eval answer: question is required")
 	}
-	prompt := answerUser(question, renderContext(items, model.maxContextRunes))
+	prompt := answerUser(question, renderContext(items, model.maxContextRunes), model.temporalHint)
 	switch model.answerStyle {
 	case AnswerStyleShort:
 		// The official protocol cues brevity with a trailing "Short answer:".
@@ -245,12 +257,16 @@ func renderContext(items []corememory.ContextItem, maxRunes int) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func answerUser(question eval.Question, context string) string {
+func answerUser(question eval.Question, context string, temporalHint bool) string {
 	var builder strings.Builder
 	if askedAt := strings.TrimSpace(question.AskedAt); askedAt != "" {
 		fmt.Fprintf(&builder, "The question was asked at: %s\n", askedAt)
 	}
-	fmt.Fprintf(&builder, "Question: %s\n", strings.TrimSpace(question.Query))
+	query := strings.TrimSpace(question.Query)
+	if temporalHint && question.Category == eval.TemporalCategory {
+		query += officialTemporalHint
+	}
+	fmt.Fprintf(&builder, "Question: %s\n", query)
 	fmt.Fprintf(&builder, "\nMemories:\n%s\n", context)
 	return builder.String()
 }
@@ -314,6 +330,16 @@ func clipRunes(value string, max int) string {
 // prompt changes: it is part of the run fingerprint, so a resumed run cannot
 // silently mix answers produced under two different policies.
 const AnswerPromptVersion = "answer-policy-v2"
+
+// officialTemporalHint is the suffix the reference LoCoMo harness appends to
+// every category-2 (temporal) question, verbatim:
+//
+//	questions.append(qa['question'] + ' Use DATE of CONVERSATION to answer with an approximate date.')
+//
+// (task_eval/gpt_utils.py, get_gpt_answers). Keeping the string byte-identical
+// means a run with the hint enabled differs from the published protocol only in
+// the context it answers from.
+const officialTemporalHint = " Use DATE of CONVERSATION to answer with an approximate date."
 
 // AnswerStyle selects the answering protocol. Short mirrors the official
 // LoCoMo protocol ("write an answer in the form of a short phrase ... Short

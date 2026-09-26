@@ -2,6 +2,8 @@ package eval
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	corememory "github.com/GizClaw/flowcraft/core/memory"
@@ -14,6 +16,35 @@ type evidenceRunner struct {
 	// requests records the context requests so a test can prove evidence ids
 	// never reach retrieval.
 	requests []corememory.ContextRequest
+}
+
+// TestRunSendsOnlyTheQuestionToRetrieval pins the other half of the labelling
+// boundary: retrieval sees the scope, the conversation, the question and the
+// budget, and nothing else. The gold answers, the evidence ids and the category
+// ride along on the Question for grading, so this test renders the request the
+// runner actually issued and searches it for them -- if a later change starts
+// passing a Question through (or stashing its labels in Metadata), the leak
+// surfaces here rather than as an unexplained score jump.
+func TestRunSendsOnlyTheQuestionToRetrieval(t *testing.T) {
+	runner := &evidenceRunner{items: []corememory.ContextItem{rawItem("msg-1", "[D1:1] Alice: I like tea.")}}
+	scenario := evidenceScenario()
+	scenario.Questions[0].Query = "What does Alice like?"
+	if _, err := RunWithOptions(context.Background(), runner, scenario, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("retrieval calls = %d, want 1", len(runner.requests))
+	}
+	request := runner.requests[0]
+	if request.Query != "What does Alice like?" {
+		t.Fatalf("query = %q", request.Query)
+	}
+	rendered := fmt.Sprintf("%+v", request)
+	for _, leak := range []string{"tea", "D1:1", "ategory", "WantContains", "Evidence"} {
+		if strings.Contains(rendered, leak) {
+			t.Fatalf("dataset label %q reached retrieval: %s", leak, rendered)
+		}
+	}
 }
 
 func (runner *evidenceRunner) CommitTurn(context.Context, corememory.Turn) error { return nil }
