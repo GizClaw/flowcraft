@@ -92,6 +92,64 @@ conditional on categories 1–4 (for `locomo10.json` that is 1540 of 1986
 questions), and any comparison with a published LoCoMo table must say so,
 because the official protocol also scores category 5.
 
+## Reference protocol vs this harness
+
+A rate printed here is not a LoCoMo leaderboard number unless the run is
+configured to reproduce the reference protocol. The differences, read off
+`snap-research/locomo` `task_eval/` (`gpt_utils.py`, `evaluation.py`):
+
+| | reference harness | this harness |
+| --- | --- | --- |
+| context | the whole conversation, windowed to the model's token budget; every session is prefixed `DATE: <session date_time>` and `CONVERSATION:` | the recalled pack from long-term memory (`-max-items`, `-max-tokens`), each item labelled `[source-class/kind]` |
+| prompt | `Based on the above context, write an answer in the form of a short phrase for the following question. Answer with exact words from the context whenever possible.` then `Question: {} Short answer:` (a batched variant when `--batch-size > 1`) | `-answer-style long` (product policy) / `short` (the same short-phrase shape) / `evidence` (quotes first, answer second) |
+| category 2 | every temporal question carries the suffix ` Use DATE of CONVERSATION to answer with an approximate date.` | off by default; `-temporal-hint` appends that string verbatim |
+| category 5 | asked as a two-way choice between `Not mentioned in the conversation` and the adversarial answer | excluded, counted as `skipped_adversarial` |
+| grading | token-F1 with the per-category rules below | `official.Score` re-scores a stored report with those rules (no model calls); live runs add a strict and a lenient judge plus evidence recall |
+| scored categories | 1-5 | 1-4 |
+
+Scoring rules, as reproduced by `official.Score`: category 1 splits prediction
+and gold on commas and averages the best F1 per gold sub-answer (listing one of
+two items scores 0.5); categories 2 and 4 are plain token-F1; category 3 scores
+the first `;`-separated segment of the gold only; category 5 is the refusal
+check (`no information available` / `not mentioned`). Token-F1 is
+`normalize_answer` (drop commas and ASCII punctuation, drop `a/an/the/and`,
+lowercase, collapse whitespace) followed by Porter stemming; this module stems
+with `reiver/go-porterstemmer` rather than NLTK's, so a last-decimal difference
+is a stemmer artefact, not a result.
+
+Two parts of the reference protocol are dataset-label routing rather than
+product behaviour, and this harness keeps them out of the default path:
+
+- **the category-2 suffix** sits behind `-temporal-hint`. Measured over the 321
+  temporal questions of `locomo10.json` (frozen LoCoMo memory, `-skip-derive
+  -answer -answer-style short -judge-style strict`, deepseek-flash answering and
+  judging, so the suffix is the only difference between the two runs):
+
+  | | strict judge | official token-F1 | output tokens | mean latency |
+  | --- | --- | --- | --- | --- |
+  | without the suffix | 234/321 = 72.90% | 62.83% | 191k | 1.33s |
+  | with the suffix | 231/321 = 71.96% | 62.03% | 279k | 1.50s |
+
+  The suffix does not buy accuracy on this pipeline. The strict difference runs
+  in both directions across the ten conversations (4 scenarios better, 3 worse,
+  3 level) and sits inside the ±1 question/scenario noise band; token-F1 slips
+  0.8pp even though the visible answers only grow from 3.94 to 4.11 words,
+  because most of the extra output is the model deliberating about dates (+46%
+  output tokens). Retrieval is untouched, as it must be (evidence recall 88.00%
+  vs 88.27%). The flag exists to reproduce the published prompt exactly, not as
+  a default to turn on.
+
+- **the fact-extraction prompt** carries no benchmark content: its worked
+  examples use invented people and dates. The previous examples were copied
+  from LoCoMo - names, dates, and, in the temporal example, one of the
+  dataset's own gold answers - which made the extractor partly tuned to the
+  benchmark it is scored on. Extraction is unchanged by the rewrite
+  (`TestExtractionModelAB`, 30 sampled turns, deepseek-flash: surface coverage
+  53.5% → 54.9%, unsupported facts 0% in both, facts per turn 15.10 → 14.37 —
+  inside that probe's run-to-run variance). `chat.AlgorithmVersion` moved to
+  `1.4.0` with the rewrite, so existing workspaces re-derive rather than mixing
+  facts from both prompts.
+
 ## Two grading modes
 
 The default run grades **evidence recall**, the metric the LoCoMo protocol
@@ -125,6 +183,10 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   Only those two shapes are accepted; hedged prose is **ungraded** rather than
   guessed at, and ungraded answers leave the denominator (reported as
   `ungraded_answers`).
+- `-temporal-hint`: append the reference harness's category-2 suffix verbatim
+  (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
+  questions. Off by default and recorded in the fingerprint; see
+  "Reference protocol vs this harness" for what it measured.
 - `-resume`: skip scenarios already recorded in `-out`, so an interrupted
   long run continues where it stopped. Each scenario is retried up to three
   times before the run fails. Results are stamped with a fingerprint (code
