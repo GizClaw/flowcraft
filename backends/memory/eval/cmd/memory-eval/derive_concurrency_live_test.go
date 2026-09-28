@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -215,6 +216,12 @@ func deriveWithRetry(t *testing.T, assembly *flowmemory.Assembly) {
 	t.Fatal(err)
 }
 
+// liveDeriveConcurrency matches the concurrency the deploy document sets, so
+// writeLiveDeploy can replace the value rather than add a second derive block:
+// the document already declares one, and two of them would leave which wins to
+// the settings decoder.
+var liveDeriveConcurrency = regexp.MustCompile(`(?m)^      derive: \{concurrency: \d+\}$`)
+
 // writeLiveDeploy copies deploy.yaml with a private workspace root and the
 // requested derive concurrency.
 func writeLiveDeploy(t *testing.T, workdir string, concurrency int) string {
@@ -232,12 +239,11 @@ func writeLiveDeploy(t *testing.T, workdir string, concurrency int) string {
 		t.Fatal("deploy.yaml no longer contains the expected workspace root line")
 	}
 	document = strings.Replace(document, "      root: ./workspace", "      root: "+root, 1)
-	anchor := "      retrieval: {decompose: false}"
-	if !strings.Contains(document, anchor) {
-		t.Fatal("deploy.yaml no longer contains the expected retrieval line")
+	if !liveDeriveConcurrency.MatchString(document) {
+		t.Fatal("deploy.yaml no longer contains the expected derive concurrency line")
 	}
-	document = strings.Replace(document, anchor,
-		fmt.Sprintf("      derive: {concurrency: %d}\n%s", concurrency, anchor), 1)
+	document = liveDeriveConcurrency.ReplaceAllString(document,
+		fmt.Sprintf("      derive: {concurrency: %d}", concurrency))
 	path := filepath.Join(t.TempDir(), "deploy.yaml")
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
