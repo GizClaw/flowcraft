@@ -153,7 +153,7 @@ func main() {
 		},
 		Concurrency: *answerConcurrency,
 	}
-	var usageModels []*evalanswer.Model
+	var usage []usageRole
 	if *answerStage {
 		if deployment.Inference == nil {
 			must(fmt.Errorf("answering requires -deploy: an inference assembly must be wired"))
@@ -166,7 +166,7 @@ func main() {
 			WithAnswerStyle(evalanswer.AnswerStyle(*answerStyle)).
 			WithTemporalHint(*temporalHint)
 		options.Answerer = answerer
-		usageModels = append(usageModels, answerer)
+		usage = append(usage, usageRole{role: "answer", counts: answerer})
 		if *judgeProvider == "" {
 			*judgeProvider = *answerProvider
 		}
@@ -193,16 +193,45 @@ func main() {
 			lenient := newJudge(evalanswer.JudgeLocoMo)
 			options.Judge = strict
 			options.LenientJudge = lenient
-			usageModels = append(usageModels, strict, lenient)
+			usage = append(usage,
+				usageRole{role: "judge", counts: strict},
+				usageRole{role: "lenient_judge", counts: lenient})
 		default:
 			must(fmt.Errorf("unknown -judge-style %q (want strict|locomo|both)", *judgeStyle))
 		}
-		if options.Judge != nil && len(usageModels) == 1 {
-			usageModels = append(usageModels, options.Judge.(*evalanswer.Model))
+		if options.Judge != nil && len(usage) == 1 {
+			usage = append(usage, usageRole{role: "judge", counts: options.Judge.(*evalanswer.Model)})
+		}
+		for index := range usage {
+			usage[index].model = judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel)
+			if usage[index].role == "answer" {
+				usage[index].model = *answerProvider + "/" + *answerModel
+			}
 		}
 	}
 
 	started := time.Now()
+	// The store's derivation state and the model counters are read lazily: a run
+	// that derives must report what it produced, not what it started from, and a
+	// run's token counters only fill up as it answers.
+	currentLibrary := func() *eval.LibraryState {
+		state := libraryState(context.Background(), deployment.Memory)
+		if state.Empty() {
+			return nil
+		}
+		return &state
+	}
+	currentUsage := func() []eval.ModelUsage {
+		measured := make([]eval.ModelUsage, 0, len(usage))
+		for _, entry := range usage {
+			calls, input, output := entry.counts.Stats()
+			measured = append(measured, eval.ModelUsage{
+				Role: entry.role, Model: entry.model,
+				Calls: calls, InputTokens: input, OutputTokens: output,
+			})
+		}
+		return measured
+	}
 	fingerprint := eval.Fingerprint{
 		Revision:     buildRevision(),
 		Dataset:      eval.DatasetDigest(raw),
@@ -226,8 +255,13 @@ func main() {
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
 			"rerank_policy":        rerank.AlgorithmVersion,
-			"judge_prompt":         evalanswer.JudgePromptVersion,
-			"schedule":             scheduleName(*prepareAll),
+			// Whether rerank actually ran. rerank_policy names the policy code
+			// that is linked in, not whether retrieval used it, and the setting
+			// lives in the deploy document: without this, two runs that differ
+			// only in that switch carry the same fingerprint.
+			"rerank":       onOff(deployment.Rerank),
+			"judge_prompt": evalanswer.JudgePromptVersion,
+			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
 			// keeps the two apart (and -resume refuses to mix them).
@@ -242,6 +276,19 @@ func main() {
 		},
 	}
 	fmt.Printf("fingerprint: %s\n", fingerprint)
+	if state := currentLibrary(); state != nil {
+		fmt.Printf("library: %s\n", state)
+		// Answering from the stored derivation measures whatever the store holds.
+		// When the watermarks do not carry this policy digest, the facts being
+		// graded were produced by another generation of the derivation policy --
+		// which is invisible in the fingerprint and changes the numbers.
+		if *skipDerive && state.Underived > 0 {
+			fmt.Fprintf(os.Stderr,
+				"warning: %d of %d conversations carry no derivation under policy digest %s:\n"+
+					"  -skip-derive answers from facts another policy generation wrote, so this run measures that generation\n",
+				state.Underived, state.Conversations, state.PolicyDigest)
+		}
+	}
 
 	reports := make([]eval.Report, 0, len(scenarios))
 	completed := map[string]eval.Report{}
@@ -312,7 +359,7 @@ func main() {
 				report.MeanLatency.Round(time.Millisecond))
 		}
 		if *out != "" {
-			writeReports(*out, reports, fingerprint, time.Since(started))
+			writeReports(*out, reports, fingerprint, &stats, currentUsage(), currentLibrary())
 		}
 	}
 	wall := time.Since(started)
@@ -370,9 +417,10 @@ func main() {
 		fmt.Printf("lenient judge: graded=%d answer_hits=%d answer_rate=%.4f\n",
 			lenientAnswers, lenientHits, float64(lenientHits)/float64(lenientAnswers))
 	}
-	for _, usage := range usageModels {
-		calls, input, output := usage.Stats()
-		fmt.Printf("model usage: calls=%d input_tokens=%d output_tokens=%d\n", calls, input, output)
+	for _, entry := range usage {
+		calls, input, output := entry.counts.Stats()
+		fmt.Printf("model usage: role=%s model=%s calls=%d input_tokens=%d output_tokens=%d\n",
+			entry.role, entry.model, calls, input, output)
 	}
 	categories := make([]int, 0, len(byCategory))
 	for category := range byCategory {
@@ -394,7 +442,7 @@ func main() {
 		fmt.Printf("worker: %s\n", encoded)
 	}
 	if *out != "" {
-		writeReports(*out, reports, fingerprint, wall)
+		writeReports(*out, reports, fingerprint, &stats, currentUsage(), currentLibrary())
 		fmt.Printf("wrote %s\n", *out)
 	}
 	if *baselinePath != "" {
@@ -464,7 +512,53 @@ func (resolver messageProvenance) ResolveSourceTexts(ctx context.Context, item c
 	return texts
 }
 
-// buildRevision prefers the VCS stamp the binary was built with, and falls back
+// usageRole pairs one model role with its live counters, so the printed line and
+// the stored report agree on which model spent what.
+type usageRole struct {
+	role   string
+	model  string
+	counts *evalanswer.Model
+}
+
+// onOff renders a boolean for the fingerprint values, which are strings.
+func onOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
+}
+
+// libraryState summarizes the derivation the assembly will answer from. It is
+// empty (rather than zeroed) when the store cannot be read, so a report never
+// claims an empty library it did not observe.
+func libraryState(ctx context.Context, memory *flowmemory.Assembly) eval.LibraryState {
+	if memory == nil {
+		return eval.LibraryState{}
+	}
+	diagnostics, err := memory.Diagnostics(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading the store's derivation state: %v\n", err)
+		return eval.LibraryState{}
+	}
+	scopes := make([]eval.ScopeState, 0, len(diagnostics.Scopes))
+	for _, scope := range diagnostics.Scopes {
+		state := eval.ScopeState{
+			RuntimeID: scope.Scope.RuntimeID,
+			UserID:    scope.Scope.UserID,
+			AgentID:   scope.Scope.AgentID,
+		}
+		for _, conversation := range scope.Conversations {
+			state.Watermarks = append(state.Watermarks, eval.ConversationState{
+				ConversationID: conversation.ConversationID,
+				Watermark:      conversation.Watermark,
+				Behind:         conversation.Behind,
+			})
+		}
+		scopes = append(scopes, state)
+	}
+	return eval.NewLibraryState(memory.PolicyDigest(), scopes)
+}
+
 // scheduleName names the ingestion schedule a run uses, so a report says which
 // one produced it.
 func scheduleName(prepareAll bool) string {
@@ -623,10 +717,23 @@ func loadPartialRun(path string) partialRun {
 }
 
 // writeReports writes the reports collected so far, so a long run keeps a
-// readable partial result on disk.
-func writeReports(path string, reports []eval.Report, fingerprint eval.Fingerprint, _ time.Duration) {
+// readable partial result on disk. Alongside the per-scenario reports it stores
+// what the run was measured on (the loader's conversion, the store's derivation
+// state) and what it cost (per-role token usage), because a rate without its
+// material and its price cannot be compared with the next run.
+func writeReports(
+	path string,
+	reports []eval.Report,
+	fingerprint eval.Fingerprint,
+	loaderStats *eval.LoaderStats,
+	usage []eval.ModelUsage,
+	library *eval.LibraryState,
+) {
 	baseline := eval.NewBaseline(filepath.Base(path), reports)
 	baseline.Fingerprint = fingerprint
+	baseline.Loader = loaderStats
+	baseline.Usage = usage
+	baseline.Library = library
 	// Write to a temporary file and rename: a crash mid-write used to leave a
 	// truncated report that -resume then refused to parse (and silently started
 	// over).
@@ -674,7 +781,21 @@ func loadEnvFile(path string) {
 type deployment struct {
 	Memory    *flowmemory.Assembly
 	Inference *inference.Assembly
-	Close     func()
+	// Rerank is the retrieval.rerank setting the memory resource was built
+	// with. It is read off the deploy document because the fingerprint needs the
+	// effective value: rerank.AlgorithmVersion names the policy linked into the
+	// binary whether or not retrieval ever calls it.
+	Rerank bool
+	Close  func()
+}
+
+// memoryResourceSettings is the slice of the memory resource's settings the
+// harness reports on, so the fingerprint can state the effective retrieval
+// toggles instead of only the linked policy version.
+type memoryResourceSettings struct {
+	Retrieval struct {
+		Rerank bool `json:"rerank,omitempty"`
+	} `json:"retrieval,omitempty"`
 }
 
 // buildAssembly returns the memory assembly either from an ad-hoc settings
@@ -694,6 +815,13 @@ func buildAssembly(deployPath string, recentItems int) deployment {
 		must(err)
 		doc, err := deploy.Parse(raw)
 		must(err)
+		var settings memoryResourceSettings
+		for _, configured := range doc.Resources {
+			if configured.Kind != corememory.AssemblyKind || len(configured.Settings) == 0 {
+				continue
+			}
+			must(json.Unmarshal(configured.Settings, &settings))
+		}
 		loader := resource.NewLoader(resource.WithBaseDir(filepath.Dir(deployPath)))
 		result, err := deploy.NewBuilder(registry, deploy.WithLoader(loader)).Deploy(ctx, doc)
 		must(err)
@@ -711,7 +839,10 @@ func buildAssembly(deployPath string, recentItems int) deployment {
 				engine = typed
 			}
 		}
-		return deployment{Memory: assembly, Inference: engine, Close: func() { _ = result.Close() }}
+		return deployment{
+			Memory: assembly, Inference: engine, Rerank: settings.Retrieval.Rerank,
+			Close: func() { _ = result.Close() },
+		}
 	}
 	dir, err := os.MkdirTemp("", "memory-eval-*")
 	must(err)

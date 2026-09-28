@@ -19,9 +19,9 @@ func TestScoreStoredReport(t *testing.T) {
 	if reportPath == "" {
 		t.Skip("set MEMORY_EVAL_REPORT to a report written by cmd/memory-eval")
 	}
-	raw, err := os.ReadFile(reportPath)
+	raw, err := readModuleFile(reportPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("MEMORY_EVAL_REPORT=%q: %v", reportPath, err)
 	}
 	var baseline eval.Baseline
 	if err := json.Unmarshal(raw, &baseline); err != nil {
@@ -31,9 +31,9 @@ func TestScoreStoredReport(t *testing.T) {
 	if datasetPath == "" {
 		datasetPath = filepath.Join("..", "locomo10.json")
 	}
-	dataset, err := os.ReadFile(datasetPath)
+	dataset, err := readModuleFile(datasetPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("MEMORY_EVAL_DATASET=%q: %v", datasetPath, err)
 	}
 	scenarios, _, err := eval.LoadLoCoMo(dataset, eval.LoaderOptions{
 		Scope: eval.Scope{RuntimeID: "memories"},
@@ -83,4 +83,17 @@ func TestScoreStoredReport(t *testing.T) {
 		t.Logf("  category %d: questions=%4d f1=%.4f", category, entry.Questions, entry.Score/float64(entry.Questions))
 	}
 	t.Logf("  overall   : questions=%4d f1=%.4f", overall.Questions, overall.Score/float64(overall.Questions))
+}
+
+// readModuleFile reads a file the way the harness names it: relative to the eval
+// module (backends/memory/eval), not to this package's working directory. A
+// report lives beside the module, so `MEMORY_EVAL_REPORT=report-x.json` means
+// `../report-x.json` from here -- reading it verbatim failed with "no such
+// file", which reads like a missing report rather than a resolved path.
+func readModuleFile(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		return raw, nil
+	}
+	return os.ReadFile(filepath.Join("..", path))
 }
