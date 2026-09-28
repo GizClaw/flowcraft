@@ -10,14 +10,17 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
+	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
 
 // TestEvidenceFidelity measures how much of our "full evidence" is really
-// visible to the answer model. A hit counts as raw only when the evidence
-// turn's own text reached the prompt; a provenance-only hit means the model saw
-// a derived paraphrase (a fact) instead of the wording the dataset graded, and
-// surface details like a book title can be missing there.
+// visible to the answer model. A hit counts as raw only when the evidence turn's
+// own message reached the prompt; a provenance-only hit means the model saw a
+// derived paraphrase (a fact) instead of the wording the dataset graded, and
+// surface details like a book title can be missing there. "Own message" is
+// decided by the turn id ingest tagged the message with, so an image turn whose
+// stored text does not carry the loader's caption still counts as raw.
 //
 // Retrieval only: no answer or judge calls.
 func TestEvidenceFidelity(t *testing.T) {
@@ -47,7 +50,8 @@ func TestEvidenceFidelity(t *testing.T) {
 	built := buildAssembly(filepath.Join(workdir, "..", "..", "deploy.yaml"), 20)
 	defer built.Close()
 	scope := corememory.Scope{RuntimeID: "memories"}
-	resolver := messageProvenance{store: built.Memory.MessageStore(), scope: scope}
+	resolver := host.NewMessageProvenance(built.Memory.MessageStore(), scope)
+	requireTurnIDs(t, resolver, scenarios)
 
 	type probe struct {
 		scenario eval.Scenario
@@ -115,42 +119,23 @@ func TestEvidenceFidelity(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				resolved := map[string][]string{}
+				matcher := eval.NewMatcher(resolver)
 				for _, id := range current.question.Evidence {
 					turnText := current.turns[id]
 					if turnText == "" {
 						continue
 					}
 					current.total++
-					raw := false
-					for _, item := range result.Items {
-						if strings.Contains(item.Content.Text(), turnText) {
-							raw = true
-							break
-						}
+					coverage := matcher.Cover(context.Background(), result.Items, id, turnText)
+					if !coverage.Covered() {
+						continue
 					}
-					if raw {
+					if coverage.ViaRaw {
 						current.raw++
 						continue
 					}
-					for _, item := range result.Items {
-						texts, ok := resolved[item.ID]
-						if !ok {
-							texts = resolver.ResolveSourceTexts(context.Background(), item)
-							resolved[item.ID] = texts
-						}
-						for _, text := range texts {
-							if strings.Contains(text, turnText) {
-								current.only++
-								current.kinds[item.Kind]++
-								raw = true
-								break
-							}
-						}
-						if raw {
-							break
-						}
-					}
+					current.only++
+					current.kinds[result.Items[coverage.Rank].Kind]++
 				}
 			}
 		}()

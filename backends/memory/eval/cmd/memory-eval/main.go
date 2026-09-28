@@ -14,20 +14,12 @@ import (
 	"strings"
 	"time"
 
-	flowmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
 	evalanswer "github.com/GizClaw/flowcraft/backends/memory/eval/answer"
+	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/rerank"
-	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
-	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
-	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/secret"
-	"github.com/GizClaw/flowcraft/core/workspace"
-	"github.com/GizClaw/flowcraft/driver/bytedance"
-	"github.com/GizClaw/flowcraft/driver/openai"
 )
 
 func main() {
@@ -143,14 +135,21 @@ func main() {
 		return
 	}
 
+	// Evidence recall follows fact provenance back to the canonical messages a
+	// fact was derived from, so a fact hit counts as the source turn being
+	// recalled -- by dataset turn id where ingest tagged the messages, and by
+	// committed text where the store predates that tagging.
+	resolver := host.NewMessageProvenance(deployment.Memory.MessageStore(), corememory.Scope(evalScope))
+	evidenceRule, taggedConversations := evidenceMatching(context.Background(), resolver, scenarios)
+	if taggedConversations < len(scenarios) {
+		fmt.Fprintf(os.Stderr,
+			"warning: %d of %d conversations hold no dataset turn ids (ingested before ingest tagged messages):\n"+
+				"  their evidence recall is matched by committed text only, so a rendering difference between\n"+
+				"  the loader and the store hides a turn. Re-ingest into a fresh workspace for comparable numbers.\n",
+			len(scenarios)-taggedConversations, len(scenarios))
+	}
 	options := eval.Options{
-		// Evidence recall follows fact provenance back to the canonical
-		// messages a fact was derived from, so a fact hit counts as the source
-		// turn being recalled.
-		Provenance: messageProvenance{
-			store: deployment.Memory.MessageStore(),
-			scope: corememory.Scope(evalScope),
-		},
+		Provenance:  resolver,
 		Concurrency: *answerConcurrency,
 	}
 	var usage []usageRole
@@ -215,7 +214,7 @@ func main() {
 	// that derives must report what it produced, not what it started from, and a
 	// run's token counters only fill up as it answers.
 	currentLibrary := func() *eval.LibraryState {
-		state := libraryState(context.Background(), deployment.Memory)
+		state := host.LibraryState(context.Background(), deployment.Memory)
 		if state.Empty() {
 			return nil
 		}
@@ -246,7 +245,12 @@ func main() {
 			"categories":           *categoryFilter,
 			"max_items":            strconv.Itoa(*maxItems),
 			"max_tokens":           strconv.Itoa(*maxTokens),
-			"recent_items":         strconv.Itoa(*recentItems),
+			// The recent window the assembly actually serves with, not the
+			// -recent-items flag: a deploy document sets recent.max_items
+			// itself, so recording the flag would name a value no run used
+			// (and make two runs that differ only in that setting agree).
+			"recent_items":         strconv.Itoa(deployment.Recent.MaxItems),
+			"recent_tokens":        strconv.Itoa(deployment.Recent.MaxTokens),
 			"judge_style":          *judgeStyle,
 			"answer_model":         *answerProvider + "/" + *answerModel,
 			"answer_prompt":        answerPromptVersion(*answerStyle),
@@ -254,7 +258,12 @@ func main() {
 			"temporal_hint":        strconv.FormatBool(*temporalHint),
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
-			"rerank_policy":        rerank.AlgorithmVersion,
+			// How evidence recall was matched, which the store decides: turn
+			// identity where ingest tagged the messages, committed text where it
+			// did not. The two do not score the same, so a report stored under
+			// one is not comparable with a run under the other.
+			"evidence_matching": evidenceRule,
+			"rerank_policy":     rerank.AlgorithmVersion,
 			// Whether rerank actually ran. rerank_policy names the policy code
 			// that is linked in, not whether retrieval used it, and the setting
 			// lives in the deploy document: without this, two runs that differ
@@ -266,10 +275,11 @@ func main() {
 			// different thing than one that derives first, so the fingerprint
 			// keeps the two apart (and -resume refuses to mix them).
 			"derive": deriveMode(*skipDerive),
-			// The assembly settings the policy digest does not cover (recent
-			// window, retrieval toggles) live in the deploy document, so its
-			// digest pins them. Without this, editing deploy.yaml would change
-			// results while the fingerprint stayed identical.
+			// The assembly settings the policy digest does not cover (lane
+			// weights, source quotes, the recent window) live in the deploy
+			// document, so its digest pins them all. Without this, editing
+			// deploy.yaml would change results while the fingerprint stayed
+			// identical.
 			"deploy": deployDigest(*deployPath),
 			// -answer-concurrency is deliberately absent: it changes only the
 			// schedule, so it must not block resuming a run.
@@ -483,35 +493,6 @@ type partialRun struct {
 	Reports     map[string]eval.Report
 }
 
-// messageProvenance resolves a recalled item's message sources through the
-// canonical message store, so evidence recall can follow fact provenance.
-type messageProvenance struct {
-	store *msgsource.MessageStore
-	scope corememory.Scope
-}
-
-func (resolver messageProvenance) ResolveSourceTexts(ctx context.Context, item corememory.ContextItem) []string {
-	if resolver.store == nil {
-		return nil
-	}
-	var texts []string
-	for _, source := range item.Sources {
-		if source.Kind != corememory.SourceMessage {
-			continue
-		}
-		conversationID, messageID, ok := splitSourceID(source.ID)
-		if !ok {
-			continue
-		}
-		record, found, err := resolver.store.Get(ctx, resolver.scope, conversationID, messageID)
-		if err != nil || !found {
-			continue
-		}
-		texts = append(texts, record.Message.Content.Text())
-	}
-	return texts
-}
-
 // usageRole pairs one model role with its live counters, so the printed line and
 // the stored report agree on which model spent what.
 type usageRole struct {
@@ -526,37 +507,6 @@ func onOff(enabled bool) string {
 		return "on"
 	}
 	return "off"
-}
-
-// libraryState summarizes the derivation the assembly will answer from. It is
-// empty (rather than zeroed) when the store cannot be read, so a report never
-// claims an empty library it did not observe.
-func libraryState(ctx context.Context, memory *flowmemory.Assembly) eval.LibraryState {
-	if memory == nil {
-		return eval.LibraryState{}
-	}
-	diagnostics, err := memory.Diagnostics(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: reading the store's derivation state: %v\n", err)
-		return eval.LibraryState{}
-	}
-	scopes := make([]eval.ScopeState, 0, len(diagnostics.Scopes))
-	for _, scope := range diagnostics.Scopes {
-		state := eval.ScopeState{
-			RuntimeID: scope.Scope.RuntimeID,
-			UserID:    scope.Scope.UserID,
-			AgentID:   scope.Scope.AgentID,
-		}
-		for _, conversation := range scope.Conversations {
-			state.Watermarks = append(state.Watermarks, eval.ConversationState{
-				ConversationID: conversation.ConversationID,
-				Watermark:      conversation.Watermark,
-				Behind:         conversation.Behind,
-			})
-		}
-		scopes = append(scopes, state)
-	}
-	return eval.NewLibraryState(memory.PolicyDigest(), scopes)
 }
 
 // scheduleName names the ingestion schedule a run uses, so a report says which
@@ -603,6 +553,30 @@ func judgeFingerprint(judgeProvider, judgeModel, answerProvider, answerModel str
 		name = answerModel
 	}
 	return provider + "/" + name
+}
+
+// evidenceMatching names the rule evidence recall is graded by, and how many of
+// the run's conversations the store had tagged for it. A store that predates
+// ingest tagging leaves only the committed text to compare, and the two rules do
+// not score the same, so the fingerprint carries which one a run measured under
+// instead of claiming the code's own.
+func evidenceMatching(ctx context.Context, resolver host.MessageProvenance, scenarios []eval.Scenario) (string, int) {
+	tagged := 0
+	for _, scenario := range scenarios {
+		if resolver.CarriesTurnIDs(ctx, scenario.ConversationID, 32) {
+			tagged++
+		}
+	}
+	switch {
+	case len(scenarios) == 0:
+		return "no-scenarios", 0
+	case tagged == 0:
+		return "committed-text", tagged
+	case tagged < len(scenarios):
+		return fmt.Sprintf("turn-id %d/%d conversations", tagged, len(scenarios)), tagged
+	default:
+		return "turn-id", tagged
+	}
 }
 
 // deployDigest summarizes the deploy document a run was built from, so the
@@ -678,15 +652,6 @@ func buildRevision() string {
 	return revision
 }
 
-// splitSourceID splits "conversation/message" provenance ids.
-func splitSourceID(id string) (string, string, bool) {
-	index := strings.LastIndex(id, "/")
-	if index <= 0 || index == len(id)-1 {
-		return "", "", false
-	}
-	return id[:index], id[index+1:], true
-}
-
 // loadPartialRun reads the scenarios already recorded in a previous partial
 // run so -resume can skip them, together with their fingerprint. A missing or
 // unreadable file yields an empty result (nothing to skip).
@@ -756,115 +721,21 @@ func must(err error) {
 }
 
 // loadEnvFile sets KEY=VALUE pairs from path, so deploy documents can resolve
-// ${env:...} without shell scripting. Blank lines and # comments are ignored.
+// ${env:...} without shell scripting.
 func loadEnvFile(path string) {
-	raw, err := os.ReadFile(path)
-	must(err)
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if key == "" || value == "" {
-			continue
-		}
-		must(os.Setenv(key, value))
-	}
+	must(host.LoadEnvFile(path))
 }
 
-// deployment carries the built assemblies and their lifecycle.
-type deployment struct {
-	Memory    *flowmemory.Assembly
-	Inference *inference.Assembly
-	// Rerank is the retrieval.rerank setting the memory resource was built
-	// with. It is read off the deploy document because the fingerprint needs the
-	// effective value: rerank.AlgorithmVersion names the policy linked into the
-	// binary whether or not retrieval ever calls it.
-	Rerank bool
-	Close  func()
-}
-
-// memoryResourceSettings is the slice of the memory resource's settings the
-// harness reports on, so the fingerprint can state the effective retrieval
-// toggles instead of only the linked policy version.
-type memoryResourceSettings struct {
-	Retrieval struct {
-		Rerank bool `json:"rerank,omitempty"`
-	} `json:"retrieval,omitempty"`
-}
+// deployment is the host's built assembly pair. The alias keeps the runner's
+// call sites unchanged while the wiring itself lives where the diagnostic can
+// share it.
+type deployment = host.Deployment
 
 // buildAssembly returns the memory assembly either from an ad-hoc settings
 // document (no inference) or from a full deploy document with a real
 // inference assembly wired in.
 func buildAssembly(deployPath string, recentItems int) deployment {
-	ctx := context.Background()
-	if deployPath != "" {
-		registry := resource.NewRegistry()
-		must(workspace.Register(registry))
-		must(secret.Register(registry))
-		must(inference.Register(registry))
-		must(openai.Register(registry))
-		must(bytedance.Register(registry))
-		must(flowmemory.Register(registry))
-		raw, err := os.ReadFile(deployPath)
-		must(err)
-		doc, err := deploy.Parse(raw)
-		must(err)
-		var settings memoryResourceSettings
-		for _, configured := range doc.Resources {
-			if configured.Kind != corememory.AssemblyKind || len(configured.Settings) == 0 {
-				continue
-			}
-			must(json.Unmarshal(configured.Settings, &settings))
-		}
-		loader := resource.NewLoader(resource.WithBaseDir(filepath.Dir(deployPath)))
-		result, err := deploy.NewBuilder(registry, deploy.WithLoader(loader)).Deploy(ctx, doc)
-		must(err)
-		value, ok := result.Value("memories")
-		if !ok {
-			must(fmt.Errorf("deploy document has no %q resource", "memories"))
-		}
-		assembly, ok := value.(*flowmemory.Assembly)
-		if !ok {
-			must(fmt.Errorf("resource memories is %T", value))
-		}
-		var engine *inference.Assembly
-		if raw, ok := result.Value("infer"); ok {
-			if typed, ok := raw.(*inference.Assembly); ok {
-				engine = typed
-			}
-		}
-		return deployment{
-			Memory: assembly, Inference: engine, Rerank: settings.Retrieval.Rerank,
-			Close: func() { _ = result.Close() },
-		}
-	}
-	dir, err := os.MkdirTemp("", "memory-eval-*")
+	built, err := host.Build(deployPath, recentItems)
 	must(err)
-	ws, err := workspace.NewLocalWorkspace(filepath.Join(dir, "workspace"))
-	must(err)
-	value, err := flowmemory.NewFactory().New(ctx, resource.Input{
-		// No generate/embed models configured: the run exercises the recent,
-		// BM25, and entity lanes without an LLM.
-		Settings: []byte(fmt.Sprintf(
-			`{"interval":"0","scopes":[{"runtime_id":"memories"}],"recent":{"max_items":%d}}`, recentItems)),
-		Deps: map[string]any{"workspace": ws},
-	})
-	must(err)
-	assembly, ok := value.(*flowmemory.Assembly)
-	if !ok {
-		must(fmt.Errorf("factory returned %T", value))
-	}
-	return deployment{
-		Memory: assembly,
-		Close: func() {
-			_ = assembly.Close()
-			_ = os.RemoveAll(dir)
-		},
-	}
+	return built
 }

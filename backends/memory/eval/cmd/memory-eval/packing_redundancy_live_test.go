@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,12 +12,31 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
+	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
 
 // TestPackingRedundancy measures what the 30 packed items actually are: how
-// many of them trace back to the same source turn (slots spent on repeats of
-// one event) and how many carry the question's evidence. Retrieval only.
+// many distinct commits they are drawn from (slots spent on a session the pack
+// already reads), and how many of them carry the question's evidence.
+//
+// The commit is the unit that matters here because the harness commits one
+// dataset session at a time and derivation reads a commit whole, so an item's
+// provenance is its commit: every fact extracted from one session resolves to
+// that one commit whatever turn it paraphrases. Counting distinct source turns
+// instead would count the messages inside a commit, which is why it produced a
+// negative duplicate share -- items times commit size exceeds items. Retrieval
+// only.
+//
+// Item text and committed text are compared through turnTextKey, not verbatim:
+// Attribution is by turn identity, not by text: every source message carries the
+// dataset turn ingest tagged it with, so an item is attributed through the turns
+// its canonical sources name. Text was only ever a proxy, and a leaky one -- the
+// loader renders an image turn as "<speaker>: <text> [shared image: <caption>]"
+// in annotation mode while a store written with "-images native" attaches the
+// image as a part instead, so 231 of 7500 packed items (all raw recent turns)
+// matched their turn by text only after the annotation was stripped, and an item
+// with no resolvable source fell out of the commit counts below.
 //
 // MEMORY_EVAL_PER_CATEGORY=25 MEMORY_EVAL_MAX_ITEMS=30
 func TestPackingRedundancy(t *testing.T) {
@@ -59,28 +79,30 @@ func TestPackingRedundancy(t *testing.T) {
 	built := buildAssembly(filepath.Join(workdir, "..", "..", "deploy.yaml"), 8)
 	defer built.Close()
 	scope := corememory.Scope{RuntimeID: "memories"}
-	resolver := messageProvenance{store: built.Memory.MessageStore(), scope: scope}
+	resolver := host.NewMessageProvenance(built.Memory.MessageStore(), scope)
+	requireTurnIDs(t, resolver, scenarios)
 
 	type sample struct {
-		scenario  eval.Scenario
-		question  eval.Question
-		diaByText map[string]string
-		evidence  map[string]struct{}
+		scenario eval.Scenario
+		question eval.Question
+		// commitByTurn maps a dataset turn to the commit it was ingested in (the
+		// loader commits one session per commit).
+		commitByTurn map[string]string
+		evidence     map[string]struct{}
+		// scenarioCommits is how many commits the scenario's conversation was
+		// ingested in, so a pack's commit count has a denominator: how much of
+		// the conversation the 30 slots actually range over.
+		scenarioCommits int
 	}
 	byCategory := map[int][]sample{}
 	for _, scenario := range scenarios {
-		diaByText := map[string]string{}
+		commitByTurn := map[string]string{}
+		commitKeys := map[string]struct{}{}
 		for _, turn := range scenario.Turns {
-			for position, message := range turn.Messages {
-				if position >= len(turn.DatasetIDs) {
-					break
-				}
-				id := strings.TrimSpace(turn.DatasetIDs[position])
-				text := strings.TrimSpace(message.Content.Text())
-				if id != "" && text != "" {
-					if _, exists := diaByText[text]; !exists {
-						diaByText[text] = id
-					}
+			commitKeys[turn.IdempotencyKey] = struct{}{}
+			for _, id := range turn.DatasetIDs {
+				if trimmed := strings.TrimSpace(id); trimmed != "" {
+					commitByTurn[trimmed] = turn.IdempotencyKey
 				}
 			}
 		}
@@ -93,7 +115,11 @@ func TestPackingRedundancy(t *testing.T) {
 				evidence[id] = struct{}{}
 			}
 			byCategory[question.Category] = append(byCategory[question.Category],
-				sample{scenario: scenario, question: question, diaByText: diaByText, evidence: evidence})
+				sample{
+					scenario: scenario, question: question,
+					commitByTurn: commitByTurn, evidence: evidence,
+					scenarioCommits: len(commitKeys),
+				})
 		}
 	}
 	var work []sample
@@ -103,8 +129,12 @@ func TestPackingRedundancy(t *testing.T) {
 
 	var (
 		mu                                             sync.Mutex
-		items, uniqueTurns, evidenceItems, evidenceQ   int
+		items, commitTotal, unattributed               int
+		untagged, spanning                             int
+		unattributedKinds                              = map[corememory.ContextItemKind]int{}
+		evidenceItems, evidenceQ                       int
 		questions, coveredEvidenceTurns, totalEvidence int
+		commitsPerPack, scenarioCommits                []int
 	)
 	var next atomic.Int64
 	var group sync.WaitGroup
@@ -126,28 +156,62 @@ func TestPackingRedundancy(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				resolved := map[string][]string{}
-				seenTurns := map[string]struct{}{}
+				ctx := context.Background()
+				matcher := eval.NewMatcher(resolver)
+				localCommits := map[string]struct{}{}
 				covered := map[string]struct{}{}
-				localItems, localEvidenceItems := 0, 0
+				localUnattributedKinds := map[corememory.ContextItemKind]int{}
+				localItems, localUnattributed, localUntagged, localEvidenceItems, localSpanning := 0, 0, 0, 0, 0
 				for _, item := range result.Items {
 					localItems++
-					for _, text := range itemSourceTexts(item, resolver, resolved) {
-						diaID, ok := current.diaByText[text]
-						if !ok {
+					sources := matcher.Sources(ctx, item)
+					attributed := false
+					itemCommits := map[string]struct{}{}
+					for _, source := range sources {
+						if source.TurnID == "" {
+							localUntagged++
 							continue
 						}
-						seenTurns[diaID] = struct{}{}
-						if _, isEvidence := current.evidence[diaID]; isEvidence {
+						commit := current.commitByTurn[source.TurnID]
+						if commit == "" {
+							continue
+						}
+						attributed = true
+						itemCommits[commit] = struct{}{}
+						localCommits[commit] = struct{}{}
+					}
+					if !attributed {
+						localUnattributed++
+						localUnattributedKinds[item.Kind]++
+					}
+					if len(itemCommits) > 1 {
+						localSpanning++
+					}
+					// Evidence keeps the narrower rule the other probes use: an
+					// item counts once, for the first dataset turn of the
+					// question it stands for.
+					for _, source := range sources {
+						if source.TurnID == "" {
+							continue
+						}
+						if _, isEvidence := current.evidence[source.TurnID]; isEvidence {
 							localEvidenceItems++
-							covered[diaID] = struct{}{}
+							covered[source.TurnID] = struct{}{}
 							break
 						}
 					}
 				}
 				mu.Lock()
 				items += localItems
-				uniqueTurns += len(seenTurns)
+				commitTotal += len(localCommits)
+				commitsPerPack = append(commitsPerPack, len(localCommits))
+				scenarioCommits = append(scenarioCommits, current.scenarioCommits)
+				unattributed += localUnattributed
+				for kind, count := range localUnattributedKinds {
+					unattributedKinds[kind] += count
+				}
+				untagged += localUntagged
+				spanning += localSpanning
 				evidenceItems += localEvidenceItems
 				questions++
 				coveredEvidenceTurns += len(covered)
@@ -162,26 +226,34 @@ func TestPackingRedundancy(t *testing.T) {
 	group.Wait()
 
 	t.Logf("max_items=%d questions=%d", maxItems, questions)
-	t.Logf("items packed=%d; distinct source turns=%d; duplicate share=%.3f",
-		items, uniqueTurns, 1-float64(uniqueTurns)/float64(items))
+	if questions == 0 || commitTotal == 0 {
+		t.Fatalf("no pack attributed to a commit: items=%d questions=%d", items, questions)
+	}
+	sort.Ints(commitsPerPack)
+	available := 0
+	for _, count := range scenarioCommits {
+		available += count
+	}
+	t.Logf("items packed=%d (mean per pack=%.2f); items whose sources name no dataset turn=%d (%.3f)",
+		items, float64(items)/float64(questions),
+		unattributed, float64(unattributed)/float64(items))
+	if unattributed > 0 {
+		t.Logf("unattributed item kinds (an item no turn can be traced to): %v", unattributedKinds)
+	}
+	t.Logf("source messages with no dataset turn id=%d (%.3f; 0 means every source ingest tagged)",
+		untagged, float64(untagged)/float64(items))
+	t.Logf("commits drawn on: mean per pack=%.2f p50=%d min=%d max=%d (mean %.1f commits exist per conversation)",
+		float64(commitTotal)/float64(questions),
+		commitsPerPack[len(commitsPerPack)/2], commitsPerPack[0],
+		commitsPerPack[len(commitsPerPack)-1], float64(available)/float64(questions))
+	t.Logf("items per commit=%.2f; duplicate share=%.3f (slots spent on a commit the pack already draws on)",
+		float64(items)/float64(commitTotal), 1-float64(commitTotal)/float64(items))
+	t.Logf("items whose sources span more than one commit=%d (%.3f; nonzero means the commit is not the item's unit)",
+		spanning, float64(spanning)/float64(items))
 	t.Logf("items carrying the question's evidence=%d (precision=%.3f)",
 		evidenceItems, float64(evidenceItems)/float64(items))
 	t.Logf("evidence turns covered=%d/%d (recall=%.3f); questions fully covered=%d (%.3f)",
 		coveredEvidenceTurns, totalEvidence,
 		float64(coveredEvidenceTurns)/float64(totalEvidence),
 		evidenceQ, float64(evidenceQ)/float64(questions))
-}
-
-// itemSourceTexts returns the committed texts an item stands for: its own
-// content for raw messages, and the resolved provenance for derived items.
-func itemSourceTexts(item corememory.ContextItem, resolver messageProvenance, resolved map[string][]string) []string {
-	if item.Kind == corememory.ContextRawMessage {
-		return []string{strings.TrimSpace(item.Content.Text())}
-	}
-	texts, ok := resolved[item.ID]
-	if !ok {
-		texts = resolver.ResolveSourceTexts(context.Background(), item)
-		resolved[item.ID] = texts
-	}
-	return texts
 }

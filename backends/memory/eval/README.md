@@ -19,10 +19,13 @@ curl -sL -o locomo10.json \
   https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
 ```
 
-Fill the key the deployment needs in the repository `.env` (git-ignored):
+Fill the key the deployment needs in a `.env` file (git-ignored). It can live
+next to this module or at the repository root — the live probes look in
+`backends/memory/eval/.env` first and the repository root second — and
+`-env-file` accepts any path explicitly:
 
 ```bash
-cp .env.example ../../../.env   # then edit ../../../.env
+cp .env.example .env   # or ../../../.env to keep it at the repository root
 ```
 
 The default deployment uses two providers: DeepSeek for fact extraction
@@ -237,6 +240,21 @@ The fingerprint's `values` map also gained `rerank`: the *effective*
 the linked-in policy version whether or not retrieval calls it, so two runs that
 differed in that switch used to share a fingerprint.
 
+`recent_items` and `recent_tokens` are the *effective* recent window for the same
+reason: they are read back off the built assembly (`Assembly.RecentSettings`,
+defaults applied) instead of the `-recent-items` flag. A deploy document sets
+`recent.max_items` itself, so the flag named a value no run used — every run
+through `deploy.yaml` stamped 20 while serving 8, and a comparison of two runs
+that differed only in that setting would have agreed. Both values change with
+this fix, so a report stored before it disagrees with a rerun until it is
+regenerated.
+
+`evidence_matching` records the rule evidence recall was graded by, which the
+workspace decides: `turn-id` when ingest tagged the messages with their dataset
+turns, `committed-text` when the workspace predates that tagging (the run warns
+on stderr). The two rules do not score the same (see "Two grading modes"), so a
+report stored under one disagrees with a run under the other.
+
 ## Two grading modes
 
 The default run grades **evidence recall**, the metric the LoCoMo protocol
@@ -247,6 +265,30 @@ items) or when the item's provenance resolves to it (a fact points at the
 messages it was derived from — the runner wires that through the message
 store). Results therefore carry both numbers: turn-level `evidence recall` and
 `questions_with_full_evidence`.
+
+Ingest also tags every committed message with the dataset turn it was loaded
+from (`DatasetTurnMetadataKey`), and that tag decides the match first: an item
+whose sources name the turn counts, whatever the text says. Text alone is not
+enough for a turn that carries an image, because the loader and the store
+disagree about it — the loader renders `[shared image: caption]` into the turn
+text, while a store ingested with `-images native` attaches the image as a part
+and keeps the caption out of the text it holds. Measured on the workspace this
+was built against: 231 of 7500 packed items (all raw recent turns) matched their
+turn only after the caption was stripped, and every one of them was an evidence
+turn a text-only match had to miss.
+
+The tag only reaches a workspace ingested after it existed. The sessions commit
+under fixed idempotency keys, so re-ingesting into an old workspace replays the
+original commits and writes nothing: comparable numbers need a fresh workspace
+(the runners and the live probes warn or fail when the store they read carries
+no ids).
+
+Read the second kind for what it is: a fact's sources are the whole commit it was
+extracted from (`chatSource` in `worker/processor.go` records every message of
+one), not the individual turn it paraphrases. A provenance hit therefore says an
+item *from the evidence turn's commit* was packed, which is why questions whose
+evidence sits in one commit recall so well — any fact out of that session
+counts — while questions that need turns from several commits do not.
 
 Questions without evidence ids fall back to expectation containment (the gold
 answer appearing verbatim in the recalled context), which is what LongMemEval

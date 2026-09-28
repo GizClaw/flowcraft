@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
+	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
 
@@ -61,7 +62,8 @@ func TestRetrievalBudgetSweep(t *testing.T) {
 	built := buildAssembly(filepath.Join(workdir, "..", "..", "deploy.yaml"), 8)
 	defer built.Close()
 	scope := corememory.Scope{RuntimeID: "memories"}
-	resolver := messageProvenance{store: built.Memory.MessageStore(), scope: scope}
+	resolver := host.NewMessageProvenance(built.Memory.MessageStore(), scope)
+	requireTurnIDs(t, resolver, scenarios)
 
 	type sample struct {
 		scenario eval.Scenario
@@ -125,7 +127,7 @@ func TestRetrievalBudgetSweep(t *testing.T) {
 					if err != nil {
 						continue
 					}
-					resolved := map[string][]string{}
+					matcher := eval.NewMatcher(resolver)
 					turns, found := 0, 0
 					for _, id := range current.question.Evidence {
 						turnText := current.turns[id]
@@ -133,7 +135,7 @@ func TestRetrievalBudgetSweep(t *testing.T) {
 							continue
 						}
 						turns++
-						if evidenceVisible(recalled.Items, turnText, resolver, resolved) {
+						if matcher.Cover(context.Background(), recalled.Items, id, turnText).Covered() {
 							found++
 						}
 					}
@@ -153,25 +155,6 @@ func TestRetrievalBudgetSweep(t *testing.T) {
 			budget, budget*205,
 			outcome.questions, ratio(outcome.found, outcome.turns), ratio(outcome.fullQuestions, outcome.questions))
 	}
-}
-
-func evidenceVisible(items []corememory.ContextItem, turnText string, resolver messageProvenance, resolved map[string][]string) bool {
-	for _, item := range items {
-		if strings.Contains(item.Content.Text(), turnText) {
-			return true
-		}
-		texts, ok := resolved[item.ID]
-		if !ok {
-			texts = resolver.ResolveSourceTexts(context.Background(), item)
-			resolved[item.ID] = texts
-		}
-		for _, text := range texts {
-			if strings.Contains(text, turnText) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func ratio(part, total int) float64 {

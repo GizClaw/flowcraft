@@ -43,11 +43,24 @@ type Options struct {
 	Concurrency int
 }
 
-// ProvenanceResolver exposes the texts of the canonical sources a recalled
-// item was derived from (a fact's source messages, for example). The harness
-// does the matching itself, so hosts only have to resolve provenance.
+// ResolvedSource is one canonical message a recalled item stands on: the text
+// the store holds for it, and the dataset turn ingest recorded it came from.
+type ResolvedSource struct {
+	ConversationID string
+	MessageID      string
+	// TurnID is the dataset turn the message was ingested from (LoCoMo's
+	// dia_id), empty when the store holds no ingest-side id for it.
+	TurnID string
+	Text   string
+}
+
+// ProvenanceResolver exposes the canonical messages behind a recalled item (a
+// fact's source messages, for example). The harness does the matching itself, so
+// hosts only have to resolve provenance: evidence recall is decided by turn
+// identity when the store carries dataset turn ids, and by committed text
+// otherwise.
 type ProvenanceResolver interface {
-	ResolveSourceTexts(ctx context.Context, item corememory.ContextItem) []string
+	ResolveSources(ctx context.Context, item corememory.ContextItem) []ResolvedSource
 }
 
 // containsAll reports whether value contains every non-empty expectation,

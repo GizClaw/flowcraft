@@ -29,14 +29,24 @@ type Runner interface {
 	RunOnce(context.Context) error
 }
 
+// DatasetTurnMetadataKey is the per-message metadata key ingest writes the
+// dataset turn id under (LoCoMo's dia_id). It lands on the canonical message
+// record, never on a retrieval request, and it is what lets a recalled item be
+// matched to its dataset turn by identity instead of by committed text: the
+// loader's rendering of an image turn and the text the store holds for it
+// differ (a caption in the text, or an attached part), and a run whose images
+// were fetched only during one of the two passes renders differently.
+const DatasetTurnMetadataKey = "dataset_turn_id"
+
 // Turn is one committed conversation batch.
 type Turn struct {
 	IdempotencyKey string                `json:"idempotency_key"`
 	Messages       []coremessage.Message `json:"messages"`
 	// DatasetIDs optionally names the dataset turn each message came from
-	// (LoCoMo's dia_id), positionally aligned with Messages. It is ingest-side
-	// metadata used only to resolve evidence recall at grading time; it is
-	// never sent to retrieval, so it cannot become an oracle channel.
+	// (LoCoMo's dia_id), positionally aligned with Messages. Ingest keeps it on
+	// the committed message under DatasetTurnMetadataKey, and grading uses it to
+	// resolve evidence recall; it is never sent to retrieval, so it cannot
+	// become an oracle channel.
 	DatasetIDs []string `json:"dataset_ids,omitempty"`
 }
 
@@ -214,11 +224,29 @@ func Ingest(ctx context.Context, runner Runner, scenario Scenario) error {
 		if err := runner.CommitTurn(ctx, corememory.Turn{
 			Scope: scope, ConversationID: scenario.ConversationID,
 			IdempotencyKey: turn.IdempotencyKey, Messages: turn.Messages,
+			MessageMetadata: datasetTurnMetadata(turn.DatasetIDs),
 		}); err != nil {
 			return fmt.Errorf("memory eval: commit turn %d: %w", index, err)
 		}
 	}
 	return nil
+}
+
+// datasetTurnMetadata tags each message with the dataset turn it was loaded
+// from, so the store keeps the identity alongside the message. Messages the
+// dataset does not name (or names with an empty id) stay untagged rather than
+// carrying an empty tag that would look like a resolved turn.
+func datasetTurnMetadata(datasetIDs []string) []corememory.Metadata {
+	if len(datasetIDs) == 0 {
+		return nil
+	}
+	metadata := make([]corememory.Metadata, len(datasetIDs))
+	for index, id := range datasetIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			metadata[index] = corememory.Metadata{DatasetTurnMetadataKey: trimmed}
+		}
+	}
+	return metadata
 }
 
 // Derive runs one derivation pass over everything ingested so far. It is
@@ -513,20 +541,20 @@ func gradeQuestion(ctx context.Context, question Question, items []corememory.Co
 	result := QuestionResult{Query: question.Query, Category: question.Category}
 	if evidence := uniqueNonEmpty(question.Evidence); len(evidence) > 0 {
 		result.EvidenceTotal = len(evidence)
-		resolved := make(map[string][]string, len(items))
+		matcher := NewMatcher(resolver)
 		for _, id := range evidence {
 			turnText := index[id]
 			if turnText == "" {
 				result.Missing = append(result.Missing, id)
 				continue
 			}
-			hit, viaRaw := recalledTurn(ctx, items, turnText, resolver, resolved)
-			if !hit {
+			coverage := matcher.Cover(ctx, items, id, turnText)
+			if !coverage.Covered() {
 				result.Missing = append(result.Missing, id)
 				continue
 			}
 			result.EvidenceFound++
-			if viaRaw {
+			if coverage.ViaRaw {
 				result.EvidenceRaw++
 			} else {
 				result.EvidenceProvenance++
@@ -562,33 +590,6 @@ func gradeQuestion(ctx context.Context, question Question, items []corememory.Co
 	}
 	result.Hit = hit
 	return result
-}
-
-// recalledTurn reports whether any recalled item covers the dataset turn whose
-// committed text is turnText: the item either carries the text itself (raw
-// message items) or resolves to it through provenance (facts point at the
-// messages they were derived from). resolved memoizes source texts per item,
-// so one question never resolves the same item twice.
-func recalledTurn(ctx context.Context, items []corememory.ContextItem, turnText string, resolver ProvenanceResolver, resolved map[string][]string) (found, viaRaw bool) {
-	for _, item := range items {
-		if strings.Contains(item.Content.Text(), turnText) {
-			return true, true
-		}
-		if resolver == nil {
-			continue
-		}
-		texts, cached := resolved[item.ID]
-		if !cached {
-			texts = resolver.ResolveSourceTexts(ctx, item)
-			resolved[item.ID] = texts
-		}
-		for _, text := range texts {
-			if strings.Contains(text, turnText) {
-				return true, false
-			}
-		}
-	}
-	return false, false
 }
 
 // containsFold is the containment rule shared with the answer fallback grader:
