@@ -143,10 +143,13 @@ func recentItem(record msgsource.Record) (corememory.ContextItem, error) {
 			ConversationID: record.ConversationID,
 			ItemID:         record.ID,
 		},
-		Kind:        corememory.ContextRawMessage,
-		Content:     record.Message.Content.Clone(),
-		Score:       1,
-		Sources:     []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: record.ID, Revision: strconv.FormatUint(record.Seq, 10)}},
+		Kind:    corememory.ContextRawMessage,
+		Content: record.Message.Content.Clone(),
+		Score:   1,
+		// The canonical "<conversation>/<message>" form, the one hydrate and the
+		// retrieval source quotes resolve. A bare message id here would make a
+		// recent item's own provenance unresolvable.
+		Sources:     []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: record.ConversationID + "/" + record.ID, Revision: strconv.FormatUint(record.Seq, 10)}},
 		Metadata:    record.Metadata.Clone(),
 		SourceClass: corememory.ContextSourceRecent,
 		MessageRole: record.Message.Role,

@@ -93,7 +93,7 @@ func (store *MessageStore) Commit(ctx context.Context, request AppendRequest) (C
 			Scope:          request.Scope,
 			ConversationID: request.ConversationID,
 			Message:        item,
-			Metadata:       request.Metadata,
+			Metadata:       request.messageMetadata(index),
 			CreatedAt:      now,
 		})
 		if err != nil {

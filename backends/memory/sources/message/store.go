@@ -32,7 +32,12 @@ type AppendRequest struct {
 	ConversationID string
 	IdempotencyKey string
 	Messages       []coremessage.Message
-	Metadata       corememory.Metadata
+	// MessageMetadata optionally tags each message on its own, positionally
+	// aligned with Messages. A nil or empty entry stores Metadata instead, so a
+	// caller that tags only some messages does not have to repeat the commit's
+	// own metadata.
+	MessageMetadata []corememory.Metadata
+	Metadata        corememory.Metadata
 }
 
 // Commit is one immutable, versioned turn and is also the durable derivation
@@ -58,6 +63,15 @@ type ListCommitOptions struct {
 type ListOptions struct {
 	AfterSeq uint64
 	Limit    int
+}
+
+// messageMetadata returns the metadata stored with message index: its own
+// entry when the caller tagged it, the commit's metadata otherwise.
+func (request AppendRequest) messageMetadata(index int) corememory.Metadata {
+	if index < len(request.MessageMetadata) && len(request.MessageMetadata[index]) > 0 {
+		return request.MessageMetadata[index]
+	}
+	return request.Metadata
 }
 
 // LatestOptions selects the newest records by canonical commit sequence.
@@ -117,6 +131,10 @@ func validateAppend(request AppendRequest) error {
 	}
 	if len(request.Messages) == 0 {
 		return errors.New("message source: messages are required")
+	}
+	if len(request.MessageMetadata) > 0 && len(request.MessageMetadata) != len(request.Messages) {
+		return fmt.Errorf("message source: %d message metadata entries for %d messages",
+			len(request.MessageMetadata), len(request.Messages))
 	}
 	for index, item := range request.Messages {
 		if err := item.Validate(); err != nil {

@@ -375,6 +375,77 @@ func TestMessageStoreConversationOrderingIsSorted(t *testing.T) {
 	}
 }
 
+// A commit tags each message on its own so a caller can keep an imported
+// source's identifiers (a dataset turn id, for example) next to the message.
+// The commit's own metadata stays the fallback, and the tags survive a read
+// back from storage, which is what lets a derived item be traced by identity
+// rather than by its text.
+func TestMessageStoreKeepsPerMessageMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := newMessageStore(t, newTestWorkspace(t))
+	commit, err := store.Commit(ctx, AppendRequest{
+		Scope: messageScopeA, ConversationID: "conv", IdempotencyKey: "session-1",
+		Messages: []coremessage.Message{
+			coremessage.NewTextMessage(coremessage.RoleUser, "hello"),
+			coremessage.NewTextMessage(coremessage.RoleAssistant, "hi"),
+			coremessage.NewTextMessage(coremessage.RoleUser, "tagged only"),
+		},
+		MessageMetadata: []corememory.Metadata{
+			{"turn": "D1:1"},
+			nil,
+			{"turn": "D1:3", "extra": "kept"},
+		},
+		Metadata: corememory.Metadata{"origin": "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []corememory.Metadata{
+		{"turn": "D1:1"},
+		{"origin": "test"},
+		{"turn": "D1:3", "extra": "kept"},
+	}
+	for index, record := range commit.Records {
+		if !reflect.DeepEqual(record.Metadata, want[index]) {
+			t.Fatalf("record %d metadata = %#v, want %#v", index, record.Metadata, want[index])
+		}
+	}
+	// Replay through the log: what was committed is what a later read resolves,
+	// not just what the in-memory commit held.
+	stored, err := store.List(ctx, messageScopeA, "conv", ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != len(want) {
+		t.Fatalf("listed %d records, want %d", len(stored), len(want))
+	}
+	for index, record := range stored {
+		if !reflect.DeepEqual(record.Metadata, want[index]) {
+			t.Fatalf("stored record %d metadata = %#v, want %#v", index, record.Metadata, want[index])
+		}
+	}
+	// A tag must not leak onto the neighbouring messages.
+	got, found, err := store.Get(ctx, messageScopeA, "conv", commit.Records[1].ID)
+	if err != nil || !found {
+		t.Fatalf("Get = %#v, %v, %v", got, found, err)
+	}
+	if _, tagged := got.Metadata["turn"]; tagged {
+		t.Fatalf("untagged message inherited a turn id: %#v", got.Metadata)
+	}
+}
+
+func TestMessageStoreRejectsMisalignedMessageMetadata(t *testing.T) {
+	store := newMessageStore(t, newTestWorkspace(t))
+	_, err := store.Commit(context.Background(), AppendRequest{
+		Scope: messageScopeA, ConversationID: "conv", IdempotencyKey: "session-1",
+		Messages:        []coremessage.Message{coremessage.NewTextMessage(coremessage.RoleUser, "hello")},
+		MessageMetadata: []corememory.Metadata{{"turn": "D1:1"}, {"turn": "D1:2"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "message metadata entries") {
+		t.Fatalf("misaligned message metadata = %v, want a rejection", err)
+	}
+}
+
 func newMessageStore(t *testing.T, ws workspace.Workspace, options ...Option) *MessageStore {
 	t.Helper()
 	logStore, err := storage.NewWorkspaceLog(ws)

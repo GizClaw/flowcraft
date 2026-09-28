@@ -310,6 +310,47 @@ func TestCommitTurnAndRecentContext(t *testing.T) {
 	}
 }
 
+// A host that imports a conversation keeps the source's own identifiers on the
+// messages it commits, and they come back on the recent items: that is the
+// channel the eval harness traces a recalled item back to a dataset turn with,
+// instead of recognizing it by its text.
+func TestCommitTurnKeepsPerMessageMetadata(t *testing.T) {
+	assembly, _ := newTestAssembly(t, "")
+	ctx := context.Background()
+	const turnKey = "dataset_turn_id"
+	if err := assembly.CommitTurn(ctx, corememory.Turn{
+		Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "session-1",
+		Messages: []coremessage.Message{
+			textMessage(coremessage.RoleUser, "hello"),
+			textMessage(coremessage.RoleAssistant, "hi there"),
+		},
+		MessageMetadata: []corememory.Metadata{{turnKey: "D1:1"}, {turnKey: "D1:2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := assembly.Context(ctx, corememory.ContextRequest{
+		Scope: testScope(), ConversationID: "conv-1", Query: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(result.Items))
+	}
+	for index, want := range []string{"D1:1", "D1:2"} {
+		item := result.Items[index]
+		if got := item.Metadata[turnKey]; got != want {
+			t.Fatalf("item %d %s = %q, want %q", index, turnKey, got, want)
+		}
+		// The source reference is the canonical "<conversation>/<message>" form:
+		// a bare message id would leave the item's own provenance unresolvable.
+		wantSource := "conv-1/" + item.ID
+		if len(item.Sources) != 1 || item.Sources[0].ID != wantSource {
+			t.Fatalf("item %d sources = %#v, want %q", index, item.Sources, wantSource)
+		}
+	}
+}
+
 // TestContextRecentBoundsOversizedNewestTurn pins the fallback recent lane:
 // the newest turn survives a tight budget as bounded, truncated content
 // instead of being injected unbounded.

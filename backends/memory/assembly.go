@@ -346,7 +346,8 @@ func (assembly *Assembly) CommitTurn(ctx context.Context, turn corememory.Turn) 
 	}
 	_, err := assembly.messages.Commit(ctx, msgsource.AppendRequest{
 		Scope: turn.Scope, ConversationID: turn.ConversationID,
-		IdempotencyKey: turn.IdempotencyKey, Messages: turn.Messages, Metadata: turn.Metadata,
+		IdempotencyKey: turn.IdempotencyKey, Messages: turn.Messages,
+		MessageMetadata: turn.MessageMetadata, Metadata: turn.Metadata,
 	})
 	return classify(err, "turn", corememory.KindProviderFailure)
 }
