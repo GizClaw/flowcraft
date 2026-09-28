@@ -43,7 +43,11 @@ func TestIngestTagsDatasetTurns(t *testing.T) {
 	scenarios, _, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
 		Scope:  eval.Scope{RuntimeID: "memories"},
 		Budget: corememory.Budget{MaxItems: 30, MaxTokens: 6144},
-		// Samples keeps the image downloader to the one conversation that runs.
+		// No image downloads: this probe checks the turn id channel, not how a
+		// turn with an image renders.
+		Images: "annotation",
+		// One conversation is enough to check the channel, and ingest is the
+		// only thing this probe pays for.
 		Samples: 1,
 	})
 	if err != nil {
