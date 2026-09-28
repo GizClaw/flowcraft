@@ -155,7 +155,9 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 	model.record(response)
 	answer := strings.TrimSpace(response.Message.Content.Text())
 	if model.answerStyle == AnswerStyleEvidence {
-		answer = evidenceAnswer(answer)
+		// Only the quoting protocol answers after a marker; the short and the
+		// product protocols reply with the bare answer.
+		answer = answerHalf(answer)
 	}
 	if answer == "" {
 		return "", errors.New("memory eval answer: model returned an empty answer")
@@ -164,16 +166,23 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 
 }
 
-// evidenceAnswer keeps only the answering half of an evidence-style reply, so
-// the token-F1 scorer and the judges grade the answer rather than the quoted
-// scratch work. A reply without the marker is used as-is (minus a leading
-// "Quotes:" section), because failing the question over a formatting slip
-// would measure the parser, not the memory.
-func evidenceAnswer(value string) string {
+// answerHalf keeps only the answering half of an evidence-style two-step reply,
+// so the token-F1 scorer and the judges grade the answer rather than the quoted
+// scratch work. The last marker wins, because a reply may quote a line that
+// itself contains "answer:" while the answer always comes last. A reply with no
+// marker is used as-is (minus a leading "Quotes:" section), and so is a marker
+// whose answer half is empty: returning the empty half would raise the
+// empty-answer error, which fails the scenario -- and with it the run -- over a
+// formatting slip. Grading the raw reply measures the memory instead.
+func answerHalf(value string) string {
 	trimmed := strings.TrimSpace(value)
 	lowered := strings.ToLower(trimmed)
-	if index := strings.LastIndex(lowered, "short answer:"); index >= 0 {
-		return strings.TrimSpace(trimmed[index+len("short answer:"):])
+	// "short answer:" ends with "answer:", so one search covers a reply that
+	// happens to spell the marker the way the product prompt does.
+	if index := strings.LastIndex(lowered, "answer:"); index >= 0 {
+		if answer := strings.TrimSpace(trimmed[index+len("answer:"):]); answer != "" {
+			return answer
+		}
 	}
 	if index := strings.Index(lowered, "quotes:"); index == 0 {
 		if line := strings.IndexByte(trimmed, '\n'); line >= 0 {
@@ -327,8 +336,20 @@ func clipRunes(value string, max int) string {
 }
 
 // AnswerPromptVersion names the answer policy below. Bump it whenever the
-// prompt changes: it is part of the run fingerprint, so a resumed run cannot
-// silently mix answers produced under two different policies.
+// prompt changes, in either direction: it is part of the run fingerprint, so a
+// resumed run cannot silently mix answers produced under two different policies.
+//
+// The policy is v2. A v3 that made it quote its evidence before answering was
+// built and measured, then reverted: the quoting step is worth +8.6pp strict on
+// the official *short* shape (answer-short-v1 -> answer-evidence-v1, same
+// library, same 1540 questions), which is why it was promoted, but it does not
+// reproduce here. An A/B differing only in that instruction moved the same 1540
+// questions 78.51% -> 78.25% strict (paired n=1529: -0.26pp, 26 improved / 30
+// regressed, McNemar p=0.69) while the answer side went from 779 to 2034 output
+// tokens per question. The long shape quotes and dates its evidence without
+// being asked, which is the likely reason the step is redundant on it. The
+// measurement is kept in "Answering policy" in backends/memory/eval/README.md,
+// so re-proposing v3 costs a re-run rather than a re-derivation.
 const AnswerPromptVersion = "answer-policy-v2"
 
 // officialTemporalHint is the suffix the reference LoCoMo harness appends to

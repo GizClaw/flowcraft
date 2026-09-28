@@ -5,20 +5,25 @@ import (
 	"testing"
 )
 
-// TestEvidenceAnswerKeepsOnlyTheAnswer pins the parser the evidence style
-// depends on: the token-F1 scorer and the judges must see the short answer,
-// not the quoted scratch work. A formatting slip falls back to the raw reply
-// instead of failing the question.
-func TestEvidenceAnswerKeepsOnlyTheAnswer(t *testing.T) {
+// TestAnswerHalfKeepsOnlyTheAnswer pins the parser the quoting protocol depends
+// on (the short-shaped evidence style): the token-F1 scorer and the judges must
+// see the short answer, not the quoted scratch work. A formatting slip falls
+// back to the raw reply instead of failing the question.
+func TestAnswerHalfKeepsOnlyTheAnswer(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		raw  string
 		want string
 	}{
 		{
-			name: "two lines",
+			name: "short-shaped reply",
 			raw:  "Quotes: \"Caroline went to the pottery class on 2 July 2023\"\nShort answer: 2 July 2023",
 			want: "2 July 2023",
+		},
+		{
+			name: "the marker spelled without the short prefix",
+			raw:  "Evidence: \"[8 May 2023] Caroline: I went to a support group yesterday.\"\nAnswer: 7 May 2023",
+			want: "7 May 2023",
 		},
 		{
 			name: "answer wraps onto a second line",
@@ -40,10 +45,20 @@ func TestEvidenceAnswerKeepsOnlyTheAnswer(t *testing.T) {
 			raw:  "Quotes: none\nSHORT ANSWER: Sweden",
 			want: "Sweden",
 		},
+		{
+			name: "the answer marker inside a quote does not win",
+			raw:  "Evidence: \"she asked: answer: what?\"\nAnswer: Sweden",
+			want: "Sweden",
+		},
+		{
+			name: "an empty answer half keeps the reply so the judge sees it",
+			raw:  "Evidence: \"they moved in 2021\"\nAnswer:",
+			want: "Evidence: \"they moved in 2021\"\nAnswer:",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := evidenceAnswer(test.raw); got != test.want {
-				t.Fatalf("evidenceAnswer(%q) = %q, want %q", test.raw, got, test.want)
+			if got := answerHalf(test.raw); got != test.want {
+				t.Fatalf("answerHalf(%q) = %q, want %q", test.raw, got, test.want)
 			}
 		})
 	}
