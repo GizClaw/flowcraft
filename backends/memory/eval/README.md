@@ -361,13 +361,47 @@ so the revision is stamped into the binary; without it the runner asks `git`
 directly.
 
 `deploy.yaml` is a template: DeepSeek (responses surface) for fact extraction
-and ByteDance Ark `doubao-embedding-vision` for the vector lane. `diag/` is a
-small diagnostic that prints per-question source classes and top long-term
-hits:
+and ByteDance Ark `doubao-embedding-vision` for the vector lane. See
+"Diagnosing one question" for the retrieval-side diagnostic.
+
+## Diagnosing one question
+
+A report says that a question's evidence did not reach the prompt. It does not
+say whether retrieval ever had it, and that is the difference between a ranking
+problem and a coverage problem. `memory-eval-diag` prints which one it is, one
+question at a time: the pack's source classes and item kinds, where every
+evidence turn the dataset records ended up, and the top long-term items with the
+dataset turns their sources stand for.
 
 ```bash
-go run ./cmd/memory-eval-diag -questions 4
+go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
+  -skip-derive -categories 1 -probe-items 300
 ```
+
+- `-probe-items N` is what separates the two failure kinds. The pack budget and
+  the candidate depth retrieval reads are coupled — the provider reads three
+  candidates per packed item — so "did retrieval ever have this turn" can only be
+  asked by asking for a much larger pack. The probe re-reads each question at `N`
+  items and reports where the turn ranked there: `pool-only` means retrieval had
+  it and the budget cut it (the rank says how far the pack would have to reach),
+  `absent` means it is outside the depth probed. Without the flag a turn that
+  missed the pack is reported as `missing` and says nothing about retrieval.
+  The rank is a bound rather than a measurement: the top of the ranking is
+  stable, near-ties below it can still move (see "Measurement noise").
+- `-skip-derive` diagnoses the derivation the workspace already holds — the one
+  the run under investigation read — instead of ingesting and deriving first.
+  The header prints the library state, and warns when the store's derivation
+  belongs to another policy generation.
+- `-images` decides the text an evidence turn is *displayed* by. A workspace
+  ingested before ingest tagged messages with their dataset turns is matched by
+  that text, so there the flag has to match the mode the library was ingested
+  with, and a caption the stored turns do not carry would hide every image turn.
+  The header says which of the two the run is in.
+- `-questions` / `-categories` select the sample, `-top` and `-snippet` the print
+  shape. The summary at the end aggregates the sample and is the part worth
+  reading first: it splits the evidence turns into packed / pool-only / absent
+  and reports how much of the packed evidence arrived as raw text rather than as
+  a derived item's provenance.
 
 ## Module dependency
 
@@ -413,10 +447,19 @@ stays offline and free).
 | `TestAnswerContextSize` | how much context reaches the answer prompt |
 | `TestEvidenceFidelity` | how much of the recalled evidence is raw text vs a fact paraphrase |
 | `TestRetrievalBudgetSweep` | what evidence coverage each item budget buys |
-| `TestPackingRedundancy` | what the packed items actually are |
+| `TestPackingRedundancy` | what the packed items actually are: how many distinct commits the slots cover and how many carry the question's evidence |
 | `TestDeriveConcurrencyLiveMatchesSequential` | does `derive.concurrency` change what is derived |
 | `TestCoIngestedConversationsDoNotChangeRetrieval` | does the two-phase schedule change recall |
 | `TestRejudgeStoredAnswersWithLenientJudge` | re-grade a stored report with the other judge style |
+| `TestIngestTagsDatasetTurns` | does ingest tag every committed message with its dataset turn, and does a re-ingest repair a store that predates that tagging |
+
+The three retrieval probes read the same workspace the runner does and match
+evidence the way the report does, so they need one that carries dataset turn ids
+and they fail with the reason rather than report an untagged workspace as missed
+recall (`requireTurnIDs`). `TestIngestTagsDatasetTurns` is the exception: it
+ingests a conversation into a workspace of its own, because that is the only way
+to get a store carrying ids out of a suite that must not derive a second
+conversation.
 
 Credentials resolve from `eval/.env` or the repository root; `MEMORY_EVAL_REPORT`
 selects the report the re-judge probe reads.
