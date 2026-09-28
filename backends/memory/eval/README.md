@@ -157,6 +157,32 @@ product behaviour, and this harness keeps them out of the default path:
   `1.4.0` with the rewrite, so existing workspaces re-derive rather than mixing
   facts from both prompts.
 
+## What a report stores
+
+The fingerprint names the configuration; the report also carries the material and
+the price, because a rate without them cannot be compared with the next run:
+
+- `loader` — the dataset conversion, including `images_attached` /
+  `images_failed` / `images_shrunk` and the `image_failures` breakdown by cause;
+- `usage` — per-role (`answer`, `judge`, `lenient_judge`) calls and input/output
+  tokens, so a protocol change can be priced from the stored result;
+- `library` — the derivation state the answers were read from: the watermark
+  digest and, per scope, how many conversations carry a watermark under *this*
+  policy digest and how many are `underived` (their facts, if any, were written
+  by another generation of the derivation policy).
+
+`library` exists because `derive=reused` answers from whatever the workspace
+holds while the fingerprint's `policy_digest` describes the code: a workspace
+derived under an older extraction policy reports every conversation as
+underived, and the run warns on stderr when `-skip-derive` is used that way.
+Without it, two runs over one workspace and two derivation policies carried the
+same fingerprint.
+
+The fingerprint's `values` map also gained `rerank`: the *effective*
+`retrieval.rerank` setting, read off the deploy document. `rerank_policy` names
+the linked-in policy version whether or not retrieval calls it, so two runs that
+differed in that switch used to share a fingerprint.
+
 ## Two grading modes
 
 The default run grades **evidence recall**, the metric the LoCoMo protocol

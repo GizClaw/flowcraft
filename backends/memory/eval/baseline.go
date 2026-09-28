@@ -15,7 +15,29 @@ type Baseline struct {
 	// Comparing a baseline whose fingerprint differs is comparing two different
 	// experiments, so callers warn before treating a delta as a regression.
 	Fingerprint Fingerprint `json:"fingerprint,omitempty"`
-	Reports     []Report    `json:"reports"`
+	// Loader, Usage and Library describe the material the run was measured on
+	// and what it cost: how the dataset was converted (including why images did
+	// or did not make it in), which models spent how many tokens, and which
+	// generation of derived facts was graded. They are recorded here rather than
+	// in the fingerprint because they describe the run, not the configuration:
+	// they change while the fingerprint must not, or -resume would refuse a
+	// continuation it should accept.
+	Loader  *LoaderStats  `json:"loader,omitempty"`
+	Usage   []ModelUsage  `json:"usage,omitempty"`
+	Library *LibraryState `json:"library,omitempty"`
+	Reports []Report      `json:"reports"`
+}
+
+// ModelUsage is one model role's cumulative token usage. Token counts used to
+// exist only on the run's stdout, so a stored result could not say what it cost
+// and a protocol change that triples answer tokens (as the evidence-first
+// answering protocol does) could not be priced from the report.
+type ModelUsage struct {
+	Role         string `json:"role"`
+	Model        string `json:"model,omitempty"`
+	Calls        int64  `json:"calls"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
 }
 
 // NewBaseline captures the current reports.
