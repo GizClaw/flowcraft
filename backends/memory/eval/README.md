@@ -157,6 +157,60 @@ product behaviour, and this harness keeps them out of the default path:
   `1.4.0` with the rewrite, so existing workspaces re-derive rather than mixing
   facts from both prompts.
 
+## Answering policy
+
+The product policy is `-answer-style long` (`answer-policy-v2`). A `v3` of that
+policy had it quote its evidence before answering — the step the official
+`evidence` shape uses — and was built, measured, and then reverted: the step pays
+on the shape it was developed on and not on the product shape. Both experiments
+run over the frozen LoCoMo library with everything else held fixed — same
+recalled context, same answering model, same two judges, 1540 questions, 30
+items / 6144 tokens. The rate columns come from those full runs; the token column
+comes from paired 30-question cost probes over the same library (20 items / 4096
+tokens, one judge), which are the only runs that price all four prompt shapes
+under identical settings:
+
+| | strict | lenient | multi-hop (cat 1) | open-domain (cat 3) | answer out tokens/question |
+| --- | --- | --- | --- | --- | --- |
+| `answer-short-v1` (official short shape) | 67.79% | 85.91% | 39.7% | 42.7% | 601 |
+| `answer-evidence-v1` (short + quoting) | **76.36%** (+8.57pp) | 88.77% (+2.86pp) | **51.4%** (+11.7pp) | **55.2%** (+12.5pp) | 1798 (**3.0×**) |
+| `answer-policy-v2` (product shape) | 78.51% | 89.93% | 54.96% | 57.29% | 779 |
+| `answer-policy-v3` (product + quoting) | 78.25% (−0.26pp) | 89.68% (−0.25pp) | 53.90% (−1.1pp) | 61.46% (+4.2pp) | 2034 (**2.6×**) |
+
+Read that as two experiments rather than one ladder: the first pair changes the
+official short shape, the second changes the product shape, and the two shapes
+are not comparable with each other (the product prompt carries the long-form
+rules and a 24k-rune context).
+
+- **Short shape: +8.57pp for 3.0×.** Paired, 152 questions improved to 20
+  regressed, McNemar p=2.6e-26; every category moved the same way.
+- **Product shape: nothing for 2.6×.** Paired over the 1529 questions the two
+  runs share, −0.26pp, 26 improved to 30 regressed, p=0.69. Open-domain is the
+  one category that moved up (+4.2pp on n=96, inside its noise band) and
+  multi-hop the one that moved down; the answer side still went 779 → 2034
+  output tokens per question, measured by a paired 30-question cost probe over
+  the same library (the same probe prices short at 601 and evidence at 1798).
+- **Retrieval was not the variable.** Per-conversation evidence recall is
+  identical in 8 of 10 conversations and differs by a single turn in the other
+  two; both arms read the same frozen library (`-skip-derive`, and the report's
+  `library` block shows `underived=0 behind=0` for the current policy digest).
+
+So `v3` was reverted: on the product shape the step buys no measurable accuracy
+and costs 2.6× the answer side's output tokens. The likeliest reason is that the
+long shape already quotes and dates its evidence without being asked — which is
+exactly what the step adds to the terse short shape. `-answer-style evidence`
+keeps the shape that pays, and a future `v3` has to move a paired product run
+before it ships.
+
+The product *prompt template* was reverted with it:
+`core/memory/render/default.gotmpl` is back to the `<memory_context>` data block
+alone, and the `<memory_instructions>` block that carried the quoting step
+(static text beside the data, so `<memory_context>` stayed pure reference data)
+is gone. That block was never what the table measures — this harness renders the
+recalled pack itself — so a deployment that wants the step back has to add the
+template block *and* re-test here first: the short shape's +8.57pp is not
+evidence for the product shape.
+
 ## What a report stores
 
 The fingerprint names the configuration; the report also carries the material and
@@ -216,6 +270,11 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   Only those two shapes are accepted; hedged prose is **ungraded** rather than
   guessed at, and ungraded answers leave the denominator (reported as
   `ungraded_answers`).
+- `-answer-style long|short|evidence` (default `long`) — `long` is the product
+  policy, `short` reproduces the official LoCoMo prompt shape that token-F1 is
+  defined over, and `evidence` is `short` with the quoting step added. All three
+  carry their own prompt version in the fingerprint. See "Answering policy"
+  below for what the quoting step measured.
 - `-temporal-hint`: append the reference harness's category-2 suffix verbatim
   (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
   questions. Off by default and recorded in the fingerprint; see
