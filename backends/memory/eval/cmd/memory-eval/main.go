@@ -91,6 +91,15 @@ func main() {
 		stats.Conversations, stats.Turns, stats.Questions, stats.Skipped, stats.SkippedAdversarial)
 	if *imageMode == "native" || *imageMode == "both" {
 		fmt.Printf(" images_attached=%d images_failed=%d", stats.ImagesAttached, stats.ImagesFailed)
+		// Why the images are missing decides whether the run is comparable: a
+		// dead link is the dataset's, a timeout is the network's.
+		if failures := stats.ImageFailures; failures != (eval.ImageFailureCounts{}) {
+			fmt.Printf(" image_failures{permanent=%d busy=%d transient=%d oversized=%d}",
+				failures.Permanent, failures.Busy, failures.Transient, failures.Oversized)
+		}
+		if stats.ImagesShrunk > 0 {
+			fmt.Printf(" images_shrunk=%d", stats.ImagesShrunk)
+		}
 	}
 	fmt.Println()
 	if stats.SkippedAdversarial > 0 {
