@@ -38,12 +38,19 @@ selects it with `-answer-provider openai -answer-model gpt-4o-mini` or points
   so a full LoCoMo run issues roughly one call per indexed message, plus one
   per query;
 - images are exercised: `-images` defaults to `native`, which downloads each
-  turn's image (8-way parallel, 5s timeout, bounded cache), verifies it by magic
-  bytes and inlines it as an `ImagePart`. The picture reaches the vector lane
+  turn's image (8-way parallel, 20s timeout, bounded cache), verifies it by magic
+  bytes and inlines it as an `ImagePart`. An image over the 4MB inline budget is
+  re-encoded to fit rather than dropped (`images_shrunk`), since a caption is not
+  a stand-in for the picture the reference harness attaches. The picture reaches the vector lane
   (the embedder takes text *and* image parts); the fact extractor and the answer
   prompt build their requests from `Content.Text()`, so they see the turn's text
-  only. A download that fails falls back to the caption annotation, and
-  `images_attached` / `images_failed` are printed. `-images annotation` keeps
+  only. A download that fails falls back to the caption annotation. Failures are
+  classified and printed (`image_failures{permanent,busy,transient,oversized}`),
+  because the classes differ in what they mean for comparability: only a cause
+  that describes the url (a 404, a hotlink block, an oversized payload) is
+  cached for the next run, while a timeout or a 5xx is retried — caching those
+  turned a slow host into a missing image for 24h and made the image set a
+  function of the network's luck. `-images annotation` keeps
   the historical text-only shape.
 - one image is not cheap on either multimodal endpoint. Measured on Chat
   Completions: a 96×96 PNG billed 8,528 prompt tokens against 28 for the same
