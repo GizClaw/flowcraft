@@ -383,6 +383,29 @@ func TestContextRecentBoundsOversizedNewestTurn(t *testing.T) {
 	}
 }
 
+// TestRecentSettingsReportsTheEffectiveWindow pins the read-back a host needs
+// to record what it measured under: the settings document may set the recent
+// window, and an omitted block means the library default, not zero. A run that
+// stamped zero (or the flag it passed) would name a window no retrieval used.
+func TestRecentSettingsReportsTheEffectiveWindow(t *testing.T) {
+	configured, _ := newTestAssembly(t, "")
+	if recent := configured.RecentSettings(); recent.MaxItems != 8 || recent.MaxTokens != 4096 {
+		t.Fatalf("configured recent = %+v, want 8 items / 4096 tokens", recent)
+	}
+	unset, _ := newTestAssembly(t, `{"storage":{"log":{"driver":"workspace"},"kv":{"driver":"workspace"}},`+
+		`"scopes":[{"runtime_id":"memories","user_id":"u1"}],"interval":"0"}`)
+	if recent := unset.RecentSettings(); recent.MaxItems != defaultRecentMaxItems ||
+		recent.MaxTokens != defaultRecentMaxTokens {
+		t.Fatalf("unset recent = %+v, want the library defaults %d/%d",
+			recent, defaultRecentMaxItems, defaultRecentMaxTokens)
+	}
+	var nilAssembly *Assembly
+	if recent := nilAssembly.RecentSettings(); recent.MaxItems != defaultRecentMaxItems ||
+		recent.MaxTokens != defaultRecentMaxTokens {
+		t.Fatalf("nil assembly recent = %+v, want the library defaults", recent)
+	}
+}
+
 func TestCommitTurnIdempotentReplay(t *testing.T) {
 	assembly, _ := newTestAssembly(t, "")
 	ctx := context.Background()

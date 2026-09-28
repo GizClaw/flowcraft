@@ -236,6 +236,25 @@ func (assembly *Assembly) PolicyDigest() string {
 	return assembly.processor.PolicyDigest()
 }
 
+// RecentSettings returns the recent-message window this assembly serves with,
+// with the library defaults applied. A request may narrow it (RecentLimit,
+// RecentMaxTokens, or the pack budget), but this is the configured value: hosts
+// report it so a run records the window it measured under rather than the flag
+// it passed, which a settings document can override.
+func (assembly *Assembly) RecentSettings() RecentSettings {
+	recent := RecentSettings{}
+	if assembly != nil {
+		recent = assembly.recent
+	}
+	if recent.MaxItems <= 0 {
+		recent.MaxItems = defaultRecentMaxItems
+	}
+	if recent.MaxTokens <= 0 {
+		recent.MaxTokens = defaultRecentMaxTokens
+	}
+	return recent
+}
+
 // MessageStore returns the canonical message store.
 func (assembly *Assembly) MessageStore() *msgsource.MessageStore {
 	if assembly == nil {
