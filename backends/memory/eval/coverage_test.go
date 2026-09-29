@@ -48,6 +48,86 @@ func TestMatcherPrefersTheTurnTextOverProvenanceIdentity(t *testing.T) {
 	}
 }
 
+// The shadowing the pack order used to cause: a derived item standing on the
+// turn outranks the turn's own message lower in the pack, and the label then
+// said the pack held a paraphrase while the prompt held the graded wording.
+func TestMatcherPrefersTheTurnMessageOverAnEarlierProvenanceHit(t *testing.T) {
+	source := coverageSource("conv-1/msg-1", "", "")
+	for _, test := range []struct {
+		name string
+		// The derived item reaches the turn the one way its store allows: by
+		// text, when nothing tagged the message, or by the turn id.
+		fact ResolvedSource
+		turn string
+	}{
+		{
+			name: "the derived item stands on the turn by text",
+			fact: ResolvedSource{ConversationID: "conv-1", MessageID: "msg-1", Text: coverageTurnText},
+		},
+		{
+			name: "the derived item stands on the turn by id",
+			fact: ResolvedSource{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: "Melanie: I ran a race."},
+			turn: "D1:1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fact := coverageItem("fact-1", corememory.ContextFact, "Melanie finds running rewarding.", source)
+			raw := coverageItem("msg-1", corememory.ContextRawMessage, coverageTurnText, source)
+			resolver := stubSources{
+				"fact-1": {test.fact},
+				"msg-1":  {{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: coverageTurnText}},
+			}
+			coverage := NewMatcher(resolver).Cover(context.Background(),
+				[]corememory.ContextItem{fact, raw}, test.turn, coverageTurnText)
+			if !coverage.Covered() || coverage.Rank != 1 || !coverage.ViaRaw {
+				t.Fatalf("coverage = %#v, want the turn's own message at rank 1", coverage)
+			}
+		})
+	}
+}
+
+// The same shadowing where no text can decide it: a native store and a loader
+// rendering disagree about the caption, so neither side contains the other. The
+// fact reaches the turn by id at rank 0 and the turn's own message sits at rank
+// 1 -- still the message the dataset graded, and still what the model read.
+func TestMatcherPrefersTheTurnMessageOverAnEarlierIdentityHit(t *testing.T) {
+	const (
+		rendered = coverageTurnText + " [shared image: finish line]"
+		stored   = coverageTurnText
+	)
+	source := coverageSource("conv-1/msg-1", "", "")
+	fact := coverageItem("fact-1", corememory.ContextFact, "Melanie finds running rewarding.", source)
+	raw := coverageItem("msg-1", corememory.ContextRawMessage, stored, source)
+	resolver := stubSources{
+		"fact-1": {{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: "Melanie: I ran a race."}},
+		"msg-1":  {{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: stored}},
+	}
+	coverage := NewMatcher(resolver).Cover(context.Background(),
+		[]corememory.ContextItem{fact, raw}, "D1:1", rendered)
+	if !coverage.Covered() || coverage.Rank != 1 || !coverage.ViaRaw {
+		t.Fatalf("coverage = %#v, want the turn's own message at rank 1", coverage)
+	}
+}
+
+// A derived item carrying the wording carries it wherever the pack put the
+// message: retrieval.source_quotes folds the source turn into the fact, so the
+// prompt shows the graded wording through that item.
+func TestMatcherCountsAFoldedSourceQuoteAsTheTurnWording(t *testing.T) {
+	source := coverageSource("conv-1/msg-1", "", "")
+	fact := coverageItem("fact-1", corememory.ContextFact,
+		"Melanie finds running rewarding. Source turn: "+coverageTurnText, source)
+	raw := coverageItem("msg-1", corememory.ContextRawMessage, coverageTurnText, source)
+	resolver := stubSources{
+		"fact-1": {{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: coverageTurnText}},
+		"msg-1":  {{ConversationID: "conv-1", MessageID: "msg-1", TurnID: "D1:1", Text: coverageTurnText}},
+	}
+	coverage := NewMatcher(resolver).Cover(context.Background(),
+		[]corememory.ContextItem{fact, raw}, "D1:1", coverageTurnText)
+	if !coverage.Covered() || coverage.Rank != 0 || !coverage.ViaRaw {
+		t.Fatalf("coverage = %#v, want the folded quote at rank 0", coverage)
+	}
+}
+
 // An item's source is a canonical message, and a store written without dataset
 // turn ids leaves only the committed text to compare: the text of the source is
 // enough to attribute the turn, but it is not the graded wording.

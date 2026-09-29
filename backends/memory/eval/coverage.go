@@ -54,42 +54,76 @@ func (matcher *Matcher) Sources(ctx context.Context, item corememory.ContextItem
 	return sources
 }
 
-// Cover reports where items first stand for the dataset turn: prefer an item
-// carrying the turn's own committed text over one whose provenance merely
-// resolves to it, so a pack that holds both is reported as a raw hit.
+// Cover reports where items best stand for the dataset turn, and whether the
+// turn's own wording reached the pack.
 //
-// Two comparisons decide it. The first is the committed text, which is all the
-// harness can do for a store that carries no dataset turn ids and all it can do
-// for a dataset that names no turns. The second is turn identity: a source
-// message whose ingest-side turn id is turnID. It is the one that survives a
-// rendering difference between the loader and the store -- the loader puts an
-// image caption in the turn's text, while a store written with "-images native"
-// attaches the image as a part instead -- and it is what lets a turn be counted
-// when a store written before ingest tagged turns cannot match by text at all.
+// An item stands for the turn in one of two ways that do not score alike: it
+// carries the graded wording, or it merely stands on the turn. Only the first
+// puts that wording in the prompt, so it wins at any rank. Comparing per item
+// instead let a high-ranked fact shadow the turn's own message lower in the
+// pack: on the 60-question LoCoMo run this was measured against, 23 of the 60
+// evidence turns labelled as paraphrases had their message packed too, and the
+// label said "the model read a paraphrase" about a prompt that held the text.
+//
+// Three comparisons decide which of the two it is, and the last two call an
+// item a paraphrase. The item's own content may carry the wording (the turn's
+// message, or a derived item a source quote was folded into). Its canonical
+// sources may carry the wording, which is all the harness can do for a store
+// that holds no dataset turn ids and all it can do for a dataset that names no
+// turns. Its canonical sources may carry the turn id ingest tagged the message
+// with, which is the comparison that survives a rendering difference between
+// the loader and the store -- the loader puts an image caption in the turn's
+// text, while a store written with "-images native" attaches the image as a
+// part instead -- and the one that counts a turn at all when a store written
+// before ingest tagged turns has no text left to match.
 func (matcher *Matcher) Cover(ctx context.Context, items []corememory.ContextItem, turnID, turnText string) TurnCoverage {
-	missing := TurnCoverage{Rank: -1}
+	if turnID == "" && turnText == "" {
+		return TurnCoverage{Rank: -1}
+	}
+	// What a paraphrase can reach is the lowest-ranked item standing on the
+	// turn, and it is the answer only when no item carries its wording.
+	derived := TurnCoverage{Rank: -1}
 	for rank, item := range items {
-		if turnText != "" && strings.Contains(item.Content.Text(), turnText) {
+		sources := matcher.Sources(ctx, item)
+		if carriesTurnWording(item, sources, turnID, turnText) {
 			return TurnCoverage{Rank: rank, ViaRaw: true}
 		}
-		for _, source := range matcher.Sources(ctx, item) {
-			if turnText != "" && strings.Contains(source.Text, turnText) {
-				return TurnCoverage{Rank: rank}
-			}
+		if !derived.Covered() && standsOnTurn(sources, turnID, turnText) {
+			derived = TurnCoverage{Rank: rank}
 		}
 	}
-	if matcher == nil || matcher.resolver == nil || turnID == "" {
-		return missing
+	return derived
+}
+
+// carriesTurnWording reports that this item puts the turn's own words in the
+// prompt, whatever its rank.
+func carriesTurnWording(item corememory.ContextItem, sources []ResolvedSource, turnID, turnText string) bool {
+	if turnText != "" && strings.Contains(item.Content.Text(), turnText) {
+		return true
 	}
-	for rank, item := range items {
-		for _, source := range matcher.Sources(ctx, item) {
-			if source.TurnID != turnID {
-				continue
-			}
-			// An item that *is* the turn's message carries the wording the
-			// dataset graded, whatever the loader's rendering of it.
-			return TurnCoverage{Rank: rank, ViaRaw: item.Kind == corememory.ContextRawMessage}
+	if item.Kind != corememory.ContextRawMessage {
+		return false
+	}
+	// An item that *is* the turn's message carries the wording the dataset
+	// graded, whatever the loader's rendering of that turn says: a caption one
+	// side holds and the other does not leaves the two texts unequal while the
+	// record stays the turn's own.
+	return standsOnTurn(sources, turnID, turnText)
+}
+
+// standsOnTurn reports whether the canonical messages an item resolves to are
+// the turn: by the ingest-side turn id first, and by committed text for a store
+// that carries no ids. An item that only reaches this is a paraphrase -- its
+// own content is what the model read, and for a derived item its sources are
+// the whole commit it was extracted from, not the turn it paraphrases.
+func standsOnTurn(sources []ResolvedSource, turnID, turnText string) bool {
+	for _, source := range sources {
+		if turnID != "" && source.TurnID == turnID {
+			return true
+		}
+		if turnText != "" && strings.Contains(source.Text, turnText) {
+			return true
 		}
 	}
-	return missing
+	return false
 }

@@ -260,10 +260,11 @@ report stored under one disagrees with a run under the other.
 The default run grades **evidence recall**, the metric the LoCoMo protocol
 reports: the loader keeps each question's `evidence` turn ids, and a question
 counts as a hit when every turn that carries the answer was surfaced. A turn is
-surfaced either when a recalled item contains its committed text (raw message
-items) or when the item's provenance resolves to it (a fact points at the
-messages it was derived from — the runner wires that through the message
-store). Results therefore carry both numbers: turn-level `evidence recall` and
+surfaced either when a recalled item contains its committed text (the turn's own
+message, or a derived item a `source_quotes` fold put that text into) or when
+the item's provenance resolves to it (a fact points at the messages it was
+derived from — the runner wires that through the message store). Results
+therefore carry both numbers: turn-level `evidence recall` and
 `questions_with_full_evidence`.
 
 Ingest also tags every committed message with the dataset turn it was loaded
@@ -289,6 +290,16 @@ one), not the individual turn it paraphrases. A provenance hit therefore says an
 item *from the evidence turn's commit* was packed, which is why questions whose
 evidence sits in one commit recall so well — any fact out of that session
 counts — while questions that need turns from several commits do not.
+
+It also says the pack carried no item with the turn's own wording, wherever the
+pack put one: the classification is about the pack, not about pack order, so a
+fact derived from the session cannot label a turn a paraphrase while the turn's
+own message sits further down the same prompt. Measured on a 60-question run:
+86 of 96 evidence turns were packed, and scoring them per item reported 26 as
+raw and 60 as provenance — 23 of those 60 with the turn's own message packed
+too. Ranking the wording first reports 49 raw and 37 provenance over the same
+packs, with `evidence recall` unchanged. Reports stored before this differ in
+exactly these two columns, and nowhere else.
 
 Questions without evidence ids fall back to expectation containment (the gold
 answer appearing verbatim in the recalled context), which is what LongMemEval
