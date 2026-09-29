@@ -407,7 +407,10 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
   ingested before ingest tagged messages with their dataset turns is matched by
   that text, so there the flag has to match the mode the library was ingested
   with, and a caption the stored turns do not carry would hide every image turn.
-  The header says which of the two the run is in.
+  The header says which of the two the run is in. Under `-skip-derive` the mode
+  shapes the text alone: the loader attaches each image as a reference to its
+  url instead of downloading it, because a diagnosis never reads a picture, and
+  a fetch that fails today would otherwise change the index one run at a time.
 - `-questions` / `-categories` select the sample, `-top` and `-snippet` the print
   shape. The summary at the end aggregates the sample and is the part worth
   reading first: it splits the evidence turns into packed / pool-only / absent

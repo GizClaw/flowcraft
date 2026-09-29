@@ -166,6 +166,97 @@ func TestImageFetcherValidatesPayloadsAndBoundsItsCache(t *testing.T) {
 	}
 }
 
+// TestLoadLoCoMoReferencesImagesWithoutFetching pins the property a diagnosis
+// over a store already on disk needs: the text shape the mode asks for, a part
+// that names the url, and no payload downloaded. Fetching there bought nothing
+// -- the text of a turn does not depend on whether its picture arrived -- while
+// costing minutes on dead links and making the index a function of the network.
+func TestLoadLoCoMoReferencesImagesWithoutFetching(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString(onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "image/png")
+		_, _ = writer.Write(png)
+	}))
+	defer server.Close()
+	t.Setenv("TMPDIR", t.TempDir())
+
+	imageURL := server.URL + "/cup.png"
+	dataset := bytes.ReplaceAll([]byte(loCoMoFixture), []byte("https://example.test/cup.png"), []byte(imageURL))
+	for _, test := range []struct {
+		mode     string
+		caption  bool
+		attached bool
+	}{
+		{mode: "native", attached: true},
+		{mode: "both", caption: true, attached: true},
+		{mode: "annotation", caption: true},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			scenarios, stats, err := LoadLoCoMo(dataset, LoaderOptions{
+				Scope: Scope{RuntimeID: "eval"}, Images: test.mode, ReferenceImages: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := int(requests.Load()); got != 0 {
+				t.Fatalf("the loader fetched %d payloads with ReferenceImages set", got)
+			}
+			// Only a mode that attaches a part can reference anything: the
+			// annotation shape has nowhere to put a url.
+			wantReferenced := 0
+			if test.attached {
+				wantReferenced = 1
+			}
+			if stats.ImagesReferenced != wantReferenced || stats.ImagesAttached != 0 || stats.ImagesFailed != 0 {
+				t.Fatalf("stats = %#v, want %d referenced images, none attached, no fetch",
+					stats, wantReferenced)
+			}
+			message := scenarios[0].Turns[0].Messages[1]
+			text := message.Content.Text()
+			if strings.Contains(text, "[shared image:") != test.caption {
+				t.Fatalf("caption in %q: mode %q disagrees with the text shape it asks for", text, test.mode)
+			}
+			parts := message.Content.Parts
+			if !test.attached {
+				if len(parts) != 1 {
+					t.Fatalf("parts = %d, want the text alone", len(parts))
+				}
+				return
+			}
+			if len(parts) != 2 {
+				t.Fatalf("parts = %d, want the text and the reference", len(parts))
+			}
+			image, ok := parts[1].(coremessage.ImagePart)
+			if !ok {
+				t.Fatalf("part = %T, want an image part", parts[1])
+			}
+			if got := image.Source.URL(); got != imageURL {
+				t.Fatalf("part names %q, want %q", got, imageURL)
+			}
+			// Nothing has read the bytes, so the part must not claim a type.
+			if got := image.Source.MediaType(); got != "" {
+				t.Fatalf("media type = %q, want none until something fetches it", got)
+			}
+		})
+	}
+
+	// The control: the same fixture without the knob does fetch, so the count
+	// above is the loader's choice and not a server the tests cannot reach.
+	if _, stats, err := LoadLoCoMo(dataset, LoaderOptions{
+		Scope: Scope{RuntimeID: "eval"}, Images: "native",
+	}); err != nil {
+		t.Fatal(err)
+	} else if requests.Load() == 0 || stats.ImagesAttached != 1 {
+		t.Fatalf("a native conversion downloaded %d payloads and attached %d images, want one of each",
+			requests.Load(), stats.ImagesAttached)
+	}
+}
+
 // TestImageFetcherShrinksOversizedPayloads pins the second half of the fix: an
 // image larger than the inline budget is re-encoded rather than dropped, because
 // a turn's caption is not a stand-in for its picture -- the reference harness

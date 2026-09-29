@@ -73,10 +73,15 @@ func main() {
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
 	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
-		Scope:   evalScope,
-		Budget:  corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
-		Images:  *imageMode,
-		Samples: *samples,
+		Scope:  evalScope,
+		Budget: corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
+		Images: *imageMode,
+		// A diagnosis that reads the derivation the workspace already holds
+		// never looks at a picture: it needs the text shape the mode gives an
+		// image turn and nothing else. Downloading the dataset to get it costs
+		// minutes on dead links and makes the index a function of the network.
+		ReferenceImages: *skipDerive,
+		Samples:         *samples,
 	})
 	must(err)
 	if stats.SkippedAdversarial > 0 {
@@ -115,7 +120,7 @@ func main() {
 	defer deployment.Close()
 	ctx := context.Background()
 	if *skipDerive {
-		fmt.Println("mode: reading the derivation the workspace already holds")
+		fmt.Println("mode: reading the derivation the workspace already holds (image parts name their url; nothing is fetched)")
 	} else {
 		fmt.Printf("mode: ingesting %d scenario(s) and running one derivation pass\n", len(scenarios))
 		for _, scenario := range scenarios {

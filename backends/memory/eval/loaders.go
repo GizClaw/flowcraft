@@ -39,6 +39,15 @@ type LoaderOptions struct {
 	//   "native"           — attach the image itself as a message part
 	//   "both"             — attach the image and keep the caption text
 	Images string
+	// ReferenceImages attaches each image url as the part instead of downloading
+	// what it points at. The text keeps the shape Images asks for, so a caller
+	// that reads the text -- the diagnostic's index, a conversion counted before
+	// a run -- gets the turn as a store would hold it, without the network in
+	// the result. The difference is the bytes: a part carrying a url is not a
+	// picture anything has fetched, so a store ingested this way holds a
+	// reference. It is the shape of a native store whose fetches all succeeded,
+	// which is the one a diagnostic wants to compare against.
+	ReferenceImages bool
 }
 
 // LoaderStats summarizes one conversion.
@@ -56,6 +65,10 @@ type LoaderStats struct {
 	// inline budget, so a run says when the pictures it embedded are not the
 	// bytes the dataset serves.
 	ImagesShrunk int `json:"images_shrunk,omitempty"`
+	// ImagesReferenced counts turns whose image was attached as a url instead
+	// of downloaded (LoaderOptions.ReferenceImages). It is reported apart from
+	// ImagesAttached because no picture was embedded: the message names one.
+	ImagesReferenced int `json:"images_referenced,omitempty"`
 	// ImageFailures breaks the failed fetches down by cause: a dead link and a
 	// timeout both end as "no image", but only one of them is worth retrying.
 	ImageFailures ImageFailureCounts `json:"image_failures,omitzero"`
@@ -125,7 +138,10 @@ func LoadLoCoMo(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, er
 			stats.Skipped++
 			continue
 		}
-		turns, ok := loCoMoTurns(sample, options.Images, fetcher, &stats)
+		turns, ok := loCoMoTurns(sample, imagePolicy{
+			mode:       options.Images,
+			references: options.ReferenceImages,
+		}, fetcher, &stats)
 		if !ok {
 			stats.Skipped++
 			continue
@@ -224,7 +240,25 @@ type loCoMoRawSample struct {
 	QA           []loCoMoRawQA              `json:"qa"`
 }
 
-func loCoMoTurns(sample loCoMoRawSample, imageMode string, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
+// imagePolicy is how one conversion treats the images a conversation names:
+// whether a turn's text folds its caption in, whether the picture rides along as
+// a message part, and whether that part is the payload or a reference to it.
+type imagePolicy struct {
+	mode       string
+	references bool
+}
+
+// foldsCaption reports whether the caption joins the turn's text. "native" is
+// the mode that keeps it out, which is what makes a native store and the
+// loader's own rendering disagree about an image turn's text.
+func (policy imagePolicy) foldsCaption() bool { return policy.mode != "native" }
+
+// attaches reports whether the picture rides along as a message part.
+func (policy imagePolicy) attaches() bool {
+	return policy.mode == "native" || policy.mode == "both"
+}
+
+func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
 	var speakerA, speakerB string
 	_ = json.Unmarshal(sample.Conversation["speaker_a"], &speakerA)
 	_ = json.Unmarshal(sample.Conversation["speaker_b"], &speakerB)
@@ -253,7 +287,11 @@ func loCoMoTurns(sample loCoMoRawSample, imageMode string, fetcher *imageFetcher
 		if err := json.Unmarshal(sample.Conversation[current.key], &rawTurns); err != nil {
 			continue
 		}
-		if imageMode == "native" || imageMode == "both" {
+		// Only a conversion that downloads needs the pool: a reference
+		// conversion has nothing to wait for, and fetching a picture it will
+		// never inline is how a run with no use for the bytes spends minutes
+		// on dead links.
+		if policy.attaches() && !policy.references {
 			urls := make([]string, 0, len(rawTurns))
 			for _, raw := range rawTurns {
 				for _, rawURL := range raw.ImgURL {
@@ -275,7 +313,7 @@ func loCoMoTurns(sample loCoMoRawSample, imageMode string, fetcher *imageFetcher
 				role = coremessage.RoleUser
 			}
 			body := strings.TrimSpace(raw.Text)
-			if annotation := loCoMoImageAnnotation(raw); annotation != "" && imageMode != "native" {
+			if annotation := loCoMoImageAnnotation(raw); annotation != "" && policy.foldsCaption() {
 				if body == "" {
 					body = annotation
 				} else {
@@ -291,7 +329,13 @@ func loCoMoTurns(sample loCoMoRawSample, imageMode string, fetcher *imageFetcher
 				text = "[" + current.dateTime + "] " + text
 			}
 			parts := []coremessage.Part{coremessage.TextPart{Text: text}}
-			if imageMode == "native" || imageMode == "both" {
+			if policy.attaches() && policy.references {
+				references := imageReferences(raw)
+				if len(references) > 0 {
+					parts = append(parts, references...)
+					stats.ImagesReferenced++
+				}
+			} else if policy.attaches() {
 				imageParts, imageErr := fetcher.parts(raw)
 				if imageErr == nil && len(imageParts) > 0 {
 					parts = append(parts, imageParts...)
@@ -330,6 +374,27 @@ func loCoMoTurns(sample loCoMoRawSample, imageMode string, fetcher *imageFetcher
 	}
 	stats.ImagesShrunk = fetcher.shrunkCount()
 	return turns, len(turns) > 0
+}
+
+// imageReferences turns a turn's image urls into parts that name them instead of
+// carrying them. The media type is left empty on purpose: nothing has looked at
+// the bytes, and a guess from the url's extension is a claim the loader cannot
+// make. A url the media package rejects is left out rather than failing the
+// turn -- the same trade the fetcher makes for a payload it cannot use.
+func imageReferences(turn loCoMoRawTurn) []coremessage.Part {
+	parts := make([]coremessage.Part, 0, len(turn.ImgURL))
+	for _, rawURL := range turn.ImgURL {
+		url := strings.TrimSpace(rawURL)
+		if url == "" {
+			continue
+		}
+		source, err := media.NewImageURL(url, "")
+		if err != nil {
+			continue
+		}
+		parts = append(parts, coremessage.ImagePart{Source: source})
+	}
+	return parts
 }
 
 // prefetch downloads a conversation's images with a bounded pool. Sequential
