@@ -28,15 +28,16 @@ import (
 // negative duplicate share -- items times commit size exceeds items. Retrieval
 // only.
 //
-// Item text and committed text are compared through turnTextKey, not verbatim:
 // Attribution is by turn identity, not by text: every source message carries the
 // dataset turn ingest tagged it with, so an item is attributed through the turns
-// its canonical sources name. Text was only ever a proxy, and a leaky one -- the
-// loader renders an image turn as "<speaker>: <text> [shared image: <caption>]"
-// in annotation mode while a store written with "-images native" attaches the
-// image as a part instead, so 231 of 7500 packed items (all raw recent turns)
-// matched their turn by text only after the annotation was stripped, and an item
-// with no resolvable source fell out of the commit counts below.
+// its canonical sources name. Text was only ever a proxy, and a leaky one -- an
+// image turn has two renderings and the store holds one of them: the loader
+// folds "[shared image: <caption>]" into the turn's text in annotation mode
+// while a store written with "-images native" keeps the caption out of its text
+// and attaches the picture as a part, so a loader whose flag does not match the
+// store hides every such turn from a text match (the diagnostic's by-text column
+// prints how many turns the tag alone found on the store it reads). An item with
+// no resolvable source still falls out of the commit counts below.
 //
 // MEMORY_EVAL_PER_CATEGORY=25 MEMORY_EVAL_MAX_ITEMS=30
 func TestPackingRedundancy(t *testing.T) {

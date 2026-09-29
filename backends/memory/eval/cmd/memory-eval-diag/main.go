@@ -154,7 +154,8 @@ func main() {
 	resolver := host.NewMessageProvenance(deployment.Memory.MessageStore(), corememory.Scope(evalScope))
 	if len(scenarios) > 0 && !resolver.CarriesTurnIDs(ctx, scenarios[0].ConversationID, 32) {
 		fmt.Println("identity: the store carries no dataset turn ids, so a turn is matched by committed text only --")
-		fmt.Println("          a caption the stored turns do not carry (-images) hides every image turn from this diagnosis")
+		fmt.Println("          -images has to name the mode the store was ingested with, or a caption one side")
+		fmt.Println("          holds and the other does not hides every image turn from this diagnosis")
 	}
 	diagnoser := diagnoser{
 		memory: deployment.Memory,
@@ -231,10 +232,16 @@ type evidencePlacement struct {
 	// value means the item resolved to the turn through its provenance only,
 	// which for a fact is the whole commit it was extracted from: the model saw a
 	// paraphrase of some turn in that commit, not the wording the dataset graded.
-	raw   bool
-	rank  int
-	kind  corememory.ContextItemKind
-	score float64
+	raw bool
+	// byText reports that committed text alone would have found the turn, with
+	// the ingest-side turn id ignored. False on a packed turn means only the id
+	// named it: the loader's rendering of the turn and the text the store holds
+	// disagree about it (an image caption, for example), so a harness that had
+	// nothing but text would have reported the turn missing.
+	byText bool
+	rank   int
+	kind   corememory.ContextItemKind
+	score  float64
 }
 
 // topHit is one recalled long-term item as printed, with the dataset turns it
@@ -302,6 +309,9 @@ func (report questionReport) print(number, total int) {
 				} else {
 					line += "  provenance"
 				}
+				if !evidence.byText {
+					line += "  id-only"
+				}
 			}
 			fmt.Printf("        %s\n", line)
 		}
@@ -347,6 +357,7 @@ type summary struct {
 	placed     map[placement]int
 	raw        int
 	provenance int
+	byText     int
 	poolRanks  []int
 	probePacks []int
 	full       int
@@ -394,6 +405,9 @@ func (totals *summary) add(report questionReport) {
 			} else {
 				totals.provenance++
 			}
+			if evidence.byText {
+				totals.byText++
+			}
 		case poolOnly:
 			totals.poolRanks = append(totals.poolRanks, evidence.rank)
 		}
@@ -416,12 +430,18 @@ func (totals summary) print(probed bool) {
 		fmt.Println("  evidence  no question in this sample carries dataset evidence")
 		return
 	}
-	fmt.Printf("  evidence  turns=%d  packed=%d  pool-only=%d  absent=%d  missing=%d\n",
+	fmt.Printf("  evidence  turns=%d  packed=%d  by-text=%d  pool-only=%d  absent=%d  missing=%d\n",
 		totals.placed[packed]+totals.placed[poolOnly]+totals.placed[absent]+totals.placed[missing],
-		totals.placed[packed], totals.placed[poolOnly], totals.placed[absent], totals.placed[missing])
+		totals.placed[packed], totals.byText,
+		totals.placed[poolOnly], totals.placed[absent], totals.placed[missing])
 	fmt.Printf("            packed: raw=%d provenance=%d -- a provenance hit is a derived item whose sources cover\n",
 		totals.raw, totals.provenance)
 	fmt.Println("            the evidence turn's whole commit, so the model saw a paraphrase, not the graded wording")
+	if missed := totals.placed[packed] - totals.byText; missed > 0 {
+		fmt.Printf("            by-text: %d of the packed turns were named by the ingest-side turn id alone, so a\n", missed)
+		fmt.Println("            loader whose rendering of a turn disagrees with the text the store holds (-images)")
+		fmt.Println("            would hide them -- matching by text is only as good as that agreement")
+	}
 	if len(totals.poolRanks) > 0 {
 		sorted := append([]int(nil), totals.poolRanks...)
 		sort.Ints(sorted)
@@ -496,6 +516,7 @@ func (diagnoser diagnoser) question(
 			report.evidence = append(report.evidence, evidencePlacement{
 				turnID: turnID, placement: packed, raw: coverage.ViaRaw, rank: coverage.Rank + 1,
 				kind: result.Items[coverage.Rank].Kind, score: result.Items[coverage.Rank].Score,
+				byText: diagnoser.matcher.Cover(ctx, result.Items, "", turnText).Covered(),
 			})
 			continue
 		}

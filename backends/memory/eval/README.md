@@ -270,13 +270,42 @@ therefore carry both numbers: turn-level `evidence recall` and
 Ingest also tags every committed message with the dataset turn it was loaded
 from (`DatasetTurnMetadataKey`), and that tag decides the match first: an item
 whose sources name the turn counts, whatever the text says. Text alone is not
-enough for a turn that carries an image, because the loader and the store
-disagree about it — the loader renders `[shared image: caption]` into the turn
-text, while a store ingested with `-images native` attaches the image as a part
-and keeps the caption out of the text it holds. Measured on the workspace this
-was built against: 231 of 7500 packed items (all raw recent turns) matched their
-turn only after the caption was stripped, and every one of them was an evidence
-turn a text-only match had to miss.
+enough for a turn that carries an image, because such a turn has two renderings
+and the store holds one of them: `-images native` keeps the caption out of the
+stored text (the picture rides along as a part), while `-images both` and
+`-images annotation` fold `[shared image: caption]` into it — and `annotation`
+is the default a loader that names no mode gets. Matching by text is therefore
+only as good as the agreement between the loader's flag and the mode the store
+was written with, and the store does not record that mode.
+
+The diagnostic prints what that costs, as `by-text` beside `packed`. Run against
+the store `deploy.yaml` names, and again with `-images annotation`:
+
+```bash
+go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env -skip-derive \
+  -images native -samples 1 -max-items 30 -max-tokens 6144 -top 0
+```
+
+Measured over the 152 questions of conv-26 at 30 items (4560 packed items, 201
+evidence turns), against the two stores this was developed on — the one
+`deploy.yaml` names, written before ingest tagged turns, and one written with
+`-images native` after:
+
+| the store                              | loader       | packed turns | found by text alone |
+| -------------------------------------- | ------------ | ------------ | ------------------- |
+| `deploy.yaml`'s, untagged              | `native`     | 185          | 185                 |
+| the same store                         | `annotation` | 128          | 128                 |
+| ingested native, tagged                | `native`     | 181          | 181                 |
+| the same store                         | `annotation` | 181          | 121                 |
+
+The first two rows are what the flag costs when nothing but text can name a
+turn: 57 of the 185 packed turns vanish, and the run reports evidence missing
+that its prompt held — that is the measurement the earlier notes recorded as
+items matched only after the caption was stripped. The last two rows are what
+the tag buys: the pack is the same 181 turns under either flag, and `by-text`
+says how much of it the tag alone found (60 turns, the ones whose caption the
+annotation-mode loader renders and a native store does not hold). Saying it the
+other way: with ids in the store, `-images` no longer decides coverage.
 
 The tag only reaches a workspace ingested after it existed. The sessions commit
 under fixed idempotency keys, so re-ingesting into an old workspace replays the
@@ -403,19 +432,23 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
   the run under investigation read — instead of ingesting and deriving first.
   The header prints the library state, and warns when the store's derivation
   belongs to another policy generation.
-- `-images` decides the text an evidence turn is *displayed* by. A workspace
-  ingested before ingest tagged messages with their dataset turns is matched by
-  that text, so there the flag has to match the mode the library was ingested
-  with, and a caption the stored turns do not carry would hide every image turn.
-  The header says which of the two the run is in. Under `-skip-derive` the mode
-  shapes the text alone: the loader attaches each image as a reference to its
-  url instead of downloading it, because a diagnosis never reads a picture, and
-  a fetch that fails today would otherwise change the index one run at a time.
+- `-images` decides the text an evidence turn is *displayed* by, which is what
+  an untagged workspace is matched by: there the flag has to match the mode the
+  library was ingested with, and a caption the stored turns do not carry hides
+  every image turn. A store written after ingest tagged messages with their
+  dataset turns is matched by the tag first, so the flag no longer decides
+  coverage — `packed` stays put while `by-text` moves, which is the column that
+  answers "how much of this did the tag carry?". The header says which of the
+  two kinds of workspace the run is in. Under `-skip-derive` the mode shapes the
+  text alone: the loader attaches each image as a reference to its url instead
+  of downloading it, because a diagnosis never reads a picture, and a fetch that
+  fails today would otherwise change the index one run at a time.
 - `-questions` / `-categories` select the sample, `-top` and `-snippet` the print
   shape. The summary at the end aggregates the sample and is the part worth
-  reading first: it splits the evidence turns into packed / pool-only / absent
-  and reports how much of the packed evidence arrived as raw text rather than as
-  a derived item's provenance.
+  reading first: it splits the evidence turns into packed / pool-only / absent,
+  reports how much of the packed evidence arrived as raw text rather than as a
+  derived item's provenance, and reports how much of the packed set committed
+  text alone would have found (`by-text`, see "Two grading modes").
 
 ## Module dependency
 
