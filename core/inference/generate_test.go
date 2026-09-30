@@ -260,6 +260,31 @@ func TestValidateForUndefinedTool(t *testing.T) {
 	}
 }
 
+func TestResponseValidationDetailNamesFailedCheck(t *testing.T) {
+	req := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
+				Intent:  Intent{Text: &TextIntent{}},
+			},
+		},
+	}
+	resp := GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "thinking", Signature: "sig"},
+			}},
+		},
+		FinishReason: FinishCompleted,
+	}
+	err := newResponseValidationError(OperationGenerate, resp.ValidateFor(req))
+	if err.Detail != "generate.validation.no_text" {
+		t.Fatalf("Detail = %q, want generate.validation.no_text", err.Detail)
+	}
+}
+
 func TestValidateForKnownToolCall(t *testing.T) {
 	req := GenerateRequest{
 		Input: GenerateInput{

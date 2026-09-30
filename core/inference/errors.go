@@ -197,5 +197,10 @@ func newResponseValidationError(operation Operation, err error) *Error {
 		out.UndefinedToolCall = &call
 		return out
 	}
-	return NewError(InvalidProviderResponse, operation, "", err)
+	out := NewError(InvalidProviderResponse, operation, "", err)
+	var check *generateResponseCheckError
+	if errors.As(err, &check) {
+		out.Detail = "generate.validation." + check.check
+	}
+	return out
 }

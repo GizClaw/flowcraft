@@ -413,6 +413,10 @@ func terminalValidationDetail(out *Error, response GenerateResponse) string {
 	if (response.FinishReason == FinishToolCalls) != hasToolCalls {
 		return "stream.finish.mismatch"
 	}
+	var check *generateResponseCheckError
+	if errors.As(out, &check) {
+		return "stream.finish.validation." + check.check
+	}
 	return "stream.finish.validation"
 }
 
