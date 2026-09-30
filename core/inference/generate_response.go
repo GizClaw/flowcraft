@@ -37,37 +37,52 @@ func (r GenerateResponse) Clone() GenerateResponse {
 
 func (r GenerateResponse) Validate() error {
 	if r.Message.Role != message.RoleAssistant {
-		return fmt.Errorf("generate response message must have assistant role")
+		return responseCheck(
+			"message_role",
+			fmt.Errorf("generate response message must have assistant role"),
+		)
 	}
 	if err := r.FinishReason.Validate(); err != nil {
-		return err
+		return responseCheck("finish_reason", err)
 	}
 	if len(r.Message.Content.Parts) == 0 {
 		if r.FinishReason == FinishCompleted || r.FinishReason == FinishToolCalls {
-			return fmt.Errorf("generate response content is required for finish reason %q", r.FinishReason)
+			return responseCheck(
+				"empty_content",
+				fmt.Errorf(
+					"generate response content is required for finish reason %q",
+					r.FinishReason,
+				),
+			)
 		}
 	} else if err := r.Message.Validate(); err != nil {
-		return err
+		return responseCheck("message", err)
 	}
 	if err := r.Usage.Validate(); err != nil {
-		return err
+		return responseCheck("usage", err)
 	}
 	if err := r.ProviderOutputs.Validate(); err != nil {
-		return err
+		return responseCheck("provider_output", err)
 	}
 	hasToolCalls := r.Message.HasToolCalls()
 	if (r.FinishReason == FinishToolCalls) != hasToolCalls {
-		return fmt.Errorf("tool-call finish reason does not match response tool calls")
+		return responseCheck(
+			"mismatch",
+			fmt.Errorf("tool-call finish reason does not match response tool calls"),
+		)
 	}
 	for _, part := range r.Message.Content.Parts {
 		normalized, err := message.NormalizePart(part)
 		if err != nil {
-			return err
+			return responseCheck("part", err)
 		}
 		switch normalized.(type) {
 		case message.TextPart, message.ImagePart, message.AudioPart, message.VideoPart, message.ToolCallPart, message.ReasoningPart:
 		default:
-			return fmt.Errorf("generate response contains unsupported part %q", normalized.Kind())
+			return responseCheck(
+				"unsupported_part",
+				fmt.Errorf("generate response contains unsupported part %q", normalized.Kind()),
+			)
 		}
 	}
 	return nil
@@ -85,6 +100,24 @@ type undefinedToolError struct {
 
 func (e *undefinedToolError) Error() string {
 	return fmt.Sprintf("generate tool call %d names undefined tool %q", e.Index, e.Call.Name)
+}
+
+// generateResponseCheckError carries the static validation stage alongside
+// the original cause. The stage is safe to expose through Error.Detail; the
+// cause remains available to callers that need errors.Is/errors.As.
+type generateResponseCheckError struct {
+	check string
+	err   error
+}
+
+func (e *generateResponseCheckError) Error() string { return e.err.Error() }
+func (e *generateResponseCheckError) Unwrap() error { return e.err }
+
+func responseCheck(check string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &generateResponseCheckError{check: check, err: err}
 }
 
 func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
@@ -107,42 +140,66 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	for _, part := range r.Message.Content.Parts {
 		normalized, err := message.NormalizePart(part)
 		if err != nil {
-			return err
+			return responseCheck("part", err)
 		}
 		switch value := normalized.(type) {
 		case message.TextPart:
 			if _, ok := requested[message.PartText]; !ok {
-				return fmt.Errorf("generate response contains unrequested text")
+				return responseCheck(
+					"unrequested_part",
+					fmt.Errorf("generate response contains unrequested text"),
+				)
 			}
 			textParts++
 			text.WriteString(value.Text)
 		case message.ImagePart:
 			if _, ok := requested[message.PartImage]; !ok {
-				return fmt.Errorf("generate response contains unrequested image")
+				return responseCheck(
+					"unrequested_part",
+					fmt.Errorf("generate response contains unrequested image"),
+				)
 			}
 			images = append(images, value)
 			if err := validateGenerateImage(value, *intent.Image); err != nil {
-				return fmt.Errorf("generate image %d: %w", len(images)-1, err)
+				return responseCheck(
+					"media",
+					fmt.Errorf("generate image %d: %w", len(images)-1, err),
+				)
 			}
 		case message.AudioPart:
 			if _, ok := requested[message.PartAudio]; !ok {
-				return fmt.Errorf("generate response contains unrequested audio")
+				return responseCheck(
+					"unrequested_part",
+					fmt.Errorf("generate response contains unrequested audio"),
+				)
 			}
 			audio = append(audio, value)
 			if err := validateGenerateAudio(value, *intent.Audio); err != nil {
-				return fmt.Errorf("generate audio %d: %w", len(audio)-1, err)
+				return responseCheck(
+					"media",
+					fmt.Errorf("generate audio %d: %w", len(audio)-1, err),
+				)
 			}
 		case message.VideoPart:
 			if _, ok := requested[message.PartVideo]; !ok {
-				return fmt.Errorf("generate response contains unrequested video")
+				return responseCheck(
+					"unrequested_part",
+					fmt.Errorf("generate response contains unrequested video"),
+				)
 			}
 			videos = append(videos, value)
 			if err := validateGenerateVideo(value); err != nil {
-				return fmt.Errorf("generate video %d: %w", len(videos)-1, err)
+				return responseCheck(
+					"media",
+					fmt.Errorf("generate video %d: %w", len(videos)-1, err),
+				)
 			}
 		case message.ToolCallPart:
 			if !toolsRequested {
-				return fmt.Errorf("generate response contains an unrequested tool call")
+				return responseCheck(
+					"unrequested_tool",
+					fmt.Errorf("generate response contains an unrequested tool call"),
+				)
 			}
 			toolCalls = append(toolCalls, value)
 		case message.ReasoningPart:
@@ -166,24 +223,36 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			switch choice.Kind {
 			case ToolChoiceNone:
 				if len(toolCalls) != 0 {
-					return fmt.Errorf("tool choice none forbids tool calls")
+					return responseCheck(
+						"tool_choice",
+						fmt.Errorf("tool choice none forbids tool calls"),
+					)
 				}
 			case ToolChoiceRequired:
 				if len(toolCalls) == 0 && r.FinishReason == FinishCompleted {
-					return fmt.Errorf("required tool choice produced no tool call")
+					return responseCheck(
+						"tool_choice",
+						fmt.Errorf("required tool choice produced no tool call"),
+					)
 				}
 			case ToolChoiceNamed:
 				for _, call := range toolCalls {
 					if call.Call.Name != choice.Name {
-						return fmt.Errorf(
-							"named tool choice %q produced tool %q",
-							choice.Name,
-							call.Call.Name,
+						return responseCheck(
+							"tool_choice",
+							fmt.Errorf(
+								"named tool choice %q produced tool %q",
+								choice.Name,
+								call.Call.Name,
+							),
 						)
 					}
 				}
 				if len(toolCalls) == 0 && r.FinishReason == FinishCompleted {
-					return fmt.Errorf("named tool choice produced no tool call")
+					return responseCheck(
+						"tool_choice",
+						fmt.Errorf("named tool choice produced no tool call"),
+					)
 				}
 			}
 		}
@@ -193,25 +262,28 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	}
 	if intent.Text != nil {
 		if textParts == 0 {
-			return fmt.Errorf("completed generate response contains no requested text")
+			return responseCheck(
+				"no_text",
+				fmt.Errorf("completed generate response contains no requested text"),
+			)
 		}
 		if err := validateGenerateText(text.String(), intent.Text.Response); err != nil {
-			return err
+			return responseCheck("text", err)
 		}
 	}
 	if intent.Image != nil {
 		if err := validateGenerateCount("image", len(images), intent.Image.Count); err != nil {
-			return err
+			return responseCheck("count", err)
 		}
 	}
 	if intent.Audio != nil {
 		if err := validateGenerateCount("audio", len(audio), intent.Audio.Count); err != nil {
-			return err
+			return responseCheck("count", err)
 		}
 	}
 	if intent.Video != nil {
 		if err := validateGenerateCount("video", len(videos), nil); err != nil {
-			return err
+			return responseCheck("count", err)
 		}
 	}
 	return nil

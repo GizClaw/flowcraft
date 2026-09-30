@@ -208,6 +208,23 @@ func TestGenerateStreamUndefinedToolDetail(t *testing.T) {
 	}
 }
 
+func TestGenerateStreamValidationDetailNamesFailedCheck(t *testing.T) {
+	stream := detailTestStream([]GenerateStreamEvent{
+		{PartIndex: 0, Delta: ReasoningDelta{Text: "thinking", Signature: "sig"}},
+		{FinishReason: FinishCompleted},
+	}, textStreamRequest(t))
+	err := nextStreamError(t, stream)
+	if err.Kind != InvalidProviderResponse {
+		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+	}
+	if err.Detail != "stream.finish.validation.no_text" {
+		t.Fatalf("Detail = %q, want stream.finish.validation.no_text", err.Detail)
+	}
+	if got := err.Error(); got != "invalid_provider_response during generate: stream.finish.validation.no_text" {
+		t.Fatalf("Error() = %q", got)
+	}
+}
+
 func TestErrorDetailFormatting(t *testing.T) {
 	err := NewError(InvalidProviderResponse, OperationGenerate, "", errors.New("boom"))
 	if err.Detail != "" {
