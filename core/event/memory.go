@@ -14,7 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/rs/xid"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -466,9 +466,9 @@ func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []d
 		// without paying the cost on the hot path.
 		if len(drops) > 0 {
 			telemetry.Debug(ctx, "event memory: envelope dropped, no observer attached",
-				otellog.String("event.subject", string(env.Subject)),
-				otellog.Int("event.drops", len(drops)),
-				otellog.String("event.drop_reasons", summarizeDropReasons(drops)))
+				attribute.String("event.subject", string(env.Subject)),
+				attribute.Int("event.drops", len(drops)),
+				attribute.String("event.drop_reasons", summarizeDropReasons(drops)))
 		}
 		return
 	}
@@ -559,8 +559,8 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 		case <-ctx.Done():
 			if err := sub.Close(); err != nil {
 				telemetry.WarnErr(ctx, "event memory: close subscriber on context done", err,
-					otellog.String("op", "subscribe"),
-					otellog.String("subscriber.id", string(sub.id)))
+					attribute.String("op", "subscribe"),
+					attribute.String("subscriber.id", string(sub.id)))
 			}
 		case <-sub.done:
 		}

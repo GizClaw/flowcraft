@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	logglobal "go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -311,15 +312,11 @@ func FormatPlainTextRecordLine(record *sdklog.Record) []byte {
 	b.WriteByte(' ')
 
 	body := record.Body()
-	msg := body.String()
-	if body.Kind() == otellog.KindString {
-		msg = body.AsString()
-	}
-	b.WriteString(msg)
+	b.WriteString(body.String())
 
-	record.WalkAttributes(func(kv otellog.KeyValue) bool {
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
 		b.WriteByte(' ')
-		b.WriteString(kv.Key)
+		b.WriteString(string(kv.Key))
 		b.WriteByte('=')
 		b.WriteString(formatPlainTextValue(stringifyLogValue(kv.Value)))
 		return true
@@ -328,25 +325,23 @@ func FormatPlainTextRecordLine(record *sdklog.Record) []byte {
 	return []byte(b.String())
 }
 
-// stringifyLogValue converts an otellog.Value to a string suitable for
-// plain-text output. KindString is treated specially because Value.String
-// only returns the raw string for that one Kind; for other Kinds it
-// returns the type name, which is useless in logs.
-func stringifyLogValue(v otellog.Value) string {
-	switch v.Kind() {
-	case otellog.KindString:
+// stringifyLogValue converts an attribute.Value to a string suitable for
+// plain-text output. The scalar types are formatted explicitly so the
+// rendered line carries the value itself rather than deferring every kind
+// to attribute.Value.String.
+func stringifyLogValue(v attribute.Value) string {
+	switch v.Type() {
+	case attribute.STRING:
 		return v.AsString()
-	case otellog.KindBool:
+	case attribute.BOOL:
 		if v.AsBool() {
 			return "true"
 		}
 		return "false"
-	case otellog.KindInt64:
+	case attribute.INT64:
 		return fmt.Sprintf("%d", v.AsInt64())
-	case otellog.KindFloat64:
+	case attribute.FLOAT64:
 		return fmt.Sprintf("%g", v.AsFloat64())
-	case otellog.KindBytes:
-		return fmt.Sprintf("%x", v.AsBytes())
 	default:
 		return v.String()
 	}

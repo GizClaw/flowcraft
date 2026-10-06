@@ -11,7 +11,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -60,9 +59,9 @@ func Telemetry() tool.Middleware {
 					attribute.String("status", "error")))
 				toolErrorCount.Add(ctx, 1, nameAttr)
 				telemetry.Warn(ctx, "tool execution failed",
-					otellog.String(telemetry.AttrToolName, call.Name),
-					otellog.String(telemetry.AttrToolCallID, call.ID),
-					otellog.String(telemetry.AttrErrorMessage, detail))
+					attribute.String(telemetry.AttrToolName, call.Name),
+					attribute.String(telemetry.AttrToolCallID, call.ID),
+					attribute.String(telemetry.AttrErrorMessage, detail))
 				return res
 			}
 

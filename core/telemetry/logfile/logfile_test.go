@@ -8,19 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/log/logtest"
 )
 
-func makeRecord(sev otellog.Severity, body string, attrs ...otellog.KeyValue) sdklog.Record {
+func makeRecord(sev otellog.Severity, body string, attrs ...attribute.KeyValue) sdklog.Record {
 	return logtest.RecordFactory{
-		Timestamp:                 time.Now(),
-		Severity:                  sev,
-		Body:                      otellog.StringValue(body),
-		Attributes:                attrs,
-		AttributeValueLengthLimit: -1,
-		AttributeCountLimit:       -1,
+		Timestamp:  time.Now(),
+		Severity:   sev,
+		Body:       attribute.StringValue(body),
+		Attributes: attrs,
 	}.NewRecord()
 }
 
@@ -52,7 +51,7 @@ func TestExporter_Export_WritesFormattedLines(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = exp.Shutdown(context.Background()) })
 
-	rec := makeRecord(otellog.SeverityInfo, "hello world", otellog.String("k", "v"))
+	rec := makeRecord(otellog.SeverityInfo, "hello world", attribute.String("k", "v"))
 
 	if err := exp.Export(context.Background(), []sdklog.Record{rec}); err != nil {
 		t.Fatalf("Export error: %v", err)

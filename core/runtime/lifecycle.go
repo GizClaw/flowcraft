@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type registerOptions struct {
@@ -118,7 +118,7 @@ func (r *Runtime) RegisterAgent(
 	closeInstance := func() {
 		if cerr := instance.Close(); cerr != nil {
 			telemetry.WarnErr(ctx, "runtime: close agent after registration failure", cerr,
-				otellog.String(telemetry.AttrAgentID, name))
+				attribute.String(telemetry.AttrAgentID, name))
 		}
 	}
 
@@ -172,8 +172,8 @@ func (r *Runtime) RegisterAgent(
 		Description: def.Card.Description,
 	})
 	telemetry.Info(ctx, "runtime agent registered",
-		otellog.String(telemetry.AttrAgentID, name),
-		otellog.String("agent.card.name", def.Card.Name))
+		attribute.String(telemetry.AttrAgentID, name),
+		attribute.String("agent.card.name", def.Card.Name))
 	return instance, nil
 }
 
@@ -238,11 +238,11 @@ func (r *Runtime) UnregisterAgent(
 		// is still visible, and let the caller retry.
 		if rerr := r.registry.Put(name, entry); rerr != nil {
 			telemetry.WarnErr(ctx, "runtime: restore agent after remove drain failed", rerr,
-				otellog.String(telemetry.AttrAgentID, name))
+				attribute.String(telemetry.AttrAgentID, name))
 		}
 		telemetry.Error(ctx, "runtime agent removal failed",
-			otellog.String(telemetry.AttrAgentID, name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 	if r.liveCatalog != nil {
@@ -250,8 +250,8 @@ func (r *Runtime) UnregisterAgent(
 	}
 	if err := entry.instance.Close(); err != nil {
 		telemetry.Error(ctx, "runtime agent removal failed",
-			otellog.String(telemetry.AttrAgentID, name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 	r.publishLifecycleEvent(ctx, SubjectAgentRemoved(name), AgentLifecycleEvent{
@@ -260,8 +260,8 @@ func (r *Runtime) UnregisterAgent(
 		Description: entry.instance.Card.Description,
 	})
 	telemetry.Info(ctx, "runtime agent removed",
-		otellog.String(telemetry.AttrAgentID, name),
-		otellog.String("agent.card.name", entry.instance.Card.Name))
+		attribute.String(telemetry.AttrAgentID, name),
+		attribute.String("agent.card.name", entry.instance.Card.Name))
 	return nil
 }
 

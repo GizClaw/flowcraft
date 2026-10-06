@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -33,7 +34,7 @@ func Enable() { disabled.Store(false) }
 // emit is the core logging function. It creates an OTel LogRecord, injects
 // trace_id/span_id from ctx when available, and emits it through the global
 // LoggerProvider.
-func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...otellog.KeyValue) {
+func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...attribute.KeyValue) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -50,8 +51,8 @@ func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...o
 
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		attrs = append(attrs,
-			otellog.String("trace_id", sc.TraceID().String()),
-			otellog.String("span_id", sc.SpanID().String()),
+			attribute.String("trace_id", sc.TraceID().String()),
+			attribute.String("span_id", sc.SpanID().String()),
 		)
 	}
 
@@ -60,17 +61,17 @@ func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...o
 	rec.SetTimestamp(now)
 	rec.SetObservedTimestamp(now)
 	rec.SetSeverity(severity)
-	rec.SetBody(otellog.StringValue(msg))
+	rec.SetBody(attribute.StringValue(msg))
 	rec.AddAttributes(attrs...)
 
 	l.Emit(ctx, rec)
 }
 
-func Trace(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
+func Trace(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 	emit(ctx, otellog.SeverityTrace, msg, attrs...)
 }
 
-func Debug(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
+func Debug(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 	emit(ctx, otellog.SeverityDebug, msg, attrs...)
 }
 
@@ -92,15 +93,15 @@ func DebugEnabled(ctx context.Context) bool {
 	})
 }
 
-func Info(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
+func Info(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 	emit(ctx, otellog.SeverityInfo, msg, attrs...)
 }
 
-func Warn(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
+func Warn(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 	emit(ctx, otellog.SeverityWarn, msg, attrs...)
 }
 
-func Error(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
+func Error(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 	emit(ctx, otellog.SeverityError, msg, attrs...)
 }
 
@@ -119,15 +120,15 @@ func Error(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
 //
 //	if err := f.Close(); err != nil {
 //	    telemetry.WarnErr(ctx, "workspace: close after append", err,
-//	        otellog.String("path", path))
+//	        attribute.String("path", path))
 //	}
 //
 // A nil err produces no log record; calling this with a nil error is a
 // cheap no-op so defer chains can use it unconditionally.
-func WarnErr(ctx context.Context, msg string, err error, attrs ...otellog.KeyValue) {
+func WarnErr(ctx context.Context, msg string, err error, attrs ...attribute.KeyValue) {
 	if err == nil {
 		return
 	}
-	attrs = append(attrs, otellog.String(AttrErrorMessage, err.Error()))
+	attrs = append(attrs, attribute.String(AttrErrorMessage, err.Error()))
 	emit(ctx, otellog.SeverityWarn, msg, attrs...)
 }

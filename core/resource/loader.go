@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const defaultMaxBytes = 1 << 20
@@ -103,7 +103,7 @@ func (l *Loader) loadFile(ctx context.Context, name string) ([]byte, error) {
 	defer func() {
 		if cerr := root.Close(); cerr != nil {
 			telemetry.WarnErr(ctx, "resource loader: close base dir failed", cerr,
-				otellog.String("resource.source", name))
+				attribute.String("resource.source", name))
 		}
 	}()
 	data, err := root.ReadFile(clean)

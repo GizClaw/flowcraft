@@ -15,7 +15,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -137,7 +137,7 @@ func (c *windowsStdioConn) shutdown() error {
 			// dropped signal so the degradation is observable.
 			telemetry.WarnErr(context.Background(),
 				"mcp: ctrl-break to child failed, escalating to kill", err,
-				otellog.Int("mcp.pid", c.cmd.Process.Pid))
+				attribute.Int("mcp.pid", c.cmd.Process.Pid))
 		}
 		waitErr, exited = c.wait(defaultMCPShutdownGrace)
 		if !exited {

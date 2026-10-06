@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // LocalWorkspace implements Workspace backed by a local directory.
@@ -167,8 +167,8 @@ func (w *LocalWorkspace) ReadLimited(_ context.Context, path string, maxBytes in
 	defer func() {
 		if cerr := f.Close(); cerr != nil {
 			telemetry.WarnErr(context.Background(), "workspace: close after limited read", cerr,
-				otellog.String("op", "read_limited"),
-				otellog.String("path", path))
+				attribute.String("op", "read_limited"),
+				attribute.String("path", path))
 		}
 	}()
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
@@ -211,8 +211,8 @@ func (w *LocalWorkspace) Append(ctx context.Context, path string, data []byte) e
 	defer func() {
 		if cerr := f.Close(); cerr != nil {
 			telemetry.WarnErr(ctx, "workspace: close after append", cerr,
-				otellog.String("op", "append"),
-				otellog.String("path", path))
+				attribute.String("op", "append"),
+				attribute.String("path", path))
 		}
 	}()
 	if _, err := f.Write(data); err != nil {
