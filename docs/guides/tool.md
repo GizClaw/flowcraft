@@ -126,6 +126,11 @@ resources:
           http_timeout: 30s
 ```
 
+For a runnable anonymous search and fetch example using the HTTP bridge, see
+[Parallel Search MCP](../../core/tool/mcp/examples/parallel/). It loads a server
+spec through the MCP factory and executes the discovered tools through the
+ordinary registry and executor, without a model provider or Parallel API key.
+
 `required: true` marks a server the host cannot start without; hosts
 await `Source.WaitReady` so a background give-up surfaces as an error
 instead of a silent missing tool set. Middleware lives in
