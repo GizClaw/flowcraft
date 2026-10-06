@@ -40,7 +40,7 @@ func (l *requestLog) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer body.Close()
+		defer func() { _ = body.Close() }()
 		if err := json.NewDecoder(body).Decode(&row); err != nil {
 			return nil, err
 		}
