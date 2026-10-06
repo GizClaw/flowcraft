@@ -13,7 +13,7 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // DefaultPrefixSeparator joins a server name to a tool name when
@@ -190,7 +190,7 @@ func (s *Source) Attach(r sdktool.Registrar) {
 	for _, t := range current {
 		if err := r.Add(t); err != nil && !errdefs.IsConflict(err) {
 			telemetry.WarnErr(s.baseCtx, "mcp: publish tool failed", err,
-				otellog.String("tool", t.Definition().Name))
+				attribute.String("tool", t.Definition().Name))
 		}
 	}
 }
@@ -572,7 +572,7 @@ func abandonAttach(ctx context.Context, srv *server, session *mcpsdk.ClientSessi
 	srv.mu.Unlock()
 	if err := session.Close(); err != nil {
 		telemetry.WarnErr(ctx, "mcp: close abandoned server session failed", err,
-			otellog.String("mcp.server", srv.name))
+			attribute.String("mcp.server", srv.name))
 	}
 }
 
@@ -671,7 +671,7 @@ func (s *Source) publish(added, removed []sdktool.Tool) {
 	for _, t := range added {
 		if err := reg.Add(t); err != nil && !errdefs.IsConflict(err) {
 			telemetry.WarnErr(s.baseCtx, "mcp: publish tool failed", err,
-				otellog.String("tool", t.Definition().Name))
+				attribute.String("tool", t.Definition().Name))
 		}
 	}
 	for _, t := range removed {
@@ -738,7 +738,7 @@ func (s *Source) retryLoop(srv *server) {
 				return
 			}
 			telemetry.WarnErr(s.baseCtx, "mcp: server attach failed, will retry", err,
-				otellog.String("server", srv.name))
+				attribute.String("server", srv.name))
 			backoff = s.nextBackoff(backoff)
 			continue
 		}
@@ -756,7 +756,7 @@ func (s *Source) retryLoop(srv *server) {
 			return
 		}
 		telemetry.WarnErr(s.baseCtx, "mcp: server connect failed, will retry", err,
-			otellog.String("server", srv.name))
+			attribute.String("server", srv.name))
 		backoff = s.nextBackoff(backoff)
 	}
 }
@@ -765,12 +765,12 @@ func (s *Source) retryLoop(srv *server) {
 // waiters with it. Required servers get an explicit mention so a host
 // that declared one knows its startup contract was not met.
 func (s *Source) giveUp(srv *server, msg string, err error) {
-	attrs := []otellog.KeyValue{
-		otellog.String("server", srv.name),
-		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	attrs := []attribute.KeyValue{
+		attribute.String("server", srv.name),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()),
 	}
 	if srv.cfg.required {
-		attrs = append(attrs, otellog.Bool("required", true))
+		attrs = append(attrs, attribute.Bool("required", true))
 	}
 	telemetry.Error(s.baseCtx, "mcp: "+msg, attrs...)
 	srv.markReady(err)
@@ -896,15 +896,15 @@ func (s *Source) sessionLost(srv *server, session *mcpsdk.ClientSession, reason 
 		return // a newer session replaced the dead one; its watcher owns it
 	}
 
-	attrs := []otellog.KeyValue{otellog.String("server", srv.name)}
+	attrs := []attribute.KeyValue{attribute.String("server", srv.name)}
 	if reason != nil {
-		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, reason.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, reason.Error()))
 	}
 	telemetry.Warn(s.baseCtx, "mcp: server connection lost, reconnecting", attrs...)
 
 	if err := session.Close(); err != nil {
 		telemetry.WarnErr(s.baseCtx, "mcp: close dead server session failed", err,
-			otellog.String("server", srv.name))
+			attribute.String("server", srv.name))
 	}
 	s.scheduleRetry(srv)
 }

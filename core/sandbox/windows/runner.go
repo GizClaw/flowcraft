@@ -17,7 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot
@@ -174,7 +174,7 @@ func (r *Runner) Close() error {
 		if rerr := os.RemoveAll(r.lowTemp); rerr != nil {
 			telemetry.WarnErr(context.Background(),
 				"windows: remove low-IL temp dir failed", rerr,
-				otellog.String("windows.temp_dir", r.lowTemp))
+				attribute.String("windows.temp_dir", r.lowTemp))
 		}
 		r.lowTemp = ""
 	}

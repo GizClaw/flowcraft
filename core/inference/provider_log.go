@@ -6,7 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Provider transports log one event per round trip at the boundary they own:
@@ -70,27 +70,27 @@ func ProviderLogAttrs(
 	provider, operation, model string,
 	err error,
 	requestID, responseID string,
-) []otellog.KeyValue {
-	attrs := []otellog.KeyValue{
-		otellog.String(telemetry.AttrLLMProvider, provider),
+) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrLLMProvider, provider),
 	}
 	if operation != "" {
-		attrs = append(attrs, otellog.String("inference.operation", operation))
+		attrs = append(attrs, attribute.String("inference.operation", operation))
 	}
 	if model != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrLLMModel, model))
+		attrs = append(attrs, attribute.String(telemetry.AttrLLMModel, model))
 	}
 	if requestID == "" {
 		requestID, _ = errdefs.RequestID(err)
 	}
 	if requestID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrLLMRequestID, requestID))
+		attrs = append(attrs, attribute.String(telemetry.AttrLLMRequestID, requestID))
 	}
 	if responseID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrLLMResponseID, responseID))
+		attrs = append(attrs, attribute.String(telemetry.AttrLLMResponseID, responseID))
 	}
 	if err != nil {
-		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	return attrs
 }

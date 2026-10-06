@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func TestSetLoggerName(t *testing.T) {
@@ -55,7 +55,7 @@ func TestEmitWithAttributes(t *testing.T) {
 	defer func() { _ = shutdown(ctx) }()
 
 	Enable()
-	Info(ctx, "msg with attrs", otellog.String("key", "value"), otellog.Int("n", 42))
+	Info(ctx, "msg with attrs", attribute.String("key", "value"), attribute.Int("n", 42))
 }
 
 func TestEmitWithTraceContext(t *testing.T) {

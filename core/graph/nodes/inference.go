@@ -17,7 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 
 	"github.com/GizClaw/flowcraft/core/message"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // InferenceConfig is the config of the "inference" node type. Board
@@ -396,9 +396,9 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg Inf
 	board.SetVar(cfg.RecoverPendingKey, true)
 	board.SetVar(cfg.RecoverCountKey, count+1)
 	telemetry.Warn(ec.Context, "inference node: recovered undefined tool call",
-		otellog.String("node.type", "inference"),
-		otellog.String("tool.name", call.Name),
-		otellog.Int("recovery.count", count+1))
+		attribute.String("node.type", "inference"),
+		attribute.String("tool.name", call.Name),
+		attribute.Int("recovery.count", count+1))
 	return nil
 }
 
@@ -780,7 +780,7 @@ func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg In
 	defer func() {
 		if cerr := stream.Close(); cerr != nil {
 			telemetry.WarnErr(ec.Context, "inference node: close stream after drain", cerr,
-				otellog.String("node.type", "inference"))
+				attribute.String("node.type", "inference"))
 		}
 	}()
 
@@ -808,8 +808,8 @@ func drainGenerateStream(
 		}
 		if reportErr := ec.Host.ReportUsage(ec.Context, lastUsage); reportErr != nil {
 			telemetry.WarnErr(ec.Context, "inference node: report partial usage", reportErr,
-				otellog.String("node.type", "inference"),
-				otellog.String("channel", channel))
+				attribute.String("node.type", "inference"),
+				attribute.String("channel", channel))
 		}
 	}
 	defer func() {
@@ -833,8 +833,8 @@ func drainGenerateStream(
 			// still see why their partial materialization didn't land.
 			if _, cerr := s.Close(board); cerr != nil {
 				telemetry.WarnErr(ec.Context, "inference node: materialize partial stream", cerr,
-					otellog.String("node.type", "inference"),
-					otellog.String("channel", channel))
+					attribute.String("node.type", "inference"),
+					attribute.String("channel", channel))
 			}
 		}
 	}()

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -503,7 +503,7 @@ func (t *Turn) recordFinalizeTimeout(result *agent.Result, finalizeErr error) {
 		context.WithoutCancel(t.runCtx),
 		"runtime session: engine did not publish run-end; turn stream drain timed out",
 		finalizeErr,
-		otellog.String(telemetry.AttrRunID, t.runID),
+		attribute.String(telemetry.AttrRunID, t.runID),
 	)
 }
 
@@ -524,8 +524,8 @@ func (t *Turn) recordPendingSteer(result *agent.Result, pending int) {
 	telemetry.Debug(
 		context.WithoutCancel(t.runCtx),
 		"runtime session: turn ended with undelivered steered messages",
-		otellog.String(telemetry.AttrRunID, t.runID),
-		otellog.Int(steerPendingStateKey, pending),
+		attribute.String(telemetry.AttrRunID, t.runID),
+		attribute.Int(steerPendingStateKey, pending),
 	)
 }
 
@@ -737,6 +737,6 @@ func (t *Turn) shutdown() {
 	if err := t.Interrupt(agent.Interrupt{Cause: agent.CauseHostShutdown}); err != nil {
 		telemetry.WarnErr(context.WithoutCancel(t.runCtx),
 			"runtime session: interrupt turn on host shutdown failed", err,
-			otellog.String(telemetry.AttrRunID, t.runID))
+			attribute.String(telemetry.AttrRunID, t.runID))
 	}
 }

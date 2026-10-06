@@ -19,7 +19,7 @@ import (
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -444,7 +444,7 @@ func (n *netIsolation) Close() error {
 	if n.home != "" {
 		if err := os.RemoveAll(n.home); err != nil {
 			telemetry.WarnErr(context.Background(), "windows: remove net isolation home failed", err,
-				otellog.String("windows.isolation_home", n.home))
+				attribute.String("windows.isolation_home", n.home))
 		}
 		n.home = ""
 	}

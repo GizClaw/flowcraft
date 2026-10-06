@@ -9,23 +9,21 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/log/logtest"
 )
 
-// makeRecord builds a Record without the default length/count limits that
-// logtest.RecordFactory's zero value would otherwise apply (which truncate
-// string attribute values to ""). Use this everywhere instead of
-// `var rec sdklog.Record` so attribute values survive round-tripping.
-func makeRecord(sev otellog.Severity, body string, attrs ...otellog.KeyValue) sdklog.Record {
+// makeRecord builds a Record through logtest.RecordFactory, which disables
+// the attribute length/count limits, so attribute values survive
+// round-tripping. Use this everywhere instead of `var rec sdklog.Record`.
+func makeRecord(sev otellog.Severity, body string, attrs ...attribute.KeyValue) sdklog.Record {
 	return logtest.RecordFactory{
-		Timestamp:                 time.Now(),
-		Severity:                  sev,
-		Body:                      otellog.StringValue(body),
-		Attributes:                attrs,
-		AttributeValueLengthLimit: -1,
-		AttributeCountLimit:       -1,
+		Timestamp:  time.Now(),
+		Severity:   sev,
+		Body:       attribute.StringValue(body),
+		Attributes: attrs,
 	}.NewRecord()
 }
 
@@ -457,9 +455,9 @@ func TestFormatPlainTextValue(t *testing.T) {
 func TestFormatPlainTextRecordLine_WithAttributes(t *testing.T) {
 	rec := makeRecord(
 		otellog.SeverityInfo, "test message",
-		otellog.String("key", "value"),
-		otellog.Int64("count", 42),
-		otellog.Bool("ok", true),
+		attribute.String("key", "value"),
+		attribute.Int64("count", 42),
+		attribute.Bool("ok", true),
 	)
 
 	line := FormatPlainTextRecordLine(&rec)
@@ -480,10 +478,8 @@ func TestFormatPlainTextRecordLine_WithAttributes(t *testing.T) {
 
 func TestFormatPlainTextRecordLine_ZeroTimestamp(t *testing.T) {
 	rec := logtest.RecordFactory{
-		Severity:                  otellog.SeverityDebug,
-		Body:                      otellog.StringValue("no timestamps"),
-		AttributeValueLengthLimit: -1,
-		AttributeCountLimit:       -1,
+		Severity: otellog.SeverityDebug,
+		Body:     attribute.StringValue("no timestamps"),
 	}.NewRecord()
 
 	line := FormatPlainTextRecordLine(&rec)
@@ -522,11 +518,11 @@ func (c *captureProcessor) snapshot() []sdklog.Record {
 	return out
 }
 
-func attrValue(rec sdklog.Record, key string) (otellog.Value, bool) {
+func attrValue(rec sdklog.Record, key string) (attribute.Value, bool) {
 	var found bool
-	var val otellog.Value
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		if kv.Key == key {
+	var val attribute.Value
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		if string(kv.Key) == key {
 			val = kv.Value
 			found = true
 			return false
@@ -546,7 +542,7 @@ func TestWarnErr_NilError_NoRecord(t *testing.T) {
 
 	Enable()
 	WarnErr(context.Background(), "should be dropped", nil,
-		otellog.String("extra", "ignored"))
+		attribute.String("extra", "ignored"))
 
 	if got := cap.snapshot(); len(got) != 0 {
 		t.Fatalf("expected 0 records on nil err, got %d", len(got))
@@ -563,7 +559,7 @@ func TestWarnErr_NonNilError_EmitsWarnWithAttr(t *testing.T) {
 
 	Enable()
 	WarnErr(context.Background(), "swallowed: file close", errors.New("disk full"),
-		otellog.String("path", "/tmp/x"))
+		attribute.String("path", "/tmp/x"))
 
 	recs := cap.snapshot()
 	if len(recs) != 1 {

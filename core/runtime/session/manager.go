@@ -14,7 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -379,13 +379,13 @@ func (m *Manager) reclaim(key Key, session *Session, generation uint64) {
 	m.mu.Unlock()
 	if err := session.close(); err != nil {
 		telemetry.WarnErr(context.Background(), "runtime session: close idle-reclaimed session failed", err,
-			otellog.String(telemetry.AttrAgentID, key.AgentID),
-			otellog.String(telemetry.AttrConversationID, key.ContextID))
+			attribute.String(telemetry.AttrAgentID, key.AgentID),
+			attribute.String(telemetry.AttrConversationID, key.ContextID))
 		return
 	}
 	telemetry.Debug(context.Background(), "runtime session: idle session reclaimed",
-		otellog.String(telemetry.AttrAgentID, key.AgentID),
-		otellog.String(telemetry.AttrConversationID, key.ContextID))
+		attribute.String(telemetry.AttrAgentID, key.AgentID),
+		attribute.String(telemetry.AttrConversationID, key.ContextID))
 }
 
 // RemoveAgent blocks new session activity for the named agent and
@@ -424,8 +424,8 @@ func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
 
 	if err := m.awaitAgentIdle(ctx, name); err != nil {
 		telemetry.Error(ctx, "runtime session: agent drain timed out",
-			otellog.String(telemetry.AttrAgentID, name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 
@@ -543,9 +543,9 @@ func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 
 	if err := m.awaitKeyIdle(ctx, key); err != nil {
 		telemetry.Error(ctx, "runtime session: session drain timed out during delete",
-			otellog.String(telemetry.AttrAgentID, key.AgentID),
-			otellog.String(telemetry.AttrConversationID, key.ContextID),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, key.AgentID),
+			attribute.String(telemetry.AttrConversationID, key.ContextID),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		m.mu.Lock()
 		delete(m.deleting, key)
 		if entry := m.entries[key]; entry != nil {
@@ -804,7 +804,7 @@ func (m *Manager) Close() error {
 	})
 	if m.closeErr != nil {
 		telemetry.Error(context.Background(), "runtime session: manager close failed",
-			otellog.String(telemetry.AttrErrorMessage, m.closeErr.Error()))
+			attribute.String(telemetry.AttrErrorMessage, m.closeErr.Error()))
 	}
 	return m.closeErr
 }

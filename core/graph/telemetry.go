@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -89,11 +88,11 @@ func runScopeAttrs(run agent.Run) []attribute.KeyValue {
 }
 
 // runScopeLogAttrs converts the shared run scope into log attributes.
-func runScopeLogAttrs(run agent.Run) []otellog.KeyValue {
+func runScopeLogAttrs(run agent.Run) []attribute.KeyValue {
 	kvs := runScope(run)
-	attrs := make([]otellog.KeyValue, 0, len(kvs))
+	attrs := make([]attribute.KeyValue, 0, len(kvs))
 	for _, kv := range kvs {
-		attrs = append(attrs, otellog.String(kv.key, kv.value))
+		attrs = append(attrs, attribute.String(kv.key, kv.value))
 	}
 	return attrs
 }

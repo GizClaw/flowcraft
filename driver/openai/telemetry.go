@@ -6,7 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // providerID is this driver's provider identity: it namespaces every extension
@@ -30,7 +30,7 @@ func logChatFinishSynthesized(
 		inference.ProviderLogAttrs(
 			providerID, "generate", model, nil, requestID, responseID,
 		),
-		otellog.String("stream.finish.synthesized", synthesized),
+		attribute.String("stream.finish.synthesized", synthesized),
 	)
 	telemetry.Warn(ctx,
 		"chat stream ended without a finish reason; finish synthesized",

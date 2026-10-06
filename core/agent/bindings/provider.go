@@ -11,7 +11,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	"go.opentelemetry.io/otel/attribute"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -226,10 +225,10 @@ func observeSurface(inv Invocation, env *agent.ScriptEnv) {
 	}
 	names := sortedBindingNames(env)
 	telemetry.Debug(inv.Context, "script bindings assembled",
-		otellog.String(telemetry.AttrNodeID, inv.NodeID),
-		otellog.String("script.bindings.node_type", inv.NodeType),
-		otellog.Int("script.bindings.count", len(names)),
-		otellog.String("script.bindings.names", strings.Join(names, ",")),
+		attribute.String(telemetry.AttrNodeID, inv.NodeID),
+		attribute.String("script.bindings.node_type", inv.NodeType),
+		attribute.Int("script.bindings.count", len(names)),
+		attribute.String("script.bindings.names", strings.Join(names, ",")),
 	)
 }
 

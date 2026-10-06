@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -117,8 +117,8 @@ func (b *Board) publish(ctx context.Context, snapshot *Card) {
 	}
 	if err := b.bus.Publish(ctx, envelope); err != nil {
 		telemetry.WarnErr(ctx, "delegation kanban: card event publish failed", err,
-			otellog.String("event.subject", string(envelope.Subject)),
-			otellog.String("delegation.card", snapshot.ID))
+			attribute.String("event.subject", string(envelope.Subject)),
+			attribute.String("delegation.card", snapshot.ID))
 	}
 }
 

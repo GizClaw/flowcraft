@@ -18,7 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -423,8 +423,8 @@ func (s *winSession) Close() error {
 		case <-time.After(sessionKillTimeout):
 			telemetry.Warn(context.Background(),
 				"windows: job did not exit after TerminateJobObject on close",
-				otellog.String("windows.session_id", s.id),
-				otellog.Int("windows.pid", s.PID()))
+				attribute.String("windows.session_id", s.id),
+				attribute.Int("windows.pid", s.PID()))
 		}
 	}
 	s.mu.Lock()
@@ -435,7 +435,7 @@ func (s *winSession) Close() error {
 	if stdin != nil && !tty {
 		if err := stdin.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "windows: close session stdin failed", err,
-				otellog.String("windows.session_id", s.id))
+				attribute.String("windows.session_id", s.id))
 		}
 	}
 	if tty {
@@ -443,17 +443,17 @@ func (s *winSession) Close() error {
 		// close is idempotent and also unblocks a stuck copy read.
 		if err := s.ttyPty.close(); err != nil {
 			telemetry.WarnErr(context.Background(), "windows: close tty failed", err,
-				otellog.String("windows.session_id", s.id))
+				attribute.String("windows.session_id", s.id))
 		}
 	}
 	if err := s.job.close(); err != nil {
 		telemetry.WarnErr(context.Background(), "windows: close job failed", err,
-			otellog.String("windows.session_id", s.id))
+			attribute.String("windows.session_id", s.id))
 	}
 	if s.netIso != nil {
 		if err := s.netIso.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "windows: close net isolation failed", err,
-				otellog.String("windows.session_id", s.id))
+				attribute.String("windows.session_id", s.id))
 		}
 	}
 	s.out.close()

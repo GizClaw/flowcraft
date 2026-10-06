@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Close releases the resources held by the agent's engine and lifecycle
@@ -28,11 +28,11 @@ func (a *Agent) Close() error {
 	closeSlice(&errs, a.Commit)
 	err := errors.Join(errs...)
 	if err != nil {
-		attrs := []otellog.KeyValue{
-			otellog.String(telemetry.AttrErrorMessage, err.Error()),
+		attrs := []attribute.KeyValue{
+			attribute.String(telemetry.AttrErrorMessage, err.Error()),
 		}
 		if a.ID != "" {
-			attrs = append(attrs, otellog.String(telemetry.AttrAgentID, a.ID))
+			attrs = append(attrs, attribute.String(telemetry.AttrAgentID, a.ID))
 		}
 		telemetry.Error(context.Background(), "agent close failed", attrs...)
 	}

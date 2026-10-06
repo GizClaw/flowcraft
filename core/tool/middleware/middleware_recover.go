@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Recover converts a panicking tool (or inner middleware) into an
@@ -21,9 +21,9 @@ func Recover() tool.Middleware {
 			defer func() {
 				if rv := recover(); rv != nil {
 					telemetry.Warn(ctx, "tool panicked",
-						otellog.String(telemetry.AttrToolName, call.Name),
-						otellog.String(telemetry.AttrToolCallID, call.ID),
-						otellog.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+						attribute.String(telemetry.AttrToolName, call.Name),
+						attribute.String(telemetry.AttrToolCallID, call.ID),
+						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
 					res = message.NewErrorToolResult(call.ID,
 						fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 				}

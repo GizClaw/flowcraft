@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // maxCachedBindings bounds a BindingCache. Hosts that address models from
@@ -114,9 +114,9 @@ func (c *BindingCache) open(ctx context.Context, ref ModelRef) (*Binding, error)
 		return nil, err
 	}
 	telemetry.Debug(ctx, "inference: opened model drivers",
-		otellog.String(telemetry.AttrLLMProvider, ref.ID.Provider),
-		otellog.String(telemetry.AttrLLMModel, ref.ID.Name),
-		otellog.String("llm.profile", ref.Profile))
+		attribute.String(telemetry.AttrLLMProvider, ref.ID.Provider),
+		attribute.String(telemetry.AttrLLMModel, ref.ID.Name),
+		attribute.String("llm.profile", ref.Profile))
 	return binding, nil
 }
 

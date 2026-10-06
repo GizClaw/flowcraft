@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -387,8 +387,8 @@ func (i *streamNodeIterator) acceptEnvelope(env event.Envelope) bool {
 	if closeAfter {
 		if err := i.Close(); err != nil {
 			telemetry.WarnErr(i.ctx, "script stream: close iterator on terminal node", err,
-				otellog.String("node.type", "script"),
-				otellog.String("stream.op", "subscribe_node"))
+				attribute.String("node.type", "script"),
+				attribute.String("stream.op", "subscribe_node"))
 		}
 	}
 	return true

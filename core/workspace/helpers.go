@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // AtomicWrite writes data to path via a tmp file + Rename, so concurrent
@@ -37,8 +37,8 @@ func AtomicWrite(ctx context.Context, ws Workspace, path string, data []byte) er
 			// primary error we surface, but a leftover tmp file is a
 			// real disk leak, so make it visible.
 			telemetry.WarnErr(ctx, "workspace atomicwrite: cleanup tmp after rename failure", dErr,
-				otellog.String("op", "atomicwrite"),
-				otellog.String("path", tmp))
+				attribute.String("op", "atomicwrite"),
+				attribute.String("path", tmp))
 		}
 		return fmt.Errorf("workspace atomicwrite: rename %s -> %s: %w", tmp, path, err)
 	}
