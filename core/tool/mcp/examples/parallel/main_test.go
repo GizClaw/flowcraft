@@ -165,22 +165,19 @@ func TestLiveParallel(t *testing.T) {
 	if err := run(ctx, settings, &http.Client{Transport: log}, "FlowCraft Go MCP tool bridge", "https://go.dev/doc/", &out); err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected search and fetch output: %s", out.String())
-	}
-	for _, line := range lines {
+	decoder := json.NewDecoder(&out)
+	for range 2 {
 		var result struct {
 			Results []struct {
 				URL      string   `json:"url"`
 				Excerpts []string `json:"excerpts"`
 			} `json:"results"`
 		}
-		if err := json.Unmarshal([]byte(line), &result); err != nil {
+		if err := decoder.Decode(&result); err != nil {
 			t.Fatal(err)
 		}
 		if len(result.Results) == 0 || result.Results[0].URL == "" || len(result.Results[0].Excerpts) == 0 {
-			t.Fatalf("expected source URLs and excerpts: %s", line)
+			t.Fatalf("expected source URLs and excerpts: %+v", result)
 		}
 		t.Logf("useful output: %d sources, first URL %s, first excerpt %.160s", len(result.Results), result.Results[0].URL, result.Results[0].Excerpts[0])
 	}
