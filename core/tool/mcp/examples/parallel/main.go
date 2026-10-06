@@ -58,7 +58,7 @@ func run(ctx context.Context, spec []byte, client *http.Client, query, fetchURL 
 	}
 	defer func() { _ = registry.Close() }()
 	source.Attach(registry)
-	if err := source.WaitReady(ctx); err != nil {
+	if err := source.WaitReady(ctx, "parallel", 0); err != nil {
 		return fmt.Errorf("connect Parallel MCP: %w", err)
 	}
 
