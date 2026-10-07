@@ -50,7 +50,10 @@ func run(ctx context.Context, spec []byte, client *http.Client, query, fetchURL 
 	if err != nil {
 		return err
 	}
-	source := built.(*mcp.Source)
+	source, ok := built.(*mcp.Source)
+	if !ok {
+		return fmt.Errorf("MCP factory returned %T, expected *mcp.Source", built)
+	}
 	defer func() { _ = source.Close() }() // cancels background retries and releases the session
 	registry, err := tool.NewRegistry([]tool.Source{source})
 	if err != nil {
@@ -76,10 +79,17 @@ func run(ctx context.Context, spec []byte, client *http.Client, query, fetchURL 
 			return err
 		}
 		result := executor.Execute(ctx, message.ToolCall{ID: name, Name: "parallel__" + name, Arguments: encoded})
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 		if result.IsError {
 			return fmt.Errorf("%s: %s", name, result.Content.Text())
 		}
-		_, err = fmt.Fprintln(out, result.Content.Text())
+		text := result.Content.Text()
+		if strings.TrimSpace(text) == "" {
+			return fmt.Errorf("%s: result contains no printable text", name)
+		}
+		_, err = fmt.Fprintln(out, text)
 		return err
 	}
 	if err := call("web_search", map[string]any{"objective": query, "search_queries": []string{query}}); err != nil {

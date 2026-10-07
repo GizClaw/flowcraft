@@ -425,6 +425,10 @@ sim:
         http_timeout: 30s
 ```
 
+For an anonymous HTTP search/fetch example, see
+[Parallel Search MCP](https://github.com/GizClaw/flowcraft/tree/main/core/tool/mcp/examples/parallel).
+Its README covers deployment identity, startup readiness and result budgets.
+
 ## memory
 
 Memory implementations are app-registered. `core/memory` supplies contracts
