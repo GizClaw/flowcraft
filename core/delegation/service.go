@@ -19,7 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -776,8 +776,8 @@ func (s *LocalService) worker() {
 			}
 			claimFailures++
 			telemetry.Warn(s.workerCtx, "local delegation: claim work failed, will retry",
-				otellog.Int("delegation.claim_failures", claimFailures),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+				attribute.Int("delegation.claim_failures", claimFailures),
+				attribute.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		claimFailures = 0
@@ -839,7 +839,7 @@ func (s *LocalService) recordWorkerError(err error) {
 		return
 	}
 	telemetry.Error(context.Background(), "local delegation: worker stopped after error",
-		otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	s.stateMu.Lock()
 	s.workerErrs = append(s.workerErrs, err)
 	s.closed = true
@@ -866,11 +866,11 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		return Response{}, err
 	}
 	telemetry.Info(ctx, "local delegation: run started",
-		otellog.String(telemetry.AttrAgentID, instance.ID),
-		otellog.String(telemetry.AttrDelegationTarget, req.Request.Target),
-		otellog.String(telemetry.AttrDelegationMode, string(req.Request.Mode)),
-		otellog.Int(telemetry.AttrDelegationDepth, req.Depth),
-		otellog.String(telemetry.AttrDelegationCaller, req.Caller),
+		attribute.String(telemetry.AttrAgentID, instance.ID),
+		attribute.String(telemetry.AttrDelegationTarget, req.Request.Target),
+		attribute.String(telemetry.AttrDelegationMode, string(req.Request.Mode)),
+		attribute.Int(telemetry.AttrDelegationDepth, req.Depth),
+		attribute.String(telemetry.AttrDelegationCaller, req.Caller),
 	)
 
 	// Identity rule: with no provider and no bound manager the ContextID
@@ -928,8 +928,8 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	defer func() {
 		if cerr := lease.Close(); cerr != nil {
 			telemetry.WarnErr(execCtx, "local delegation: close session lease failed", cerr,
-				otellog.String(telemetry.AttrAgentID, key.AgentID),
-				otellog.String(telemetry.AttrConversationID, key.ContextID))
+				attribute.String(telemetry.AttrAgentID, key.AgentID),
+				attribute.String(telemetry.AttrConversationID, key.ContextID))
 		}
 	}()
 
@@ -963,16 +963,16 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		if err != nil {
 			telemetry.WarnErr(execCtx,
 				"local delegation: cannot inspect parked run, starting fresh", err,
-				otellog.String(telemetry.AttrAgentID, key.AgentID),
-				otellog.String(telemetry.AttrConversationID, key.ContextID))
+				attribute.String(telemetry.AttrAgentID, key.AgentID),
+				attribute.String(telemetry.AttrConversationID, key.ContextID))
 		} else if ok && sameDelegationRequest(request, parked) {
 			if resumed, err := lease.Session().ResumeWithOptions(execCtx, opts...); err == nil {
 				turn = resumed
 			} else {
 				telemetry.WarnErr(execCtx,
 					"local delegation: resume parked run failed, starting fresh", err,
-					otellog.String(telemetry.AttrAgentID, key.AgentID),
-					otellog.String(telemetry.AttrConversationID, key.ContextID))
+					attribute.String(telemetry.AttrAgentID, key.AgentID),
+					attribute.String(telemetry.AttrConversationID, key.ContextID))
 			}
 		}
 	}
@@ -1168,7 +1168,7 @@ func (s *LocalService) exportStreamTarget(
 		telemetry.Warn(ctx,
 			"local delegation: stream exporter matched no sink; "+
 				"cross-process streaming will be unavailable",
-			otellog.Int("delegation.stream_sinks", len(specs)))
+			attribute.Int("delegation.stream_sinks", len(specs)))
 		return StreamTarget{}, session.SinkSpec{}, false
 	}
 	return first, firstSpec, true
@@ -1299,12 +1299,12 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 		sink, err := s.streamResolver(ctx, *req.Stream.Target)
 		if err != nil {
 			telemetry.WarnErr(ctx, "local delegation: stream target resolution failed",
-				err, otellog.String("delegation.stream_target", req.Stream.Target.ID))
+				err, attribute.String("delegation.stream_target", req.Stream.Target.ID))
 			return ctx
 		}
 		if ptr.IsNil(sink) {
 			telemetry.Warn(ctx, "local delegation: stream resolver returned nil sink",
-				otellog.String("delegation.stream_target", req.Stream.Target.ID))
+				attribute.String("delegation.stream_target", req.Stream.Target.ID))
 			return ctx
 		}
 		spec := session.SinkSpec{
@@ -1329,7 +1329,7 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 	// degrading the subagent stream.
 	telemetry.Warn(ctx, "local delegation: stream attachment unavailable; "+
 		"subagent stream will not reach caller sinks",
-		otellog.String("delegation.stream_ref", req.Stream.Ref))
+		attribute.String("delegation.stream_ref", req.Stream.Ref))
 	return ctx
 }
 
@@ -1348,7 +1348,7 @@ func (s *LocalService) notifyRunStarted(ctx context.Context, req AsyncRequest, t
 	}
 	if err := notifier.NoteRunID(ctx, ref, turn.RunID()); err != nil {
 		telemetry.WarnErr(ctx, "local delegation: note run id failed", err,
-			otellog.String(telemetry.AttrDelegationTarget, req.Request.Target))
+			attribute.String(telemetry.AttrDelegationTarget, req.Request.Target))
 	}
 }
 

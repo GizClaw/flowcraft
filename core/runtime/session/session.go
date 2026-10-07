@@ -18,7 +18,7 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type activityKind uint8
@@ -373,12 +373,12 @@ func (s *Session) interruptActive(ctx context.Context) (func(), error) {
 	if old != nil {
 		if err := old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput}); err != nil {
 			telemetry.WarnErr(ctx, "runtime session: interrupt active turn failed", err,
-				otellog.String(telemetry.AttrRunID, old.runID))
+				attribute.String(telemetry.AttrRunID, old.runID))
 		}
 		if _, err := old.Wait(ctx); err != nil {
 			telemetry.Debug(ctx, "runtime session: active turn wait after interrupt",
-				otellog.String(telemetry.AttrRunID, old.runID),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+				attribute.String(telemetry.AttrRunID, old.runID),
+				attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -679,7 +679,7 @@ func (s *Session) saveSessionState(
 	defer cancel()
 	if err := checkpoints.Save(ctx, cp); err != nil {
 		telemetry.WarnErr(ctx, "runtime session: save session state checkpoint failed", err,
-			otellog.String("runtime.session.id", sessionStateID(s.key)))
+			attribute.String("runtime.session.id", sessionStateID(s.key)))
 	}
 }
 
@@ -756,7 +756,7 @@ func (s *Session) deleteCheckpoint(
 	defer cancel()
 	if err := deleter.Delete(ctx, runID); err != nil {
 		telemetry.WarnErr(ctx, "runtime session: delete parked-run checkpoint failed", err,
-			otellog.String(telemetry.AttrRunID, runID))
+			attribute.String(telemetry.AttrRunID, runID))
 	}
 }
 
@@ -946,7 +946,7 @@ func (s *Session) close() error {
 			if s.closeErr != nil && errors.Is(s.closeErr, context.DeadlineExceeded) {
 				telemetry.Warn(context.Background(),
 					"runtime session: active turn did not stop within close budget",
-					otellog.String(telemetry.AttrRunID, active.runID))
+					attribute.String(telemetry.AttrRunID, active.runID))
 				s.closeErr = nil
 			}
 		}

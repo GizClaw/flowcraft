@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Sink receives one envelope from a Router attachment. Implementations
@@ -342,7 +342,7 @@ func logSubClose(sub Subscription) {
 	if err := sub.Close(); err != nil {
 		telemetry.WarnErr(context.Background(),
 			"event router: close subscription failed", err,
-			otellog.String("event.subscription", string(sub.ID())))
+			attribute.String("event.subscription", string(sub.ID())))
 	}
 }
 

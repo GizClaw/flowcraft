@@ -5,7 +5,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"go.opentelemetry.io/otel/attribute"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -45,8 +44,8 @@ func warnOnMetricError(ctx context.Context, err error, name string) {
 		return
 	}
 	telemetry.Warn(ctx, "delegation kanban: failed to create metric",
-		otellog.String("metric", name),
-		otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		attribute.String("metric", name),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()))
 }
 
 func (m *metrics) cardSubmitted(ctx context.Context, card *Card) {

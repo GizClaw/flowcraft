@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -148,14 +148,14 @@ func (s *queuedSink) detach(err error) {
 		return
 	}
 	if err != nil {
-		attrs := []otellog.KeyValue{
-			otellog.String("runtime.session.sink", string(s.spec.ID)),
-			otellog.String("event.subject", string(s.runEnd)),
+		attrs := []attribute.KeyValue{
+			attribute.String("runtime.session.sink", string(s.spec.ID)),
+			attribute.String("event.subject", string(s.runEnd)),
 		}
 		if s.session != nil {
 			attrs = append(attrs,
-				otellog.String(telemetry.AttrAgentID, s.session.key.AgentID),
-				otellog.String(telemetry.AttrConversationID, s.session.key.ContextID))
+				attribute.String(telemetry.AttrAgentID, s.session.key.AgentID),
+				attribute.String(telemetry.AttrConversationID, s.session.key.ContextID))
 		}
 		telemetry.WarnErr(context.Background(),
 			"runtime session: stream sink detached due to delivery failure",

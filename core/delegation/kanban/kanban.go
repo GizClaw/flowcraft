@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -665,8 +665,8 @@ func (b *Board) evictLocked() {
 				b.removeCardLocked(card)
 				b.statusCount[card.Status]--
 				telemetry.Debug(b.ctx, "delegation kanban: card evicted by ttl",
-					otellog.String("delegation.scope", b.scopeID),
-					otellog.String("delegation.card", card.ID))
+					attribute.String("delegation.scope", b.scopeID),
+					attribute.String("delegation.card", card.ID))
 				continue
 			}
 			kept = append(kept, card)
@@ -683,8 +683,8 @@ func (b *Board) evictLocked() {
 			b.removeCardLocked(card)
 			b.statusCount[card.Status]--
 			telemetry.Debug(b.ctx, "delegation kanban: card evicted by card cap",
-				otellog.String("delegation.scope", b.scopeID),
-				otellog.String("delegation.card", card.ID))
+				attribute.String("delegation.scope", b.scopeID),
+				attribute.String("delegation.card", card.ID))
 			excess--
 			continue
 		}
@@ -716,7 +716,7 @@ func (b *Board) retainTerminalLocked(card *Card) {
 		if err != nil {
 			telemetry.WarnErr(b.ctx,
 				"delegation kanban: fingerprint request for retention failed", err,
-				otellog.String("delegation.card", card.ID))
+				attribute.String("delegation.card", card.ID))
 			return
 		}
 		retained = &retainedOperation{
@@ -745,8 +745,8 @@ func (b *Board) expireRetainedLocked(now time.Time) {
 			delete(b.idempotency, key)
 		}
 		telemetry.Debug(b.ctx, "delegation kanban: retained result expired",
-			otellog.String("delegation.scope", b.scopeID),
-			otellog.String("delegation.card", id))
+			attribute.String("delegation.scope", b.scopeID),
+			attribute.String("delegation.card", id))
 	}
 }
 

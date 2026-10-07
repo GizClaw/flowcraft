@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const defaultAttemptDrainTimeout = 5 * time.Second
@@ -307,7 +307,7 @@ func (c *streamCoordinator) failConfirmedLocked(err error) {
 		context.WithoutCancel(c.turn.runCtx),
 		"runtime session: confirmed stream failed and detached",
 		err,
-		otellog.String(telemetry.AttrRunID, c.turn.runID),
+		attribute.String(telemetry.AttrRunID, c.turn.runID),
 	)
 	c.confirmedDead = true
 	c.branches = nil

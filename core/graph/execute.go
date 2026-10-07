@@ -14,7 +14,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -72,10 +71,10 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 			span.SetStatus(codes.Ok, status)
 		}
 		if runErr != nil {
-			runLogAttrs := []otellog.KeyValue{
-				otellog.String(telemetry.AttrGraphName, g.name),
-				otellog.String(telemetry.AttrRunID, run.RunID),
-				otellog.String(telemetry.AttrErrorMessage, runErr.Error()),
+			runLogAttrs := []attribute.KeyValue{
+				attribute.String(telemetry.AttrGraphName, g.name),
+				attribute.String(telemetry.AttrRunID, run.RunID),
+				attribute.String(telemetry.AttrErrorMessage, runErr.Error()),
 			}
 			runLogAttrs = append(runLogAttrs, runScopeLogAttrs(run)...)
 			switch {
@@ -101,8 +100,8 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 
 	if err := publishRunEvent(ctx, host, g, run, agent.SubjectRunStart(run.RunID), nil); err != nil {
 		telemetry.WarnErr(ctx, "graph: run start event publish failed", err,
-			otellog.String(telemetry.AttrGraphName, g.name),
-			otellog.String(telemetry.AttrRunID, run.RunID))
+			attribute.String(telemetry.AttrGraphName, g.name),
+			attribute.String(telemetry.AttrRunID, run.RunID))
 	}
 	defer func() {
 		publishCtx, cancel := context.WithTimeout(
@@ -120,9 +119,9 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		}
 	}()
 
-	startLogAttrs := []otellog.KeyValue{
-		otellog.String(telemetry.AttrGraphName, g.name),
-		otellog.String(telemetry.AttrRunID, run.RunID),
+	startLogAttrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrGraphName, g.name),
+		attribute.String(telemetry.AttrRunID, run.RunID),
 	}
 	startLogAttrs = append(startLogAttrs, runScopeLogAttrs(run)...)
 	telemetry.Info(ctx, "graph execution started", startLogAttrs...)
@@ -329,10 +328,10 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 			break
 		}
 		telemetry.Debug(ctx, "graph node attempt failed, will retry",
-			otellog.String(telemetry.AttrGraphName, g.name),
-			otellog.String(telemetry.AttrNodeID, nodeID),
-			otellog.Int("graph.node.attempt", attempt+1),
-			otellog.String(telemetry.AttrErrorMessage, invokeErr.Error()))
+			attribute.String(telemetry.AttrGraphName, g.name),
+			attribute.String(telemetry.AttrNodeID, nodeID),
+			attribute.Int("graph.node.attempt", attempt+1),
+			attribute.String(telemetry.AttrErrorMessage, invokeErr.Error()))
 		// Roll the board back to the pre-attempt state so a retried
 		// node never sees its own half-written vars or duplicated
 		// messages. The final attempt's writes stay for diagnostics.
@@ -346,9 +345,9 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 			board.SetVar(VarInterruptedNode, nodeID)
 		}
 		telemetry.Error(ctx, "node execution failed",
-			otellog.String(telemetry.AttrGraphName, g.name),
-			otellog.String(telemetry.AttrNodeID, nodeID),
-			otellog.String(telemetry.AttrErrorMessage, invokeErr.Error()))
+			attribute.String(telemetry.AttrGraphName, g.name),
+			attribute.String(telemetry.AttrNodeID, nodeID),
+			attribute.String(telemetry.AttrErrorMessage, invokeErr.Error()))
 		publishStepError(ctx, host, g, info, nodeID, invokeErr)
 		return false, fmt.Errorf("graph %q node %q: %w", g.name, nodeID, invokeErr)
 	}
@@ -679,9 +678,9 @@ func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.
 		SpecVersion:       g.specVersion,
 	}); err != nil {
 		telemetry.WarnErr(ctx, "graph: checkpoint write failed", err,
-			otellog.String(telemetry.AttrGraphName, g.name),
-			otellog.String(telemetry.AttrRunID, run.RunID),
-			otellog.Int("graph.iteration", iterations))
+			attribute.String(telemetry.AttrGraphName, g.name),
+			attribute.String(telemetry.AttrRunID, run.RunID),
+			attribute.Int("graph.iteration", iterations))
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -130,17 +129,17 @@ func recordRoute(
 			span.SetAttributes(
 				attribute.String(telemetry.AttrLLMRequestID, requestID))
 		}
-		logAttrs := []otellog.KeyValue{
-			otellog.String("inference.operation", string(operation)),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()),
+		logAttrs := []attribute.KeyValue{
+			attribute.String("inference.operation", string(operation)),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()),
 		}
 		if executed := routeTrace.Executed; executed.ID != (model.ModelID{}) {
 			logAttrs = append(logAttrs,
-				otellog.String(telemetry.AttrLLMProvider, executed.ID.Provider),
-				otellog.String(telemetry.AttrLLMModel, executed.ID.Name))
+				attribute.String(telemetry.AttrLLMProvider, executed.ID.Provider),
+				attribute.String(telemetry.AttrLLMModel, executed.ID.Name))
 		}
 		if requestID, ok := errdefs.RequestID(err); ok {
-			logAttrs = append(logAttrs, otellog.String(telemetry.AttrLLMRequestID, requestID))
+			logAttrs = append(logAttrs, attribute.String(telemetry.AttrLLMRequestID, requestID))
 		}
 		telemetry.Warn(ctx, "inference route failed", logAttrs...)
 		span.SetStatus(codes.Error, err.Error())

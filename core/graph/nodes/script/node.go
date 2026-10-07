@@ -19,7 +19,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/workspace"
 
 	"go.opentelemetry.io/otel/attribute"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -205,7 +204,7 @@ func (e scriptEmitter) emitDelta(delta agent.StreamDeltaPayload) {
 	}
 	if err := e.emit(delta); err != nil {
 		telemetry.WarnErr(e.ctx, "script node: stream delta publish failed", err,
-			otellog.String(telemetry.AttrNodeID, e.nodeID))
+			attribute.String(telemetry.AttrNodeID, e.nodeID))
 	}
 }
 
