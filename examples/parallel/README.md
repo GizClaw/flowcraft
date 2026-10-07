@@ -7,13 +7,19 @@ calls `parallel__web_search` and optionally `parallel__web_fetch` through
 `tool.Executor`. It needs neither a Parallel API key nor a model provider:
 no LLM inference is involved.
 
+This standalone example module uses released `core v0.4.9`. Use `GOWORK=off`
+to build against that release rather than the repository workspace.
+
 From the repository root:
 
 ```sh
-cd core
-go run ./tool/mcp/examples/parallel -query "FlowCraft Go MCP tool bridge"
-go run ./tool/mcp/examples/parallel -query "Go language documentation" -fetch https://go.dev/doc/
+cd examples/parallel
+GOWORK=off go run . -query "FlowCraft Go MCP tool bridge"
+GOWORK=off go run . -query "Go language documentation" -fetch https://go.dev/doc/
 ```
+
+To install the CLI, run `GOWORK=off go install .` from `examples/parallel`;
+then run `parallel` from your Go binary directory with the same flags.
 
 Text results are printed as the server's JSON, including source URLs and
 excerpts. Empty or non-text-only results produce an error rather than blank
@@ -59,7 +65,9 @@ and fetch errors, discovery deadlines and cancellation. The live check
 explicitly opts into network calls
 and consumes anonymous limits:
 
+From `examples/parallel`:
+
 ```sh
-go test ./tool/mcp/examples/parallel
-FLOWCRAFT_PARALLEL_LIVE=1 go test ./tool/mcp/examples/parallel -run TestLiveParallel -v -count=1
+GOWORK=off go test ./...
+FLOWCRAFT_PARALLEL_LIVE=1 GOWORK=off go test ./... -run TestLiveParallel -v -count=1
 ```
