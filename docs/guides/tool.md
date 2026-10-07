@@ -137,6 +137,11 @@ protocol `2026-07-28` or later are never pinged, because those revisions
 removed the method: they reconnect when their connection closes. A
 probe-less server (`"off"`) behaves the same way by choice.
 
+For a runnable anonymous search and fetch example using the HTTP bridge, see
+[Parallel Search MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel). It loads a server
+spec through the MCP factory and executes the discovered tools through the
+ordinary registry and executor, without a model provider or Parallel API key.
+
 ## Middleware chain
 
 `tool.Assembly/middleware` is the memory assembly plus a
