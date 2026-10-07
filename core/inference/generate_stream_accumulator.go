@@ -378,7 +378,6 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := response.ValidateFor(s.request); err != nil {
 		out := newResponseValidationError(OperationGenerate, s.withProviderID(err))
-		out.Detail = terminalValidationDetail(out, response)
 		if requestID, ok := errdefs.RequestID(out); ok {
 			out.RequestID = requestID
 		}
@@ -386,38 +385,6 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 		return
 	}
 	s.result = response
-}
-
-// terminalValidationDetail picks the Detail for a terminal response
-// validation failure. Structurally invalid tool-call parts and
-// finish-reason/tool-call mismatches each get a distinct label (both mean
-// the provider ended cleanly with a corrupt tool payload); undefined-tool
-// calls keep their own label alongside the rejected call; everything else
-// is a generic response validation failure.
-func terminalValidationDetail(out *Error, response GenerateResponse) string {
-	if out.Kind == UndefinedTool {
-		return "stream.finish.undefined_tool"
-	}
-	for _, part := range response.Message.Content.Parts {
-		normalized, err := message.NormalizePart(part)
-		if err != nil {
-			continue
-		}
-		if call, ok := normalized.(message.ToolCallPart); ok {
-			if err := call.Validate(); err != nil {
-				return "stream.finish.tool_call"
-			}
-		}
-	}
-	hasToolCalls := response.Message.HasToolCalls()
-	if (response.FinishReason == FinishToolCalls) != hasToolCalls {
-		return "stream.finish.mismatch"
-	}
-	var check *generateResponseCheckError
-	if errors.As(out, &check) {
-		return "stream.finish.validation." + check.check
-	}
-	return "stream.finish.validation"
 }
 
 func (p *generatePartAccumulator) result() (message.Part, error) {

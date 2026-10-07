@@ -190,17 +190,16 @@ func (kind ErrorKind) classify(cause error) error {
 // potentially recoverable); every other contract violation stays
 // InvalidProviderResponse (provider-side corruption).
 func newResponseValidationError(operation Operation, err error) *Error {
+	out := NewError(InvalidProviderResponse, operation, "", err)
 	var ute *undefinedToolError
 	if errors.As(err, &ute) {
-		out := NewError(UndefinedTool, operation, "", err)
+		out = NewError(UndefinedTool, operation, "", err)
 		call := ute.Call
 		out.UndefinedToolCall = &call
-		return out
 	}
-	out := NewError(InvalidProviderResponse, operation, "", err)
 	var check *generateResponseCheckError
 	if errors.As(err, &check) {
-		out.Detail = "generate.validation." + check.check
+		out.Detail = string(operation) + ".validation." + string(check.check)
 	}
 	return out
 }

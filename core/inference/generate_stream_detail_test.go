@@ -163,8 +163,8 @@ func TestGenerateStreamToolCallStructureDetail(t *testing.T) {
 	if err.Kind != InvalidProviderResponse {
 		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
 	}
-	if err.Detail != "stream.finish.tool_call" {
-		t.Fatalf("Detail = %q, want stream.finish.tool_call", err.Detail)
+	if err.Detail != "generate.validation.tool_call" {
+		t.Fatalf("Detail = %q, want generate.validation.tool_call", err.Detail)
 	}
 }
 
@@ -181,11 +181,14 @@ func TestGenerateStreamToolCallConflictDetail(t *testing.T) {
 }
 
 func TestGenerateStreamToolCallFinishMismatchDetail(t *testing.T) {
-	events := []GenerateStreamEvent{{FinishReason: FinishToolCalls}}
+	events := []GenerateStreamEvent{
+		{PartIndex: 0, Delta: TextPartDelta{Text: "done"}},
+		{FinishReason: FinishToolCalls},
+	}
 	stream := detailTestStream(events, toolStreamRequest(t))
 	err := nextStreamError(t, stream)
-	if err.Detail != "stream.finish.mismatch" {
-		t.Fatalf("Detail = %q, want stream.finish.mismatch", err.Detail)
+	if err.Detail != "generate.validation.mismatch" {
+		t.Fatalf("Detail = %q, want generate.validation.mismatch", err.Detail)
 	}
 }
 
@@ -203,8 +206,8 @@ func TestGenerateStreamUndefinedToolDetail(t *testing.T) {
 	if err.Kind != UndefinedTool {
 		t.Fatalf("kind = %q, want %q", err.Kind, UndefinedTool)
 	}
-	if err.Detail != "stream.finish.undefined_tool" {
-		t.Fatalf("Detail = %q, want stream.finish.undefined_tool", err.Detail)
+	if err.Detail != "generate.validation.undefined_tool" {
+		t.Fatalf("Detail = %q, want generate.validation.undefined_tool", err.Detail)
 	}
 }
 
@@ -217,10 +220,10 @@ func TestGenerateStreamValidationDetailNamesFailedCheck(t *testing.T) {
 	if err.Kind != InvalidProviderResponse {
 		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
 	}
-	if err.Detail != "stream.finish.validation.no_text" {
-		t.Fatalf("Detail = %q, want stream.finish.validation.no_text", err.Detail)
+	if err.Detail != "generate.validation.no_text" {
+		t.Fatalf("Detail = %q, want generate.validation.no_text", err.Detail)
 	}
-	if got := err.Error(); got != "invalid_provider_response during generate: stream.finish.validation.no_text" {
+	if got := err.Error(); got != "invalid_provider_response during generate: generate.validation.no_text" {
 		t.Fatalf("Error() = %q", got)
 	}
 }
