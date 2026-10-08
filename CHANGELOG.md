@@ -1,7 +1,9 @@
 # Changelog
 
-All notable changes to this repository are documented here. The active
-published module is `core`; releases use the `core/vX.Y.Z` tag prefix.
+All notable changes to this repository are documented here. The release-managed
+modules are `core` and `craft`; releases use the `core/vX.Y.Z` and
+`craft/vX.Y.Z` tag prefixes. A `-` in the latest-tag column marks a module that
+has not been tagged yet.
 
 Pending changesets are aggregated into module release sections by the automated
 Release PR before their tags are published.
@@ -11,6 +13,7 @@ Release PR before their tags are published.
 | Module | Latest tag | Notes |
 | --- | --- | --- |
 | `core` | `core/v0.4.10` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
 

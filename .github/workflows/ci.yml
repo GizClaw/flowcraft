@@ -148,6 +148,12 @@ jobs:
           GOWORK: "off"
         run: go run . plan --repo ../..
 
+      - name: Validate planned module pins and tidiness
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . preflight --repo ../..
+
       - name: Validate generated release changelog
         if: github.event_name == 'workflow_dispatch' || github.head_ref == 'automation/release-changelog'
         working-directory: tools/releasegate

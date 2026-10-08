@@ -19,7 +19,11 @@ the intent.
 - `summary` must be a non-empty single line and must not contain the reserved
   releasegate marker.
 - `releases` must contain at least one entry.
-- `module` must be `core`.
+- `module` must be `core` or `craft`. A changeset may declare both when they
+  release together: `craft` requires `core`, so the batch is tagged
+  `core` first, and the `craft` gate expects the new `core` checksums to
+  appear in `go.sum`. A same-batch dependent must already require the version
+  being tagged, or the preflight fails.
 - `bump` must be `patch` or `minor`.
 - A changeset cannot declare the same module more than once.
 - Multiple pending changesets for one module use the highest bump (`minor`
@@ -45,9 +49,15 @@ With no pending release intent, it succeeds with empty arrays.
 the module releases in the same batch as an in-tree dependency, the dependency is
 replaced with its local directory so the tidy result reflects the versions that
 will exist after tagging. This catches new indirect requirements before the
-release gate runs. `preflight --write` applies the normalized tidy result to the
-module's `go.mod`/`go.sum` (without the temporary replace directives), so a
-coordinated release PR can commit the tidy state up front.
+release gate runs. The same pass requires every same-batch dependency to be
+pinned at the version this batch tags: the temporary replace resolves either pin,
+so a dependency left on the previous tag would otherwise pass and the tag would
+be built against the old release. `preflight --write` applies the normalized tidy
+result to the module's `go.mod`/`go.sum` (without the temporary replace
+directives) and moves stale same-batch pins to the planned versions, so a
+coordinated release PR can commit the tidy state up front. The
+`Validate release intent` lane runs the read-only preflight on every pull
+request.
 
 After a changeset reaches `main`, the `Release modules` workflow aggregates all
 pending summaries, updates the module-version table and release sections in
@@ -55,10 +65,14 @@ pending summaries, updates the module-version table and release sections in
 `automation/release-changelog` Release PR. `make release-changelog` determines
 that PR's content; feature PRs normally do not commit the generated output.
 
-Merging the Release PR makes the workflow validate the changelog again and run
-the module gates. It creates every planned tag atomically only after all checks
-pass. An unmerged Release PR, a changelog mismatch, or any failed gate creates
-no tags.
+Merging the Release PR makes the workflow validate the changelog again and gate
+the planned modules in dependency order, pushing each tag once its own gate
+passes. A module that has never been tagged has no version cell yet; its row in
+the published-state table carries `-` until its first release fills it in. An
+unmerged Release PR, a changelog mismatch, or any failed gate creates no tags
+beyond the ones already pushed in that run: a partial batch is retried by the
+next push to `main` or a manual workflow dispatch, which plans only the modules
+whose tags are still missing.
 
 Pending sections converge before publication: if a failed batch receives more
 changesets, releasegate replaces that module's untagged section with the newly

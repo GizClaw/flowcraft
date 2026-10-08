@@ -18,7 +18,18 @@ import (
 
 const changelogMarker = "<!-- releasegate:releases -->"
 
-var moduleOrder = []string{"core"}
+// moduleOrder is the release-managed module list in dependency order: a
+// module appears after every module it requires, so a batch can be gated
+// and tagged in this order with each dependency already published.
+var moduleOrder = []string{"core", "craft"}
+
+// moduleDependencies lists the in-tree modules each release-managed
+// module requires by module path. A dependency that ships in the same
+// batch is tagged first and has no entry in go.sum yet, which the
+// preflight tidy and the release gate both account for.
+var moduleDependencies = map[string][]string{
+	"craft": {"core"},
+}
 
 type Changeset struct {
 	Summary  string    `json:"summary"`
@@ -39,6 +50,10 @@ type ModulePlan struct {
 	Next     string   `json:"next"`
 	Tag      string   `json:"tag"`
 	Replaces []string `json:"replaces"`
+	// Deps names the modules this module requires that are tagged
+	// earlier in the same batch. Their checksums are legitimately
+	// absent from go.sum until the tag exists.
+	Deps []string `json:"deps"`
 }
 
 type Plan struct {
@@ -294,6 +309,19 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 		}
 	}
 
+	pins, err := sameBatchDepPins(repo, item, plan)
+	if err != nil {
+		return false, err
+	}
+	// plannedMod is go.mod as this batch requires it: the same-batch
+	// dependency pins first, then the tidy result. The temporary replace
+	// resolves either pin, so a dependency left on the previous tag would
+	// tidy cleanly and the tag would be built against the old release.
+	plannedMod, pinned, err := applyDependencyPins(modData, parseRequirements(modData), pins)
+	if err != nil {
+		return false, fmt.Errorf("module %s: %w", item.Module, err)
+	}
+
 	tempDir, err := os.MkdirTemp("", "releasegate-preflight-*")
 	if err != nil {
 		return false, fmt.Errorf("module %s: create temp dir: %w", item.Module, err)
@@ -301,14 +329,20 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 	defer os.RemoveAll(tempDir)
 	tempMod := filepath.Join(tempDir, "modfile.mod")
 	tempSum := filepath.Join(tempDir, "modfile.sum")
-	if err := os.WriteFile(tempMod, modData, 0o644); err != nil {
+	replaceBlock, paths, err := batchReplaceBlock(repo, item.Module,
+		sameBatchDeps(item.Module, plan))
+	if err != nil {
+		return false, err
+	}
+	// The replace block is appended to a copy: modData is compared with
+	// the tidied file below, and appending in place could overwrite it.
+	tempModData := append(append([]byte{}, plannedMod...), replaceBlock...)
+	if err := os.WriteFile(tempMod, tempModData, 0o644); err != nil {
 		return false, fmt.Errorf("module %s: write temp go.mod: %w", item.Module, err)
 	}
 	if err := os.WriteFile(tempSum, sumData, 0o644); err != nil {
 		return false, fmt.Errorf("module %s: write temp go.sum: %w", item.Module, err)
 	}
-
-	paths := map[string]bool{}
 
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = moduleDir
@@ -348,9 +382,14 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 		if !bytes.Equal(sumData, normalizedSum) {
 			fmt.Fprintf(&diff, "go.sum:\n%s", lineDiff(sumData, normalizedSum))
 		}
-		return false, fmt.Errorf("module %s: %s not tidy for planned releases:\n%s"+
+		var stale strings.Builder
+		if len(pinned) != 0 {
+			fmt.Fprintf(&stale, "dependency pins not on the planned versions: %s\n",
+				strings.Join(pinned, ", "))
+		}
+		return false, fmt.Errorf("module %s: %s not tidy for planned releases:\n%s%s"+
 			"run `releasegate preflight --write` to apply the changes",
-			item.Module, strings.Join(changedFiles, ", "), diff.String())
+			item.Module, strings.Join(changedFiles, ", "), stale.String(), diff.String())
 	}
 	if err := writeModuleFile(modPath, normalizedMod); err != nil {
 		return false, fmt.Errorf("module %s: write go.mod: %w", item.Module, err)
@@ -359,6 +398,163 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 		return false, fmt.Errorf("module %s: write go.sum: %w", item.Module, err)
 	}
 	return true, nil
+}
+
+// sameBatchDepNames lists, in moduleOrder order, the modules the given
+// module requires that release in the same batch.
+func sameBatchDepNames(module string, pending map[string]string) []string {
+	names := make([]string, 0)
+	for _, candidate := range moduleOrder {
+		if candidate == module {
+			continue
+		}
+		if !containsString(moduleDependencies[module], candidate) {
+			continue
+		}
+		if _, ok := pending[candidate]; ok {
+			names = append(names, candidate)
+		}
+	}
+	return names
+}
+
+// sameBatchDeps returns the planned modules the given module requires,
+// in moduleOrder order.
+func sameBatchDeps(module string, plan map[string]ModulePlan) []ModulePlan {
+	deps := make([]ModulePlan, 0, len(moduleDependencies[module]))
+	for _, candidate := range moduleOrder {
+		if !containsString(moduleDependencies[module], candidate) {
+			continue
+		}
+		if item, ok := plan[candidate]; ok {
+			deps = append(deps, item)
+		}
+	}
+	return deps
+}
+
+// sameBatchDepPins maps the module paths the given module requires that
+// release in the same batch to the version this batch plans to tag. The
+// batch is gated and tagged in dependency order, so a dependent tagged
+// after its dependency must already require the version being tagged:
+// the preflight replace resolves either pin, and a requirement left on
+// the previous tag would publish a release built against the old one.
+func sameBatchDepPins(repo string, item ModulePlan, plan map[string]ModulePlan) (map[string]string, error) {
+	deps := sameBatchDeps(item.Module, plan)
+	if len(deps) == 0 {
+		return nil, nil
+	}
+	pins := make(map[string]string, len(deps))
+	for _, dep := range deps {
+		modulePath, err := readModulePath(filepath.Join(repo, dep.Dir, "go.mod"))
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", item.Module, err)
+		}
+		pins[modulePath] = "v" + dep.Next
+	}
+	return pins, nil
+}
+
+// applyDependencyPins rewrites each pinned requirement to the version the
+// batch plans and reports the pins it moved. A pinned module path the
+// file does not require is an error: requirement versions are rewritten,
+// never invented.
+func applyDependencyPins(
+	modData []byte,
+	requirements map[string]string,
+	pins map[string]string,
+) ([]byte, []string, error) {
+	if len(pins) == 0 {
+		return modData, nil, nil
+	}
+	paths := make([]string, 0, len(pins))
+	for modulePath := range pins {
+		paths = append(paths, modulePath)
+	}
+	sort.Strings(paths)
+
+	updated := string(modData)
+	var moved []string
+	for _, modulePath := range paths {
+		expected := pins[modulePath]
+		current, ok := requirements[modulePath]
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"go.mod does not require %s; add the requirement to the release PR",
+				modulePath)
+		}
+		if current == expected {
+			continue
+		}
+		// Rewrite the version token that follows the module path: the
+		// line keeps its indentation and any trailing comment.
+		needle := modulePath + " " + current
+		index := strings.Index(updated, needle)
+		if index < 0 {
+			return nil, nil, fmt.Errorf(
+				"go.mod: cannot rewrite the requirement for %s", modulePath)
+		}
+		updated = updated[:index] + modulePath + " " + expected +
+			updated[index+len(needle):]
+		moved = append(moved, modulePath+" "+current+" -> "+expected)
+	}
+	if len(moved) == 0 {
+		return modData, nil, nil
+	}
+	return []byte(updated), moved, nil
+}
+
+// batchReplaceBlock renders the temporary `replace` block that points
+// same-batch dependencies at their local directories, so the preflight
+// tidy resolves the versions this batch is about to tag. It returns the
+// module paths it replaced, which the caller strips from the tidied
+// go.mod/go.sum: the committed files must stay replace-free and carry no
+// checksums for a version that does not exist yet.
+func batchReplaceBlock(repo, module string, deps []ModulePlan) (string, map[string]bool, error) {
+	paths := make(map[string]bool, len(deps))
+	if len(deps) == 0 {
+		return "", paths, nil
+	}
+	var replace strings.Builder
+	replace.WriteString("\nreplace (\n")
+	for _, dep := range deps {
+		depDir := filepath.Join(repo, dep.Dir)
+		modulePath, err := readModulePath(filepath.Join(depDir, "go.mod"))
+		if err != nil {
+			return "", nil, err
+		}
+		target, err := filepath.Abs(depDir)
+		if err != nil {
+			return "", nil, fmt.Errorf("module %s: resolve %s path: %w", module, dep.Module, err)
+		}
+		paths[modulePath] = true
+		fmt.Fprintf(&replace, "\t%s => %s\n", modulePath, target)
+	}
+	replace.WriteString(")\n")
+	return replace.String(), paths, nil
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func readModulePath(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(stripComment(line))
+		if len(fields) == 2 && fields[0] == "module" {
+			return fields[1], nil
+		}
+	}
+	return "", fmt.Errorf("%s has no module directive", path)
 }
 
 func stripPreflightReplaces(content []byte, paths map[string]bool) []byte {
@@ -376,7 +572,10 @@ func stripPreflightReplaces(content []byte, paths map[string]bool) []byte {
 				kept = append(kept, line)
 			}
 		}
-		if len(kept) != 0 {
+		// A block whose replacements were all stripped keeps only its
+		// delimiters: an empty `replace (...)` directive is not what
+		// plain `go mod tidy` writes, so drop it whole.
+		if hasReplaceEntry(kept) {
 			out = append(out, kept...)
 		}
 		block = nil
@@ -423,12 +622,25 @@ func replaceLineTargets(line string, paths map[string]bool) bool {
 	return paths[fields[0]]
 }
 
+// hasReplaceEntry reports whether a replace block kept any line other
+// than its own delimiters.
+func hasReplaceEntry(lines []string) bool {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "replace (" || trimmed == ")" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func filterPreflightSums(sum []byte, paths map[string]bool) []byte {
 	if len(paths) == 0 {
 		return sum
 	}
 	lines := strings.Split(string(sum), "\n")
-	var out []string
+	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if line == "" {
 			continue
@@ -439,7 +651,12 @@ func filterPreflightSums(sum []byte, paths map[string]bool) []byte {
 		}
 		out = append(out, line)
 	}
-	return []byte(strings.Join(out, "\n"))
+	if len(out) == 0 {
+		return nil
+	}
+	// go.sum ends in a newline; keep exactly one so the committed file
+	// matches what `go mod tidy` writes without the replace block.
+	return []byte(strings.Join(out, "\n") + "\n")
 }
 
 func lineDiff(oldData, newData []byte) string {
@@ -662,6 +879,7 @@ func buildPlan(repo string) (Plan, error) {
 			Next:     next.String(),
 			Tag:      module + "/v" + next.String(),
 			Replaces: replaces,
+			Deps:     sameBatchDepNames(module, pendingBumps),
 		}
 	}
 
@@ -855,6 +1073,19 @@ func formatReleaseSection(tag, date string, summaries []string) string {
 	return strings.TrimSuffix(builder.String(), "\n")
 }
 
+// unreleasedCell marks the version cell of a module in the published
+// state table that has no tag yet.
+const unreleasedCell = "-"
+
+// isUnreleasedCell reports whether a published-state version cell holds
+// the placeholder for a module that has not been tagged yet.
+func isUnreleasedCell(cell string) bool {
+	return strings.Trim(strings.TrimSpace(cell), "`") == unreleasedCell
+}
+
+// updatePublishedState rewrites the "Current Published State" row of
+// every planned module to its new tag. A row whose version cell is
+// unreleasedCell is filled in by the module's first release.
 func updatePublishedState(changelog string, modules []ModulePlan) (string, error) {
 	tags := make(map[string]string, len(modules))
 	for _, item := range modules {
@@ -891,10 +1122,15 @@ func updatePublishedState(changelog string, modules []ModulePlan) (string, error
 		oldRe := regexp.MustCompile("`" + regexp.QuoteMeta(module) +
 			"/v[0-9]+\\.[0-9]+\\.[0-9]+`")
 		old := oldRe.FindString(cells[2])
-		if old == "" {
+		switch {
+		case old != "":
+			lines[index] = strings.Replace(line, old, "`"+tag+"`", 1)
+		case isUnreleasedCell(cells[2]):
+			cells[2] = " `" + tag + "` "
+			lines[index] = strings.Join(cells, "|")
+		default:
 			return "", fmt.Errorf("Current Published State row for module %s has no version cell", module)
 		}
-		lines[index] = strings.Replace(line, old, "`"+tag+"`", 1)
 		updated[module] = true
 	}
 	for module := range tags {
@@ -984,11 +1220,9 @@ func moduleChangedSince(repo, tag, module string) (bool, error) {
 	return strings.TrimSpace(untracked) != "", nil
 }
 
-func readRequirements(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
+// parseRequirements maps the module paths a go.mod file requires to their
+// versions; both the single-line and the block form are read.
+func parseRequirements(data []byte) map[string]string {
 	requirements := make(map[string]string)
 	inBlock := false
 	for _, line := range strings.Split(string(data), "\n") {
@@ -1015,7 +1249,7 @@ func readRequirements(path string) (map[string]string, error) {
 			requirements[fields[1]] = fields[2]
 		}
 	}
-	return requirements, nil
+	return requirements
 }
 
 func stripComment(line string) string {

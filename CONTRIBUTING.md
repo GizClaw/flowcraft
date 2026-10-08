@@ -21,8 +21,8 @@ Keep changes within module boundaries.
 
 ## Modules and dependency order
 
-The independently versioned library modules are `core`, `driver/*`, and
-`backends/*`.
+The independently versioned library modules are `core`, `craft`, `driver/*`,
+and `backends/*`.
 The Go workspace also includes `examples/forge` (the runnable local demo, not
 released), while `tools/releasegate` builds with `GOWORK=off` against pinned
 releases.
@@ -30,10 +30,13 @@ releases.
 Module dependency order:
 
 ```text
-core -> driver/* / backends/*
+core -> craft / driver/* / backends/*
 ```
 
 - `core` is the platform module and depends on nothing in-tree.
+- `craft` assembles an application over `core`: the `craft.yaml` definition,
+  compile-time capabilities, the MCP plugin host and host primitives, and the
+  process-level manager. It is the second module the release gate manages.
 - `driver/*` provides provider inference adapters over `core`.
 - `backends/*` provides platform-specific sandbox/object-store/SQLite
   backends over `core`.
@@ -59,7 +62,10 @@ publish one or more library modules, add a new immutable
 Allowed bumps are `patch` and `minor`; pre-1.0 breaking changes use `minor`.
 Multiple pending changesets for one module are aggregated to the highest bump.
 Never edit, rename, or delete a merged changeset. Add another changeset to
-correct release intent.
+correct release intent. `module` is `core` or `craft`; the release gate rejects
+any other value, and a changeset may name both when they release together. A
+module that has never been tagged has no version cell in `CHANGELOG.md` yet: its
+row carries `-` until its first release fills it in.
 
 ### Coordinated releases
 
@@ -70,15 +76,20 @@ the versions being planned in the same batch. Check the exact versions with:
 make release-plan
 ```
 
-The release gate rejects a module whose same-batch dependency pins do not match
-the planned versions.
+Move each dependent's `go.mod` requirement to the version planned in the same
+batch; a pin left on the previous tag ships a release built against the old
+dependency, and `craft` requires `core`, so a core + craft batch is tagged
+`core` first. The release gate rejects a module whose same-batch dependency pins
+do not match the planned versions, and rejects an untidy `go.mod`.
 
 Before opening a coordinated release PR, run `make release-preflight`. It tidies
 each planned module against the same-batch versions (using temporary local
 `replace` directives), so new indirect requirements introduced by the dependency
 bump are committed with the release instead of failing the gate after the first
-tag is published. `make release-preflight-write` applies the tidy results to the
-module's `go.mod`/`go.sum`.
+tag is published. `make release-preflight-write` applies the tidy results and
+moves a same-batch requirement still sitting on the previous tag to the planned
+version. The `Validate release intent` lane runs the same preflight, so a stale
+pin or an untidy `go.mod` fails the PR that declares the release.
 
 ## Release automation
 
@@ -89,10 +100,12 @@ generated changelog update. Maintainers can reproduce it locally with
 `make release-changelog`.
 
 When the Release PR merges, the release workflow validates each planned module
-independently with `GOWORK=off`, including tidy, build, vet, and race tests.
-Only after the generated changelog and every required gate succeed are all
-module tags pushed atomically. Failed runs create no tags and are retried by
-the next push to `main` or a manual workflow dispatch.
+independently with `GOWORK=off` — tidy, build, vet, and race tests — in
+dependency order, and pushes each tag as soon as that module's own gate passes,
+so a later module can resolve the dependency released earlier in the same run.
+A module tagged earlier in a batch keeps its tag if a later gate fails; the next
+push to `main` or a manual workflow dispatch plans only the modules whose tags
+are still missing.
 
 ## Working in the workspace
 
