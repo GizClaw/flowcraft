@@ -256,8 +256,9 @@ func (processor *Processor) processConversations(ctx context.Context, scope core
 	return failures
 }
 
-// ProcessConversation scans commits after the stored watermark and returns
-// the number of commits processed.
+// ProcessConversation scans commits after the stored watermark, converges the
+// conversation's projection entries with the generation it is about to
+// publish, and returns the number of commits processed.
 func (processor *Processor) ProcessConversation(ctx context.Context, scope corememory.Scope, conversationID string) (int, error) {
 	if processor == nil {
 		return 0, errors.New("memory worker: processor is required")
@@ -271,6 +272,121 @@ func (processor *Processor) ProcessConversation(ctx context.Context, scope corem
 	if strings.TrimSpace(conversationID) == "" {
 		return 0, errors.New("memory worker: conversation id is required")
 	}
+	processed, err := processor.scanConversation(ctx, scope, conversationID)
+	if err != nil {
+		return processed, err
+	}
+	// The lanes are reconciled before the generation is published, not after:
+	// converging and publishing are one switch, and a converge that fails
+	// leaves the previous generation visible instead of publishing a
+	// generation the projections do not hold yet.
+	previous, published, err := processor.facts.ActiveGeneration(ctx, scope, conversationID)
+	if err != nil {
+		return processed, fmt.Errorf("memory worker: read derivation generation: %w", err)
+	}
+	if !published || previous != processor.policyDigest {
+		// A switch re-projects the whole active window: an earlier switch
+		// dropped the facts of the generation it replaced, and this
+		// generation may own some of them. Adopting the first generation of a
+		// conversation has nothing to re-project -- nothing ever pruned this
+		// conversation -- but it may still have to drop what a generation
+		// nobody published left in the lanes.
+		if err := processor.convergeGeneration(ctx, scope, conversationID, published); err != nil {
+			return processed, err
+		}
+	}
+	// The generation is the policy digest itself: it is what the watermarks
+	// are keyed by, so "which policy derived this" and "which generation a
+	// reader resolves" are the same answer. A pass that failed above returns
+	// before this point and leaves the previous generation visible.
+	if err := processor.facts.PublishActiveGeneration(ctx, scope, conversationID, processor.policyDigest); err != nil {
+		return processed, fmt.Errorf("memory worker: publish derivation generation: %w", err)
+	}
+	return processed, nil
+}
+
+// convergeGeneration makes the projection lanes hold the generation this pass
+// is about to publish and nothing of the generations it replaces: the facts a
+// replaced generation owns exclusively stop being projected, and every fact
+// the active generation owns is (re-)projected when the switch can have
+// pruned it. Lanes are rebuildable derived state, so the converge is expressed
+// as one ordinary delta per lane rather than as a rebuild: it is idempotent,
+// content-addressed, and leaves the lanes' manifests describing themselves.
+func (processor *Processor) convergeGeneration(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+	reproject bool,
+) error {
+	active, err := processor.facts.List(ctx, scope, conversationID, factview.ListOptions{
+		Generation: processor.policyDigest,
+	})
+	if err != nil {
+		return fmt.Errorf("memory worker: list the generation being published: %w", err)
+	}
+	keep := make(map[string]struct{}, len(active))
+	for _, fact := range active {
+		keep[fact.ID] = struct{}{}
+	}
+	generations, err := processor.facts.ListGenerations(ctx, scope, conversationID)
+	if err != nil {
+		return fmt.Errorf("memory worker: list derivation generations: %w", err)
+	}
+	// A fact two generations share is still live, so it stays projected: both
+	// generations address that content the same way, and re-deriving it under
+	// a new policy must not remove it.
+	var stale []string
+	for _, generation := range generations {
+		if generation == processor.policyDigest {
+			continue
+		}
+		replaced, err := processor.facts.List(ctx, scope, conversationID, factview.ListOptions{Generation: generation})
+		if err != nil {
+			return fmt.Errorf("memory worker: list the replaced generation %q: %w", generation, err)
+		}
+		for _, fact := range replaced {
+			if _, live := keep[fact.ID]; live {
+				continue
+			}
+			stale = append(stale, factLaneID(conversationID, fact.ID))
+		}
+	}
+	if !reproject && len(stale) == 0 {
+		// The conversation is adopting a generation nothing can have pruned,
+		// and no other generation is stored: the lanes already hold exactly
+		// this generation.
+		return nil
+	}
+	var artifacts []component.Artifact
+	if reproject {
+		artifacts = make([]component.Artifact, 0, len(active))
+		for _, fact := range active {
+			artifacts = append(artifacts, factArtifact(fact))
+		}
+		sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
+	}
+	sort.Strings(stale)
+	delta := component.ProjectionDelta{
+		Scope: scope, Projection: processor.projection,
+		Upserts: artifacts, DeleteIDs: stale,
+		SourceRevision: "generation:" + processor.policyDigest,
+	}
+	if len(artifacts) > 0 {
+		delta.SourceDigest = projectionSourceDigest(artifacts)
+	}
+	for _, lane := range processor.indexers {
+		if err := lane.Indexer.ApplyDelta(ctx, delta); err != nil {
+			return fmt.Errorf("memory worker: converge %q with the published generation: %w", lane.Name, err)
+		}
+		processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
+	}
+	processor.bump(func(stats *Stats) { stats.GenerationConvergences++ })
+	return nil
+}
+
+// scanConversation walks the commits after the stored watermark, deriving and
+// indexing each one in order.
+func (processor *Processor) scanConversation(ctx context.Context, scope corememory.Scope, conversationID string) (int, error) {
 	cursor := uint64(0)
 	if watermark, found, err := processor.checkpoints.LoadWatermark(
 		ctx, scope, streamKindMessages, conversationID, processor.policyDigest,
@@ -544,7 +660,7 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 	if processor.deriver == nil {
 		return artifacts, nil
 	}
-	derived, err := processor.deriver.Derive(ctx, chatSource(commit))
+	derived, err := processor.deriver.Derive(ctx, chatSource(commit, processor.policyDigest))
 	if err != nil {
 		return nil, fmt.Errorf("memory worker: derive commit %q: %w", commit.ID, err)
 	}
@@ -552,7 +668,7 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 		if artifact.Kind != chat.KindFact {
 			continue
 		}
-		fact, err := processor.facts.Add(ctx, factAddRequest(commit, artifact))
+		fact, err := processor.facts.Add(ctx, factAddRequest(commit, artifact, processor.policyDigest))
 		if err != nil {
 			return nil, fmt.Errorf("memory worker: publish fact %q: %w", artifact.ID, err)
 		}
@@ -578,7 +694,13 @@ func (processor *Processor) compact(ctx context.Context, commit msgsource.Commit
 	if processor.compactor == nil {
 		return nil
 	}
-	values, err := processor.facts.List(ctx, commit.Scope, commit.ConversationID, factview.ListOptions{})
+	// Compaction summarises the complete fact window of the generation this
+	// pass is building, never the active one: during a re-derivation the active
+	// generation is the one being replaced, and summarising it is exactly how
+	// the previous policy's facts survived into the new policy's summaries.
+	values, err := processor.facts.List(ctx, commit.Scope, commit.ConversationID, factview.ListOptions{
+		Generation: processor.policyDigest,
+	})
 	if err != nil {
 		return fmt.Errorf("memory worker: list facts for compaction: %w", err)
 	}
@@ -591,7 +713,11 @@ func (processor *Processor) compact(ctx context.Context, commit msgsource.Commit
 	}
 	if _, err := processor.compactor.Compact(ctx, summaryderive.CompactRequest{
 		Scope: commit.Scope, ConversationID: commit.ConversationID,
-		GenerationID: "message-commit:" + commit.ID, PolicySignature: processor.policyDigest,
+		// The summary generation is the derivation generation: the same
+		// identity keys the watermarks, names the fact generation, and labels
+		// the summary manifest, so a reader can tell that every derived view of
+		// a conversation came from one policy.
+		GenerationID: processor.policyDigest, PolicySignature: processor.policyDigest,
 		Inputs: inputs,
 	}); err != nil {
 		return fmt.Errorf("memory worker: compact summaries: %w", err)
@@ -599,7 +725,7 @@ func (processor *Processor) compact(ctx context.Context, commit msgsource.Commit
 	return nil
 }
 
-func chatSource(commit msgsource.Commit) component.Artifact {
+func chatSource(commit msgsource.Commit, generation string) component.Artifact {
 	var text strings.Builder
 	sources := make([]corememory.SourceRef, 0, len(commit.Records))
 	for _, record := range commit.Records {
@@ -616,6 +742,10 @@ func chatSource(commit msgsource.Commit) component.Artifact {
 	metadata["commit_id"] = commit.ID
 	metadata["commit_version"] = strconv.FormatUint(commit.Version, 10)
 	metadata["event_time"] = commit.CreatedAt.UTC().Format(time.RFC3339Nano)
+	// The extractor links a new fact to the facts of the generation it is
+	// building, so the generation travels with the source instead of being
+	// re-derived downstream.
+	metadata[component.GenerationMetadataKey] = generation
 	return component.Artifact{
 		Kind:    chat.KindRawMessage,
 		ID:      commit.ID,
@@ -636,7 +766,7 @@ func messageArtifact(commit msgsource.Commit, record msgsource.Record) component
 	}
 }
 
-func factAddRequest(commit msgsource.Commit, artifact component.Artifact) factview.AddRequest {
+func factAddRequest(commit msgsource.Commit, artifact component.Artifact, generation string) factview.AddRequest {
 	metadata := addressMetadata(artifact.Metadata, corememory.ContextFact, commit.ConversationID, "", "", artifact.ID)
 	addScopeMetadata(metadata, commit.Scope)
 	metadata["commit_version"] = strconv.FormatUint(commit.Version, 10)
@@ -649,7 +779,7 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact) factvi
 		eventTime = commit.CreatedAt.UTC()
 	}
 	return factview.AddRequest{
-		ID: artifact.ID, Scope: commit.Scope, ConversationID: commit.ConversationID,
+		ID: artifact.ID, Generation: generation, Scope: commit.Scope, ConversationID: commit.ConversationID,
 		Content: artifact.Content, Provenance: artifact.Sources, Metadata: metadata,
 		CanonicalHash: artifact.Metadata["canonical_hash"],
 		Entities:      decodeMetadataStrings(artifact.Metadata["entities"]),
@@ -681,11 +811,23 @@ func factArtifact(fact factview.Fact) component.Artifact {
 		metadata["event_time"] = fact.EventTime.UTC().Format(time.RFC3339Nano)
 	}
 	return component.Artifact{
-		Kind: chat.KindFact, ID: fact.ID,
+		Kind: chat.KindFact, ID: factLaneID(fact.ConversationID, fact.ID),
 		Content: fact.Content.Clone(), Entities: append([]string(nil), fact.Entities...),
 		Sources:  append([]corememory.SourceRef(nil), fact.Provenance...),
 		Metadata: metadata,
 	}
+}
+
+// factLaneID names one fact inside a projection lane. A fact id is a content
+// address -- two conversations, or two generations, that derive the same text
+// derive the same one -- while a lane is partitioned by scope. Addressing a
+// fact by its content alone would therefore let a write from one conversation
+// claim the entry of another, and would leave a generation switch unable to
+// tell whose entry it is deleting. The address carries the conversation (the
+// message and chunk lanes already do this), and item_id keeps the fact id the
+// read side hydrates by.
+func factLaneID(conversationID, factID string) string {
+	return projectionArtifactID("fact", conversationID, factID)
 }
 
 func messageSourceRef(record msgsource.Record) corememory.SourceRef {

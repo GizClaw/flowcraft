@@ -15,6 +15,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
+// testGeneration is the derivation generation these fixtures write facts
+// under: reads resolve through the generation the store publishes.
+const testGeneration = "test-generation"
+
 func TestCompositeHydratesThreeSourcesAndMissing(t *testing.T) {
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
@@ -33,7 +37,7 @@ func TestCompositeHydratesThreeSourcesAndMissing(t *testing.T) {
 		Kind: corememory.SourceMessage, ID: "conversation/" + records[0].ID, Revision: "1",
 	}
 	if _, err := facts.Add(ctx, factview.AddRequest{
-		ID: "fact-1", Scope: scope, ConversationID: "conversation", Content: textContent("fact text"),
+		ID: "fact-1", Generation: testGeneration, Scope: scope, ConversationID: "conversation", Content: textContent("fact text"),
 		Provenance: []corememory.SourceRef{source},
 	}); err != nil {
 		t.Fatal(err)

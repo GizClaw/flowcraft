@@ -23,6 +23,7 @@ const (
 // Fact is one immutable, derived fact in a conversation.
 type Fact struct {
 	ID                 string                 `json:"id"`
+	Generation         string                 `json:"generation"`
 	CanonicalHash      string                 `json:"canonical_hash"`
 	Scope              corememory.Scope       `json:"scope"`
 	ConversationID     string                 `json:"conversation_id"`
@@ -42,7 +43,11 @@ type Fact struct {
 
 // AddRequest appends one immutable fact.
 type AddRequest struct {
-	ID                 string
+	ID string
+	// Generation names the derivation policy that produced this fact. It is
+	// required: a fact belongs to exactly one generation, and reads resolve
+	// facts through the conversation's active generation.
+	Generation         string
 	CanonicalHash      string
 	Scope              corememory.Scope
 	ConversationID     string
@@ -60,7 +65,13 @@ type AddRequest struct {
 
 // ListOptions paginates by the stable (CreatedAt, ID) ordering. AfterCreatedAt
 // and AfterID form an exclusive cursor. A non-positive Limit means no limit.
+//
+// Generation selects which generation to read: empty resolves the
+// conversation's active generation, any other value reads exactly that
+// generation even while it is not yet active. Derivation reads the generation
+// it is building through the explicit form, readers through the empty one.
 type ListOptions struct {
+	Generation     string
 	AfterCreatedAt time.Time
 	AfterID        string
 	Limit          int
@@ -73,6 +84,27 @@ func cloneFact(value Fact) Fact {
 	value.Provenance = append([]corememory.SourceRef(nil), value.Provenance...)
 	value.Metadata = value.Metadata.Clone()
 	return value
+}
+
+// maxGenerationBytes bounds one generation identity: it has to survive a
+// single encoded path segment, so the limit stays well below the portable path
+// segment limit.
+const maxGenerationBytes = 128
+
+// validateGeneration rejects a generation that cannot address a stored
+// generation. The identity itself is opaque: it only has to be non-empty,
+// canonical, and short enough to name a storage subtree.
+func validateGeneration(value string) error {
+	if value == "" {
+		return errors.New("fact view: generation is required")
+	}
+	if value != strings.TrimSpace(value) {
+		return errors.New("fact view: generation must not carry surrounding whitespace")
+	}
+	if len(value) > maxGenerationBytes {
+		return fmt.Errorf("fact view: generation is %d bytes, the limit is %d", len(value), maxGenerationBytes)
+	}
+	return nil
 }
 
 // NormalizeText applies NFKC and deterministic Unicode whitespace folding
@@ -133,6 +165,9 @@ func validateFact(value Fact) error {
 	}
 	if value.CanonicalHash != CanonicalHash(value.Text) {
 		return errors.New("fact view: canonical_hash does not match text")
+	}
+	if err := validateGeneration(value.Generation); err != nil {
+		return err
 	}
 	if !reflectStringsEqual(value.Entities, NormalizeEntities(value.Entities)) {
 		return errors.New("fact view: entities are not canonical")

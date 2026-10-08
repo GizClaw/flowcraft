@@ -9,6 +9,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
+// testGeneration is the derivation generation the retrieval fixtures write
+// facts under: reads resolve through the generation the store publishes.
+const testGeneration = "test-generation"
+
 func newFactStore(t *testing.T, ws workspace.Workspace, options ...factview.Option) *factview.FactStore {
 	t.Helper()
 	logStore, err := storage.NewWorkspaceLog(ws)

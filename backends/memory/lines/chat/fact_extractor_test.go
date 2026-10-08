@@ -15,6 +15,11 @@ import (
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
 
+// chatTestGeneration is the derivation generation these fixtures write facts
+// under and hand to the extractor through the source artifact, exactly as the
+// worker does.
+const chatTestGeneration = "chat-test-generation"
+
 func TestFactExtractorStableIDProvenancePromptAndClone(t *testing.T) {
 	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"  Alice   likes tea ","entities":[],"event_time":""},{"text":"\t","entities":[],"event_time":""}]}`)}
 	runtime := fake.Assembly(t)
@@ -158,7 +163,9 @@ func rawMessageArtifact() component.Artifact {
 			{Kind: corememory.SourceMessage, ID: "m2", Revision: "2"},
 			{Kind: corememory.SourceMessage, ID: "m1", Revision: "1"},
 		},
-		Metadata: corememory.Metadata{"key": "value"},
+		Metadata: corememory.Metadata{
+			"key": "value", component.GenerationMetadataKey: chatTestGeneration,
+		},
 	}
 }
 

@@ -21,9 +21,19 @@ import (
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
 
-const schemaVersion = 2
+const (
+	// schemaVersion is the current persisted fact envelope.
+	schemaVersion = 3
+	// activeGenerationSchemaVersion is the current active-generation envelope.
+	activeGenerationSchemaVersion = 1
+	// rootPrefix is the fact view storage namespace. It moved to v2 when the
+	// generation became part of the key: facts of one generation now live in
+	// their own subtree, so a re-derivation cannot share a key -- or a
+	// canonical identity -- with the generation it replaces.
+	rootPrefix = "views/fact/v2"
 
-const mergeEventType = "fact.merge"
+	mergeEventType = "fact.merge"
+)
 
 // Option configures a FactStore.
 type Option func(*FactStore)
@@ -56,6 +66,7 @@ type FactStore struct {
 
 type persistedFact struct {
 	SchemaVersion  int    `json:"schema_version"`
+	Generation     string `json:"generation"`
 	RuntimeID      string `json:"runtime_id"`
 	UserID         string `json:"user_id"`
 	AgentID        string `json:"agent_id,omitempty"`
@@ -75,8 +86,24 @@ type mergeEvent struct {
 	EventTime       time.Time              `json:"event_time"`
 }
 
+// activeGeneration is one conversation's pointer to the generation readers
+// resolve. A derivation pass writes facts under its own generation and
+// publishes the pointer once that generation is complete, so a policy change
+// switches reads over only after the new generation is fully derived: an
+// interrupted pass leaves the previous generation visible.
+type activeGeneration struct {
+	SchemaVersion  int       `json:"schema_version"`
+	Generation     string    `json:"generation"`
+	RuntimeID      string    `json:"runtime_id"`
+	UserID         string    `json:"user_id"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	ConversationID string    `json:"conversation_id"`
+	PublishedAt    time.Time `json:"published_at"`
+}
+
 // NewFactStore constructs a Log+KV backed fact view. The KV backend must
-// support immutable writes for base fact snapshots.
+// support immutable writes for base fact snapshots and mutable writes for the
+// active-generation pointer.
 func NewFactStore(log storage.Log, kv storage.Store, options ...Option) (*FactStore, error) {
 	if nilValue(log) || nilValue(kv) {
 		return nil, errors.New("fact view: log and store are required")
@@ -103,6 +130,10 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 	if now.IsZero() {
 		return Fact{}, errors.New("fact view: clock returned zero time")
 	}
+	generation := request.Generation
+	if err := validateGeneration(generation); err != nil {
+		return Fact{}, err
+	}
 	text := NormalizeText(request.Content.Text())
 	canonicalHash := request.CanonicalHash
 	if canonicalHash == "" {
@@ -124,7 +155,7 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 		transformSignature = "manual-v1"
 	}
 	candidate := Fact{
-		ID: request.ID, CanonicalHash: canonicalHash,
+		ID: request.ID, Generation: generation, CanonicalHash: canonicalHash,
 		Scope: request.Scope, ConversationID: request.ConversationID,
 		Text: text, Content: factTextContent(text), Entities: NormalizeEntities(request.Entities),
 		Predicate: NormalizeText(request.Predicate), TemporalDetail: NormalizeText(request.TemporalDetail),
@@ -140,7 +171,22 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	existing, ok, err := store.findByCanonicalHash(ctx, request.Scope, request.ConversationID, canonicalHash)
+	// A conversation with no published generation adopts the one just written:
+	// there is nothing to hide yet, and a fresh conversation's facts have to be
+	// readable as they are derived. Once a generation is published, only
+	// PublishActiveGeneration switches reads over, so a re-derivation under a
+	// new policy never exposes a half-built replacement for the old one.
+	if _, found, err := store.activeGenerationLocked(ctx, request.Scope, request.ConversationID); err != nil {
+		return Fact{}, err
+	} else if !found {
+		if err := store.publishActiveGenerationLocked(
+			ctx, request.Scope, request.ConversationID, generation, now,
+		); err != nil {
+			return Fact{}, err
+		}
+	}
+	existing, ok, err := store.findByCanonicalHash(
+		ctx, request.Scope, request.ConversationID, generation, canonicalHash)
 	if err != nil {
 		return Fact{}, err
 	}
@@ -163,7 +209,8 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 			Provenance: candidate.Provenance, LinkedMemoryIDs: normalizeIDs(candidate.LinkedMemoryIDs, existing.Fact.ID),
 			Entities: candidate.Entities, SourceDigest: candidate.SourceDigest, EventTime: candidate.EventTime,
 		}
-		revisionDigest, err := store.writeMergeEvent(ctx, request.Scope, request.ConversationID, event)
+		revisionDigest, err := store.writeMergeEvent(
+			ctx, request.Scope, request.ConversationID, generation, event)
 		if err != nil {
 			return Fact{}, err
 		}
@@ -176,13 +223,15 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 		}
 		return merged, nil
 	}
-	if byID, exists, err := store.read(ctx, request.Scope, request.ConversationID, request.ID); err != nil {
+	if byID, exists, err := store.read(
+		ctx, request.Scope, request.ConversationID, generation, request.ID,
+	); err != nil {
 		return Fact{}, err
 	} else if exists {
 		return Fact{}, errdefs.Conflictf("fact view: fact %q already exists with canonical hash %q", request.ID, byID.Fact.CanonicalHash)
 	}
 	persisted := persistedFact{
-		SchemaVersion: schemaVersion, RuntimeID: request.Scope.RuntimeID,
+		SchemaVersion: schemaVersion, Generation: generation, RuntimeID: request.Scope.RuntimeID,
 		UserID: request.Scope.UserID, AgentID: request.Scope.AgentID, ConversationID: request.ConversationID,
 		FactID: request.ID, Fact: candidate,
 	}
@@ -190,7 +239,7 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 	if err != nil {
 		return Fact{}, fmt.Errorf("fact view: encode fact %q: %w", request.ID, err)
 	}
-	key, err := store.factKey(request.Scope, request.ConversationID, request.ID)
+	key, err := store.factKey(request.Scope, request.ConversationID, generation, request.ID)
 	if err != nil {
 		return Fact{}, err
 	}
@@ -217,7 +266,9 @@ func (store *FactStore) publish(ctx context.Context, value Fact, event, revision
 	return nil
 }
 
-// Get returns the aggregated fact for one ID.
+// Get returns the aggregated fact for one ID in the conversation's active
+// generation. A fact of a generation that no completed derivation pass
+// published is not found.
 func (store *FactStore) Get(ctx context.Context, scope corememory.Scope, conversationID, factID string) (Fact, bool, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
 		return Fact{}, false, err
@@ -227,7 +278,11 @@ func (store *FactStore) Get(ctx context.Context, scope corememory.Scope, convers
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	persisted, ok, err := store.read(ctx, scope, conversationID, factID)
+	generation, found, err := store.resolveGeneration(ctx, scope, conversationID, "")
+	if err != nil || !found {
+		return Fact{}, false, err
+	}
+	persisted, ok, err := store.read(ctx, scope, conversationID, generation, factID)
 	if err != nil || !ok {
 		return Fact{}, ok, err
 	}
@@ -236,18 +291,26 @@ func (store *FactStore) Get(ctx context.Context, scope corememory.Scope, convers
 }
 
 // List returns aggregated facts in one conversation, ordered by (CreatedAt,
-// ID).
+// ID). An empty ListOptions.Generation reads the conversation's active
+// generation; an explicit one reads exactly that generation.
 func (store *FactStore) List(ctx context.Context, scope corememory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
 		return nil, err
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	return store.listLocked(ctx, scope, conversationID, options)
+	generation, found, err := store.resolveGeneration(ctx, scope, conversationID, options.Generation)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	return store.listLocked(ctx, scope, conversationID, generation, options)
 }
 
 // ListScope scans aggregated facts across every conversation in one hard
-// scope.
+// scope, each conversation resolving its own active generation.
 func (store *FactStore) ListScope(ctx context.Context, scope corememory.Scope) ([]Fact, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
@@ -270,6 +333,152 @@ func (store *FactStore) ListScope(ctx context.Context, scope corememory.Scope) (
 	return result, nil
 }
 
+// ActiveGeneration returns the generation readers of one conversation resolve.
+// A conversation with no published generation reports none: facts whose
+// derivation never completed stay invisible instead of being served as if the
+// pass had finished.
+func (store *FactStore) ActiveGeneration(ctx context.Context, scope corememory.Scope, conversationID string) (string, bool, error) {
+	if err := validateAddress(scope, conversationID); err != nil {
+		return "", false, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.activeGenerationLocked(ctx, scope, conversationID)
+}
+
+// PublishActiveGeneration makes generation the one readers resolve for one
+// conversation. The derivation pass that owns the generation calls it once the
+// generation is complete; republishing the current generation is a no-op, so a
+// pass that finds nothing to derive does not rewrite the pointer.
+func (store *FactStore) PublishActiveGeneration(ctx context.Context, scope corememory.Scope, conversationID, generation string) error {
+	if err := validateAddress(scope, conversationID); err != nil {
+		return err
+	}
+	if err := validateGeneration(generation); err != nil {
+		return err
+	}
+	now := store.clock()
+	if now.IsZero() {
+		return errors.New("fact view: clock returned zero time")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.publishActiveGenerationLocked(ctx, scope, conversationID, generation, now)
+}
+
+// publishActiveGenerationLocked writes the pointer unless it already names
+// generation, so republishing the current generation never rewrites the record
+// or its publication time. Callers hold mu.
+func (store *FactStore) publishActiveGenerationLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID, generation string,
+	now time.Time,
+) error {
+	current, found, err := store.activeGenerationLocked(ctx, scope, conversationID)
+	if err != nil {
+		return err
+	}
+	if found && current == generation {
+		return nil
+	}
+	key, err := store.activeKey(scope, conversationID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(activeGeneration{
+		SchemaVersion: activeGenerationSchemaVersion, Generation: generation,
+		RuntimeID: scope.RuntimeID, UserID: scope.UserID, AgentID: scope.AgentID,
+		ConversationID: conversationID, PublishedAt: now.UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("fact view: encode active generation: %w", err)
+	}
+	if err := store.kv.Put(ctx, key, data); err != nil {
+		return fmt.Errorf("fact view: publish active generation: %w", err)
+	}
+	return nil
+}
+
+// ListGenerations returns every generation stored for one conversation, so
+// lifecycle tooling can retire the ones no longer active. The result is sorted
+// by generation identity.
+func (store *FactStore) ListGenerations(ctx context.Context, scope corememory.Scope, conversationID string) ([]string, error) {
+	if err := validateAddress(scope, conversationID); err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	prefix, err := store.generationsPrefix(scope, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(entries))
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		generation, err := decodeGenerationKey(prefix, entry.Key)
+		if err != nil {
+			return nil, fmt.Errorf("fact view: decode generation key %q: %w", entry.Key, err)
+		}
+		if _, ok := seen[generation]; ok {
+			continue
+		}
+		seen[generation] = struct{}{}
+		result = append(result, generation)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// resolveGeneration maps a requested generation onto the one to read. An
+// explicit request is honoured as asked -- a non-empty generation never falls
+// back to the active one -- while an empty request resolves the conversation's
+// active generation.
+func (store *FactStore) resolveGeneration(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID, requested string,
+) (string, bool, error) {
+	if requested != "" {
+		if err := validateGeneration(requested); err != nil {
+			return "", false, err
+		}
+		return requested, true, nil
+	}
+	return store.activeGenerationLocked(ctx, scope, conversationID)
+}
+
+// activeGenerationLocked reads and validates the pointer. Callers hold mu.
+func (store *FactStore) activeGenerationLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) (string, bool, error) {
+	key, err := store.activeKey(scope, conversationID)
+	if err != nil {
+		return "", false, err
+	}
+	data, err := store.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("fact view: read active generation: %w", err)
+	}
+	var active activeGeneration
+	if err := decodeJSON(data, &active); err != nil {
+		return "", false, fmt.Errorf("fact view: decode active generation: %w", err)
+	}
+	if err := validateActiveGeneration(active, scope, conversationID); err != nil {
+		return "", false, fmt.Errorf("fact view: corrupt active generation: %w", err)
+	}
+	return active.Generation, true, nil
+}
+
 // ListPublications reconstructs every immutable initial and merge publication
 // so outbox reconciliation preserves per-revision task identity.
 func (store *FactStore) ListPublications(ctx context.Context, scope corememory.Scope) ([]Publication, error) {
@@ -284,7 +493,7 @@ func (store *FactStore) ListPublications(ctx context.Context, scope corememory.S
 	}
 	var result []Publication
 	for _, current := range facts {
-		base, ok, err := store.read(ctx, scope, current.ConversationID, current.ID)
+		base, ok, err := store.read(ctx, scope, current.ConversationID, current.Generation, current.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -296,7 +505,7 @@ func (store *FactStore) ListPublications(ctx context.Context, scope corememory.S
 			Fact: current, Event: "published", RevisionDigest: revision,
 			PublicationID: publicationID(scope, current.ConversationID, current.ID, "published", revision),
 		})
-		events, err := store.mergeEvents(ctx, scope, current.ConversationID, current.ID)
+		events, err := store.mergeEvents(ctx, scope, current.ConversationID, current.Generation, current.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -323,13 +532,20 @@ func (store *FactStore) AuditSourceDigests(ctx context.Context, scope corememory
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	values, err := store.listLocked(ctx, scope, conversationID, ListOptions{})
+	generation, found, err := store.resolveGeneration(ctx, scope, conversationID, "")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	values, err := store.listLocked(ctx, scope, conversationID, generation, ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	var result []SourceDigestEvidence
 	for _, value := range values {
-		base, ok, err := store.read(ctx, scope, conversationID, value.ID)
+		base, ok, err := store.read(ctx, scope, conversationID, value.Generation, value.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +556,7 @@ func (store *FactStore) AuditSourceDigests(ctx context.Context, scope corememory
 			Name: "fact:" + value.ID, StoredDigest: base.Fact.SourceDigest,
 			ComputedDigest: digestSources(base.Fact.Provenance),
 		})
-		events, err := store.mergeEvents(ctx, scope, conversationID, value.ID)
+		events, err := store.mergeEvents(ctx, scope, conversationID, value.Generation, value.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -372,18 +588,40 @@ func (store *FactStore) listScopeLocked(ctx context.Context, scope corememory.Sc
 	if err != nil {
 		return nil, err
 	}
+	// The scope holds every generation of every conversation, so the active
+	// pointer is resolved per conversation once and reused for its facts.
+	active := make(map[string]string)
 	var result []Fact
 	for _, entry := range entries {
-		conversationID, factID, err := decodeScopeFactKey(prefix, entry.Key)
+		address, isFact, err := decodeScopeKey(prefix, entry.Key)
 		if err != nil {
 			return nil, fmt.Errorf("fact view: decode fact key %q: %w", entry.Key, err)
 		}
-		persisted, ok, err := store.read(ctx, scope, conversationID, factID)
+		if !isFact {
+			continue
+		}
+		generation, resolved := active[address.ConversationID]
+		if !resolved {
+			current, found, err := store.activeGenerationLocked(ctx, scope, address.ConversationID)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				generation = current
+			}
+			active[address.ConversationID] = generation
+		}
+		if generation != address.Generation {
+			// A generation no completed pass published, or one a later policy
+			// replaced, keeps its facts but hides them.
+			continue
+		}
+		persisted, ok, err := store.read(ctx, scope, address.ConversationID, address.Generation, address.FactID)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", factID)
+			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", address.FactID)
 		}
 		aggregated, err := store.aggregate(ctx, persisted)
 		if err != nil {
@@ -394,8 +632,8 @@ func (store *FactStore) listScopeLocked(ctx context.Context, scope corememory.Sc
 	return result, nil
 }
 
-func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
-	prefix, err := store.conversationPrefix(scope, conversationID)
+func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, conversationID, generation string, options ListOptions) ([]Fact, error) {
+	prefix, err := store.generationPrefix(scope, conversationID, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -405,11 +643,11 @@ func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, 
 	}
 	facts := make([]Fact, 0, len(entries))
 	for _, entry := range entries {
-		_, factID, err := decodeFactKey(prefix, entry.Key)
+		factID, err := decodeFactKey(prefix, entry.Key)
 		if err != nil {
 			return nil, fmt.Errorf("fact view: decode fact filename %q: %w", entry.Key, err)
 		}
-		persisted, ok, err := store.read(ctx, scope, conversationID, factID)
+		persisted, ok, err := store.read(ctx, scope, conversationID, generation, factID)
 		if err != nil {
 			return nil, err
 		}
@@ -442,8 +680,8 @@ func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, 
 	return result, nil
 }
 
-func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememory.Scope, conversationID, canonicalHash string) (persistedFact, bool, error) {
-	prefix, err := store.conversationPrefix(scope, conversationID)
+func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememory.Scope, conversationID, generation, canonicalHash string) (persistedFact, bool, error) {
+	prefix, err := store.generationPrefix(scope, conversationID, generation)
 	if err != nil {
 		return persistedFact{}, false, err
 	}
@@ -452,11 +690,11 @@ func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememor
 		return persistedFact{}, false, fmt.Errorf("fact view: scan exact identities: %w", err)
 	}
 	for _, entry := range entries {
-		_, factID, err := decodeFactKey(prefix, entry.Key)
+		factID, err := decodeFactKey(prefix, entry.Key)
 		if err != nil {
 			return persistedFact{}, false, err
 		}
-		value, ok, err := store.read(ctx, scope, conversationID, factID)
+		value, ok, err := store.read(ctx, scope, conversationID, generation, factID)
 		if err != nil {
 			return persistedFact{}, false, err
 		}
@@ -469,7 +707,7 @@ func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememor
 
 func (store *FactStore) aggregate(ctx context.Context, base persistedFact) (Fact, error) {
 	result := cloneFact(base.Fact)
-	events, err := store.mergeEvents(ctx, result.Scope, result.ConversationID, result.ID)
+	events, err := store.mergeEvents(ctx, result.Scope, result.ConversationID, result.Generation, result.ID)
 	if err != nil {
 		return Fact{}, err
 	}
@@ -494,7 +732,7 @@ func (store *FactStore) aggregate(ctx context.Context, base persistedFact) (Fact
 	return cloneFact(result), nil
 }
 
-func (store *FactStore) writeMergeEvent(ctx context.Context, scope corememory.Scope, conversationID string, event mergeEvent) (string, error) {
+func (store *FactStore) writeMergeEvent(ctx context.Context, scope corememory.Scope, conversationID, generation string, event mergeEvent) (string, error) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return "", fmt.Errorf("fact view: encode merge event: %w", err)
@@ -503,7 +741,7 @@ func (store *FactStore) writeMergeEvent(ctx context.Context, scope corememory.Sc
 	if err != nil {
 		return "", err
 	}
-	stream, err := store.mergeStream(scope, conversationID, event.FactID)
+	stream, err := store.mergeStream(scope, conversationID, generation, event.FactID)
 	if err != nil {
 		return "", err
 	}
@@ -520,16 +758,16 @@ func (store *FactStore) writeMergeEvent(ctx context.Context, scope corememory.Sc
 	return eventID, nil
 }
 
-func (store *FactStore) mergeEvents(ctx context.Context, scope corememory.Scope, conversationID, factID string) ([]storage.Event, error) {
-	stream, err := store.mergeStream(scope, conversationID, factID)
+func (store *FactStore) mergeEvents(ctx context.Context, scope corememory.Scope, conversationID, generation, factID string) ([]storage.Event, error) {
+	stream, err := store.mergeStream(scope, conversationID, generation, factID)
 	if err != nil {
 		return nil, err
 	}
 	return store.log.Read(ctx, stream, 0, 0)
 }
 
-func (store *FactStore) read(ctx context.Context, scope corememory.Scope, conversationID, factID string) (persistedFact, bool, error) {
-	key, err := store.factKey(scope, conversationID, factID)
+func (store *FactStore) read(ctx context.Context, scope corememory.Scope, conversationID, generation, factID string) (persistedFact, bool, error) {
+	key, err := store.factKey(scope, conversationID, generation, factID)
 	if err != nil {
 		return persistedFact{}, false, err
 	}
@@ -544,7 +782,7 @@ func (store *FactStore) read(ctx context.Context, scope corememory.Scope, conver
 	if err := decodeJSON(data, &persisted); err != nil {
 		return persistedFact{}, false, fmt.Errorf("fact view: decode fact %q: %w", factID, err)
 	}
-	if err := validatePersisted(persisted, scope, conversationID, factID); err != nil {
+	if err := validatePersisted(persisted, scope, conversationID, generation, factID); err != nil {
 		return persistedFact{}, false, fmt.Errorf("fact view: corrupt fact %q: %w", factID, err)
 	}
 	return persisted, true, nil
@@ -577,7 +815,7 @@ func (store *FactStore) scopePrefix(scope corememory.Scope) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "views/fact/v1/" + partition, nil
+	return rootPrefix + "/" + partition, nil
 }
 
 func (store *FactStore) conversationPrefix(scope corememory.Scope, conversationID string) (string, error) {
@@ -585,68 +823,122 @@ func (store *FactStore) conversationPrefix(scope corememory.Scope, conversationI
 	if err != nil {
 		return "", err
 	}
-	return prefix + "/" + storage.EncodeSegment(conversationID) + "/facts", nil
+	return prefix + "/conversations/" + storage.EncodeSegment(conversationID), nil
 }
 
-func (store *FactStore) factKey(scope corememory.Scope, conversationID, factID string) (string, error) {
+func (store *FactStore) generationsPrefix(scope corememory.Scope, conversationID string) (string, error) {
 	prefix, err := store.conversationPrefix(scope, conversationID)
 	if err != nil {
 		return "", err
 	}
-	return prefix + "/" + storage.EncodeSegment(factID), nil
+	return prefix + "/generations", nil
 }
 
-func (store *FactStore) mergeStream(scope corememory.Scope, conversationID, factID string) (string, error) {
-	key, err := store.factKey(scope, conversationID, factID)
+func (store *FactStore) generationPrefix(scope corememory.Scope, conversationID, generation string) (string, error) {
+	prefix, err := store.generationsPrefix(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/" + storage.EncodeSegment(generation), nil
+}
+
+func (store *FactStore) factKey(scope corememory.Scope, conversationID, generation, factID string) (string, error) {
+	prefix, err := store.generationPrefix(scope, conversationID, generation)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/facts/" + storage.EncodeSegment(factID), nil
+}
+
+func (store *FactStore) mergeStream(scope corememory.Scope, conversationID, generation, factID string) (string, error) {
+	key, err := store.factKey(scope, conversationID, generation, factID)
 	if err != nil {
 		return "", err
 	}
 	return key + "/merges", nil
 }
 
-func decodeFactKey(prefix, key string) (string, string, error) {
-	suffix := strings.TrimPrefix(key, prefix+"/")
-	if suffix == key {
-		return "", "", errors.New("fact key outside prefix")
-	}
-	segments := strings.Split(suffix, "/")
-	if len(segments) != 1 {
-		return "", "", errors.New("fact key has unexpected depth")
-	}
-	factID, err := storage.DecodeSegment(segments[0])
+func (store *FactStore) activeKey(scope corememory.Scope, conversationID string) (string, error) {
+	prefix, err := store.conversationPrefix(scope, conversationID)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	// Recover the conversation from the prefix segments.
-	prefixSegments := strings.Split(prefix, "/")
-	if len(prefixSegments) < 2 {
-		return "", "", errors.New("invalid fact prefix")
-	}
-	conversationID, err := storage.DecodeSegment(prefixSegments[len(prefixSegments)-2])
-	if err != nil {
-		return "", "", err
-	}
-	return conversationID, factID, nil
+	return prefix + "/active", nil
 }
 
-func decodeScopeFactKey(prefix, key string) (string, string, error) {
+// decodeFactKey parses one key below a generation prefix into a fact ID.
+func decodeFactKey(prefix, key string) (string, error) {
 	suffix := strings.TrimPrefix(key, prefix+"/")
 	if suffix == key {
-		return "", "", errors.New("fact key outside prefix")
+		return "", errors.New("fact key outside prefix")
+	}
+	segments := strings.Split(suffix, "/")
+	if len(segments) != 2 || segments[0] != "facts" {
+		return "", errors.New("fact key has unexpected shape")
+	}
+	factID, err := storage.DecodeSegment(segments[1])
+	if err != nil {
+		return "", err
+	}
+	return factID, nil
+}
+
+// decodeGenerationKey parses one key below a generations prefix into a
+// generation identity. Generations are directories, not keys, so the identity
+// is recovered from the fact keys stored inside them.
+func decodeGenerationKey(prefix, key string) (string, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return "", errors.New("generation key outside prefix")
 	}
 	segments := strings.Split(suffix, "/")
 	if len(segments) != 3 || segments[1] != "facts" {
-		return "", "", errors.New("fact key has unexpected shape")
+		return "", errors.New("generation key has unexpected shape")
 	}
-	conversationID, err := storage.DecodeSegment(segments[0])
+	generation, err := storage.DecodeSegment(segments[0])
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	factID, err := storage.DecodeSegment(segments[2])
+	return generation, nil
+}
+
+// factAddress is one stored fact's full address. The generation is part of it
+// because a conversation keeps every generation it ever derived.
+type factAddress struct {
+	ConversationID string
+	Generation     string
+	FactID         string
+}
+
+// decodeScopeKey parses one key below a scope prefix. Keys that are not fact
+// addresses -- the active-generation pointer of a conversation -- report
+// isFact false instead of an error, so a scope scan can skip them.
+func decodeScopeKey(prefix, key string) (factAddress, bool, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return factAddress{}, false, errors.New("fact key outside prefix")
+	}
+	segments := strings.Split(suffix, "/")
+	if len(segments) == 3 && segments[0] == "conversations" && segments[2] == "active" {
+		return factAddress{}, false, nil
+	}
+	if len(segments) != 6 || segments[0] != "conversations" || segments[2] != "generations" ||
+		segments[4] != "facts" {
+		return factAddress{}, false, errors.New("fact key has unexpected shape")
+	}
+	conversationID, err := storage.DecodeSegment(segments[1])
 	if err != nil {
-		return "", "", err
+		return factAddress{}, false, err
 	}
-	return conversationID, factID, nil
+	generation, err := storage.DecodeSegment(segments[3])
+	if err != nil {
+		return factAddress{}, false, err
+	}
+	factID, err := storage.DecodeSegment(segments[5])
+	if err != nil {
+		return factAddress{}, false, err
+	}
+	return factAddress{ConversationID: conversationID, Generation: generation, FactID: factID}, true, nil
 }
 
 func mergeEventID(data []byte) (string, error) {
@@ -751,9 +1043,32 @@ func validateAddress(scope corememory.Scope, conversationID string) error {
 	return nil
 }
 
-func validatePersisted(value persistedFact, scope corememory.Scope, conversationID, factID string) error {
+// validateActiveGeneration re-checks the pointer against the address it was
+// read from, so a record written under another conversation can never redirect
+// this one's reads.
+func validateActiveGeneration(value activeGeneration, scope corememory.Scope, conversationID string) error {
+	if value.SchemaVersion != activeGenerationSchemaVersion {
+		return fmt.Errorf("unsupported schema_version %d", value.SchemaVersion)
+	}
+	if err := validateGeneration(value.Generation); err != nil {
+		return err
+	}
+	if value.RuntimeID != scope.RuntimeID || value.UserID != scope.UserID ||
+		value.AgentID != scope.AgentID || value.ConversationID != conversationID {
+		return errors.New("active generation address does not match fact key")
+	}
+	if value.PublishedAt.IsZero() {
+		return errors.New("active generation has no publication time")
+	}
+	return nil
+}
+
+func validatePersisted(value persistedFact, scope corememory.Scope, conversationID, generation, factID string) error {
 	if value.SchemaVersion != schemaVersion {
 		return fmt.Errorf("unsupported schema_version %d", value.SchemaVersion)
+	}
+	if value.Generation != generation {
+		return errors.New("persisted generation does not match fact key")
 	}
 	if value.RuntimeID != scope.RuntimeID || value.UserID != scope.UserID ||
 		value.AgentID != scope.AgentID ||
@@ -761,8 +1076,8 @@ func validatePersisted(value persistedFact, scope corememory.Scope, conversation
 		return errors.New("persisted address does not match fact key")
 	}
 	fact := value.Fact
-	if fact.ID != factID || fact.Scope != scope || fact.ConversationID != conversationID ||
-		fact.CreatedAt.IsZero() {
+	if fact.ID != factID || fact.Generation != generation || fact.Scope != scope ||
+		fact.ConversationID != conversationID || fact.CreatedAt.IsZero() {
 		return errors.New("fact address or authority fields are invalid")
 	}
 	return validateFact(fact)

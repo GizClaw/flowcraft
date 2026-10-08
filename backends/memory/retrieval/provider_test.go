@@ -44,7 +44,7 @@ func TestProviderReinforcesOnlyActuallyReturnedLongTermItems(t *testing.T) {
 	facts := newFactStore(t, newTestWorkspace(t))
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
 	for _, id := range []string{"a", "b"} {
-		_, _ = facts.Add(ctx, factview.AddRequest{ID: id, Scope: scope, ConversationID: "conversation",
+		_, _ = facts.Add(ctx, factview.AddRequest{ID: id, Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 			Content: providerText(id), Provenance: []corememory.SourceRef{source}})
 	}
 	search := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
@@ -81,7 +81,7 @@ func TestProviderKeepsEqualLocalFactIDsAcrossConversations(t *testing.T) {
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
 	for _, conversationID := range []string{"conversation-a", "conversation-b"} {
 		if _, err := facts.Add(ctx, factview.AddRequest{
-			ID: "same-fact", Scope: scope, ConversationID: conversationID,
+			ID: "same-fact", Generation: testGeneration, Scope: scope, ConversationID: conversationID,
 			Content: providerText(conversationID), Provenance: []corememory.SourceRef{source},
 		}); err != nil {
 			t.Fatal(err)
@@ -121,7 +121,7 @@ func TestProviderHonorsExplicitSoftForgottenOverlay(t *testing.T) {
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	facts := newFactStore(t, newTestWorkspace(t))
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
-	_, _ = facts.Add(ctx, factview.AddRequest{ID: "hidden", Scope: scope, ConversationID: "conversation",
+	_, _ = facts.Add(ctx, factview.AddRequest{ID: "hidden", Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 		Content: providerText("hidden"), Provenance: []corememory.SourceRef{source}})
 	search := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
 		return []component.Candidate{providerCandidate("hidden", 1)}, nil
@@ -190,7 +190,7 @@ func TestContextProviderIntegrationDegradesHydratesFiltersAndPacks(t *testing.T)
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
 	for _, fact := range []struct{ id, text string }{{"high", "important fact"}, {"low", "less relevant"}} {
 		if _, err := facts.Add(ctx, factview.AddRequest{
-			ID: fact.id, Scope: scope, ConversationID: "conversation",
+			ID: fact.id, Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 			Content: providerText(fact.text), Provenance: []corememory.SourceRef{source},
 		}); err != nil {
 			t.Fatal(err)
@@ -241,7 +241,7 @@ func TestFactEntityProjectionProviderIntegration(t *testing.T) {
 	facts := newFactStore(t, ws)
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "conversation/message"}
 	if _, err := facts.Add(ctx, factview.AddRequest{
-		ID: "fact", Scope: scope, ConversationID: "conversation",
+		ID: "fact", Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 		Content: providerText("Sam Altman leads OpenAI"), Entities: []string{"OpenAI", "Sam Altman"},
 		Provenance: []corememory.SourceRef{source},
 	}); err != nil {
@@ -282,7 +282,7 @@ func TestProviderMinScoreStableAcrossCandidateSets(t *testing.T) {
 	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
 	for _, id := range []string{"target", "distractor"} {
 		if _, err := facts.Add(ctx, factview.AddRequest{
-			ID: id, Scope: scope, ConversationID: "conversation",
+			ID: id, Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 			Content: providerText(id), Provenance: []corememory.SourceRef{source},
 		}); err != nil {
 			t.Fatal(err)

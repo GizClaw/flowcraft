@@ -492,8 +492,20 @@ func (extractor *FactExtractor) associate(ctx context.Context, input component.A
 	scope, conversationID, ok := artifactAddress(input.Metadata)
 	var existing []factview.Fact
 	if ok && extractor.config.Facts != nil {
+		// Link candidates come from the generation this pass is building. The
+		// active generation would be the one being replaced, and a link to a
+		// fact that disappears when the pass publishes would leave the new
+		// generation with a dangling reference. Reading the active generation
+		// here would be exactly that, so an absent generation fails instead of
+		// resolving to a generation this derivation does not own.
+		generation := strings.TrimSpace(input.Metadata[component.GenerationMetadataKey])
+		if generation == "" {
+			return errors.New("chat line: source artifact carries no derivation generation")
+		}
 		var err error
-		existing, err = extractor.config.Facts.List(ctx, scope, conversationID, factview.ListOptions{})
+		existing, err = extractor.config.Facts.List(ctx, scope, conversationID, factview.ListOptions{
+			Generation: generation,
+		})
 		if err != nil {
 			return fmt.Errorf("chat line: list link candidates: %w", err)
 		}

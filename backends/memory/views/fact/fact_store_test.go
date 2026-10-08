@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	factScope  = corememory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "agent"}
-	factSource = corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message-1", Revision: "1"}
+	factScope      = corememory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "agent"}
+	factSource     = corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message-1", Revision: "1"}
+	factGeneration = "generation-1"
 )
 
 func TestFactStoreAddRetryConflictListAndClone(t *testing.T) {
@@ -93,7 +94,7 @@ func TestFactStoreIsolationReopenTraversalAndConcurrency(t *testing.T) {
 	}
 	otherScope := corememory.Scope{RuntimeID: "runtime", UserID: "other"}
 	if _, err := reopened.Add(ctx, AddRequest{
-		ID: "same", Scope: otherScope, ConversationID: "conversation",
+		ID: "same", Generation: factGeneration, Scope: otherScope, ConversationID: "conversation",
 		Content: textContent("other"), Provenance: []corememory.SourceRef{factSource},
 	}); err != nil {
 		t.Fatal(err)
@@ -104,12 +105,12 @@ func TestFactStoreIsolationReopenTraversalAndConcurrency(t *testing.T) {
 	}
 	malicious := corememory.Scope{RuntimeID: "../runtime", UserID: "/../../user"}
 	if _, err := reopened.Add(ctx, AddRequest{
-		ID: "../fact", Scope: malicious, ConversationID: "../../conversation",
+		ID: "../fact", Generation: factGeneration, Scope: malicious, ConversationID: "../../conversation",
 		Content: textContent("safe"), Provenance: []corememory.SourceRef{factSource},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	target, err := reopened.factKey(malicious, "../../conversation", "../fact")
+	target, err := reopened.factKey(malicious, "../../conversation", factGeneration, "../fact")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,10 @@ func TestFactStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 			t.Fatal(err)
 		}
 		store := newFactStore(t, ws)
-		key, keyErr := store.factKey(factScope, "conversation", "fact")
+		if err := store.PublishActiveGeneration(ctx, factScope, "conversation", factGeneration); err != nil {
+			t.Fatal(err)
+		}
+		key, keyErr := store.factKey(factScope, "conversation", factGeneration, "fact")
 		if keyErr != nil {
 			t.Fatal(keyErr)
 		}
@@ -150,7 +154,7 @@ func TestFactStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, keyErr := store.factKey(factScope, "conversation", "fact")
+	key, keyErr := store.factKey(factScope, "conversation", factGeneration, "fact")
 	if keyErr != nil {
 		t.Fatal(keyErr)
 	}
@@ -169,7 +173,7 @@ func TestFactStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 
 func factRequest(id, text string) AddRequest {
 	return AddRequest{
-		ID: id, Scope: factScope, ConversationID: "conversation",
+		ID: id, Generation: factGeneration, Scope: factScope, ConversationID: "conversation",
 		Content: textContent(text), Provenance: []corememory.SourceRef{factSource},
 		Metadata: corememory.Metadata{"key": "value"},
 	}

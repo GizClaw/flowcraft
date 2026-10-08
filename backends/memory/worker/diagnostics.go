@@ -12,12 +12,13 @@ import (
 
 // Stats is a snapshot of one processor's cumulative counters.
 type Stats struct {
-	CommitsProcessed   int64  `json:"commits_processed"`
-	FactsPublished     int64  `json:"facts_published"`
-	DocumentsProcessed int64  `json:"documents_processed"`
-	ChunksPublished    int64  `json:"chunks_published"`
-	IndexDeltasApplied int64  `json:"index_deltas_applied"`
-	LastError          string `json:"last_error,omitempty"`
+	CommitsProcessed       int64  `json:"commits_processed"`
+	FactsPublished         int64  `json:"facts_published"`
+	DocumentsProcessed     int64  `json:"documents_processed"`
+	ChunksPublished        int64  `json:"chunks_published"`
+	IndexDeltasApplied     int64  `json:"index_deltas_applied"`
+	GenerationConvergences int64  `json:"generation_convergences"`
+	LastError              string `json:"last_error,omitempty"`
 }
 
 // ConversationDiagnostics reports one conversation's derivation cursor.

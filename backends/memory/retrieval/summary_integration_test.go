@@ -24,7 +24,7 @@ func TestFactCompactProviderIntegration(t *testing.T) {
 		Kind: corememory.SourceMessage, ID: "conversation/message", Revision: "1",
 	}
 	fact, err := facts.Add(ctx, factview.AddRequest{
-		ID: "fact", Scope: scope, ConversationID: "conversation",
+		ID: "fact", Generation: testGeneration, Scope: scope, ConversationID: "conversation",
 		Content:  providerText("prefers deterministic architecture"),
 		Entities: []string{"architecture"}, Provenance: []corememory.SourceRef{source},
 	})

@@ -15,6 +15,13 @@ import (
 // ArtifactKind identifies a typed value moving through write-side derivation.
 type ArtifactKind string
 
+// GenerationMetadataKey names the derivation generation on a write-side
+// artifact. The generation is the identity of the derivation policy that owns a
+// pass, and it travels with the derived values so a deriver reads and writes
+// the generation it is building instead of whichever one readers currently
+// resolve.
+const GenerationMetadataKey = "generation"
+
 // Artifact is an immutable-by-convention value produced by a Deriver.
 // ID must be stable for the same logical value.
 type Artifact struct {

@@ -236,7 +236,7 @@ func TestFactExtractorLinksEntityEmbeddingTopFiveAndTimeWindow(t *testing.T) {
 	}
 	for _, item := range items {
 		_, err := store.Add(ctx, factview.AddRequest{
-			ID: item.id, Scope: scope, ConversationID: "conversation",
+			ID: item.id, Generation: chatTestGeneration, Scope: scope, ConversationID: "conversation",
 			Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: item.text}}},
 			Entities: item.entities, EventTime: item.at,
 			LinkedMemoryIDs: item.links,
@@ -281,7 +281,8 @@ func TestFactExtractorLinksEntityEmbeddingTopFiveAndTimeWindow(t *testing.T) {
 	}
 	merged, err := store.Add(ctx, factview.AddRequest{
 		ID: got[0].ID, CanonicalHash: got[0].Metadata["canonical_hash"],
-		Scope: scope, ConversationID: "conversation", Content: got[0].Content,
+		Generation: chatTestGeneration,
+		Scope:      scope, ConversationID: "conversation", Content: got[0].Content,
 		Entities:  decodeStrings(got[0].Metadata["entities"]),
 		EventTime: eventTime, LinkedMemoryIDs: duplicateLinks, Provenance: got[0].Sources,
 		SourceDigest: got[0].Metadata["source_digest"], TransformSignature: got[0].Metadata["transform_signature"],
@@ -292,6 +293,38 @@ func TestFactExtractorLinksEntityEmbeddingTopFiveAndTimeWindow(t *testing.T) {
 	if !containsString(merged.Entities, "alice") || !containsString(merged.Entities, "legacy") ||
 		!containsString(merged.LinkedMemoryIDs, "legacy-link") || len(merged.Provenance) != 3 {
 		t.Fatalf("duplicate merge = %#v", merged)
+	}
+}
+
+// TestFactExtractorRefusesASourceWithoutAGeneration pins the boundary between
+// the two fact planes: linking reads the generation the pass is building, so a
+// source artifact that names no generation is refused instead of resolving to
+// whichever generation readers currently serve.
+func TestFactExtractorRefusesASourceWithoutAGeneration(t *testing.T) {
+	runtime, generate, embed, _ := associationRuntime(t)
+	logStore, err := storage.NewWorkspaceLog(newTestWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(newTestWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := factview.NewFactStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.Runtime, config.GenerateModel, config.EmbedModel, config.Facts = runtime, &generate, &embed, store
+	extractor, err := NewFactExtractorWithConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := addressedRawMessageArtifact()
+	delete(input.Metadata, component.GenerationMetadataKey)
+	if _, err := extractor.Derive(context.Background(), input); err == nil ||
+		!strings.Contains(err.Error(), "generation") {
+		t.Fatalf("derive err = %v, want a refusal of a source without a generation", err)
 	}
 }
 
