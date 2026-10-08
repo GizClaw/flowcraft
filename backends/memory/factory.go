@@ -264,6 +264,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Messages: messages,
 		Hydrator: &hydrate.Composite{Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries},
 		Packer:   pack.New(nil),
+		// The fact store owns the published generation, and the read plane
+		// resolves through it: the summary branch labels every record with the
+		// generation that published it, so a request that names the active one
+		// never gets served a summary of a replaced policy.
+		Generations: facts,
 		Recent: retrieval.RecentConfig{
 			MaxItems:  settings.Recent.MaxItems,
 			MaxTokens: settings.Recent.MaxTokens,

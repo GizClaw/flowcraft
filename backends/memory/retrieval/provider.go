@@ -46,6 +46,10 @@ type Provider struct {
 	Recent        RecentConfig
 	ItemReranker  ItemReranker
 	ScoreAdjuster ScoreAdjuster
+	// Generations labels a search with the generation the request reads under,
+	// so a lane that publishes its own generation can be told that its view
+	// belongs to a replaced policy.
+	Generations GenerationResolver
 	// SourceQuotes is how many source messages one derived fact may pull into
 	// the context (0 disables the expansion). A fact is a paraphrase, so the
 	// wording the conversation actually used -- a title, a quoted number, a
@@ -138,6 +142,14 @@ type BulkScoreAdjuster interface {
 	ScoreOverlay(context.Context, corememory.Scope) (map[string]float64, error)
 }
 
+// GenerationResolver reports the derivation generation readers should serve for
+// one conversation. Lanes that store their own generation label -- the summary
+// branch publishes one with its manifest -- drop candidates from a replaced
+// generation instead of serving a view of a policy that no longer applies.
+type GenerationResolver interface {
+	ActiveGeneration(context.Context, corememory.Scope, string) (string, bool, error)
+}
+
 // ProviderConfig declares the fixed recent + hybrid + optional summary path.
 type ProviderConfig struct {
 	Fusion        *fusion.Fusion
@@ -147,6 +159,10 @@ type ProviderConfig struct {
 	Recent        RecentConfig
 	ItemReranker  ItemReranker
 	ScoreAdjuster ScoreAdjuster
+	// Generations labels a search with the generation the request reads under.
+	// Without it a lane that cannot resolve a generation itself has nothing to
+	// compare against, and a summary of a replaced policy stays visible.
+	Generations GenerationResolver
 	// SourceQuotes is how many source messages one derived fact may pull into
 	// the context (0 disables the expansion). A fact is a paraphrase, so the
 	// wording the conversation actually used -- a title, a quoted number, a
@@ -197,6 +213,7 @@ func NewProviderWithConfig(config ProviderConfig) (*Provider, error) {
 		Hydrator: config.Hydrator, Packer: config.Packer, Recent: config.Recent,
 		ItemReranker:  config.ItemReranker,
 		ScoreAdjuster: config.ScoreAdjuster,
+		Generations:   config.Generations,
 		SourceQuotes:  config.SourceQuotes,
 		ExpandParents: config.ExpandParents,
 		RecallEvents:  config.RecallEvents, Visibility: config.Visibility, Clock: config.Clock,
@@ -227,6 +244,21 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 	}
 	if request.ConversationID != "" {
 		metadata["conversation_id"] = request.ConversationID
+	}
+	if !isNilInterface(provider.Generations) && request.ConversationID != "" {
+		generation, found, generationErr := provider.Generations.ActiveGeneration(
+			ctx, request.Scope, request.ConversationID)
+		if generationErr != nil {
+			// Reading the wrong generation is a correctness leak, not a
+			// degradation: without the label a lane falls back to whatever its
+			// own manifest holds. Fail the request instead of serving it.
+			return corememory.ContextResult{}, corememory.NewError(
+				corememory.KindProviderFailure, "context",
+				fmt.Errorf("retrieval: resolve derivation generation: %w", generationErr))
+		}
+		if found {
+			metadata["generation_id"] = generation
+		}
 	}
 	if len(request.DatasetIDs) > 0 {
 		encoded, _ := json.Marshal(request.DatasetIDs)
