@@ -434,6 +434,83 @@ func (store *FactStore) ListGenerations(ctx context.Context, scope corememory.Sc
 	return result, nil
 }
 
+// RetireGeneration removes a generation's stored facts and returns how many
+// records it removed. The active generation cannot be retired -- reads have to
+// resolve somewhere -- and retiring an absent generation is a no-op, so a sweep
+// can be retried.
+//
+// Retirement is unreachability, not erasure: the merge-event streams live in
+// the append-only Log, whose contract has no delete, and the Log is the
+// authority a repair replays from. A retired generation therefore stops being
+// readable while its history stays auditable.
+func (store *FactStore) RetireGeneration(ctx context.Context, scope corememory.Scope, conversationID, generation string) (int, error) {
+	if err := validateAddress(scope, conversationID); err != nil {
+		return 0, err
+	}
+	if err := validateGeneration(generation); err != nil {
+		return 0, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, found, err := store.activeGenerationLocked(ctx, scope, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	if found && current == generation {
+		return 0, fmt.Errorf("fact view: generation %q is active for conversation %q", generation, conversationID)
+	}
+	prefix, err := store.generationPrefix(scope, conversationID, generation)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if err := store.kv.Delete(ctx, entry.Key); err != nil {
+			return removed, fmt.Errorf("fact view: retire %q: %w", entry.Key, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+// RetireGenerations retires every generation of one conversation except the
+// ones named, and reports how many records it removed. Which generations to
+// keep is a retention decision -- the active one plus its predecessor is the
+// conservative choice, since the predecessor is what a policy rollback reads --
+// so the caller names them instead of this store guessing. The active
+// generation is always kept: it is what reads resolve.
+func (store *FactStore) RetireGenerations(ctx context.Context, scope corememory.Scope, conversationID string, keep ...string) (int, error) {
+	retained := make(map[string]struct{}, len(keep))
+	for _, generation := range keep {
+		retained[generation] = struct{}{}
+	}
+	if active, found, err := store.ActiveGeneration(ctx, scope, conversationID); err != nil {
+		return 0, err
+	} else if found {
+		retained[active] = struct{}{}
+	}
+	generations, err := store.ListGenerations(ctx, scope, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, generation := range generations {
+		if _, ok := retained[generation]; ok {
+			continue
+		}
+		count, err := store.RetireGeneration(ctx, scope, conversationID, generation)
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
+}
+
 // resolveGeneration maps a requested generation onto the one to read. An
 // explicit request is honoured as asked -- a non-empty generation never falls
 // back to the active one -- while an empty request resolves the conversation's
