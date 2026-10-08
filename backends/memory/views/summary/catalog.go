@@ -518,14 +518,24 @@ func (store *SummaryStore) activeCatalogRoot(scope corememory.Scope, conversatio
 	return "views/summary/v1/" + partition + "/conversations/" + storage.EncodeSegment(conversationID), nil
 }
 
+// generationsDir is the area holding one bookmark per generation that published
+// a manifest, and the set a retention sweep retires from.
+func (store *SummaryStore) generationsDir(scope corememory.Scope, conversationID string) (string, error) {
+	root, err := store.activeCatalogRoot(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return root + "/generations", nil
+}
+
 // generationManifestPath names the bookmark of one generation's manifest.
 func (store *SummaryStore) generationManifestPath(
 	scope corememory.Scope,
 	conversationID, generation string,
 ) (string, error) {
-	root, err := store.activeCatalogRoot(scope, conversationID)
+	dir, err := store.generationsDir(scope, conversationID)
 	if err != nil {
 		return "", err
 	}
-	return root + "/generations/" + storage.EncodeSegment(generation) + ".json", nil
+	return dir + "/" + storage.EncodeSegment(generation) + ".json", nil
 }

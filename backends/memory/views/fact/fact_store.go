@@ -483,6 +483,9 @@ func (store *FactStore) RetireGeneration(ctx context.Context, scope corememory.S
 // conservative choice, since the predecessor is what a policy rollback reads --
 // so the caller names them instead of this store guessing. The active
 // generation is always kept: it is what reads resolve.
+//
+// Call Assembly.RetireGenerations to sweep this view together with the summary
+// bookmarks of the same generation.
 func (store *FactStore) RetireGenerations(ctx context.Context, scope corememory.Scope, conversationID string, keep ...string) (int, error) {
 	retained := make(map[string]struct{}, len(keep))
 	for _, generation := range keep {

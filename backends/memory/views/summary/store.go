@@ -254,6 +254,164 @@ func (store *SummaryStore) PublishGeneration(
 	return manifest, true, nil
 }
 
+// ListGenerations returns every generation whose manifest is bookmarked for one
+// conversation, sorted by identity. A bookmark outlives the publication that
+// made it -- that is what makes a rollback possible -- so this is the set a
+// retention policy can still retire, not the set the branch serves.
+func (store *SummaryStore) ListGenerations(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) ([]string, error) {
+	if ctx == nil {
+		return nil, errors.New("summary view: context is required")
+	}
+	if err := validateAddress(scope, conversationID); err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.listGenerationsLocked(ctx, scope, conversationID)
+}
+
+func (store *SummaryStore) listGenerationsLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) ([]string, error) {
+	dir, err := store.generationsDir(scope, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, dir)
+	if err != nil {
+		return nil, fmt.Errorf("summary view: list generations: %w", err)
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		generation, ok, err := generationFromKey(dir, entry.Key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		result = append(result, generation)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// RetireGeneration drops the bookmark of one generation and reports how many
+// bookmarks it removed -- one, or zero when the conversation does not hold it: a
+// retired generation is absent, not an error, so a sweep can be retried. The
+// active generation cannot be retired; it is the manifest a rollback is served
+// from, and a generation already back on the branch is kept rather than dropped
+// under the reader.
+//
+// Only the bookmark goes. The immutable records stay where they are, because a
+// record is a content address shared by every generation that compacted the
+// same inputs -- dropping the ones this generation happened to reference would
+// break the generations a retention policy keeps. Retirement is unreachability,
+// not erasure: the retired generation stops being servable while everything the
+// kept generations read stays intact.
+//
+// Call Assembly.RetireGenerations to sweep this view together with the facts the
+// same generation derived.
+func (store *SummaryStore) RetireGeneration(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID, generation string,
+) (int, error) {
+	if ctx == nil {
+		return 0, errors.New("summary view: context is required")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	generation = strings.TrimSpace(generation)
+	if err := validateAddress(scope, conversationID); err != nil {
+		return 0, err
+	}
+	if generation == "" {
+		return 0, errors.New("summary view: generation_id is required")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if active, found, err := store.loadActiveLocked(ctx, scope, conversationID); err != nil {
+		return 0, err
+	} else if found && active.GenerationID == generation {
+		return 0, fmt.Errorf("summary view: generation %q is active for conversation %q", generation, conversationID)
+	}
+	key, err := store.generationManifestPath(scope, conversationID, generation)
+	if err != nil {
+		return 0, err
+	}
+	head, _, found, err := store.readHeadLocked(ctx, key, scope, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	if head.GenerationID != generation {
+		return 0, fmt.Errorf(
+			"summary view: generation %q is bookmarked to manifest of %q", generation, head.GenerationID)
+	}
+	if err := store.kv.Delete(ctx, key); err != nil {
+		return 0, fmt.Errorf("summary view: retire generation %q: %w", generation, err)
+	}
+	return 1, nil
+}
+
+// RetireGenerations retires every bookmarked generation of one conversation
+// except the ones named, and reports how many bookmarks it removed. The active
+// generation is always kept: reads resolve to its manifest. Which other
+// generations to keep is a retention decision -- the active one plus its
+// predecessor is the conservative choice, since the predecessor is what a
+// rollback reads -- so the caller names them instead of this store guessing.
+func (store *SummaryStore) RetireGenerations(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+	keep ...string,
+) (int, error) {
+	if ctx == nil {
+		return 0, errors.New("summary view: context is required")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if err := validateAddress(scope, conversationID); err != nil {
+		return 0, err
+	}
+	retained := make(map[string]struct{}, len(keep)+1)
+	for _, generation := range keep {
+		if generation = strings.TrimSpace(generation); generation != "" {
+			retained[generation] = struct{}{}
+		}
+	}
+	if active, found, err := store.LoadActive(ctx, scope, conversationID); err != nil {
+		return 0, err
+	} else if found {
+		retained[active.GenerationID] = struct{}{}
+	}
+	generations, err := store.ListGenerations(ctx, scope, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, generation := range generations {
+		if _, ok := retained[generation]; ok {
+			continue
+		}
+		// RetireGeneration re-reads the active generation under its own lock,
+		// so a publication that lands mid-sweep is kept, not retired.
+		count, err := store.RetireGeneration(ctx, scope, conversationID, generation)
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
+}
+
 // ListActive returns the active records of one conversation.
 func (store *SummaryStore) ListActive(
 	ctx context.Context,
@@ -543,6 +701,21 @@ func recordIDFromKey(prefix, key string) (string, bool, error) {
 		return "", true, err
 	}
 	return id, true, nil
+}
+
+func generationFromKey(dir, key string) (string, bool, error) {
+	suffix := strings.TrimPrefix(key, dir+"/")
+	if suffix == key {
+		return "", false, errors.New("summary view: generation key outside prefix")
+	}
+	if !strings.HasSuffix(suffix, ".json") {
+		return "", false, nil
+	}
+	generation, err := storage.DecodeSegment(strings.TrimSuffix(suffix, ".json"))
+	if err != nil {
+		return "", true, err
+	}
+	return generation, true, nil
 }
 
 func decodeStrict(data []byte, destination any) error {

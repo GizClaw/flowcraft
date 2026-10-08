@@ -316,6 +316,67 @@ func (assembly *Assembly) Maintain(ctx context.Context, scope corememory.Scope) 
 	return assembly.maintain.RunScope(ctx, scope)
 }
 
+// RetireResult reports what one retention sweep removed, per derived view.
+type RetireResult struct {
+	// Facts counts the stored fact records of the retired generations.
+	Facts int `json:"facts"`
+	// Summaries counts the retired manifest bookmarks. Summary records are
+	// content addressed and shared between generations, so none are removed.
+	Summaries int `json:"summaries"`
+}
+
+// RetireGenerations runs one host-invoked retention sweep over a conversation:
+// every derived generation a retention policy no longer keeps leaves the read
+// paths in one call. Whatever each view is serving stays -- reads have to
+// resolve somewhere -- and the caller names the rest to keep, exactly as the
+// views' own sweeps do.
+//
+// One call, because the views share the generation identity: retiring the facts
+// of a generation while its summary manifest stays bookmarked leaves a rollback
+// that serves summaries of facts that are gone. The sweep therefore keeps every
+// generation a view is serving, so a policy change that has left the two views
+// on different generations is not pruned while they disagree, and it retires
+// the summary bookmarks before the facts: a sweep interrupted between the two
+// leaves unreachable facts, which the next sweep collects, instead of a
+// bookmark to facts that no longer exist.
+func (assembly *Assembly) RetireGenerations(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+	keep ...string,
+) (RetireResult, error) {
+	if assembly == nil || assembly.facts == nil {
+		return RetireResult{}, errors.New("memory assembly: fact view is not configured")
+	}
+	if ctx == nil {
+		return RetireResult{}, errors.New("memory assembly: context is required")
+	}
+	retained := append([]string(nil), keep...)
+	if active, found, err := assembly.facts.ActiveGeneration(ctx, scope, conversationID); err != nil {
+		return RetireResult{}, err
+	} else if found {
+		retained = append(retained, active)
+	}
+	if assembly.summaries != nil {
+		if manifest, found, err := assembly.summaries.LoadActive(ctx, scope, conversationID); err != nil {
+			return RetireResult{}, err
+		} else if found {
+			retained = append(retained, manifest.GenerationID)
+		}
+	}
+	result := RetireResult{}
+	if assembly.summaries != nil {
+		removed, err := assembly.summaries.RetireGenerations(ctx, scope, conversationID, retained...)
+		if err != nil {
+			return result, err
+		}
+		result.Summaries = removed
+	}
+	removed, err := assembly.facts.RetireGenerations(ctx, scope, conversationID, retained...)
+	result.Facts = removed
+	return result, err
+}
+
 // Catalog returns the scope catalog.
 func (assembly *Assembly) Catalog() *sources.ScopeCatalog {
 	if assembly == nil {

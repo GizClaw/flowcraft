@@ -49,6 +49,30 @@ func (deriver replacingDeriver) Derive(_ context.Context, input component.Artifa
 	}}, nil
 }
 
+// deriveGeneration commits the fixture turns into ws -- idempotently, since the
+// keys are stable, so a later assembly sees the same canonical commits -- runs
+// one pass under the policy named, and returns the assembly that published it.
+func deriveGeneration(t *testing.T, ctx context.Context, ws workspace.Workspace, name, version string) *Assembly {
+	t.Helper()
+	assembly := newTestAssemblyOn(t, ws, generationSettings,
+		WithDeriver(replacingDeriver{name: name}), WithDeriverVersion(version))
+	t.Cleanup(func() { _ = assembly.Close() })
+	for index, text := range []string{"we talked about beverages", "and about tea"} {
+		turn := corememory.Turn{
+			Scope: testScope(), ConversationID: "conv-1",
+			IdempotencyKey: fmt.Sprintf("run-%d", index+1),
+			Messages:       []coremessage.Message{textMessage(coremessage.RoleUser, text)},
+		}
+		if err := assembly.CommitTurn(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+		if err := assembly.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return assembly
+}
+
 // TestPolicyChangeReplacesTheDerivedGeneration is the acceptance test for
 // generation-scoped derivation: a policy change re-derives the same canonical
 // commits into a new generation instead of accumulating beside the old one, the
@@ -62,37 +86,14 @@ func TestPolicyChangeReplacesTheDerivedGeneration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ws.Close() })
 
-	// derive commits the fixture turns (idempotently: the keys are stable, so a
-	// later assembly sees the same canonical commits) and runs one pass.
-	derive := func(name string, version string) *Assembly {
-		t.Helper()
-		assembly := newTestAssemblyOn(t, ws, generationSettings,
-			WithDeriver(replacingDeriver{name: name}), WithDeriverVersion(version))
-		t.Cleanup(func() { _ = assembly.Close() })
-		for index, text := range []string{"we talked about beverages", "and about tea"} {
-			turn := corememory.Turn{
-				Scope: testScope(), ConversationID: "conv-1",
-				IdempotencyKey: fmt.Sprintf("run-%d", index+1),
-				Messages:       []coremessage.Message{textMessage(coremessage.RoleUser, text)},
-			}
-			if err := assembly.CommitTurn(ctx, turn); err != nil {
-				t.Fatal(err)
-			}
-			if err := assembly.RunOnce(ctx); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return assembly
-	}
-
-	first := derive("a", "policy-a")
+	first := deriveGeneration(t, ctx, ws, "a", "policy-a")
 	firstDigest := first.PolicyDigest()
 	assertVisibleFacts(t, first, firstDigest, "a")
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	second := derive("b", "policy-b")
+	second := deriveGeneration(t, ctx, ws, "b", "policy-b")
 	secondDigest := second.PolicyDigest()
 	if secondDigest == firstDigest {
 		t.Fatal("the new policy kept the previous digest")
@@ -165,7 +166,7 @@ func TestPolicyChangeReplacesTheDerivedGeneration(t *testing.T) {
 	// one step: no migration, no re-derivation. Its summaries come back with
 	// it, because the generation published them and the branch keeps what a
 	// generation published until that generation is retired.
-	rolledBack := derive("a", "policy-a")
+	rolledBack := deriveGeneration(t, ctx, ws, "a", "policy-a")
 	rolledBackFacts := assertVisibleFacts(t, rolledBack, firstDigest, "a")
 	// The switch converged the projection lanes with the generation it
 	// publishes, so the facts of the generation that is current again are

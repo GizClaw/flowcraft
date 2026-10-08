@@ -27,8 +27,10 @@ maintenance; `core/memory` stays implementation-neutral.
   projection lanes (BM25, entity, and vector when an embed model is
   configured), hydrates candidates, and packs them within the request
   budget.
-
-Lifecycle maintenance is a later phase behind the same assembly SPI.
+- Maintenance: `Assembly.Maintain` decays and soft-merges superseded facts on
+  the read path, and `Assembly.RetireGenerations` drops the derived generations
+  a retention policy no longer keeps. Both are host-invoked through the same
+  assembly SPI; the module ships no runner.
 
 ## Deploy
 
@@ -159,11 +161,25 @@ it replaces:
   with none.
 
 Replaced generations stay stored, which is what makes a rollback possible, and
-that makes retirement necessary: `FactStore.ListGenerations` reports what one
-conversation holds, and `RetireGeneration` / `RetireGenerations` drop the
-generations a retention policy no longer keeps. Retirement is unreachability,
-not erasure — the merge-event streams live in the append-only Log, whose
-contract has no delete.
+that makes retirement necessary. `Assembly.RetireGenerations(ctx, scope,
+conversationID, keep...)` is the sweep: it drops every derived generation of one
+conversation except the ones named, over the facts and the summary bookmarks in
+one call. One call because the views share the generation identity — dropping a
+generation's facts while its summary manifest stays bookmarked leaves a rollback
+that serves summaries of facts that are gone. The sweep therefore keeps every
+generation a view is still serving (so views left on different generations by a
+policy change are not pruned while they disagree) and retires the bookmarks
+before the facts (so an interrupted sweep leaves unreachable facts, which the
+next sweep collects, rather than a bookmark to facts that no longer exist).
+
+The per-view sweeps stay available for tooling that retires one view alone:
+`FactStore.ListGenerations` / `RetireGeneration` / `RetireGenerations` and the
+same three on `SummaryStore`, whose `ListGenerations` reports the generations
+that published a manifest. Retirement is unreachability, not erasure: the
+merge-event streams live in the append-only Log, whose contract has no delete,
+and a summary record is a content address shared by every generation that
+compacted the same inputs, so a sweep removes the facts and bookmarks of the
+retired generation and keeps the records the surviving generations read.
 
 A workspace written before generation scoping is not migrated: the fact view
 moved from `views/fact/v1` to `views/fact/v2`, and a fact stored without a
@@ -202,6 +218,13 @@ decay floor).
   CLI and the live-provider deploy wiring live in the sibling `eval` module
   (`backends/memory/eval/cmd/memory-eval`); this library module keeps no
   provider-driver dependency.
+
+Retention is the other half of the same surface: `Assembly.RetireGenerations(ctx,
+scope, conversationID, keep...)` drops the derived generations a policy no
+longer keeps, across the views that hold them, and reports what it removed as
+`RetireResult`. It has no configuration — which generations to keep is the
+caller's retention policy, named per conversation. See *Derivation generations*
+above for what a sweep keeps and why the views are swept together.
 
 Every name segment is encoded before it reaches a filesystem path, so user
 input never becomes a path verbatim.
