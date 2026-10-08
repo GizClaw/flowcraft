@@ -1,6 +1,6 @@
 ---
 name: flowcraft-config
-description: "Author, validate, and troubleshoot complete FlowCraft deployment configuration (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring). Use when writing or reviewing FlowCraft configs, assembling an agent deployment, adding runtime/session settings, building graph definitions, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment template."
+description: "Author, validate, and troubleshoot complete FlowCraft configuration: deployment documents (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring), craft.yaml application definitions, and plugin.json manifests. Use when writing or reviewing FlowCraft configs, assembling an agent deployment on top of a Craft, adding runtime/session settings, building graph definitions, defining plugins and their permissions, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment or craft template."
 ---
 
 # FlowCraft Config Authoring
@@ -32,7 +32,16 @@ the L2 structural validator and fix errors against the reference cards.
    wired. Model refs must use the nested `id` form; script nodes need
    `runtime` and `source`; wire edges back to the inference node after
    tool nodes.
-5. **Validate structurally with L2.** Run
+5. **Assemble the Craft application.** When the deployment runs inside a
+   Craft, wrap it in `craft.yaml`: an inline `deploy` (or `base_layers`),
+   plus `ui`, `plugins` (`roots`, `tool_registry`, `node_targets`) and
+   `host_tools` where they matter. Read
+   [references/craft.md](references/craft.md), then copy
+   [assets/minimal-craft](assets/minimal-craft/) as a starting point. A
+   definition is checked by the host with `craft.ParseDefinition`; the
+   standalone validator does not cover `craft.yaml` (see "Compatibility
+   and versioning").
+6. **Validate structurally with L2.** Run
    `skills/flowcraft-config/scripts/validate-config.sh <deployment-file>`
    (or the installed copy's script). The validator pins the FlowCraft
    core module in its `go.mod` and works standalone from any directory.
@@ -56,7 +65,7 @@ the L2 structural validator and fix errors against the reference cards.
    ids, entry presence, edge endpoints). No sub-document schema is
    decoded in standalone mode — `inference`, `workspace`, `sandbox`,
    `tool`, and `agent` are syntax checks only.
-6. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
+7. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
    or `[build]` (`[parse]` input/syntax errors, `[graph]` graph
    definition errors, `[build]` deploy document or runtime subtree
    errors); validation stops at the first error.
@@ -64,7 +73,7 @@ the L2 structural validator and fix errors against the reference cards.
    error → cause map. The validator prints no warnings: custom and
    app-registered kinds pass structurally, and settings semantics it
    cannot check are the host build's responsibility.
-7. **Hand off.** Report the structural validation result and what L2
+8. **Hand off.** Report the structural validation result and what L2
    could not verify: settings schemas, factory resolution, `file`/`embed`
    references, and graph node configs are validated only when the host
    builds the deployment with its own registry. Note the registration
@@ -77,7 +86,7 @@ the L2 structural validator and fix errors against the reference cards.
 ## Cross-file invariants
 
 These invariants describe core semantics. The validator enforces the
-structural subset (see step 5); the rest are enforced when the host
+structural subset (see step 6); the rest are enforced when the host
 builds the deployment with its own factory registry.
 
 - Memory hooks bind a whole `memory.Assembly` resource; the settings
@@ -95,6 +104,17 @@ builds the deployment with its own factory registry.
 - Runtime-registered agents reuse the deployment assembly path; their
   names must not collide with deployed agents, and with a `dynamic_catalog`
   they need a tool mapping or a `default`.
+- `craft.yaml` wraps the deployment document: `deploy` and `base_layers`
+  are mutually exclusive and one is required, `craft.id` and
+  `craft.version` are required, and `min_host_version` is a compatibility
+  floor checked against the host (`craft.Version`).
+- A plugin's gated sections are fail-closed: `mcp` / `skills` / `hooks` /
+  `nodes` declared without `mcp:provide` / `skills:provide` /
+  `hooks:provide` / `nodes:provide` are dropped, and an unknown permission
+  is rejected rather than ignored.
+- `plugins.tool_registry` and `plugins.node_targets` are mounting points
+  resolved against the composed document — the named resource or agent
+  must exist — and a plugin can never register a resource kind.
 
 ## Templates
 
@@ -102,6 +122,10 @@ Copy [assets/minimal-deploy](assets/minimal-deploy/) as a starting point:
 one agent, graph inference node, and a validated runtime section. Replace
 the model/provider references and workspace root, then extend per the
 workflow.
+
+Copy [assets/minimal-craft](assets/minimal-craft/) when the deployment
+runs inside a Craft: it wraps an inline `deploy` with `ui`, `plugins` and
+`host_tools`, and ships a sample plugin directory.
 
 ## Compatibility and versioning
 
@@ -112,6 +136,11 @@ modules are required, since the validator never constructs factories).
 When FlowCraft releases a new version, bump the pin and reconcile the
 cards in the same change. Custom kinds are structurally valid by design;
 their factories and settings schemas live in the host application.
+
+The validator pins core only and does **not** validate `craft.yaml`: no
+`craft/vX.Y.Z` release exists, so a standalone validator cannot resolve
+the craft module. A craft definition is checked by the host with
+`craft.ParseDefinition`, and its factories by the host registry.
 
 ## Reference index
 
@@ -125,3 +154,5 @@ their factories and settings schemas live in the host application.
   build settings.
 - [pitfalls.md](references/pitfalls.md) — known drift points and the
   error → cause map.
+- [craft.md](references/craft.md) — craft.yaml and plugin.json schemas,
+  permissions and drop rules, host_tools bindings, hostmcp primitives.

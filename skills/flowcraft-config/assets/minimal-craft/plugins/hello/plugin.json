@@ -1,0 +1,8 @@
+{
+  "id": "hello",
+  "name": "Hello Plugin",
+  "version": "0.1.0",
+  "minHostVersion": "0.1.0",
+  "permissions": ["skills:provide"],
+  "skills": ["skills"]
+}

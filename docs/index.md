@@ -56,6 +56,12 @@ retrieval, runtime orchestration, and voice. Source on
   target discovery, sync / async execution, and the session-bound
   delegation lifecycle.
 
+### Application assembly
+
+- [Craft Assembly](guides/craft.md) — `craft`: the `craft.yaml` definition
+  and capability set, the plugin manifest and permissions, the host-primitive
+  protocol, and the process-level manager.
+
 ## Migrations
 
 - [`core/v0.1.0`](migrations/core-v0.1.0.md) — the breaking cut from
@@ -80,14 +86,16 @@ The repository is organised as independently released Go modules:
 | Agent runtime        | `core/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
 | Delegation contracts | `core/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
 | Async delegation     | `core/delegation/kanban`                            | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
-| Adapters             | `driver/*`, `backends/*`                       | Concrete provider / protocol bindings layered on core contracts                                  |
+| Application assembly | `craft`                                             | craft.yaml definitions, compile-time capabilities, the plugin host and host primitives          |
+| Adapters             | `driver/*`, `backends/*`                            | Concrete provider / protocol bindings layered on core contracts                                |
 
 ## Repository layout
 
 ```
 core/            Platform module (contracts, deploy, runtime, built-in resources)
+craft/           Application assembly (craft.yaml, capabilities, plugins, host primitives)
 driver/          Provider inference adapters
-backends/        SQLite checkpoints and plugin shell (sandbox backends live in core/)
+backends/        SQLite checkpoints and the memory backend (sandbox backends live in core/)
 examples/        Reference assemblies
 ```
 
