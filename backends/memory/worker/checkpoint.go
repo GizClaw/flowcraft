@@ -37,6 +37,10 @@ type SourceWatermark struct {
 type CheckpointStore interface {
 	LoadWatermark(context.Context, corememory.Scope, string, string, string) (SourceWatermark, bool, error)
 	SaveWatermark(context.Context, SourceWatermark) error
+	// RetireWatermarks drops the stored progress of the named policies on one
+	// stream, and reports how many were stored. Retiring a generation retires
+	// its cursor with it: see Processor.RetireProgress.
+	RetireWatermarks(context.Context, corememory.Scope, string, string, []string) (int, error)
 }
 
 // KVCheckpoints persists watermarks on a storage.Store.
@@ -130,6 +134,58 @@ func (store *KVCheckpoints) SaveWatermark(ctx context.Context, watermark SourceW
 		return fmt.Errorf("memory worker: save watermark: %w", err)
 	}
 	return nil
+}
+
+// RetireWatermarks drops the stored cursors of the named policies on one
+// stream, and reports how many of them were stored. Empty and repeated policy
+// digests are ignored, and retiring a cursor that is not stored is a no-op, so
+// a sweep that retries after a partial failure simply finds less to do.
+//
+// A cursor is read before it is deleted, so the count describes what was there
+// rather than what the call asked for. The payload is not decoded: a cursor a
+// reader would refuse -- a persisted watermark that does not match its key --
+// is still this policy's progress, and dropping it is what derivation wants.
+// Nothing else writes a cursor of one policy while its conversation is being
+// swept: the sweep refuses to run beside a pass (see quiesce.go).
+func (store *KVCheckpoints) RetireWatermarks(
+	ctx context.Context,
+	scope corememory.Scope,
+	streamKind, streamID string,
+	policyDigests []string,
+) (int, error) {
+	if store == nil || nilInterface(store.kv) {
+		return 0, errors.New("memory worker: checkpoint store is incomplete")
+	}
+	if ctx == nil {
+		return 0, errors.New("memory worker: context is required")
+	}
+	retired := 0
+	seen := make(map[string]struct{}, len(policyDigests))
+	for _, policyDigest := range policyDigests {
+		policyDigest = strings.TrimSpace(policyDigest)
+		if policyDigest == "" {
+			continue
+		}
+		if _, ok := seen[policyDigest]; ok {
+			continue
+		}
+		seen[policyDigest] = struct{}{}
+		key, err := watermarkKey(scope, streamKind, streamID, policyDigest)
+		if err != nil {
+			return retired, err
+		}
+		if _, err := store.kv.Get(ctx, key); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			return retired, fmt.Errorf("memory worker: read watermark: %w", err)
+		}
+		if err := store.kv.Delete(ctx, key); err != nil {
+			return retired, fmt.Errorf("memory worker: retire watermark: %w", err)
+		}
+		retired++
+	}
+	return retired, nil
 }
 
 func watermarkKey(scope corememory.Scope, streamKind, streamID, policyDigest string) (string, error) {

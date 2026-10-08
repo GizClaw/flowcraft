@@ -98,6 +98,21 @@ func (store *memoryCheckpoints) SaveWatermark(_ context.Context, watermark Sourc
 	return nil
 }
 
+func (store *memoryCheckpoints) RetireWatermarks(_ context.Context, scope corememory.Scope, streamKind, streamID string, digests []string) (int, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	retired := 0
+	for _, digest := range digests {
+		key := checkpointKey(scope, streamKind, streamID, digest)
+		if _, ok := store.values[key]; !ok {
+			continue
+		}
+		delete(store.values, key)
+		retired++
+	}
+	return retired, nil
+}
+
 func (store *memoryCheckpoints) snapshot() map[string]uint64 {
 	store.mu.Lock()
 	defer store.mu.Unlock()

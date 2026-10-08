@@ -519,6 +519,68 @@ func (processor *Processor) PurgeGenerations(
 	return len(stale), nil
 }
 
+// RetireProgress drops the derivation progress of the named generations for one
+// conversation, and reports how many watermarks it removed.
+//
+// It is the other half of retiring a generation, and the half that cannot be
+// left behind: the watermark is where the next pass under that policy resumes,
+// so a generation whose facts, lane entries and summary bookmark are retired
+// while its cursor still points past them is one a rollback re-derives only in
+// part -- the commits the cursor passed are never derived again, and the
+// generation readers resolve is missing the facts of exactly those commits.
+// Dropping the cursor makes the next pass under that policy start at the head
+// of the stream, which is what "derive this generation" means once what it
+// derived is gone.
+//
+// The conversation's published generation is refused. Reads resolve it, so its
+// progress is what keeps an ordinary pass from re-deriving a generation that is
+// already visible: the content of a re-derivation is the model's, so the visible
+// generation would grow with whatever a second pass produces instead of
+// converging. A sweep never names it -- it retires what the views do not serve
+// -- so the refusal only reaches a caller that asks for it directly.
+func (processor *Processor) RetireProgress(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+	generations []string,
+) (int, error) {
+	if processor == nil {
+		return 0, errors.New("memory worker: processor is required")
+	}
+	if ctx == nil {
+		return 0, errors.New("memory worker: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return 0, err
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return 0, errors.New("memory worker: conversation id is required")
+	}
+	digests := make([]string, 0, len(generations))
+	for _, generation := range generations {
+		if generation = strings.TrimSpace(generation); generation != "" {
+			digests = append(digests, generation)
+		}
+	}
+	if len(digests) == 0 {
+		return 0, nil
+	}
+	sort.Strings(digests)
+	digests = slices.Compact(digests)
+	if active, found, err := processor.facts.ActiveGeneration(ctx, scope, conversationID); err != nil {
+		return 0, fmt.Errorf("memory worker: read the active generation: %w", err)
+	} else if found && slices.Contains(digests, active) {
+		return 0, fmt.Errorf(
+			"memory worker: generation %q is the published generation of conversation %q", active, conversationID)
+	}
+	// Only the message stream carries a conversation's progress: the document
+	// stream is one cursor per scope, shared by every conversation that derives
+	// knowledge from it, and a sweep over one conversation has no business
+	// rewinding the documents of the others.
+	return processor.checkpoints.RetireWatermarks(ctx, scope, streamKindMessages, conversationID, digests)
+}
+
 // scanConversation walks the commits after the stored watermark, deriving and
 // indexing each one in order.
 func (processor *Processor) scanConversation(ctx context.Context, scope corememory.Scope, conversationID string) (int, error) {

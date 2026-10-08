@@ -52,7 +52,7 @@ func TestRetiringGenerationsDropsGenerationsNoViewServes(t *testing.T) {
 	// The lanes are swept with the views: the entries of the replaced
 	// generation are the ones its switch pruned, and the sweep drops them
 	// again so a lane that missed the converge is reconciled too.
-	if want := (RetireResult{Facts: len(stored), Summaries: 1, LaneEntries: len(stored)}); retired != want {
+	if want := (RetireResult{Facts: len(stored), Summaries: 1, LaneEntries: len(stored), Watermarks: 1}); retired != want {
 		t.Fatalf("retired = %#v, want %#v", retired, want)
 	}
 	assertStoredGenerations(t, ctx, current, currentDigest)
@@ -220,7 +220,7 @@ func TestRetiringGenerationsDropsTheEntriesOfAGenerationNoPassPublished(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (RetireResult{Facts: 1, Summaries: 1, LaneEntries: 1}); retired != want {
+	if want := (RetireResult{Facts: 1, Summaries: 1, LaneEntries: 1, Watermarks: 1}); retired != want {
 		t.Fatalf("retired = %#v, want %#v", retired, want)
 	}
 	assertStoredGenerations(t, ctx, current, publishedDigest)
@@ -361,6 +361,74 @@ const noSummarySettings = `{
   "summary": {"disabled": true},
   "interval": "0"
 }`
+
+// TestRetiringGenerationsLetsARollbackReDeriveWhatTheSweepRemoved is the
+// acceptance test for retiring derivation progress with the generation it
+// belongs to. A pass that failed before publishing leaves a cursor mid-stream
+// over the commits it had covered; a sweep that retires that generation's facts
+// but leaves the cursor makes the next rollback to that policy resume after the
+// commits it just removed -- deriving only the tail and publishing a generation
+// that silently lacks the rest. With the cursor retired, the rollback derives
+// the conversation again and serves what the generation derives.
+func TestRetiringGenerationsLetsARollbackReDeriveWhatTheSweepRemoved(t *testing.T) {
+	ctx, ws := retirementFixture(t)
+	published := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	publishedDigest := published.PolicyDigest()
+	if err := published.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second policy's pass stops after the first commit, so its generation
+	// holds one of the two facts and its cursor points at the commit it came
+	// from. Nothing publishes it: the conversation still resolves policy-a.
+	abandoned := newTestAssemblyOn(t, ws, generationSettings,
+		WithDeriver(&failingDeriver{deriver: replacingDeriver{name: "b"}, succeeds: 1}),
+		WithDeriverVersion("policy-b"))
+	abandonedDigest := abandoned.PolicyDigest()
+	if err := abandoned.RunOnce(ctx); err == nil {
+		t.Fatal("the failing pass reported success")
+	}
+	if err := abandoned.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	current := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	retired, err := current.RetireGenerations(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (RetireResult{Facts: 1, Summaries: 1, LaneEntries: 1, Watermarks: 1}); retired != want {
+		t.Fatalf("retired = %#v, want %#v", retired, want)
+	}
+	assertStoredGenerations(t, ctx, current, publishedDigest)
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rolling back to the policy the sweep retired derives the conversation
+	// again: the commits the abandoned pass had already covered are derived a
+	// second time, so the generation serves both facts instead of the one after
+	// the cursor, and the summaries it publishes come back with it.
+	rolled := newTestAssemblyOn(t, ws, generationSettings,
+		WithDeriver(replacingDeriver{name: "b"}), WithDeriverVersion("policy-b"))
+	t.Cleanup(func() { _ = rolled.Close() })
+	rolledDigest := rolled.PolicyDigest()
+	if rolledDigest != abandonedDigest {
+		t.Fatalf("rollback digest = %q, want %q", rolledDigest, abandonedDigest)
+	}
+	if err := rolled.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleFacts(t, rolled, rolledDigest, "b")
+	if manifest, found, err := rolled.Summaries().LoadActive(ctx, testScope(), "conv-1"); err != nil || !found || manifest.GenerationID != rolledDigest {
+		t.Fatalf("active manifest after the rollback = %#v, %v, %v", manifest, found, err)
+	}
+	if plan, err := rolled.Verify(ctx, testScope(), "conv-1"); err != nil {
+		t.Fatal(err)
+	} else if len(plan.Actions) != 0 {
+		t.Fatalf("verify actions after the rollback = %#v", plan.Actions)
+	}
+}
 
 // TestRetiringGenerationsRefusesTheGenerationTheWorkerHasNotPublished pins the
 // other half of the guard: a pass that stopped between the facts it derived and

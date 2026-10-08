@@ -29,8 +29,10 @@ maintenance; `core/memory` stays implementation-neutral.
   budget.
 - Maintenance: `Assembly.Maintain` decays and soft-merges superseded facts on
   the read path, and `Assembly.RetireGenerations` drops the derived generations
-  a retention policy no longer keeps. Both are host-invoked through the same
-  assembly SPI; the module ships no runner.
+  a retention policy no longer keeps -- their facts, lane entries, summary
+  bookmarks, and the derivation progress that would otherwise resume in the
+  middle of them. Both are host-invoked through the same assembly SPI; the
+  module ships no runner.
 
 ## Deploy
 
@@ -117,7 +119,8 @@ With the workspace driver all state lives under the bound workspace:
 - `views/summary/v1/...` — immutable summary records, the active record
   catalog, and the manifest bookmark of every generation that published one.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
-- `worker/v1/watermarks/...` — policy-scoped derivation cursors.
+- `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
+  the generation they belong to.
 
 ## Derivation generations
 
@@ -159,22 +162,47 @@ it replaces:
   nothing, as a rollback does) serves that generation's own manifest again —
   rather than leaving reads with the summaries of the replaced generation or
   with none.
+- Rolling back into a generation a **sweep** retired derives it again instead of
+  resuming it: retirement drops the generation's derivation progress with the
+  generation itself, so the pass starts at the head of the stream and publishes
+  what it derives rather than the tail of what the sweep removed. It is the same
+  switch over a generation that is no longer stored, and it is why the cursor is
+  retired as part of retiring a generation rather than left behind as an
+  afterthought.
 
 Replaced generations stay stored, which is what makes a rollback possible, and
 that makes retirement necessary. `Assembly.RetireGenerations(ctx, scope,
 conversationID, keep...)` is the sweep: it drops every derived generation of one
-conversation except the ones named, over the facts, the summary bookmarks, and
-the projection lanes in one call. One call because the views share the
-generation identity — dropping a generation's facts while its summary manifest
-stays bookmarked leaves a rollback that serves summaries of facts that are gone.
-The sweep therefore keeps every generation a view is still serving (so views
-left on different generations by a policy change are not pruned while they
-disagree), it drops the lanes' entries for the retiring generation first, and it
-retires the bookmarks before the facts (so an interrupted sweep leaves
+conversation except the ones named, over the facts, the summary bookmarks, the
+projection lanes, and the derivation progress of the generation itself, in one
+call. One call because everything a generation is addressed by is the same
+identity: dropping a generation's facts while its summary manifest stays
+bookmarked leaves a rollback that serves summaries of facts that are gone, and
+the derivation watermark is keyed by that identity too — a generation whose
+facts are retired while its cursor stays at the end of the stream is one a later
+rollback resumes in the middle, deriving the tail and publishing a generation
+missing the rest. The sweep therefore keeps every generation a view is still
+serving (so views left on different generations by a policy change are not
+pruned while they disagree), it retires the derivation progress of the
+generations it drops before anything else, then the lanes' entries for them, and
+it retires the bookmarks before the facts (so an interrupted sweep leaves
 unreachable facts, which the next sweep collects, rather than a bookmark to
 facts that no longer exist).
 
-The lanes are swept first because a lane entry is addressed by the id of the
+The progress goes first because it is the only thing a sweep removes that is not
+derived state: the cursor is where the next pass under that policy resumes, not
+what any reader resolves, so dropping it first means an interruption leaves the
+generation's facts without a cursor — which re-deriving under that policy
+reproduces from the canonical commits, since their derived addresses are content
+derived — rather than leaving the state the sweep exists to prevent, facts gone
+under a cursor that still points past them. Retiring the progress of the
+generation reads resolve is refused (`Processor.RetireProgress`): an ordinary
+pass under a policy whose generation is visible would derive the stream a second
+time, and a re-derivation is the model's, so the visible generation would grow
+beside itself instead of converging. A sweep never names it — it retires what the
+views do not serve.
+
+The lanes are swept next because a lane entry is addressed by the id of the
 fact it projects: once a generation's facts are gone those addresses can no
 longer be enumerated — the converge walks the stored generations — so the lane
 would keep offering a candidate the read path cannot hydrate, and nothing else
@@ -206,7 +234,11 @@ that published a manifest. Retirement is unreachability, not erasure: the
 merge-event streams live in the append-only Log, whose contract has no delete,
 and a summary record is a content address shared by every generation that
 compacted the same inputs, so a sweep removes the facts and bookmarks of the
-retired generation and keeps the records the surviving generations read.
+retired generation and keeps the records the surviving generations read. They
+leave the derivation progress where it is: `Processor.RetireProgress` is what
+the sweep over one conversation retires the cursors with, and a caller that
+retires a view on its own is the caller that has to retire the cursor of the
+generation it removed.
 
 A workspace written before generation scoping is not migrated: the fact view
 moved from `views/fact/v1` to `views/fact/v2`, and a fact stored without a
@@ -214,10 +246,11 @@ generation cannot be assigned to a policy it never ran under. The stored
 derivation watermarks are keyed by policy digest and survive the move, so a
 workspace whose derivation settings did not change reports nothing to derive
 while its `views/fact/v1` facts stay unread. Change a derivation setting, or
-drop the watermarks under `worker/v1/watermarks/...`, to derive the next
-generation. Its projection entries stay where they are -- an entry derived
-before the lane identity changed is addressed by the fact id alone -- and are
-replaced by re-deriving or by rebuilding the lane.
+drop the watermarks under `worker/v1/watermarks/...` (which is what a sweep does
+for the generations it retires), to derive the next generation. Its projection
+entries stay where they are -- an entry derived before the lane identity changed
+is addressed by the fact id alone -- and are replaced by re-deriving or by
+rebuilding the lane.
 
 ## Integrity and evaluation
 
@@ -248,11 +281,12 @@ decay floor).
 
 Retention is the other half of the same surface: `Assembly.RetireGenerations(ctx,
 scope, conversationID, keep...)` drops the derived generations a policy no
-longer keeps, across the views and the projection lanes that hold them, and
-reports what it removed as `RetireResult`. It has no configuration — which
-generations to keep is the caller's retention policy, named per conversation.
-See *Derivation generations* above for what a sweep keeps, why the views are
-swept together, why the lanes go first, and what makes it refuse a conversation
+longer keeps, across the views and the projection lanes that hold them and the
+derivation progress that would resume in the middle of them, and reports what it
+removed as `RetireResult`. It has no configuration — which generations to keep is
+the caller's retention policy, named per conversation. See *Derivation
+generations* above for what a sweep keeps, why the views are swept together, why
+the progress and the lanes go first, and what makes it refuse a conversation
 whose derivation has not settled.
 
 Every name segment is encoded before it reaches a filesystem path, so user

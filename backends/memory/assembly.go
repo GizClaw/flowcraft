@@ -335,7 +335,7 @@ func (assembly *Assembly) DerivationState(
 	return assembly.processor.DerivationState(ctx, scope, conversationID)
 }
 
-// RetireResult reports what one retention sweep removed, per derived view.
+// RetireResult reports what one retention sweep removed.
 type RetireResult struct {
 	// Facts counts the stored fact records of the retired generations.
 	Facts int `json:"facts"`
@@ -346,13 +346,20 @@ type RetireResult struct {
 	// address per fact of a retired generation that the generation readers
 	// resolve does not share, leaving each configured lane.
 	LaneEntries int `json:"lane_entries"`
+	// Watermarks counts the derivation cursors the sweep retired with the
+	// generations they belong to: one per retired generation this worker had
+	// derived under, on the message stream of the conversation. Retiring a
+	// cursor is what makes a later rollback to that policy re-derive the
+	// conversation instead of resuming after the facts the sweep removed.
+	Watermarks int `json:"watermarks"`
 }
 
 // RetireGenerations runs one host-invoked retention sweep over a conversation:
-// every derived generation a retention policy no longer keeps leaves the read
-// paths in one call. Whatever each view is serving stays -- reads have to
-// resolve somewhere -- and the caller names the rest to keep, exactly as the
-// views' own sweeps do.
+// every derived generation a retention policy no longer keeps leaves the store
+// in one call -- the facts, the lane entries, the summary bookmarks, and the
+// derivation progress it would otherwise resume from. Whatever each view is
+// serving stays -- reads have to resolve somewhere -- and the caller names the
+// rest to keep, exactly as the views' own sweeps do.
 //
 // One call, because the views share the generation identity: retiring the facts
 // of a generation while its summary manifest stays bookmarked leaves a rollback
@@ -363,8 +370,20 @@ type RetireResult struct {
 // leaves unreachable facts, which the next sweep collects, instead of a
 // bookmark to facts that no longer exist.
 //
-// The projection lanes are swept first, and for the same reason: an entry is
-// addressed by the fact id it projects, so once a generation's facts are gone
+// Derivation progress is retired with the generations it belongs to, before
+// anything else: a watermark is where the next pass under that policy resumes,
+// so a generation whose facts are retired while its cursor stays at the end of
+// the stream is one a later rollback re-derives only after the cursor -- the
+// commits it already covered are never derived again, and readers resolve a
+// generation missing their facts. Dropping the cursor instead makes that
+// rollback derive the generation again, from the canonical commits, which the
+// sweep left where they were. Progress goes first because it is the one step
+// that removes a pointer: an interrupted sweep then leaves facts without a
+// cursor, which the next pass reproduces, rather than facts retired under a
+// cursor that still points past them.
+//
+// The projection lanes are swept next, and for a reason of their own: an entry
+// is addressed by the fact id it projects, so once a generation's facts are gone
 // no pass can enumerate the entries it left behind -- the converge walks the
 // stored generations -- and the lane would keep offering a candidate the read
 // path cannot hydrate. A generation whose pass failed after projecting is the
@@ -413,8 +432,7 @@ func (assembly *Assembly) RetireGenerations(
 		}
 	}
 	result := RetireResult{}
-	// The lanes go first: what is about to be retired is still enumerable now,
-	// and never again afterwards.
+	// The worker's steps come first, and the progress before the lanes.
 	if assembly.processor != nil {
 		generations, err := assembly.facts.ListGenerations(ctx, scope, conversationID)
 		if err != nil {
@@ -430,6 +448,21 @@ func (assembly *Assembly) RetireGenerations(
 				retiring = append(retiring, generation)
 			}
 		}
+		// Derivation progress goes first. It is a pointer, not derived state:
+		// dropping it changes what the next pass under that policy derives, not
+		// what any reader resolves, and a sweep interrupted here leaves the
+		// generation's facts with no cursor -- which re-deriving under that
+		// policy reproduces from the canonical commits (the addresses are
+		// content derived). Retiring it after the facts would leave the window
+		// this ordering exists to close: the facts gone while the cursor still
+		// points past them.
+		watermarks, err := assembly.processor.RetireProgress(ctx, scope, conversationID, retiring)
+		if err != nil {
+			return result, err
+		}
+		result.Watermarks = watermarks
+		// The lanes go next: what is about to be retired is still enumerable
+		// now, and never again afterwards.
 		entries, err := assembly.processor.PurgeGenerations(ctx, scope, conversationID, retiring)
 		if err != nil {
 			return result, err
