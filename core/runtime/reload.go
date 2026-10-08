@@ -268,7 +268,8 @@ func (r *Runtime) Reload(
 	for _, name := range sortedKeys(entries) {
 		entry := entries[name]
 		instance, bindErr := deploy.BindAgent(
-			ctx, r.resources, newResult, r.loader, nil, nil, name, entry.definition)
+			ctx, r.resources, newResult, r.loader,
+			newResult.Resolver(), newResult.Secrets(), name, entry.definition)
 		if bindErr != nil {
 			closeRebound()
 			return nil, abort(fmt.Errorf(

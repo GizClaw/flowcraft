@@ -827,6 +827,26 @@ func (r *Result) Value(name string) (any, bool) {
 	return v, ok
 }
 
+// Resolver returns the effective settings reference resolver assembled
+// by Build. Callers that construct values after the build (for example
+// a runtime registering dynamic agents) pass it back into BindAgent so
+// dynamic settings expand exactly like deployment-time settings.
+func (r *Result) Resolver() *resource.ReferenceResolver {
+	if r == nil {
+		return nil
+	}
+	return r.resolver
+}
+
+// Secrets returns the effective secret resolver assembled by Build, or
+// nil when the deployment declared no secret stores.
+func (r *Result) Secrets() *resource.SecretResolver {
+	if r == nil {
+		return nil
+	}
+	return r.secrets
+}
+
 // Names returns the sorted built resource names.
 func (r *Result) Names() []string {
 	names := make([]string, 0, len(r.values))
