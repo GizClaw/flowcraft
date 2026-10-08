@@ -24,6 +24,10 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   model, message, inference, memory contracts, event bus, telemetry,
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
+- **`craft`** — Application assembly on top of `core`: the `craft.yaml`
+  definition, compile-time capabilities, the MCP plugin host (plugin
+  processes as MCP servers, host primitives as MCP tools), UI
+  contributions, and the process-level `craft/manager` lifecycle.
 - **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance, and
   MiniMax.

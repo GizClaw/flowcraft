@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "examples/forge"]
+              dirs = ["core", "craft", "examples/forge"]
               for base in ("backends", "driver"):
                   for path in pathlib.Path(base).rglob("go.mod"):
                       if "vendor" in path.parts or "testdata" in path.parts:
@@ -165,7 +165,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core driver backends examples/forge)
+          diff=$(gofmt -s -l core craft driver backends examples/forge)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"

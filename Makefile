@@ -8,10 +8,10 @@ SHELL := /bin/bash
 BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod backends/*/*/go.mod))
 DRIVER_MODULES := $(patsubst %/go.mod,%,$(wildcard driver/*/go.mod))
 
-MODULES_WORK := core $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge
+MODULES_WORK := core craft $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(BACKEND_MODULES) $(DRIVER_MODULES)
+MODULES_LINT := core craft $(BACKEND_MODULES) $(DRIVER_MODULES)
 
 # `make fmt` mirrors the CI gofmt -s gate.
 ALL_MODULES := $(MODULES_WORK)
