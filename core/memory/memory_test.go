@@ -87,6 +87,28 @@ func TestHardPartitionKeyIncludesAgentID(t *testing.T) {
 	}
 }
 
+// Per-message metadata is positional: a caller that supplies it has to supply
+// one entry per message, or the tags would silently land on the wrong ones.
+func TestTurnRejectsMisalignedMessageMetadata(t *testing.T) {
+	turn := memory.Turn{
+		Scope:          memory.Scope{RuntimeID: "runtime"},
+		ConversationID: "conversation",
+		IdempotencyKey: "run",
+		Messages:       []message.Message{message.NewTextMessage(message.RoleUser, "hello")},
+		MessageMetadata: []memory.Metadata{
+			{"dataset_turn_id": "D1:1"},
+			{"dataset_turn_id": "D1:2"},
+		},
+	}
+	if err := turn.Validate(); !memory.IsKind(err, memory.KindInvalidRequest) {
+		t.Fatalf("Validate() error = %v, want invalid request", err)
+	}
+	turn.MessageMetadata = turn.MessageMetadata[:1]
+	if err := turn.Validate(); err != nil {
+		t.Fatalf("aligned metadata rejected: %v", err)
+	}
+}
+
 func TestCapabilityRequestsRejectMissingAddresses(t *testing.T) {
 	scope := memory.Scope{RuntimeID: "runtime"}
 	content := message.NewTextMessage(message.RoleUser, "hello").Content
@@ -125,15 +147,22 @@ func TestCapabilityRequestsRejectMissingAddresses(t *testing.T) {
 func TestTurnCloneOwnsMutableData(t *testing.T) {
 	original := memory.Turn{
 		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "hello")},
+		MessageMetadata: []memory.Metadata{
+			{"key": "value"},
+		},
 		Metadata: memory.Metadata{"key": "value"},
 	}
 	cloned := original.Clone()
 
 	cloned.Metadata["key"] = "changed"
+	cloned.MessageMetadata[0]["key"] = "changed"
 	cloned.Messages[0] = message.NewTextMessage(message.RoleAssistant, "changed")
 
 	if original.Metadata["key"] != "value" {
 		t.Fatal("Clone() aliases metadata")
+	}
+	if original.MessageMetadata[0]["key"] != "value" {
+		t.Fatal("Clone() aliases message metadata")
 	}
 	if original.Messages[0].Role != message.RoleUser {
 		t.Fatal("Clone() aliases messages")

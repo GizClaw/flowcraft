@@ -65,7 +65,10 @@ func (kind SourceKind) Validate() error {
 
 // SourceRef preserves provenance without exposing a storage backend.
 type SourceRef struct {
-	Kind     SourceKind
+	Kind SourceKind
+	// ID identifies the source within its kind. A message source is
+	// "<conversation_id>/<message_id>": the form hydration validates candidates
+	// against and the form retrieval quotes messages back from.
 	ID       string
 	Revision string
 	Locator  string
