@@ -2,12 +2,15 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/backends/memory/component"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	summaryview "github.com/GizClaw/flowcraft/backends/memory/views/summary"
+	corememory "github.com/GizClaw/flowcraft/core/memory"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -43,7 +46,10 @@ func TestRetiringGenerationsDropsGenerationsNoViewServes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (RetireResult{Facts: len(stored), Summaries: 1}); retired != want {
+	// The lanes are swept with the views: the entries of the replaced
+	// generation are the ones its switch pruned, and the sweep drops them
+	// again so a lane that missed the converge is reconciled too.
+	if want := (RetireResult{Facts: len(stored), Summaries: 1, LaneEntries: len(stored)}); retired != want {
 		t.Fatalf("retired = %#v, want %#v", retired, want)
 	}
 	assertStoredGenerations(t, ctx, current, currentDigest)
@@ -134,6 +140,120 @@ func TestRetiringGenerationsKeepsTheGenerationEitherViewServes(t *testing.T) {
 	assertStoredGenerations(t, ctx, current, currentDigest)
 	if plan, err := current.Verify(ctx, testScope(), "conv-1"); err != nil || len(plan.Actions) != 0 {
 		t.Fatalf("verify actions after the sweep = %#v, %v", plan.Actions, err)
+	}
+}
+
+// failingDeriver derives exactly like the replacing deriver until its first
+// calls succeed, then fails. A pass that fails there has already stored and
+// projected what the commits before the failure derived, and never reaches the
+// publication that would have made its generation the one readers resolve.
+type failingDeriver struct {
+	deriver  replacingDeriver
+	succeeds int
+	calls    int
+}
+
+func (deriver *failingDeriver) Derive(ctx context.Context, input component.Artifact) ([]component.Artifact, error) {
+	deriver.calls++
+	if deriver.calls > deriver.succeeds {
+		return nil, errors.New("memory: derivation is unavailable")
+	}
+	return deriver.deriver.Derive(ctx, input)
+}
+
+// TestRetiringGenerationsDropsTheEntriesOfAGenerationNoPassPublished is the
+// acceptance test for sweeping the projection lanes with the views: a pass that
+// fails after projecting leaves a generation whose facts are stored and whose
+// entries are in the lanes, and which no switch ever reconciled because it never
+// published. Retiring its facts while those entries stay projected leaves a
+// candidate every later query has to fetch and fail to hydrate -- the lanes walk
+// the stored generations, so a retired one's entries can never be enumerated
+// again -- and nothing in the module would ever collect it.
+func TestRetiringGenerationsDropsTheEntriesOfAGenerationNoPassPublished(t *testing.T) {
+	ctx, ws := retirementFixture(t)
+	published := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	publishedDigest := published.PolicyDigest()
+	if err := published.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second commit is never derived, so the pass stops between what it
+	// projected and the generation it would have published.
+	abandoned := newTestAssemblyOn(t, ws, generationSettings,
+		WithDeriver(&failingDeriver{deriver: replacingDeriver{name: "b"}, succeeds: 1}),
+		WithDeriverVersion("policy-b"))
+	abandonedDigest := abandoned.PolicyDigest()
+	if abandonedDigest == publishedDigest {
+		t.Fatal("the second policy kept the previous digest")
+	}
+	if err := abandoned.RunOnce(ctx); err == nil {
+		t.Fatal("the failing pass reported success")
+	}
+	if active, found, err := abandoned.Facts().ActiveGeneration(ctx, testScope(), "conv-1"); err != nil || !found || active != publishedDigest {
+		t.Fatalf("active generation after the failing pass = %q, %v, %v", active, found, err)
+	}
+	assertStoredGenerations(t, ctx, abandoned, publishedDigest, abandonedDigest)
+	derived, err := abandoned.Facts().List(ctx, testScope(), "conv-1", factview.ListOptions{Generation: abandonedDigest})
+	if err != nil || len(derived) != 1 {
+		t.Fatalf("facts of the generation that never published = %#v, %v", derived, err)
+	}
+	// Compaction publishes the generation it summarises, so the branch followed
+	// the failing pass; a later pass moves it back.
+	if manifest, found, err := abandoned.Summaries().LoadActive(ctx, testScope(), "conv-1"); err != nil || !found || manifest.GenerationID != abandonedDigest {
+		t.Fatalf("active manifest after the failing pass = %#v, %v, %v", manifest, found, err)
+	}
+	if err := abandoned.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A pass under the published policy again derives nothing -- its watermark
+	// is at the end of the stream -- and serves its own summaries again.
+	current := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	if manifest, found, err := current.Summaries().LoadActive(ctx, testScope(), "conv-1"); err != nil || !found || manifest.GenerationID != publishedDigest {
+		t.Fatalf("active manifest after the recovery pass = %#v, %v, %v", manifest, found, err)
+	}
+
+	retired, err := current.RetireGenerations(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (RetireResult{Facts: 1, Summaries: 1, LaneEntries: 1}); retired != want {
+		t.Fatalf("retired = %#v, want %#v", retired, want)
+	}
+	assertStoredGenerations(t, ctx, current, publishedDigest)
+
+	// The read path serves the published generation and nothing else: the sweep
+	// dropped a candidate that could not be hydrated, not the window it belongs
+	// to.
+	result, err := current.Context(ctx, corememory.ContextRequest{
+		Scope: testScope(), ConversationID: "conv-1", Query: "beverages",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := assertVisibleFacts(t, current, publishedDigest, "a")
+	served := 0
+	for _, item := range result.Items {
+		if item.Kind != corememory.ContextFact {
+			continue
+		}
+		served++
+		known := false
+		for _, fact := range visible {
+			if fact.ID == item.ID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			t.Fatalf("served fact %q belongs to the generation that never published", item.ID)
+		}
+	}
+	if served != 1 {
+		t.Fatalf("served fact items = %d, want 1", served)
+	}
+	if diagnostics := current.provider.LastDiagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("the sweep left entries the read path cannot hydrate: %#v", diagnostics)
 	}
 }
 

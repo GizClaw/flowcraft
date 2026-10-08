@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -413,6 +414,98 @@ func (processor *Processor) convergeGeneration(
 	}
 	processor.bump(func(stats *Stats) { stats.GenerationConvergences++ })
 	return nil
+}
+
+// PurgeGenerations removes the projection entries of the named generations
+// from every lane, and reports how many addresses it dropped; the same set
+// leaves each configured lane.
+//
+// Retention calls this before it retires those generations, because after
+// retirement their facts are gone and the addresses those entries were written
+// under can no longer be enumerated: a converge walks the stored generations,
+// so an entry whose generation left the fact view is one no pass can ever find
+// again. Purging first is also what makes the sweep retryable -- the entries of
+// a generation that is still stored are simply dropped again -- and it is safe
+// on its own: the lanes serve the published generation, so entries belonging to
+// any other one are stale whether or not the sweep reaches the facts.
+//
+// Entries the active generation also owns stay: a fact is a content address, so
+// a generation that re-derived the same content keeps projecting it.
+func (processor *Processor) PurgeGenerations(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+	generations []string,
+) (int, error) {
+	if processor == nil {
+		return 0, errors.New("memory worker: processor is required")
+	}
+	if ctx == nil {
+		return 0, errors.New("memory worker: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return 0, err
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return 0, errors.New("memory worker: conversation id is required")
+	}
+	if len(processor.indexers) == 0 {
+		return 0, nil
+	}
+	names := make([]string, 0, len(generations))
+	for _, generation := range generations {
+		if generation = strings.TrimSpace(generation); generation != "" {
+			names = append(names, generation)
+		}
+	}
+	if len(names) == 0 {
+		return 0, nil
+	}
+	sort.Strings(names)
+	names = slices.Compact(names)
+	live := make(map[string]struct{})
+	if active, found, err := processor.facts.ActiveGeneration(ctx, scope, conversationID); err != nil {
+		return 0, fmt.Errorf("memory worker: read the active generation: %w", err)
+	} else if found {
+		published, err := processor.facts.List(ctx, scope, conversationID, factview.ListOptions{Generation: active})
+		if err != nil {
+			return 0, fmt.Errorf("memory worker: list the active generation %q: %w", active, err)
+		}
+		for _, fact := range published {
+			live[fact.ID] = struct{}{}
+		}
+	}
+	stale := make([]string, 0, len(names))
+	for _, generation := range names {
+		retired, err := processor.facts.List(ctx, scope, conversationID, factview.ListOptions{Generation: generation})
+		if err != nil {
+			return 0, fmt.Errorf("memory worker: list the replaced generation %q: %w", generation, err)
+		}
+		for _, fact := range retired {
+			if _, shared := live[fact.ID]; shared {
+				continue
+			}
+			stale = append(stale, factLaneID(conversationID, fact.ID))
+		}
+	}
+	sort.Strings(stale)
+	stale = slices.Compact(stale)
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	delta := component.ProjectionDelta{
+		Scope: scope, Projection: processor.projection,
+		DeleteIDs:      stale,
+		SourceRevision: "retire:" + strings.Join(names, ","),
+	}
+	for _, lane := range processor.indexers {
+		if err := lane.Indexer.ApplyDelta(ctx, delta); err != nil {
+			return 0, fmt.Errorf("memory worker: purge %q: %w", lane.Name, err)
+		}
+		processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
+	}
+	return len(stale), nil
 }
 
 // scanConversation walks the commits after the stored watermark, deriving and

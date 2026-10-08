@@ -323,6 +323,10 @@ type RetireResult struct {
 	// Summaries counts the retired manifest bookmarks. Summary records are
 	// content addressed and shared between generations, so none are removed.
 	Summaries int `json:"summaries"`
+	// LaneEntries counts the entries the sweep dropped from the lanes: one
+	// address per fact of a retired generation that the generation readers
+	// resolve does not share, leaving each configured lane.
+	LaneEntries int `json:"lane_entries"`
 }
 
 // RetireGenerations runs one host-invoked retention sweep over a conversation:
@@ -339,6 +343,19 @@ type RetireResult struct {
 // the summary bookmarks before the facts: a sweep interrupted between the two
 // leaves unreachable facts, which the next sweep collects, instead of a
 // bookmark to facts that no longer exist.
+//
+// The projection lanes are swept first, and for the same reason: an entry is
+// addressed by the fact id it projects, so once a generation's facts are gone
+// no pass can enumerate the entries it left behind -- the converge walks the
+// stored generations -- and the lane would keep offering a candidate the read
+// path cannot hydrate. A generation whose pass failed after projecting is the
+// case that reaches it: its facts are stored and projected, but it never
+// published, so nothing reconciles the lanes with it.
+//
+// Sweeping is a maintenance action, and it expects derivation over the
+// conversation to be quiesced: the generations it purges are listed before they
+// are retired, so a pass writing a new one mid-sweep can be retired with
+// entries the sweep never listed still in the lanes.
 func (assembly *Assembly) RetireGenerations(
 	ctx context.Context,
 	scope corememory.Scope,
@@ -365,6 +382,29 @@ func (assembly *Assembly) RetireGenerations(
 		}
 	}
 	result := RetireResult{}
+	// The lanes go first: what is about to be retired is still enumerable now,
+	// and never again afterwards.
+	if assembly.processor != nil {
+		generations, err := assembly.facts.ListGenerations(ctx, scope, conversationID)
+		if err != nil {
+			return result, err
+		}
+		kept := make(map[string]struct{}, len(retained))
+		for _, generation := range retained {
+			kept[generation] = struct{}{}
+		}
+		var retiring []string
+		for _, generation := range generations {
+			if _, ok := kept[generation]; !ok {
+				retiring = append(retiring, generation)
+			}
+		}
+		entries, err := assembly.processor.PurgeGenerations(ctx, scope, conversationID, retiring)
+		if err != nil {
+			return result, err
+		}
+		result.LaneEntries = entries
+	}
 	if assembly.summaries != nil {
 		removed, err := assembly.summaries.RetireGenerations(ctx, scope, conversationID, retained...)
 		if err != nil {

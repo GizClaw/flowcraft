@@ -163,14 +163,26 @@ it replaces:
 Replaced generations stay stored, which is what makes a rollback possible, and
 that makes retirement necessary. `Assembly.RetireGenerations(ctx, scope,
 conversationID, keep...)` is the sweep: it drops every derived generation of one
-conversation except the ones named, over the facts and the summary bookmarks in
-one call. One call because the views share the generation identity — dropping a
-generation's facts while its summary manifest stays bookmarked leaves a rollback
-that serves summaries of facts that are gone. The sweep therefore keeps every
-generation a view is still serving (so views left on different generations by a
-policy change are not pruned while they disagree) and retires the bookmarks
-before the facts (so an interrupted sweep leaves unreachable facts, which the
-next sweep collects, rather than a bookmark to facts that no longer exist).
+conversation except the ones named, over the facts, the summary bookmarks, and
+the projection lanes in one call. One call because the views share the
+generation identity — dropping a generation's facts while its summary manifest
+stays bookmarked leaves a rollback that serves summaries of facts that are gone.
+The sweep therefore keeps every generation a view is still serving (so views
+left on different generations by a policy change are not pruned while they
+disagree), it drops the lanes' entries for the retiring generation first, and it
+retires the bookmarks before the facts (so an interrupted sweep leaves
+unreachable facts, which the next sweep collects, rather than a bookmark to
+facts that no longer exist).
+
+The lanes are swept first because a lane entry is addressed by the id of the
+fact it projects: once a generation's facts are gone those addresses can no
+longer be enumerated — the converge walks the stored generations — so the lane
+would keep offering a candidate the read path cannot hydrate, and nothing else
+would collect it. The generation that reaches that state is one whose pass
+failed after projecting: its facts are stored and its entries are in the lanes,
+but it never published, so no switch reconciled them. Sweeping is a maintenance
+action and expects derivation over the conversation to be quiesced, since the
+generations to purge are listed before they are retired.
 
 The per-view sweeps stay available for tooling that retires one view alone:
 `FactStore.ListGenerations` / `RetireGeneration` / `RetireGenerations` and the
@@ -221,10 +233,11 @@ decay floor).
 
 Retention is the other half of the same surface: `Assembly.RetireGenerations(ctx,
 scope, conversationID, keep...)` drops the derived generations a policy no
-longer keeps, across the views that hold them, and reports what it removed as
-`RetireResult`. It has no configuration — which generations to keep is the
-caller's retention policy, named per conversation. See *Derivation generations*
-above for what a sweep keeps and why the views are swept together.
+longer keeps, across the views and the projection lanes that hold them, and
+reports what it removed as `RetireResult`. It has no configuration — which
+generations to keep is the caller's retention policy, named per conversation.
+See *Derivation generations* above for what a sweep keeps, why the views are
+swept together, and why the lanes go first.
 
 Every name segment is encoded before it reaches a filesystem path, so user
 input never becomes a path verbatim.

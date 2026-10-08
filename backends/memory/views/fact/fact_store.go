@@ -485,7 +485,9 @@ func (store *FactStore) RetireGeneration(ctx context.Context, scope corememory.S
 // generation is always kept: it is what reads resolve.
 //
 // Call Assembly.RetireGenerations to sweep this view together with the summary
-// bookmarks of the same generation.
+// bookmarks and the projection entries of the same generation: this view
+// retires the facts a lane entry is addressed by, so a lane swept after it can
+// no longer enumerate the entry it should drop.
 func (store *FactStore) RetireGenerations(ctx context.Context, scope corememory.Scope, conversationID string, keep ...string) (int, error) {
 	retained := make(map[string]struct{}, len(keep))
 	for _, generation := range keep {
