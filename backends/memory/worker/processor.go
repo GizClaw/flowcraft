@@ -107,6 +107,11 @@ type Processor struct {
 	pageSize      int
 	concurrency   int
 
+	// running tracks the conversations with a pass in flight in this processor,
+	// so a sweep can refuse to race one. See quiesce.go.
+	runningMu sync.Mutex
+	running   map[string]int
+
 	statsMu sync.Mutex
 	stats   Stats
 }
@@ -273,6 +278,12 @@ func (processor *Processor) ProcessConversation(ctx context.Context, scope corem
 	if strings.TrimSpace(conversationID) == "" {
 		return 0, errors.New("memory worker: conversation id is required")
 	}
+	// The pass is announced before it touches anything and cleared however it
+	// returns: a sweep reads this marker to refuse a conversation whose
+	// derivation is still running, and a failed pass must not leave the
+	// conversation looking busy for good.
+	finished := processor.beginDerivation(scope, conversationID)
+	defer finished()
 	processed, err := processor.scanConversation(ctx, scope, conversationID)
 	if err != nil {
 		return processed, err

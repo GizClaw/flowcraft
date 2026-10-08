@@ -5,12 +5,15 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"sync/atomic"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	summaryview "github.com/GizClaw/flowcraft/backends/memory/views/summary"
+	"github.com/GizClaw/flowcraft/backends/memory/worker"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	coremessage "github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -255,6 +258,202 @@ func TestRetiringGenerationsDropsTheEntriesOfAGenerationNoPassPublished(t *testi
 	if diagnostics := current.provider.LastDiagnostics(); len(diagnostics) != 0 {
 		t.Fatalf("the sweep left entries the read path cannot hydrate: %#v", diagnostics)
 	}
+}
+
+// blockingDeriver derives like the replacing deriver until the test arms it,
+// then holds every call until the test closes the release: a pass that reaches
+// it stays in flight for as long as the test needs, which is how a sweep beside
+// a running pass is staged.
+type blockingDeriver struct {
+	deriver replacingDeriver
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (deriver *blockingDeriver) Derive(ctx context.Context, input component.Artifact) ([]component.Artifact, error) {
+	if deriver.armed.Load() {
+		deriver.entered <- struct{}{}
+		<-deriver.release
+	}
+	return deriver.deriver.Derive(ctx, input)
+}
+
+// TestRetiringGenerationsRefusesASweepWhileAPassIsInFlight pins the guard: a
+// sweep lists the generations it retires before it retires them, and the pass
+// that owns a generation publishes it afterwards, so a sweep beside a running
+// pass can empty the generation that pass is about to serve. The sweep refuses
+// instead, retires nothing, and the host sweeps after the pass.
+func TestRetiringGenerationsRefusesASweepWhileAPassIsInFlight(t *testing.T) {
+	ctx, ws := retirementFixture(t)
+	replaced := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	replacedDigest := replaced.PolicyDigest()
+	if err := replaced.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deriver := &blockingDeriver{
+		deriver: replacingDeriver{name: "b"}, entered: make(chan struct{}, 4), release: make(chan struct{}),
+	}
+	current := newTestAssemblyOn(t, ws, generationSettings,
+		WithDeriver(deriver), WithDeriverVersion("policy-b"))
+	t.Cleanup(func() { _ = current.Close() })
+	currentDigest := current.PolicyDigest()
+	if err := current.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleFacts(t, current, currentDigest, "b")
+
+	// A new turn gives the pass work; it stops in the deriver, which is mid-scan
+	// and long before the switch that would make its generation the one
+	// readers resolve.
+	if err := current.CommitTurn(ctx, corememory.Turn{
+		Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "run-3",
+		Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "and about coffee")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deriver.armed.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- current.RunOnce(ctx) }()
+	<-deriver.entered
+
+	retired, err := current.RetireGenerations(ctx, testScope(), "conv-1")
+	if err == nil {
+		t.Fatal("a sweep beside a running pass was accepted")
+	}
+	if !errors.Is(err, worker.ErrDerivationUnsettled) {
+		t.Fatalf("refusal = %v, want an unsettled derivation", err)
+	}
+	if retired != (RetireResult{}) {
+		t.Fatalf("a refused sweep reported %#v", retired)
+	}
+	assertStoredGenerations(t, ctx, current, replacedDigest, currentDigest)
+
+	close(deriver.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	// The pass published its generation, so the sweep the host wanted runs and
+	// retires the generation it replaced.
+	retired, err = current.RetireGenerations(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.Facts == 0 || retired.LaneEntries == 0 {
+		t.Fatalf("sweep = %#v, want the replaced generation retired", retired)
+	}
+	assertStoredGenerations(t, ctx, current, currentDigest)
+	if active, found, err := current.Facts().ActiveGeneration(ctx, testScope(), "conv-1"); err != nil || !found || active != currentDigest {
+		t.Fatalf("active generation after the sweep = %q, %v, %v", active, found, err)
+	}
+}
+
+// noSummarySettings turns the summary branch off. With summaries on, compacting
+// a commit publishes that generation's manifest, and a sweep keeps whatever the
+// branch serves -- so a workspace with summaries on cannot show what retiring a
+// generation this worker still owes costs. Disabling them leaves the generation
+// the worker owes with nothing but the facts that generation stored.
+const noSummarySettings = `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "fact": {"strategy": "none"},
+  "summary": {"disabled": true},
+  "interval": "0"
+}`
+
+// TestRetiringGenerationsRefusesTheGenerationTheWorkerHasNotPublished pins the
+// other half of the guard: a pass that stopped between the facts it derived and
+// the switch that serves them leaves a generation this worker still owes the
+// conversation. Retiring it costs the commits derivation has already covered --
+// the next pass publishes that generation whatever the sweep did to it, and it
+// resumes after its own watermark, so those commits are never derived again --
+// and the refusal is what leaves the fact the failing pass derived for the
+// conversation to serve once derivation finishes.
+func TestRetiringGenerationsRefusesTheGenerationTheWorkerHasNotPublished(t *testing.T) {
+	ctx, ws := retirementFixture(t)
+	published := deriveGeneration(t, ctx, ws, "a", "policy-a")
+	publishedDigest := published.PolicyDigest()
+	if err := published.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second policy's pass stops mid-scan: its facts are stored under a
+	// generation no pass published, and nothing serves it yet.
+	owed := newTestAssemblyOn(t, ws, noSummarySettings,
+		WithDeriver(&failingDeriver{deriver: replacingDeriver{name: "b"}, succeeds: 1}),
+		WithDeriverVersion("policy-b"))
+	owedDigest := owed.PolicyDigest()
+	if err := owed.RunOnce(ctx); err == nil {
+		t.Fatal("the failing pass reported success")
+	}
+	state, err := owed.DerivationState(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Unpublished || state.Settled() {
+		t.Fatalf("state after the failing pass = %#v, want the generation this worker owes", state)
+	}
+	derived, err := owed.Facts().List(ctx, testScope(), "conv-1", factview.ListOptions{Generation: owedDigest})
+	if err != nil || len(derived) != 1 {
+		t.Fatalf("facts of the generation this worker owes = %#v, %v", derived, err)
+	}
+	if generations, err := owed.Facts().ListGenerations(ctx, testScope(), "conv-1"); err != nil || !reflect.DeepEqual(generations, sortedGenerations(publishedDigest, owedDigest)) {
+		t.Fatalf("fact generations before the sweep = %#v, %v", generations, err)
+	}
+
+	retired, err := owed.RetireGenerations(ctx, testScope(), "conv-1")
+	if err == nil {
+		t.Fatal("a sweep of the generation this worker owes was accepted")
+	}
+	if !errors.Is(err, worker.ErrDerivationUnsettled) {
+		t.Fatalf("refusal = %v, want an unsettled derivation", err)
+	}
+	if retired != (RetireResult{}) {
+		t.Fatalf("a refused sweep reported %#v", retired)
+	}
+	if stored, err := owed.Facts().List(ctx, testScope(), "conv-1", factview.ListOptions{Generation: owedDigest}); err != nil || len(stored) != len(derived) {
+		t.Fatalf("facts after the refused sweep = %#v, %v, want %#v", stored, err, derived)
+	}
+	if err := owed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deriving again finishes the generation this worker owed -- from its own
+	// watermark, which is why the sweep had to wait -- and the conversation
+	// serves both commits it derived, not only the one the recovering pass saw.
+	current := newTestAssemblyOn(t, ws, noSummarySettings,
+		WithDeriver(replacingDeriver{name: "b"}), WithDeriverVersion("policy-b"))
+	t.Cleanup(func() { _ = current.Close() })
+	if err := current.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := current.DerivationState(ctx, testScope(), "conv-1"); err != nil {
+		t.Fatal(err)
+	} else if !state.Settled() {
+		t.Fatalf("state after the pass that published = %#v, want settled", state)
+	}
+	assertVisibleFacts(t, current, owedDigest, "b")
+
+	// The sweep the host wanted runs after that pass, and retires the generation
+	// it replaced.
+	retired, err = current.RetireGenerations(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.Facts == 0 || retired.LaneEntries == 0 {
+		t.Fatalf("sweep = %#v, want the replaced generation retired", retired)
+	}
+	if generations, err := current.Facts().ListGenerations(ctx, testScope(), "conv-1"); err != nil || !reflect.DeepEqual(generations, []string{owedDigest}) {
+		t.Fatalf("fact generations after the sweep = %#v, %v, want %q", generations, err, owedDigest)
+	}
+}
+
+// sortedGenerations sorts the generations named, the way the views list them.
+func sortedGenerations(generations ...string) []string {
+	sorted := append([]string(nil), generations...)
+	sort.Strings(sorted)
+	return sorted
 }
 
 // retirementFixture returns a context and a workspace both derived generations

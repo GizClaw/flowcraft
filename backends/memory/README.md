@@ -182,7 +182,22 @@ would collect it. The generation that reaches that state is one whose pass
 failed after projecting: its facts are stored and its entries are in the lanes,
 but it never published, so no switch reconciled them. Sweeping is a maintenance
 action and expects derivation over the conversation to be quiesced, since the
-generations to purge are listed before they are retired.
+generations to purge are listed before they are retired: a sweep run beside a
+pass, or over the generation that pass has derived but not published, would
+leave the pass publishing a generation whose facts and lane entries the sweep
+removed, and derivation resumes after its own watermark, so the commits that
+generation already covered are never derived again.
+
+The sweep enforces that precondition instead of assuming it: it refuses while a
+pass over the conversation is running, or while this worker has stored facts
+under its own generation without publishing it, and returns
+`worker.ErrDerivationUnsettled` (the same state is observable, before the fact,
+as `Assembly.DerivationState`). Both are retryable, both mean the sweep retired
+nothing, and both are answered by deriving again — `Assembly.RunOnce` is
+synchronous — and sweeping after that pass. Commits no pass has scanned yet are
+deliberately not part of it: a sweep only removes generations readers do not
+resolve, so it is safe beside a lagging watermark, and the pass that catches up
+converges the lanes with the generation it publishes.
 
 The per-view sweeps stay available for tooling that retires one view alone:
 `FactStore.ListGenerations` / `RetireGeneration` / `RetireGenerations` and the
@@ -237,7 +252,8 @@ longer keeps, across the views and the projection lanes that hold them, and
 reports what it removed as `RetireResult`. It has no configuration — which
 generations to keep is the caller's retention policy, named per conversation.
 See *Derivation generations* above for what a sweep keeps, why the views are
-swept together, and why the lanes go first.
+swept together, why the lanes go first, and what makes it refuse a conversation
+whose derivation has not settled.
 
 Every name segment is encoded before it reaches a filesystem path, so user
 input never becomes a path verbatim.

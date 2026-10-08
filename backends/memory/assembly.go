@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -316,6 +317,24 @@ func (assembly *Assembly) Maintain(ctx context.Context, scope corememory.Scope) 
 	return assembly.maintain.RunScope(ctx, scope)
 }
 
+// DerivationState reports the derivation this assembly's worker owes one
+// conversation: the state RetireGenerations refuses to sweep beside. It is the
+// observable half of that guard, for a host that would rather sweep when the
+// conversation is settled than retry a refused sweep.
+func (assembly *Assembly) DerivationState(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) (worker.DerivationState, error) {
+	if assembly == nil || assembly.processor == nil {
+		return worker.DerivationState{}, errors.New("memory assembly: derivation worker is not configured")
+	}
+	if ctx == nil {
+		return worker.DerivationState{}, errors.New("memory assembly: context is required")
+	}
+	return assembly.processor.DerivationState(ctx, scope, conversationID)
+}
+
 // RetireResult reports what one retention sweep removed, per derived view.
 type RetireResult struct {
 	// Facts counts the stored fact records of the retired generations.
@@ -353,9 +372,16 @@ type RetireResult struct {
 // published, so nothing reconciles the lanes with it.
 //
 // Sweeping is a maintenance action, and it expects derivation over the
-// conversation to be quiesced: the generations it purges are listed before they
-// are retired, so a pass writing a new one mid-sweep can be retired with
-// entries the sweep never listed still in the lanes.
+// conversation to be quiesced, which the sweep enforces rather than assumes:
+// the generations it purges are listed before they are retired, so a pass
+// writing one mid-sweep can be published with the facts and the entries the
+// sweep removed under it, and derivation resumes after its own watermark -- the
+// commits that generation already covered are never derived again. A sweep
+// therefore refuses (errors.Is(err, worker.ErrDerivationUnsettled)) while a pass
+// over the conversation is running, or while this worker has derived its own
+// generation without publishing it. Both are retryable, and both mean the sweep
+// retired nothing: derive again -- RunOnce is synchronous -- and sweep after the
+// pass rather than beside it.
 func (assembly *Assembly) RetireGenerations(
 	ctx context.Context,
 	scope corememory.Scope,
@@ -367,6 +393,11 @@ func (assembly *Assembly) RetireGenerations(
 	}
 	if ctx == nil {
 		return RetireResult{}, errors.New("memory assembly: context is required")
+	}
+	if assembly.processor != nil {
+		if err := assembly.processor.RequireSettled(ctx, scope, conversationID); err != nil {
+			return RetireResult{}, fmt.Errorf("memory assembly: retention sweep refused: %w", err)
+		}
 	}
 	retained := append([]string(nil), keep...)
 	if active, found, err := assembly.facts.ActiveGeneration(ctx, scope, conversationID); err != nil {
