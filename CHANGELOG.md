@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.4.9` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.4.10` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.4.10` - 2026-10-08
+
+### Changed
+
+- feat(core): call one MCP tool directly, keep a mounted tool registry live, and bind dynamically registered agents with the deployment's own resolvers — a host that opens an MCP server and hands one of its tools to a plugin-provided graph node had to route the call through the tool registry, which renames the tool, re-scopes it to an agent and re-checks grants, so mcp.Source.CallTool invokes one tool on a connected server directly and returns the payload a node's writes contract is written against: raw JSON, the text content when the server sent any, the structured content when it sent no text mirror (SEP-2106 lets a server answer with data and no text, and reading "no text" as "no result" collapsed a real answer into an empty object without an error), "{}" when the result carries neither, and non-JSON text as a JSON string so a caller always holds valid JSON; an unknown server is NotFound, a server whose handshake has not finished is NotAvailable instead of a nil-session panic, and an errored result is an ordinary error carrying the server's own text or its structured content; tool.RegistryFactory attaches every source that implements RegistryAttacher right after construction, so a registry built from a deployment's tool.registry settings sees what a mount point in an assembly sees — a source that publishes after the fact (a refresh, a background MCP connect) previously reached the mounted registry nowhere while it worked in an assembly — and the registry path stays the one the model may pick from; deploy.Result.Resolver() and deploy.Result.Secrets() expose the effective settings reference resolver and secret resolver the build assembled, and Runtime.RegisterAgent and Runtime.Reload pass them into deploy.BindAgent in place of nil, nil, because a dynamically registered or reloaded agent was binding with no resolver at all: a card or engine setting written with a custom scheme or ${secret:...} that works in a deployment failed the moment the same agent definition arrived at runtime; the tests pin both halves — an engine factory captures the settings it was constructed with through RegisterAgent and through the Reload re-bind, and the direct call pins its payload shapes, unknown server, unconnected server and error propagation; this tag also covers the memory provenance change that shipped between core/v0.4.9 and the same window: Turn.MessageMetadata tags messages positionally, an empty entry falling back to the turn metadata, so a host importing a conversation from elsewhere keeps the source's own identifiers (a dataset turn id, for example) and a derived item is traced back to the imported message by identity instead of being recognized by its text, validated against the message count and deep-copied by Clone, with SourceRef.ID documented as <conversation_id>/<message_id>, the form hydration validates candidates against and retrieval quotes messages back from.
 
 ## `core/v0.4.9` - 2026-10-07
 
