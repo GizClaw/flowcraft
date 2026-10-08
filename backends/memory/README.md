@@ -11,8 +11,9 @@ maintenance; `core/memory` stays implementation-neutral.
 - Canonical document storage: every document revision is an immutable Log
   event with a latest-revision pointer in KV.
 - Derivation: a policy-scoped worker scans commits after a durable
-  watermark, extracts facts (chat line), publishes them to the fact view,
-  and feeds every projection lane exactly once per commit.
+  watermark, extracts facts (chat line) into the generation that policy owns,
+  publishes that generation once the pass completes, and feeds every
+  projection lane exactly once per commit.
 - Documents: canonical revisions are scanned through their scope-wide outbox
   cursor, chunked by the deterministic knowledge line, published as a
   document hierarchy, and reconciled into the projection lanes.
@@ -109,16 +110,68 @@ With the workspace driver all state lives under the bound workspace:
   recovery.
 - `storage/v1/kv/...` — current values, the scope catalog, and document
   latest-revision pointers.
-- `views/...` — derived fact and summary views.
+- `views/fact/v2/...` — derived facts per generation, plus each conversation's
+  published-generation pointer.
+- `views/summary/v1/...` — immutable summary records and the active record
+  catalog.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors.
 
-## Import safety
+## Derivation generations
 
-`sources/importer` fetches external documents under an explicit policy
-(scheme and host allowlists, body-size cap, loopback/private-address
-blocking at dial time). Importing stays outside the capability SPI: hosts
-fetch through the importer and hand normalized content to `PutDocument`.
+Everything derived from one conversation belongs to a **generation**, whose
+identity is the policy digest: the derivation settings, the generate/embed
+models, and the algorithm versions of every derivation line. The policy digest
+already keys the derivation watermarks; it also names the fact generation, and
+it labels the summary manifest, so one identity answers "which policy produced
+this" for every derived view.
+
+Facts are stored per generation, so changing a prompt or a model re-derives the
+same canonical commits into a new generation instead of merging beside the one
+it replaces:
+
+- Derivation reads the generation it is building (link candidates, and the fact
+  window summaries are compacted from); readers resolve the conversation's
+  published generation and never name one.
+- A pass publishes its generation when it finishes, so an interrupted pass
+  leaves the previous generation visible instead of exposing a half-built one.
+  A conversation with no published generation adopts the first generation
+  written, so a fresh conversation stays readable while it is derived.
+- Publishing a generation also converges the projection lanes with it, before
+  the pointer moves: the facts the generation being replaced owns exclusively
+  stop being projected, and the active window is re-projected when an earlier
+  switch pruned it. A converge that fails leaves the previous generation
+  visible and the next pass retries, so the lanes never describe a generation
+  readers cannot resolve -- which is what makes re-derivation converge instead
+  of leaving the two generations side by side in the lanes.
+- Projected facts are addressed by conversation: a fact id is a content address
+  shared by every conversation that derived the same text, and a lane is
+  partitioned by scope, so the lane entry carries the conversation and
+  `item_id` keeps the fact id the read side hydrates by.
+- Re-deriving under the same policy converges: the visible facts, the stored
+  generations, and the derived views do not grow.
+- Rolling back is switching policy, not restoring a backup: building an
+  assembly with the previous policy publishes the generation it already wrote.
+  Summaries still published by the replaced generation are dropped from reads
+  rather than served beside it.
+
+Replaced generations stay stored, which is what makes a rollback possible, and
+that makes retirement necessary: `FactStore.ListGenerations` reports what one
+conversation holds, and `RetireGeneration` / `RetireGenerations` drop the
+generations a retention policy no longer keeps. Retirement is unreachability,
+not erasure — the merge-event streams live in the append-only Log, whose
+contract has no delete.
+
+A workspace written before generation scoping is not migrated: the fact view
+moved from `views/fact/v1` to `views/fact/v2`, and a fact stored without a
+generation cannot be assigned to a policy it never ran under. The stored
+derivation watermarks are keyed by policy digest and survive the move, so a
+workspace whose derivation settings did not change reports nothing to derive
+while its `views/fact/v1` facts stay unread. Change a derivation setting, or
+drop the watermarks under `worker/v1/watermarks/...`, to derive the next
+generation. Its projection entries stay where they are -- an entry derived
+before the lane identity changed is addressed by the fact id alone -- and are
+replaced by re-deriving or by rebuilding the lane.
 
 ## Integrity and evaluation
 
