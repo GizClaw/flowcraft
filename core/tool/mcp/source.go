@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,6 +169,99 @@ func (s *Source) Tools() []sdktool.Tool {
 // when a connection succeeds; a not-yet-connected server contributes
 // nothing until the background retry brings it up.
 func (s *Source) LazyTools() []sdktool.LazyTool { return nil }
+
+// CallTool invokes one tool on a connected server directly, bypassing
+// the tool registry. The tool result is returned as raw JSON (the
+// shape plugin-provided graph nodes consume): the text content when
+// the server sent any, the structured content when it did not, and
+// "{}" when the result carries neither. Non-JSON text is returned as a
+// JSON string, so the caller always receives valid JSON.
+func (s *Source) CallTool(
+	ctx context.Context,
+	serverName, toolName string,
+	args any,
+) (json.RawMessage, error) {
+	s.mu.Lock()
+	srv := s.servers[serverName]
+	s.mu.Unlock()
+	if srv == nil {
+		return nil, errdefs.NotFoundf(
+			"mcp: server %q is not configured", serverName)
+	}
+	session, err := srv.currentSession()
+	if err != nil {
+		return nil, err
+	}
+	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		srv.noteCallFailure(session, err)
+		return nil, errdefs.NotAvailablef(
+			"mcp: server %q: call tool %q: %v", serverName, toolName, err)
+	}
+	text := strings.TrimSpace(resultContent(res).Text())
+	if res != nil && res.IsError {
+		if text == "" {
+			structured, err := structuredPayload(res)
+			if err != nil {
+				return nil, err
+			}
+			if structured != nil {
+				return nil, errors.New(string(structured))
+			}
+			text = fmt.Sprintf("mcp tool %q reported an error", toolName)
+		}
+		return nil, errors.New(text)
+	}
+	return callPayload(res, text)
+}
+
+// callPayload renders a successful tool result as the JSON body direct
+// callers consume. Text wins when the server sent any: that is the
+// shape the "writes" contract of a plugin graph node is written
+// against. Structured content is the fallback, because SEP-2106 lets a
+// server return data without a text mirror — the Python SDK and
+// hand-rolled servers do — and dropping it would collapse a real
+// result into "{}" without an error.
+func callPayload(
+	res *mcpsdk.CallToolResult,
+	text string,
+) (json.RawMessage, error) {
+	if text == "" {
+		structured, err := structuredPayload(res)
+		if err != nil {
+			return nil, err
+		}
+		if structured != nil {
+			return structured, nil
+		}
+		return json.RawMessage("{}"), nil
+	}
+	if json.Valid([]byte(text)) {
+		return json.RawMessage(text), nil
+	}
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return nil, errdefs.Internal(err)
+	}
+	return encoded, nil
+}
+
+// structuredPayload renders a result's structured content as JSON, or
+// nil when the server sent none.
+func structuredPayload(res *mcpsdk.CallToolResult) (json.RawMessage, error) {
+	if res == nil || res.StructuredContent == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		return nil, errdefs.Internal(
+			fmt.Errorf("mcp: encode structured tool result: %w", err))
+	}
+	return encoded, nil
+}
 
 // Attach implements tool.RegistryAttacher. The registrar receives
 // every runtime tool publication. Connected servers' current
