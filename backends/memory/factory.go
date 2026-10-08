@@ -209,7 +209,9 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: maintain store: %w", err))
 	}
-	maintainService := &maintain.Service{Facts: facts, Store: maintainStore, Clock: clock}
+	maintainService := &maintain.Service{
+		Facts: facts, Store: maintainStore, Documents: documentViews, Clock: clock,
+	}
 	var summaries *summaryview.SummaryStore
 	var compactor *summaryderive.Compactor
 	if !settings.Summary.Disabled {
@@ -307,7 +309,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		seeds = append(seeds, seed.scope())
 	}
 	assembly, err := newAssembly(
-		messages, documents, facts, summaries, catalog, seeds, settings.Recent,
+		messages, documents, documentViews, facts, summaries, catalog, seeds, settings.Recent,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
 	)

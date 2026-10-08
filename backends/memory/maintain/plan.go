@@ -81,13 +81,22 @@ type Decay struct {
 	EventTime    time.Time `json:"event_time"`
 }
 
-// Plan is the deterministic output of one maintenance pass. It is pure data:
-// applying it writes a read-path overlay and never edits canonical facts.
+// Plan is the output of one maintenance pass, and it is pure data: applying what
+// it detects writes a read-path overlay and never edits canonical facts.
+// Supersedes and Decays are what the pass detected and are deterministic in the
+// scope's facts; ReclaimedChunks describes what the same pass removed from the
+// derived views, which is a property of the stored state rather than of the
+// facts, so it is reported beside the detection rather than detected with it.
 type Plan struct {
-	Scope            corememory.Scope `json:"scope"`
-	Supersedes       []Supersede      `json:"supersedes,omitempty"`
-	Decays           []Decay          `json:"decays,omitempty"`
-	AlgorithmVersion string           `json:"algorithm_version"`
+	Scope      corememory.Scope `json:"scope"`
+	Supersedes []Supersede      `json:"supersedes,omitempty"`
+	Decays     []Decay          `json:"decays,omitempty"`
+	// ReclaimedChunks counts the superseded document chunk records this pass
+	// removed: an immutable build leaves one record per chunk when a document
+	// is published again, and reads reach only the active build. See
+	// document.DocumentViewStore.RetireScopeBuilds for what is kept.
+	ReclaimedChunks  int    `json:"reclaimed_chunks,omitempty"`
+	AlgorithmVersion string `json:"algorithm_version"`
 }
 
 // Detect plans one scope's soft merges and decay from its conversations.

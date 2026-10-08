@@ -14,6 +14,7 @@ import (
 	docsource "github.com/GizClaw/flowcraft/backends/memory/sources/document"
 	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
 	"github.com/GizClaw/flowcraft/backends/memory/verify"
+	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	summaryview "github.com/GizClaw/flowcraft/backends/memory/views/summary"
 	"github.com/GizClaw/flowcraft/backends/memory/worker"
@@ -27,6 +28,7 @@ import (
 type Assembly struct {
 	messages  *msgsource.MessageStore
 	documents *docsource.DocumentStore
+	docViews  *docview.DocumentViewStore
 	facts     *factview.FactStore
 	summaries *summaryview.SummaryStore
 	catalog   *sources.ScopeCatalog
@@ -62,6 +64,7 @@ var (
 func newAssembly(
 	messages *msgsource.MessageStore,
 	documents *docsource.DocumentStore,
+	docViews *docview.DocumentViewStore,
 	facts *factview.FactStore,
 	summaries *summaryview.SummaryStore,
 	catalog *sources.ScopeCatalog,
@@ -81,6 +84,9 @@ func newAssembly(
 	if documents == nil {
 		return nil, errors.New("document store is required")
 	}
+	if docViews == nil {
+		return nil, errors.New("document view is required")
+	}
 	if facts == nil {
 		return nil, errors.New("fact view is required")
 	}
@@ -91,7 +97,8 @@ func newAssembly(
 		clock = time.Now
 	}
 	return &Assembly{
-		messages: messages, documents: documents, facts: facts, summaries: summaries,
+		messages: messages, documents: documents, docViews: docViews,
+		facts: facts, summaries: summaries,
 		catalog: catalog,
 		scopes:  append([]corememory.Scope(nil), scopes...),
 		recent:  recent, provider: provider, processor: processor,
@@ -272,6 +279,18 @@ func (assembly *Assembly) DocumentStore() *docsource.DocumentStore {
 	return assembly.documents
 }
 
+// DocumentViews returns the derived document chunk view. Unlike Facts and
+// Summaries it is not generation scoped -- a chunk is addressed by the document
+// provenance and text it was derived from, so a policy change reproduces the
+// build it produced -- and its superseded builds are reclaimed by
+// Assembly.Maintain or by DocumentViewStore.RetireScopeBuilds directly.
+func (assembly *Assembly) DocumentViews() *docview.DocumentViewStore {
+	if assembly == nil {
+		return nil
+	}
+	return assembly.docViews
+}
+
 // Facts returns the derived fact view.
 func (assembly *Assembly) Facts() *factview.FactStore {
 	if assembly == nil {
@@ -401,6 +420,12 @@ type RetireResult struct {
 // generation without publishing it. Both are retryable, and both mean the sweep
 // retired nothing: derive again -- RunOnce is synchronous -- and sweep after the
 // pass rather than beside it.
+//
+// The sweep is per conversation, over the views a conversation's derivation
+// fills. Derived documents are not among them: a document chunk is addressed by
+// the document it came from, not by a policy, so the view keeps no generation
+// and a superseded build is reclaimed at scope granularity by
+// Assembly.Maintain (see DocumentViewStore.RetireScopeBuilds).
 func (assembly *Assembly) RetireGenerations(
 	ctx context.Context,
 	scope corememory.Scope,

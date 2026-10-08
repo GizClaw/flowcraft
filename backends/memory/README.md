@@ -263,12 +263,20 @@ rebuilding the lane.
 `Assembly.Maintain(ctx, scope)` runs one soft-merge and decay pass: it detects
 superseded facts (same entity plus similar text; the newer fact wins) and aged
 facts (exponential decay by event time), writes a per-scope read-path
-overlay, and returns the plan. Canonical fact text is never edited — the
+overlay, reclaims the derived document builds the scope no longer serves, and
+returns the plan. Canonical fact text is never edited — the
 overlay only multiplies retrieval scores, and the strongest of the supersede
 and decay factors wins. The module ships no runner: hosts schedule the call
 however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
 decay floor).
+
+The reclaim is the document half of the sweep surface, and it is deliberately
+not a generation sweep: see *Derived documents are not generation scoped*
+below. `Plan.ReclaimedChunks` reports how many superseded chunk records one pass
+removed, the overlay is saved before they are, and a retried pass finds less to
+remove. A deployment without derived documents configures no document view on
+the service and reclaims nothing.
 - `eval.Run` drives a scenario (turns + questions) through the capability
   SPI and reports hit rate and latency. The harness is dataset-agnostic;
   LoCoMo/LongMemEval exports convert to scenarios host-side.
@@ -288,6 +296,33 @@ the caller's retention policy, named per conversation. See *Derivation
 generations* above for what a sweep keeps, why the views are swept together, why
 the progress and the lanes go first, and what makes it refuse a conversation
 whose derivation has not settled.
+
+## Derived documents are not generation scoped
+
+Conversations are swept by generation; documents are not, and they do not need
+to be. A document view is addressed by dataset and document
+(`views/v1/documents/<partition>/<dataset>/<document>`), and a publish writes one
+immutable **build** and moves an `active` pointer at it. A chunk id comes from
+the document's provenance and text (`lines/knowledge`), not from the policy that
+derived it, so deriving a document again under an earlier policy reproduces the
+build it published then: there is nothing a rollback would need to find that
+re-deriving does not reproduce, which is exactly why the view keeps no
+generation and why `Assembly.RetireGenerations` — a per-conversation sweep —
+never touches it.
+
+What a document does leave behind is a superseded build: a new revision, a
+re-derivation under changed chunking, or a publish that fails after writing its
+chunks and before moving the pointer. `Get` and `List` resolve only the active
+build, so nothing reads them, and the projection lanes are not a reason to keep
+them either — the worker reconciles a lane's entries for a document when the
+document changes. They are reclaimed at scope granularity, by the same
+maintenance pass that soft-merges facts (`Assembly.Maintain`, reported as
+`Plan.ReclaimedChunks`) or by `DocumentViewStore.RetireScopeBuilds` directly,
+which keeps the active build of every document of the scope and removes the rest
+— including the builds of a document whose pointer never landed, since none of
+them has a reader. Reclaiming is unreachability, not erasure of authority: the
+canonical revisions live in the document Log, and a build removed here is
+written again by the next publish that needs it.
 
 Every name segment is encoded before it reaches a filesystem path, so user
 input never becomes a path verbatim.

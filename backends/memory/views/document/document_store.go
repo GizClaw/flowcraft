@@ -24,6 +24,11 @@ const schemaVersion = 1
 // DocumentViewStore writes immutable chunk builds and atomically publishes a
 // small pointer on a storage.Store. Calls through one instance are safe for
 // concurrent use.
+//
+// The view is not generation scoped: a chunk is addressed by the document
+// provenance and text it was derived from, so an earlier policy reproduces the
+// build it published rather than needing to be rolled back to. RetireStaleBuilds
+// is what keeps the superseded builds from accumulating.
 type DocumentViewStore struct {
 	kv storage.Store
 	mu sync.RWMutex
@@ -213,6 +218,218 @@ func (store *DocumentViewStore) List(ctx context.Context, scope corememory.Scope
 	return result, nil
 }
 
+// ListBuilds returns every build stored for one document, sorted by build id.
+// A build is written immutably and never overwritten, so a document that was
+// published more than once -- a new revision, a re-derivation under changed
+// chunking, a pointer that failed after its chunks were written -- has one
+// build per chunk set it ever published, and readers resolve only the active
+// one. The result is what RetireStaleBuilds sweeps.
+func (store *DocumentViewStore) ListBuilds(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID string,
+) ([]string, error) {
+	if err := validateAddress(scope, datasetID, documentID); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return nil, errors.New("document view: context is required")
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.listBuildsLocked(ctx, scope, datasetID, documentID)
+}
+
+// RetireStaleBuilds drops the stored chunks of every build of one document
+// except the active one, and reports how many chunk records it removed.
+//
+// This view is not generation scoped, and it does not need to be: a chunk id is
+// derived from the document's provenance and text, not from the policy that
+// derived it, so deriving a document again under an earlier policy reproduces
+// the build it published then. There is therefore nothing to roll back to and
+// nothing to keep for one: a superseded build has no reader, because Get and
+// List resolve the active pointer, and its chunks are its only trace -- the
+// projection lanes reconcile their entries themselves when a document changes
+// (see the worker's knowledge delta). Retiring it is how the space comes back.
+//
+// A document with no active pointer keeps none of its builds: its chunks were
+// written by a publish that did not finish, and the next ReplaceDocument writes
+// whatever build it needs -- immutably, so a build retired here and published
+// again is written again. Retiring is a maintenance action, like the rest of
+// the sweep surface: run it while the documents of the scope are quiesced, or
+// accept that a publish racing it leaves its own build in place.
+func (store *DocumentViewStore) RetireStaleBuilds(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID string,
+) (int, error) {
+	if err := validateAddress(scope, datasetID, documentID); err != nil {
+		return 0, err
+	}
+	if ctx == nil {
+		return 0, errors.New("document view: context is required")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.retireStaleBuildsLocked(ctx, scope, datasetID, documentID)
+}
+
+// RetireScopeBuilds runs RetireStaleBuilds over every document of one scope,
+// and reports how many chunk records it removed in total. It is the entry point
+// a scope-wide maintenance pass uses, since the document view is addressed by
+// dataset and document rather than by conversation.
+func (store *DocumentViewStore) RetireScopeBuilds(ctx context.Context, scope corememory.Scope) (int, error) {
+	if ctx == nil {
+		return 0, errors.New("document view: context is required")
+	}
+	root, err := documentsRoot(scope)
+	if err != nil {
+		return 0, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entries, err := store.kv.List(ctx, root)
+	if err != nil {
+		return 0, fmt.Errorf("document view: list documents: %w", err)
+	}
+	addresses := make([]documentAddress, 0, len(entries))
+	seen := make(map[documentAddress]struct{}, len(entries))
+	for _, entry := range entries {
+		address, err := documentAddressFromKey(root, entry.Key)
+		if err != nil {
+			return 0, fmt.Errorf("document view: decode document key %q: %w", entry.Key, err)
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	sort.Slice(addresses, func(i, j int) bool {
+		if addresses[i].DatasetID == addresses[j].DatasetID {
+			return addresses[i].DocumentID < addresses[j].DocumentID
+		}
+		return addresses[i].DatasetID < addresses[j].DatasetID
+	})
+	removed := 0
+	for _, address := range addresses {
+		count, err := store.retireStaleBuildsLocked(ctx, scope, address.DatasetID, address.DocumentID)
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
+}
+
+type documentAddress struct {
+	DatasetID  string
+	DocumentID string
+}
+
+func (store *DocumentViewStore) retireStaleBuildsLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID string,
+) (int, error) {
+	active, found, err := store.readActive(ctx, scope, datasetID, documentID)
+	if err != nil {
+		return 0, err
+	}
+	builds, err := store.listBuildsLocked(ctx, scope, datasetID, documentID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, build := range builds {
+		if found && build == active.BuildID {
+			continue
+		}
+		count, err := store.retireBuildLocked(ctx, scope, datasetID, documentID, build)
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
+}
+
+func (store *DocumentViewStore) listBuildsLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID string,
+) ([]string, error) {
+	prefix, err := store.buildsPrefix(scope, datasetID, documentID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("document view: list builds: %w", err)
+	}
+	seen := make(map[string]struct{}, len(entries))
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		buildID, err := buildIDFromKey(prefix, entry.Key)
+		if err != nil {
+			return nil, fmt.Errorf("document view: decode build key %q: %w", entry.Key, err)
+		}
+		if _, ok := seen[buildID]; ok {
+			continue
+		}
+		seen[buildID] = struct{}{}
+		result = append(result, buildID)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (store *DocumentViewStore) retireBuildLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID, buildID string,
+) (int, error) {
+	prefix, err := store.chunksPrefix(scope, datasetID, documentID, buildID)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return 0, fmt.Errorf("document view: list build %q: %w", buildID, err)
+	}
+	removed := 0
+	for _, entry := range entries {
+		if _, err := chunkIDFromKey(prefix, entry.Key); err != nil {
+			return removed, fmt.Errorf("document view: build %q: %w", buildID, err)
+		}
+		if err := store.kv.Delete(ctx, entry.Key); err != nil {
+			return removed, fmt.Errorf("document view: retire chunk %q: %w", entry.Key, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func documentAddressFromKey(root, key string) (documentAddress, error) {
+	suffix := strings.TrimPrefix(key, root+"/")
+	if suffix == key {
+		return documentAddress{}, errors.New("document key outside scope root")
+	}
+	parts := strings.Split(suffix, "/")
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
+		return documentAddress{}, errors.New("document key has no dataset and document address")
+	}
+	datasetID, err := storage.DecodeSegment(parts[0])
+	if err != nil {
+		return documentAddress{}, err
+	}
+	documentID, err := storage.DecodeSegment(parts[1])
+	if err != nil {
+		return documentAddress{}, err
+	}
+	return documentAddress{DatasetID: datasetID, DocumentID: documentID}, nil
+}
+
 func (store *DocumentViewStore) writeImmutableChunk(ctx context.Context, persisted persistedChunk) error {
 	key, err := store.chunkKey(persisted.Chunk.Scope, persisted.DatasetID, persisted.DocumentID, persisted.BuildID, persisted.ChunkID)
 	if err != nil {
@@ -299,13 +516,21 @@ func (store *DocumentViewStore) readChunk(ctx context.Context, active activeBuil
 }
 
 func (store *DocumentViewStore) documentPrefix(scope corememory.Scope, datasetID, documentID string) (string, error) {
+	root, err := documentsRoot(scope)
+	if err != nil {
+		return "", err
+	}
+	return root + "/" +
+		storage.EncodeSegment(datasetID) + "/" +
+		storage.EncodeSegment(documentID), nil
+}
+
+func documentsRoot(scope corememory.Scope) (string, error) {
 	partition, err := storage.ScopePartition(scope)
 	if err != nil {
 		return "", err
 	}
-	return "views/v1/documents/" + partition + "/" +
-		storage.EncodeSegment(datasetID) + "/" +
-		storage.EncodeSegment(documentID), nil
+	return "views/v1/documents/" + partition, nil
 }
 
 func (store *DocumentViewStore) activeKey(scope corememory.Scope, datasetID, documentID string) (string, error) {
@@ -316,12 +541,20 @@ func (store *DocumentViewStore) activeKey(scope corememory.Scope, datasetID, doc
 	return prefix + "/active", nil
 }
 
-func (store *DocumentViewStore) chunksPrefix(scope corememory.Scope, datasetID, documentID, buildID string) (string, error) {
+func (store *DocumentViewStore) buildsPrefix(scope corememory.Scope, datasetID, documentID string) (string, error) {
 	prefix, err := store.documentPrefix(scope, datasetID, documentID)
 	if err != nil {
 		return "", err
 	}
-	return prefix + "/builds/" + storage.EncodeSegment(buildID) + "/chunks", nil
+	return prefix + "/builds", nil
+}
+
+func (store *DocumentViewStore) chunksPrefix(scope corememory.Scope, datasetID, documentID, buildID string) (string, error) {
+	prefix, err := store.buildsPrefix(scope, datasetID, documentID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/" + storage.EncodeSegment(buildID) + "/chunks", nil
 }
 
 func (store *DocumentViewStore) chunkKey(scope corememory.Scope, datasetID, documentID, buildID, chunkID string) (string, error) {
@@ -338,6 +571,18 @@ func chunkIDFromKey(prefix, key string) (string, error) {
 		return "", errors.New("chunk key outside build prefix")
 	}
 	return storage.DecodeSegment(suffix)
+}
+
+func buildIDFromKey(prefix, key string) (string, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return "", errors.New("build key outside builds prefix")
+	}
+	segment, _, _ := strings.Cut(suffix, "/")
+	if segment == "" {
+		return "", errors.New("build key has no build id")
+	}
+	return storage.DecodeSegment(segment)
 }
 
 func validateReplace(request ReplaceRequest) error {

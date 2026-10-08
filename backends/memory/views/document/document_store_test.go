@@ -282,3 +282,145 @@ func (store *failPutKV) Put(ctx context.Context, key string, data []byte) error 
 func (store *failPutKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	return store.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }
+
+// TestRetireStaleBuildsKeepsOnlyTheActiveBuild is the reclaim fixture: a
+// document published twice leaves two immutable builds, reads resolve the
+// active one, and the superseded one is unreachable until it is swept.
+func TestRetireStaleBuildsKeepsOnlyTheActiveBuild(t *testing.T) {
+	ctx := context.Background()
+	store := newChunkStore(t, newTestWorkspace(t))
+	if _, err := store.ReplaceDocument(ctx, replaceRequest(1, "old-a", "old-b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplaceDocument(ctx, replaceRequest(2, "new")); err != nil {
+		t.Fatal(err)
+	}
+	builds, err := store.ListBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil || len(builds) != 2 {
+		t.Fatalf("builds = %#v, %v", builds, err)
+	}
+	removed, err := store.RetireStaleBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil || removed != 2 {
+		t.Fatalf("retire = %d, %v, want the two chunks of the superseded build", removed, err)
+	}
+	remaining, err := store.ListBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, found, activeErr := store.readActive(ctx, chunkScope, "dataset", "document")
+	if activeErr != nil || !found {
+		t.Fatalf("active build = %#v found=%v, %v", active, found, activeErr)
+	}
+	if len(remaining) != 1 || remaining[0] != active.BuildID {
+		t.Fatalf("remaining builds = %#v, want only %q", remaining, active.BuildID)
+	}
+	listed, err := store.List(ctx, chunkScope, "dataset", "document", ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Content.Text() != "new" {
+		t.Fatalf("active chunks after retire = %#v, %v", listed, err)
+	}
+	// The retired chunk is gone, so an address a lane still holds for the
+	// superseded build resolves nothing.
+	if _, ok, err := store.Get(ctx, chunkScope, "dataset", "document", "v1-0-old-a"); err != nil || ok {
+		t.Fatalf("retired chunk still visible: ok=%v err=%v", ok, err)
+	}
+	// Retiring again finds nothing, so a retried pass is a no-op.
+	again, err := store.RetireStaleBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil || again != 0 {
+		t.Fatalf("second retire = %d, %v, want 0", again, err)
+	}
+}
+
+// TestRetireStaleBuildsDropsBuildsNoPointerServes covers the publish that failed
+// after writing its chunks: those chunks are unreachable, and a document with no
+// active pointer keeps none of its builds.
+func TestRetireStaleBuildsDropsBuildsNoPointerServes(t *testing.T) {
+	ctx := context.Background()
+	ws := newTestWorkspace(t)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDocumentViewStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplaceDocument(ctx, replaceRequest(1, "kept")); err != nil {
+		t.Fatal(err)
+	}
+	activeKey, err := store.activeKey(chunkScope, "dataset", "document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.kv = &failPutKV{Store: kvStore, key: activeKey}
+	if _, err := store.ReplaceDocument(ctx, replaceRequest(2, "orphan-a", "orphan-b")); err == nil {
+		t.Fatal("pointer failure not surfaced")
+	}
+	store.kv = kvStore
+	if builds, err := store.ListBuilds(ctx, chunkScope, "dataset", "document"); err != nil || len(builds) != 2 {
+		t.Fatalf("builds after failed publish = %#v, %v", builds, err)
+	}
+	removed, err := store.RetireStaleBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil || removed != 2 {
+		t.Fatalf("retire = %d, %v, want the two orphan chunks", removed, err)
+	}
+	listed, err := store.List(ctx, chunkScope, "dataset", "document", ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Content.Text() != "kept" {
+		t.Fatalf("active chunks after retire = %#v, %v", listed, err)
+	}
+	// A document whose pointer never landed has no reader at all, so a sweep
+	// keeps none of it.
+	if err := kvStore.Delete(ctx, activeKey); err != nil {
+		t.Fatal(err)
+	}
+	removed, err = store.RetireStaleBuilds(ctx, chunkScope, "dataset", "document")
+	if err != nil || removed != 1 {
+		t.Fatalf("retire without active = %d, %v, want the remaining chunk", removed, err)
+	}
+	if builds, err := store.ListBuilds(ctx, chunkScope, "dataset", "document"); err != nil || len(builds) != 0 {
+		t.Fatalf("builds after retire = %#v, %v", builds, err)
+	}
+}
+
+// TestRetireScopeBuildsCoversOneScopeOnly sweeps every document of a scope and
+// leaves the partitions of other scopes where they are.
+func TestRetireScopeBuildsCoversOneScopeOnly(t *testing.T) {
+	ctx := context.Background()
+	store := newChunkStore(t, newTestWorkspace(t))
+	other := corememory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "other"}
+	publish := func(scope corememory.Scope, datasetID, documentID string, versions ...uint64) {
+		t.Helper()
+		for _, version := range versions {
+			request := replaceRequest(version, fmt.Sprintf("v%d", version))
+			request.Scope = scope
+			request.DatasetID = datasetID
+			request.DocumentID = documentID
+			for index := range request.Chunks {
+				request.Chunks[index].Scope = scope
+				request.Chunks[index].DatasetID = datasetID
+				request.Chunks[index].DocumentID = documentID
+			}
+			if _, err := store.ReplaceDocument(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	publish(chunkScope, "dataset", "document", 1, 2, 3)
+	publish(chunkScope, "dataset", "other-document", 1, 2)
+	publish(chunkScope, "other-dataset", "document", 1, 2)
+	publish(other, "dataset", "document", 1, 2)
+	removed, err := store.RetireScopeBuilds(ctx, chunkScope)
+	if err != nil || removed != 4 {
+		t.Fatalf("scope retire = %d, %v, want the 4 superseded chunks", removed, err)
+	}
+	for _, address := range [][2]string{
+		{"dataset", "document"}, {"dataset", "other-document"}, {"other-dataset", "document"},
+	} {
+		builds, err := store.ListBuilds(ctx, chunkScope, address[0], address[1])
+		if err != nil || len(builds) != 1 {
+			t.Fatalf("builds of %v = %#v, %v, want only the active one", address, builds, err)
+		}
+	}
+	if builds, err := store.ListBuilds(ctx, other, "dataset", "document"); err != nil || len(builds) != 2 {
+		t.Fatalf("builds of another scope = %#v, %v, want both", builds, err)
+	}
+}

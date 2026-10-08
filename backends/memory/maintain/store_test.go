@@ -2,11 +2,15 @@ package maintain
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
+	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
+	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	coremessage "github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -94,5 +98,85 @@ func TestStoreAdjustSingleIdentity(t *testing.T) {
 	missing, err := store.Adjust(ctx, scope, "context-item-missing")
 	if err != nil || missing != 1 {
 		t.Fatalf("missing adjust = %v, %v", missing, err)
+	}
+}
+
+// TestRunScopeReclaimsSupersededDocumentBuilds pins the reclaim half of a
+// maintenance pass: the overlay is what the pass detects, and the derived
+// document builds it no longer serves are what it removes. A service without a
+// document view still runs, and reclaims nothing.
+func TestRunScopeReclaimsSupersededDocumentBuilds(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := factview.NewFactStore(logStore, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docViews, err := docview.NewDocumentViewStore(kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	provenance := []corememory.SourceRef{{Kind: corememory.SourceDocument, ID: "document"}}
+	publish := func(version uint64) {
+		t.Helper()
+		chunk := docview.Chunk{
+			ID: fmt.Sprintf("chunk-%d", version), Scope: scope,
+			DatasetID: "dataset", DocumentID: "document", DocumentVersion: version,
+			Ordinal: 0, Content: coremessage.Content{Parts: []coremessage.Part{
+				coremessage.TextPart{Text: fmt.Sprintf("body %d", version)},
+			}},
+			Provenance: provenance,
+		}
+		if _, err := docViews.ReplaceDocument(ctx, docview.ReplaceRequest{
+			Scope: scope, DatasetID: "dataset", DocumentID: "document",
+			DocumentVersion: version, Chunks: []docview.Chunk{chunk},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(1)
+	publish(2)
+	service := &Service{Facts: facts, Store: store, Documents: docViews}
+	plan, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ReclaimedChunks != 1 {
+		t.Fatalf("reclaimed = %d, want the superseded build's chunk", plan.ReclaimedChunks)
+	}
+	if builds, err := docViews.ListBuilds(ctx, scope, "dataset", "document"); err != nil || len(builds) != 1 {
+		t.Fatalf("builds after the pass = %#v, %v, want only the active one", builds, err)
+	}
+	// A pass that reclaims nothing reports nothing, and a deployment that
+	// configures no document view still runs.
+	again, err := service.RunScope(ctx, scope)
+	if err != nil || again.ReclaimedChunks != 0 {
+		t.Fatalf("second pass reclaimed %d, %v, want 0", again.ReclaimedChunks, err)
+	}
+	publish(3)
+	service.Documents = nil
+	plan, err = service.RunScope(ctx, scope)
+	if err != nil || plan.ReclaimedChunks != 0 {
+		t.Fatalf("pass without a document view reclaimed %d, %v, want 0", plan.ReclaimedChunks, err)
+	}
+	if builds, err := docViews.ListBuilds(ctx, scope, "dataset", "document"); err != nil || len(builds) != 2 {
+		t.Fatalf("builds after a pass without a view = %#v, %v, want both", builds, err)
 	}
 }

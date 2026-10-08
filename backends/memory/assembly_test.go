@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
 	"github.com/GizClaw/flowcraft/backends/memory/verify"
+	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	summaryview "github.com/GizClaw/flowcraft/backends/memory/views/summary"
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -1238,5 +1239,72 @@ func TestDocumentKnowledgeRetrieval(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("document chunk missing from context items = %#v", result.Items)
+	}
+}
+
+// TestMaintainReclaimsSupersededDocumentBuilds is the document reclaim fixture:
+// a document published twice leaves two immutable builds, reads resolve the
+// active one, and maintenance returns the space of the build nothing resolves.
+// It is the document answer to the fact sweep -- the view is not generation
+// scoped, so the pass reclaims what a sweep would have retired.
+func TestMaintainReclaimsSupersededDocumentBuilds(t *testing.T) {
+	settings := `{
+	  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+	  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+	  "fact": {"strategy": "none"},
+	  "summary": {"disabled": true},
+	  "chunk": {"max_runes": 64, "overlap_runes": 8},
+	  "interval": "0"
+	}`
+	assembly, _ := newTestAssemblyWith(t, settings)
+	ctx := context.Background()
+	views := assembly.DocumentViews()
+	if views == nil {
+		t.Fatal("document view is not configured")
+	}
+	publish := func(key, text string) {
+		t.Helper()
+		document := corememory.Document{
+			Scope: testScope(), DatasetID: "docs", DocumentID: "doc-1", IdempotencyKey: key,
+			Content:    coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: text}}},
+			Provenance: []corememory.SourceRef{{Kind: corememory.SourceExternal, ID: "uri:report"}},
+		}
+		if err := assembly.PutDocument(ctx, document); err != nil {
+			t.Fatal(err)
+		}
+		if err := assembly.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish("rev-1", "The quarterly report covers espresso brewing techniques in detail.")
+	first, err := views.List(ctx, testScope(), "docs", "doc-1", docview.ListOptions{})
+	if err != nil || len(first) == 0 {
+		t.Fatalf("first build = %#v, %v", first, err)
+	}
+	publish("rev-2", "The quarterly report covers espresso brewing techniques and roast profiles in detail.")
+	builds, err := views.ListBuilds(ctx, testScope(), "docs", "doc-1")
+	if err != nil || len(builds) != 2 {
+		t.Fatalf("builds after two revisions = %#v, %v", builds, err)
+	}
+	plan, err := assembly.Maintain(ctx, testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ReclaimedChunks != len(first) {
+		t.Fatalf("reclaimed = %d, want the %d chunks of the superseded build",
+			plan.ReclaimedChunks, len(first))
+	}
+	remaining, err := views.ListBuilds(ctx, testScope(), "docs", "doc-1")
+	if err != nil || len(remaining) != 1 {
+		t.Fatalf("builds after maintenance = %#v, %v, want only the active one", remaining, err)
+	}
+	served, err := views.List(ctx, testScope(), "docs", "doc-1", docview.ListOptions{})
+	if err != nil || len(served) == 0 {
+		t.Fatalf("active build after maintenance = %#v, %v", served, err)
+	}
+	// The pass is idempotent: a second one finds nothing to reclaim.
+	again, err := assembly.Maintain(ctx, testScope())
+	if err != nil || again.ReclaimedChunks != 0 {
+		t.Fatalf("second maintenance reclaimed %d, %v, want 0", again.ReclaimedChunks, err)
 	}
 }

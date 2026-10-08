@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
+	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -166,15 +167,27 @@ func (store *Store) Adjust(ctx context.Context, scope corememory.Scope, identity
 }
 
 // Service is the host-invoked batch entry point: it lists one scope's facts,
-// plans maintenance, and saves the overlay.
+// plans maintenance, saves the overlay, and reclaims the document builds the
+// scope no longer serves.
 type Service struct {
-	Facts  *factview.FactStore
-	Store  *Store
-	Config Config
-	Clock  func() time.Time
+	Facts *factview.FactStore
+	Store *Store
+	// Documents, when set, is the document chunk view whose superseded builds a
+	// pass reclaims. It is optional: a deployment without derived documents has
+	// nothing to reclaim, and a host that would rather sweep them separately can
+	// call DocumentViewStore.RetireScopeBuilds itself.
+	Documents *docview.DocumentViewStore
+	Config    Config
+	Clock     func() time.Time
 }
 
-// RunScope plans and saves one scope's maintenance overlay.
+// RunScope plans and saves one scope's maintenance overlay, then reclaims the
+// superseded document builds of the scope.
+//
+// The overlay is saved before the builds are reclaimed, so a pass that fails
+// while reclaiming still publishes what it detected, and the reclaim is
+// idempotent: a retried pass finds less to remove. A failed reclaim is returned
+// with the plan, since the plan it was going to report was already applied.
 func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (Plan, error) {
 	empty := Plan{}
 	if service == nil || service.Facts == nil || service.Store == nil {
@@ -207,6 +220,13 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 	}
 	if err := service.Store.Save(ctx, plan); err != nil {
 		return empty, err
+	}
+	if service.Documents != nil {
+		reclaimed, err := service.Documents.RetireScopeBuilds(ctx, scope)
+		if err != nil {
+			return plan, fmt.Errorf("maintain: reclaim superseded document builds: %w", err)
+		}
+		plan.ReclaimedChunks = reclaimed
 	}
 	return plan, nil
 }
