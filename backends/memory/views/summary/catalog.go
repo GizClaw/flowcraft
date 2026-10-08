@@ -82,7 +82,10 @@ func (store *SummaryStore) publishActiveLocked(ctx context.Context, desired Mani
 		return err
 	}
 	if found && sameActivePublication(previous, desired) {
-		return nil
+		// The publication is already the active one, but its generation may
+		// not be bookmarked yet: a store written before generations were
+		// bookmarked publishes its first delta with this one.
+		return store.putGenerationHead(ctx, head, nil)
 	}
 	if desired.PublishedAt.IsZero() {
 		desired.PublishedAt = store.clock()
@@ -190,7 +193,34 @@ func (store *SummaryStore) writeActiveHead(ctx context.Context, head activeCatal
 	if err := store.kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("summary view: publish active manifest: %w", err)
 	}
+	if err := store.putGenerationHead(ctx, head, data); err != nil {
+		return err
+	}
 	store.cacheActive(store.catalogKey(manifest.Scope, manifest.ConversationID), digestBytes(data), manifest)
+	return nil
+}
+
+// putGenerationHead bookmarks one head under the generation it names, so the
+// manifest a generation published stays reachable after another generation
+// replaced it: serving it again is pointing the conversation back at it rather
+// than rebuilding it, and a bookmark therefore outlives the publication that
+// made it. data may be nil, in which case the head is encoded here.
+func (store *SummaryStore) putGenerationHead(ctx context.Context, head activeCatalogHead, data []byte) error {
+	if data == nil {
+		encoded, err := json.Marshal(head)
+		if err != nil {
+			return fmt.Errorf("summary view: encode active manifest: %w", err)
+		}
+		data = encoded
+	}
+	scope := corememory.Scope{RuntimeID: head.RuntimeID, UserID: head.UserID, AgentID: head.AgentID}
+	key, err := store.generationManifestPath(scope, head.ConversationID, head.GenerationID)
+	if err != nil {
+		return err
+	}
+	if err := store.kv.Put(ctx, key, data); err != nil {
+		return fmt.Errorf("summary view: bookmark generation manifest: %w", err)
+	}
 	return nil
 }
 
@@ -203,27 +233,48 @@ func (store *SummaryStore) materializeActiveLocked(
 	if err != nil {
 		return Manifest{}, activeCatalogHead{}, false, err
 	}
-	data, err := store.kv.Get(ctx, manifestKey)
+	return store.materializeHeadLocked(ctx, scope, conversationID, manifestKey)
+}
+
+// readHeadLocked reads and validates one stored head, which may be the active
+// one or the bookmark of a generation.
+func (store *SummaryStore) readHeadLocked(
+	ctx context.Context,
+	key string,
+	scope corememory.Scope,
+	conversationID string,
+) (activeCatalogHead, []byte, bool, error) {
+	data, err := store.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return Manifest{}, activeCatalogHead{}, false, nil
+			return activeCatalogHead{}, nil, false, nil
 		}
-		return Manifest{}, activeCatalogHead{}, false, fmt.Errorf("summary view: read active manifest: %w", err)
-	}
-	headDigest := digestBytes(data)
-	if cached, ok := store.activeCache[store.catalogKey(scope, conversationID)]; ok && cached.headDigest == headDigest {
-		if cachedHead, headErr := activeCatalogHeadFromManifestData(data); headErr == nil {
-			return cached.manifest.Clone(), cachedHead, true, nil
-		}
-		// Fall through to the strict decode below: it reports the corruption
-		// instead of silently serving a zero head.
+		return activeCatalogHead{}, nil, false, fmt.Errorf("summary view: read active manifest: %w", err)
 	}
 	var head activeCatalogHead
 	if err := decodeStrict(data, &head); err != nil {
-		return Manifest{}, activeCatalogHead{}, false, fmt.Errorf("summary view: decode active manifest: %w", err)
+		return activeCatalogHead{}, nil, false, fmt.Errorf("summary view: decode active manifest: %w", err)
 	}
 	if err := validateActiveHead(head, scope, conversationID); err != nil {
+		return activeCatalogHead{}, nil, false, err
+	}
+	return head, data, true, nil
+}
+
+// materializeHeadLocked materializes the manifest named by the head stored at
+// key: the base it descends from plus every segment down to it.
+func (store *SummaryStore) materializeHeadLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID, key string,
+) (Manifest, activeCatalogHead, bool, error) {
+	head, data, found, err := store.readHeadLocked(ctx, key, scope, conversationID)
+	if err != nil || !found {
 		return Manifest{}, activeCatalogHead{}, false, err
+	}
+	headDigest := digestBytes(data)
+	if cached, ok := store.activeCache[store.catalogKey(scope, conversationID)]; ok && cached.headDigest == headDigest {
+		return cached.manifest.Clone(), head, true, nil
 	}
 	baseKey, err := store.activeBasePath(scope, conversationID, head.BaseID)
 	if err != nil {
@@ -288,14 +339,6 @@ func (store *SummaryStore) materializeActiveLocked(
 	}
 	store.cacheActive(store.catalogKey(scope, conversationID), headDigest, manifest)
 	return manifest.Clone(), head, true, nil
-}
-
-func activeCatalogHeadFromManifestData(data []byte) (activeCatalogHead, error) {
-	var head activeCatalogHead
-	if err := json.Unmarshal(data, &head); err != nil {
-		return activeCatalogHead{}, fmt.Errorf("summary view: decode active head: %w", err)
-	}
-	return head, nil
 }
 
 func activeDelta(previous, desired []string) ([]activeCatalogAdd, []string) {
@@ -473,4 +516,16 @@ func (store *SummaryStore) activeCatalogRoot(scope corememory.Scope, conversatio
 		return "", err
 	}
 	return "views/summary/v1/" + partition + "/conversations/" + storage.EncodeSegment(conversationID), nil
+}
+
+// generationManifestPath names the bookmark of one generation's manifest.
+func (store *SummaryStore) generationManifestPath(
+	scope corememory.Scope,
+	conversationID, generation string,
+) (string, error) {
+	root, err := store.activeCatalogRoot(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return root + "/generations/" + storage.EncodeSegment(generation) + ".json", nil
 }

@@ -3,16 +3,19 @@ package worker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	summaryderive "github.com/GizClaw/flowcraft/backends/memory/derive/summary"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
+	summaryview "github.com/GizClaw/flowcraft/backends/memory/views/summary"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/workspace"
@@ -147,9 +150,15 @@ func (lane *recordingLane) lastConverge(t *testing.T) component.ProjectionDelta 
 	return component.ProjectionDelta{}
 }
 
-// newGenerationStore opens the derived state two processors of one workspace
-// share: a policy change builds a new assembly over the same store.
-func newGenerationStore(t *testing.T) *factview.FactStore {
+// generationStore is the derived state two processors of one workspace share: a
+// policy change builds a new assembly over the same store.
+type generationStore struct {
+	facts     *factview.FactStore
+	summaries *summaryview.SummaryStore
+	compactor *summaryderive.Compactor
+}
+
+func newGenerationStore(t *testing.T) *generationStore {
 	t.Helper()
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
@@ -164,26 +173,36 @@ func newGenerationStore(t *testing.T) *factview.FactStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := factview.NewFactStore(logStore, kvStore)
+	store := &generationStore{}
+	store.facts, err = factview.NewFactStore(logStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return facts
+	store.summaries, err = summaryview.NewSummaryStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.compactor, err = summaryderive.New(
+		summaryderive.DefaultConfig(), store.summaries, summaryderive.ExtractiveSummarizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func newGenerationProcessor(
 	t *testing.T,
 	messages MessageReader,
 	checkpoints CheckpointStore,
-	facts *factview.FactStore,
+	store *generationStore,
 	policyDigest string,
 	deriver component.Deriver,
 	lane *recordingLane,
 ) *Processor {
 	t.Helper()
 	processor, err := NewProcessor(Config{
-		Messages: messages, Facts: facts, Deriver: deriver, Checkpoints: checkpoints,
-		Projection: "test", PolicyDigest: policyDigest,
+		Messages: messages, Facts: store.facts, Deriver: deriver, Checkpoints: checkpoints,
+		Compactor: store.compactor, Projection: "test", PolicyDigest: policyDigest,
 		Indexers: []ProjectionIndexer{{Name: "test", Indexer: lane}},
 	})
 	if err != nil {
@@ -217,9 +236,9 @@ func TestGenerationSwitchConvergesTheProjectionLanes(t *testing.T) {
 	}}
 	checkpoints := newMemoryCheckpoints()
 	lane := newRecordingLane()
-	facts := newGenerationStore(t)
+	store := newGenerationStore(t)
 
-	first := newGenerationProcessor(t, messages, checkpoints, facts, "policy-a",
+	first := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
 		policyDeriver{prefix: "a"}, lane)
 	if _, err := first.ProcessConversation(ctx, scope, conversationID); err != nil {
 		t.Fatal(err)
@@ -238,12 +257,12 @@ func TestGenerationSwitchConvergesTheProjectionLanes(t *testing.T) {
 		t.Fatalf("convergences = %d, want 0", convergences)
 	}
 
-	second := newGenerationProcessor(t, messages, checkpoints, facts, "policy-b",
+	second := newGenerationProcessor(t, messages, checkpoints, store, "policy-b",
 		policyDeriver{prefix: "b"}, lane)
 	if _, err := second.ProcessConversation(ctx, scope, conversationID); err != nil {
 		t.Fatal(err)
 	}
-	if active, found, err := facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-b" {
+	if active, found, err := store.facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-b" {
 		t.Fatalf("active generation = %q, %v, %v", active, found, err)
 	}
 	switched := lane.projected(conversationID)
@@ -267,7 +286,7 @@ func TestGenerationSwitchConvergesTheProjectionLanes(t *testing.T) {
 	// The replaced generation is still stored, which is what makes a rollback
 	// possible: switching back re-projects the facts the outbound switch
 	// pruned instead of serving them half-present.
-	third := newGenerationProcessor(t, messages, checkpoints, facts, "policy-a",
+	third := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
 		policyDeriver{prefix: "a"}, lane)
 	if _, err := third.ProcessConversation(ctx, scope, conversationID); err != nil {
 		t.Fatal(err)
@@ -276,7 +295,7 @@ func TestGenerationSwitchConvergesTheProjectionLanes(t *testing.T) {
 	if len(rolledBack) != 1 || rolledBack[0] != derived[0] {
 		t.Fatalf("projected entries after the rollback = %#v, want %#v", rolledBack, derived)
 	}
-	if active, found, err := facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-a" {
+	if active, found, err := store.facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-a" {
 		t.Fatalf("active generation = %q, %v, %v", active, found, err)
 	}
 
@@ -307,9 +326,9 @@ func TestConvergenceKeepsAnotherConversationsFact(t *testing.T) {
 	}}
 	checkpoints := newMemoryCheckpoints()
 	lane := newRecordingLane()
-	facts := newGenerationStore(t)
+	store := newGenerationStore(t)
 
-	first := newGenerationProcessor(t, messages, checkpoints, facts, "policy-a",
+	first := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
 		policyDeriver{prefix: "a"}, lane)
 	for _, conversationID := range []string{"conv-a", "conv-b"} {
 		if _, err := first.ProcessConversation(ctx, scope, conversationID); err != nil {
@@ -327,7 +346,7 @@ func TestConvergenceKeepsAnotherConversationsFact(t *testing.T) {
 		t.Fatalf("lane holds %d entries, want 2", entries)
 	}
 
-	second := newGenerationProcessor(t, messages, checkpoints, facts, "policy-b",
+	second := newGenerationProcessor(t, messages, checkpoints, store, "policy-b",
 		policyDeriver{prefix: "b"}, lane)
 	if _, err := second.ProcessConversation(ctx, scope, "conv-a"); err != nil {
 		t.Fatal(err)
@@ -357,16 +376,16 @@ func TestConvergeFailureKeepsThePublishedGeneration(t *testing.T) {
 	}}
 	checkpoints := newMemoryCheckpoints()
 	lane := newRecordingLane()
-	facts := newGenerationStore(t)
+	store := newGenerationStore(t)
 
-	first := newGenerationProcessor(t, messages, checkpoints, facts, "policy-a",
+	first := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
 		policyDeriver{prefix: "a"}, lane)
 	if _, err := first.ProcessConversation(ctx, scope, conversationID); err != nil {
 		t.Fatal(err)
 	}
 	derived := lane.projected(conversationID)
 
-	second := newGenerationProcessor(t, messages, checkpoints, facts, "policy-b",
+	second := newGenerationProcessor(t, messages, checkpoints, store, "policy-b",
 		policyDeriver{prefix: "b"}, lane)
 	lane.failNextConverge = errors.New("lane is down")
 	if _, err := second.ProcessConversation(ctx, scope, conversationID); err == nil {
@@ -374,7 +393,7 @@ func TestConvergeFailureKeepsThePublishedGeneration(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "lane is down") {
 		t.Fatalf("failure does not name the lane: %v", err)
 	}
-	if active, found, err := facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-a" {
+	if active, found, err := store.facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-a" {
 		t.Fatalf("active generation = %q, %v, %v, want the generation that never switched", active, found, err)
 	}
 	if kept := lane.projected(conversationID); !contains(kept, derived[0]) {
@@ -384,12 +403,103 @@ func TestConvergeFailureKeepsThePublishedGeneration(t *testing.T) {
 	if _, err := second.ProcessConversation(ctx, scope, conversationID); err != nil {
 		t.Fatal(err)
 	}
-	if active, found, err := facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-b" {
+	if active, found, err := store.facts.ActiveGeneration(ctx, scope, conversationID); err != nil || !found || active != "policy-b" {
 		t.Fatalf("active generation after the retry = %q, %v, %v", active, found, err)
 	}
 	if convergences := second.Stats().GenerationConvergences; convergences != 1 {
 		t.Fatalf("convergences = %d, want 1", convergences)
 	}
+}
+
+// TestGenerationSwitchRepublishesTheSummaryBranch pins what a pass that derives
+// nothing still has to do: a rollback finds the generation's watermark already
+// at the end of the stream, so no commit is compacted, and the summaries the
+// branch serves have to move back with the same switch that moves the facts.
+func TestGenerationSwitchRepublishesTheSummaryBranch(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "memories"}
+	const conversationID = "conv-a"
+	messages := &fakeMessages{commits: map[string][]msgsource.Commit{
+		conversationID: {conversationCommit(conversationID, "we talked about beverages")},
+	}}
+	checkpoints := newMemoryCheckpoints()
+	lane := newRecordingLane()
+	store := newGenerationStore(t)
+
+	first := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
+		policyDeriver{prefix: "a"}, lane)
+	if _, err := first.ProcessConversation(ctx, scope, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	firstManifest := activeSummaryManifest(t, store, scope, conversationID)
+	if firstManifest.GenerationID != "policy-a" {
+		t.Fatalf("summary generation = %q, want policy-a", firstManifest.GenerationID)
+	}
+
+	second := newGenerationProcessor(t, messages, checkpoints, store, "policy-b",
+		policyDeriver{prefix: "b"}, lane)
+	if _, err := second.ProcessConversation(ctx, scope, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if switched := activeSummaryManifest(t, store, scope, conversationID); switched.GenerationID != "policy-b" {
+		t.Fatalf("summary generation after the switch = %q, want policy-b", switched.GenerationID)
+	}
+
+	third := newGenerationProcessor(t, messages, checkpoints, store, "policy-a",
+		policyDeriver{prefix: "a"}, lane)
+	processed, err := third.ProcessConversation(ctx, scope, conversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed != 0 {
+		t.Fatalf("the rollback derived %d commits, want none", processed)
+	}
+	if restored := activeSummaryManifest(t, store, scope, conversationID); !reflect.DeepEqual(restored, firstManifest) {
+		t.Fatalf("restored summaries = %#v, want %#v", restored, firstManifest)
+	}
+	// The branch serves the rolled-back generation's own leaves, summarising
+	// the facts that generation derived.
+	generationFacts, err := store.facts.List(ctx, scope, conversationID, factview.ListOptions{Generation: "policy-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := make(map[string]struct{}, len(generationFacts))
+	for _, fact := range generationFacts {
+		live[fact.ID] = struct{}{}
+	}
+	records, err := store.summaries.ListActive(ctx, scope, conversationID,
+		summaryview.ListOptions{GenerationID: "policy-a"})
+	if err != nil || len(records) == 0 {
+		t.Fatalf("summaries of the rolled-back generation = %#v, %v", records, err)
+	}
+	for _, record := range records {
+		if record.GenerationID != "policy-a" {
+			t.Fatalf("summary %q belongs to generation %q", record.ID, record.GenerationID)
+		}
+		if record.Level != summaryview.L0 {
+			continue
+		}
+		for _, inputID := range record.InputIDs {
+			if _, ok := live[inputID]; !ok {
+				t.Fatalf("summary %q summarises fact %q of another generation", record.ID, inputID)
+			}
+		}
+	}
+}
+
+// activeSummaryManifest returns the manifest the summary branch serves.
+func activeSummaryManifest(
+	t *testing.T,
+	store *generationStore,
+	scope corememory.Scope,
+	conversationID string,
+) summaryview.Manifest {
+	t.Helper()
+	manifest, found, err := store.summaries.LoadActive(context.Background(), scope, conversationID)
+	if err != nil || !found {
+		t.Fatalf("active summary manifest = %v, %v", found, err)
+	}
+	return manifest
 }
 
 func artifactIDs(artifacts []component.Artifact) []string {

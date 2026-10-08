@@ -197,6 +197,63 @@ func (store *SummaryStore) PublishActive(ctx context.Context, manifest Manifest)
 	return store.publishActiveLocked(ctx, manifest)
 }
 
+// PublishGeneration makes one derivation generation the one the active branch
+// serves. It moves the conversation back to the bookmark of the manifest that
+// generation published, so the summaries a generation had are the ones a
+// conversation returning to it reads again -- the same records, the same
+// frontier, the same publication time -- instead of a manifest rebuilt from
+// whatever the records look like now.
+//
+// A generation that never published has no bookmark and reports found=false:
+// there is no manifest to show for it, and the branch is left as it was rather
+// than labelled empty.
+func (store *SummaryStore) PublishGeneration(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID, generation string,
+) (Manifest, bool, error) {
+	if ctx == nil {
+		return Manifest{}, false, errors.New("summary view: context is required")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	generation = strings.TrimSpace(generation)
+	if err := validateAddress(scope, conversationID); err != nil {
+		return Manifest{}, false, err
+	}
+	if generation == "" {
+		return Manifest{}, false, errors.New("summary view: generation_id is required")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key, err := store.generationManifestPath(scope, conversationID, generation)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	head, data, found, err := store.readHeadLocked(ctx, key, scope, conversationID)
+	if err != nil || !found {
+		return Manifest{}, false, err
+	}
+	if head.GenerationID != generation {
+		return Manifest{}, false, fmt.Errorf(
+			"summary view: generation %q is bookmarked to manifest of %q", generation, head.GenerationID)
+	}
+	// The active manifest is the bookmark just read: the pointer moves before
+	// the manifest is materialized so the cache is filled for the publication
+	// this call makes active.
+	activeKey, err := store.manifestPath(scope, conversationID)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	if err := store.kv.Put(ctx, activeKey, data); err != nil {
+		return Manifest{}, false, fmt.Errorf("summary view: publish active manifest: %w", err)
+	}
+	manifest, _, _, err := store.materializeActiveLocked(ctx, scope, conversationID)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	return manifest, true, nil
+}
+
 // ListActive returns the active records of one conversation.
 func (store *SummaryStore) ListActive(
 	ctx context.Context,

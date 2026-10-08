@@ -142,6 +142,14 @@ type CompactRequest struct {
 	Inputs          []Input
 }
 
+// RepublishRequest names the generation whose branch has to become the active
+// one again.
+type RepublishRequest struct {
+	Scope          corememory.Scope
+	ConversationID string
+	GenerationID   string
+}
+
 type SummarizeRequest struct {
 	Level      summaryview.Level
 	Texts      []string
@@ -160,6 +168,7 @@ type Store interface {
 	Get(context.Context, corememory.Scope, string, string) (summaryview.Record, bool, error)
 	LoadActive(context.Context, corememory.Scope, string) (summaryview.Manifest, bool, error)
 	PublishActive(context.Context, summaryview.Manifest) error
+	PublishGeneration(context.Context, corememory.Scope, string, string) (summaryview.Manifest, bool, error)
 	ListActive(context.Context, corememory.Scope, string, summaryview.ListOptions) ([]summaryview.Record, error)
 }
 
@@ -271,22 +280,58 @@ func (compactor *Compactor) Compact(ctx context.Context, request CompactRequest)
 		current = next
 		all = append(all, current...)
 	}
-	ids := make([]string, len(all))
-	for index, record := range all {
-		ids[index] = record.ID
+	manifest, err := summaryview.BuildManifest(request.Scope, request.ConversationID, request.GenerationID, all)
+	if err != nil {
+		return nil, err
 	}
-	var coverage summaryview.CoverageRange
-	if len(inputs) > 0 {
-		_, _, _, _, coverage = aggregate(all[:len(inputs)])
-	}
-	if err := compactor.store.PublishActive(ctx, summaryview.Manifest{
-		Scope: request.Scope, ConversationID: request.ConversationID, GenerationID: request.GenerationID,
-		RecordIDs: ids, CoverageRange: coverage,
-		FrontierDigest: digestValue("frontier", ids, coverage),
-	}); err != nil {
+	if err := compactor.store.PublishActive(ctx, manifest); err != nil {
 		return nil, err
 	}
 	return compactor.store.ListActive(ctx, request.Scope, request.ConversationID, summaryview.ListOptions{})
+}
+
+// Republish makes one generation the one the summary branch serves, rebuilding
+// its manifest from the records that generation kept.
+//
+// A generation is written beside the one it replaces, so the branch of the
+// generation a conversation returns to -- a policy rollback, or a pass that
+// failed after compacting and left the branch labelled for a generation the
+// facts never switched to -- is rebuilt rather than re-derived: the records are
+// immutable and addressed by their generation, so what that generation
+// summarised is still there to publish. Nothing is published when the branch
+// already serves the generation, so a pass that derives nothing does not rewrite
+// the catalog.
+func (compactor *Compactor) Republish(
+	ctx context.Context,
+	request RepublishRequest,
+) (summaryview.Manifest, bool, error) {
+	if compactor == nil || compactor.store == nil {
+		return summaryview.Manifest{}, false, errors.New("summary compactor: compactor is incomplete")
+	}
+	if ctx == nil {
+		return summaryview.Manifest{}, false, errors.New("summary compactor: context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return summaryview.Manifest{}, false, err
+	}
+	if err := request.Scope.Validate(); err != nil {
+		return summaryview.Manifest{}, false, err
+	}
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	request.GenerationID = strings.TrimSpace(request.GenerationID)
+	if request.ConversationID == "" || request.GenerationID == "" {
+		return summaryview.Manifest{}, false, errors.New(
+			"summary compactor: conversation_id and generation_id are required")
+	}
+	active, found, err := compactor.store.LoadActive(ctx, request.Scope, request.ConversationID)
+	if err != nil {
+		return summaryview.Manifest{}, false, err
+	}
+	if found && active.GenerationID == request.GenerationID {
+		return active, false, nil
+	}
+	return compactor.store.PublishGeneration(
+		ctx, request.Scope, request.ConversationID, request.GenerationID)
 }
 
 func (compactor *Compactor) compactGroups(

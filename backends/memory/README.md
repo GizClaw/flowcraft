@@ -112,8 +112,8 @@ With the workspace driver all state lives under the bound workspace:
   latest-revision pointers.
 - `views/fact/v2/...` — derived facts per generation, plus each conversation's
   published-generation pointer.
-- `views/summary/v1/...` — immutable summary records and the active record
-  catalog.
+- `views/summary/v1/...` — immutable summary records, the active record
+  catalog, and the manifest bookmark of every generation that published one.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors.
 
@@ -152,8 +152,11 @@ it replaces:
   generations, and the derived views do not grow.
 - Rolling back is switching policy, not restoring a backup: building an
   assembly with the previous policy publishes the generation it already wrote.
-  Summaries still published by the replaced generation are dropped from reads
-  rather than served beside it.
+  The summaries come back with it — the branch bookmarks the manifest each
+  generation publishes, and the switch (which runs even in a pass that derives
+  nothing, as a rollback does) serves that generation's own manifest again —
+  rather than leaving reads with the summaries of the replaced generation or
+  with none.
 
 Replaced generations stay stored, which is what makes a rollback possible, and
 that makes retirement necessary: `FactStore.ListGenerations` reports what one

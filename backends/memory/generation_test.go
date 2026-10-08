@@ -162,11 +162,11 @@ func TestPolicyChangeReplacesTheDerivedGeneration(t *testing.T) {
 	}
 
 	// Rolling back to the previous policy moves reads back to its generation in
-	// one step: no migration, no re-derivation. The summaries still published
-	// belong to the replaced generation, and the read plane drops them instead
-	// of serving two policies at once.
+	// one step: no migration, no re-derivation. Its summaries come back with
+	// it, because the generation published them and the branch keeps what a
+	// generation published until that generation is retired.
 	rolledBack := derive("a", "policy-a")
-	assertVisibleFacts(t, rolledBack, firstDigest, "a")
+	rolledBackFacts := assertVisibleFacts(t, rolledBack, firstDigest, "a")
 	// The switch converged the projection lanes with the generation it
 	// publishes, so the facts of the generation that is current again are
 	// readable through them: the lane address carries the conversation, and
@@ -178,8 +178,34 @@ func TestPolicyChangeReplacesTheDerivedGeneration(t *testing.T) {
 	}
 	if summaryItems, err = countSummaryItems(rolledBack); err != nil {
 		t.Fatal(err)
-	} else if summaryItems != 0 {
-		t.Fatalf("context served %d summaries of the replaced generation", summaryItems)
+	} else if summaryItems == 0 {
+		t.Fatal("the rolled-back generation's summaries are missing from the context")
+	}
+	// The summaries the branch serves are the ones the generation published:
+	// its own leaves, summarising the facts that generation derived.
+	manifest, records, found, err = rolledBack.Summaries().ActiveSnapshot(ctx, testScope(), "conv-1")
+	if err != nil || !found {
+		t.Fatalf("active summaries after the rollback = %v, %v", found, err)
+	}
+	if manifest.GenerationID != firstDigest {
+		t.Fatalf("summary generation after the rollback = %q, want %q", manifest.GenerationID, firstDigest)
+	}
+	rolledBackLive := make(map[string]struct{}, len(rolledBackFacts))
+	for _, fact := range rolledBackFacts {
+		rolledBackLive[fact.ID] = struct{}{}
+	}
+	for _, record := range records {
+		if record.Level != summaryview.L0 {
+			continue
+		}
+		if record.GenerationID != firstDigest {
+			t.Fatalf("restored summary %q belongs to generation %q", record.ID, record.GenerationID)
+		}
+		for _, inputID := range record.InputIDs {
+			if _, ok := rolledBackLive[inputID]; !ok {
+				t.Fatalf("restored summary %q summarises fact %q of another generation", record.ID, inputID)
+			}
+		}
 	}
 }
 

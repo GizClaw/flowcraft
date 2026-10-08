@@ -295,6 +295,9 @@ func (processor *Processor) ProcessConversation(ctx context.Context, scope corem
 			return processed, err
 		}
 	}
+	if err := processor.republishSummaries(ctx, scope, conversationID); err != nil {
+		return processed, err
+	}
 	// The generation is the policy digest itself: it is what the watermarks
 	// are keyed by, so "which policy derived this" and "which generation a
 	// reader resolves" are the same answer. A pass that failed above returns
@@ -303,6 +306,34 @@ func (processor *Processor) ProcessConversation(ctx context.Context, scope corem
 		return processed, fmt.Errorf("memory worker: publish derivation generation: %w", err)
 	}
 	return processed, nil
+}
+
+// republishSummaries makes the summary branch serve the generation this pass is
+// about to publish. Summaries are derived state like the lanes and are
+// reconciled with the same switch, but unlike them they are not rebuilt from
+// the facts: the branch of the generation being published was bookmarked when
+// it published and is restored here.
+//
+// Without it a pass that derives nothing -- a policy that came back to a
+// generation whose watermark is already at the end, which is what a rollback
+// looks like -- would leave the summaries of the generation it replaced in
+// place, and reads resolving the generation that is current again would find
+// none of its summaries. Writing before the pointer moves means readers never
+// resolve a generation whose summaries are still the replaced one's.
+func (processor *Processor) republishSummaries(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) error {
+	if processor.compactor == nil {
+		return nil
+	}
+	if _, _, err := processor.compactor.Republish(ctx, summaryderive.RepublishRequest{
+		Scope: scope, ConversationID: conversationID, GenerationID: processor.policyDigest,
+	}); err != nil {
+		return fmt.Errorf("memory worker: republish summaries: %w", err)
+	}
+	return nil
 }
 
 // convergeGeneration makes the projection lanes hold the generation this pass

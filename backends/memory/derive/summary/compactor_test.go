@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,72 @@ func TestCompactorIncrementallyReusesStablePrefix(t *testing.T) {
 	if summarizer.calls != 0 || store.adds != 0 {
 		t.Fatalf("same-input replay calls=%d writes=%d", summarizer.calls, store.adds)
 	}
+}
+
+// TestCompactorRepublishMovesTheBranchBackToTheGeneration pins what the switch
+// does to the summary branch when a conversation returns to a generation: the
+// manifest that generation published is the one to serve again, a branch that
+// already serves it is left alone, and a generation that never published moves
+// nothing.
+func TestCompactorRepublishMovesTheBranchBackToTheGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := mustStore(t)
+	compactor, _ := New(DefaultConfig(), store, echoSummarizer{})
+	first, err := compactor.Compact(ctx, CompactRequest{
+		Scope: testScope(), ConversationID: "conversation", GenerationID: "generation-1",
+		PolicySignature: "generation-1", Inputs: inputs(3),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstManifest := loadSummaryManifest(t, store)
+	if _, err := compactor.Compact(ctx, CompactRequest{
+		Scope: testScope(), ConversationID: "conversation", GenerationID: "generation-2",
+		PolicySignature: "generation-2", Inputs: inputs(5),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if switched := loadSummaryManifest(t, store); switched.GenerationID != "generation-2" {
+		t.Fatalf("summary generation after the switch = %q", switched.GenerationID)
+	}
+
+	restored, published, err := compactor.Republish(ctx, RepublishRequest{
+		Scope: testScope(), ConversationID: "conversation", GenerationID: "generation-1",
+	})
+	if err != nil || !published || !reflect.DeepEqual(restored, firstManifest) {
+		t.Fatalf("restored = %#v, published = %v, err = %v", restored, published, err)
+	}
+	if active := loadSummaryManifest(t, store); !reflect.DeepEqual(active, firstManifest) {
+		t.Fatalf("active summary manifest = %#v, want %#v", active, firstManifest)
+	}
+	records, err := store.ListActive(ctx, testScope(), "conversation",
+		summaryview.ListOptions{GenerationID: "generation-1"})
+	if err != nil || !reflect.DeepEqual(recordIDSet(records), recordIDSet(first)) {
+		t.Fatalf("records of the restored generation = %#v, %v", recordIDSet(records), err)
+	}
+
+	if _, published, err := compactor.Republish(ctx, RepublishRequest{
+		Scope: testScope(), ConversationID: "conversation", GenerationID: "generation-1",
+	}); err != nil || published {
+		t.Fatalf("republishing the generation already served published = %v, err = %v", published, err)
+	}
+	if _, published, err := compactor.Republish(ctx, RepublishRequest{
+		Scope: testScope(), ConversationID: "conversation", GenerationID: "generation-absent",
+	}); err != nil || published {
+		t.Fatalf("a generation that never published published = %v, err = %v", published, err)
+	}
+	if active := loadSummaryManifest(t, store); !reflect.DeepEqual(active, firstManifest) {
+		t.Fatalf("active summary manifest = %#v, want %#v", active, firstManifest)
+	}
+}
+
+func loadSummaryManifest(t *testing.T, store Store) summaryview.Manifest {
+	t.Helper()
+	manifest, found, err := store.LoadActive(context.Background(), testScope(), "conversation")
+	if err != nil || !found {
+		t.Fatalf("active summary manifest = %v, %v", found, err)
+	}
+	return manifest
 }
 
 // TestCompactorPartialWindowReplacesTheCatalog pins why every caller must
