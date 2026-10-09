@@ -157,7 +157,7 @@ document's `runtime.external_deps`.
 
 | Method | Does |
 | --- | --- |
-| `New(def, opts)` | validates the definition, registers capability factories and service impls, and (with `opts.Plugins`) the plugin node factory. Builds no runtime. |
+| `New(def, opts)` | validates the definition, registers capability factories and service impls, and (with `opts.Plugins`) the plugin node factory and the UI registry. Builds no runtime. |
 | `Start(ctx)` | starts the host primitive server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
 | `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`. |
@@ -166,7 +166,8 @@ document's `runtime.external_deps`.
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
-| `Close()` | closes every runtime in reverse key order, then the router, bus, plugin host and host server. Idempotent. |
+| `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
+| `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
 
 The runtime key (`craft.RuntimeKey`) is application-defined; `craft.DefaultKey`
 is `"default"`. An empty key is rejected (`craft: runtime key is
@@ -187,9 +188,10 @@ Craft-plane events (exact subjects): `craft.started` (empty
 (`RuntimeEvent{key}`), `craft.reload.started` / `.completed` / `.failed`
 (`RuntimeEvent{key, reason, error}`), `craft.manager.state`
 (`ManagerStateEvent`), `craft.group.instance.state`
-(`GroupInstanceEvent`). `Reason` is `ReasonManual`, `ReasonConfig`,
-`ReasonPlugin` or `ReasonAgent`. Subscribe with
-`Attach(ctx, craft.PatternCraft(), sink)` (`craft.>`).
+(`GroupInstanceEvent`), and `craft.ui.changed`
+(`ui.ChangedEvent{revision}`, published by the UI registry). `Reason`
+is `ReasonManual`, `ReasonConfig`, `ReasonPlugin` or `ReasonAgent`.
+Subscribe with `Attach(ctx, craft.PatternCraft(), sink)` (`craft.>`).
 
 ## Capabilities
 
@@ -289,10 +291,65 @@ its permission still loads and enables, but the section is dropped:
 - `nodes` without `nodes:provide`: no node resource or engine dep is
   synthesized;
 - `ui` and `storage` carry no gate inside craft — the shell gates the
-  bundle and binds the KV, while `Host.KV` is the host accessor.
+  bundle and binds the KV, while `Host.KV` is the host accessor. The
+  registry serves the bundle and reports the grant in its entries, so
+  the shell refuses to load what the plugin did not ask for.
 
 Disabling a plugin withdraws its contributions even though its
 permissions are unchanged; re-enabling restores them.
+
+### UI delivery
+
+craft delivers bundles and lifecycle; the shell decides how a bundle
+runs. `Craft.UI()` returns the registry (`craft/ui`), or nil when the
+Craft has no plugin host:
+
+```go
+registry := craft.UI()                        // nil without a plugin host
+entries, err := registry.Entries()            // what there is to load
+assets, ok := registry.Assets(entries[0].ID)  // where to read it from
+```
+
+`Entries()` lists every valid plugin — enabled or not — sorted by id,
+with `id`, `name`, `version`, `entry`, `permissions`, `enabled` and the
+`revision` the read started at. Invalid plugins are not enumerated:
+scan errors belong to the management view (`plugin.Host.List`).
+`Assets(id)` returns an `fs.FS` rooted at the directory holding the
+plugin's `ui.entry`, so `dist/index.js` is `index.js` and the chunks
+beside it resolve the way the bundle's own relative imports do. A
+plugin without `ui.entry`, an unknown id and a host that cannot serve
+assets all report false — the registry probes for that half at run
+time, so `craft.PluginHost` stays the narrow contract applications
+implement.
+
+The bundle view is re-validated on every open, because a plugin
+directory is user-writable and can change under a running shell: a path
+must be slash-separated, relative and clean (`..`, absolute paths and
+backslashes are `fs.ErrInvalid`); a symlink leaving the bundle is
+`plugin.ErrAssetEscape` while one that stays inside is followed; a
+device, socket or fifo is refused; and no single asset may exceed
+`plugin.MaxAssetBytes` (10 MiB), checked when the file is opened and
+again while it is read.
+
+**Events.** `craft.ui.changed` (`ui.SubjectChanged`) carries
+`ui.ChangedEvent{revision}` and is published on the craft bus whenever
+the plugin store's revision moves — enable, disable, install, update
+and rollback all end there. Subscribe to it like any other craft event:
+`craft.Attach(ctx, event.Pattern(ui.SubjectChanged), sink)`. The
+registry starts watching in `New`, so a shell that subscribes before
+its first `Entries()` call cannot miss a change, and the contract on
+each event is:
+
+1. destroy every plugin scope from the previous round;
+2. read `Entries()` again, and record the revision it carries;
+3. load each enabled bundle, handing the plugin's id, version and
+   permissions to the JS host.
+
+Two asset roots, on purpose: `Assets` / `plugin.Host.AssetFS` read
+inside the bundle, bundle-relative, which is what a JS loader needs,
+while `plugin.Store.Asset(id, rel)` materializes one file relative to
+the plugin directory for assets that live outside the bundle (a pet
+pack, say). Both refuse a symlink out of the plugin tree.
 
 ### Tools
 

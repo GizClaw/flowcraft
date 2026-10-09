@@ -104,7 +104,7 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
 | `skills:provide` | `skills` list |
 | `hooks:provide` | `hooks` list |
 | `nodes:provide` | `nodes` section |
-| `ui:webview` | UI bundle (shell gate; craft only validates/publishes) |
+| `ui:webview` | UI bundle (shell gate; craft serves the bundle and lists the grant in `ui.Registry` entries) |
 | `storage:kv` | plugin KV (shell binds; `Host.KV` is the host accessor) |
 | `secrets:auth` | `secret_get` / `secret_set` / `secret_delete` |
 | `inference:write` | `inference_upsert` / `inference_remove` |
@@ -127,6 +127,18 @@ still loads and enables.
 - `nodes` without `nodes:provide`: no node resource, no engine dep.
 - Disabling a plugin withdraws its contributions even with permissions
   intact.
+
+### UI delivery
+
+`Craft.UI()` (`craft/ui.Registry`, nil without a plugin host) is the
+whole UI surface: `Entries()` → id / name / version / entry /
+permissions / enabled + revision, `Assets(id)` → an `fs.FS` rooted at
+the directory holding `ui.entry` (confined, ≤ 10 MiB per file), and
+`craft.ui.changed` (`{revision}`, same counter as the plugin store) on
+every enable / disable / install / update / rollback. The shell reloads
+every bundle on each event: destroy the old plugin scopes, re-read
+`Entries()`, load again. Runtime registration, rendering and the
+`ui:webview` gate are the shell's, not craft's.
 
 ### Directory layout the host scans
 
@@ -228,8 +240,9 @@ Craft selects and configures; the host supplies everything executable:
 - **Service implementations** for the host primitives, via
   `Options.HostServices` (direct or as a `HostServices` capability) or
   named impls + `host_tools.services`.
-- **UI rendering**: craft delivers `ui` and plugin bundles; the shell
-  loads and draws them, and gates `ui:webview` / `storage:kv`.
+- **UI rendering**: craft delivers plugin bundles (`Craft.UI()` registry,
+  `Assets`, `craft.ui.changed`) plus the `ui` config; the shell loads
+  and draws them, and gates `ui:webview` / `storage:kv`.
 - **Credentials**: secrets, provider keys and any `${env:...}` values.
 - **Plugin roots**: the host builds `plugin.Store` and `plugin.Host`
   (`Roots`, `StateDir`, `DataDirRoot`, `HostVersion`) and passes the host
