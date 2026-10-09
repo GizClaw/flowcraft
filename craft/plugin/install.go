@@ -35,17 +35,25 @@ func (s *Store) userRoot() (string, error) {
 // Inspect reads and validates one plugin source directory without
 // installing it.
 func (s *Store) Inspect(_ context.Context, source string) (Summary, error) {
+	summary, _, err := s.inspect(source)
+	return summary, err
+}
+
+// inspect is Inspect's body plus the parsed manifest, which the update
+// path needs to diff an incoming package's grants against the installed
+// one.
+func (s *Store) inspect(source string) (Summary, Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(source, "plugin.json"))
 	if err != nil {
-		return Summary{}, errdefs.Validationf(
+		return Summary{}, Manifest{}, errdefs.Validationf(
 			"plugin install: plugin.json: %v", err)
 	}
 	manifest, err := ParseManifest(context.Background(), data)
 	if err != nil {
-		return Summary{}, err
+		return Summary{}, Manifest{}, err
 	}
 	if err := manifest.Validate(source); err != nil {
-		return Summary{}, err
+		return Summary{}, Manifest{}, err
 	}
 	return Summary{
 		ID:          manifest.ID,
@@ -53,7 +61,7 @@ func (s *Store) Inspect(_ context.Context, source string) (Summary, error) {
 		Version:     manifest.Version,
 		Entry:       manifest.Entry(),
 		Permissions: append([]string(nil), manifest.Permissions...),
-	}, nil
+	}, manifest, nil
 }
 
 // Install copies a plugin directory into the writable root. Installing
@@ -127,8 +135,15 @@ func (s *Store) Install(
 	return summary, nil
 }
 
-// Rollback restores the last snapshot of one plugin.
+// Rollback restores the last snapshot of one plugin. The id is
+// validated first: every path below is built from it, and
+// filepath.Join cleans "..", so an unvalidated one would resolve the
+// snapshot — and the target it is swapped with — outside the plugin
+// root.
 func (s *Store) Rollback(ctx context.Context, id string) (Summary, error) {
+	if err := ValidateID(id); err != nil {
+		return Summary{}, err
+	}
 	root, err := s.userRoot()
 	if err != nil {
 		return Summary{}, err
@@ -216,6 +231,10 @@ func (s *Store) Uninstall(
 	}
 	// Snapshots live beside the copy they belong to.
 	_ = os.RemoveAll(filepath.Join(filepath.Dir(dir), backupsDir, id))
+	// Gathered before the lock: the fail-closed rebuild of an unreadable
+	// state file needs the surviving set, and scanning takes the lock
+	// this write holds.
+	survivors := s.validIDs()
 	s.mu.Lock()
 	if !opts.KeepKV {
 		_ = os.Remove(filepath.Join(s.opts.StateDir, "kv", id+".json"))
@@ -224,7 +243,7 @@ func (s *Store) Uninstall(
 	if !opts.KeepData {
 		_ = os.RemoveAll(filepath.Join(s.opts.DataDirRoot, id))
 	}
-	state := s.loadStateLocked()
+	state := s.stateForWriteLocked(survivors)
 	delete(state, id)
 	// The plugin is gone whether or not the state write lands, so the
 	// revision moves either way and every watcher reloads.
@@ -247,7 +266,8 @@ func (s *Store) Uninstall(
 // plugin is exactly the one a user wants to remove and it never reaches
 // the valid-plugin view.
 func (s *Store) uninstallTarget(id string) (string, error) {
-	for _, entry := range s.scan() {
+	entries, _ := s.scan()
+	for _, entry := range entries {
 		if entry.ID != id {
 			continue
 		}

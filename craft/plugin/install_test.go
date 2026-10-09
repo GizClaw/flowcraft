@@ -77,6 +77,12 @@ func TestInstallUpdateRollback(t *testing.T) {
 	if info, ok := store.Entry("hello"); !ok || info.Manifest.Version != "0.1.0" {
 		t.Fatalf("entry after rollback = %+v, %v", info, ok)
 	}
+	// Every path a rollback builds comes from the id, so an id that
+	// would resolve outside the plugin root has to be refused before any
+	// of them is used.
+	if _, err := store.Rollback(context.Background(), "../hello"); !errdefs.IsValidation(err) {
+		t.Fatalf("Rollback of a traversing id = %v, want Validation", err)
+	}
 }
 
 // builtinStore opens a store with one read-only root and one writable

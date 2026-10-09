@@ -196,6 +196,19 @@ func (m Manifest) Validate(root string) error {
 			return err
 		}
 	}
+	// Two servers whose tools would share a namespace shadow each other:
+	// the registry keeps the first name it is given and the other tool
+	// silently does not exist. The namespace of one server is
+	// ToolNamespaces' answer, so that is what has to be distinct.
+	seenNamespace := make(map[string]int, len(servers))
+	for i, namespace := range ToolNamespaces(m.ID, servers) {
+		if first, duplicate := seenNamespace[namespace]; duplicate {
+			return errdefs.Validationf(
+				"plugin %s: mcp servers %d and %d share the tool namespace %q; "+
+					"name them differently", m.ID, first, i, namespace)
+		}
+		seenNamespace[namespace] = i
+	}
 	for i, node := range m.Nodes {
 		if strings.TrimSpace(node.Type) == "" ||
 			strings.TrimSpace(node.Tool) == "" {

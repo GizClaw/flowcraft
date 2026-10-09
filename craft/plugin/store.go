@@ -3,6 +3,9 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -135,9 +138,12 @@ func (s *Store) bumpLocked() []func() {
 	return out
 }
 
-// List returns every scanned plugin, including invalid ones.
+// List returns every scanned plugin, including invalid ones. A state
+// file that could not be read is returned alongside the list: the
+// plugins are still listed (so a UI can show them and the error), but
+// their enabled flags are the fail-closed ones.
 func (s *Store) List() ([]Summary, error) {
-	entries := s.scan()
+	entries, stateErr := s.scan()
 	out := make([]Summary, 0, len(entries))
 	for _, entry := range entries {
 		summary := Summary{
@@ -157,12 +163,17 @@ func (s *Store) List() ([]Summary, error) {
 		}
 		out = append(out, summary)
 	}
-	return out, nil
+	return out, stateErr
 }
 
-// Entries returns every valid scanned plugin.
+// Entries returns every valid scanned plugin. An unreadable state file
+// is an error: nothing may act on the fail-closed view as if it were
+// the recorded one.
 func (s *Store) Entries() ([]Entry, error) {
-	entries := s.scan()
+	entries, stateErr := s.scan()
+	if stateErr != nil {
+		return nil, stateErr
+	}
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Error == "" {
@@ -189,7 +200,7 @@ func (s *Store) Enabled() ([]Entry, error) {
 
 // Entry returns one valid plugin by id.
 func (s *Store) Entry(id string) (Entry, bool) {
-	entries := s.scan()
+	entries, _ := s.scan()
 	for _, entry := range entries {
 		if entry.ID == id && entry.Error == "" {
 			return entry, true
@@ -203,8 +214,12 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	if _, ok := s.Entry(id); !ok {
 		return errdefs.NotFoundf("plugin store: plugin %q not found", id)
 	}
+	// The fail-closed rebuild of an unreadable state file needs the set
+	// it must disable, and scan reads the same state file under mu, so
+	// the set is gathered before the lock is taken.
+	ids := s.validIDs()
 	s.mu.Lock()
-	state := s.loadStateLocked()
+	state := s.stateForWriteLocked(ids)
 	state[id] = enabled
 	if err := s.saveStateLocked(state); err != nil {
 		s.mu.Unlock()
@@ -216,6 +231,35 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 		fn()
 	}
 	return nil
+}
+
+// validIDs lists every valid scanned plugin id, in scan order.
+func (s *Store) validIDs() []string {
+	entries, _ := s.scan()
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Error == "" {
+			ids = append(ids, entry.ID)
+		}
+	}
+	return ids
+}
+
+// stateForWriteLocked is the state a write starts from: the recorded
+// one when it reads, and the fail-closed view when it does not — every
+// id the scan still sees, disabled. Starting from "no records" would
+// write a file that re-enables everything the unreadable one held, the
+// exact opposite of what the user was shown.
+func (s *Store) stateForWriteLocked(ids []string) map[string]bool {
+	state, err := s.loadStateLocked()
+	if err == nil {
+		return state
+	}
+	state = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		state[id] = false
+	}
+	return state
 }
 
 // DataDir returns (creating it) the plugin's data directory.
@@ -249,8 +293,13 @@ func (s *Store) KV(id string) (*KV, error) {
 	return store, nil
 }
 
-// scan returns every plugin across the configured roots, in id order.
-func (s *Store) scan() []Entry {
+// scan returns every plugin across the configured roots, in id order,
+// plus the error of an unreadable enable state. A state file that does
+// not exist is the fresh-install case and reads as "no records"; any
+// other failure — a truncated or unreadable file — is returned and
+// reported as every plugin disabled, so a broken file cannot re-enable
+// plugins the user had switched off.
+func (s *Store) scan() ([]Entry, error) {
 	entries := make(map[string]Entry)
 	for _, root := range s.opts.Roots {
 		dirs, err := os.ReadDir(root.Path)
@@ -280,19 +329,45 @@ func (s *Store) scan() []Entry {
 		}
 	}
 	s.mu.Lock()
-	state := s.loadStateLocked()
+	state, stateErr := s.loadStateLocked()
 	s.mu.Unlock()
 	out := make([]Entry, 0, len(entries))
 	for id, entry := range entries {
 		if enabled, ok := state[id]; ok {
 			entry.Enabled = enabled
 		} else {
-			entry.Enabled = true
+			entry.Enabled = stateErr == nil
 		}
 		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	markToolNamespaceCollisions(out)
+	return out, stateErr
+}
+
+// markToolNamespaceCollisions marks every valid plugin whose MCP tool
+// namespace another plugin already claimed. Two ids can collapse into
+// one namespace — ToolPrefix rewrites anything outside [a-z0-9_-], and
+// an id may contain "." — and a second plugin publishing the same tool
+// name loses the registry's duplicate race silently: the tool simply
+// does not exist. Making it a scan error means the user sees which two
+// plugins collide and can disable or rename one.
+func markToolNamespaceCollisions(entries []Entry) {
+	owner := make(map[string]string, len(entries))
+	for i, entry := range entries {
+		if entry.Error != "" {
+			continue
+		}
+		for _, namespace := range ToolNamespaces(entry.ID, entry.Manifest.Servers()) {
+			if first, taken := owner[namespace]; taken {
+				entries[i].Error = fmt.Sprintf(
+					"plugin %s: the tool namespace %q collides with plugin %q",
+					entry.ID, namespace, first)
+				break
+			}
+			owner[namespace] = entry.ID
+		}
+	}
 }
 
 func (s *Store) loadEntry(dir string, builtin bool) Entry {
@@ -326,14 +401,26 @@ func (s *Store) statePath() string {
 	return filepath.Join(s.opts.StateDir, "enabled.json")
 }
 
-func (s *Store) loadStateLocked() map[string]bool {
-	state := map[string]bool{}
+// loadStateLocked reads the enable state. A file that does not exist is
+// the fresh-install case and reads as no records — every plugin then
+// takes the default. Any other failure is returned: a truncated or
+// unreadable file must not read as "no records", which is what silently
+// re-enables plugins the user had switched off.
+func (s *Store) loadStateLocked() (map[string]bool, error) {
 	data, err := os.ReadFile(s.statePath())
-	if err != nil {
-		return state
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]bool{}, nil
 	}
-	_ = json.Unmarshal(data, &state)
-	return state
+	if err != nil {
+		return nil, errdefs.Validationf(
+			"plugin store: read %s: %v", s.statePath(), err)
+	}
+	state := map[string]bool{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, errdefs.Validationf(
+			"plugin store: parse %s: %v", s.statePath(), err)
+	}
+	return state, nil
 }
 
 func (s *Store) saveStateLocked(state map[string]bool) error {
