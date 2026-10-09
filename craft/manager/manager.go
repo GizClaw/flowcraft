@@ -323,13 +323,21 @@ func (m *Manager) Replace(
 	m.state = StateRunning
 	m.mu.Unlock()
 	m.notifyState(StateRunning)
-	if err := previous.Drain(ctx); err != nil {
-		return err
+	// The retired instance is closed whatever the drain does: the manager
+	// already points at the new one, so a previous instance left behind
+	// keeps its goroutines, plugin processes and lock file alive with
+	// nothing left to reach it.
+	drainErr := previous.Drain(ctx)
+	closeErr := previous.Close()
+	if drainErr != nil || closeErr != nil {
+		return fmt.Errorf("craft manager: retire previous instance: %w",
+			errors.Join(drainErr, closeErr))
 	}
-	return previous.Close()
+	return nil
 }
 
-// Drain waits for in-flight work to finish.
+// Drain waits for in-flight work to finish. The instance stays live and
+// the manager goes back to running once it has.
 func (m *Manager) Drain(ctx context.Context) error {
 	m.mu.Lock()
 	current := m.current
@@ -341,7 +349,23 @@ func (m *Manager) Drain(ctx context.Context) error {
 		return nil
 	}
 	m.notifyState(StateDraining)
-	return current.Drain(ctx)
+	err := current.Drain(ctx)
+	// A drain is a wait, not a stop, so the state machine returns to
+	// running; without that a drain would park the manager in
+	// StateDraining forever and Replace — which requires a running
+	// instance — could never follow one. A Stop or a Replace that got
+	// there first wins: the state is only restored while this call's
+	// instance is still the current one.
+	m.mu.Lock()
+	restored := m.current == current && m.state == StateDraining
+	if restored {
+		m.state = StateRunning
+	}
+	m.mu.Unlock()
+	if restored {
+		m.notifyState(StateRunning)
+	}
+	return err
 }
 
 // Stop drains and closes the Craft, releasing the lock.

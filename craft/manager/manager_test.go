@@ -480,3 +480,49 @@ func TestManagerCloseReleasesLock(t *testing.T) {
 		t.Fatalf("Close next: %v", err)
 	}
 }
+
+// TestManagerDrainReturnsToRunning covers the state a drain leaves
+// behind: it waits, it does not stop, so the instance must still be the
+// running one afterwards — otherwise Replace, which requires a running
+// Craft, could never follow a drain.
+func TestManagerDrainReturnsToRunning(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeDefinition(t, dir)
+	ctx := context.Background()
+	m := newTestManager(t, path, dir, nil)
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	before := m.Craft()
+	if err := m.Drain(ctx); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if m.State() != StateRunning {
+		t.Fatalf("state after Drain = %s, want running", m.State())
+	}
+	if m.Craft() != before {
+		t.Fatal("a drain replaced the Craft")
+	}
+
+	def, err := craft.ParseDefinition([]byte(definition))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	if err := m.Replace(ctx, def); err != nil {
+		t.Fatalf("Replace after a drain: %v", err)
+	}
+	if m.State() != StateRunning || m.Craft() == nil {
+		t.Fatalf("after Replace state=%s craft=%v", m.State(), m.Craft())
+	}
+	// The retired instance is closed, not merely dropped: a Craft left
+	// behind keeps its goroutines, its plugin processes and its endpoints
+	// alive with nothing left to reach it.
+	if err := before.Start(ctx); !errors.Is(err, craft.ErrCraftClosed) {
+		t.Fatalf("the retired Craft answers Start with %v, want ErrCraftClosed",
+			err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
