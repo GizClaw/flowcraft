@@ -165,6 +165,7 @@ document's `runtime.external_deps`.
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
+| `SyncAgents(ctx, key, decls)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
 | `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
 | `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
@@ -182,6 +183,9 @@ in. In-flight turns stay on the generation they started on; the retired
 generation closes once it drains. Everything outside the document is
 preserved: the resource registry, the plugin host and its child
 processes, open sessions, and the runtime's craft-plane consumers.
+Reloads are serialized with each other and with `SyncAgents` through the
+lifecycle lock: an agent pass never observes a reload of this Craft in
+flight.
 
 Craft-plane events (exact subjects): `craft.started` (empty
 `RuntimeEvent`), `craft.runtime.opened` / `craft.runtime.closed`
@@ -192,6 +196,58 @@ Craft-plane events (exact subjects): `craft.started` (empty
 (`ui.ChangedEvent{revision}`, published by the UI registry). `Reason`
 is `ReasonManual`, `ReasonConfig`, `ReasonPlugin` or `ReasonAgent`.
 Subscribe with `Attach(ctx, craft.PatternCraft(), sink)` (`craft.>`).
+
+### Dynamic agents
+
+`SyncAgents` reconciles one runtime's *dynamically registered* agents
+with a declaration set — `[]craft.AgentDecl{Name, Def, Rev}` — without
+reloading the generation:
+
+- new names are registered, a changed `Rev` replaces the agent
+  (unregister + register), a name the set no longer declares is
+  unregistered, and an unchanged `Rev` whose agent is live is left
+  alone. The set is the full desired set: an empty set removes
+  everything a previous pass applied.
+- `Rev` is the application-owned declaration revision and the only input
+  to the diff: fold whatever makes the declaration what it is (the
+  definition, its settings, the resources it references) into it — a
+  content hash is the natural choice. An empty `Rev` is rejected, as are
+  an empty or duplicated name.
+- the applied set is remembered per Craft and runtime key, so it
+  survives reloads (a reload re-binds the dynamic agents itself) and a
+  runtime reopen. A record is trusted only while `Runtime.Agent` still
+  has the name; a name that is live but unrecorded — a direct
+  `RegisterAgent` call — is replaced, because the declaration set is
+  authoritative over the runtime's live view.
+- a per-declaration failure does not abort the pass. Failures come back
+  per name in `AgentSyncReport.Errors` and joined as the returned error;
+  a failed declaration is not recorded, so the next pass retries it even
+  with an unchanged `Rev` — the repair path for declarations that arrive
+  from outside the application.
+- deployed agents are never touched: a declaration whose name the
+  deployment document declares is an error, and deployment documents
+  must not declare names the coordinator manages.
+- `SyncAgents` triggers no reload — call `ReloadRuntime` with
+  `craft.ReasonAgent` when the document itself must change. It holds the
+  same lifecycle lock as reloads, and `RuntimeBinder` callbacks and
+  event sinks run on paths that may hold that lock: do not call
+  `SyncAgents`, `ReloadRuntime` or `ReloadAll` synchronously from them.
+
+Applications whose dynamic agents need a tool assembly do not pass one
+per declaration: declare a fallback in the deployment document
+(`runtime.dynamic_catalog.tools.default: <tool.Assembly resource>`) and
+every dynamically registered agent runs with it. A runtime whose dynamic
+catalog has no default rejects a declaration per name
+(`... needs WithToolAssembly`).
+
+The declaration *source* belongs to the application: craft takes the set
+it is handed and keeps no schema of its own (per-agent files, versions
+and CRUD tools stay on the application side). The migration from
+imperative per-agent bookkeeping is "read the declarations once at cold
+start and once after each reload, call `SyncAgents`": the
+per-generation known-set handoff the reference implementation needed
+disappears, because the records live on the Craft and a reload re-binds
+what they describe.
 
 ## Capabilities
 
@@ -608,6 +664,10 @@ surfaces around them — update feeds and channels, UI orchestration, the
 transport itself, and the desktop / shell side — are not; the app owns
 them. Do not assume behaviour beyond what the code and the reference
 cards describe.
+
+The dynamic agent coordinator (`Craft.SyncAgents`) is craft's; the
+declaration store behind it — file schema, versioning, CRUD tools — is
+the application's.
 
 ## Minimal example
 
