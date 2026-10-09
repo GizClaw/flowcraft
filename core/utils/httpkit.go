@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -215,8 +216,31 @@ func buildBaseTransport(config Config) http.RoundTripper {
 
 // newTransport returns a connection-pooling base transport tuned for a
 // small number of provider hosts.
+//
+// http.DefaultTransport is cloned while it still is the standard
+// *http.Transport. Once something wrapped it (an httpprobe, a test
+// transport), the assertion the clone needs would panic and a wrapper's
+// semantics cannot be carried through the RoundTripper interface, so
+// the fallback builds a fresh transport with the same defaults net/http
+// ships in DefaultTransport.
 func newTransport() *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+	} else {
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
 	transport.MaxIdleConns = 128
 	transport.MaxIdleConnsPerHost = 32
 	transport.IdleConnTimeout = 90 * time.Second
