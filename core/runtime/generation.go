@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -27,6 +28,10 @@ type Generation struct {
 	hostFactory session.HostFactory
 	resolver    session.InstanceResolver
 	catalog     *catalogRegistry
+	// agentRemoveTimeout is the document's runtime.agents.remove_timeout
+	// (zero when unset): the default bound a dynamic agent removal
+	// drains active turns under.
+	agentRemoveTimeout time.Duration
 
 	// adopted are the dynamic agent instances that retire with this
 	// generation. They are frozen by Reload at swap time (empty while
