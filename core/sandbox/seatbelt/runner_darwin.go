@@ -20,6 +20,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -361,7 +362,7 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("seatbelt: resolve workdir: %w", err)
 	}
-	if real != r.rootDir && !strings.HasPrefix(real, r.rootDir+string(filepath.Separator)) {
+	if !pathsafe.Within(r.rootDir, real) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil

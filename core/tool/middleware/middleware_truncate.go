@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/fsatomic"
 )
 
 // TruncateSettings configures [Truncate]. Zero values disable it.
@@ -76,14 +77,12 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 				telemetry.WarnErr(ctx,
 					"tool middleware: secure truncation directory failed",
 					os.Chmod(settings.Dir, 0o700))
-				tmp := path + ".tmp"
-				if err := os.WriteFile(tmp, []byte(full), 0o600); err == nil {
+				if err := fsatomic.Write(path, []byte(full), fsatomic.Options{
+					Perm:       0o600,
+					TempPrefix: ".truncate-*.tmp",
+				}); err != nil {
 					telemetry.WarnErr(ctx,
-						"tool middleware: persist truncated output failed",
-						os.Rename(tmp, path))
-				} else {
-					telemetry.WarnErr(ctx,
-						"tool middleware: write truncated output failed", err)
+						"tool middleware: persist truncated output failed", err)
 				}
 			} else {
 				telemetry.WarnErr(ctx,

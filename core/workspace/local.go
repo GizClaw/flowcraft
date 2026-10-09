@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -346,18 +346,14 @@ func (w *LocalWorkspace) Stat(_ context.Context, path string) (fs.FileInfo, erro
 }
 
 // containedIn reports whether path is root itself or directly under
-// it. Paths are case-insensitive on Windows, so the prefix check must
-// fold case there; on case-sensitive filesystems it is byte-exact.
-// Used only to classify errors; the os.Root handle is the boundary.
+// it. On Windows the filesystem folds case, so the comparison must
+// too; elsewhere it is byte-exact. Used only to classify errors; the
+// os.Root handle is the boundary.
 func containedIn(path, root string) bool {
-	if path == root {
-		return true
-	}
 	if runtime.GOOS == "windows" {
-		return strings.HasPrefix(strings.ToLower(path),
-			strings.ToLower(root)+string(filepath.Separator))
+		return pathsafe.WithinFold(root, path)
 	}
-	return strings.HasPrefix(path, root+string(filepath.Separator))
+	return pathsafe.Within(root, path)
 }
 
 // evalExistingPrefix resolves symlinks for the longest existing ancestor

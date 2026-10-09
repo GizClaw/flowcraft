@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -386,15 +387,11 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 }
 
 // containedInRoot reports whether path is root itself or directly
-// under it. Windows paths are case-insensitive, so the prefix check
-// folds case (this file only builds on Windows); the workspace layer's
-// equivalent check does the same.
+// under it. Windows paths are case-insensitive, so the comparison
+// folds case (pathsafe.WithinFold); the workspace layer's equivalent
+// check does the same.
 func containedInRoot(path, root string) bool {
-	if strings.EqualFold(path, root) {
-		return true
-	}
-	return strings.HasPrefix(strings.ToLower(path),
-		strings.ToLower(root)+string(filepath.Separator))
+	return pathsafe.WithinFold(root, path)
 }
 
 // resolveAbsolutePaths makes each path absolute (relative entries are
