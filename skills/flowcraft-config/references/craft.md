@@ -267,7 +267,7 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin <id>: mcp and mcpServers are mutually exclusive` | both set |
 | `plugin <id>: the kraft field is no longer supported; ...` | removed field |
 | `plugin: path "X" escapes the plugin root` | path outside the root |
-| `plugin <id>: requires host version >= X` | scan gate (entry error) |
+| `requires host version >= X` | scan gate (`Entry.Error`, no id prefix) |
 | `plugin <id>: mcp servers 0 and 1 share the tool namespace "X"` | two of the plugin's own servers collide |
 | `plugin <id>: the tool namespace "X" collides with plugin "Y"` | two installed plugins would publish the same tool names |
 | `plugin store: read\|parse <path>` | unreadable `enabled.json`; every plugin reads as disabled and the next write keeps them that way |
@@ -276,11 +276,12 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin install: zip has no plugin.json` | package is not a plugin |
 | `plugin install: zip holds N plugins (...)` | more than one manifest |
 | `plugin install: zip entry "X" escapes the archive` | absolute, `..` or backslash name |
-| `plugin install: zip entry "X" is a symlink` | symlink or non-regular entry |
+| `plugin install: zip entry "X" is a symlink` | symlink entry |
+| `plugin install: zip entry "X" is not a regular file` | entry that is neither a file nor a directory |
 | `plugin install: zip entry "X" unpacks to N bytes, over the ... limit` | entry or package over the caps |
 | `plugin uninstall: X is a builtin plugin; disable it instead` (`Forbidden`) | builtin removal |
 | `plugin uninstall: plugin "X" not found` (`NotFound`) | unknown id |
-| `plugin update: plugin "X" declares no update.url` (`NotFound`) | no source declared |
+| `plugin update: X declares no update.url` (`NotFound`) | no source declared |
 | `plugin update: checksum mismatch (want sha256:..., got sha256:...)` | package did not match its digest |
 | `plugin update: package holds plugin "X", wanted "Y"` | wrong plugin in the package |
 | `plugin update: package version V does not match the announced W` | stale package under a new version |
