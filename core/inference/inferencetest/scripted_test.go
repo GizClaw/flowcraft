@@ -158,6 +158,51 @@ func TestScriptedOpenAIToolCalls(t *testing.T) {
 	}
 }
 
+// The last reply repeats so a script stays open-ended for retries; call
+// ids must stay unique across that wrap, or host-side bookkeeping keyed
+// by call id (spill names, tool-result matching) collides.
+func TestScriptedOpenAIToolCallIDsStayUniqueAfterWrap(t *testing.T) {
+	srv := inferencetest.NewScriptedOpenAI(t,
+		inferencetest.ScriptedReply{ToolCalls: []inferencetest.ScriptedToolCall{
+			{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+		}},
+	)
+	for i, want := range []string{"call_0_1", "call_1_1", "call_2_1"} {
+		resp, err := postChat(t, context.Background(), srv, scriptedChatBody)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		out := decodeChatResponse(t, resp)
+		if got := out.Choices[0].Message.ToolCalls[0].ID; got != want {
+			t.Fatalf("call %d id = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// The servers this provider is meant to retire assert on request
+// headers (auth, content type, provider routing); the accessors make
+// that possible without a hand-rolled capture server.
+func TestScriptedOpenAIExposesRequestHeaders(t *testing.T) {
+	srv := inferencetest.NewScriptedOpenAI(t, inferencetest.ScriptedReply{Text: "hi"})
+	if srv.LastHeaders() != nil {
+		t.Fatal("headers before any call must be nil")
+	}
+	if _, err := postChat(t, context.Background(), srv, scriptedChatBody); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	last := srv.LastHeaders()
+	if last == nil || !strings.Contains(last.Get("Content-Type"), "application/json") {
+		t.Fatalf("last headers = %v, want the JSON content type", last)
+	}
+	all := srv.HeadersForCalls()
+	if len(all) != 1 {
+		t.Fatalf("headers for calls = %d, want 1", len(all))
+	}
+	if all[0].Get("Content-Type") != last.Get("Content-Type") {
+		t.Fatalf("headers for calls = %v, want the last request's", all[0])
+	}
+}
+
 func TestScriptedOpenAIErrorInjection(t *testing.T) {
 	srv := inferencetest.NewScriptedOpenAI(t,
 		inferencetest.ScriptedReply{Status: http.StatusTooManyRequests, Error: "rate limited"},

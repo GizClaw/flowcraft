@@ -159,7 +159,7 @@ resources:
         recover: {enabled: true}
         telemetry: {enabled: true}
         result_limit: {max: 20000}
-        truncate: {enabled: true, max_chars: 20000, dir: ./cache/tools}
+        truncate: {enabled: true, max_chars: 4000, dir: ${base:cache/tools}}
         timeout: {default: 30s}
         concurrency: {limit: 8}
 ```

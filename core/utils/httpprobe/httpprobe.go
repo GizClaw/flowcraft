@@ -30,6 +30,11 @@
 // logged, and only POST/PUT/PATCH round trips are recorded, which
 // keeps the output to provider traffic.
 //
+// Nothing in core turns the probe on by itself: no host or deployment
+// setting reads [Enabled], so the environment variable matters only in
+// an application that checks it and calls [Install] (or wraps its own
+// transport with [New]).
+//
 // Two notes on the global form. A wrapped process transport is not
 // transparent to every caller — core/utils builds provider transports
 // by cloning http.DefaultTransport through a *http.Transport

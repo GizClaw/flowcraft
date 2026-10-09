@@ -6,17 +6,21 @@
 package utils
 
 import (
+	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Protocol selects the transport family built by [NewRoundTripper].
@@ -228,6 +232,7 @@ func newTransport() *http.Transport {
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = base.Clone()
 	} else {
+		warnWrappedTransport()
 		transport = &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -245,6 +250,23 @@ func newTransport() *http.Transport {
 	transport.MaxIdleConnsPerHost = 32
 	transport.IdleConnTimeout = 90 * time.Second
 	return transport
+}
+
+// warnWrappedTransportOnce keeps the warning to one per process: the
+// fallback runs for every client the process builds.
+var warnWrappedTransportOnce sync.Once
+
+// warnWrappedTransport reports what the fallback cannot carry: once
+// something wrapped http.DefaultTransport (an httpprobe, an
+// application's TLS or dialer wrapper), the clone is impossible through
+// the RoundTripper interface and every client built here stays
+// invisible to that wrapper.
+func warnWrappedTransport() {
+	warnWrappedTransportOnce.Do(func() {
+		telemetry.Warn(context.Background(),
+			"utils: http.DefaultTransport is wrapped; building a fresh provider transport without the wrapper",
+			attribute.String("wrapped_type", fmt.Sprintf("%T", http.DefaultTransport)))
+	})
 }
 
 // RetryConfig bounds the retry behaviour.

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
@@ -30,9 +31,10 @@ type Options struct {
 	MkdirPerm os.FileMode
 	// TempPrefix is the os.CreateTemp pattern; empty means ".tmp-*".
 	TempPrefix string
-	// Sync fsyncs the temp file before the rename. Callers that need
-	// the durability keep it; the difference stays per call site
-	// instead of being silently unified.
+	// Sync fsyncs the temp file before the rename and the destination
+	// directory after it, so the published name survives a power loss
+	// and not just the data. Windows cannot flush a directory handle;
+	// there the directory step is skipped.
 	Sync bool
 }
 
@@ -82,7 +84,30 @@ func Write(path string, data []byte, opts Options) error {
 	if err := os.Rename(name, path); err != nil {
 		return fmt.Errorf("fsatomic: rename temp file: %w", err)
 	}
+	if opts.Sync {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("fsatomic: sync directory: %w", err)
+		}
+	}
 	return nil
+}
+
+// syncDir makes the rename itself durable by flushing the directory
+// entry, not just the file contents.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	handle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := handle.Sync()
+	closeErr := handle.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 // closeAfter closes the temp file on a failure path where the caller

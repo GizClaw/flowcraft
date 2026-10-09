@@ -62,6 +62,7 @@ type ScriptedOpenAI struct {
 	calls   int
 	hold    *Gate
 	bodies  [][]byte
+	headers []http.Header
 	noUsage bool
 }
 
@@ -146,6 +147,18 @@ func NewScriptedOpenAI(t testing.TB, replies ...ScriptedReply) *ScriptedOpenAI {
 	s := &ScriptedOpenAI{replies: replies}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(s.Close)
+	// Cleanups run last-in-first-out, so this runs before Close: an
+	// armed hold that no request consumed would otherwise block a
+	// handler forever, and Close waits for handlers — the mistake would
+	// surface as a test-binary timeout instead of a failure.
+	t.Cleanup(func() {
+		s.mu.Lock()
+		hold := s.hold
+		s.mu.Unlock()
+		if hold != nil {
+			hold.Release()
+		}
+	})
 	return s
 }
 
@@ -191,6 +204,30 @@ func (s *ScriptedOpenAI) MessagesForCalls() ([][]map[string]any, error) {
 	return out, nil
 }
 
+// HeadersForCalls returns the request headers of every completion
+// request received so far, oldest first, so a test can assert what the
+// client actually sent (auth scheme, content type, provider headers)
+// instead of standing up its own capture server.
+func (s *ScriptedOpenAI) HeadersForCalls() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]http.Header, len(s.headers))
+	for i, header := range s.headers {
+		out[i] = header.Clone()
+	}
+	return out
+}
+
+// LastHeaders returns the request headers of the most recent completion
+// request, or nil when none has arrived.
+func (s *ScriptedOpenAI) LastHeaders() http.Header {
+	all := s.HeadersForCalls()
+	if len(all) == 0 {
+		return nil
+	}
+	return all[len(all)-1]
+}
+
 func (s *ScriptedOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/v1/chat/completions" {
 		http.NotFound(w, r)
@@ -211,8 +248,13 @@ func (s *ScriptedOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.calls++
+	reqIdx := s.calls - 1
 	s.bodies = append(s.bodies, append([]byte(nil), body...))
-	idx := s.calls - 1
+	s.headers = append(s.headers, r.Header.Clone())
+	// The last reply repeats so a script stays open-ended for retries;
+	// call ids keep the raw request index, which stays unique after the
+	// wrap instead of colliding on the clamped one.
+	idx := reqIdx
 	if idx >= len(s.replies) || len(s.replies) == 0 {
 		idx = len(s.replies) - 1
 	}
@@ -248,10 +290,10 @@ func (s *ScriptedOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Stream {
-		s.writeStream(w, reply, idx)
+		s.writeStream(w, reply, reqIdx)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(s.completion(reply, idx)); err != nil {
+	if err := json.NewEncoder(w).Encode(s.completion(reply, reqIdx)); err != nil {
 		http.Error(w, "encode response", http.StatusInternalServerError)
 	}
 }
