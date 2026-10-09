@@ -27,8 +27,9 @@ func Valid(s string) bool {
 }
 
 // Compare orders two dotted numeric versions with an optional
-// prerelease; a release sorts above its prereleases. Invalid inputs
-// fall back to a plain string comparison.
+// prerelease; a release sorts above its prereleases, and prereleases
+// compare identifier by identifier (numeric ones numerically, others
+// lexically). Invalid inputs fall back to a plain string comparison.
 func Compare(a, b string) int {
 	av, aok := parse(a)
 	bv, bok := parse(b)
@@ -58,8 +59,71 @@ func Compare(a, b string) int {
 	case bv.pre == "":
 		return -1
 	default:
-		return strings.Compare(av.pre, bv.pre)
+		return comparePrerelease(av.pre, bv.pre)
 	}
+}
+
+// comparePrerelease orders two prerelease suffixes by identifier, the
+// way every version writer means them: identifiers are split on ".",
+// numeric ones compare numerically and rank below alphanumeric ones,
+// other identifiers compare lexically, and a list sorts below a longer
+// list that starts with it. Comparing the raw strings instead puts
+// alpha.10 below alpha.2 — the direction that decides whether an update
+// is newer and whether a host satisfies a floor.
+func comparePrerelease(a, b string) int {
+	left := strings.Split(a, ".")
+	right := strings.Split(b, ".")
+	for i := 0; i < len(left) && i < len(right); i++ {
+		if cmp := compareIdentifier(left[i], right[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	switch {
+	case len(left) == len(right):
+		return 0
+	case len(left) < len(right):
+		return -1
+	default:
+		return 1
+	}
+}
+
+// compareIdentifier orders one pair of prerelease identifiers.
+func compareIdentifier(a, b string) int {
+	left, leftNumeric := numericIdentifier(a)
+	right, rightNumeric := numericIdentifier(b)
+	switch {
+	case leftNumeric && rightNumeric:
+		switch {
+		case left == right:
+			return 0
+		case left < right:
+			return -1
+		default:
+			return 1
+		}
+	case leftNumeric:
+		// Numeric identifiers have lower precedence than alphanumeric
+		// ones.
+		return -1
+	case rightNumeric:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
+// numericIdentifier reports whether an identifier is a non-negative
+// decimal number, and its value.
+func numericIdentifier(id string) (int, bool) {
+	if id == "" {
+		return 0, false
+	}
+	value, err := strconv.Atoi(id)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 type parsed struct {
