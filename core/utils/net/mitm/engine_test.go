@@ -95,6 +95,34 @@ func TestH1ClientDisconnectCancelsUpstream(t *testing.T) {
 	}
 }
 
+func TestH2RoundTrip(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	endpoint := startMITM(t, upstream)
+	resp, err := h2Client(t, endpoint).Get("https://" + endpoint.addr + "/ok")
+	if err != nil {
+		t.Fatalf("h2 request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("proto = %s, want HTTP/2 (the h2 ALPN branch)", resp.Proto)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+}
+
 type mitmEndpoint struct {
 	addr       string
 	ca         *CA
@@ -155,6 +183,26 @@ func dialH1(t *testing.T, endpoint *mitmEndpoint) net.Conn {
 		t.Fatalf("client handshake: %v", err)
 	}
 	return tlsConn
+}
+
+// h2Client returns an HTTP/2 client that trusts the endpoint's leaf CA
+// and reaches it by address under the certificate's server name.
+func h2Client(t *testing.T, endpoint *mitmEndpoint) *http.Client {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(endpoint.ca.PEM()) {
+		t.Fatal("append leaf CA PEM")
+	}
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pool,
+				ServerName: endpoint.serverName,
+			},
+			ForceAttemptHTTP2: true,
+		},
+	}
 }
 
 func h1Request(t *testing.T, endpoint *mitmEndpoint, req string) *http.Response {

@@ -16,8 +16,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-
-	"golang.org/x/net/http2"
 )
 
 // Protocol selects the transport family built by [NewRoundTripper].
@@ -40,7 +38,8 @@ type Config struct {
 	// ClientTimeout bounds the whole request (http.Client.Timeout).
 	ClientTimeout time.Duration
 
-	// TLSClientConfig is used for TLS dialing. Nil uses system roots.
+	// TLSClientConfig is used for TLS dialing. Nil uses system roots. It
+	// is cloned before use, so one config may back several clients.
 	TLSClientConfig *tls.Config
 
 	// ResponseHeaderTimeout bounds the wait for HTTP/1.1 response headers.
@@ -182,25 +181,32 @@ func applyOptions(options []Option) Config {
 }
 
 func buildBaseTransport(config Config) http.RoundTripper {
+	// The transport writes NextProtos in place, so hand each transport its
+	// own copy: a config shared by an HTTP/2 and an HTTP/1.1 client would
+	// otherwise leave the HTTP/1.1 client offering h2. (Server.ServeTLS
+	// clones for the same reason; Transport does not.)
+	tlsConfig := config.TLSClientConfig.Clone()
 	switch config.Protocol {
 	case ProtocolHTTP2:
-		http1 := newTransport()
-		http1.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-		http1.TLSClientConfig = config.TLSClientConfig
-		h2, err := http2.ConfigureTransports(http1)
-		if err != nil {
-			panic("utils: configure h2: " + err.Error())
+		transport := newTransport()
+		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+		transport.TLSClientConfig = tlsConfig
+		transport.IdleConnTimeout = config.IdleConnTimeout
+		// HTTP/2 comes from the standard library now: the cloned default
+		// transport keeps ForceAttemptHTTP2, so ALPN negotiates h2, and
+		// HTTP2Config takes the health-check knobs the x/net transport
+		// used to own (ReadIdleTimeout maps to SendPingTimeout).
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout:  config.PingInterval,
+			PingTimeout:      config.PingTimeout,
+			WriteByteTimeout: config.WriteByteTimeout,
 		}
-		h2.ReadIdleTimeout = config.PingInterval
-		h2.PingTimeout = config.PingTimeout
-		h2.WriteByteTimeout = config.WriteByteTimeout
-		h2.IdleConnTimeout = config.IdleConnTimeout
-		return http1
+		return transport
 	case ProtocolHTTP1:
 		transport := newTransport()
 		transport.ForceAttemptHTTP2 = false
 		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-		transport.TLSClientConfig = config.TLSClientConfig
+		transport.TLSClientConfig = tlsConfig
 		return transport
 	default:
 		panic("utils: unknown protocol")
