@@ -13,7 +13,7 @@ English version: [README.md](README.md).
 
 ## 快速开始
 
-前置条件：Go 1.25+。插件的 MCP server 是一个 Go 程序，manifest 用 `go run`
+前置条件：Go 1.26+。插件的 MCP server 是一个 Go 程序，manifest 用 `go run`
 启动它，因此**首次**运行会先编译它（几秒钟，之后走缓存）。
 
 ```bash

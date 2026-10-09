@@ -14,7 +14,7 @@ tour is local and deterministic, so it doubles as an integration test.
 
 ## Quickstart
 
-Prerequisite: Go 1.25+. The plugin's MCP server is a Go program that the
+Prerequisite: Go 1.26+. The plugin's MCP server is a Go program that the
 manifest starts with `go run`, so the **first** run compiles it (a few
 seconds, then it is cached).
 

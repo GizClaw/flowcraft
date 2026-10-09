@@ -1,6 +1,6 @@
 module github.com/GizClaw/flowcraft/backends/checkpoint
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/core v0.4.9

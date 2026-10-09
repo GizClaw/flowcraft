@@ -131,7 +131,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Test release gate tooling
         working-directory: tools/releasegate
@@ -172,7 +172,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: gofmt -s check
         run: |
           diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil)
@@ -195,7 +195,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -211,9 +211,15 @@ jobs:
       matrix: ${{ fromJson(needs.compute-matrix.outputs.test) }}
     steps:
       - uses: actions/checkout@v4
+      # 1.26, not a lower floor: govulncheck below reports the standard
+      # library of the toolchain it runs on, and Go only fixes the two most
+      # recent releases, so a floor that is EOL scans as affected forever
+      # (the GO-2026-6603..6617 batch shipped with no 1.25 fix). The same
+      # batch put a hard stop under the floor: x/net v0.60.0, the earliest
+      # release fixing it, declares go 1.26.0 itself.
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
@@ -252,7 +258,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Test
         working-directory: backends/memory
         env:
@@ -266,7 +272,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Test
         working-directory: backends/memory
         run: go test -count=1 ./...
@@ -278,7 +284,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Install bubblewrap
         run: |
           set -euo pipefail
@@ -356,7 +362,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Build
         working-directory: core
         run: go build ./...
@@ -374,7 +380,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Test
         working-directory: core/sandbox
         run: go test -count=1 -timeout 180s ./windows/...
@@ -386,7 +392,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       # The kqueue source, the cross-backend journal contract suite and
       # the seatbelt backend only run where the platform primitives
       # exist; the cross-vet lanes prove they compile, this proves they
