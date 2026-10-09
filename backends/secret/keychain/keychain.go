@@ -42,12 +42,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/fsatomic"
 )
 
 // encMagic prefixes every sealed secret file. Files without it are
@@ -109,6 +112,13 @@ func NewStore(dir string) (Store, error) {
 		return Store{}, fmt.Errorf(
 			"secret keychain store: create store dir: %w", err)
 	}
+	// MkdirAll is a no-op on an existing directory, so the mode is
+	// re-asserted: the store's promise is 0700, however the directory
+	// was created.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return Store{}, fmt.Errorf(
+			"secret keychain store: secure store dir: %w", err)
+	}
 	key, err := loadOrCreateKey(dir)
 	if err != nil {
 		return Store{}, err
@@ -153,6 +163,7 @@ func (s Store) Delete(ctx context.Context, name string) error {
 }
 
 // DeletePrefix removes every secret whose account starts with prefix.
+// An empty prefix is rejected: it matches every account.
 func (s Store) DeletePrefix(ctx context.Context, prefix string) error {
 	if s.backend == nil {
 		return errors.New("secret keychain store: store is unavailable")
@@ -210,7 +221,8 @@ func (m *Manager) Delete(ctx context.Context, account string) error {
 }
 
 // DeletePrefix removes every secret whose account starts with prefix
-// (for example when a plugin or a deployment is removed).
+// (for example when a plugin or a deployment is removed). An empty
+// prefix is rejected.
 func (m *Manager) DeletePrefix(ctx context.Context, prefix string) error {
 	if m == nil {
 		return errors.New("secret keychain store: manager is unavailable")
@@ -223,9 +235,19 @@ func (m *Manager) DeletePrefix(ctx context.Context, prefix string) error {
 // never escape the directory. Every file is sealed with AES-256-GCM
 // (magic + random nonce + ciphertext+tag) under the store's 32-byte
 // key; a backend without a key is unusable.
+//
+// The account index (accounts.json) is the only way to enumerate
+// accounts, so it is guarded twice: modifications hold mu (two
+// concurrent Sets must not drop an entry), and an index that exists but
+// cannot be decoded is an error everywhere instead of an empty list
+// (rewriting from empty would orphan every secret it still names).
+// Writers in other processes are not serialized; management is an
+// app-side, single-writer surface.
 type fileBackend struct {
 	dir string
 	key []byte
+
+	mu sync.Mutex // guards the accounts.json read-modify-write
 }
 
 // accountsFile tracks every account name so prefix deletion can find
@@ -241,22 +263,25 @@ func (f *fileBackend) path(name string) string {
 	return filepath.Join(f.dir, hex.EncodeToString(sum[:]))
 }
 
-func (f *fileBackend) readAccounts() []string {
+// readAccounts returns the account index. A missing index is an empty
+// one (a fresh store); an index that exists but cannot be read or
+// decoded is an error, never an empty list.
+func (f *fileBackend) readAccounts() ([]string, error) {
 	raw, err := os.ReadFile(filepath.Join(f.dir, accountsFile))
 	if err != nil {
-		if !os.IsNotExist(err) {
-			telemetry.WarnErr(context.Background(),
-				"secret keychain store: read account list failed", err)
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		return nil
+		return nil, fmt.Errorf(
+			"secret keychain store: read account list: %w", err)
 	}
 	var list []string
 	if err := json.Unmarshal(raw, &list); err != nil {
-		telemetry.WarnErr(context.Background(),
-			"secret keychain store: decode account list failed", err)
-		return nil
+		return nil, fmt.Errorf(
+			"secret keychain store: account list is undecodable, refusing to rewrite it: %w",
+			err)
 	}
-	return list
+	return list, nil
 }
 
 func (f *fileBackend) writeAccounts(list []string) error {
@@ -264,11 +289,24 @@ func (f *fileBackend) writeAccounts(list []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(f.dir, accountsFile), raw, 0o600)
+	// Atomic publish: the index is the only enumeration source, so a
+	// crash mid-write must never truncate it.
+	if err := fsatomic.Write(filepath.Join(f.dir, accountsFile), raw, fsatomic.Options{
+		Perm:       0o600,
+		TempPrefix: ".accounts-*.tmp",
+	}); err != nil {
+		return fmt.Errorf("secret keychain store: write account list: %w", err)
+	}
+	return nil
 }
 
 func (f *fileBackend) addAccount(name string) error {
-	list := f.readAccounts()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list, err := f.readAccounts()
+	if err != nil {
+		return err
+	}
 	for _, n := range list {
 		if n == name {
 			return nil
@@ -278,8 +316,13 @@ func (f *fileBackend) addAccount(name string) error {
 }
 
 func (f *fileBackend) removeAccount(name string) error {
-	list := f.readAccounts()
-	kept := list[:0]
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list, err := f.readAccounts()
+	if err != nil {
+		return err
+	}
+	kept := make([]string, 0, len(list))
 	for _, n := range list {
 		if n != name {
 			kept = append(kept, n)
@@ -288,6 +331,10 @@ func (f *fileBackend) removeAccount(name string) error {
 	return f.writeAccounts(kept)
 }
 
+// Get returns the stored value exactly as Set received it; this store
+// only ever reads files it sealed itself, so there is nothing to
+// normalize away (the plaintext file store trims because its files are
+// hand-written).
 func (f *fileBackend) Get(_ context.Context, name string) (string, bool, error) {
 	raw, err := os.ReadFile(f.path(name))
 	if err != nil {
@@ -303,7 +350,7 @@ func (f *fileBackend) Get(_ context.Context, name string) (string, bool, error) 
 			return "", false, fmt.Errorf(
 				"secret keychain store: read %q: %w", name, err)
 		}
-		return strings.TrimRight(string(plain), "\r\n"), true, nil
+		return string(plain), true, nil
 	}
 	// Unencrypted files are rejected, not silently read: the secret
 	// must be re-entered so it is never left (or treated) as plaintext.
@@ -316,7 +363,14 @@ func (f *fileBackend) Set(_ context.Context, name, value string) error {
 	if err != nil {
 		return fmt.Errorf("secret keychain store: encrypt %q: %w", name, err)
 	}
-	if err := os.WriteFile(f.path(name), data, 0o600); err != nil {
+	// Atomic publish: a crash mid-write must not leave a truncated
+	// sealed file (GCM would fail every later read), and the
+	// temp-plus-rename path also settles the mode of a file written by
+	// earlier tooling with looser permissions.
+	if err := fsatomic.Write(f.path(name), data, fsatomic.Options{
+		Perm:       0o600,
+		TempPrefix: ".sealed-*.tmp",
+	}); err != nil {
 		return fmt.Errorf("secret keychain store: write %q: %w", name, err)
 	}
 	if err := f.addAccount(name); err != nil {
@@ -335,8 +389,20 @@ func (f *fileBackend) Delete(_ context.Context, name string) error {
 	return nil
 }
 
+// DeletePrefix removes every secret whose account starts with prefix.
+// An empty prefix is rejected: every account matches it, and this is
+// the cleanup hook a "the plugin or deployment is gone" path calls.
 func (f *fileBackend) DeletePrefix(_ context.Context, prefix string) error {
-	list := f.readAccounts()
+	if strings.TrimSpace(prefix) == "" {
+		return errdefs.Validationf(
+			"secret keychain store: refusing to delete every secret with an empty prefix")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list, err := f.readAccounts()
+	if err != nil {
+		return err
+	}
 	kept := make([]string, 0, len(list))
 	for _, name := range list {
 		if strings.HasPrefix(name, prefix) {
@@ -407,16 +473,34 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// errKeyMissing reports a store whose key file is gone while sealed
+// secrets remain: minting a fresh key would silently make every one of
+// them unreadable, and Set would overwrite them under the new key.
+var errKeyMissing = errors.New(
+	"secret keychain store: the store holds sealed secrets but its key file is missing; restore it from backup instead of starting fresh")
+
 // loadOrCreateKey reads the store's 32-byte AES key, creating it with
-// 0600 permissions on first use. Concurrent first runs race on O_EXCL;
-// the loser reads the winner's key.
+// 0600 permissions on first use. Creation is claimed with O_EXCL, so a
+// concurrent first run has exactly one winner; the loser waits out the
+// winner's write instead of reading a half-written key. A store that
+// already holds sealed secrets never mints a key: it fails closed.
 func loadOrCreateKey(dir string) ([]byte, error) {
 	path := filepath.Join(dir, encKeyFile)
 	raw, err := os.ReadFile(path)
-	if err == nil {
-		return decodeKey(raw)
+	switch {
+	case err == nil:
+		if key, derr := decodeKey(raw); derr == nil {
+			return key, nil
+		}
+		// The file exists but does not decode yet: a concurrent first
+		// run may still be writing it (O_EXCL claims the name before
+		// the bytes land). Wait for that writer; a genuinely truncated
+		// key file still fails closed.
+		return readKeyRetrying(path)
+	case !os.IsNotExist(err):
+		return nil, err
 	}
-	if !os.IsNotExist(err) {
+	if err := ensureKeyMintable(dir); err != nil {
 		return nil, err
 	}
 	key := make([]byte, encKeyLen)
@@ -426,28 +510,82 @@ func loadOrCreateKey(dir string) ([]byte, error) {
 	fd, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
-			raw, rerr := os.ReadFile(path)
-			if rerr != nil {
-				return nil, rerr
-			}
-			return decodeKey(raw)
+			return readKeyRetrying(path)
 		}
 		return nil, err
 	}
-	defer func() {
-		telemetry.WarnErr(context.Background(),
-			"secret keychain store: close key file failed", fd.Close())
-	}()
-	if err := fd.Chmod(0o600); err != nil {
+	// A failure past this point removes the claimed file again, so a
+	// later run can mint cleanly instead of tripping over a key file
+	// that will never decode.
+	write := func() error {
+		if err := fd.Chmod(0o600); err != nil {
+			return err
+		}
+		if _, err := fd.Write([]byte(hex.EncodeToString(key) + "\n")); err != nil {
+			return err
+		}
+		return fd.Sync()
+	}
+	if err := write(); err != nil {
+		_ = fd.Close()
+		_ = os.Remove(path)
 		return nil, err
 	}
-	if _, err := fd.Write([]byte(hex.EncodeToString(key) + "\n")); err != nil {
-		return nil, err
-	}
-	if err := fd.Sync(); err != nil {
+	if err := fd.Close(); err != nil {
+		_ = os.Remove(path)
 		return nil, err
 	}
 	return key, nil
+}
+
+// readKeyRetrying reads the key a concurrent first run may still be
+// writing: O_EXCL claims the file before it holds bytes, so a loser can
+// observe an empty or partial key for a moment.
+func readKeyRetrying(path string) ([]byte, error) {
+	const attempts = 100
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+		} else if key, derr := decodeKey(raw); derr == nil {
+			return key, nil
+		} else {
+			lastErr = derr
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return nil, fmt.Errorf(
+		"secret keychain store: key file did not become usable: %w", lastErr)
+}
+
+// ensureKeyMintable refuses a fresh key when the directory already
+// holds store data. Anything else in the directory is not the store's
+// to judge.
+func ensureKeyMintable(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == encKeyFile {
+			continue
+		}
+		if entry.Name() == accountsFile {
+			return errKeyMissing
+		}
+		file, err := os.Open(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		head := make([]byte, len(encMagic))
+		n, _ := io.ReadFull(file, head)
+		_ = file.Close()
+		if n == len(encMagic) && bytes.Equal(head, encMagic) {
+			return errKeyMissing
+		}
+	}
+	return nil
 }
 
 func decodeKey(raw []byte) ([]byte, error) {

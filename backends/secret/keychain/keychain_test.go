@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -245,10 +246,109 @@ func TestDeletePrefix(t *testing.T) {
 		}
 	}
 	// Deleted accounts are gone from the index too.
-	for _, n := range b.readAccounts() {
+	accounts, err := b.readAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range accounts {
 		if n == "plugin-a/token" {
 			t.Fatal("deleted account still indexed")
 		}
+	}
+	first := false
+	for _, n := range accounts {
+		if n == "plugin-b/token" {
+			first = true
+		}
+	}
+	if !first {
+		t.Fatal("kept account dropped from the index")
+	}
+}
+
+// The file store returns exactly what Set received: unlike the
+// plaintext file store there is nothing hand-written to normalize, and
+// trimming would silently corrupt a value that ends in a newline (a PEM
+// block, a password that ends in "\r\n").
+func TestFileBackendGetReturnsStoredValueVerbatim(t *testing.T) {
+	b := newKeyedBackend(t, t.TempDir())
+	ctx := context.Background()
+	for _, value := range []string{
+		"v",
+		"v\n",
+		"v\r\n",
+		"line1\nline2\n",
+		"-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+	} {
+		if err := b.Set(ctx, "account", value); err != nil {
+			t.Fatal(err)
+		}
+		got, found, err := b.Get(ctx, "account")
+		if err != nil || !found {
+			t.Fatalf("Get(%q): found=%v err=%v", value, found, err)
+		}
+		if got != value {
+			t.Fatalf("Get = %q, want %q", got, value)
+		}
+	}
+}
+
+// DeletePrefix("") matches every account; it is rejected so the
+// "the plugin or deployment is gone" path cannot wipe the store by
+// accident.
+func TestDeletePrefixRefusesEmptyPrefix(t *testing.T) {
+	b := newKeyedBackend(t, t.TempDir())
+	ctx := context.Background()
+	for _, acc := range []string{"plugin-a/token", "provider/x"} {
+		if err := b.Set(ctx, acc, "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := b.DeletePrefix(ctx, "")
+	if err == nil {
+		t.Fatal("empty prefix must be rejected")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("error = %v, want a validation error", err)
+	}
+	for _, acc := range []string{"plugin-a/token", "provider/x"} {
+		if _, found, err := b.Get(ctx, acc); err != nil || !found {
+			t.Fatalf("%q removed by an empty prefix", acc)
+		}
+	}
+}
+
+// An index that cannot be decoded must not be treated as an empty one:
+// every later rewrite would drop the accounts it still names, and the
+// hashed file names cannot be enumerated again.
+func TestUndecodableAccountIndexFailsClosed(t *testing.T) {
+	b := newKeyedBackend(t, t.TempDir())
+	ctx := context.Background()
+	for _, acc := range []string{"plugin-a/token", "provider/x"} {
+		if err := b.Set(ctx, acc, "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := filepath.Join(b.dir, accountsFile)
+	if err := os.WriteFile(index, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set(ctx, "new", "v"); err == nil {
+		t.Fatal("Set must fail while the index is undecodable")
+	}
+	if err := b.DeletePrefix(ctx, "plugin-a/"); err == nil {
+		t.Fatal("DeletePrefix must fail while the index is undecodable")
+	}
+	raw, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "{not json" {
+		t.Fatalf("undecodable index was rewritten: %q", raw)
+	}
+	got, found, err := b.Get(ctx, "plugin-a/token")
+	if err != nil || !found || got != "v" {
+		t.Fatalf("Get = %q/%v/%v, want the stored secret", got, found, err)
 	}
 }
 
