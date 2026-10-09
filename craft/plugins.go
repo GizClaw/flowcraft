@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft/plugin"
+	"github.com/GizClaw/flowcraft/craft/ui"
 )
 
 // PluginHost is the craft-facing view of a plugin host (implemented by
@@ -44,6 +45,15 @@ func (c *Craft) Plugins() PluginHost {
 		return nil
 	}
 	return c.plugins
+}
+
+// UI returns the plugin UI registry, or nil when this Craft has no
+// plugin host to deliver UI from.
+func (c *Craft) UI() *ui.Registry {
+	if c == nil {
+		return nil
+	}
+	return c.uiRegistry
 }
 
 // pluginExternals are the two Craft-level values injected into every

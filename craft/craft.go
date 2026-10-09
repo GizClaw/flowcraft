@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/craft/hostmcp"
+	"github.com/GizClaw/flowcraft/craft/ui"
 )
 
 // Craft is one running application: shared services plus a keyed set of
@@ -30,6 +31,7 @@ type Craft struct {
 	bus              *event.MemoryBus
 	router           *event.Router
 	plugins          PluginHost
+	uiRegistry       *ui.Registry
 	hostMCP          *hostMCPState
 	watchCancel      context.CancelFunc
 	unsubscribe      func()
@@ -106,6 +108,15 @@ func New(def Definition, opts Options) (*Craft, error) {
 		opening:     make(map[RuntimeKey]struct{}),
 		runtimes:    make(map[RuntimeKey]*runtime.Runtime),
 		runtimeOpts: make(map[RuntimeKey]RuntimeOptions),
+	}
+	if c.plugins != nil {
+		uiRegistry, err := ui.NewRegistry(c.plugins, c)
+		if err != nil {
+			_ = c.router.Close()
+			_ = c.bus.Close()
+			return nil, fmt.Errorf("craft: ui registry: %w", err)
+		}
+		c.uiRegistry = uiRegistry
 	}
 	named := hostmcp.NewServiceRegistry()
 	for _, capability := range caps {
@@ -456,8 +467,10 @@ func (c *Craft) Close() error {
 	c.started = false
 	watchCancel := c.watchCancel
 	unsubscribe := c.unsubscribe
+	uiRegistry := c.uiRegistry
 	c.watchCancel = nil
 	c.unsubscribe = nil
+	c.uiRegistry = nil
 	plugins := c.plugins
 	keys := make([]RuntimeKey, 0, len(c.runtimes))
 	for key := range c.runtimes {
@@ -475,6 +488,9 @@ func (c *Craft) Close() error {
 	}
 	if unsubscribe != nil {
 		unsubscribe()
+	}
+	if uiRegistry != nil {
+		_ = uiRegistry.Close()
 	}
 	for i := len(keys) - 1; i >= 0; i-- {
 		key := keys[i]

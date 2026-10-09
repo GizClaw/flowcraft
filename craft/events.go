@@ -1,6 +1,9 @@
 package craft
 
-import "github.com/GizClaw/flowcraft/core/event"
+import (
+	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/craft/ui"
+)
 
 // Reason classifies why a runtime was reloaded.
 type Reason string
@@ -22,6 +25,10 @@ const (
 	SubjectReloadFailed    = event.Subject("craft.reload.failed")
 	SubjectManagerState    = event.Subject("craft.manager.state")
 	SubjectGroupInstance   = event.Subject("craft.group.instance.state")
+	// SubjectUIChanged is published by the UI registry on every plugin
+	// revision bump; the registry owns the literal, this keeps the list
+	// of craft-plane subjects complete in one place.
+	SubjectUIChanged = ui.SubjectChanged
 )
 
 // PatternCraft matches every craft-plane event.
