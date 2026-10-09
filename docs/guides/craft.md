@@ -259,6 +259,70 @@ per-generation known-set handoff the reference implementation needed
 disappears, because the records live on the Craft and a reload re-binds
 what they describe.
 
+The removal bound is application configuration of the same shape: it
+parametrizes a pass, not a declaration, so an application that wants it
+adjustable keeps it in its own document. `craft.yaml` is not that place
+— its schema is craft's, and both it and the `runtime:` subtree are
+strict-decoded, so a key craft does not know fails the load. One wrapper
+keeps the value in a single spot:
+
+```yaml
+# The application's own configuration, not craft.yaml.
+agents:
+  remove_timeout: 5s
+```
+
+```go
+// remove_timeout is a duration string, not a number: the document is
+// decoded with JSON semantics, where a time.Duration is an integer
+// count.
+type agentSyncDocument struct {
+	Agents struct {
+		RemoveTimeout string `json:"remove_timeout,omitempty"`
+	} `json:"agents,omitempty"`
+}
+
+// loadAgentSync runs at the application's own load step and returns the
+// options every pass carries: an absent key keeps
+// craft.DefaultAgentRemoveTimeout, an invalid one fails there rather
+// than inside a pass.
+func loadAgentSync(raw []byte) ([]craft.AgentSyncOption, error) {
+	doc, err := utils.Decode[agentSyncDocument](raw) // core/utils
+	if err != nil {
+		return nil, fmt.Errorf("agent sync config: %w", err)
+	}
+	if strings.TrimSpace(doc.Agents.RemoveTimeout) == "" {
+		return nil, nil
+	}
+	timeout, err := time.ParseDuration(doc.Agents.RemoveTimeout)
+	if err != nil || timeout <= 0 {
+		if err == nil {
+			err = errors.New("must be positive")
+		}
+		return nil, fmt.Errorf(
+			"agent sync config: agents.remove_timeout %q: %w",
+			doc.Agents.RemoveTimeout, err)
+	}
+	return []craft.AgentSyncOption{craft.WithAgentRemoveTimeout(timeout)}, nil
+}
+
+// syncAgents is the application's one SyncAgents call site: the
+// configured bound covers every pass, and a caller that needs another
+// one appends its own option — the last one wins.
+func (a *app) syncAgents(
+	ctx context.Context,
+	key craft.RuntimeKey,
+	decls []craft.AgentDecl,
+	opts ...craft.AgentSyncOption,
+) (craft.AgentSyncReport, error) {
+	return a.craft.SyncAgents(ctx, key, decls,
+		append(a.agentSyncOptions, opts...)...)
+}
+```
+
+`utils.Decode` is strict like the rest of the configuration surface, so
+a misspelled key in the application's own document fails its load too.
+
 ## Capabilities
 
 A capability is any value with `Name() string`; the optional interfaces
