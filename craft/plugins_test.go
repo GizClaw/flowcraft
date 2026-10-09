@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/hooks"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -50,7 +51,9 @@ func (h *fakePluginHost) Revision() uint64        { return 1 }
 func (h *fakePluginHost) Subscribe(func()) func() { return func() {} }
 func (h *fakePluginHost) Tools() tool.Source      { return h.set }
 func (h *fakePluginHost) SkillRoots() []string    { return nil }
-func (h *fakePluginHost) HookFiles() []string     { return nil }
+func (h *fakePluginHost) HookSources() []hooks.ExtraSource {
+	return nil
+}
 func (h *fakePluginHost) Entries() ([]plugin.Entry, error) {
 	return nil, nil
 }

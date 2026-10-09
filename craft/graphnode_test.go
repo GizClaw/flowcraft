@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	coregraph "github.com/GizClaw/flowcraft/core/graph"
+	"github.com/GizClaw/flowcraft/core/hooks"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft/plugin"
@@ -122,7 +123,9 @@ func (h *nodeHost) Revision() uint64            { return 1 }
 func (h *nodeHost) Subscribe(func()) func()     { return func() {} }
 func (h *nodeHost) Tools() tool.Source          { return plugin.NewToolSet() }
 func (h *nodeHost) SkillRoots() []string        { return nil }
-func (h *nodeHost) HookFiles() []string         { return nil }
+func (h *nodeHost) HookSources() []hooks.ExtraSource {
+	return nil
+}
 
 func (h *nodeHost) Entries() ([]plugin.Entry, error) {
 	return []plugin.Entry{{

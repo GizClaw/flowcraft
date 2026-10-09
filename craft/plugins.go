@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/hooks"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft/plugin"
@@ -22,7 +23,7 @@ type PluginHost interface {
 	Subscribe(fn func()) func()
 	Tools() tool.Source
 	SkillRoots() []string
-	HookFiles() []string
+	HookSources() []hooks.ExtraSource
 	Entries() ([]plugin.Entry, error)
 	CallTool(ctx context.Context, pluginID, toolName string, args any) (json.RawMessage, error)
 }

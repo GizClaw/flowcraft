@@ -46,7 +46,7 @@ var Charter = []CharterRow{
 	},
 	{
 		Kind: "hooks", ManifestField: "Hooks", Permission: "hooks:provide",
-		DropRule: "the hooks list is dropped: HookFiles omits the " +
+		DropRule: "the hooks list is dropped: HookSources omits the " +
 			"plugin's hook files",
 	},
 	{

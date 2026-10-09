@@ -13,6 +13,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/hooks"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/mcp"
 )
@@ -200,25 +201,33 @@ func (h *Host) SkillRoots() []string {
 	return out
 }
 
-// HookFiles returns the absolute hook files of every enabled plugin
-// that declares hooks:provide.
-func (h *Host) HookFiles() []string {
+// HookSources returns the hook files of every enabled plugin that
+// declares hooks:provide, each anchored to its plugin directory and
+// marked untrusted. Both facts matter to a runner: a plugin's hooks.json
+// expects to run inside its own directory, and it is third-party
+// content, so the runner strips the content-bearing payload fields
+// before those commands see them. Sources are ordered by path, so hook
+// execution order is stable across calls.
+func (h *Host) HookSources() []hooks.ExtraSource {
 	entries, err := h.store.Enabled()
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []hooks.ExtraSource
 	for _, entry := range entries {
 		if !entry.Manifest.HasPermission("hooks:provide") {
 			continue
 		}
 		for _, rel := range entry.Manifest.Hooks {
 			if path, err := ResolvePath(entry.Dir, rel); err == nil {
-				out = append(out, path)
+				out = append(out, hooks.ExtraSource{
+					Path: path,
+					Dir:  entry.Dir,
+				})
 			}
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
