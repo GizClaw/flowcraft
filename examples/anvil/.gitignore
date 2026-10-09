@@ -1,4 +1,3 @@
 # The anvil example writes its data directory (plugin state, notes
 # files, per-runtime layers) next to itself by default.
 .anvil/
-
