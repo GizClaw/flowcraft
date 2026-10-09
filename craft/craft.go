@@ -37,14 +37,26 @@ type Craft struct {
 	unsubscribe      func()
 
 	// mu serializes lifecycle mutations: Start, OpenRuntime,
-	// ReloadRuntime, CloseRuntime and Close. Binder callbacks run after
-	// the mutation and outside the lock.
+	// ReloadRuntime, CloseRuntime and Close. It only ever guards the
+	// table below; binder callbacks run after the mutation and outside
+	// it.
 	mu          sync.Mutex
 	started     bool
 	closed      bool
 	opening     map[RuntimeKey]struct{}
 	runtimes    map[RuntimeKey]*runtime.Runtime
 	runtimeOpts map[RuntimeKey]RuntimeOptions
+
+	// lifecycleMu serializes the operations that must not interleave:
+	// ReloadRuntime, ReloadAll and SyncAgents. mu stays the table
+	// lock it has always been and is never held across a reload or an
+	// agent pass; capability callbacks and event sinks those
+	// operations reach run under this one.
+	lifecycleMu sync.Mutex
+	// agentRevs holds, per runtime key, the declaration revision
+	// SyncAgents last applied for each agent name: the applied set the
+	// next pass diffs against. Guarded by lifecycleMu.
+	agentRevs map[RuntimeKey]map[string]string
 }
 
 // New validates the definition and builds the shared services. No
@@ -108,6 +120,7 @@ func New(def Definition, opts Options) (*Craft, error) {
 		opening:     make(map[RuntimeKey]struct{}),
 		runtimes:    make(map[RuntimeKey]*runtime.Runtime),
 		runtimeOpts: make(map[RuntimeKey]RuntimeOptions),
+		agentRevs:   make(map[RuntimeKey]map[string]string),
 	}
 	if c.plugins != nil {
 		uiRegistry, err := ui.NewRegistry(c.plugins, c)
@@ -283,7 +296,7 @@ func (c *Craft) OpenRuntime(
 
 // ReloadRuntime recomposes the layers for key and atomically replaces
 // the runtime's deployment generation. In-flight turns stay on the
-// previous generation.
+// previous generation. It is serialized with ReloadAll and SyncAgents.
 func (c *Craft) ReloadRuntime(
 	ctx context.Context,
 	key RuntimeKey,
@@ -292,6 +305,18 @@ func (c *Craft) ReloadRuntime(
 	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("craft: ReloadRuntime context is required")
 	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.reloadRuntimeLocked(ctx, key, reason)
+}
+
+// reloadRuntimeLocked is ReloadRuntime's body; callers hold
+// lifecycleMu.
+func (c *Craft) reloadRuntimeLocked(
+	ctx context.Context,
+	key RuntimeKey,
+	reason Reason,
+) error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -325,11 +350,18 @@ func (c *Craft) ReloadRuntime(
 }
 
 // ReloadAll reloads every open runtime. Each runtime is transactional;
-// failures are aggregated with the runtime key.
+// failures are aggregated with the runtime key. It holds the lifecycle
+// lock across the whole pass, so neither a single-runtime reload nor an
+// agent sync can interleave with it.
 func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
+	if ptr.IsNil(ctx) {
+		return errdefs.Validationf("craft: ReloadAll context is required")
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 	var errs []error
 	for _, key := range c.Runtimes() {
-		if err := c.ReloadRuntime(ctx, key, reason); err != nil {
+		if err := c.reloadRuntimeLocked(ctx, key, reason); err != nil {
 			errs = append(errs, fmt.Errorf("runtime %q: %w", key, err))
 		}
 	}
