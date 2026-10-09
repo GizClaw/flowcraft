@@ -10,7 +10,7 @@ itself.
 
 ## Quickstart
 
-Prerequisites: Go 1.26+ and a provider credential (see
+Prerequisites: Go 1.25+ and a provider credential (see
 [Credentials](#credentials)).
 
 ```bash

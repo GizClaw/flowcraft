@@ -8,7 +8,7 @@ English version: [README.md](README.md).
 
 ## 快速开始
 
-前置要求:Go 1.26+ 和 provider 凭证(见[凭证](#凭证))。
+前置要求:Go 1.25+ 和 provider 凭证(见[凭证](#凭证))。
 
 ```bash
 cd examples/forge

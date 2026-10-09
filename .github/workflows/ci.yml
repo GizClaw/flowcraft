@@ -131,7 +131,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
 
       - name: Test release gate tooling
         working-directory: tools/releasegate
@@ -172,7 +172,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: gofmt -s check
         run: |
           diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil)
@@ -195,7 +195,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
@@ -252,7 +252,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Test
         working-directory: backends/memory
         env:
@@ -266,7 +266,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Test
         working-directory: backends/memory
         run: go test -count=1 ./...
@@ -278,7 +278,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Install bubblewrap
         run: |
           set -euo pipefail
@@ -356,7 +356,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Build
         working-directory: core
         run: go build ./...
@@ -374,7 +374,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       - name: Test
         working-directory: core/sandbox
         run: go test -count=1 -timeout 180s ./windows/...
@@ -386,7 +386,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
       # The kqueue source, the cross-backend journal contract suite and
       # the seatbelt backend only run where the platform primitives
       # exist; the cross-vet lanes prove they compile, this proves they

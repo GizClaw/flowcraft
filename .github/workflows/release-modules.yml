@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
 
       - name: Validate release changesets
         working-directory: tools/releasegate
@@ -145,7 +145,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.25"
 
       - name: Configure git
         run: |
