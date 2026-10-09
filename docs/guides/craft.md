@@ -165,7 +165,7 @@ document's `runtime.external_deps`.
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
-| `SyncAgents(ctx, key, decls)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. |
+| `SyncAgents(ctx, key, decls, opts...)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. `craft.WithAgentRemoveTimeout` replaces the default bound on one removal's drain. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
 | `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
 | `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
@@ -224,6 +224,16 @@ reloading the generation:
   a failed declaration is not recorded, so the next pass retries it even
   with an unchanged `Rev` — the repair path for declarations that arrive
   from outside the application.
+- every removal a pass performs — a name the set dropped, and the live
+  agent a replacement replaces — drains the agent's active turns bounded
+  by the pass's removal bound: `craft.DefaultAgentRemoveTimeout` (30s)
+  unless the pass replaces it with `craft.WithAgentRemoveTimeout`. The
+  bound is there because the pass holds the lifecycle lock: a reload, a
+  close and the next pass all queue behind that drain. A removal that
+  runs out of time fails its declaration — the agent stays live, its
+  record stays, and the next pass retries — and a non-positive bound is
+  rejected before anything mutates. Lower it in applications whose turns
+  are short; there is no unbounded setting.
 - deployed agents are never touched: a declaration whose name the
   deployment document declares is an error, and deployment documents
   must not declare names the coordinator manages.
