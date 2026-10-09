@@ -49,23 +49,31 @@ func TestWritePublishesContentAndPerm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
-	}
-	// MkdirPerm 0700 must not leak group/other bits (umask may narrow
-	// it further, which is fine).
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dirInfo.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("directory mode = %v, want no group/other bits",
-			dirInfo.Mode().Perm())
+	// Windows reports synthesized modes for every file, so the POSIX
+	// permission assertions only apply elsewhere; the content and
+	// litter checks below run on every platform.
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+		}
+		// MkdirPerm 0700 must not leak group/other bits (umask may
+		// narrow it further, which is fine).
+		dirInfo, err := os.Stat(filepath.Dir(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dirInfo.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("directory mode = %v, want no group/other bits",
+				dirInfo.Mode().Perm())
+		}
 	}
 	noLitter(t, filepath.Dir(path), "flowcraft.yaml")
 }
 
 func TestWriteZeroPermKeepsTempMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports synthesized file modes, not the 0600 default")
+	}
 	// Call sites that never chmod keep os.CreateTemp's 0600.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yaml")

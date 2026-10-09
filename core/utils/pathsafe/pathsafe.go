@@ -91,8 +91,11 @@ func ResolveUnder(root, rel string) (string, error) {
 }
 
 // RelRef reports whether ref is a relative reference that cannot walk
-// out of the directory it will be joined onto: not absolute, not "..",
-// and not starting with "../".
+// out of the directory it will be joined onto: not absolute, not
+// rooted, not "..", and not starting with "../". The rooted case is
+// spelled out because on Windows "\x" is not absolute yet still
+// resolves against the current drive's root, which is exactly the
+// escape this guard exists for.
 //
 // This is the sibling of Within for names chosen by someone else — a
 // zip entry, a manifest-declared binary, a plugin asset path — before
@@ -101,6 +104,7 @@ func ResolveUnder(root, rel string) (string, error) {
 func RelRef(ref string) bool {
 	clean := filepath.Clean(ref)
 	return !filepath.IsAbs(clean) &&
+		!strings.HasPrefix(clean, string(filepath.Separator)) &&
 		clean != ".." &&
 		!strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
