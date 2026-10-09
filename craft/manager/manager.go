@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/lock"
 	"github.com/GizClaw/flowcraft/craft"
 )
 
@@ -60,6 +62,21 @@ type Options struct {
 	Paths          Paths
 	// Lock enables the DataDir+Profile single-instance lock.
 	Lock bool
+	// OnLockHeld is consulted when another live instance already holds the
+	// lock. The holder record arrives as lock.Info (pid, kind, start,
+	// version, optional endpoint), so a shell can forward its arguments to
+	// the running instance and raise it — the record's endpoint is where
+	// that instance can be reached. The returned error is what Start
+	// reports; nil keeps the default conflict error. The hook cannot let a
+	// second instance proceed: the lock is what makes the launch single.
+	OnLockHeld func(lock.Info) error
+	// OnLockUnavailable is consulted when the lock cannot be taken at all —
+	// a filesystem that will not lock, a directory where the lock file
+	// belongs, missing permissions. That is the state the lock cannot
+	// answer for, so the default is to start without it and log a warning:
+	// a lock that cannot be taken must not keep the user out. Return an
+	// error to refuse the launch instead.
+	OnLockUnavailable func(error) error
 	// Migrate runs before the Craft is built.
 	Migrate func(ctx context.Context, paths Paths) error
 	// Restart bounds automatic restarts in Run.
@@ -77,7 +94,7 @@ type Manager struct {
 	mu      sync.Mutex
 	state   State
 	current *craft.Craft
-	lock    *lockFile
+	lock    *lock.Handle
 	subs    map[uint64]func(State)
 	nextSub uint64
 	closed  bool
@@ -199,13 +216,15 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	}
 	if m.opts.Lock {
-		lock, err := acquireLock(m.opts.Paths.DataDir, m.opts.Profile)
+		handle, err := m.acquireLock(ctx)
 		if err != nil {
 			return fail(err)
 		}
-		m.mu.Lock()
-		m.lock = lock
-		m.mu.Unlock()
+		if handle != nil {
+			m.mu.Lock()
+			m.lock = handle
+			m.mu.Unlock()
+		}
 	}
 	built, err := m.build(ctx, def)
 	if err != nil {
@@ -378,11 +397,11 @@ func (m *Manager) Close() error {
 
 func (m *Manager) releaseLock() {
 	m.mu.Lock()
-	lock := m.lock
+	handle := m.lock
 	m.lock = nil
 	m.mu.Unlock()
-	if lock != nil {
-		_ = lock.Release()
+	if handle != nil {
+		_ = handle.Release()
 	}
 }
 
@@ -439,46 +458,50 @@ func executableDir() string {
 	return filepath.Dir(path)
 }
 
-// lockFile is an exclusive lock file; a stale lock after a crash must
-// be removed manually.
-type lockFile struct {
-	path string
-	file *os.File
-}
+// lockKind is the holder kind recorded in the single-instance lock file.
+const lockKind = "manager"
 
-func acquireLock(dataDir, profile string) (*lockFile, error) {
+// lockPath resolves the DataDir+Profile lock file: craft.lock, or
+// craft-<profile>.lock for a named profile.
+func lockPath(dataDir, profile string) string {
 	name := "craft.lock"
 	if strings.TrimSpace(profile) != "" {
 		name = "craft-" + profile + ".lock"
 	}
-	path := filepath.Join(dataDir, name)
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, errdefs.Validationf("craft manager: create data dir: %v", err)
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, errdefs.Conflictf(
-				"craft manager: another instance holds %s", path)
-		}
-		return nil, errdefs.Validationf("craft manager: lock: %v", err)
-	}
-	_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-	return &lockFile{path: path, file: file}, nil
+	return filepath.Join(dataDir, name)
 }
 
-func (l *lockFile) Release() error {
-	if l == nil {
-		return nil
+// acquireLock takes the single-instance lock of this manager's DataDir and
+// profile.
+//
+// A live holder is the one outcome that refuses the launch: OnLockHeld gets
+// the holder record (and may raise the running instance, forward arguments)
+// and chooses the error Start reports. Anything else — an unusable path, a
+// filesystem without lock semantics — is a question the lock cannot answer,
+// so the manager starts without it after a warning, unless OnLockUnavailable
+// refuses. A nil handle means exactly that: no lock was taken, start anyway.
+func (m *Manager) acquireLock(ctx context.Context) (*lock.Handle, error) {
+	path := lockPath(m.opts.Paths.DataDir, m.opts.Profile)
+	handle, err := lock.Acquire(ctx, path, lockKind)
+	if err == nil {
+		return handle, nil
 	}
-	var errs []error
-	if l.file != nil {
-		if err := l.file.Close(); err != nil {
-			errs = append(errs, err)
+	if holder, held := lock.IsHeld(err); held {
+		if m.opts.OnLockHeld != nil {
+			if refusal := m.opts.OnLockHeld(holder); refusal != nil {
+				return nil, refusal
+			}
+		}
+		return nil, errdefs.Conflictf(
+			"craft manager: another instance holds %s: %w", path, err)
+	}
+	if m.opts.OnLockUnavailable != nil {
+		if refusal := m.opts.OnLockUnavailable(err); refusal != nil {
+			return nil, refusal
 		}
 	}
-	if err := os.Remove(l.path); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+	telemetry.Warn(ctx, fmt.Sprintf(
+		"craft manager: single-instance lock unavailable, starting without it: %v",
+		err))
+	return nil, nil
 }
