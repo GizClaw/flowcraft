@@ -357,6 +357,9 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   `core/memory` contracts and deploy/runtime glue.
 - [Prompt Lifecycle Events](docs/guides/prompt.md) — the
   `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
+- [External Hooks](docs/guides/hooks.md) — `core/hooks`: `hooks.json`
+  command hooks, the frozen event vocabulary and invocation contract,
+  and the trust rules for plugin-contributed sources.
 - [Delegation](docs/guides/delegation.md) — `core/delegation`: backend-neutral
   target discovery, sync / async execution, and the session-bound
   delegation lifecycle.

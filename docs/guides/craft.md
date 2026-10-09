@@ -285,7 +285,7 @@ its permission still loads and enables, but the section is dropped:
 - `mcp` without `mcp:provide`: no child process starts, no host token is
   minted, and a node bound to it fails with the missing grant;
 - `skills` without `skills:provide`: `SkillRoots` omits the directories;
-- `hooks` without `hooks:provide`: `HookFiles` omits the files;
+- `hooks` without `hooks:provide`: `HookSources` omits the files;
 - `nodes` without `nodes:provide`: no node resource or engine dep is
   synthesized;
 - `ui` and `storage` carry no gate inside craft — the shell gates the
@@ -315,9 +315,13 @@ composition as a `tool.plugins: craft.plugins` dependency:
   when `tool_registry` is empty.
 
 A capability can also read the plugin host at build time via the
-`craft.pluginhost` external (`SkillRoots`, `HookFiles`, `Entries`,
-`CallTool`). Disable/update drops the plugin's tools from every registry
-and waits for in-flight calls before the source closes.
+`craft.pluginhost` external (`SkillRoots`, `HookSources`, `Entries`,
+`CallTool`). `HookSources` hands each plugin hook file to a command hook
+runner together with the two facts it needs — the plugin directory the
+commands run in, and the untrusted marking that strips content fields
+from the payload ([External Hooks](hooks.md)). Disable/update drops the
+plugin's tools from every registry and waits for in-flight calls before
+the source closes.
 
 ## Plugin graph nodes
 

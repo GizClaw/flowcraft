@@ -25,6 +25,9 @@ retrieval, runtime orchestration, and voice. Source on
   interruptible streaming sessions above a built deployment.
 - [Prompt Lifecycle Events](guides/prompt.md) — the
   `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
+- [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
+  command-hook runner, the frozen event vocabulary, the invocation
+  contract, and the trust rules for plugin-contributed sources.
 
 ### State and execution boundary
 

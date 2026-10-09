@@ -123,7 +123,7 @@ still loads and enables.
 - `mcp` without `mcp:provide`: no child process, no token, no tools; a
   node bound to it is `Forbidden` with the missing grant.
 - `skills` without `skills:provide`: `SkillRoots` omits the plugin.
-- `hooks` without `hooks:provide`: `HookFiles` omits the plugin.
+- `hooks` without `hooks:provide`: `HookSources` omits the plugin.
 - `nodes` without `nodes:provide`: no node resource, no engine dep.
 - Disabling a plugin withdraws its contributions even with permissions
   intact.
