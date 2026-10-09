@@ -612,6 +612,75 @@ whole process. Use a group for mutually trusting instances (profiles,
 several apps of one operator); untrusted tenants need one process per
 instance.
 
+## craft/pool
+
+`craft/pool` is the optional package that keeps **one member per key
+alive across generations**: which key gets which member, when an
+invalidated member is retired, who assembles its replacement, and how
+callers wait that swap out. It is not built into `Craft`: the value of a
+key is the application's — a Craft runtime, a connection, whatever it
+pools — and the pool is handed a `Spec[T]` that says how one is
+assembled, when it is busy, and how its teardown finishes. Everything
+the pool asks is a hook, so `T` needs no interface: a nil `Busy` means
+never busy, a nil `WaitClosed` means `Close` tears down synchronously,
+a nil `Wanted` means every key is wanted.
+
+```go
+type Key struct{ Kind, ID string } // two identifiers, one namespace each
+
+func New[T any](spec Spec[T]) (*Pool[T], error)
+// Ensure / Acquire / Current / Stale / Release / Settle
+// Invalidate / InvalidateKind / InvalidateAll / Close
+// ScheduleReplacement / ReplacementArmed / Do
+```
+
+- **Two entrance points.** `Ensure` is the cheap read path, called once
+  per unit of work: it answers with the pooled member — including one
+  that was invalidated but is still serving its last work on the old
+  generation — or assembles one, once any member retiring for the key
+  has finished teardown. It takes no reference. `Acquire` checks a
+  member out: it waits out a retiring member's teardown instead of
+  handing out one on its way out, concurrent callers for one key share a
+  single assembly (error included), and the caller owes exactly one
+  `Release` — the last reference is what retires a member.
+- **A key names two things.** `Kind` is the application's namespace
+  (`workspace`, `app`, …), so the same id in two kinds is two keys and
+  neither kind can answer for the other. A blank part is not a key:
+  `Ensure` and `Acquire` refuse it with `ErrNoKey`, the reads answer
+  with nothing, and the retirements ignore it.
+- **Invalidation defers to idle work.** `Invalidate` marks the key's
+  member stale. An idle member closes immediately; a member with work in
+  flight stays pooled and keeps serving it on the old generation until
+  the member's own idle (`Settle`) retires it — a second generation is
+  never assembled under a live unit. `InvalidateKind` drops one kind and
+  nothing else; `InvalidateAll` and `Close` drop every key, and a pool
+  closed this way keeps working (the next `Ensure` assembles again).
+- **One deferred replacement per key.** A reload that lands on a stale
+  but still-serving member hands it off with
+  `ScheduleReplacement`: the watcher waits for the drain, asks `Wanted`
+  (a key the user left is not rebuilt), ensures, and announces the
+  member through `Replaced`. A second arm inside the same drain is
+  refused, and a drain that already finished between the arm and the
+  watcher still gets its replacement.
+- **`Do` absorbs the lifecycle guards.** `Do(ctx, key, stop, fn)`
+  resolves the member and runs `fn` on it, retrying the errors
+  `Spec.Retryable` classifies (plus the pool's own `ErrNotReady`) inside
+  one window (`RetryWindow`, default 10s) and one attempt budget
+  (`RetryAttempts`, default 3). The budget is the whole call's, measured
+  by the remaining time per attempt; `stop` is asked before every retry
+  and never before the first attempt; a non-retryable error, the
+  caller's cancellation and a member resolved as the window closed all
+  come back as they are.
+- **Configure-once.** `Installed` runs once per member, on every path
+  that hands one out, so event wiring is applied exactly once however
+  often a member is handed out — and a member the pool already forgot is
+  never wired late.
+- **What is not here.** Which keys exist and what they mean, what
+  triggers an invalidation, the fallback backend an assembly reads, and
+  what a member's busy state is: the application's. The pool also does
+  not run a member's own cancellation or drain — `Close` and
+  `WaitClosed` are hooks into the application's teardown.
+
 ## Failure modes to expect first
 
 - Definition: `craft: definition id is required`, `craft: definition
@@ -668,6 +737,10 @@ cards describe.
 The dynamic agent coordinator (`Craft.SyncAgents`) is craft's; the
 declaration store behind it — file schema, versioning, CRUD tools — is
 the application's.
+
+The pool mechanism (`craft/pool`) is craft's; the keys, the triggers
+that invalidate them, and the wiring of one member — a Craft runtime,
+mostly — are the application's.
 
 ## Minimal example
 
