@@ -31,6 +31,15 @@ the intent.
 - A changeset is consumed for a module when that file exists in the module's
   latest `module/vX.Y.Z` tag.
 
+`craft`'s first release has to ship in the same batch as the `core` release it
+depends on: the module imports `core/hooks` and `core/utils/lock`, and no
+published `core` tag contains them, so `GOWORK=off go build ./...` — what the
+release gate runs per module — cannot resolve them. Declare both modules in one
+changeset, run `make release-preflight` (or `-write`) so `craft`'s `core` pin
+moves to the version this batch tags, and let the workflow tag `core` first. A
+standalone `craft` changeset fails the gate with `no required module provides
+package ...`, which does not point at the cause.
+
 The CLI is a standalone Go module. Run these commands from the repository root:
 
 ```sh

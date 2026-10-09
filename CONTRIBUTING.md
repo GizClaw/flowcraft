@@ -23,9 +23,9 @@ Keep changes within module boundaries.
 
 The independently versioned library modules are `core`, `craft`, `driver/*`,
 and `backends/*`.
-The Go workspace also includes `examples/forge` (the runnable local demo, not
-released), while `tools/releasegate` builds with `GOWORK=off` against pinned
-releases.
+The Go workspace also includes `examples/forge` and `examples/anvil` (runnable
+local demos, not released), while `tools/releasegate` builds with `GOWORK=off`
+against pinned releases.
 
 Module dependency order:
 
@@ -38,8 +38,9 @@ core -> craft / driver/* / backends/*
   compile-time capabilities, the MCP plugin host and host primitives, and the
   process-level manager. It is the second module the release gate manages.
 - `driver/*` provides provider inference adapters over `core`.
-- `backends/*` provides platform-specific sandbox/object-store/SQLite
-  backends over `core`.
+- `backends/*` provides the platform-side implementations over `core` (the
+  SQLite checkpoint store and the memory backend today); sandbox backends live
+  in `core/sandbox`.
 
 ## Declaring a module release
 
@@ -82,6 +83,12 @@ dependency, and `craft` requires `core`, so a core + craft batch is tagged
 `core` first. The release gate rejects a module whose same-batch dependency pins
 do not match the planned versions, and rejects an untidy `go.mod`.
 
+A dependent that imports packages no published dependency tag contains cannot
+be tagged on its own at all: `GOWORK=off go build ./...`, which the gate runs
+per module, fails before the pin is ever consulted. Ship it in the same batch
+as the dependency release that adds those packages (`craft` and `core` are the
+current pair; the details are in `.release/README.md`).
+
 Before opening a coordinated release PR, run `make release-preflight`. It tidies
 each planned module against the same-batch versions (using temporary local
 `replace` directives), so new indirect requirements introduced by the dependency
@@ -109,11 +116,11 @@ are still missing.
 
 ## Working in the workspace
 
-- `make ci` runs `vet` + `test` across `core`, `driver/*`, `backends/*`,
-  and `examples/forge`.
+- `make ci` runs `vet` + `test` across `core`, `craft`, `driver/*`,
+  `backends/*`, `examples/forge`, and `examples/anvil`.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
-- Changes to `core` contracts may break `driver/*`, `backends/*`,
-  or `examples/forge`; `make ci` covers them in-tree.
+- Changes to `core` contracts may break `craft`, `driver/*`, `backends/*`,
+  `examples/forge`, or `examples/anvil`; `make ci` covers them in-tree.
 - The forge demo's scenarios are native deployment documents; changes to the
   assembly or runtime surface should be exercised with a demo run
   (`cd examples/forge && go run . test -test werewolf/opening_setup`).
