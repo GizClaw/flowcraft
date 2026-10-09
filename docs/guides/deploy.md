@@ -123,6 +123,7 @@ resources:
       kind: secret.Store
       impl: keychain
       settings:
+        id: keychain
         dir: /path/to/secrets
   ```
 

@@ -345,7 +345,7 @@ func (f *fileBackend) Get(_ context.Context, name string) (string, bool, error) 
 			"secret keychain store: read %q: %w", name, err)
 	}
 	if bytes.HasPrefix(raw, encMagic) {
-		plain, err := f.decrypt(raw)
+		plain, err := f.decrypt(name, raw)
 		if err != nil {
 			return "", false, fmt.Errorf(
 				"secret keychain store: read %q: %w", name, err)
@@ -359,7 +359,7 @@ func (f *fileBackend) Get(_ context.Context, name string) (string, bool, error) 
 }
 
 func (f *fileBackend) Set(_ context.Context, name, value string) error {
-	data, err := f.seal([]byte(value))
+	data, err := f.seal(name, []byte(value))
 	if err != nil {
 		return fmt.Errorf("secret keychain store: encrypt %q: %w", name, err)
 	}
@@ -416,9 +416,12 @@ func (f *fileBackend) DeletePrefix(_ context.Context, prefix string) error {
 	return f.writeAccounts(kept)
 }
 
-// seal encrypts value with AES-256-GCM under f.key. A missing key is
-// an error: plaintext writes are never allowed.
-func (f *fileBackend) seal(value []byte) ([]byte, error) {
+// seal encrypts value with AES-256-GCM under f.key, binding the sealed
+// bytes to the account name as additional authenticated data: a sealed
+// file moved onto another account's name fails to open instead of
+// handing back the wrong credential. A missing key is an error:
+// plaintext writes are never allowed.
+func (f *fileBackend) seal(name string, value []byte) ([]byte, error) {
 	if len(f.key) == 0 {
 		return nil, errors.New("secret keychain store: no encryption key")
 	}
@@ -430,7 +433,7 @@ func (f *fileBackend) seal(value []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	sealed := gcm.Seal(nil, nonce, value, nil)
+	sealed := gcm.Seal(nil, nonce, value, []byte(name))
 	out := make([]byte, 0, len(encMagic)+len(nonce)+len(sealed))
 	out = append(out, encMagic...)
 	out = append(out, nonce...)
@@ -439,8 +442,10 @@ func (f *fileBackend) seal(value []byte) ([]byte, error) {
 }
 
 // decrypt reverses seal. Files without the magic prefix are rejected
-// by Get before this runs.
-func (f *fileBackend) decrypt(raw []byte) ([]byte, error) {
+// by Get before this runs. Files sealed before the name binding existed
+// carry no additional data; they are accepted so an existing store
+// keeps working, and the next Set rewrites them bound.
+func (f *fileBackend) decrypt(name string, raw []byte) ([]byte, error) {
 	if len(f.key) == 0 {
 		return nil, errors.New("secret keychain store: no encryption key")
 	}
@@ -453,8 +458,11 @@ func (f *fileBackend) decrypt(raw []byte) ([]byte, error) {
 		return nil, errors.New("secret keychain store: truncated sealed secret")
 	}
 	nonce, sealed := body[:gcm.NonceSize()], body[gcm.NonceSize():]
-	plain, err := gcm.Open(nil, nonce, sealed, nil)
+	plain, err := gcm.Open(nil, nonce, sealed, []byte(name))
 	if err != nil {
+		if legacy, legacyErr := gcm.Open(nil, nonce, sealed, nil); legacyErr == nil {
+			return legacy, nil
+		}
 		return nil, fmt.Errorf("secret keychain store: decrypt: %w", err)
 	}
 	return plain, nil

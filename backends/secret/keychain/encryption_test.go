@@ -285,3 +285,60 @@ func TestReadKeyRetryingWaitsForTheWriter(t *testing.T) {
 		t.Fatal("readKeyRetrying returned the wrong key")
 	}
 }
+
+// A sealed file is bound to its account name: swapping two sealed files
+// must not hand back the other credential.
+func TestFileBackendSealedFileIsBoundToItsAccount(t *testing.T) {
+	b := newKeyedBackend(t, t.TempDir())
+	ctx := context.Background()
+	for name, value := range map[string]string{"first": "one", "second": "two"} {
+		if err := b.Set(ctx, name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := os.ReadFile(b.path("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(b.path("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.path("first"), second, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.path("second"), first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"first", "second"} {
+		if value, found, err := b.Get(ctx, name); err == nil {
+			t.Fatalf("swapped sealed file opened for %q: value=%q found=%v",
+				name, value, found)
+		}
+	}
+}
+
+// Files sealed before the name binding existed carry no additional
+// data; they keep working so an existing store survives the upgrade
+// (the next Set rewrites them bound).
+func TestFileBackendReadsLegacyUnboundSealedFiles(t *testing.T) {
+	b := newKeyedBackend(t, t.TempDir())
+	gcm, err := newGCM(b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	raw := append([]byte{}, encMagic...)
+	raw = append(raw, nonce...)
+	raw = append(raw, gcm.Seal(nil, nonce, []byte("legacy"), nil)...)
+	if err := os.WriteFile(b.path("account"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := b.Get(context.Background(), "account")
+	if err != nil || !found || got != "legacy" {
+		t.Fatalf("legacy sealed file: value=%q found=%v err=%v", got, found, err)
+	}
+}

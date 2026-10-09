@@ -615,6 +615,27 @@ pass the description through. See
 [docs/guides/delegation.md](../../../docs/guides/delegation.md) for the
 full lifecycle.
 
+## secret store
+
+```yaml
+secrets:
+  kind: secret.Store
+  impl: keychain
+  settings:
+    id: keychain         # optional; the name ${secret:keychain.NAME} uses
+    dir: ${base:secrets} # keychain impl only: the store directory (0700)
+```
+
+`secret.Store` backends answer `${secret:NAME}` (the deployment's
+default store) and `${secret:store.NAME}`. Values resolve at use time
+and are cached per store for a minute, so a missing secret fails the
+request rather than the build, and a value never appears in logs or
+error messages. `core/secret` ships `env` and `file`; `backends/secret`
+ships `keychain`, which seals one AES-256-GCM file per secret under
+`dir` (protection against backups and casual reads, not against another
+process running as the same user). Other impls (vault, 1Password, ...)
+are app-registered.
+
 ## checkpoint store
 
 ```yaml
