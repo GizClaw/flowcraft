@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "craft", "examples/forge"]
+              dirs = ["core", "craft", "examples/forge", "examples/anvil"]
               for base in ("backends", "driver"):
                   for path in pathlib.Path(base).rglob("go.mod"):
                       if "vendor" in path.parts or "testdata" in path.parts:
@@ -43,6 +43,8 @@ jobs:
               return sorted(set(dirs))
 
           dirs = module_dirs()
+          # examples/forge stays out of the lint gate; examples/anvil is a
+          # workspace module like any other and is linted and tested.
           lint_dirs = [d for d in dirs if d != "examples/forge"]
 
           # Parse each in-workspace module's identity and its requires on
@@ -105,6 +107,8 @@ jobs:
           lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
           # examples/forge pins released module versions and builds with
           # GOWORK=off, so it always runs rather than joining the closure.
+          # examples/anvil requires craft, so the closure pulls it in
+          # whenever craft or core changes.
           test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
           test = sorted(set(test) | {"examples/forge"})
           json.dump(
@@ -171,7 +175,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core craft driver backends examples/forge)
+          diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"

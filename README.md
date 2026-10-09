@@ -16,7 +16,8 @@
 FlowCraft is a Go workspace for building and evaluating AI applications without
 tying application code to one model provider or execution model. Graphs are one
 built-in option, not a required architecture: use the core packages directly, or
-start with the forge demo in `examples/forge` for a runnable local workspace.
+start with the forge demo in `examples/forge` for a runnable local workspace, or
+the anvil example in `examples/anvil` for a minimal `craft` host application.
 
 ## Modules
 
@@ -39,6 +40,10 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
+- **`examples/anvil`** — The runnable `craft` example: a minimal host
+  application that assembles a Craft from a `craft.yaml` definition, a
+  capability and a plugin directory, then walks the lifecycle — keyed runtimes,
+  tool calls, reload, plugin hot-plug. No provider, no network.
 - **`tools/releasegate`** — Release automation: changeset validation, release
   planning, and changelog aggregation.
 
@@ -85,6 +90,22 @@ documents, opens an interactive TUI, and runs scripted tests and raid × persona
 simulations. Command reference, scenario layout, and credentials live in
 [`examples/forge/README.md`](examples/forge/README.md) (中文版:
 [`examples/forge/README_zh.md`](examples/forge/README_zh.md)).
+
+### Run the craft example
+
+[`examples/anvil`](examples/anvil/) is a minimal host application built on
+`craft`: it assembles a Craft from a definition, a capability and a plugin, and
+walks the lifecycle (keyed runtimes, tool calls, reload, hot-plug). No provider
+or network needed:
+
+```bash
+cd examples/anvil
+go run .
+```
+
+See [`examples/anvil/README.md`](examples/anvil/README.md) (中文版:
+[`examples/anvil/README_zh.md`](examples/anvil/README_zh.md)) for the tour step
+by step.
 
 ### Embed FlowCraft in a Go service
 
@@ -244,6 +265,7 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
 | [`backends`](backends/)                               | SQLite checkpoints, the long-term memory backend (sandbox backends live in `core/sandbox`) | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
+| [`examples/anvil`](examples/anvil/)                   | Minimal `craft` host application (keyed runtimes, plugins, reload)                       | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
 
@@ -293,6 +315,15 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 A runnable demo on the current stack: native scenario documents, an interactive
 TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
 [`examples/forge/README.md`](examples/forge/README.md) for details.
+
+### Minimal craft host application (`examples/anvil`)
+
+The runnable `craft` example: one small host application that assembles a Craft
+from a `craft.yaml` definition, one compile-time capability and one plugin
+directory, then walks the lifecycle a real shell drives — scanning plugins,
+opening keyed runtimes, calling tools through the runtime's assembly, reloading
+one runtime, hot-plugging a plugin and shutting down. Everything is local and
+deterministic. See [`examples/anvil/README.md`](examples/anvil/README.md).
 
 ## Documentation
 
@@ -401,8 +432,8 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `core`, `craft`,
-`driver/*`, `backends/*`, and `examples/forge`; release tooling in
-`tools/releasegate` builds standalone with `GOWORK=off`.
+`driver/*`, `backends/*`, `examples/forge`, and `examples/anvil`; release
+tooling in `tools/releasegate` builds standalone with `GOWORK=off`.
 
 ## Contributing
 

@@ -96,7 +96,7 @@ core/            Platform module (contracts, deploy, runtime, built-in resources
 craft/           Application assembly (craft.yaml, capabilities, plugins, host primitives)
 driver/          Provider inference adapters
 backends/        SQLite checkpoints and the memory backend (sandbox backends live in core/)
-examples/        Reference assemblies
+examples/        Reference assemblies: forge (workspace demo), anvil (craft host)
 ```
 
 ## Getting started

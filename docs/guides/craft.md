@@ -553,4 +553,7 @@ func main() {
 
 Copy `assets/minimal-craft` from the `flowcraft-config` skill for a fuller
 starting point: an inline deploy with one agent, explicit `ui`, `plugins`
-and `host_tools` sections, and a sample plugin directory.
+and `host_tools` sections, and a sample plugin directory. For a runnable host
+application that exercises keyed runtimes, per-runtime values and layers, tools,
+reload, plugin hot-plug and the host primitives, see `examples/anvil` and its
+README.

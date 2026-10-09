@@ -1,8 +1,9 @@
 # golangci-lint configuration (schema v2).
 #
 # CI scope: the in-workspace modules except examples/forge (core, craft,
-# backends/*, driver/*) — see .github/workflows/ci.yml. examples/forge pins
-# released versions and tools/releasegate stays out of the gate.
+# examples/anvil, backends/*, driver/*) — see .github/workflows/ci.yml.
+# examples/forge pins released versions and tools/releasegate stays out of
+# the gate.
 #
 # The enabled set mirrors golangci-lint's "standard" linters, made explicit so
 # future additions are deliberate changes.

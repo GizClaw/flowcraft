@@ -1,0 +1,68 @@
+# Anvil's craft definition.
+#
+# craft.ParseDefinition decodes this file; craft.New validates it against
+# the resource factories the application registered as capabilities. The
+# `deploy` block is an ordinary deployment document headed by the same
+# keys core/deploy and core/runtime expect.
+
+craft:
+  id: anvil
+  name: Anvil
+  version: 0.1.0
+
+plugins:
+  # Directories scanned for plugin subdirectories, resolved by the
+  # application against the directory holding this file.
+  roots: [plugins]
+  # The resource that receives every enabled plugin's tools. The plugin
+  # host's tool set is mounted into this resource automatically.
+  tool_registry: tools
+
+host_tools:
+  services:
+    # Selects one named implementation per primitive family. "workshop"
+    # is registered by the example capability; an unknown implementation
+    # makes craft.New fail.
+    events: {impl: workshop}
+    # A family with no service removes its primitives entirely: the host
+    # reports them as denied with reason no_service. A plugin only calls
+    # what its own permissions grant, so secret_* stays out of reach for
+    # the hello plugin either way — host_about says which is which.
+    secrets: {impl: workshop}
+  # Primitives to never expose even though a service backs them, as a
+  # host-side policy (host_about reports them with reason disabled):
+  # disable: [open_url]
+
+deploy:
+  version: v1
+  resources:
+    events:
+      kind: event.Bus
+      impl: memory
+    notes:
+      # The example's own resource kind, registered by the workshop
+      # capability. A plugin can never register a Go resource kind: the
+      # registry is frozen by craft.New.
+      kind: workshop.Notes
+      impl: memory
+      deps:
+        # The always-injected craft.runtime external: every runtime gets
+        # one RuntimeContext (key, values, roots), and the factory below
+        # binds the resource value to the runtime it was built for.
+        runtime: craft.runtime
+      settings:
+        # Per-runtime value: every runtime supplies its own file through
+        # craft.RuntimeOptions.Values. An unknown ${craft:...} name fails
+        # the build. The key is deliberately not "file": that one is the
+        # loader's whole-subtree file reference.
+        path: ${craft:notes}
+    tools:
+      kind: tool.Assembly
+      impl: memory
+      deps:
+        # The plug-in tool set (the craft.plugins external) is added to
+        # this many-dependency as well, because plugins.tool_registry
+        # names this resource.
+        tool: notes
+  runtime:
+    event_bus: events
