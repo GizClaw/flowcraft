@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -285,6 +286,159 @@ func TestUpdateFromRefusals(t *testing.T) {
 				t.Fatal("a fetched package was not cleaned up")
 			}
 		})
+	}
+}
+
+// updatePackageWith writes a package whose manifest carries the given
+// grant list, so a test can hand an update that asks for more than the
+// installed plugin holds.
+func updatePackageWith(
+	t *testing.T,
+	dir, id, version string,
+	permissions ...string,
+) (string, string) {
+	t.Helper()
+	quoted := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		quoted = append(quoted, `"`+permission+`"`)
+	}
+	manifest := `{
+		"id": "` + id + `", "version": "` + version + `",
+		"permissions": [` + strings.Join(quoted, ", ") + `],
+		"mcp": {"command": "true"}
+	}`
+	path := writeZip(t, dir, zipEntry{name: "plugin.json", data: manifest})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read package: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	return path, "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// approvalInstaller is a fakeInstaller that also plays the approver the
+// update path asks before it widens a plugin's grants.
+type approvalInstaller struct {
+	fakeInstaller
+	approveErr error
+	approved   bool
+	approval   UpdateApproval
+}
+
+func (a *approvalInstaller) ApproveUpdate(
+	_ context.Context,
+	_ string,
+	approval UpdateApproval,
+) error {
+	a.approved = true
+	a.approval = approval
+	return a.approveErr
+}
+
+// TestUpdateFromNeedsApprovalForExpandedGrants covers the expansion an
+// update may not slip past: a package that asks for permissions the
+// installed manifest did not hold. Without an approver the update is
+// refused before it is installed, an approver that objects keeps the
+// plugin as it was, and one that agrees sees what it is agreeing to.
+func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
+	t.Parallel()
+	newInfo := func(checksum string) UpdateInfo {
+		return UpdateInfo{
+			Version:     "0.2.0",
+			DownloadURL: "https://example.test/hello-0.2.0.zip",
+			Checksum:    checksum,
+		}
+	}
+	installedAt := func(t *testing.T, store *Store) string {
+		t.Helper()
+		entry, ok := store.Entry("hello")
+		if !ok {
+			t.Fatal("hello is not installed")
+		}
+		return entry.Manifest.Version
+	}
+	// The installed plugin grants mcp:provide only.
+	store := updateStore(t, "0.1.0")
+	path, checksum := updatePackageWith(t, t.TempDir(), "hello", "0.2.0",
+		"mcp:provide", "events:emit")
+
+	refuser := &fakeInstaller{info: newInfo(checksum), path: path}
+	_, err := store.UpdateFrom(context.Background(), "hello", refuser)
+	if !errdefs.IsConflict(err) ||
+		!strings.Contains(err.Error(), "does not approve update grants") {
+		t.Fatalf("UpdateFrom without an approver = %v, want a Conflict", err)
+	}
+	if version := installedAt(t, store); version != "0.1.0" {
+		t.Fatalf("installed version after the refusal = %s, want 0.1.0", version)
+	}
+
+	objector := &approvalInstaller{approveErr: errors.New("user said no")}
+	objector.info = newInfo(checksum)
+	objector.path = path
+	_, err = store.UpdateFrom(context.Background(), "hello", objector)
+	if err == nil || !strings.Contains(err.Error(), "user said no") {
+		t.Fatalf("UpdateFrom with an objecting approver = %v", err)
+	}
+	if version := installedAt(t, store); version != "0.1.0" {
+		t.Fatalf("installed version after the objection = %s, want 0.1.0", version)
+	}
+
+	agreer := &approvalInstaller{}
+	agreer.info = newInfo(checksum)
+	agreer.path = path
+	summary, err := store.UpdateFrom(context.Background(), "hello", agreer)
+	if err != nil || summary.Version != "0.2.0" {
+		t.Fatalf("UpdateFrom with an agreeing approver = %+v, %v", summary, err)
+	}
+	if !agreer.approved {
+		t.Fatal("the approver was never asked")
+	}
+	if !slices.Equal(agreer.approval.Permissions, []string{"events:emit"}) {
+		t.Fatalf("approval = %+v, want the added permission only", agreer.approval)
+	}
+	if agreer.approval.ServerAdded {
+		t.Fatalf("approval = %+v, want no added server", agreer.approval)
+	}
+}
+
+// TestApprovalFor pins the diff itself: what the incoming manifest adds
+// on top of the installed one, not what it declares.
+func TestApprovalFor(t *testing.T) {
+	t.Parallel()
+	installed := Manifest{
+		Permissions:      []string{"mcp:provide"},
+		LegacyMCPServers: []MCPServer{{Name: "primary", Command: "true"}},
+	}
+	if same := approvalFor(installed, installed); !same.Empty() {
+		t.Fatalf("an unchanged manifest asks for approval: %+v", same)
+	}
+	approval := approvalFor(installed, Manifest{
+		Permissions: []string{"skills:provide", "mcp:provide", "events:emit"},
+		LegacyMCPServers: []MCPServer{
+			{Name: "primary", Command: "true"},
+		},
+	})
+	if !slices.Equal(approval.Permissions,
+		[]string{"events:emit", "skills:provide"}) {
+		t.Fatalf("approval.Permissions = %v, want the added grants in name order",
+			approval.Permissions)
+	}
+	if approval.ServerAdded || approval.Empty() {
+		t.Fatalf("approval = %+v, want added grants and no added server", approval)
+	}
+	added := approvalFor(
+		Manifest{Permissions: []string{"mcp:provide"}},
+		Manifest{
+			Permissions: []string{"mcp:provide"},
+			MCP:         &MCPServer{Name: "primary", Command: "true"},
+		},
+	)
+	if !added.ServerAdded {
+		t.Fatalf("approval = %+v, want an added MCP server", added)
+	}
+	if added.String() != "an MCP server" {
+		t.Fatalf("approval.String() = %q, want it to name the server",
+			added.String())
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	neturl "net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -47,11 +49,61 @@ type Installer interface {
 	Fetch(ctx context.Context, info UpdateInfo) (string, func(), error)
 }
 
+// UpdateApproval describes what an update would add on top of the
+// installed plugin: the permissions the incoming manifest requests that
+// the installed one did not, and whether it starts declaring an MCP
+// server where the installed one declared none. The update source is the
+// same source that served the version check, so nothing here verifies
+// that the package is the same plugin asking for the same things; these
+// are the parts a user would have to agree to, so craft asks before the
+// package is installed.
+type UpdateApproval struct {
+	// Permissions are the grants the update adds, in name order.
+	Permissions []string
+	// ServerAdded reports an update that starts shipping an MCP server.
+	ServerAdded bool
+}
+
+// Empty reports whether the update asks for nothing the installed
+// manifest did not already have.
+func (a UpdateApproval) Empty() bool {
+	return len(a.Permissions) == 0 && !a.ServerAdded
+}
+
+// String renders an approval for an error message.
+func (a UpdateApproval) String() string {
+	parts := make([]string, 0, 2)
+	if len(a.Permissions) > 0 {
+		parts = append(parts, "permissions "+strings.Join(a.Permissions, ", "))
+	}
+	if a.ServerAdded {
+		parts = append(parts, "an MCP server")
+	}
+	return strings.Join(parts, " and ")
+}
+
+// UpdateApprover is optionally implemented by an Installer that decides
+// grants for the application. An update that requests new permissions or
+// starts an MCP server is approved through it and refused when there is
+// no approver: craft never approves a grant expansion on its own. A nil
+// return approves; any error is reported to the caller and installs
+// nothing. An update that asks for nothing new is not routed here at all.
+type UpdateApprover interface {
+	ApproveUpdate(
+		ctx context.Context,
+		id string,
+		approval UpdateApproval,
+	) error
+}
+
 // UpdateFrom checks one installed plugin's declared update source,
 // verifies what it offers and installs it. The version rule is the one
 // every install obeys (strictly newer than what is installed) and the
 // package must hold the plugin that was asked for, so an endpoint
-// cannot turn an update into a different plugin.
+// cannot turn an update into a different plugin. An update that would
+// add permissions, or that starts declaring an MCP server, needs the
+// installer's approval (see UpdateApprover) before anything is
+// installed.
 func (s *Store) UpdateFrom(
 	ctx context.Context,
 	id string,
@@ -95,7 +147,7 @@ func (s *Store) UpdateFrom(
 		return Summary{}, err
 	}
 	defer cleanupZip()
-	pkg, err := s.Inspect(ctx, dir)
+	pkg, manifest, err := s.inspect(dir)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -108,7 +160,40 @@ func (s *Store) UpdateFrom(
 			"plugin update: package version %s does not match the announced %s",
 			pkg.Version, info.Version)
 	}
+	if approval := approvalFor(entry.Manifest, manifest); !approval.Empty() {
+		approver, ok := installer.(UpdateApprover)
+		if !ok {
+			return Summary{}, errdefs.Conflictf(
+				"plugin update: %s %s adds %s; the installer does not "+
+					"approve update grants — install the package explicitly "+
+					"if the expansion is intended",
+				id, info.Version, approval)
+		}
+		if err := approver.ApproveUpdate(ctx, id, approval); err != nil {
+			return Summary{}, fmt.Errorf(
+				"plugin update: %s %s: approve grants: %w", id, info.Version, err)
+		}
+	}
 	return s.Install(ctx, dir)
+}
+
+// approvalFor diffs an incoming manifest against the installed one.
+func approvalFor(installed, incoming Manifest) UpdateApproval {
+	granted := make(map[string]struct{}, len(installed.Permissions))
+	for _, permission := range installed.Permissions {
+		granted[permission] = struct{}{}
+	}
+	var approval UpdateApproval
+	for _, permission := range incoming.Permissions {
+		if _, ok := granted[permission]; ok {
+			continue
+		}
+		approval.Permissions = append(approval.Permissions, permission)
+	}
+	sort.Strings(approval.Permissions)
+	approval.ServerAdded = len(incoming.Servers()) > 0 &&
+		len(installed.Servers()) == 0
+	return approval
 }
 
 // validate checks what craft relies on before anything is fetched or
