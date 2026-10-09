@@ -118,6 +118,24 @@ func TestCraftUIDeliversBundlesAndEvents(t *testing.T) {
 	if err != nil || len(entries) != 1 || entries[0].Enabled {
 		t.Fatalf("entries after disable = %+v, %v", entries, err)
 	}
+
+	// Closing stops the watch but does not take the registry away:
+	// Plugins() keeps answering too, and what the shell reads out of a
+	// closed Craft is the state it ended in.
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if c.UI() == nil {
+		t.Fatal("UI() = nil after Close, want the registry it was built with")
+	}
+	if entries, err = registry.Entries(); err != nil || len(entries) != 1 {
+		t.Fatalf("Entries after Close = %+v, %v", entries, err)
+	}
+	select {
+	case payload := <-changes:
+		t.Fatalf("event %+v after Close", payload)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestCraftUIWithoutPluginHost(t *testing.T) {

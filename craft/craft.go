@@ -470,7 +470,6 @@ func (c *Craft) Close() error {
 	uiRegistry := c.uiRegistry
 	c.watchCancel = nil
 	c.unsubscribe = nil
-	c.uiRegistry = nil
 	plugins := c.plugins
 	keys := make([]RuntimeKey, 0, len(c.runtimes))
 	for key := range c.runtimes {
