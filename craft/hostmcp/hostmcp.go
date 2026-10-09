@@ -7,6 +7,7 @@ package hostmcp
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"sort"
@@ -162,7 +163,10 @@ func (r *Registry) Tools() []Tool {
 	return out
 }
 
-// Tokens mints and revokes per-plugin bearer tokens.
+// Tokens mints and revokes per-plugin bearer tokens. The store keeps
+// the tokens' SHA-256 digests, never the tokens themselves, so a lookup
+// compares digests and nothing in the process holds a string that could
+// be replayed.
 type Tokens struct {
 	mu     sync.RWMutex
 	byHash map[string]Identity
@@ -181,7 +185,7 @@ func (t *Tokens) Mint(identity Identity) (string, error) {
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw[:])
 	t.mu.Lock()
-	t.byHash[token] = identity
+	t.byHash[hashToken(token)] = identity
 	t.mu.Unlock()
 	return token, nil
 }
@@ -190,15 +194,22 @@ func (t *Tokens) Mint(identity Identity) (string, error) {
 func (t *Tokens) Lookup(token string) (Identity, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	identity, ok := t.byHash[token]
+	identity, ok := t.byHash[hashToken(token)]
 	return identity, ok
 }
 
 // Revoke removes one token.
 func (t *Tokens) Revoke(token string) {
 	t.mu.Lock()
-	delete(t.byHash, token)
+	delete(t.byHash, hashToken(token))
 	t.mu.Unlock()
+}
+
+// hashToken is the map key of one token: the digest stands in for the
+// secret everywhere the store is concerned.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return string(sum[:])
 }
 
 // About is the host_about response.

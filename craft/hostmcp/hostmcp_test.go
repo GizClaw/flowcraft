@@ -72,6 +72,16 @@ func TestTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
+	// The store keeps digests, not the tokens themselves: nothing in the
+	// process holds a string that could be replayed.
+	if len(tokens.byHash) != 1 {
+		t.Fatalf("token store holds %d entries, want 1", len(tokens.byHash))
+	}
+	for key := range tokens.byHash {
+		if key == token {
+			t.Fatal("the token store keeps the raw token as its key")
+		}
+	}
 	identity, ok := tokens.Lookup(token)
 	if !ok || identity.PluginID != "hello" || !identity.Grants.Has("secrets:auth") {
 		t.Fatalf("Lookup = %+v/%v", identity, ok)
