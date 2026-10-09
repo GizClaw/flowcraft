@@ -165,7 +165,7 @@ document's `runtime.external_deps`.
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
-| `SyncAgents(ctx, key, decls, opts...)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. `craft.WithAgentRemoveTimeout` replaces the default bound on one removal's drain. |
+| `SyncAgents(ctx, key, decls, opts...)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. `craft.WithAgentRemoveTimeout` replaces the runtime's configured bound on one drain. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
 | `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
 | `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
@@ -226,14 +226,16 @@ reloading the generation:
   from outside the application.
 - every removal a pass performs — a name the set dropped, and the live
   agent a replacement replaces — drains the agent's active turns bounded
-  by the pass's removal bound: `craft.DefaultAgentRemoveTimeout` (30s)
-  unless the pass replaces it with `craft.WithAgentRemoveTimeout`. The
-  bound is there because the pass holds the lifecycle lock: a reload, a
-  close and the next pass all queue behind that drain. A removal that
-  runs out of time fails its declaration — the agent stays live, its
-  record stays, and the next pass retries — and a non-positive bound is
-  rejected before anything mutates. Lower it in applications whose turns
-  are short; there is no unbounded setting.
+  by the pass's removal bound: `craft.WithAgentRemoveTimeout` when
+  given, otherwise the runtime document's
+  `runtime.agents.remove_timeout` when set, otherwise
+  `craft.DefaultAgentRemoveTimeout` (30s). The bound is there because
+  the pass holds the lifecycle lock: a reload, a close and the next pass
+  all queue behind that drain. A removal that runs out of time fails its
+  declaration — the agent stays live, its record stays, and the next
+  pass retries — and a non-positive bound is rejected before anything
+  mutates. Lower it in applications whose turns are short; there is no
+  unbounded setting.
 - deployed agents are never touched: a declaration whose name the
   deployment document declares is an error, and deployment documents
   must not declare names the coordinator manages.
@@ -259,69 +261,28 @@ per-generation known-set handoff the reference implementation needed
 disappears, because the records live on the Craft and a reload re-binds
 what they describe.
 
-The removal bound is application configuration of the same shape: it
-parametrizes a pass, not a declaration, so an application that wants it
-adjustable keeps it in its own document. `craft.yaml` is not that place
-— its schema is craft's, and both it and the `runtime:` subtree are
-strict-decoded, so a key craft does not know fails the load. One wrapper
-keeps the value in a single spot:
+The removal bound is document configuration: the runtime's
+`agents.remove_timeout` is the default bound for a dynamic agent
+removal, so it applies to every `UnregisterAgent` call on that runtime —
+`SyncAgents` passes included (see [runtime.md](runtime.md)). Craft
+resolves one removal's bound in this order:
+
+1. `craft.WithAgentRemoveTimeout` on the pass, when given;
+2. the runtime document's `runtime.agents.remove_timeout`, when set;
+3. `craft.DefaultAgentRemoveTimeout` (30s).
 
 ```yaml
-# The application's own configuration, not craft.yaml.
-agents:
-  remove_timeout: 5s
+runtime:
+  event_bus: events
+  agents:
+    remove_timeout: 5s
 ```
 
-```go
-// remove_timeout is a duration string, not a number: the document is
-// decoded with JSON semantics, where a time.Duration is an integer
-// count.
-type agentSyncDocument struct {
-	Agents struct {
-		RemoveTimeout string `json:"remove_timeout,omitempty"`
-	} `json:"agents,omitempty"`
-}
-
-// loadAgentSync runs at the application's own load step and returns the
-// options every pass carries: an absent key keeps
-// craft.DefaultAgentRemoveTimeout, an invalid one fails there rather
-// than inside a pass.
-func loadAgentSync(raw []byte) ([]craft.AgentSyncOption, error) {
-	doc, err := utils.Decode[agentSyncDocument](raw) // core/utils
-	if err != nil {
-		return nil, fmt.Errorf("agent sync config: %w", err)
-	}
-	if strings.TrimSpace(doc.Agents.RemoveTimeout) == "" {
-		return nil, nil
-	}
-	timeout, err := time.ParseDuration(doc.Agents.RemoveTimeout)
-	if err != nil || timeout <= 0 {
-		if err == nil {
-			err = errors.New("must be positive")
-		}
-		return nil, fmt.Errorf(
-			"agent sync config: agents.remove_timeout %q: %w",
-			doc.Agents.RemoveTimeout, err)
-	}
-	return []craft.AgentSyncOption{craft.WithAgentRemoveTimeout(timeout)}, nil
-}
-
-// syncAgents is the application's one SyncAgents call site: the
-// configured bound covers every pass, and a caller that needs another
-// one appends its own option — the last one wins.
-func (a *app) syncAgents(
-	ctx context.Context,
-	key craft.RuntimeKey,
-	decls []craft.AgentDecl,
-	opts ...craft.AgentSyncOption,
-) (craft.AgentSyncReport, error) {
-	return a.craft.SyncAgents(ctx, key, decls,
-		append(a.agentSyncOptions, opts...)...)
-}
-```
-
-`utils.Decode` is strict like the rest of the configuration surface, so
-a misspelled key in the application's own document fails its load too.
+Because it is an ordinary `runtime:` key, it is per-runtime: layers and
+`RuntimeOptions.Layers` override it per runtime, a reload carries a
+changed value, `${...}` references resolve, and the strict decode
+rejects a misspelled key at build time. A bound computed per call still
+goes through `craft.WithAgentRemoveTimeout`.
 
 ## Capabilities
 
