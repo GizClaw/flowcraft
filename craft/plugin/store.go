@@ -13,9 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/craft/internal/version"
 )
 
-// MaxAssetBytes caps one materialized plugin asset (10 MiB).
-const MaxAssetBytes = 10 << 20
-
 // Root is one directory scanned for plugin subdirectories. Builtin
 // roots are read-only: they can be disabled or shadowed by a user root
 // with the same plugin id, never uninstalled.
@@ -231,29 +228,6 @@ func (s *Store) DataDir(id string) (string, error) {
 		return "", errdefs.Validationf("plugin: create data dir: %v", err)
 	}
 	return dir, nil
-}
-
-// Asset materializes one plugin-relative file (the UI bundle and its
-// assets).
-func (s *Store) Asset(id, rel string) ([]byte, error) {
-	entry, ok := s.Entry(id)
-	if !ok {
-		return nil, errdefs.NotFoundf("plugin store: plugin %q not found", id)
-	}
-	path, err := ResolvePath(entry.Dir, rel)
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errdefs.NotFoundf(
-			"plugin %s: asset %q: %v", id, rel, err)
-	}
-	if len(data) > MaxAssetBytes {
-		return nil, errdefs.Validationf(
-			"plugin %s: asset %q exceeds %d bytes", id, rel, MaxAssetBytes)
-	}
-	return data, nil
 }
 
 // KV returns the plugin's namespaced key/value store.
