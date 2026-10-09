@@ -3,6 +3,7 @@ package craft
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/event"
@@ -38,11 +39,15 @@ func (s *mountSource) Attach(registrar tool.Registrar) {
 func (s *mountSource) Close() error { return nil }
 
 type fakePluginHost struct {
-	set *plugin.ToolSet
-	src *mountSource
+	set      *plugin.ToolSet
+	src      *mountSource
+	startErr error
 }
 
 func (h *fakePluginHost) Start(context.Context) error {
+	if h.startErr != nil {
+		return h.startErr
+	}
 	return h.set.AddPlugin("hello", h.src)
 }
 
@@ -133,6 +138,58 @@ deploy:
 	}
 	if _, ok := catalog.Get("late__tool"); !ok {
 		t.Fatalf("live catalog tools = %v, want late__tool", catalog.Definitions())
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestCraftStartFailureStaysRetryable covers what a failed Start has to
+// leave behind: nothing is recorded as started until the host MCP
+// endpoint and the plugin host are both up, so the call can be made
+// again instead of succeeding while the plugins stay down.
+func TestCraftStartFailureStaysRetryable(t *testing.T) {
+	t.Parallel()
+	def, err := ParseDefinition([]byte(`
+craft:
+  id: test
+  version: 0.1.0
+plugins:
+  tool_registry: tools
+deploy:
+  version: v1
+  resources:
+    bus: {kind: event.Bus, impl: memory}
+    tools: {kind: tool.Assembly, impl: memory}
+  runtime:
+    event_bus: bus
+`))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	host := &fakePluginHost{
+		set:      plugin.NewToolSet(),
+		src:      &mountSource{tools: []tool.Tool{mountTool{name: "hello__echo"}}},
+		startErr: errors.New("plugin host: the local store is unreadable"),
+	}
+	c, err := New(def, Options{
+		DataDir:      t.TempDir(),
+		Capabilities: []Capability{coreToolsCapability{}},
+		Plugins:      host,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err == nil {
+		t.Fatal("Start accepted a plugin host that failed to start")
+	}
+	host.startErr = nil
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start after the failure: %v", err)
+	}
+	if tools := host.set.Tools(); len(tools) != 1 {
+		t.Fatalf("the retry did not start the plugin host: %d tools mounted", len(tools))
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

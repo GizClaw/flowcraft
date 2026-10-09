@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -212,6 +213,10 @@ func assertLifecycle(t *testing.T, c *Craft) {
 type binderCapability struct {
 	mu    sync.Mutex
 	calls []RuntimeKey
+	// failAt makes the call with this ordinal (counting from 1) fail, so
+	// a test can break the bind of one reload.
+	failAt  int
+	failErr error
 }
 
 func (*binderCapability) Name() string { return "binder" }
@@ -226,6 +231,9 @@ func (b *binderCapability) BindRuntime(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, key)
+	if b.failAt > 0 && len(b.calls) == b.failAt {
+		return b.failErr
+	}
 	return nil
 }
 
@@ -322,6 +330,100 @@ deploy:
 	}
 	if got := binder.count(); got != 2 {
 		t.Fatalf("binder calls after ReloadRuntime = %d, want 2", got)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestReloadRuntimeRollsBackWhenBindingFails covers the half of a reload
+// that happens after the runtime has already swapped generations: a
+// binder that fails there has to leave the caller with the generation it
+// had, not with a new one nothing is bound to.
+func TestReloadRuntimeRollsBackWhenBindingFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.yaml")
+	writeBase := func(extra string) {
+		t.Helper()
+		content := `
+version: v1
+resources:
+  bus:
+    kind: event.Bus
+    impl: memory
+  context:
+    kind: test.RuntimeContext
+    deps:
+      runtime: craft.runtime
+` + extra + `
+runtime:
+  event_bus: bus
+`
+		if err := os.WriteFile(base, []byte(content), 0o600); err != nil {
+			t.Fatalf("write base layer: %v", err)
+		}
+	}
+	writeBase("")
+	def, err := ParseDefinition([]byte(`
+craft:
+  id: test
+  name: Test
+  version: 0.1.0
+base_layers:
+  - name: base
+    file: base.yaml
+`))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	binder := &binderCapability{failAt: 2, failErr: errors.New("registry is locked")}
+	c, err := New(def, Options{
+		ConfigDir:     dir,
+		DataDir:       dir,
+		DefinitionDir: dir,
+		Capabilities:  []Capability{testCapability{}, binder},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	rt, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("OpenRuntime: %v", err)
+	}
+	if _, ok := rt.Resource("context"); !ok {
+		t.Fatal("the first generation is missing its resource")
+	}
+
+	// The next generation adds a resource. The reload swaps it in and
+	// then fails to bind it, so the rollback has to bring the previous
+	// generation back.
+	writeBase(`
+  next:
+    kind: test.RuntimeContext
+    deps:
+      runtime: craft.runtime
+`)
+	err = c.ReloadRuntime(ctx, DefaultKey, ReasonManual)
+	if err == nil {
+		t.Fatal("ReloadRuntime bound a generation its binder refused")
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("ReloadRuntime = %v, want it to report the rollback", err)
+	}
+	if got := binder.count(); got != 3 {
+		t.Fatalf("binder calls = %d, want the open, the failed reload and the rebind",
+			got)
+	}
+	if _, ok := rt.Resource("next"); ok {
+		t.Fatal("the generation whose bind failed is still serving")
+	}
+	if _, ok := rt.Resource("context"); !ok {
+		t.Fatal("the previous generation is not serving after the rollback")
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

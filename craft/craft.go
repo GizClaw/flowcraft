@@ -46,6 +46,16 @@ type Craft struct {
 	opening     map[RuntimeKey]struct{}
 	runtimes    map[RuntimeKey]*runtime.Runtime
 	runtimeOpts map[RuntimeKey]RuntimeOptions
+	// runtimeDocs holds, per key, the document whose generation is bound
+	// and serving. It is what a reload that fails after the runtime
+	// already swapped generations is rolled back to.
+	runtimeDocs map[RuntimeKey]deploy.Document
+
+	// startMu serializes Start against itself. Every other mutation is
+	// guarded by mu alone; Start is the one that runs long enough (it
+	// spawns plugin processes) for a second caller to interleave, and
+	// two concurrent starts would each bring up half the services.
+	startMu sync.Mutex
 
 	// lifecycleMu serializes the operations that must not interleave:
 	// ReloadRuntime, ReloadAll and SyncAgents. mu stays the table
@@ -120,6 +130,7 @@ func New(def Definition, opts Options) (*Craft, error) {
 		opening:     make(map[RuntimeKey]struct{}),
 		runtimes:    make(map[RuntimeKey]*runtime.Runtime),
 		runtimeOpts: make(map[RuntimeKey]RuntimeOptions),
+		runtimeDocs: make(map[RuntimeKey]deploy.Document),
 		agentRevs:   make(map[RuntimeKey]map[string]string),
 	}
 	if c.plugins != nil {
@@ -200,11 +211,15 @@ func New(def Definition, opts Options) (*Craft, error) {
 	return c, nil
 }
 
-// Start starts the shared services. It is idempotent.
+// Start starts the shared services. It is idempotent, and a failure
+// leaves it retryable: nothing is marked started until the host MCP
+// endpoint and the plugin host are both up.
 func (c *Craft) Start(ctx context.Context) error {
 	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("craft: Start context is required")
 	}
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -214,7 +229,6 @@ func (c *Craft) Start(ctx context.Context) error {
 		c.mu.Unlock()
 		return nil
 	}
-	c.started = true
 	c.mu.Unlock()
 	if err := c.startHostMCP(); err != nil {
 		return err
@@ -225,6 +239,9 @@ func (c *Craft) Start(ctx context.Context) error {
 		}
 		c.startPluginWatch()
 	}
+	c.mu.Lock()
+	c.started = true
+	c.mu.Unlock()
 	c.publish(ctx, SubjectCraftStarted, RuntimeEvent{})
 	return nil
 }
@@ -277,9 +294,19 @@ func (c *Craft) OpenRuntime(
 		return fail(err)
 	}
 	c.mu.Lock()
+	if c.closed {
+		// Close finished while this runtime was being composed. Publishing
+		// it now would leave it running and reachable through Runtime(key)
+		// on a closed Craft, so it is torn down like any other failure.
+		delete(c.opening, key)
+		c.mu.Unlock()
+		_ = rt.Close()
+		return nil, ErrCraftClosed
+	}
 	delete(c.opening, key)
 	c.runtimes[key] = rt
 	c.runtimeOpts[key] = opts
+	c.runtimeDocs[key] = doc
 	c.mu.Unlock()
 
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
@@ -287,6 +314,7 @@ func (c *Craft) OpenRuntime(
 		c.mu.Lock()
 		delete(c.runtimes, key)
 		delete(c.runtimeOpts, key)
+		delete(c.runtimeDocs, key)
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -324,6 +352,7 @@ func (c *Craft) reloadRuntimeLocked(
 	}
 	rt, ok := c.runtimes[key]
 	opts := c.runtimeOpts[key]
+	previous, havePrevious := c.runtimeDocs[key]
 	c.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
@@ -343,10 +372,48 @@ func (c *Craft) reloadRuntimeLocked(
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return err
+		return c.rollbackReload(ctx, key, rt, previous, havePrevious, err)
 	}
+	c.mu.Lock()
+	c.runtimeDocs[key] = doc
+	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadCompleted, RuntimeEvent{Key: key, Reason: reason})
 	return nil
+}
+
+// rollbackReload undoes a reload whose bind failed after the runtime had
+// already committed the new generation, by reloading the document that
+// was bound and serving before the call. A caller that sees an error
+// then still has the generation it had, which is what "failed reload"
+// has to mean; if even the rollback fails, the error says exactly which
+// half is live so nobody assumes the previous generation is serving.
+func (c *Craft) rollbackReload(
+	ctx context.Context,
+	key RuntimeKey,
+	rt *runtime.Runtime,
+	previous deploy.Document,
+	havePrevious bool,
+	cause error,
+) error {
+	failure := fmt.Errorf("craft: reload runtime %q: bind: %w", key, cause)
+	if !havePrevious {
+		return fmt.Errorf(
+			"%w (the new generation is serving but unbound; no previous "+
+				"document is recorded to roll back to)", failure)
+	}
+	if _, err := rt.Reload(ctx, previous); err != nil {
+		return fmt.Errorf(
+			"%w (rolling back to the previous generation failed: %v; "+
+				"the new generation is serving but unbound)", failure, err)
+	}
+	if err := c.bindRuntime(ctx, key, rt); err != nil {
+		return fmt.Errorf(
+			"%w (the previous generation is serving but rebinding it "+
+				"failed: %v)", failure, err)
+	}
+	return fmt.Errorf(
+		"%w (the reload was rolled back; the previous generation is serving)",
+		failure)
 }
 
 // ReloadAll reloads every open runtime. Each runtime is transactional;
@@ -406,6 +473,7 @@ func (c *Craft) CloseRuntime(ctx context.Context, key RuntimeKey) error {
 	if ok {
 		delete(c.runtimes, key)
 		delete(c.runtimeOpts, key)
+		delete(c.runtimeDocs, key)
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -511,6 +579,7 @@ func (c *Craft) Close() error {
 	runtimes := c.runtimes
 	c.runtimes = make(map[RuntimeKey]*runtime.Runtime)
 	c.runtimeOpts = make(map[RuntimeKey]RuntimeOptions)
+	c.runtimeDocs = make(map[RuntimeKey]deploy.Document)
 	c.mu.Unlock()
 
 	var errs []error
