@@ -16,7 +16,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
-	"golang.org/x/net/http2"
 )
 
 // DefaultMaxBodyBytes caps buffered bodies when
@@ -155,13 +154,7 @@ func (e *Engine) Serve(client net.Conn, serverName, dialHostport string) error {
 	defer transport.CloseIdleConnections()
 
 	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
-		h2 := &http2.Server{}
-		h2.ServeConn(tlsConn, &http2.ServeConnOpts{
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				e.serveH2(w, r, transport, serverName, dialHostport)
-			}),
-		})
-		return nil
+		return e.serveH2(tlsConn, transport, serverName, dialHostport)
 	}
 	return e.serveH1(tlsConn, transport, serverName, dialHostport)
 }
@@ -221,6 +214,44 @@ func (e *Engine) serveH1(tlsConn *tls.Conn, transport *http.Transport, serverNam
 	return nil
 }
 
+func (e *Engine) serveH2(tlsConn *tls.Conn, transport *http.Transport, serverName, dialHostport string) error {
+	// The client picked h2 over ALPN and the standard library server
+	// reads that off the connection, so the handshake stays ours and no
+	// TLS config is passed. Same shape as serveH1 — a real http.Server
+	// over a single-connection listener — and the same benefit: request
+	// contexts are tied to the client connection, so a client
+	// disconnect cancels the in-flight upstream request.
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	markClosed := func() { closeOnce.Do(func() { close(done) }) }
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			e.serveH2Request(w, r, transport, serverName, dialHostport)
+		}),
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed || state == http.StateHijacked {
+				markClosed()
+			}
+		},
+	}
+	serveErr := srv.Serve(&singleConnListener{conn: tlsConn})
+	// Serve returns as soon as the single-connection listener is
+	// exhausted, while the HTTP/2 session keeps running in the server's
+	// goroutine. Wait for the connection to close before releasing the
+	// TLS connection. Unlike the HTTP/1.1 path there is no bound here:
+	// this engine sets no HTTP/2 idle timeout, so a quiet connection is
+	// the client's to close — exactly as it was under the x/net server
+	// ServeConn used to run.
+	<-done
+	_ = srv.Close()
+	if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) &&
+		!errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	return nil
+}
+
 // singleConnListener hands out exactly one connection (the decrypted
 // TLS conn) and then reports closed, so one http.Server instance
 // serves exactly one client connection.
@@ -265,7 +296,7 @@ func (e *Engine) serveH1Request(w http.ResponseWriter, r *http.Request, transpor
 	copyResponse(w, resp)
 }
 
-func (e *Engine) serveH2(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
+func (e *Engine) serveH2Request(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
 	resp, err := e.forward(r, transport, serverName, dialHostport)
 	if err == errBlocked {
 		http.Error(w, "mitm: blocked by hook", http.StatusForbidden)

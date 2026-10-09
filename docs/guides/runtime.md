@@ -147,6 +147,8 @@ runtime:
     tools:
       default: shared_tools
       researcher: research_tools
+  agents:
+    remove_timeout: 1m
 ```
 
 Rules:
@@ -159,6 +161,12 @@ Rules:
   live: dynamically registered agents may attach a tool assembly at
   registration time (see below). Every mapping key must name a deployed
   agent — an unknown key fails the build (`no such deployed agent`).
+- `agents.remove_timeout` (a positive duration string) bounds how long
+  a dynamic agent removal waits for the agent's active turns to finish:
+  it is the default `UnregisterAgent` applies when the call gives no
+  `WithRemoveTimeout`. Absent, a removal is bounded only by the caller's
+  context; the craft module's `SyncAgents` passes fall back to this key
+  before their own default.
 - Buffer and concurrency fields are validated against hard upper bounds.
 
 ## Checkpoint stores
@@ -354,10 +362,11 @@ Semantics:
   already-registered agent is a `Conflict`; assembly failures are
   `Validation` and never leave a partial registration.
 - `UnregisterAgent` blocks new sessions for the agent, waits for active
-  turns to finish naturally (bounded by the caller context or
-  `WithRemoveTimeout`), then closes the agent's engine and hooks. On
-  timeout the agent stays registered and sessions stay intact; the call
-  is retryable. Unknown names are an idempotent no-op; deployed agents
+  turns to finish naturally (bounded by `WithRemoveTimeout`, the
+  document's `agents.remove_timeout`, or the caller context, in that
+  order), then closes the agent's engine and hooks. On timeout the
+  agent stays registered and sessions stay intact; the call is
+  retryable. Unknown names are an idempotent no-op; deployed agents
   cannot be removed at runtime (`Conflict`).
 - `Agent` / `AgentNames` are the live view: dynamically registered agents
   plus the deployment snapshot.

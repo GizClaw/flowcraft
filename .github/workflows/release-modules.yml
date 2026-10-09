@@ -21,7 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_releases: ${{ steps.plan.outputs.has_releases }}
-      has_core: ${{ steps.plan.outputs.has_core }}
       changelog_ready: ${{ steps.changelog.outputs.ready }}
       modules: ${{ steps.plan.outputs.modules }}
       tags: ${{ steps.plan.outputs.tags }}
@@ -52,16 +51,9 @@ jobs:
           modules=$(jq -c '.modules' /tmp/release-plan.json)
           tags=$(jq -c '.tags' /tmp/release-plan.json)
           count=$(jq '.modules | length' /tmp/release-plan.json)
-          if jq -e '.[] | select(.module == "core")' \
-            <<< "$modules" >/dev/null; then
-            has_core=true
-          else
-            has_core=false
-          fi
           {
             echo "modules=$modules"
             echo "tags=$tags"
-            echo "has_core=$has_core"
             if [ "$count" -gt 0 ]; then
               echo "has_releases=true"
             else
@@ -123,7 +115,7 @@ jobs:
               echo "Planned tags:"
               jq -r '.[] | "- `" + . + "`"' <<< "$TAGS_JSON"
               echo
-              echo "Merging this PR reruns the core release gate and publishes the planned core tag."
+              echo "Merging this PR reruns the module release gates and publishes the planned tags in dependency order."
             } > "$body_file"
             pr_url=$(gh pr create \
               --base main \
@@ -138,10 +130,10 @@ jobs:
           echo "release changelog PR: $pr_url"
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
-  release-core:
-    name: Release core
+  publish:
+    name: Publish planned modules
     needs: plan
-    if: needs.plan.outputs.has_core == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     env:
       RELEASES_JSON: ${{ needs.plan.outputs.modules }}
@@ -174,30 +166,77 @@ jobs:
             exit 1
           fi
 
-      - name: Gate and publish core
+      - name: Validate planned module pins and tidiness
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . preflight --repo ../..
+
+      - name: Gate and publish modules in dependency order
         run: |
           set -euo pipefail
 
-          module="core"
-          dir="core"
-          modfile="$RUNNER_TEMP/${module}.mod"
-          sumfile="$RUNNER_TEMP/${module}.sum"
+          # Each module is gated with GOWORK=off, from its own directory,
+          # then tagged immediately: the plan is in dependency order, so
+          # a later module can resolve a dependency tagged earlier in
+          # this same run.
+          gate_module() {
+            local module="$1"
+            local slug="${module//\//-}"
+            local dir
+            dir=$(jq -r --arg module "$module" \
+              '.[] | select(.module == $module) | .dir' <<< "$RELEASES_JSON")
+            local modfile="$RUNNER_TEMP/${slug}.mod"
+            local sumfile="$RUNNER_TEMP/${slug}.sum"
 
-          cp "$dir/go.mod" "$modfile"
-          cp "$dir/go.sum" "$sumfile"
+            cp "$dir/go.mod" "$modfile"
+            if [ -f "$dir/go.sum" ]; then
+              cp "$dir/go.sum" "$sumfile"
+            else
+              : > "$sumfile"
+            fi
+            cp "$modfile" "$RUNNER_TEMP/${slug}.before.mod"
+            cp "$sumfile" "$RUNNER_TEMP/${slug}.before.sum"
 
-          (
-            cd "$dir"
-            GOWORK=off GOFLAGS="-modfile=$modfile" go mod tidy
-            GOWORK=off GOFLAGS="-modfile=$modfile" go build ./...
-            GOWORK=off GOFLAGS="-modfile=$modfile" go vet ./...
-            GOWORK=off GOFLAGS="-modfile=$modfile" go test -count=1 -race ./...
-          )
+            # A dependency tagged earlier in this run only becomes
+            # resolvable now, so the release PR cannot have committed its
+            # checksums: allow go.sum to gain them. go.mod must still be
+            # exactly what tidy writes.
+            local allow_sum_change=false
+            local deps
+            deps=$(jq -r --arg module "$module" \
+              '.[] | select(.module == $module) | .deps[]?' <<< "$RELEASES_JSON")
+            if [ -n "$deps" ]; then
+              allow_sum_change=true
+            fi
 
-          tag=$(jq -r '.[] | select(.module == "core") | .tag' <<< "$RELEASES_JSON")
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "tag already exists: $tag" >&2
-            exit 1
-          fi
-          git tag "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag:refs/tags/$tag"
+            (
+              cd "$dir"
+              GOWORK=off GOFLAGS="-modfile=$modfile" go mod tidy
+              diff -u "$RUNNER_TEMP/${slug}.before.mod" "$modfile"
+              if [ "$allow_sum_change" = "false" ]; then
+                diff -u "$RUNNER_TEMP/${slug}.before.sum" "$sumfile"
+              fi
+              GOWORK=off GOFLAGS="-modfile=$modfile" go build ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go vet ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go test -count=1 -race ./...
+            )
+          }
+
+          publish_module() {
+            local module="$1"
+            local tag
+            tag=$(jq -r --arg module "$module" \
+              '.[] | select(.module == $module) | .tag' <<< "$RELEASES_JSON")
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "tag already exists: $tag" >&2
+              exit 1
+            fi
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag:refs/tags/$tag"
+          }
+
+          while IFS= read -r module; do
+            gate_module "$module"
+            publish_module "$module"
+          done < <(jq -r '.[].module' <<< "$RELEASES_JSON")

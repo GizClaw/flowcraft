@@ -34,8 +34,13 @@ type Config struct {
 	// agent.CheckpointStore; empty keeps checkpoints as a host no-op.
 	CheckpointStore string
 	// Sessions configures the runtime-owned session manager.
-	Sessions       SessionConfig
+	Sessions SessionConfig
+	// DynamicCatalog governs the tool assembly dynamically registered
+	// agents run with.
 	DynamicCatalog *DynamicCatalogConfig
+	// Agents configures the runtime's handling of dynamically registered
+	// agents beyond the catalog.
+	Agents AgentConfig
 	// ExternalDeps declares caller-owned dependency values that the
 	// application injects through Builder.WithExternalResource.
 	ExternalDeps []ExternalDependency
@@ -61,11 +66,21 @@ type DynamicCatalogConfig struct {
 	Tools map[string]string
 }
 
+// AgentConfig configures how the runtime treats dynamically registered
+// agents.
+type AgentConfig struct {
+	// RemoveTimeout is the bound UnregisterAgent puts on the drain of a
+	// dynamic agent removal when the call gives no WithRemoveTimeout.
+	// Zero means the removal is bounded only by the caller's context.
+	RemoveTimeout time.Duration
+}
+
 type configWire struct {
 	EventBus        string                    `json:"event_bus"`
 	CheckpointStore string                    `json:"checkpoint_store,omitempty"`
 	Sessions        sessionConfigWire         `json:"sessions,omitempty"`
 	DynamicCatalog  *dynamicCatalogConfigWire `json:"dynamic_catalog,omitempty"`
+	Agents          agentConfigWire           `json:"agents,omitempty"`
 	ExternalDeps    []externalDependencyWire  `json:"external_deps,omitempty"`
 }
 
@@ -86,6 +101,10 @@ type sessionConfigWire struct {
 
 type dynamicCatalogConfigWire struct {
 	Tools map[string]string `json:"tools,omitempty"`
+}
+
+type agentConfigWire struct {
+	RemoveTimeout *string `json:"remove_timeout,omitempty"`
 }
 
 // DecodeConfig strictly decodes and validates the runtime subtree.
@@ -174,6 +193,18 @@ func DecodeConfig(ctx context.Context, doc deploy.Document) (Config, error) {
 	if cfg.Sessions.Resume && cfg.CheckpointStore == "" {
 		return Config{}, errdefs.Validationf(
 			"runtime config: sessions.resume requires checkpoint_store")
+	}
+	if wire.Agents.RemoveTimeout != nil {
+		timeout, parseErr := time.ParseDuration(*wire.Agents.RemoveTimeout)
+		if parseErr != nil || timeout <= 0 {
+			if parseErr == nil {
+				parseErr = fmt.Errorf("must be positive")
+			}
+			return Config{}, errdefs.Validation(fmt.Errorf(
+				"runtime config: agents.remove_timeout %q: %w",
+				*wire.Agents.RemoveTimeout, parseErr))
+		}
+		cfg.Agents.RemoveTimeout = timeout
 	}
 	if wire.DynamicCatalog != nil {
 		cfg.DynamicCatalog = &DynamicCatalogConfig{

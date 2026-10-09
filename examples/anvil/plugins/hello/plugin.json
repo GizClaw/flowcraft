@@ -1,0 +1,11 @@
+{
+  "id": "hello",
+  "name": "Hello Plugin",
+  "version": "0.1.0",
+  "permissions": ["mcp:provide", "skills:provide", "events:emit"],
+  "skills": ["skills"],
+  "mcp": {
+    "command": "go",
+    "args": ["run", "./server"]
+  }
+}

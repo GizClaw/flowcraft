@@ -362,7 +362,8 @@ func (r *Runtime) Reload(
 			registry: r.registry,
 			result:   newResult,
 		},
-		catalog: newCatalog,
+		catalog:            newCatalog,
+		agentRemoveTimeout: cfg.Agents.RemoveTimeout,
 	}
 	r.registry.Replace(newEntries, newResult)
 	// The live view is swapped before the epoch swap on purpose: the

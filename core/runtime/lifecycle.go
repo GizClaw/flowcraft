@@ -44,8 +44,9 @@ type removeOptions struct {
 type UnregisterAgentOption func(*removeOptions) error
 
 // WithRemoveTimeout bounds how long UnregisterAgent waits for active
-// turns to finish before giving up. On timeout the agent is left in
-// place (registration intact, sessions intact) and the call is retryable.
+// turns to finish before giving up, replacing the document's
+// runtime.agents.remove_timeout. On timeout the agent is left in place
+// (registration intact, sessions intact) and the call is retryable.
 func WithRemoveTimeout(d time.Duration) UnregisterAgentOption {
 	return func(o *removeOptions) error {
 		if d <= 0 {
@@ -55,6 +56,24 @@ func WithRemoveTimeout(d time.Duration) UnregisterAgentOption {
 		o.timeout = d
 		return nil
 	}
+}
+
+// AgentRemoveTimeout returns the bound the runtime's document sets for
+// a dynamic agent removal's drain (runtime.agents.remove_timeout), and
+// whether it sets one. It is the default UnregisterAgent applies when
+// the call gives no WithRemoveTimeout; false means a removal is bounded
+// only by the caller's context.
+func (r *Runtime) AgentRemoveTimeout() (time.Duration, bool) {
+	if r == nil {
+		return 0, false
+	}
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.current == nil {
+		return 0, false
+	}
+	timeout := r.current.agentRemoveTimeout
+	return timeout, timeout > 0
 }
 
 // RegisterAgent assembles and registers a new agent at runtime: the
@@ -181,9 +200,11 @@ func (r *Runtime) RegisterAgent(
 
 // UnregisterAgent removes a dynamically registered agent: new session
 // activity is blocked, live sessions are drained (active turns are
-// allowed to finish, bounded by ctx or WithRemoveTimeout), and the
-// agent's engine and hooks are closed. Unknown names are an idempotent
-// no-op; deployed (static) agents cannot be removed at runtime.
+// allowed to finish, bounded by WithRemoveTimeout, the document's
+// runtime.agents.remove_timeout, or the caller's context, in that
+// order), and the agent's engine and hooks are closed. Unknown names
+// are an idempotent no-op; deployed (static) agents cannot be removed
+// at runtime.
 func (r *Runtime) UnregisterAgent(
 	ctx context.Context,
 	name string,
@@ -228,10 +249,17 @@ func (r *Runtime) UnregisterAgent(
 		return nil // idempotent: unknown name
 	}
 
+	// The document's bound is the fallback: a call that gives no
+	// WithRemoveTimeout still drains under the runtime's configured bound
+	// instead of waiting out the caller's context.
+	timeout := options.timeout
+	if timeout <= 0 && r.current != nil {
+		timeout = r.current.agentRemoveTimeout
+	}
 	removeCtx := ctx
-	if options.timeout > 0 {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		removeCtx, cancel = context.WithTimeout(ctx, options.timeout)
+		removeCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	if err := r.manager.RemoveAgent(removeCtx, name); err != nil {

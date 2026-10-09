@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -574,6 +575,90 @@ runtime:
 	second := runTurn(t, app.Sessions(), "bot", "ctx")
 	if got := assistantCount(second.LastBoard); got != 2 {
 		t.Fatalf("second turn messages = %d, want 2 (history preserved)", got)
+	}
+}
+
+// TestRuntimeReloadSwapsAgentRemoveTimeout pins that the document's
+// removal bound rides its generation: a reload carrying a new value is
+// what the next removal drains under.
+func TestRuntimeReloadSwapsAgentRemoveTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	f := &gatedEngineFactory{
+		runs: make(chan int64, 8),
+		gate: make(chan struct{}),
+	}
+	reg := resource.NewRegistry()
+	reg.MustRegister(event.NewFactory())
+	reg.MustRegister(f)
+	doc := func(timeout string) deploy.Document {
+		return parseRuntimeDoc(t, `version: v1
+resources:
+  events: {kind: event.Bus, impl: memory}
+agents:
+  bot:
+    card: {name: Bot}
+    engine: {kind: `+reloadEngineKind+`}
+runtime:
+  event_bus: events
+  agents: {remove_timeout: `+timeout+`}
+  sessions: {idle_timeout: 1m, sink_buffer: 8}
+`)
+	}
+
+	app, err := NewBuilder(reg).Build(ctx, doc("1h"))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+	if timeout, ok := app.AgentRemoveTimeout(); !ok || timeout != time.Hour {
+		t.Fatalf("AgentRemoveTimeout = %v, %v; want 1h, true", timeout, ok)
+	}
+
+	if _, err := app.Reload(ctx, doc("50ms")); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if timeout, ok := app.AgentRemoveTimeout(); !ok || timeout != 50*time.Millisecond {
+		t.Fatalf("AgentRemoveTimeout after reload = %v, %v; want 50ms, true",
+			timeout, ok)
+	}
+
+	// The reloaded bound is what the next removal drains under: a call
+	// that gives no WithRemoveTimeout times out against a parked turn,
+	// and the hour-long pre-reload bound cannot be what stopped it.
+	if _, err := app.RegisterAgent(ctx, "dyn", agent.Definition{
+		Card:   agent.AgentCard{Name: "Dyn"},
+		Engine: agent.EngineRef{Kind: reloadEngineKind},
+	}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	lease, err := app.Sessions().GetOrCreate(
+		ctx, session.Key{AgentID: "dyn", ContextID: "conv"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForEngineRun(t, f.runs)
+
+	start := time.Now()
+	err = app.UnregisterAgent(ctx, "dyn")
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("UnregisterAgent took %v, want the reloaded 50ms bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("UnregisterAgent error = %v, want DeadlineExceeded", err)
+	}
+
+	close(f.gate)
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	if err := app.UnregisterAgent(ctx, "dyn"); err != nil {
+		t.Fatalf("retry UnregisterAgent: %v", err)
 	}
 }
 

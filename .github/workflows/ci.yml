@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "examples/forge"]
+              dirs = ["core", "craft", "examples/forge", "examples/anvil"]
               for base in ("backends", "driver"):
                   for path in pathlib.Path(base).rglob("go.mod"):
                       if "vendor" in path.parts or "testdata" in path.parts:
@@ -43,6 +43,8 @@ jobs:
               return sorted(set(dirs))
 
           dirs = module_dirs()
+          # examples/forge stays out of the lint gate; examples/anvil is a
+          # workspace module like any other and is linted and tested.
           lint_dirs = [d for d in dirs if d != "examples/forge"]
 
           # Parse each in-workspace module's identity and its requires on
@@ -105,6 +107,8 @@ jobs:
           lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
           # examples/forge pins released module versions and builds with
           # GOWORK=off, so it always runs rather than joining the closure.
+          # examples/anvil requires craft, so the closure pulls it in
+          # whenever craft or core changes.
           test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
           test = sorted(set(test) | {"examples/forge"})
           json.dump(
@@ -148,6 +152,12 @@ jobs:
           GOWORK: "off"
         run: go run . plan --repo ../..
 
+      - name: Validate planned module pins and tidiness
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . preflight --repo ../..
+
       - name: Validate generated release changelog
         if: github.event_name == 'workflow_dispatch' || github.head_ref == 'automation/release-changelog'
         working-directory: tools/releasegate
@@ -165,7 +175,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core driver backends examples/forge)
+          diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -201,9 +211,17 @@ jobs:
       matrix: ${{ fromJson(needs.compute-matrix.outputs.test) }}
     steps:
       - uses: actions/checkout@v4
+      # The floor is 1.26 and the patch is pinned, not floated: govulncheck
+      # below reports the standard library of the toolchain it runs on, the
+      # Go security batch from 2026-10-08 is fixed in 1.26.9 (and 1.27.2)
+      # with no 1.25 release, and both the runner image and the setup-go
+      # manifest lag fresh releases - they still serve 1.26.8, a day later.
+      # The other lanes keep the floating minor: no verdict of theirs
+      # depends on the patch. Bump this pin when a security release lands;
+      # the scan reddening on the previous patch is the reminder.
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
@@ -356,6 +374,30 @@ jobs:
       - name: Test
         working-directory: core
         run: go test -count=1 ./...
+
+  test-craft-windows:
+    name: Test craft (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Build
+        working-directory: craft
+        run: go build ./...
+      - name: Vet
+        working-directory: craft
+        run: go vet ./...
+      # The LockFileEx half of core/utils/lock and the single-instance
+      # lock of craft/manager only compile - and only behave - on
+      # windows; the linux lanes cover the flock half. The rest of craft
+      # is built and vetted here but not run: the graphnode and plugin
+      # process suites stage their helper binary behind a symlink, which
+      # a windows runner cannot be relied on to allow.
+      - name: Test
+        working-directory: craft
+        run: go test -count=1 ./manager/...
 
   test-sandbox-windows:
     name: Integration core/sandbox/windows
