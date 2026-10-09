@@ -2,6 +2,7 @@ package craft
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -27,6 +29,11 @@ type agentsetProbe struct {
 
 	block   chan struct{} // non-nil: a bind waits for it to close
 	entered chan struct{} // non-nil: a bind sends once it has started
+
+	// turnRelease, non-nil, is what the fixture engine waits on before
+	// finishing a run: a turn that is live until the test closes the
+	// channel, which is what makes a removal's drain observable.
+	turnRelease chan struct{}
 }
 
 func (p *agentsetProbe) countEngines() int {
@@ -51,6 +58,18 @@ func (p *agentsetProbe) parkNextBind(block, entered chan struct{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.block, p.entered = block, entered
+}
+
+func (p *agentsetProbe) parkTurns(release chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.turnRelease = release
+}
+
+func (p *agentsetProbe) turnGate() chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.turnRelease
 }
 
 type agentsetCapability struct{ probe *agentsetProbe }
@@ -118,11 +137,18 @@ func (f agentsetEngineFactory) New(context.Context, resource.Input) (any, error)
 	f.probe.order = append(f.probe.order, "engine")
 	f.probe.mu.Unlock()
 	return agent.EngineFunc(func(
-		_ context.Context,
+		ctx context.Context,
 		_ agent.Run,
 		_ agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
+		if release := f.probe.turnGate(); release != nil {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return board, ctx.Err()
+			}
+		}
 		return board, nil
 	}), nil
 }
@@ -433,6 +459,105 @@ func TestSyncAgentsEmptySetRemovesEverything(t *testing.T) {
 	checkAgentsetReport(t, report, nil, nil, nil)
 	if got := probe.countEngines(); got != 2 {
 		t.Fatalf("engine builds = %d, want 2", got)
+	}
+}
+
+// TestSyncAgentsRemoveTimeoutIsConfigurable covers the bound a pass puts
+// on one removal's drain. The default ([DefaultAgentRemoveTimeout]) is
+// too long to observe here, so the pass shortens it with
+// [WithAgentRemoveTimeout]: the removal runs out of time against a live
+// turn, the pass reports it, and the agent stays live with its record
+// until a later pass retries.
+func TestSyncAgentsRemoveTimeoutIsConfigurable(t *testing.T) {
+	t.Parallel()
+	c, probe := newAgentsetCraft(t, agentsetBaseDeploy)
+	ctx := context.Background()
+	rt := agentsetRuntime(t, c)
+	release := make(chan struct{})
+	probe.parkTurns(release)
+
+	if _, err := c.SyncAgents(ctx, DefaultKey, []AgentDecl{agentsetDecl("alpha", "r1")}); err != nil {
+		t.Fatalf("SyncAgents (register): %v", err)
+	}
+	lease, err := rt.Sessions().GetOrCreate(
+		ctx, session.Key{AgentID: "alpha", ContextID: "conv"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The set no longer declares alpha and its turn outlives the
+	// shortened bound: the declaration fails, so the agent is left in
+	// place and the pass reports it instead of removing it half-way.
+	start := time.Now()
+	report, err := c.SyncAgents(
+		ctx, DefaultKey, nil, WithAgentRemoveTimeout(50*time.Millisecond))
+	// A pass that ignored the option would still time out, only after
+	// DefaultAgentRemoveTimeout: the elapsed time is what proves the
+	// bound came from the option.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the pass took %v, want the shortened bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SyncAgents (short bound) error = %v, want DeadlineExceeded", err)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("Errors = %v, want one", report.Errors)
+	}
+	if report.Registered != nil || report.Updated != nil || report.Removed != nil {
+		t.Fatalf("report lists = %+v, want none", report)
+	}
+	if _, ok := rt.Agent("alpha"); !ok {
+		t.Fatal("alpha disappeared although its removal timed out")
+	}
+
+	// Released, then retried with the default bound: the record survived
+	// the failed removal, so the next pass removes the name.
+	close(release)
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	report, err = c.SyncAgents(ctx, DefaultKey, nil)
+	if err != nil {
+		t.Fatalf("SyncAgents (retry): %v", err)
+	}
+	checkAgentsetReport(t, report, nil, nil, []string{"alpha"})
+	if _, ok := rt.Agent("alpha"); ok {
+		t.Fatal("alpha is still live after the retry")
+	}
+}
+
+// TestSyncAgentsRejectsInvalidRemoveTimeout pins that the option is
+// checked before anything mutates: a bound that is not positive and a
+// nil option both reject the call with the zero report.
+func TestSyncAgentsRejectsInvalidRemoveTimeout(t *testing.T) {
+	t.Parallel()
+	c, _ := newAgentsetCraft(t, agentsetBaseDeploy)
+	ctx := context.Background()
+	rt := agentsetRuntime(t, c)
+	decls := []AgentDecl{agentsetDecl("alpha", "r1")}
+
+	for _, tc := range []struct {
+		name string
+		opts []AgentSyncOption
+	}{
+		{name: "zero", opts: []AgentSyncOption{WithAgentRemoveTimeout(0)}},
+		{name: "negative", opts: []AgentSyncOption{WithAgentRemoveTimeout(-time.Second)}},
+		{name: "nil", opts: []AgentSyncOption{nil}},
+	} {
+		report, err := c.SyncAgents(ctx, DefaultKey, decls, tc.opts...)
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("%s bound error = %v, want Validation", tc.name, err)
+		}
+		if len(report.Registered)+len(report.Updated)+len(report.Removed)+len(report.Errors) != 0 {
+			t.Fatalf("%s bound report = %+v, want the zero report", tc.name, report)
+		}
+		if _, ok := rt.Agent("alpha"); ok {
+			t.Fatalf("%s bound registered the declaration", tc.name)
+		}
 	}
 }
 

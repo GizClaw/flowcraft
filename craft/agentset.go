@@ -14,14 +14,46 @@ import (
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
-// agentRemoveTimeout bounds how long one SyncAgents pass waits for the
-// active turns of an agent it removes or replaces. The pass holds the
-// lifecycle lock, so everything else that needs it — a reload, a close —
-// is queued behind that wait; the runtime's default (the caller's
-// context) would let one long turn block them for as long as the
-// application allows. On timeout the agent is left in place, the pass
-// reports it, and the next pass retries the removal.
-const agentRemoveTimeout = 30 * time.Second
+// DefaultAgentRemoveTimeout is the bound one [Craft.SyncAgents] pass
+// puts on the drain of a single removal when no
+// [WithAgentRemoveTimeout] is given.
+//
+// It exists because the pass holds the lifecycle lock: everything else
+// that needs it — a reload, a close — is queued behind that wait, and
+// the runtime's own default (the caller's context) would let one long
+// turn hold them off for as long as the application allows. On timeout
+// the agent is left in place, the pass reports it, and the next pass
+// retries the removal.
+const DefaultAgentRemoveTimeout = 30 * time.Second
+
+// agentSyncOptions is the resolved configuration of one [Craft.SyncAgents]
+// pass.
+type agentSyncOptions struct {
+	removeTimeout time.Duration
+}
+
+// AgentSyncOption configures one [Craft.SyncAgents] pass.
+type AgentSyncOption func(*agentSyncOptions) error
+
+// WithAgentRemoveTimeout replaces [DefaultAgentRemoveTimeout] for every
+// removal of one pass: how long the pass waits for the active turns of
+// an agent it removes or replaces before giving up on that
+// declaration. It must be positive.
+//
+// Lower it when turns are short and reloads, closes and later passes
+// must not wait the default out. There is no unbounded setting: the
+// removal runs under the lifecycle lock, which is what the bound is
+// there to protect.
+func WithAgentRemoveTimeout(d time.Duration) AgentSyncOption {
+	return func(o *agentSyncOptions) error {
+		if d <= 0 {
+			return errdefs.Validationf(
+				"craft: WithAgentRemoveTimeout must be positive")
+		}
+		o.removeTimeout = d
+		return nil
+	}
+}
 
 // AgentDecl is one desired runtime agent in a declaration set passed to
 // [Craft.SyncAgents]. The declaration set is the application's view of
@@ -64,7 +96,9 @@ type AgentSyncReport struct {
 	// recorded as applied, so a later pass retries it even when its
 	// Rev is unchanged. A replacement can fail after its unregister
 	// step, in which case the name is left without a live agent and
-	// the error reports it; the next pass retries the declaration.
+	// the error reports it; the next pass retries the declaration. A
+	// removal with no time left in the pass's removal bound fails the
+	// same way, except that the agent stays live.
 	Errors []error
 }
 
@@ -107,17 +141,35 @@ type AgentSyncReport struct {
 // declarations still apply. The error is nil when every declaration is
 // in sync (applied earlier or now) and otherwise joins the report's
 // errors; callers that need per-name attribution read the report.
+// Every removal the pass performs — a name the set dropped, and the
+// live agent a replacement replaces — drains the agent's active turns
+// through [runtime.Runtime.UnregisterAgent], bounded by the pass's
+// removal bound ([DefaultAgentRemoveTimeout] unless
+// [WithAgentRemoveTimeout] replaces it). A removal that runs out of
+// that time fails its declaration: the agent stays live, its record
+// stays, and the next pass retries it.
 // Malformed input (nil context, unknown key, an empty or duplicated
-// name, an empty Rev) rejects the whole call before anything mutates
-// and returns the zero report.
+// name, an empty Rev, a non-positive removal bound) rejects the whole
+// call before anything mutates and returns the zero report.
 func (c *Craft) SyncAgents(
 	ctx context.Context,
 	key RuntimeKey,
 	decls []AgentDecl,
+	opts ...AgentSyncOption,
 ) (AgentSyncReport, error) {
 	if ptr.IsNil(ctx) {
 		return AgentSyncReport{}, errdefs.Validationf(
 			"craft: SyncAgents context is required")
+	}
+	options := agentSyncOptions{removeTimeout: DefaultAgentRemoveTimeout}
+	for _, option := range opts {
+		if ptr.IsNil(option) {
+			return AgentSyncReport{}, errdefs.Validationf(
+				"craft: AgentSyncOption must not be nil")
+		}
+		if err := option(&options); err != nil {
+			return AgentSyncReport{}, err
+		}
 	}
 	declared, err := checkAgentDecls(decls)
 	if err != nil {
@@ -134,7 +186,7 @@ func (c *Craft) SyncAgents(
 		records = make(map[string]string, len(declared))
 		c.agentRevs[key] = records
 	}
-	report := syncAgentDecls(ctx, key, rt, declared, records)
+	report := syncAgentDecls(ctx, key, rt, declared, records, options.removeTimeout)
 	if len(records) == 0 {
 		delete(c.agentRevs, key)
 	}
@@ -167,13 +219,15 @@ func checkAgentDecls(decls []AgentDecl) (map[string]AgentDecl, error) {
 }
 
 // syncAgentDecls performs one pass against a live runtime; callers hold
-// the lifecycle lock. Records is the applied set, updated in place.
+// the lifecycle lock. Records is the applied set, updated in place, and
+// removeTimeout is the resolved, positive bound on each removal's drain.
 func syncAgentDecls(
 	ctx context.Context,
 	key RuntimeKey,
 	rt *runtime.Runtime,
 	declared map[string]AgentDecl,
 	records map[string]string,
+	removeTimeout time.Duration,
 ) AgentSyncReport {
 	var report AgentSyncReport
 	fail := func(name string, err error) {
@@ -203,7 +257,7 @@ func syncAgentDecls(
 			continue
 		}
 		if err := rt.UnregisterAgent(
-			ctx, name, runtime.WithRemoveTimeout(agentRemoveTimeout),
+			ctx, name, runtime.WithRemoveTimeout(removeTimeout),
 		); err != nil {
 			fail(name, err)
 			continue
@@ -228,7 +282,7 @@ func syncAgentDecls(
 		replaced := false
 		if live(name) {
 			if err := rt.UnregisterAgent(
-				ctx, name, runtime.WithRemoveTimeout(agentRemoveTimeout),
+				ctx, name, runtime.WithRemoveTimeout(removeTimeout),
 			); err != nil {
 				// The old agent stays live and keeps its record: the
 				// replacement never happened, so a later pass may
