@@ -163,6 +163,21 @@ runtime:
   event_bus: bus
 `
 
+// agentsetRemoveTimeoutDeploy is agentsetBaseDeploy with the runtime's
+// configured removal bound: the fallback a pass uses when no
+// WithAgentRemoveTimeout is given.
+func agentsetRemoveTimeoutDeploy(timeout string) string {
+	return `
+version: v1
+resources:
+  bus: {kind: event.Bus, impl: memory}
+runtime:
+  event_bus: bus
+  agents:
+    remove_timeout: ` + timeout + `
+`
+}
+
 // agentsetDeployedDeploy declares a deployed agent, so a declaration
 // with the same name must fail instead of shadowing it.
 const agentsetDeployedDeploy = `
@@ -558,6 +573,119 @@ func TestSyncAgentsRejectsInvalidRemoveTimeout(t *testing.T) {
 		if _, ok := rt.Agent("alpha"); ok {
 			t.Fatalf("%s bound registered the declaration", tc.name)
 		}
+	}
+}
+
+// TestSyncAgentsUsesDocumentRemoveTimeout covers the runtime document's
+// removal bound as the pass's fallback: with no WithAgentRemoveTimeout,
+// the pass drains under runtime.agents.remove_timeout instead of the
+// craft default.
+func TestSyncAgentsUsesDocumentRemoveTimeout(t *testing.T) {
+	t.Parallel()
+	c, probe := newAgentsetCraft(t, agentsetRemoveTimeoutDeploy("50ms"))
+	ctx := context.Background()
+	rt := agentsetRuntime(t, c)
+	release := make(chan struct{})
+	probe.parkTurns(release)
+
+	if _, err := c.SyncAgents(ctx, DefaultKey, []AgentDecl{agentsetDecl("alpha", "r1")}); err != nil {
+		t.Fatalf("SyncAgents (register): %v", err)
+	}
+	lease, err := rt.Sessions().GetOrCreate(
+		ctx, session.Key{AgentID: "alpha", ContextID: "conv"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The set no longer declares alpha and its turn outlives the
+	// document's bound: the declaration fails, so the agent stays in
+	// place and the pass reports it instead of removing it half-way.
+	start := time.Now()
+	report, err := c.SyncAgents(ctx, DefaultKey, nil)
+	// A pass that ignored the document would still time out, only after
+	// DefaultAgentRemoveTimeout: the elapsed time is what proves the
+	// bound came from the document.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the pass took %v, want the document's shortened bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SyncAgents (document bound) error = %v, want DeadlineExceeded", err)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("Errors = %v, want one", report.Errors)
+	}
+	if _, ok := rt.Agent("alpha"); !ok {
+		t.Fatal("alpha disappeared although its removal timed out")
+	}
+
+	// Released, then retried: the record survived the failed removal, so
+	// the next pass removes the name.
+	close(release)
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	report, err = c.SyncAgents(ctx, DefaultKey, nil)
+	if err != nil {
+		t.Fatalf("SyncAgents (retry): %v", err)
+	}
+	checkAgentsetReport(t, report, nil, nil, []string{"alpha"})
+	if _, ok := rt.Agent("alpha"); ok {
+		t.Fatal("alpha is still live after the retry")
+	}
+}
+
+// TestSyncAgentsOptionOverridesDocumentRemoveTimeout pins the order: an
+// explicit WithAgentRemoveTimeout replaces the document's bound.
+func TestSyncAgentsOptionOverridesDocumentRemoveTimeout(t *testing.T) {
+	t.Parallel()
+	c, probe := newAgentsetCraft(t, agentsetRemoveTimeoutDeploy("1h"))
+	ctx := context.Background()
+	rt := agentsetRuntime(t, c)
+	release := make(chan struct{})
+	probe.parkTurns(release)
+
+	if _, err := c.SyncAgents(ctx, DefaultKey, []AgentDecl{agentsetDecl("alpha", "r1")}); err != nil {
+		t.Fatalf("SyncAgents (register): %v", err)
+	}
+	lease, err := rt.Sessions().GetOrCreate(
+		ctx, session.Key{AgentID: "alpha", ContextID: "conv"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The document's hour-long bound cannot be what stopped this drain.
+	start := time.Now()
+	report, err := c.SyncAgents(
+		ctx, DefaultKey, nil, WithAgentRemoveTimeout(50*time.Millisecond))
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the pass took %v, want the option's shortened bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SyncAgents (option bound) error = %v, want DeadlineExceeded", err)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("Errors = %v, want one", report.Errors)
+	}
+
+	close(release)
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	report, err = c.SyncAgents(ctx, DefaultKey, nil)
+	if err != nil {
+		t.Fatalf("SyncAgents (retry): %v", err)
+	}
+	checkAgentsetReport(t, report, nil, nil, []string{"alpha"})
+	if _, ok := rt.Agent("alpha"); ok {
+		t.Fatal("alpha is still live after the retry")
 	}
 }
 

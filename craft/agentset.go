@@ -15,8 +15,9 @@ import (
 )
 
 // DefaultAgentRemoveTimeout is the bound one [Craft.SyncAgents] pass
-// puts on the drain of a single removal when no
-// [WithAgentRemoveTimeout] is given.
+// puts on the drain of a single removal when neither the runtime's
+// document (runtime.agents.remove_timeout) nor
+// [WithAgentRemoveTimeout] provides one.
 //
 // It exists because the pass holds the lifecycle lock: everything else
 // that needs it — a reload, a close — is queued behind that wait, and
@@ -29,15 +30,17 @@ const DefaultAgentRemoveTimeout = 30 * time.Second
 // agentSyncOptions is the resolved configuration of one [Craft.SyncAgents]
 // pass.
 type agentSyncOptions struct {
-	removeTimeout time.Duration
+	removeTimeout    time.Duration
+	removeTimeoutSet bool
 }
 
 // AgentSyncOption configures one [Craft.SyncAgents] pass.
 type AgentSyncOption func(*agentSyncOptions) error
 
-// WithAgentRemoveTimeout replaces [DefaultAgentRemoveTimeout] for every
-// removal of one pass: how long the pass waits for the active turns of
-// an agent it removes or replaces before giving up on that
+// WithAgentRemoveTimeout replaces, for every removal of one pass, both
+// the runtime document's runtime.agents.remove_timeout and
+// [DefaultAgentRemoveTimeout]: how long the pass waits for the active
+// turns of an agent it removes or replaces before giving up on that
 // declaration. It must be positive.
 //
 // Lower it when turns are short and reloads, closes and later passes
@@ -51,6 +54,7 @@ func WithAgentRemoveTimeout(d time.Duration) AgentSyncOption {
 				"craft: WithAgentRemoveTimeout must be positive")
 		}
 		o.removeTimeout = d
+		o.removeTimeoutSet = true
 		return nil
 	}
 }
@@ -144,10 +148,11 @@ type AgentSyncReport struct {
 // Every removal the pass performs — a name the set dropped, and the
 // live agent a replacement replaces — drains the agent's active turns
 // through [runtime.Runtime.UnregisterAgent], bounded by the pass's
-// removal bound ([DefaultAgentRemoveTimeout] unless
-// [WithAgentRemoveTimeout] replaces it). A removal that runs out of
-// that time fails its declaration: the agent stays live, its record
-// stays, and the next pass retries it.
+// removal bound: [WithAgentRemoveTimeout] when given, otherwise the
+// runtime document's runtime.agents.remove_timeout when set, otherwise
+// [DefaultAgentRemoveTimeout]. A removal that runs out of that time
+// fails its declaration: the agent stays live, its record stays, and
+// the next pass retries it.
 // Malformed input (nil context, unknown key, an empty or duplicated
 // name, an empty Rev, a non-positive removal bound) rejects the whole
 // call before anything mutates and returns the zero report.
@@ -180,6 +185,14 @@ func (c *Craft) SyncAgents(
 	rt, ok := c.Runtime(key)
 	if !ok {
 		return AgentSyncReport{}, fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
+	}
+	// The document's bound sits between the option and the craft
+	// default: an explicit WithAgentRemoveTimeout wins, and a runtime
+	// whose document sets none keeps DefaultAgentRemoveTimeout.
+	if !options.removeTimeoutSet {
+		if configured, ok := rt.AgentRemoveTimeout(); ok {
+			options.removeTimeout = configured
+		}
 	}
 	records := c.agentRevs[key]
 	if records == nil {
