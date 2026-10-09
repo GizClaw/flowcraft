@@ -375,6 +375,30 @@ jobs:
         working-directory: core
         run: go test -count=1 ./...
 
+  test-craft-windows:
+    name: Test craft (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Build
+        working-directory: craft
+        run: go build ./...
+      - name: Vet
+        working-directory: craft
+        run: go vet ./...
+      # The LockFileEx half of core/utils/lock and the single-instance
+      # lock of craft/manager only compile - and only behave - on
+      # windows; the linux lanes cover the flock half. The rest of craft
+      # is built and vetted here but not run: the graphnode and plugin
+      # process suites stage their helper binary behind a symlink, which
+      # a windows runner cannot be relied on to allow.
+      - name: Test
+        working-directory: craft
+        run: go test -count=1 ./manager/...
+
   test-sandbox-windows:
     name: Integration core/sandbox/windows
     runs-on: windows-latest
