@@ -148,6 +148,18 @@ func (s *Store) bump() {
 	}
 }
 
+// pluginFileMode is the mode a plugin file is written with: 0600, or
+// 0700 when the source is executable. A plugin may ship a compiled MCP
+// server, and dropping the executable bit would install a package whose
+// own command cannot start; everything else stays closed, because a
+// plugin tree is user-installed content that no one else needs to read.
+func pluginFileMode(mode fs.FileMode) fs.FileMode {
+	if mode&0o111 != 0 {
+		return 0o700
+	}
+	return 0o600
+}
+
 // copyDir copies a plugin directory tree, rejecting symlinks.
 func copyDir(source, target string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
@@ -169,6 +181,10 @@ func copyDir(source, target string) error {
 			}
 			return nil
 		default:
+			info, err := entry.Info()
+			if err != nil {
+				return errdefs.Validationf("plugin install: stat: %v", err)
+			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return errdefs.Validationf("plugin install: read: %v", err)
@@ -176,9 +192,10 @@ func copyDir(source, target string) error {
 			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 				return errdefs.Validationf("plugin install: mkdir: %v", err)
 			}
-			if err := os.WriteFile(destination, data, 0o600); err != nil {
+			if err := os.WriteFile(destination, data, pluginFileMode(info.Mode())); err != nil {
 				return errdefs.Validationf("plugin install: write: %v", err)
 			}
+			return nil
 			return nil
 		}
 	})

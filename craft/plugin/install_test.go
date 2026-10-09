@@ -14,6 +14,20 @@ func manifestFor(id, version string) string {
 	}`
 }
 
+// newRootStore opens a store over one writable root.
+func newRootStore(t *testing.T, root string) *Store {
+	t.Helper()
+	store, err := NewStore(Options{
+		Roots:       []Root{{Path: root}},
+		StateDir:    t.TempDir(),
+		DataDirRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return store
+}
+
 func TestInstallUpdateRollback(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
