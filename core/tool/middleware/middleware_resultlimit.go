@@ -35,6 +35,10 @@ const DefaultResultPartBudget = 1 << 20 // 1 MiB
 // a part that does not fit is dropped and the marker is appended, so
 // runaway media cannot fill the model's context unnoticed.
 //
+// For a recoverable cap — the full output spilled to disk and an excerpt
+// plus pointer left in context — see [Truncate], which is designed to run
+// inside this limiter.
+//
 // The two budgets share one promise: a result that was cut never carries
 // more than max runes of text. The marker counts against that budget, so a
 // result whose non-text parts were cut keeps the marker's runes free instead

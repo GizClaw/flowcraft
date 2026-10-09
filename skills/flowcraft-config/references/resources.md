@@ -373,6 +373,7 @@ tools:
       recover: {enabled: true}
       telemetry: {enabled: true}
       result_limit: {max: 20000}
+      truncate: {enabled: true, max_chars: 20000, dir: ./cache/tools}
       timeout: {default: 30s}
       concurrency: {limit: 8}
     dynamic: {default: deferred, exposures: {tool_search: always}}
@@ -398,6 +399,16 @@ tool result rides every later turn's context and inline media has no natural
 size. `result_part_budget_bytes` (same level as the middleware entries) moves
 that default — absent means 1 MiB, `0` lifts it — and is ignored when
 `result_limit.part_budget_bytes` is set.
+
+`truncate` (same level) is the recoverable cap: non-error results beyond
+`truncate.max_chars` runes are persisted under `<dir>/<call_id>.output`
+while the context keeps a head+tail excerpt plus a pointer
+(`truncate.work_dir` makes the pointer relative). It runs inside
+`result_limit` — keep `max_chars` at or below `result_limit.max` so the
+limiter cannot cut the pointer away. JSON results stay parseable
+(oversized string fields excerpted in place, or a
+`{truncated, full_output, preview}` envelope); a failed spill logs and
+still returns the excerpt.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host
