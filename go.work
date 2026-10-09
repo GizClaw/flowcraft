@@ -4,6 +4,7 @@ use (
 	./backends/checkpoint
 	./backends/memory
 	./backends/memory/eval
+	./backends/secret
 	./core
 	./craft
 	./driver/anthropic

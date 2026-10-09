@@ -37,8 +37,9 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance, and
   MiniMax.
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
-  (`backends/checkpoint`) and the long-term memory backend with its eval
-  harness (`backends/memory`); the sandbox backends (`bwrap`, `seatbelt`) live
+  (`backends/checkpoint`), the long-term memory backend with its eval
+  harness (`backends/memory`), and the encrypted keychain secret store
+  (`backends/secret`); the sandbox backends (`bwrap`, `seatbelt`) live
   in `core/sandbox`.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
@@ -266,7 +267,7 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
 | [`craft`](craft/)                                     | Application assembly: craft.yaml, capabilities, plugin host, host primitives, manager     | Versioned Go module  |
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
-| [`backends`](backends/)                               | SQLite checkpoints, the long-term memory backend (sandbox backends live in `core/sandbox`) | Versioned Go modules |
+| [`backends`](backends/)                               | SQLite checkpoints, the long-term memory backend, the keychain secret store (sandbox backends live in `core/sandbox`) | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`examples/anvil`](examples/anvil/)                   | Minimal `craft` host application (keyed runtimes, plugins, reload)                       | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
