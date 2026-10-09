@@ -394,6 +394,43 @@ func TestTruncateBudgetTooSmallForEnvelopeFallsBackToExcerpt(t *testing.T) {
 	}
 }
 
+// Truncation stays inside the text parts: a data part riding the same
+// result is not payload to shorten and must survive untouched.
+func TestTruncateKeepsNonTextParts(t *testing.T) {
+	mw := Truncate(TruncateSettings{
+		Enabled:  true,
+		MaxChars: 60,
+		Dir:      t.TempDir(),
+	})
+	next := func(context.Context, message.ToolCall) message.ToolResult {
+		return message.ToolResult{
+			CallID: "call-1",
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: strings.Repeat("x", 400)},
+				message.DataPart{
+					MediaType: "application/json",
+					Value:     json.RawMessage(`{"ok":true}`),
+				},
+			}},
+		}
+	}
+	res := mw(next)(context.Background(), message.ToolCall{})
+	if len(res.Content.Parts) != 2 {
+		t.Fatalf("parts = %d, want the excerpt and the data part", len(res.Content.Parts))
+	}
+	data, ok := res.Content.Parts[1].(message.DataPart)
+	if !ok || string(data.Value) != `{"ok":true}` {
+		t.Fatalf("data part = %#v, want it untouched", res.Content.Parts[1])
+	}
+	text, ok := res.Content.Parts[0].(message.TextPart)
+	if !ok {
+		t.Fatalf("text part = %T, want the excerpt", res.Content.Parts[0])
+	}
+	if got := len([]rune(text.Text)); got > 60 {
+		t.Fatalf("text part = %d runes, want <= 60", got)
+	}
+}
+
 // The plain-text excerpt is sliced at UTF-8 boundaries by hand, so a
 // multi-byte value must neither split a rune nor change the rune count.
 func TestHeadTailStringKeepsUTF8Boundaries(t *testing.T) {
