@@ -36,10 +36,24 @@ func writeHooks(t *testing.T, content string) string {
 	return path
 }
 
+// jsonStringBody renders s as the body of a JSON string literal, for
+// splicing into document literals. A path is the reason it exists: a
+// Windows temp path holds backslashes, and a raw one is not a legal JSON
+// escape, which makes the whole document unparsable there.
+func jsonStringBody(s string) string {
+	escaped, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal of a string has no failure mode; the branch keeps
+		// the helper's signature free of a *testing.T.
+		panic(err)
+	}
+	return strings.Trim(string(escaped), `"`)
+}
+
 // appendHook is a command that appends its stdin to path, so a test can
 // count how often a hook ran and read what it received.
 func appendHook(path string) string {
-	return "cat >> " + path
+	return "cat >> " + jsonStringBody(path)
 }
 
 // waitForContent waits until path holds non-blank content.
@@ -301,7 +315,7 @@ func TestHookTimeoutKillsTheProcessGroup(t *testing.T) {
 	path := writeHooks(t, `{
 		"hooks": {
 			"PreToolUse": [{"hooks": [
-				{"command": "(sleep 2; echo late > `+late+`) & sleep 30", "timeout": 1}
+				{"command": "(sleep 2; echo late > `+jsonStringBody(late)+`) & sleep 30", "timeout": 1}
 			]}]
 		}
 	}`)
