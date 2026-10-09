@@ -85,7 +85,10 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
 ```
 
 - `id`: `^[a-z0-9][a-z0-9._-]{0,63}$`. `version` required; `version`
-  and `minHostVersion` are dotted numeric with optional prerelease.
+  and `minHostVersion` are dotted numeric with optional prerelease. Leave
+  `minHostVersion` out against a development build of craft
+  (`Version == "0.0.0"`), where any floor above `0.0.0` makes the plugin
+  invalid; set it once you pin a released craft.
 - Legacy aliases: `entry` (⇒ `ui.entry`), `mcpServers` (⇒ `mcp`; the two
   are mutually exclusive). `kraft` and `tools` are rejected with an
   upgrade hint.
@@ -96,6 +99,13 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   `url`). `command`/`args` carrying a path separator are resolved against
   the plugin root; bare names go through `PATH`. `mcp` and `mcpServers`
   in the same manifest is rejected.
+- Tool names are namespaced per server: one server publishes under the
+  plugin's namespace, several publish under the plugin's plus the
+  server's `name` (or its position, when unnamed). Two of a plugin's own
+  servers collapsing into one namespace is rejected, and so is a plugin
+  whose namespace an installed plugin already holds — the second one is
+  listed with an error instead of silently losing every tool it
+  publishes.
 - `update.url`: optional, ≤ 2048 bytes, absolute `http(s)` URL without
   credentials or fragment. craft validates the shape and hands the URL to
   a `plugin.Installer`; it never fetches anything itself.
@@ -258,6 +268,9 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin <id>: the kraft field is no longer supported; ...` | removed field |
 | `plugin: path "X" escapes the plugin root` | path outside the root |
 | `plugin <id>: requires host version >= X` | scan gate (entry error) |
+| `plugin <id>: mcp servers 0 and 1 share the tool namespace "X"` | two of the plugin's own servers collide |
+| `plugin <id>: the tool namespace "X" collides with plugin "Y"` | two installed plugins would publish the same tool names |
+| `plugin store: read\|parse <path>` | unreadable `enabled.json`; every plugin reads as disabled and the next write keeps them that way |
 | `plugin install: <id> version V is not newer than W` | downgrade/equal |
 | `plugin install: no rollback snapshot for "id"` | nothing to roll back |
 | `plugin install: zip has no plugin.json` | package is not a plugin |
@@ -271,6 +284,8 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin update: checksum mismatch (want sha256:..., got sha256:...)` | package did not match its digest |
 | `plugin update: package holds plugin "X", wanted "Y"` | wrong plugin in the package |
 | `plugin update: package version V does not match the announced W` | stale package under a new version |
+| `plugin update: <id> V adds permissions p; the installer does not approve update grants — ...` (`Conflict`) | update widens the grants and the `Installer` is not an `UpdateApprover` |
+| `plugin update: <id> V: approve grants: ...` | an `UpdateApprover` refused the expansion |
 | `plugin update: Installer is required` | `UpdateFrom` with no installer |
 | `plugin <id>: the mcp section is ignored without the mcp:provide permission` | node/direct call to a dropped `mcp` section |
 | `hostmcp: tool "x" already registered` | duplicate primitive name |
