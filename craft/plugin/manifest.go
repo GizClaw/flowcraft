@@ -53,6 +53,7 @@ type Manifest struct {
 	Permissions    []string    `json:"permissions,omitempty"`
 	UI             *UIManifest `json:"ui,omitempty"`
 	MCP            *MCPServer  `json:"mcp,omitempty"`
+	Update         *UpdateDecl `json:"update,omitempty"`
 	Skills         []string    `json:"skills,omitempty"`
 	Hooks          []string    `json:"hooks,omitempty"`
 	Nodes          []NodeDecl  `json:"nodes,omitempty"`
@@ -69,6 +70,14 @@ type Manifest struct {
 // UIManifest points at the plugin's UI bundle.
 type UIManifest struct {
 	Entry string `json:"entry"`
+}
+
+// UpdateDecl declares where an application can look for a newer version
+// of the plugin: a JSON manifest at url (see UpdateInfo). craft checks
+// the shape and hands the URL to an Installer; it never fetches
+// anything itself.
+type UpdateDecl struct {
+	URL string `json:"url"`
 }
 
 // MCPServer declares one MCP server the plugin ships.
@@ -192,6 +201,14 @@ func (m Manifest) Validate(root string) error {
 			strings.TrimSpace(node.Tool) == "" {
 			return errdefs.Validationf(
 				"plugin %s: nodes[%d] requires type and tool", m.ID, i)
+		}
+	}
+	// The update endpoint is checked before the filesystem half: it
+	// says nothing about the plugin root, so it is an error whether or
+	// not a root was handed in.
+	if m.Update != nil {
+		if err := checkRemoteURL(m.Update.URL); err != nil {
+			return errdefs.Validationf("plugin %s: update.url %v", m.ID, err)
 		}
 	}
 	if root == "" {
