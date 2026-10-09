@@ -179,6 +179,22 @@ func (h *Host) SetEnabled(
 	return h.store.SetEnabled(id, enabled)
 }
 
+// Uninstall stops one plugin and then removes it through the store.
+// Stopping comes first and its failure aborts the uninstall: removing a
+// directory out from under a running plugin would take the files its
+// process still reads and leaves the drain waiting for work that will
+// never finish.
+func (h *Host) Uninstall(
+	ctx context.Context,
+	id string,
+	opts UninstallOptions,
+) error {
+	if err := h.stopEntry(ctx, id); err != nil {
+		return err
+	}
+	return h.store.Uninstall(ctx, id, opts)
+}
+
 // SkillRoots returns the absolute skill directories of every enabled
 // plugin that declares skills:provide.
 func (h *Host) SkillRoots() []string {

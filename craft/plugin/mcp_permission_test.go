@@ -18,10 +18,14 @@ import (
 // never got one.
 type sourceFactory struct {
 	created map[string]int
+	closed  map[string]int
 }
 
 func newSourceFactory() *sourceFactory {
-	return &sourceFactory{created: map[string]int{}}
+	return &sourceFactory{
+		created: map[string]int{},
+		closed:  map[string]int{},
+	}
 }
 
 func (f *sourceFactory) new(
@@ -31,12 +35,14 @@ func (f *sourceFactory) new(
 	_ string,
 ) (Source, error) {
 	f.created[entry.ID]++
-	return &fakeSource{
+	source := &fakeSource{
 		tools: []tool.Tool{fakeTool{name: entry.ID + "__echo"}},
 		call: func(toolName string, _ any) (json.RawMessage, error) {
 			return json.RawMessage(`{"writes":{"result":"` + toolName + `"}}`), nil
 		},
-	}, nil
+	}
+	source.close = func() { f.closed[entry.ID]++ }
+	return source, nil
 }
 
 // newStoreOver scans one plugin root into a fresh store.

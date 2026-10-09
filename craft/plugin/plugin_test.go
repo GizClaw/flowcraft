@@ -28,6 +28,7 @@ func (t fakeTool) Execute(context.Context, string) (message.Content, error) {
 type fakeSource struct {
 	tools []tool.Tool
 	call  func(toolName string, args any) (json.RawMessage, error)
+	close func()
 }
 
 func (s *fakeSource) Tools() []tool.Tool { return s.tools }
@@ -40,7 +41,12 @@ func (s *fakeSource) Attach(registrar tool.Registrar) {
 	}
 }
 
-func (s *fakeSource) Close() error { return nil }
+func (s *fakeSource) Close() error {
+	if s.close != nil {
+		s.close()
+	}
+	return nil
+}
 
 func (s *fakeSource) CallTool(
 	_ context.Context,

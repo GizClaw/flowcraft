@@ -178,6 +178,88 @@ func (s *Store) restore(root, id, target string) error {
 	return copyDir(backup, target)
 }
 
+// UninstallOptions selects what survives an uninstall. Both flags are
+// off by default: plugin KV and the data directory belong to the
+// plugin, so a reinstall starts clean, and keeping them is a decision
+// the caller makes explicitly.
+type UninstallOptions struct {
+	// KeepKV leaves the plugin's key/value file in place.
+	KeepKV bool
+	// KeepData leaves the plugin's data directory in place.
+	KeepData bool
+}
+
+// Uninstall removes an installed plugin: its directory, its rollback
+// snapshot, its enable state and, unless UninstallOptions keeps them,
+// its KV file and data directory. A builtin plugin is refused (disable
+// it instead); uninstalling a user plugin that shadows a builtin
+// removes the copy and uncovers the builtin again.
+//
+// Nothing here stops a running plugin: Host.Uninstall drains the
+// process first, and a direct caller owns that step. Application-sized
+// state that happens to be keyed by plugin id (secrets, inference
+// profiles) is not craft's to delete and is left alone.
+func (s *Store) Uninstall(
+	_ context.Context,
+	id string,
+	opts UninstallOptions,
+) error {
+	if err := ValidateID(id); err != nil {
+		return err
+	}
+	dir, err := s.uninstallTarget(id)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return errdefs.Validationf("plugin uninstall: remove %s: %v", id, err)
+	}
+	// Snapshots live beside the copy they belong to.
+	_ = os.RemoveAll(filepath.Join(filepath.Dir(dir), backupsDir, id))
+	s.mu.Lock()
+	if !opts.KeepKV {
+		_ = os.Remove(filepath.Join(s.opts.StateDir, "kv", id+".json"))
+		delete(s.kv, id)
+	}
+	if !opts.KeepData {
+		_ = os.RemoveAll(filepath.Join(s.opts.DataDirRoot, id))
+	}
+	state := s.loadStateLocked()
+	delete(state, id)
+	// The plugin is gone whether or not the state write lands, so the
+	// revision moves either way and every watcher reloads.
+	stateErr := s.saveStateLocked(state)
+	callbacks := s.bumpLocked()
+	s.mu.Unlock()
+	for _, fn := range callbacks {
+		fn()
+	}
+	if stateErr != nil {
+		return stateErr
+	}
+	return nil
+}
+
+// uninstallTarget resolves the directory to remove. The scanned view
+// decides, because that is the view the host serves: a builtin plugin
+// is refused even when a copy sits in a writable root, and a directory
+// whose manifest no longer validates still counts, since a broken
+// plugin is exactly the one a user wants to remove and it never reaches
+// the valid-plugin view.
+func (s *Store) uninstallTarget(id string) (string, error) {
+	for _, entry := range s.scan() {
+		if entry.ID != id {
+			continue
+		}
+		if entry.Builtin {
+			return "", errdefs.Forbiddenf(
+				"plugin uninstall: %s is a builtin plugin; disable it instead", id)
+		}
+		return entry.Dir, nil
+	}
+	return "", errdefs.NotFoundf("plugin uninstall: plugin %q not found", id)
+}
+
 func (s *Store) bump() {
 	s.mu.Lock()
 	callbacks := s.bumpLocked()
