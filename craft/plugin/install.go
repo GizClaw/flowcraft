@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,12 +14,19 @@ import (
 
 const backupsDir = ".backups"
 
-// userRoot returns the first writable (non-builtin) root.
+// userRoot returns the writable (non-builtin) root the scan prefers:
+// the last one, which shadows every root before it. Installing into an
+// earlier root would land a plugin where the scan does not look for it,
+// so the two must agree on which root wins.
 func (s *Store) userRoot() (string, error) {
+	target := ""
 	for _, root := range s.opts.Roots {
 		if !root.Builtin && strings.TrimSpace(root.Path) != "" {
-			return root.Path, nil
+			target = root.Path
 		}
+	}
+	if target != "" {
+		return target, nil
 	}
 	return "", errdefs.Validationf(
 		"plugin store: no writable plugin root configured")
@@ -49,8 +57,11 @@ func (s *Store) Inspect(_ context.Context, source string) (Summary, error) {
 }
 
 // Install copies a plugin directory into the writable root. Installing
-// over an existing plugin requires a strictly newer version and keeps a
-// rollback snapshot in <root>/.backups/<id>.
+// over an installed plugin requires a strictly newer version and keeps
+// a rollback snapshot in <root>/.backups/<id>; installing a newer
+// version over an id that exists only as a builtin creates the user copy
+// that shadows it, and keeps nothing, because there is no copy of ours
+// to restore.
 func (s *Store) Install(
 	ctx context.Context,
 	source string,
@@ -63,13 +74,35 @@ func (s *Store) Install(
 	if err != nil {
 		return Summary{}, err
 	}
-	target := filepath.Join(root, summary.ID)
-	if existing, ok := s.Entry(summary.ID); ok && existing.Error == "" {
+	if existing, ok := s.Entry(summary.ID); ok {
 		if version.Compare(summary.Version, existing.Manifest.Version) <= 0 {
 			return Summary{}, errdefs.Conflictf(
 				"plugin install: %s version %s is not newer than %s",
 				summary.ID, summary.Version, existing.Manifest.Version)
 		}
+		// A user copy that shadows a builtin may be newer than that
+		// copy and still older than the builtin it hides: the version
+		// the application ships is a floor, not a fallback.
+		if existing.ShadowsBuiltin &&
+			version.Compare(summary.Version, existing.BuiltinVersion) < 0 {
+			return Summary{}, errdefs.Conflictf(
+				"plugin install: %s version %s is older than builtin %s, which it would shadow",
+				summary.ID, summary.Version, existing.BuiltinVersion)
+		}
+	}
+	target := filepath.Join(root, summary.ID)
+	// Replacing means the copy being overwritten is this one. The
+	// scanned plugin may live in another root (the builtin root, most
+	// likely), and then there is nothing to snapshot before the copy.
+	replacing := false
+	switch info, err := os.Stat(target); {
+	case err == nil && info.IsDir():
+		replacing = true
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return Summary{}, errdefs.Validationf(
+			"plugin install: inspect %s: %v", summary.ID, err)
+	}
+	if replacing {
 		if err := s.snapshot(root, summary.ID, target); err != nil {
 			return Summary{}, err
 		}
@@ -79,8 +112,14 @@ func (s *Store) Install(
 		}
 	}
 	if err := copyDir(source, target); err != nil {
-		if err := s.restore(root, summary.ID, target); err != nil {
+		// A failed install leaves the previous state in place: the
+		// snapshot goes back, or a fresh install leaves nothing behind.
+		if !replacing {
+			_ = os.RemoveAll(target)
 			return Summary{}, err
+		}
+		if restoreErr := s.restore(root, summary.ID, target); restoreErr != nil {
+			return Summary{}, errors.Join(err, restoreErr)
 		}
 		return Summary{}, err
 	}
@@ -195,7 +234,6 @@ func copyDir(source, target string) error {
 			if err := os.WriteFile(destination, data, pluginFileMode(info.Mode())); err != nil {
 				return errdefs.Validationf("plugin install: write: %v", err)
 			}
-			return nil
 			return nil
 		}
 	})
