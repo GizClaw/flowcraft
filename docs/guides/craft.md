@@ -263,6 +263,67 @@ to the plugin root, while a bare command goes through `PATH`. The legacy
 `mcpServers` and top-level `entry` aliases are accepted; the removed
 `kraft` and `tools` fields are rejected with an upgrade hint.
 
+### Install, update, uninstall
+
+A plugin arrives as a directory or as a zip package. Both go through the
+same pipeline — `Store.Install(ctx, dir)` and
+`Store.InstallZip(ctx, zipPath)` — so a package gets the same manifest
+validation, the same version rule, the same snapshot and the same
+restore:
+
+- Installing over an installed plugin requires a version that is
+  **strictly newer**; the old copy is snapshotted to
+  `<root>/.backups/<id>` first and put back if the copy fails. A fresh
+  install that fails leaves nothing behind. `Store.Rollback(ctx, id)`
+  restores the snapshot.
+- The install lands in the same writable root the scan prefers (the
+  last one configured), so the plugin it creates is the plugin the scan
+  serves. An id that exists only as a builtin gets a user copy that
+  shadows it; that copy must be newer than the builtin, and may not be
+  older than a builtin the application has since updated.
+- A zip package may carry the files at the archive root or under a
+  single top-level directory. Everything else about the archive is
+  refused: absolute names, `..` elements, backslashes, symlinks and
+  anything that is not a file or a directory. One entry may unpack to
+  `plugin.MaxZipEntryBytes` (64 MiB) and the whole package to
+  `plugin.MaxZipBytes` (256 MiB), read from the headers — archive/zip
+  refuses to read a stream that runs past its declared size — and the
+  temporary tree is removed whatever happens.
+
+`Store.Uninstall(ctx, id, opts)` removes a plugin: its directory, its
+snapshot, its enable state and — by default — its KV file
+(`<state>/kv/<id>.json`) and data directory (`<data>/<id>`).
+`UninstallOptions{KeepKV: true}` / `{KeepData: true}` keep them, for
+content a reinstall should still find. A builtin cannot be uninstalled
+(disable it instead); removing the user copy that shadows a builtin
+uncovers the builtin again. `Host.Uninstall` stops the plugin first
+(in-flight calls drain, the source closes) and then uninstalls;
+`Store.Uninstall` on its own stops nothing. State the application keys
+by plugin id — secrets, inference profiles, telemetry — is not craft's
+to delete and stays.
+
+**Remote updates.** A manifest may declare where to look for a newer
+version:
+
+```json
+"update": {"url": "https://example.test/plugins/hello.json"}
+```
+
+The URL must be an absolute `http(s)` URL without credentials or a
+fragment (≤ 2048 bytes); the scheme is *checked*, not restricted —
+https-only is transport policy, and transport belongs to the
+application. `plugin.Installer` is the seam for it: the application
+implements `Check(ctx, url)` (fetch the update manifest, see
+`plugin.UpdateInfo`) and `Fetch(ctx, info)` (download the package,
+return its path and a cleanup), deciding proxies, credentials and
+network policy itself. `Store.UpdateFrom(ctx, id, installer)` then runs
+the whole pipeline: fetch the manifest → validate the version, the
+download URL and the `sha256:<64 hex>` checksum → require the announced
+version to be newer than the installed one → fetch → verify the package
+against its checksum (≤ 256 MiB) → require the package to hold the same
+plugin at the announced version → install it under the version rule and
+rollback above.
+
 ### Permissions
 
 | Permission | Authorizes |
@@ -521,7 +582,18 @@ instance.
   configured`).
 - Install: `plugin install: hello version 0.1.0 is not newer than 0.2.0`;
   rollback without a snapshot is `plugin install: no rollback snapshot
-  for "hello"`. See the `flowcraft-config` reference card for the full
+  for "hello"`. A package that is not a single plugin is `plugin
+  install: zip has no plugin.json` (or `zip holds 2 plugins`), a name
+  that leaves the extraction tree is `plugin install: zip entry "../x"
+  escapes the archive`, and an archive past the caps is `plugin
+  install: zip entry "huge.bin" unpacks to N bytes, over the N-byte
+  limit`.
+- Uninstall and update: removing a builtin is `Forbidden` (`plugin
+  uninstall: hello is a builtin plugin; disable it instead`); a remote
+  update that fails its checks is `plugin update: checksum mismatch
+  (want sha256:..., got sha256:...)`, `plugin update: package holds
+  plugin "x", wanted "y"` or `plugin update: plugin "x" declares no
+  update.url`. See the `flowcraft-config` reference card for the full
   error → cause table.
 
 ## Status
@@ -529,10 +601,13 @@ instance.
 Craft lives in the workspace and is **not yet released**: no `craft/vX.Y.Z`
 tag exists, and `craft.Version` stays `"0.0.0"` for development builds. The
 host primitive set is **v1** and its tool names are a wire contract. The
-plugin install / update / rollback *surface*
-(feeds, channels, UI orchestration) and the desktop / shell side are not
-part of craft; the app owns them. Do not assume behaviour beyond what the
-code and the reference cards describe.
+plugin install / update / rollback / uninstall *mechanics* are craft's
+(`Store.Install`, `InstallZip`, `Rollback`, `Uninstall`, and the
+`plugin.Installer` seam an application wires its transport into); the
+surfaces around them — update feeds and channels, UI orchestration, the
+transport itself, and the desktop / shell side — are not; the app owns
+them. Do not assume behaviour beyond what the code and the reference
+cards describe.
 
 ## Minimal example
 

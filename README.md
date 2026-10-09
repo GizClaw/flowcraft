@@ -29,7 +29,10 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   definition, compile-time capabilities, the MCP plugin host (plugin processes
   as MCP servers, host primitives as MCP tools for plugins), tools / graph
   nodes / skills / hooks / UI contributed by plugins, and the process-level
-  `craft/manager` lifecycle.
+  `craft/manager` lifecycle. Plugins install from a directory or a zip
+  package, update in place with a rollback snapshot, and uninstall with
+  the data they own; a remote update source is validated here and fetched
+  by the application (`plugin.Installer`).
 - **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance, and
   MiniMax.

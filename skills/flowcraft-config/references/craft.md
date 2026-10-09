@@ -79,7 +79,8 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   },
   "skills": ["<path>"],
   "hooks": ["<path>"],
-  "nodes": [{"type": "<t>", "tool": "<tool>", "desc": "<s>", "timeout": "30s"}]
+  "nodes": [{"type": "<t>", "tool": "<tool>", "desc": "<s>", "timeout": "30s"}],
+  "update": {"url": "<url>"}
 }
 ```
 
@@ -95,6 +96,9 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   `url`). `command`/`args` carrying a path separator are resolved against
   the plugin root; bare names go through `PATH`. `mcp` and `mcpServers`
   in the same manifest is rejected.
+- `update.url`: optional, ≤ 2048 bytes, absolute `http(s)` URL without
+  credentials or fragment. craft validates the shape and hands the URL to
+  a `plugin.Installer`; it never fetches anything itself.
 
 ### Permissions
 
@@ -139,6 +143,40 @@ every enable / disable / install / update / rollback. The shell reloads
 every bundle on each event: destroy the old plugin scopes, re-read
 `Entries()`, load again. Runtime registration, rendering and the
 `ui:webview` gate are the shell's, not craft's.
+
+### Install / update / uninstall
+
+Directory and zip installs share one pipeline
+(`Store.Install(ctx, dir)`, `Store.InstallZip(ctx, zipPath)`):
+`Inspect` validation, a **strictly newer** version over an installed
+plugin, a snapshot to `<root>/.backups/<id>` before the replace, restore
+on failure, nothing left behind by a failed fresh install. The install
+lands in the last writable root, the one the scan prefers. An id that
+exists only as a builtin takes a user copy that shadows it (newer than
+the builtin, and never older than a builtin the application has since
+updated); `Store.Rollback(ctx, id)` restores the snapshot.
+
+A zip package holds the files at the archive root or under one top-level
+directory. Refused: absolute names, `..` elements, backslashes,
+symlinks, anything not a file or a directory, one entry unpacking past
+`MaxZipEntryBytes` (64 MiB) or a package past `MaxZipBytes` (256 MiB) —
+caps read from the headers, which archive/zip itself enforces.
+Executable bits survive; everything else is written 0600/0700.
+
+`Store.Uninstall(ctx, id, UninstallOptions{})` removes the directory,
+the snapshot, the enable state and by default the KV file and the data
+directory; `KeepKV` / `KeepData` keep them. Builtins are refused
+(`Forbidden`). `Host.Uninstall` drains the plugin before removing it.
+App state keyed by plugin id (secrets, inference profiles) is not
+craft's.
+
+`Store.UpdateFrom(ctx, id, installer)` runs a remote update: the
+manifest's `update.url` through `Installer.Check`, validate version /
+download URL / `sha256:<64hex>` checksum, require a newer version,
+`Installer.Fetch`, verify the checksum (≤ 256 MiB), require the package
+to hold the same plugin at the announced version, then install.
+Transport policy (https-only, proxies, credentials, SSRF) is the
+application's, behind the `Installer` seam.
 
 ### Directory layout the host scans
 
@@ -222,6 +260,18 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin <id>: requires host version >= X` | scan gate (entry error) |
 | `plugin install: <id> version V is not newer than W` | downgrade/equal |
 | `plugin install: no rollback snapshot for "id"` | nothing to roll back |
+| `plugin install: zip has no plugin.json` | package is not a plugin |
+| `plugin install: zip holds N plugins (...)` | more than one manifest |
+| `plugin install: zip entry "X" escapes the archive` | absolute, `..` or backslash name |
+| `plugin install: zip entry "X" is a symlink` | symlink or non-regular entry |
+| `plugin install: zip entry "X" unpacks to N bytes, over the ... limit` | entry or package over the caps |
+| `plugin uninstall: X is a builtin plugin; disable it instead` (`Forbidden`) | builtin removal |
+| `plugin uninstall: plugin "X" not found` (`NotFound`) | unknown id |
+| `plugin update: plugin "X" declares no update.url` (`NotFound`) | no source declared |
+| `plugin update: checksum mismatch (want sha256:..., got sha256:...)` | package did not match its digest |
+| `plugin update: package holds plugin "X", wanted "Y"` | wrong plugin in the package |
+| `plugin update: package version V does not match the announced W` | stale package under a new version |
+| `plugin update: Installer is required` | `UpdateFrom` with no installer |
 | `plugin <id>: the mcp section is ignored without the mcp:provide permission` | node/direct call to a dropped `mcp` section |
 | `hostmcp: tool "x" already registered` | duplicate primitive name |
 | `craft manager: craft.yaml not found` | definition not located |
@@ -247,6 +297,10 @@ Craft selects and configures; the host supplies everything executable:
 - **Plugin roots**: the host builds `plugin.Store` and `plugin.Host`
   (`Roots`, `StateDir`, `DataDirRoot`, `HostVersion`) and passes the host
   as `Options.Plugins`.
+- **Update transport**: the `plugin.Installer` an update path is wired
+  into (`Check` / `Fetch` — https-only, proxies, credentials, SSRF
+  policy), plus the surfaces around installing: feeds, channels, the
+  install dialog.
 - **Process lifecycle** (optional): `craft/manager` or your own shell.
 
 See [craft.md](../../../docs/guides/craft.md) for the full guide.
