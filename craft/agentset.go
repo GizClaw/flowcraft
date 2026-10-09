@@ -6,12 +6,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
+
+// agentRemoveTimeout bounds how long one SyncAgents pass waits for the
+// active turns of an agent it removes or replaces. The pass holds the
+// lifecycle lock, so everything else that needs it — a reload, a close —
+// is queued behind that wait; the runtime's default (the caller's
+// context) would let one long turn block them for as long as the
+// application allows. On timeout the agent is left in place, the pass
+// reports it, and the next pass retries the removal.
+const agentRemoveTimeout = 30 * time.Second
 
 // AgentDecl is one desired runtime agent in a declaration set passed to
 // [Craft.SyncAgents]. The declaration set is the application's view of
@@ -192,7 +202,9 @@ func syncAgentDecls(
 			delete(records, name)
 			continue
 		}
-		if err := rt.UnregisterAgent(ctx, name); err != nil {
+		if err := rt.UnregisterAgent(
+			ctx, name, runtime.WithRemoveTimeout(agentRemoveTimeout),
+		); err != nil {
 			fail(name, err)
 			continue
 		}
@@ -215,7 +227,9 @@ func syncAgentDecls(
 		}
 		replaced := false
 		if live(name) {
-			if err := rt.UnregisterAgent(ctx, name); err != nil {
+			if err := rt.UnregisterAgent(
+				ctx, name, runtime.WithRemoveTimeout(agentRemoveTimeout),
+			); err != nil {
 				// The old agent stays live and keeps its record: the
 				// replacement never happened, so a later pass may
 				// retry it.
