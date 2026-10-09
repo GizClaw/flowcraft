@@ -48,8 +48,12 @@ type Host struct {
 	started bool
 	closed  bool
 	sources map[string]Source
-	envHook func(Entry, map[string]string) error
-	stopped func(string)
+	// entryLocks serializes start and stop for one plugin id, so an
+	// enable racing a disable (or a start racing Close) cannot leave the
+	// store saying one thing and the process table another.
+	entryLocks map[string]*sync.Mutex
+	envHook    func(Entry, map[string]string) error
+	stopped    func(string)
 }
 
 // NewHost opens a plugin host over a store.
@@ -72,6 +76,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 		drainTimeout: drain,
 		tools:        NewToolSet(),
 		sources:      make(map[string]Source),
+		entryLocks:   make(map[string]*sync.Mutex),
 	}
 	if host.newSource == nil {
 		host.newSource = host.mcpSource
@@ -169,14 +174,32 @@ func (h *Host) SetEnabled(
 	if !ok {
 		return errdefs.NotFoundf("plugin host: plugin %q not found", id)
 	}
+	// The whole toggle — the process and the record that describes it —
+	// is serialized with every other toggle of this plugin. Holding the
+	// lock only while the process is spawned is not enough: the state
+	// write that follows it would still be able to overtake a disable
+	// that raced it and leave the two disagreeing.
+	lock := h.entryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if enabled {
-		if err := h.startEntry(ctx, entry); err != nil {
+		if err := h.startEntryLocked(ctx, entry); err != nil {
 			return err
 		}
-	} else if err := h.stopEntry(ctx, id); err != nil {
+		if err := h.store.SetEnabled(id, true); err != nil {
+			// The process is up but the state write failed, which would
+			// leave the recorded state saying "disabled" about a running
+			// plugin. Stopping it again keeps the two agreeing: the error
+			// the caller sees means nothing changed.
+			_ = h.stopEntryLocked(ctx, id)
+			return err
+		}
+		return nil
+	}
+	if err := h.stopEntryLocked(ctx, id); err != nil {
 		return err
 	}
-	return h.store.SetEnabled(id, enabled)
+	return h.store.SetEnabled(id, false)
 }
 
 // Uninstall stops one plugin and then removes it through the store.
@@ -276,6 +299,19 @@ func (h *Host) Close() error {
 }
 
 func (h *Host) startEntry(ctx context.Context, entry Entry) error {
+	// One plugin's start and stop are serialized with each other: the
+	// open spawns a process and the record is written after it, and
+	// without the lock a disable (or Close) that ran in between would
+	// leave a process nobody tracks.
+	lock := h.entryLock(entry.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return h.startEntryLocked(ctx, entry)
+}
+
+// startEntryLocked is startEntry's body; callers hold the plugin's
+// entry lock.
+func (h *Host) startEntryLocked(ctx context.Context, entry Entry) error {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -290,14 +326,49 @@ func (h *Host) startEntry(ctx context.Context, entry Entry) error {
 	if err != nil {
 		return err
 	}
+	// The open ran outside the host lock (it spawns a process), so the
+	// host may have closed in the meantime. Recording the source first
+	// means Close's id snapshot sees it and drains it; a source the
+	// snapshot missed is closed here instead of being left running
+	// behind a closed host.
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		_ = source.Close()
+		return errdefs.NotAvailablef("plugin host: closed")
+	}
+	h.sources[entry.ID] = source
+	h.mu.Unlock()
 	if err := h.tools.AddPlugin(entry.ID, source); err != nil {
+		h.forgetSource(entry.ID, source)
 		_ = source.Close()
 		return err
 	}
-	h.mu.Lock()
-	h.sources[entry.ID] = source
-	h.mu.Unlock()
 	return nil
+}
+
+// entryLock returns the mutex that serializes one plugin's start and
+// stop.
+func (h *Host) entryLock(id string) *sync.Mutex {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	lock := h.entryLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		h.entryLocks[id] = lock
+	}
+	return lock
+}
+
+// forgetSource drops one entry's record when it is still the source
+// that was recorded, so a failed publication cannot hide the process it
+// left behind.
+func (h *Host) forgetSource(id string, source Source) {
+	h.mu.Lock()
+	if h.sources[id] == source {
+		delete(h.sources, id)
+	}
+	h.mu.Unlock()
 }
 
 // openSource builds the tool source of one plugin. The mcp section is
@@ -352,6 +423,18 @@ func (r refusedSource) CallTool(
 }
 
 func (h *Host) stopEntry(ctx context.Context, id string) error {
+	// The mirror of startEntry: waiting for the per-entry lock means a
+	// disable that raced an enable stops the process that enable
+	// spawned, not the state it saw before.
+	lock := h.entryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return h.stopEntryLocked(ctx, id)
+}
+
+// stopEntryLocked is stopEntry's body; callers hold the plugin's entry
+// lock.
+func (h *Host) stopEntryLocked(ctx context.Context, id string) error {
 	h.mu.Lock()
 	_, running := h.sources[id]
 	delete(h.sources, id)
@@ -379,6 +462,7 @@ func (h *Host) mcpSource(
 ) (Source, error) {
 	source := mcp.NewSource()
 	servers := entry.Manifest.Servers()
+	namespaces := ToolNamespaces(entry.ID, servers)
 	for i, server := range servers {
 		name := entry.ID
 		if i > 0 {
@@ -389,7 +473,7 @@ func (h *Host) mcpSource(
 			_ = source.Close()
 			return nil, err
 		}
-		options := []mcp.ServerOption{mcp.WithPrefix(ToolPrefix(entry.ID))}
+		options := []mcp.ServerOption{mcp.WithPrefix(namespaces[i])}
 		if err := source.AddServer(ctx, name, transport, options...); err != nil {
 			_ = source.Close()
 			return nil, err
