@@ -247,3 +247,29 @@ func TestDoRetriesUntilTheAttemptBudgetRunsOut(t *testing.T) {
 		}
 	})
 }
+
+// TestDoPausesBetweenAttempts pins the backoff: a guard that fails
+// instantly is still spaced out, so the retry waits for the premise to
+// change instead of spinning through its attempt budget. The bound is
+// the window, which the pause never runs past.
+func TestDoPausesBetweenAttempts(t *testing.T) {
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/backoff"}
+	h.pooled(k, 0)
+
+	var attempts []time.Time
+	err := h.pool.Do(context.Background(), k, nil,
+		func(*fakeMember) error {
+			attempts = append(attempts, time.Now())
+			return errGuard
+		})
+	if !errors.Is(err, errGuard) {
+		t.Fatalf("Do = %v, want the guard it hit last", err)
+	}
+	if len(attempts) != DefaultRetryAttempts {
+		t.Fatalf("attempts = %d, want %d", len(attempts), DefaultRetryAttempts)
+	}
+	if gap := attempts[1].Sub(attempts[0]); gap < retryBackoff {
+		t.Fatalf("attempts ran %v apart, want at least %v", gap, retryBackoff)
+	}
+}

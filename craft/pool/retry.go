@@ -13,6 +13,13 @@ const (
 	// DefaultRetryAttempts caps Do's attempts. It is
 	// Spec.RetryAttempts's zero value.
 	DefaultRetryAttempts = 3
+	// retryBackoff is how long Do waits before an attempt that follows a
+	// retryable failure. The guards it retries are meant to clear by
+	// themselves (a member that is draining, an assembly that has not
+	// finished), but one that fails instantly would otherwise burn the
+	// whole attempt budget in a single spin. The wait is bounded by the
+	// remaining window.
+	retryBackoff = 50 * time.Millisecond
 )
 
 // Do runs fn against the member that serves k, absorbing the
@@ -35,7 +42,9 @@ const (
 // at most the window for it, and never for the length of somebody
 // else's work. A member that resolves as the window runs out is still
 // used — the expiry check only turns an attempt that came back with
-// nothing in hand into "not ready".
+// nothing in hand into "not ready". Attempts after a retryable failure
+// are spaced by retryBackoff, so a guard that fails instantly cannot
+// spin the loop.
 //
 // stop is consulted before every retry, never before the first attempt:
 // a caller whose premise expired — the window moved away from the key
@@ -100,6 +109,16 @@ func (p *Pool[T]) Do(
 		// asked about.
 		if ctx.Err() != nil || (stop != nil && stop()) {
 			return lastErr
+		}
+		if wait := time.Until(deadline); wait > 0 {
+			if wait > retryBackoff {
+				wait = retryBackoff
+			}
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return lastErr
+			}
 		}
 	}
 	return lastErr
