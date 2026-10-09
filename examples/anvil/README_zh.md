@@ -150,7 +150,7 @@ runtime 的文件来自 runtime **values**，alpha 的来自应用写出的 runt
 
 `plugins/hello` 是一个完整的插件：manifest、skill 和一个 MCP server。
 
-- `mcp: {command: "go", args: ["./server"]}` —— 带路径的参数的会相对插件根目录
+- `mcp: {command: "go", args: ["run", "./server"]}` —— 带路径的参数的会相对插件根目录
   解析并被限制在其中，所以 manifest 只携带源码、由宿主在启动时编译。真实插件应发布
   编译好的二进制（或解释器 + 脚本，例如 `python3 server/main.py`）。
 - `permissions: [mcp:provide, skills:provide, events:emit]` —— 没有对应权限的贡献

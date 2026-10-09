@@ -160,7 +160,7 @@ hot-plugging never tears the resource registry. Both surface as
 
 `plugins/hello` is a complete plugin: a manifest, a skill and an MCP server.
 
-- `mcp: {command: "go", args: ["./server"]}` — a path-bearing argument is
+- `mcp: {command: "go", args: ["run", "./server"]}` — a path-bearing argument is
   resolved against the plugin root and confined to it, so the manifest ships
   source and the host compiles it on start. A real plugin ships a compiled
   binary (or an interpreter plus a script, e.g. `python3 server/main.py`).
