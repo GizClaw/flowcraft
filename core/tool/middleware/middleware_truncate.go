@@ -2,17 +2,20 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils/fsatomic"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
 // TruncateSettings configures [Truncate]. Zero values disable it.
@@ -29,8 +32,19 @@ type TruncateSettings struct {
 	WorkDir string `json:"work_dir,omitempty"`
 }
 
+// MarkerPrefix starts the pointer a spilled result carries
+// ("\n…[truncated; full output: " plus the path and a closing "]"), and
+// MarkerNoOutput is the marker when nothing was persisted, so a
+// consumer can recognize a truncation without matching a format
+// string.
+const (
+	MarkerPrefix   = "\n…[truncated; full output: "
+	MarkerNoOutput = "\n…[truncated]"
+)
+
 // Truncate caps oversized tool results recoverably: the full output is
-// persisted under <dir>/<call_id>.output and the in-context content is
+// persisted under <dir>/<call_id>.output (a call id that is not a safe
+// file name falls back to a digest of it) and the in-context content is
 // replaced with a head+tail excerpt plus a pointer to the file, so the
 // model can read the rest on demand. Results under the cap are
 // returned as-is and never spill; error results pass through
@@ -44,7 +58,7 @@ type TruncateSettings struct {
 // Telemetry: the spill file then holds the tool's full output, and the
 // limiter only ever sees the excerpt. Spill failures do not fail the
 // call: they are logged through telemetry and the result still leaves
-// as an excerpt.
+// as an excerpt — without a pointer, since there is no file to read.
 //
 // Structured results stay structured: JSON envelopes are excerpted
 // inside their own top-level string fields and re-encoded, so tools
@@ -72,7 +86,8 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 			if utf8.RuneCountInString(full) <= settings.MaxChars {
 				return res
 			}
-			path := filepath.Join(settings.Dir, res.CallID+".output")
+			path := spillPath(settings.Dir, res.CallID)
+			spilled := false
 			if err := os.MkdirAll(settings.Dir, 0o700); err == nil {
 				telemetry.WarnErr(ctx,
 					"tool middleware: secure truncation directory failed",
@@ -83,29 +98,40 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 				}); err != nil {
 					telemetry.WarnErr(ctx,
 						"tool middleware: persist truncated output failed", err)
+				} else {
+					spilled = true
 				}
 			} else {
 				telemetry.WarnErr(ctx,
 					"tool middleware: create truncation directory failed", err)
 			}
-			ref := path
-			if settings.WorkDir != "" {
-				if rel, err := filepath.Rel(settings.WorkDir, path); err == nil {
-					ref = rel
-				} else {
-					telemetry.WarnErr(ctx,
-						"tool middleware: resolve relative truncation path failed",
-						err)
+			// The marker only carries a pointer once the payload is
+			// really on disk: a failed spill must not send the model
+			// after a file that is not there.
+			marker := MarkerNoOutput
+			ref := ""
+			if spilled {
+				ref = path
+				if settings.WorkDir != "" {
+					if rel, err := filepath.Rel(settings.WorkDir, path); err == nil {
+						ref = rel
+					} else {
+						telemetry.WarnErr(ctx,
+							"tool middleware: resolve relative truncation path failed",
+							err)
+					}
 				}
+				marker = MarkerPrefix + ref + "]"
 			}
-			marker := fmt.Sprintf("\n…[truncated; full output: %s]", ref)
 			if out, ok := truncateJSONResult(full, settings.MaxChars, ref, marker); ok {
 				res.Content = replaceTextParts(res.Content, out)
 				return res
 			}
 			// Plain text keeps the historical head+tail excerpt. A
-			// valid JSON result never reaches this branch: either it
-			// shrank in place, or it became a pointer envelope.
+			// valid JSON result only reaches this branch when even the
+			// pointer envelope cannot fit the budget (a degenerate
+			// max_chars) or when the payload is not JSON at all; the
+			// envelope is the promised shape for realistic budgets.
 			markerRunes := []rune(marker)
 			if len(markerRunes) > settings.MaxChars {
 				markerRunes = markerRunes[:settings.MaxChars]
@@ -116,6 +142,21 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 			return res
 		}
 	}
+}
+
+// spillPath names the spill file for one call. The call id comes off
+// the wire, so it is used as a file name only when it is a single safe
+// path element; a separator, "." or "..", or a Windows reserved name
+// falls back to a digest of the id, which keeps the payload recoverable
+// without letting an attacker-influenced name escape dir.
+func spillPath(dir, callID string) string {
+	name := callID
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) || !pathsafe.RelRef(name) {
+		sum := sha256.Sum256([]byte(callID))
+		name = hex.EncodeToString(sum[:16])
+	}
+	return filepath.Join(dir, name+".output")
 }
 
 // truncateJSONResult shrinks an oversized JSON result while keeping it
@@ -295,7 +336,7 @@ func excerptWithinBudget(raw string, marker []rune, budget int) (string, bool) {
 func jsonPointerResult(text string, maxChars int, ref, marker string) (string, bool) {
 	type pointerResult struct {
 		Truncated  bool   `json:"truncated"`
-		FullOutput string `json:"full_output"`
+		FullOutput string `json:"full_output,omitempty"`
 		Preview    string `json:"preview,omitempty"`
 	}
 	base, err := json.Marshal(pointerResult{Truncated: true, FullOutput: ref})
@@ -364,10 +405,17 @@ func headTailAtMost(raw string, length, keep int, marker []rune) string {
 	}
 	tailStart := len(raw)
 	for i := 0; i < tail; i++ {
-		tailStart--
-		for tailStart > 0 && !utf8.RuneStart(raw[tailStart]) {
-			tailStart--
+		if tailStart <= 0 {
+			break
 		}
+		// Step back one rune at a time; a byte that is not part of a
+		// valid encoding counts as one rune on the way in (RuneCount)
+		// and must do the same here, or the walk leaves the string.
+		_, size := utf8.DecodeLastRuneInString(raw[:tailStart])
+		tailStart -= size
+	}
+	if tailStart < headEnd {
+		tailStart = headEnd
 	}
 	return raw[:headEnd] + string(marker) + raw[tailStart:]
 }

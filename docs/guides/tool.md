@@ -189,7 +189,9 @@ plain `memory` impl runs no middleware at all, so a deployment that uses it
 bounds tool results in its own tools.
 
 `truncate` adds the recoverable half: each non-error result beyond
-`truncate.max_chars` is persisted whole under `<dir>/<call_id>.output` and
+`truncate.max_chars` is persisted whole under `<dir>/<call_id>.output` (a id
+that is not a safe file name is replaced by a digest of it, so an
+attacker-influenced call id cannot name a file outside the directory) and
 the context carries a head+tail excerpt plus a pointer to the file, so the
 model can read the rest on demand. `truncate.dir` is the spill directory,
 and `truncate.work_dir` (optional) anchors the pointer as a path relative
@@ -199,9 +201,13 @@ below `result_limit.max`, or the limiter can cut the pointer away. JSON
 results stay parseable: oversized top-level string fields are excerpted in
 place, a structural value (a long match array) becomes a small
 `{truncated, full_output, preview}` envelope, and `is_truncated` /
-`truncated` flags are flipped to true. A failed spill (an unwritable
-directory) does not fail the call — it is logged through telemetry and the
-excerpt still leaves.
+`truncated` flags are flipped to true; a `max_chars` smaller than the
+marker plus pointer overhead is the one budget where a JSON result degrades
+to the plain-text excerpt. A failed spill (an unwritable directory) does
+not fail the call — it is logged through telemetry and the excerpt still
+leaves without a pointer. The spill file holds the tool's raw output in
+plaintext, so it is only as private as `truncate.dir` itself, and nothing
+deletes it later: retention is the host's business.
 
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`

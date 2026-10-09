@@ -296,7 +296,8 @@ func TestTruncateBoundsStructuredJSONWithPointerEnvelope(t *testing.T) {
 
 // A spilled result that cannot be written (the directory path is a
 // file) must not fail the call: telemetry records the failure and the
-// result still leaves as an excerpt.
+// result still leaves as an excerpt — without a pointer, since there is
+// no file to read.
 func TestTruncateSpillFailureStillExcerpts(t *testing.T) {
 	work := t.TempDir()
 	blocked := filepath.Join(work, "blocked")
@@ -320,8 +321,76 @@ func TestTruncateSpillFailureStillExcerpts(t *testing.T) {
 	if len([]rune(out)) > 100 {
 		t.Fatalf("result = %d runes, want the excerpt", len([]rune(out)))
 	}
-	if !strings.Contains(out, "truncated; full output:") {
-		t.Fatalf("marker missing: %q", out)
+	if strings.Contains(out, "full output:") {
+		t.Fatalf("marker points at an output that was never written: %q", out)
+	}
+	if !strings.Contains(out, "[truncated]") {
+		t.Fatalf("truncation marker missing: %q", out)
+	}
+}
+
+// The call id arrives off the wire; it must never name a file outside
+// the spill directory.
+func TestTruncateSpillNameCannotEscape(t *testing.T) {
+	work := t.TempDir()
+	dir := filepath.Join(work, "spill")
+	mw := Truncate(TruncateSettings{
+		Enabled:  true,
+		MaxChars: 300,
+		Dir:      dir,
+	})
+	next := func(context.Context, message.ToolCall) message.ToolResult {
+		return message.ToolResult{
+			CallID:  filepath.Join("..", "..", "escape"),
+			Content: message.NewTextContent(strings.Repeat("x", 600)),
+		}
+	}
+	res := mw(next)(context.Background(), message.ToolCall{})
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spill dir holds %d entries, want 1", len(entries))
+	}
+	// The fallback name is a digest of the id: one safe element, still
+	// a readable payload.
+	name := entries[0].Name()
+	if !strings.HasSuffix(name, ".output") ||
+		strings.ContainsAny(name, `/\`) || len(name) != 32+len(".output") {
+		t.Fatalf("spill name %q is not the digest fallback", name)
+	}
+	if _, err := os.Stat(filepath.Join(work, "escape.output")); !os.IsNotExist(err) {
+		t.Fatalf("spill wrote outside its directory: %v", err)
+	}
+	if pointer := filepath.Join(dir, name); !strings.Contains(res.Content.Text(), pointer) {
+		t.Fatalf("pointer %q does not name the spill file", res.Content.Text())
+	}
+}
+
+// A budget too small for the marker plus the pointer envelope degrades
+// to the plain-text excerpt: an envelope that does not fit would be
+// truncated into something that is not JSON at all.
+func TestTruncateBudgetTooSmallForEnvelopeFallsBackToExcerpt(t *testing.T) {
+	mw := Truncate(TruncateSettings{
+		Enabled:  true,
+		MaxChars: 20,
+		Dir:      t.TempDir(),
+	})
+	full := `{"content":"` + strings.Repeat("x", 400) + `"}`
+	next := func(context.Context, message.ToolCall) message.ToolResult {
+		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent(full)}
+	}
+	res := mw(next)(context.Background(), message.ToolCall{})
+	out := res.Content.Text()
+	if len([]rune(out)) > 20 {
+		t.Fatalf("result = %d runes, want <= 20", len([]rune(out)))
+	}
+	if json.Valid([]byte(out)) {
+		t.Fatalf("a degraded excerpt must not pretend to be JSON: %q", out)
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("truncation marker missing: %q", out)
 	}
 }
 
@@ -340,6 +409,15 @@ func TestHeadTailStringKeepsUTF8Boundaries(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "中文🙂") || !strings.HasSuffix(got, "中文🙂") {
 		t.Fatalf("excerpt lost its multi-byte head or tail: %q", got)
+	}
+	// A payload that is not valid UTF-8 (a binary tool result) must not
+	// walk the tail index negative: RuneCountInString counts each
+	// invalid byte as one rune, and both walks have to agree.
+	binary := strings.Repeat("\x80", 400)
+	got = headTailString(binary, 200, marker)
+	if want := 200 + len(marker); utf8.RuneCountInString(got) != want {
+		t.Fatalf("binary excerpt = %d runes, want %d",
+			utf8.RuneCountInString(got), want)
 	}
 }
 
@@ -447,6 +525,12 @@ func FuzzTruncateJSONResult(f *testing.F) {
 	} {
 		f.Add(seed, 200)
 	}
+	// Invalid UTF-8 (a binary tool result quoted into JSON) and budgets
+	// too small for the pointer envelope: the excerpt walks must stay in
+	// bounds whatever the bytes are.
+	f.Add(`{"content":"`+strings.Repeat("\x80", 400)+`"}`, 200)
+	f.Add(strings.Repeat("\x80", 400), 200)
+	f.Add(`{"content":"`+strings.Repeat("x", 400)+`"}`, 20)
 	f.Fuzz(func(t *testing.T, text string, maxChars int) {
 		if maxChars <= 0 || maxChars > 1<<16 {
 			return
