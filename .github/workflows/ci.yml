@@ -211,15 +211,17 @@ jobs:
       matrix: ${{ fromJson(needs.compute-matrix.outputs.test) }}
     steps:
       - uses: actions/checkout@v4
-      # 1.26, not a lower floor: govulncheck below reports the standard
-      # library of the toolchain it runs on, and Go only fixes the two most
-      # recent releases, so a floor that is EOL scans as affected forever
-      # (the GO-2026-6603..6617 batch shipped with no 1.25 fix). The same
-      # batch put a hard stop under the floor: x/net v0.60.0, the earliest
-      # release fixing it, declares go 1.26.0 itself.
+      # The floor is 1.26 and the patch is pinned, not floated: govulncheck
+      # below reports the standard library of the toolchain it runs on, the
+      # Go security batch from 2026-10-08 is fixed in 1.26.9 (and 1.27.2)
+      # with no 1.25 release, and both the runner image and the setup-go
+      # manifest lag fresh releases - they still serve 1.26.8, a day later.
+      # The other lanes keep the floating minor: no verdict of theirs
+      # depends on the patch. Bump this pin when a security release lands;
+      # the scan reddening on the previous patch is the reminder.
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
