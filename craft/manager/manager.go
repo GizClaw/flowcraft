@@ -361,14 +361,19 @@ func (m *Manager) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Close is Stop with a background timeout.
+// Close is Stop with a background timeout, and it is final: a closed
+// manager has released its lock and refuses to start again. The flag is
+// set after the stop, not before it: Stop short-circuits on the flag, so
+// marking the manager closed first would turn Close into a no-op that
+// leaves the Craft running and the single-instance lock held.
 func (m *Manager) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := m.Stop(ctx)
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return m.Stop(ctx)
+	return err
 }
 
 func (m *Manager) releaseLock() {

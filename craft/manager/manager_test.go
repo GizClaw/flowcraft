@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/craft"
@@ -35,6 +36,28 @@ func writeDefinition(t *testing.T, dir string) string {
 		t.Fatalf("write craft.yaml: %v", err)
 	}
 	return path
+}
+
+// newTestManager builds a locked manager over dataDir, tuned by the
+// caller.
+func newTestManager(
+	t *testing.T, definitionPath, dataDir string, tune func(*Options),
+) *Manager {
+	t.Helper()
+	opts := Options{
+		DefinitionPath: definitionPath,
+		Paths:          Paths{DataDir: dataDir},
+		Lock:           true,
+		Capabilities:   []craft.Capability{testCapability{}},
+	}
+	if tune != nil {
+		tune(&opts)
+	}
+	manager, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return manager
 }
 
 func TestLocateDefinition(t *testing.T) {
@@ -118,5 +141,35 @@ func TestManagerRun(t *testing.T) {
 	}
 	if !runner.called || m.State() != StateStopped {
 		t.Fatalf("runner called=%v state=%s", runner.called, m.State())
+	}
+}
+
+func TestManagerCloseReleasesLock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeDefinition(t, dir)
+	ctx := context.Background()
+	// Close is the final stop, so it has to release the lock: an
+	// unstopped manager would keep a live holder on the DataDir and the
+	// next launch could never start.
+	closed := newTestManager(t, path, dir, nil)
+	if err := closed.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if closed.State() != StateStopped {
+		t.Fatalf("state = %s, want stopped", closed.State())
+	}
+	if err := closed.Start(ctx); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("restart of a closed manager = %v, want not available", err)
+	}
+	next := newTestManager(t, path, dir, nil)
+	if err := next.Start(ctx); err != nil {
+		t.Fatalf("start after Close: %v", err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatalf("Close next: %v", err)
 	}
 }
