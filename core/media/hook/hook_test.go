@@ -3,10 +3,12 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -40,28 +42,45 @@ func mustResolve(t *testing.T, settings Settings) resolvedSettings {
 	return config
 }
 
-func TestInlineLocalMedia(t *testing.T) {
+func writeFile(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestNormalizePartsInlinesLocalMedia(t *testing.T) {
 	dir := t.TempDir()
-	png := filepath.Join(dir, "photo.png")
-	if err := os.WriteFile(png, []byte("png-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	localSource := urlSource[media.ImageSource](t, png, "image/png")
-	remoteSource, err := media.NewImageURL("https://example.com/a.png", "image/png")
+	png := writeFile(t, dir, "photo.png", "png-bytes")
+	remote, err := media.NewImageURL("https://example.com/a.png", "image/png")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts, changed, err := inlineLocalMedia([]message.Part{
-		message.TextPart{Text: "look"},
-		message.ImagePart{Source: localSource},
-		message.ImagePart{Source: remoteSource},
-		message.FilePart{URI: png, Name: "photo.png", MediaType: "image/png"},
+	recording, err := media.NewAudioBytes([]byte("audio-bytes"), "audio/webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The budget below is exactly the file size: an attachment on the
+	// budget is inlined, one byte over it is flattened.
+	config := mustResolve(t, Settings{
+		WorkDir:          dir,
+		PassthroughKinds: []string{"file", "audio"},
+		MaxInlineBytes:   int64(len("png-bytes")),
 	})
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
+		message.TextPart{Text: "look"},
+		message.ImagePart{Source: urlSource[media.ImageSource](t, png, "image/png")},
+		message.ImagePart{Source: remote},
+		message.AudioPart{Source: recording},
+		message.FilePart{URI: png, Name: "photo.png", MediaType: "image/png"},
+	}, config)
 	if err != nil {
-		t.Fatalf("inlineLocalMedia: %v", err)
+		t.Fatalf("normalizeParts: %v", err)
 	}
 	if !changed {
-		t.Fatal("inlineLocalMedia reported no change")
+		t.Fatal("normalizeParts reported no change")
 	}
 	local := parts[1].(message.ImagePart)
 	if local.Source.Kind() != media.SourceInline {
@@ -70,33 +89,35 @@ func TestInlineLocalMedia(t *testing.T) {
 	if string(local.Source.Bytes()) != "png-bytes" {
 		t.Errorf("inline bytes = %q, want source bytes", local.Source.Bytes())
 	}
-	remote := parts[2].(message.ImagePart)
-	if remote.Source.Kind() != media.SourceURL {
-		t.Errorf("remote image was inlined: %s", remote.Source.Kind())
+	if got := parts[2].(message.ImagePart); got.Source.Kind() != media.SourceURL {
+		t.Errorf("remote image was inlined: %s", got.Source.Kind())
 	}
-	if _, ok := parts[3].(message.FilePart); !ok {
-		t.Errorf("file part changed type: %T", parts[3])
+	if got := parts[3].(message.AudioPart); got.Source.Kind() != media.SourceInline {
+		t.Errorf("inline audio was rewritten: %s", got.Source.Kind())
+	}
+	if _, ok := parts[4].(message.FilePart); !ok {
+		t.Errorf("file part changed type: %T", parts[4])
 	}
 }
 
-func TestInlineLocalMediaNoChange(t *testing.T) {
+func TestNormalizePartsNoChange(t *testing.T) {
 	remote, err := media.NewImageURL("https://example.com/a.png", "image/png")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts, changed, err := inlineLocalMedia([]message.Part{
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
 		message.TextPart{Text: "hi"},
 		message.ImagePart{Source: remote},
-	})
+	}, mustResolve(t, Settings{}))
 	if err != nil {
-		t.Fatalf("inlineLocalMedia: %v", err)
+		t.Fatalf("normalizeParts: %v", err)
 	}
 	if changed || len(parts) != 2 {
 		t.Errorf("changed=%v parts=%d, want no change", changed, len(parts))
 	}
 }
 
-func TestFlattenNonImageMedia(t *testing.T) {
+func TestNormalizePartsFlattensNonPassthroughKinds(t *testing.T) {
 	const workDir = "/ws/proj"
 	const storedAudio = workDir + "/sessions/s-abc/media/1-a.mp3"
 	const storedVideo = workDir + "/sessions/s-abc/media/2-b.mp4"
@@ -104,12 +125,15 @@ func TestFlattenNonImageMedia(t *testing.T) {
 	config := mustResolve(t, Settings{WorkDir: workDir})
 	audioSource := urlSource[media.AudioSource](t, storedAudio, "audio/mpeg")
 	videoSource := urlSource[media.VideoSource](t, storedVideo, "video/mp4")
-	parts, changed := flattenNonImageMedia([]message.Part{
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
 		message.TextPart{Text: "look"},
 		message.FilePart{URI: storedFile, Name: "notes.txt"},
 		message.AudioPart{Source: audioSource},
 		message.VideoPart{Source: videoSource},
 	}, config)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
 	if !changed || len(parts) != 4 {
 		t.Fatalf("flatten = %v parts, changed=%v", len(parts), changed)
 	}
@@ -125,9 +149,12 @@ func TestFlattenNonImageMedia(t *testing.T) {
 
 	// Paths outside the workspace stay absolute.
 	outside := urlSource[media.AudioSource](t, "/tmp/out.mp3", "audio/mpeg")
-	parts, changed = flattenNonImageMedia([]message.Part{
+	parts, changed, err = normalizeParts(context.Background(), []message.Part{
 		message.AudioPart{Source: outside},
 	}, config)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
 	if !changed || len(parts) != 1 {
 		t.Fatalf("outside flatten = %v parts, changed=%v", len(parts), changed)
 	}
@@ -137,15 +164,19 @@ func TestFlattenNonImageMedia(t *testing.T) {
 
 	// A kind the deployment passes through keeps its part: the driver
 	// lowers it to the wire, and flattening it would hide the
-	// attachment behind a path the model cannot open.
+	// attachment behind a path the model cannot open. This path names no
+	// local file, so nothing is inlined either.
 	videoConfig := mustResolve(t, Settings{
 		WorkDir:          workDir,
 		PassthroughKinds: []string{"video"},
 	})
-	parts, changed = flattenNonImageMedia([]message.Part{
+	parts, changed, err = normalizeParts(context.Background(), []message.Part{
 		message.TextPart{Text: "look"},
 		message.VideoPart{Source: videoSource},
 	}, videoConfig)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
 	if changed || len(parts) != 2 {
 		t.Fatalf("video passthrough = %v parts, changed=%v", len(parts), changed)
 	}
@@ -153,25 +184,15 @@ func TestFlattenNonImageMedia(t *testing.T) {
 		t.Fatalf("part = %T, want the video to survive", parts[1])
 	}
 
-	// Images survive stripping.
-	remote, err := media.NewImageURL("https://example.com/a.png", "image/png")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parts, changed = flattenNonImageMedia([]message.Part{
-		message.TextPart{Text: "hi"},
-		message.ImagePart{Source: remote},
-	}, config)
-	if changed || len(parts) != 2 {
-		t.Errorf("flatten = %v parts, changed=%v, want unchanged", len(parts), changed)
-	}
-
 	// A custom marker replaces the default for its kind; the localized
 	// label here is what a desktop deployment configures.
 	marked := mustResolve(t, Settings{WorkDir: workDir, AudioMarker: "[录音] "})
-	parts, changed = flattenNonImageMedia([]message.Part{
+	parts, changed, err = normalizeParts(context.Background(), []message.Part{
 		message.AudioPart{Source: audioSource},
 	}, marked)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
 	if !changed || len(parts) != 1 {
 		t.Fatalf("marked flatten = %v parts, changed=%v", len(parts), changed)
 	}
@@ -180,22 +201,159 @@ func TestFlattenNonImageMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizePartsDegradesOversizedAttachments(t *testing.T) {
+	dir := t.TempDir()
+	photo := writeFile(t, dir, "big.png", "0123456789")
+	config := mustResolve(t, Settings{WorkDir: dir, MaxInlineBytes: 4})
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
+		message.ImagePart{Source: urlSource[media.ImageSource](t, photo, "image/png")},
+	}, config)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
+	if !changed || len(parts) != 1 {
+		t.Fatalf("parts = %d, changed=%v: an oversized attachment must not fail the turn",
+			len(parts), changed)
+	}
+	if got := parts[0].(message.TextPart).Text; got != "[image file] big.png" {
+		t.Errorf("degraded image line = %q", got)
+	}
+
+	// A passthrough kind over the budget is degraded too: the bytes
+	// cannot travel, so the part would reach the provider unfetchable.
+	clip := writeFile(t, dir, "clip.mp4", "0123456789")
+	videoConfig := mustResolve(t, Settings{
+		WorkDir:          dir,
+		MaxInlineBytes:   4,
+		PassthroughKinds: []string{"video"},
+	})
+	parts, changed, err = normalizeParts(context.Background(), []message.Part{
+		message.VideoPart{Source: urlSource[media.VideoSource](t, clip, "video/mp4")},
+	}, videoConfig)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
+	if !changed || len(parts) != 1 {
+		t.Fatalf("parts = %d, changed=%v", len(parts), changed)
+	}
+	if got := parts[0].(message.TextPart).Text; got != "[video file] clip.mp4" {
+		t.Errorf("degraded video line = %q", got)
+	}
+}
+
+func TestNormalizePartsDescribesPathlessAttachments(t *testing.T) {
+	recording, err := media.NewAudioBytes([]byte("audio-bytes"), "audio/webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip, err := media.NewVideoStream(message.NewPartPipe(1), "video/mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
+		message.AudioPart{Source: recording},
+		message.VideoPart{Source: clip},
+		message.FilePart{Name: "notes.txt"},
+	}, mustResolve(t, Settings{}))
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
+	if !changed || len(parts) != 3 {
+		t.Fatalf("parts = %d, changed=%v", len(parts), changed)
+	}
+	// An attachment with no path to name is described instead of
+	// vanishing from the prompt: the model knows what it did not get.
+	for index, want := range []string{
+		"[audio file] (inline audio/webm)",
+		"[video file] (stream video/mp4)",
+		"[file] (file text/plain)",
+	} {
+		if got := parts[index].(message.TextPart).Text; got != want {
+			t.Errorf("line %d = %q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestNormalizePartsUsesForwardSlashes(t *testing.T) {
+	// The rendered line is prompt text, and prompt text crosses hosts:
+	// separators are slashed on every platform, including the one this
+	// test runs on when it is Windows.
+	workDir := filepath.FromSlash("/ws/proj")
+	config := mustResolve(t, Settings{WorkDir: workDir})
+	stored := filepath.Join(workDir, "sessions", "s-abc", "files", "notes.txt")
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
+		message.FilePart{URI: stored, Name: "notes.txt"},
+	}, config)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
+	if !changed || len(parts) != 1 {
+		t.Fatalf("parts = %d, changed=%v", len(parts), changed)
+	}
+	line := parts[0].(message.TextPart).Text
+	if want := "[file] sessions/s-abc/files/notes.txt"; line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+	if strings.ContainsRune(line, '\\') {
+		t.Errorf("line carries a platform separator: %q", line)
+	}
+}
+
+func TestNormalizePartsHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := normalizeParts(ctx, []message.Part{
+		message.TextPart{Text: "hi"},
+	}, mustResolve(t, Settings{})); !errors.Is(err, context.Canceled) {
+		t.Fatalf("normalizeParts error = %v, want context.Canceled", err)
+	}
+
+	value, err := prepareFactory{}.New(context.Background(), resource.Input{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	board := agent.NewBoard()
+	board.AppendChannelMessage(agent.MainChannel, message.Message{
+		Role:    message.RoleUser,
+		Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
+	})
+	if _, err := value.(agent.Preparer).Before(ctx,
+		agent.Identity{RunID: "r1"}, &agent.Request{TaskID: "t1"}, board); err == nil {
+		t.Fatal("Before ignored a cancelled context")
+	}
+}
+
+func TestNormalizePartsRejectsMalformedParts(t *testing.T) {
+	_, _, err := normalizeParts(context.Background(), []message.Part{nil},
+		mustResolve(t, Settings{}))
+	if err == nil {
+		t.Fatal("normalizeParts accepted a nil part")
+	}
+}
+
 func TestSettingsResolve(t *testing.T) {
 	config := mustResolve(t, Settings{})
 	if config.workDir != "" || len(config.passthrough) != 0 {
 		t.Errorf("default config = %+v, want empty", config)
 	}
+	if config.maxInline != DefaultMaxInlineBytes {
+		t.Errorf("default inline budget = %d, want %d",
+			config.maxInline, DefaultMaxInlineBytes)
+	}
 	if config.audioMarker != DefaultAudioMarker ||
 		config.videoMarker != DefaultVideoMarker ||
+		config.imageMarker != DefaultImageMarker ||
 		config.fileMarker != DefaultFileMarker {
-		t.Errorf("default markers = %q, %q, %q",
-			config.audioMarker, config.videoMarker, config.fileMarker)
+		t.Errorf("default markers = %q, %q, %q, %q",
+			config.audioMarker, config.videoMarker,
+			config.imageMarker, config.fileMarker)
 	}
 
 	config = mustResolve(t, Settings{
 		WorkDir:          "/ws",
 		PassthroughKinds: []string{"video", " file "},
 		AudioMarker:      "A ",
+		MaxInlineBytes:   2048,
 	})
 	if !config.passthrough[message.PartVideo] ||
 		!config.passthrough[message.PartFile] {
@@ -208,11 +366,17 @@ func TestSettingsResolve(t *testing.T) {
 	if config.audioMarker != "A " || config.videoMarker != DefaultVideoMarker {
 		t.Errorf("markers = %q, %q", config.audioMarker, config.videoMarker)
 	}
+	if config.maxInline != 2048 {
+		t.Errorf("inline budget = %d, want 2048", config.maxInline)
+	}
 
 	for _, kind := range []string{"image", "text", "", "audio, video"} {
 		if _, err := (Settings{PassthroughKinds: []string{kind}}).resolve(); err == nil {
 			t.Errorf("passthrough kind %q was accepted", kind)
 		}
+	}
+	if _, err := (Settings{MaxInlineBytes: -1}).resolve(); err == nil {
+		t.Error("a negative inline budget was accepted")
 	}
 }
 
@@ -239,17 +403,25 @@ func TestPrepareFactoryNew(t *testing.T) {
 work_dir: /ws
 passthrough_kinds: [video]
 audio_marker: "A "
+image_marker: "I "
+max_inline_bytes: 4096
 `),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, ok := value.(agent.Preparer); !ok {
+	preparer, ok := value.(agent.Preparer)
+	if !ok {
 		t.Fatalf("New returned %T, want an agent.Preparer", value)
+	}
+	if _, err := preparer.Before(context.Background(), agent.Identity{RunID: "r1"},
+		&agent.Request{TaskID: "t1"}, nil); err == nil {
+		t.Fatal("Before accepted a nil board")
 	}
 
 	for name, settings := range map[string]string{
 		"unknown passthrough kind": "passthrough_kinds: [text]\n",
+		"negative inline budget":   "max_inline_bytes: -1\n",
 		"unknown field":            `{"nope": 1}`,
 		"wrong field type":         `{"work_dir": 3}`,
 	} {
@@ -263,10 +435,7 @@ audio_marker: "A "
 
 func TestPreparerNormalizesTheBoard(t *testing.T) {
 	dir := t.TempDir()
-	png := filepath.Join(dir, "photo.png")
-	if err := os.WriteFile(png, []byte("png-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	png := writeFile(t, dir, "photo.png", "png-bytes")
 	settings, err := json.Marshal(map[string]string{"work_dir": dir})
 	if err != nil {
 		t.Fatal(err)

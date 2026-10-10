@@ -11,8 +11,14 @@ large it may be, and how it survives the trip into a request:
 | Piece | Package | Job |
 | --- | --- | --- |
 | Classification | `core/utils/filetype` | decide a file's type by its content, not its name |
-| Normalization | `core/message/media/imageutil` | EXIF orientation, alpha flattening, bounded JPEG re-encoding |
-| Board adaptation | `core/message/media/hook` | the `media.attachments` prepare hook |
+| Normalization | `core/media/imageutil` | EXIF orientation, alpha flattening, bounded JPEG re-encoding |
+| Board adaptation | `core/media/hook` | the `media.attachments` prepare hook |
+
+`core/media` is the payload layer: `core/message/media` keeps the
+vocabulary (sources, parts, streams), and `core/media` holds the
+handling around it. Nothing in core wires the hook or the normalization
+entry points yet — they are the contract hosts consume, and the desktop
+application registers `media.attachments` in place of its own hook.
 
 ## The `media.attachments` prepare hook
 
@@ -28,11 +34,27 @@ message before the engine reads the board:
   and inline bytes are what the wire carries;
 - **images and text otherwise pass through untouched**: a vision model
   takes the image part directly, and the declaration checks route the
-  turn to a target that accepts it.
+  turn to a target that accepts it;
+- **an attachment whose bytes cannot travel is flattened the same way**
+  rather than failing the turn: a local file over the inline budget, and
+  an inline or stream source with no path to name, are described in the
+  line (`[image file] sessions/s-abc/media/2-b.png`,
+  `[audio file] (inline audio/webm)`) so the model knows what it did not
+  get. How large an attachment is never decides whether a turn runs.
 
 The hook never rewrites the request itself; flattening and inlining
 live on the board the engine reads, so a session archive that keeps the
 request keeps the original typed attachments.
+
+Flattened lines use forward slashes on every platform, because prompt
+text crosses hosts.
+
+Part URLs on the main channel are host-attested: the hook inlines
+whatever local file they name, wherever it lives. An attachment
+legitimately sits outside the workspace root (`work_dir` is for
+readable paths, not confinement — a host keeps session media in its own
+data directory), so a host that maps untrusted input into parts must
+sanitize before seeding the board.
 
 ```yaml
 agents:
@@ -40,8 +62,13 @@ agents:
     prepare:
       - type: media.attachments        # hook.prepare attachment normalizer
         settings:
-          work_dir: /workspace         # attachment paths under it render relative
-          passthrough_kinds: [video]   # keep these kinds as parts: audio / video / file
+          work_dir: /workspace           # attachment paths under it render relative
+          passthrough_kinds: [video]     # keep these kinds as parts: audio / video / file
+          max_inline_bytes: 10485760     # inline budget per attachment (10 MiB default)
+          audio_marker: "[audio file] "  # per-kind label (defaults shown)
+          video_marker: "[video file] "
+          image_marker: "[image file] "
+          file_marker: "[file] "
 ```
 
 Settings:
@@ -49,8 +76,9 @@ Settings:
 | Field | Meaning |
 | --- | --- |
 | `work_dir` | Workspace root; attachment paths under it render relative in the flattened text, paths outside it stay absolute. Optional. |
-| `passthrough_kinds` | The non-image kinds (`audio`, `video`, `file`) whose parts survive as parts. The default flattens every non-image attachment: the hook runs before routing, so the declared inputs of the eventual target are not known here. A deployment lists a kind only for turns it routes to a model that declares that input. Images are never flattened. |
-| `audio_marker`, `video_marker`, `file_marker` | Prefix of the flattened line for that kind. An empty marker falls back to `[audio file] `, `[video file] ` and `[file] `. |
+| `passthrough_kinds` | The non-image kinds (`audio`, `video`, `file`) whose parts survive as parts. The default flattens every non-image attachment: the hook runs before routing, so the declared inputs of the eventual target are not known here. A deployment lists a kind only for turns it routes to a model that declares that input. Images are flattened only when their bytes cannot travel. |
+| `max_inline_bytes` | Inline budget for one attachment. Optional; 10 MiB (`hook.DefaultMaxInlineBytes`) when unset, matching `imageutil.MaxInlineImageBytes` so an attachment that survived persistence also survives the trip into a request. A file over it is flattened to a path line, never a failed turn. |
+| `audio_marker`, `video_marker`, `image_marker`, `file_marker` | Prefix of the flattened line for that kind. An empty marker falls back to `[audio file] `, `[video file] `, `[image file] ` and `[file] `. |
 
 ## Content classification
 
@@ -79,7 +107,7 @@ The rule is content-first, in order:
 
 ## Image normalization
 
-`core/message/media/imageutil` turns an arbitrary attachment image into
+`core/media/imageutil` turns an arbitrary attachment image into
 predictable prompt bytes:
 
 - `NormalizeToJPEG(r)` decodes JPEG / PNG / GIF / TIFF / BMP, applies
@@ -92,20 +120,30 @@ predictable prompt bytes:
   rejected before a full-size allocation;
 - `DownscaleToJPEG(r, maxEdge, maxBytes)` fits both bounds: quality is
   stepped down first, and the image is scaled further only when the
-  lowest quality still does not fit. It returns the dimensions that
-  were actually encoded;
+  lowest quality still does not fit (`maxBytes <= 0` applies no byte
+  budget). The dimensions it returns always describe the bytes it
+  returns, including when the budget stays out of reach even at the
+  smallest size the ladder produces — then the smallest encoding is
+  returned rather than an error;
 - `JPEGUpright(path)` reports whether a JPEG's EXIF orientation needs
   no transform, so an upright file can be persisted byte-for-byte
-  instead of being re-encoded.
+  instead of being re-encoded. It answers what imaging's own EXIF
+  reader answers (first APP1 segment only; the orientation is the first
+  two bytes of the tag's value field, whatever type and count the entry
+  declares), and where it cannot follow a malformed stream — truncated
+  EXIF data, marker fill bytes — it reports "needs a transform" rather
+  than guessing.
 
 Budgets:
 
 | Constant | Value | Bounds |
 | --- | --- | --- |
-| `MaxInlineImageBytes` | 10 MiB | one inlined attachment, including the hook's local-file inlining |
+| `hook.DefaultMaxInlineBytes` | 10 MiB | one inlined attachment of any kind; `max_inline_bytes` overrides it |
+| `MaxInlineImageBytes` | 10 MiB | one image: persisted as an attachment, previewed as a data URL |
 | `MaxDecodePixels` | 40,000,000 | pixels of any image that is fully decoded |
 | `DefaultPromptImageEdge` | 1568 px | longest edge of a prompt-side downscale |
 | `DefaultPromptImageBytes` | 786,000 | raw JPEG size whose marshalled part stays under the default 1 MiB non-text part budget (`middleware.DefaultResultPartBudget`), pinned by a test |
 
 Decoding runs on `github.com/disintegration/imaging` (pure Go, no cgo);
-TIFF and BMP decoding comes from `golang.org/x/image`.
+TIFF and BMP decoding comes from `golang.org/x/image`, which imaging
+imports for registration (a test in the package pins that dependency).

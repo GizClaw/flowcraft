@@ -484,10 +484,12 @@ agents:
     prepare:
       - type: media.attachments       # hook.prepare attachment normalizer
         settings:
+          max_inline_bytes: 10485760   # optional; per-attachment inline budget (default 10 MiB)
           work_dir: /workspace              # optional; paths under it render relative
           passthrough_kinds: [video]        # optional; audio / video / file parts survive as parts
           audio_marker: "[audio file] "     # optional; per-kind label (defaults shown)
           video_marker: "[video file] "
+          image_marker: "[image file] "
           file_marker: "[file] "
 ```
 
@@ -495,7 +497,10 @@ agents:
 text line naming its path unless the kind is listed in
 `passthrough_kinds`, and rewrites URL-sourced image / audio / video
 parts that point at a local file into inline bytes before the engine
-reads the board. Images are never flattened. See
+reads the board. An attachment whose bytes cannot travel — a local file
+over `max_inline_bytes`, or an inline / stream source with no path to
+name — is flattened to a described line instead of failing the turn.
+See
 [Media & Attachments](../../../docs/guides/media.md).
 
 ## event bus
