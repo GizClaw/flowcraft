@@ -2,6 +2,9 @@ package middleware_test
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +93,53 @@ func TestAssemblyFactoryAppliesResultLimit(t *testing.T) {
 	}
 	if !strings.HasSuffix(res.Content.Text(), "[cut]") {
 		t.Fatalf("content = %q, want the configured marker", res.Content.Text())
+	}
+}
+
+// The truncate block decodes through the factory and drives the
+// middleware end to end: the result leaves as an excerpt plus a pointer
+// while the spill file holds the tool's full output.
+func TestAssemblyFactoryAppliesTruncate(t *testing.T) {
+	dir := t.TempDir()
+	settings, err := json.Marshal(map[string]any{
+		"middlewares": map[string]any{
+			"truncate": map[string]any{"enabled": true, "max_chars": 40, "dir": dir},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
+		Settings: settings,
+		Deps: map[string]any{
+			"tool": tooltest.Source(tooltest.FuncTool("long", "",
+				func(context.Context, string) (string, error) {
+					return strings.Repeat("x", 500), nil
+				})),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	assembly, ok := value.(*tool.Assembly)
+	if !ok {
+		t.Fatalf("New returned %T, want *tool.Assembly", value)
+	}
+	res := assembly.Execute(context.Background(),
+		message.ToolCall{ID: "c", Name: "long", Arguments: []byte(`{}`)})
+	out := res.Content.Text()
+	if got := len([]rune(out)); got > 40 {
+		t.Fatalf("truncated text = %d runes, want <= 40", got)
+	}
+	if !strings.Contains(out, "full output:") {
+		t.Fatalf("content = %q, want the spill pointer", out)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "c.output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 500 {
+		t.Fatalf("spill file = %d bytes, want the tool's full output", len(raw))
 	}
 }
 

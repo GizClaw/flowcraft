@@ -373,6 +373,7 @@ tools:
       recover: {enabled: true}
       telemetry: {enabled: true}
       result_limit: {max: 20000}
+      truncate: {enabled: true, max_chars: 20000, dir: ./cache/tools}
       timeout: {default: 30s}
       concurrency: {limit: 8}
     dynamic: {default: deferred, exposures: {tool_search: always}}
@@ -398,6 +399,16 @@ tool result rides every later turn's context and inline media has no natural
 size. `result_part_budget_bytes` (same level as the middleware entries) moves
 that default — absent means 1 MiB, `0` lifts it — and is ignored when
 `result_limit.part_budget_bytes` is set.
+
+`truncate` (same level) is the recoverable cap: non-error results beyond
+`truncate.max_chars` runes are persisted under `<dir>/<call_id>.output`
+while the context keeps a head+tail excerpt plus a pointer
+(`truncate.work_dir` makes the pointer relative). It runs inside
+`result_limit` — keep `max_chars` at or below `result_limit.max` so the
+limiter cannot cut the pointer away. JSON results stay parseable
+(oversized string fields excerpted in place, or a
+`{truncated, full_output, preview}` envelope); a failed spill logs and
+still returns the excerpt.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host
@@ -603,6 +614,27 @@ themselves via `delegation.StreamTargetProvider`, so UI decorators can
 pass the description through. See
 [docs/guides/delegation.md](../../../docs/guides/delegation.md) for the
 full lifecycle.
+
+## secret store
+
+```yaml
+secrets:
+  kind: secret.Store
+  impl: keychain
+  settings:
+    id: keychain         # optional; the name ${secret:keychain.NAME} uses
+    dir: ${base:secrets} # keychain impl only: the store directory (0700)
+```
+
+`secret.Store` backends answer `${secret:NAME}` (the deployment's
+default store) and `${secret:store.NAME}`. Values resolve at use time
+and are cached per store for a minute, so a missing secret fails the
+request rather than the build, and a value never appears in logs or
+error messages. `core/secret` ships `env` and `file`; `backends/secret`
+ships `keychain`, which seals one AES-256-GCM file per secret under
+`dir` (protection against backups and casual reads, not against another
+process running as the same user). Other impls (vault, 1Password, ...)
+are app-registered.
 
 ## checkpoint store
 

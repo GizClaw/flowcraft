@@ -56,12 +56,7 @@ func NewFSBridge(ws workspace.Workspace, opts ...FSBridgeOption) BindingFunc {
 					return "", errdefs.NotAvailablef("fs.read: workspace not configured")
 				}
 				if cfg.readMaxBytes > 0 {
-					lr, ok := ws.(workspace.LimitedReader)
-					if !ok {
-						return "", errdefs.NotAvailablef(
-							"fs.read: workspace %T does not support bounded reads", ws)
-					}
-					data, err := lr.ReadLimited(ctx, path, cfg.readMaxBytes)
+					data, err := workspace.Capped(ctx, ws, path, cfg.readMaxBytes)
 					if err != nil {
 						return "", err
 					}

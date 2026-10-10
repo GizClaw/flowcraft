@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -17,6 +18,11 @@ type Settings struct {
 	Concurrency *ConcurrencySettings `json:"concurrency,omitempty"`
 	Telemetry   *TelemetrySettings   `json:"telemetry,omitempty"`
 	ResultLimit *ResultLimitSettings `json:"result_limit,omitempty"`
+	// Truncate persists oversized results to disk and hands the model an
+	// excerpt plus a pointer ([Truncate]). It runs inside ResultLimit, so
+	// the spill file holds the tool's full output while the limiter keeps
+	// the hard context bound.
+	Truncate *TruncateSettings `json:"truncate,omitempty"`
 	// ResultPartBudgetBytes caps the encoded size of one result's non-text
 	// parts when ResultLimit declares no text budget. Non-text parts are
 	// bounded by default ([DefaultResultPartBudget]) because a tool result is
@@ -96,6 +102,21 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		// media is bounded by default so a tool cannot hand the model an
 		// unbounded context item by returning one.
 		mws = append(mws, ResultPartLimiter(budget))
+	}
+	if s.Truncate != nil && s.Truncate.Enabled {
+		if s.Truncate.MaxChars <= 0 {
+			return nil, errdefs.Validationf(
+				"tool middleware: truncate.max_chars must be positive, got %d",
+				s.Truncate.MaxChars)
+		}
+		if strings.TrimSpace(s.Truncate.Dir) == "" {
+			return nil, errdefs.Validationf(
+				"tool middleware: truncate.dir is required")
+		}
+		// Inside ResultLimit: Truncate persists the tool's full output
+		// and hands the limiter its excerpt, so the spill file never
+		// holds an already-limited result.
+		mws = append(mws, Truncate(*s.Truncate))
 	}
 	if s.Timeout != nil && s.Timeout.Default != "" {
 		d, err := time.ParseDuration(s.Timeout.Default)
