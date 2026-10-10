@@ -39,6 +39,17 @@
 // it renders relative in the flattened text and everything else renders
 // absolute, and the rendering uses forward slashes on every platform so
 // the same line crosses hosts unchanged.
+//
+// # Budgets
+//
+// MaxInlineBytes bounds what the hook reads, not what the prompt
+// carries: the bytes of an attachment that fits travel verbatim, so a
+// stored file reaches every later turn's context at its stored size.
+// The prompt-side bound that keeps that context small
+// (core/media/imageutil.DefaultPromptImageBytes, far below this one) is
+// applied by whoever normalizes before seeding the board: a host that
+// wants it runs imageutil's entry points first, and registering
+// media.attachments alone downscales nothing.
 package hook
 
 import (
@@ -46,6 +57,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -444,14 +456,25 @@ func readInline(ctx context.Context, path string, limit int64) ([]byte, error) {
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("media: read attachment %s: %w", path, err)
+		return nil, fmt.Errorf(
+			"%s: read attachment %s: %w", AttachmentsType, path, err)
 	}
 	defer func() {
 		_ = f.Close() // read-only handle: a close error changes nothing here
 	}()
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	// The read runs one byte past the budget, which is how "over the
+	// budget" is detected. At the int64 ceiling there is no byte left to
+	// add, and no readable file is over that budget, so the increment is
+	// skipped: wrapping it would leave a negative bound, report EOF at
+	// once, and hand an empty payload to a media constructor.
+	bound := limit
+	if bound < math.MaxInt64 {
+		bound++
+	}
+	data, err := io.ReadAll(io.LimitReader(f, bound))
 	if err != nil {
-		return nil, fmt.Errorf("media: read attachment %s: %w", path, err)
+		return nil, fmt.Errorf(
+			"%s: read attachment %s: %w", AttachmentsType, path, err)
 	}
 	if int64(len(data)) > limit {
 		return nil, errOverInlineBudget

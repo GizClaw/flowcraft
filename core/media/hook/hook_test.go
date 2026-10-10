@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -238,6 +239,43 @@ func TestNormalizePartsDegradesOversizedAttachments(t *testing.T) {
 	}
 	if got := parts[0].(message.TextPart).Text; got != "[video file] clip.mp4" {
 		t.Errorf("degraded video line = %q", got)
+	}
+}
+
+func TestNormalizePartsReadsUnderAnInt64CeilingBudget(t *testing.T) {
+	// A budget at the int64 ceiling means "no practical bound". The read
+	// runs one byte past the budget to spot an oversized file, and that
+	// increment has no room left here: wrapping it would read nothing,
+	// pass the budget check with an empty payload, and fail the turn
+	// inside a media constructor — naming neither the setting nor the
+	// file. The attachment must inline with its bytes intact.
+	dir := t.TempDir()
+	recording := writeFile(t, dir, "note.webm", "audio-bytes")
+	config := mustResolve(t, Settings{
+		WorkDir:          dir,
+		PassthroughKinds: []string{"audio"},
+		MaxInlineBytes:   math.MaxInt64,
+	})
+	parts, changed, err := normalizeParts(context.Background(), []message.Part{
+		message.AudioPart{
+			Source: urlSource[media.AudioSource](t, recording, "audio/webm"),
+		},
+	}, config)
+	if err != nil {
+		t.Fatalf("normalizeParts: %v", err)
+	}
+	if !changed || len(parts) != 1 {
+		t.Fatalf("parts = %d, changed=%v", len(parts), changed)
+	}
+	audio, ok := parts[0].(message.AudioPart)
+	if !ok {
+		t.Fatalf("part = %T, want the audio part inlined", parts[0])
+	}
+	if audio.Source.Kind() != media.SourceInline {
+		t.Fatalf("audio source = %s, want inline", audio.Source.Kind())
+	}
+	if got := string(audio.Source.Bytes()); got != "audio-bytes" {
+		t.Errorf("inline bytes = %q, want the file's bytes", got)
 	}
 }
 

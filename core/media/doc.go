@@ -27,7 +27,9 @@
 //   - imageutil.MaxInlineImageBytes (10 MiB) is the same bound for the
 //     image paths hosts own: persisting an attachment, previewing one;
 //   - imageutil.DefaultPromptImageBytes (786 KB) is far smaller, because
-//     an inline part is replayed in every later turn's context.
+//     an inline part is replayed in every later turn's context. It
+//     bounds what a host normalizes before seeding, not what the hook
+//     carries: core/media/hook moves bytes verbatim.
 //
 // # Consumers
 //

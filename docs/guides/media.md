@@ -49,6 +49,12 @@ request keeps the original typed attachments.
 Flattened lines use forward slashes on every platform, because prompt
 text crosses hosts.
 
+The hook moves bytes; it does not normalize them. An attachment under
+`max_inline_bytes` reaches the request at its stored size, so the
+prompt-side bound (`imageutil.DefaultPromptImageBytes`) is applied by
+whoever normalizes before seeding — registering `media.attachments`
+alone never downscales.
+
 Part URLs on the main channel are host-attested: the hook inlines
 whatever local file they name, wherever it lives. An attachment
 legitimately sits outside the workspace root (`work_dir` is for
@@ -77,7 +83,7 @@ Settings:
 | --- | --- |
 | `work_dir` | Workspace root; attachment paths under it render relative in the flattened text, paths outside it stay absolute. Optional. |
 | `passthrough_kinds` | The non-image kinds (`audio`, `video`, `file`) whose parts survive as parts. The default flattens every non-image attachment: the hook runs before routing, so the declared inputs of the eventual target are not known here. A deployment lists a kind only for turns it routes to a model that declares that input. Images are flattened only when their bytes cannot travel. |
-| `max_inline_bytes` | Inline budget for one attachment. Optional; 10 MiB (`hook.DefaultMaxInlineBytes`) when unset, matching `imageutil.MaxInlineImageBytes` so an attachment that survived persistence also survives the trip into a request. A file over it is flattened to a path line, never a failed turn. |
+| `max_inline_bytes` | Inline budget for one attachment. Optional; 10 MiB (`hook.DefaultMaxInlineBytes`) when unset, matching `imageutil.MaxInlineImageBytes` (pinned by a test) so an attachment that survived persistence also survives the trip into a request. A file over it is flattened to a path line, never a failed turn. |
 | `audio_marker`, `video_marker`, `image_marker`, `file_marker` | Prefix of the flattened line for that kind. An empty marker falls back to `[audio file] `, `[video file] `, `[image file] ` and `[file] `. |
 
 ## Content classification
@@ -142,7 +148,7 @@ Budgets:
 | `MaxInlineImageBytes` | 10 MiB | one image: persisted as an attachment, previewed as a data URL |
 | `MaxDecodePixels` | 40,000,000 | pixels of any image that is fully decoded |
 | `DefaultPromptImageEdge` | 1568 px | longest edge of a prompt-side downscale |
-| `DefaultPromptImageBytes` | 786,000 | raw JPEG size whose marshalled part stays under the default 1 MiB non-text part budget (`middleware.DefaultResultPartBudget`), pinned by a test |
+| `DefaultPromptImageBytes` | 786,000 | raw JPEG size whose marshalled part stays under the default 1 MiB non-text part budget (`middleware.DefaultResultPartBudget`), pinned by a test. The bound a host applies while normalizing before seeding; the hook does not enforce it. |
 
 Decoding runs on `github.com/disintegration/imaging` (pure Go, no cgo);
 TIFF and BMP decoding comes from `golang.org/x/image`, which imaging
