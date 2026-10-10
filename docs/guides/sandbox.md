@@ -186,11 +186,15 @@ acts on the answer:
 
 ```go
 esc := &sandbox.Escalation{
-    Confined:   confined,        // approval / defaults / OS-backend chain
-    Unconfined: local.New(root), // the retry target: no OS boundary
-    Escalate:   policy,          // the ask channel (renders the prompt)
-    Rules:      policy,          // remembered "run outside" rules, read side
-    Gate:       host,            // mode owner: is the retry offerable?
+    Confined: confined, // approval / defaults / OS-backend chain
+    // The retry target is a chain of its own; keep the floor that a
+    // retry must not drop.
+    Unconfined: sandbox.WithDefaults( // daemon Env / Net / Resources policy
+        sandbox.AllowCommands(local.New(root), allowed), // keep the command gate
+        defaults),
+    Escalate: policy, // the ask channel (renders the prompt)
+    Rules:    policy, // remembered "run outside" rules, read side
+    Gate:     host,   // mode owner: is the retry offerable?
 }
 res, outcome, err := esc.Exec(ctx, cmd, args, opts)
 ```
@@ -206,15 +210,25 @@ Semantics worth relying on:
 
 - **Denial detection is a tripwire, not a wall.** `Denied` matches the
   fragments the three confinement layers leave behind (seatbelt EPERM,
-  bwrap read-only binds, the Windows access-denied spellings) and
+  bwrap read-only binds, the Windows access-denied spellings) in either
+  captured stream — the shells that phrase them disagree on stderr
+  vs. stdout — and
   deliberately ignores plain "Permission denied" and the
   cannot-execute statuses 126/127: those are ordinary file-mode and
   lookup failures, and prompting for them would train users to approve
   noise. A false positive only produces a prompt the user can decline;
-  the OS backend stays the wall.
+  the OS backend stays the wall. The table is pinned to reality by the
+  seatbelt / bwrap / windows integration lanes, each of which provokes
+  a genuine refusal and asserts `Denied` recognizes it.
 - **Fail closed.** A prompt that errors keeps the confined result, a
   deployment with no escalator (headless, tests) keeps refusals as
   plain command failures, and a nil gate offers nothing.
+- **The retry chain stands on its own.** `Unconfined` is not "the
+  confined chain minus the OS backend": nothing merged into `Confined`
+  — defaults, command gates, resource caps — applies to it, so build
+  it with whatever floor must survive an escalation. The OS boundary
+  is the one thing a retry gives up; the rest is that chain's
+  configuration.
 - **The gate is the mode owner's half.** A session that already runs
   unconfined has no confine to leave, and a read-only session must not
   trade its workspace read-only guarantee for a per-command approval:
@@ -225,9 +239,17 @@ Semantics worth relying on:
 - **Remembered rules skip the doomed attempt.** `EscalatedAllowed` is
   consulted before the first attempt, so an "always" answer runs
   directly through `Unconfined`; persisting the rule belongs to the
-  `Escalator` implementation. Matching normalizes like the allowlist
-  (`RuleFor` unwraps `sh -c` wrappers), so `Command` and `Rule` in the
-  `EscalationRequest` are what the prompt and the rule store show.
+  `Escalator` implementation. It observes a snapshot of the request
+  (mutating it cannot rewrite the call, exactly like an approval
+  predicate), and it is the only check left on such a call beyond
+  `Gate`: a stored rule keeps routing through `Unconfined` however the
+  confined chain is retuned later. Matching normalizes like the
+  allowlist (`RuleFor` unwraps `sh -c` wrappers), so the request's
+  `Rule` is the normalized prefix the store matches while `Command` is
+  the display line the prompt shows (argv re-quoted, `sh -c 'pip
+  install x'`), `Reason` / `Detail` the refusal, and `Exec` the
+  snapshot of the refused attempt (WorkDir and the rest) for a prompt
+  that shows more than the line.
 - **`Escalation` is not a `Runner`.** The one-shot `Exec` is a derived
   view over `Start`, and only a completed result tells a refusal from
   an ordinary failure, so the retry lives at the Exec level.

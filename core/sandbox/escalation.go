@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -21,16 +22,25 @@ import (
 // answer is an ordinary decision the front end can act on.
 
 // EscalationRequest describes one confined attempt the OS sandbox
-// refused. It is rendered into the user prompt; Command is the command
-// line rebuilt from the spawn argv (what the user sees, including any
-// shell wrapper), while Rule is the normalized token prefix persisted
-// for a "remember" answer. The two differ for shell-wrapped calls
-// ("sh -c 'pip install x'" vs "pip install x").
+// refused. It is rendered into the user prompt.
+//
+// Command is the display line, not the caller's text: the spawn argv
+// with every token that a bare join would leave ambiguous quoted the
+// way a POSIX shell reads it back, so a shell wrapper shows the script
+// it runs ("sh -c 'pip install x'"). It is a rendering; the retry
+// re-runs the argv. Rule is the normalized token prefix persisted for
+// a "remember" answer ("pip install x" for that call) — the two differ
+// for shell-wrapped calls, and only Rule reaches the rule store.
 type EscalationRequest struct {
 	Command string
 	Rule    string
 	Reason  string
 	Detail  string
+	// Exec is the refused attempt itself — command, args and options
+	// (WorkDir, env policy, ...) — for a prompt that shows more than
+	// the rendered line. It is a clone: mutating it cannot change what
+	// the retry runs.
+	Exec ExecRequest
 }
 
 // EscalationDecision is the user's answer to an [EscalationRequest].
@@ -55,7 +65,8 @@ type Escalator interface {
 // EscalationRules is the read side of the persisted escalation rules.
 // The front end consults it before the first attempt so a remembered
 // rule skips the confined attempt (and its doomed first failure)
-// entirely.
+// entirely. It observes a snapshot of the request, exactly like the
+// approval predicates: reading the rule, never rewriting the call.
 type EscalationRules interface {
 	EscalatedAllowed(req ExecRequest) bool
 }
@@ -73,9 +84,12 @@ type EscalationGate interface {
 // EscalationGateFunc lets a plain closure act as an [EscalationGate].
 type EscalationGateFunc func(ctx context.Context) bool
 
-// EscalationAvailable implements EscalationGate.
+// EscalationAvailable implements EscalationGate. A nil func is a nil
+// gate: a typed-nil func boxes into a non-nil interface, so the nil
+// check has to happen here (fail closed, like the nil approval
+// predicate).
 func (f EscalationGateFunc) EscalationAvailable(ctx context.Context) bool {
-	return f(ctx)
+	return f != nil && f(ctx)
 }
 
 // RuleFor renders one spawn's argv as the rule string the escalation
@@ -93,7 +107,7 @@ func RuleFor(argv []string) string {
 	}), " ")
 }
 
-// denialMarkers are the stderr fragments the OS backends and the
+// denialMarkers are the stream fragments the OS backends and the
 // shells in front of them leave behind when a syscall is refused.
 // macOS seatbelt denies a write with EPERM ("Operation not
 // permitted"), bwrap leaves the rest of the filesystem on a read-only
@@ -106,6 +120,13 @@ func RuleFor(argv []string) string {
 // "permission denied" is deliberately absent: it is the ordinary
 // EACCES of unrelated file-mode problems, and prompting to leave the
 // sandbox for those would train users to approve noise.
+//
+// Seatbelt *profile* syntax is absent for the same reason it cannot
+// work: the profile is what the backend hands the kernel, and a
+// refused syscall surfaces as the EPERM wording above, never as
+// profile text. The integration lanes (seatbelt, bwrap, windows)
+// provoke a genuine refusal per backend and assert [Denied] recognizes
+// it, so the table is pinned to the streams that exist.
 var denialMarkers = []string{
 	"operation not permitted",
 	"read-only file system",
@@ -113,7 +134,6 @@ var denialMarkers = []string{
 	"access to the path",
 	"unauthorizedaccessexception",
 	"permissiondenied",
-	"deny file-write",
 }
 
 // quickRejectExitCodes are the conventional "cannot execute" statuses
@@ -129,7 +149,10 @@ var denialMarkers = []string{
 var quickRejectExitCodes = map[int]bool{126: true, 127: true}
 
 // Denied reports whether res looks like the OS sandbox refused the
-// command, with a short reason for the user prompt.
+// command, with a short reason for the user prompt. Both captured
+// streams are searched: the shells that phrase these failures do not
+// agree on which one carries them, and a wrapper can move its own
+// error output.
 //
 // Like every command predicate in this package this is a tripwire,
 // not a wall: a false positive only produces a prompt the user can
@@ -140,40 +163,50 @@ func Denied(res *ExecResult) (string, bool) {
 	if res == nil || res.ExitCode == 0 || quickRejectExitCodes[res.ExitCode] {
 		return "", false
 	}
-	haystack := strings.ToLower(res.Stderr)
-	if haystack == "" {
-		haystack = strings.ToLower(res.Stdout)
+	marker, ok := denialMarker(res.Stderr)
+	if !ok {
+		marker, ok = denialMarker(res.Stdout)
 	}
+	if !ok {
+		return "", false
+	}
+	return "the sandbox refused the command (" + marker + ")", true
+}
+
+// denialMarker returns the first marker one captured stream carries,
+// so the reason names the wording that actually tripped the detector.
+func denialMarker(stream string) (string, bool) {
+	lower := strings.ToLower(stream)
 	for _, marker := range denialMarkers {
-		if !strings.Contains(haystack, marker) {
-			continue
+		if strings.Contains(lower, marker) {
+			return marker, true
 		}
-		return "the sandbox refused the command (" + marker + ")", true
 	}
 	return "", false
 }
 
-// DenialExcerpt picks the stderr line that carries the refusal, so the
+// DenialExcerpt picks the line that carries the refusal, so the
 // escalation prompt can show the concrete error instead of the whole
-// captured output. It falls back to the first non-empty stderr line.
+// captured output. It searches the streams in [Denied]'s order
+// (stderr, then stdout) and falls back to the first non-empty line of
+// either.
 func DenialExcerpt(res *ExecResult) string {
 	const maxLen = 400
 	if res == nil {
 		return ""
 	}
-	for _, line := range strings.Split(res.Stderr, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	for _, stream := range []string{res.Stderr, res.Stdout} {
+		for _, line := range strings.Split(stream, "\n") {
+			if line = strings.TrimSpace(line); line != "" && isDenialLine(line) {
+				return truncateDenialLine(line, maxLen)
+			}
 		}
-		if !isDenialLine(line) {
-			continue
-		}
-		return truncateDenialLine(line, maxLen)
 	}
-	for _, line := range strings.Split(res.Stderr, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return truncateDenialLine(line, maxLen)
+	for _, stream := range []string{res.Stderr, res.Stdout} {
+		for _, line := range strings.Split(stream, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				return truncateDenialLine(line, maxLen)
+			}
 		}
 	}
 	return ""
@@ -190,12 +223,47 @@ func isDenialLine(line string) bool {
 }
 
 // truncateDenialLine keeps an over-long line readable in a prompt; the
-// excerpt is display-only.
+// excerpt is display-only, but the cut still lands on a rune boundary
+// so non-ASCII error text does not turn into mojibake.
 func truncateDenialLine(line string, maxLen int) string {
 	if len(line) <= maxLen {
 		return line
 	}
-	return line[:maxLen] + "..."
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return line[:cut] + "..."
+}
+
+// renderCommand joins one spawn's argv into the display line the
+// prompt shows: tokens that a bare join would leave ambiguous (spaces,
+// quotes, shell metacharacters) are quoted the way a POSIX shell reads
+// them back, so a wrapped script still reads as the script that runs.
+// Display only — the retry re-runs the argv, never this string.
+func renderCommand(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		parts = append(parts, quoteToken(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// safeTokenRunes are the bytes a shell word may carry bare. Anything
+// else (spaces, quotes, globs, redirections, non-ASCII) gets quoted.
+const safeTokenRunes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+	"0123456789_@%+=:,./-"
+
+// quoteToken single-quotes one token unless every rune is safe bare;
+// an embedded single quote closes, escapes and reopens the quotes, the
+// way a shell escapes one.
+func quoteToken(arg string) string {
+	if arg != "" && !strings.ContainsFunc(arg, func(r rune) bool {
+		return !strings.ContainsRune(safeTokenRunes, r)
+	}) {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
 // Escalation is the one-shot front end that adds the approved-retry
@@ -212,22 +280,36 @@ func truncateDenialLine(line string, maxLen int) string {
 // persistent command channel whose refusals surface over many reads,
 // and restarting one is not what the user approved.
 //
-// Everything optional fails closed: a nil Escalate or Gate never
-// offers a retry, a nil Rules remembers nothing, and a prompt that
-// errors keeps the confined result. Both chains are required.
+// Everything optional fails closed: a nil Escalate or Gate turns off
+// the prompt (a remembered rule still runs through Unconfined where
+// the gate allows it), a nil Rules remembers nothing, and a prompt
+// that errors keeps the confined result. Both chains are required.
 type Escalation struct {
 	// Confined is where commands run by default: the approval /
 	// defaults / OS-backend chain. Required.
 	Confined Runner
 	// Unconfined is the retry target: the same command outside the
 	// confine, with byte-identical [ExecOptions]. Required.
+	//
+	// It is a chain of its own, not "Confined minus the OS backend":
+	// nothing merged into Confined — defaults, command gates,
+	// resource caps — applies to it, so build it with whatever floor
+	// must survive an escalation. The OS boundary is the one thing a
+	// retry gives up; the rest is this chain's configuration.
+	// Remembered rules run through it with no prompt at all, so a
+	// rule the user approved routes around every gate that this chain
+	// does not carry, however the confined chain is retuned later.
 	Unconfined Runner
 	// Escalate is the ask channel for one refused command. Nil
-	// disables escalation: refusals stay ordinary command failures.
+	// turns off the prompt: a refusal no rule covers stays an
+	// ordinary command failure. Remembered rules still apply, subject
+	// to Gate — the user already answered those.
 	Escalate Escalator
 	// Rules is the read side of remembered "run this outside the
 	// sandbox" rules. A covered call skips the confined attempt and
-	// runs through Unconfined directly. Nil remembers nothing.
+	// runs through Unconfined directly, so a rule outlives the
+	// confined chain it was approved under, with Gate as the only
+	// check left on such a call. Nil remembers nothing.
 	Rules EscalationRules
 	// Gate is the session-mode check behind every offer. Nil means
 	// no: hosts that model permission modes wire it explicitly (see
@@ -268,15 +350,14 @@ func (e *Escalation) Exec(
 	}
 
 	argv := append([]string{cmd}, args...)
+	req := ExecRequest{Command: cmd, Args: args, Opts: opts}
 	available := e.Gate != nil && e.Gate.EscalationAvailable(ctx)
 
 	// A remembered rule skips the confined attempt entirely, but only
 	// where a retry would be offerable at all: the read-only
 	// mode must not be traded even for a rule the user approved
 	// earlier.
-	if available && e.Rules != nil && e.Rules.EscalatedAllowed(
-		ExecRequest{Command: cmd, Args: args, Opts: opts},
-	) {
+	if available && e.Rules != nil && e.Rules.EscalatedAllowed(cloneExecRequest(req)) {
 		res, err := Exec(ctx, e.Unconfined, cmd, args, opts)
 		outcome.Approved = true
 		outcome.Remembered = true
@@ -296,10 +377,11 @@ func (e *Escalation) Exec(
 		return res, outcome, nil
 	}
 	decision, err := e.Escalate.Escalate(ctx, EscalationRequest{
-		Command: strings.Join(argv, " "),
+		Command: renderCommand(argv),
 		Rule:    RuleFor(argv),
 		Reason:  reason,
 		Detail:  DenialExcerpt(res),
+		Exec:    cloneExecRequest(req),
 	})
 	if err != nil {
 		// Fail closed: the refusal stands unless the user could be

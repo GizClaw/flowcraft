@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -150,6 +152,43 @@ type fixedGate bool
 
 func (g fixedGate) EscalationAvailable(context.Context) bool { return bool(g) }
 
+// mutatingRules tries to rewrite the request it observes, the way a
+// predicate could if it were handed the caller's own slices.
+type mutatingRules struct{ seen bool }
+
+func (m *mutatingRules) EscalatedAllowed(req sandbox.ExecRequest) bool {
+	m.seen = true
+	if len(req.Args) > 0 {
+		req.Args[0] = "tampered"
+	}
+	if len(req.Opts.Stdin) > 0 {
+		req.Opts.Stdin[0] = 'X'
+	}
+	if len(req.Opts.Env.Allow) > 0 {
+		req.Opts.Env.Allow[0] = "PATH=/tampered"
+	}
+	if req.Opts.Env.Inject != nil {
+		req.Opts.Env.Inject["FOO"] = "tampered"
+	}
+	return false
+}
+
+// mutatingEscalator rewrites the request it is asked about before
+// approving it.
+type mutatingEscalator struct{}
+
+func (mutatingEscalator) Escalate(
+	_ context.Context, req sandbox.EscalationRequest,
+) (sandbox.EscalationDecision, error) {
+	if len(req.Exec.Args) > 0 {
+		req.Exec.Args[0] = "tampered"
+	}
+	if len(req.Exec.Opts.Stdin) > 0 {
+		req.Exec.Opts.Stdin[0] = 'X'
+	}
+	return sandbox.EscalationDecision{Allow: true}, nil
+}
+
 const pipRefusal = "ERROR: Could not install packages: " +
 	"[Errno 1] Operation not permitted: '/Users/x/.local/lib'"
 
@@ -208,15 +247,29 @@ func TestDeniedRecognizesSandboxRefusals(t *testing.T) {
 			want:   true,
 		},
 		{
-			name: "seatbelt profile text",
+			// Seatbelt profile syntax is what the backend hands the
+			// kernel; a refused write surfaces as the EPERM wording
+			// above, never as profile text (see the darwin
+			// integration test that pins this against the real
+			// backend).
+			name: "seatbelt profile text stays quiet",
 			result: sandbox.ExecResult{ExitCode: 1, Stderr: "deny file-write-create " +
 				"/Users/x/.local"},
-			want: true,
+			want: false,
 		},
 		{
 			name:   "stdout fallback",
 			result: sandbox.ExecResult{ExitCode: 1, Stdout: "Operation not permitted"},
 			want:   true,
+		},
+		{
+			// A wrapper that moves its own error output must not
+			// hide the refusal behind unrelated stderr noise.
+			name: "marker on stdout behind stderr",
+			result: sandbox.ExecResult{ExitCode: 1,
+				Stderr: "note: retrying without the cache\n",
+				Stdout: "touch: /Users/x/.local: Operation not permitted\n"},
+			want: true,
 		},
 		{
 			name:   "success",
@@ -300,6 +353,27 @@ func TestDenialExcerptFallsBackAndTruncates(t *testing.T) {
 		t.Fatalf("truncated detail = %d bytes, suffix ok = %v",
 			len(got), strings.HasSuffix(got, "..."))
 	}
+	// The cut lands on a rune boundary: 399 ASCII bytes put byte 400 in
+	// the middle of the first multi-byte rune, so a byte-wise slice
+	// would emit invalid UTF-8.
+	wide := strings.Repeat("x", 399) + strings.Repeat("\u00e9", 100)
+	got = sandbox.DenialExcerpt(&sandbox.ExecResult{ExitCode: 1, Stderr: wide + "\n"})
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated detail = %q, want valid UTF-8", got)
+	}
+	if want := strings.Repeat("x", 399) + "..."; got != want {
+		t.Fatalf("truncated detail = %q, want the cut on the rune boundary", got)
+	}
+	// A refusal carried on stdout gets the same treatment, even behind
+	// unrelated stderr noise.
+	got = sandbox.DenialExcerpt(&sandbox.ExecResult{
+		ExitCode: 1,
+		Stderr:   "note: retrying without the cache\n",
+		Stdout:   "touch: /Users/x/.local: Operation not permitted\n",
+	})
+	if !strings.Contains(got, "Operation not permitted") {
+		t.Fatalf("stdout detail = %q, want the denial line", got)
+	}
 }
 
 func TestRuleForUnwrapsShell(t *testing.T) {
@@ -351,11 +425,15 @@ func TestEscalationApprovedRetriesThroughUnconfined(t *testing.T) {
 		t.Fatalf("asks = %d, want exactly one prompt", len(escalator.requests))
 	}
 	req := escalator.requests[0]
-	if req.Command != "sh -c pip install requests" {
+	if req.Command != "sh -c 'pip install requests'" {
 		t.Fatalf("request command = %q", req.Command)
 	}
 	if req.Rule != "pip install requests" {
 		t.Fatalf("request rule = %q, want the unwrapped command", req.Rule)
+	}
+	if req.Exec.Opts.WorkDir != "sub" || len(req.Exec.Args) != 2 ||
+		req.Exec.Args[0] != "-c" {
+		t.Fatalf("request exec = %+v, want the refused attempt", req.Exec)
 	}
 	if !strings.Contains(req.Reason, "operation not permitted") {
 		t.Fatalf("request reason = %q", req.Reason)
@@ -546,6 +624,83 @@ func TestEscalationNilEscalatorKeepsFailure(t *testing.T) {
 	}
 	if outcome != (sandbox.EscalationOutcome{Refused: true}) {
 		t.Fatalf("outcome = %+v", outcome)
+	}
+}
+
+func TestEscalationTypedNilGateOffersNothing(t *testing.T) {
+	// A typed-nil func boxes into a non-nil interface; the gate must
+	// still read as "no" instead of panicking on the call.
+	escalator := &fakeEscalator{decision: sandbox.EscalationDecision{Allow: true}}
+	unconfined := succeededRunner()
+	esc := &sandbox.Escalation{
+		Confined:   refusedRunner(),
+		Unconfined: unconfined,
+		Escalate:   escalator,
+		Gate:       sandbox.EscalationGateFunc(nil),
+	}
+	res, outcome, err := esc.Exec(
+		context.Background(), "pip", []string{"install", "requests"}, sandbox.ExecOptions{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res == nil || res.ExitCode != 1 {
+		t.Fatalf("result = %+v, want the confined refusal", res)
+	}
+	if len(escalator.requests) != 0 || unconfined.calls() != 0 {
+		t.Fatal("a nil gate must not offer a retry")
+	}
+	if outcome != (sandbox.EscalationOutcome{Refused: true}) {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+}
+
+func TestEscalationObservesRequestSnapshots(t *testing.T) {
+	// The rule store and the escalator observe snapshots, never the
+	// caller's own slices: neither can rewrite what runs (the same
+	// contract approval predicates have through cloneExecRequest).
+	confined := refusedRunner()
+	unconfined := succeededRunner()
+	rules := &mutatingRules{}
+	opts := sandbox.ExecOptions{
+		WorkDir: "sub",
+		Stdin:   []byte("input"),
+		Env: sandbox.EnvPolicy{
+			Allow:  []string{"PATH=/usr/bin"},
+			Inject: map[string]string{"FOO": "bar"},
+		},
+	}
+	args := []string{"-c", "pip install requests"}
+	esc := &sandbox.Escalation{
+		Confined:   confined,
+		Unconfined: unconfined,
+		Escalate:   mutatingEscalator{},
+		Rules:      rules,
+		Gate:       fixedGate(true),
+	}
+	if _, _, err := esc.Exec(context.Background(), "sh", args, opts); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if !rules.seen {
+		t.Fatal("the rules store must observe the attempt")
+	}
+	if confined.calls() != 1 || unconfined.calls() != 1 {
+		t.Fatalf("calls = %d confined / %d unconfined, want 1 and 1",
+			confined.calls(), unconfined.calls())
+	}
+	wantArgv := []string{"sh", "-c", "pip install requests"}
+	for name, runner := range map[string]*scriptedRunner{
+		"confined": confined,
+		"retry":    unconfined,
+	} {
+		if got := runner.specs[0].Argv; !slices.Equal(got, wantArgv) {
+			t.Fatalf("%s argv = %v, want %v", name, got, wantArgv)
+		}
+		if got := string(runner.specs[0].Opts.Stdin); got != "input" {
+			t.Fatalf("%s stdin = %q", name, got)
+		}
+		if got := runner.specs[0].Opts.Env; !reflect.DeepEqual(got, opts.Env) {
+			t.Fatalf("%s env = %+v, want %+v", name, got, opts.Env)
+		}
 	}
 }
 
