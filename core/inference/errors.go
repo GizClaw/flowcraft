@@ -189,13 +189,26 @@ func (kind ErrorKind) classify(cause error) error {
 // failure. Undefined tool calls become UndefinedTool (deterministic,
 // potentially recoverable); every other contract violation stays
 // InvalidProviderResponse (provider-side corruption).
-func newResponseValidationError(operation Operation, err error) *Error {
+// scope identifies the call phase independently of the operation.
+func newResponseValidationError(operation Operation, scope string, err error) *Error {
+	out := NewError(InvalidProviderResponse, operation, "", err)
 	var ute *undefinedToolError
 	if errors.As(err, &ute) {
-		out := NewError(UndefinedTool, operation, "", err)
+		out = NewError(UndefinedTool, operation, "", err)
 		call := ute.Call
 		out.UndefinedToolCall = &call
-		return out
 	}
-	return NewError(InvalidProviderResponse, operation, "", err)
+	var check *generateResponseCheckError
+	if errors.As(err, &check) {
+		prefix := scope + ".validation."
+		if scope == "stream.finish" {
+			// Preserve the terminal labels already used by logs and alerts.
+			switch check.check {
+			case generateResponseCheckToolCall, generateResponseCheckMismatch, generateResponseCheckUndefinedTool:
+				prefix = scope + "."
+			}
+		}
+		out.Detail = prefix + string(check.check)
+	}
+	return out
 }
