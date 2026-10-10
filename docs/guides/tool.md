@@ -80,6 +80,17 @@ reason `visible_budget`. Hits are ranked, so a batch's first (best) hit
 wins when the budget cuts the set, and an oversized definition is
 skipped instead of truncating everything behind it.
 
+Hits are ranked by the shared BM25 kernel (`core/utils/bm25`): a name
+match outweighs a description match, an exact term outweighs a term it
+merely prefixes, one query term contributes its best match and never the
+sum of everything it prefixes, and equal scores keep name order. ASCII
+terms shorter than two runes are ignored on both sides, so a filler word
+like `a` neither matches nor widens the hit set, while CJK splits into
+single characters plus adjacent bigrams, so `会话` matches `清理会话`
+without a segmentation dictionary. `limit` is capped at
+`discovery.max_tools`: hits beyond the pool could never be exposed, and
+loading them would only evict tools the session is using.
+
 Pool entries stay visible while they are used: every executed call
 refreshes the entry, idle entries are evicted after
 `discovery.idle_rounds`, and the pool never exceeds

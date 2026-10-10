@@ -35,7 +35,8 @@ func (SearchTool) Definition() message.ToolDefinition {
 		message.ToolProperty("query", "string",
 			"natural-language or keyword query describing the capability to find"),
 		message.ToolPropertyWithDefault("limit", "integer",
-			"maximum number of hits to return and expose", defaultSearchLimit),
+			"maximum number of hits to return and expose; capped at the discovery pool size",
+			defaultSearchLimit),
 	).Required("query").Build()
 }
 

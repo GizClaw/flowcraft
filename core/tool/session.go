@@ -355,6 +355,16 @@ func (s *dynamicSession) search(ctx context.Context, query string, limit int) ([
 		}
 		docs = append(docs, searchDoc{name: def.Name, description: def.Description})
 	}
+	// Every hit is loaded and takes a discovery-pool slot, so a
+	// model-supplied limit cannot exceed the pool it would be loaded
+	// into: a larger one only churns the pool with hits that can never
+	// be exposed.
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+	if pool := policy.Discovery.MaxTools; pool > 0 && limit > pool {
+		limit = pool
+	}
 	return bm25Search(docs, query, limit)
 }
 

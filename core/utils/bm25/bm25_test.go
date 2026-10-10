@@ -299,6 +299,27 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 	if _, err := New(docs, WithK1(0.1), WithB(0), WithB(1), WithPrefixWeight(0), WithPrefixWeight(1)); err != nil {
 		t.Fatalf("New with boundary options: %v", err)
 	}
+	// A nil option is ignored rather than applied, so a caller can pass an
+	// optional one through without checking it first.
+	if _, err := New(docs, nil, WithK1(1.4)); err != nil {
+		t.Fatalf("New with a nil option: %v", err)
+	}
+	if _, err := NewFromTerms([]TermDoc{{ID: "a"}}, nil); err != nil {
+		t.Fatalf("NewFromTerms with a nil option: %v", err)
+	}
+}
+
+// TestNewRejectsDuplicateIDs pins the uniqueness precondition both callers
+// rely on: core/tool maps a hit back to its definition by name, and the
+// memory lane keys its documents by ID, so a duplicate would silently pick
+// one of the two.
+func TestNewRejectsDuplicateIDs(t *testing.T) {
+	if _, err := New([]Doc{{ID: "a", Name: "alpha"}, {ID: "a", Name: "beta"}}); err == nil {
+		t.Fatal("New accepted duplicate ids, want error")
+	}
+	if _, err := NewFromTerms([]TermDoc{{ID: "a"}, {ID: "a"}}); err == nil {
+		t.Fatal("NewFromTerms accepted duplicate ids, want error")
+	}
 }
 
 func TestNewFromTermsRejectsInvalidFrequencies(t *testing.T) {
@@ -354,7 +375,9 @@ func TestIndexStaysFlat(t *testing.T) {
 // retains mostly empty entries — on a 100k-document corpus (4M postings,
 // 30k terms) that was 95MB of a 131MB index. This corpus has ~16k
 // postings and ~1k terms, so the same regression still shows as a table
-// sized for the postings.
+// sized for the postings. The bound is a ratio rather than an exact
+// capacity: the point is that the table is not sized from something an
+// order of magnitude larger, and a table grown by append is just as fine.
 func TestTablesAreSizedFromTheirOwnCounts(t *testing.T) {
 	index := mustIndex(t, corpusDocs(500))
 	for field, name := range []string{"name", "text"} {
@@ -362,11 +385,11 @@ func TestTablesAreSizedFromTheirOwnCounts(t *testing.T) {
 		if len(f.terms) == 0 || len(f.postings) == 0 {
 			t.Fatalf("%s field: empty tables (terms=%d, postings=%d)", name, len(f.terms), len(f.postings))
 		}
-		if cap(f.terms) != len(f.terms) {
+		if cap(f.terms) > 4*len(f.terms) {
 			t.Errorf("%s field: term table capacity %d for %d terms: the table is sized from postings",
 				name, cap(f.terms), len(f.terms))
 		}
-		if cap(f.postings) != len(f.postings) {
+		if cap(f.postings) > 4*len(f.postings) {
 			t.Errorf("%s field: postings capacity %d for %d postings",
 				name, cap(f.postings), len(f.postings))
 		}
@@ -482,5 +505,102 @@ func TestSearchTermsDeduplicatesAndSkipsEmpty(t *testing.T) {
 	}
 	if got := index.SearchTerms([]string{"", ""}, 0); got != nil {
 		t.Fatalf("SearchTerms(empty terms) = %+v, want nil", got)
+	}
+}
+
+// TestPrefixExpansionSaturatesPerQueryTerm pins the rule that a query term
+// contributes its best match rather than the sum over its expansions. "con"
+// is an exact term in one document and the prefix of four terms in the
+// other, so summing the expansions at half weight each would put the
+// prefix document first.
+func TestPrefixExpansionSaturatesPerQueryTerm(t *testing.T) {
+	index := mustIndex(t, []Doc{
+		{ID: "exact", Name: "con"},
+		{ID: "prefixy", Name: "config content connection context"},
+	})
+	results := index.Search("con", 10)
+	if len(results) != 2 || results[0].ID != "exact" {
+		t.Fatalf("Search(con) = %+v, want the exact match first", results)
+	}
+	if results[0].Score <= results[1].Score {
+		t.Fatalf("Search(con) = %+v, want a strict win for the exact match", results)
+	}
+}
+
+// TestScoresMatchTheHandComputedContract freezes the numeric side of the
+// ranking contract. The other tests assert relative properties — order,
+// counts, limits — which the magic numbers could all keep while moving:
+// nameBoost, the default prefix discount, the idf smoothing and the (k1+1)
+// saturation read as absolute scores, and the fusion lane calibrates its
+// query-length buckets against raw BM25 magnitudes, so a drift would
+// re-rank every retrieval lane with the suite still green.
+//
+// The fixture: alpha sits in d1 and d2 (name) and d4 (text), so its
+// document frequency is the union 3. The name field averages 1.5 tokens
+// (1+2+2+1 over four documents) and the text field 0.25.
+func TestScoresMatchTheHandComputedContract(t *testing.T) {
+	index := mustIndex(t, []Doc{
+		{ID: "d1", Name: "alpha"},
+		{ID: "d2", Name: "alpha beta"},
+		{ID: "d3", Name: "beta gamma"},
+		{ID: "d4", Name: "delta", Text: "alpha"},
+	})
+	cases := []struct {
+		query string
+		want  []Result
+	}{
+		{
+			query: "alpha",
+			want: []Result{
+				{ID: "d1", Score: 1.2389761210503338},
+				{ID: "d2", Score: 0.9416218519982535},
+				{ID: "d4", Score: 0.1601397707480023},
+			},
+		},
+		{
+			// The same three documents at exactly half of the previous
+			// scores: a term that only prefixes an index term is discounted
+			// by the default 0.5.
+			query: "alph",
+			want: []Result{
+				{ID: "d1", Score: 0.6194880605251669},
+				{ID: "d2", Score: 0.4708109259991268},
+				{ID: "d4", Score: 0.08006988537400116},
+			},
+		},
+		{
+			// Equal scores keep document order, here d2 before d3.
+			query: "beta",
+			want: []Result{
+				{ID: "d2", Score: 1.8299085566782556},
+				{ID: "d3", Score: 1.8299085566782556},
+			},
+		},
+		{
+			// Two query terms on one document: a name hit plus a text hit
+			// add up (d4, 4.182221320290094 + 0.1601397707480023), and a
+			// name hit outranks a text hit for the same term (d1 1.2389
+			// against d4 0.1601) — the field weight is 3x, and the name
+			// field's length normalisation is gentler here as well.
+			query: "delta alpha",
+			want: []Result{
+				{ID: "d4", Score: 4.3423610910380965},
+				{ID: "d1", Score: 1.2389761210503338},
+				{ID: "d2", Score: 0.9416218519982535},
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.query, func(t *testing.T) {
+			got := index.Search(c.query, 0)
+			if len(got) != len(c.want) {
+				t.Fatalf("Search(%q) = %+v, want %+v", c.query, got, c.want)
+			}
+			for i := range c.want {
+				if got[i].ID != c.want[i].ID || math.Abs(got[i].Score-c.want[i].Score) > 1e-12 {
+					t.Fatalf("Search(%q)[%d] = %+v, want %+v", c.query, i, got[i], c.want[i])
+				}
+			}
+		})
 	}
 }

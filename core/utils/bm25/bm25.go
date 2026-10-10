@@ -7,7 +7,10 @@
 // A document carries a name (an identifier such as a tool or command
 // name) and a text (its description). Name hits score higher than text
 // hits, and a query term also matches index terms by prefix, so a
-// fragment like "webf" still surfaces "webfetch". Tokens are
+// fragment like "webf" still surfaces "webfetch". A query term
+// contributes its best match in each field rather than the sum of all
+// of them, so a document that merely prefixes several index terms
+// cannot outrank one that contains the term itself. Tokens are
 // lowercased word runs; CJK scripts are indexed as single characters
 // plus adjacent bigrams, which lets Chinese queries match fragments
 // without a segmentation dictionary.
@@ -92,7 +95,8 @@ func defaultConfig() config {
 }
 
 // Option adjusts scoring when an index is built. Options are applied in
-// order and validated by New and NewFromTerms.
+// order and validated by New and NewFromTerms. A nil Option is ignored,
+// so a caller can pass one through unconditionally.
 type Option func(*config)
 
 // WithK1 sets the term-frequency saturation parameter (default
@@ -128,6 +132,9 @@ func (c config) validate() error {
 func resolveConfig(opts []Option) (config, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(&cfg)
 	}
 	if err := cfg.validate(); err != nil {
@@ -146,15 +153,23 @@ type Index struct {
 	config config
 }
 
-// New builds an index over docs, tokenizing Name and Text. Document
-// IDs must be unique; ties in Search keep the order docs arrive in.
+// New builds an index over docs, tokenizing Name and Text. Document IDs
+// must be unique: a repeated ID is an error, because results are keyed
+// by ID and a caller that maps a result back to its document would
+// silently pick one of the duplicates. Ties in Search keep the order
+// docs arrive in.
 func New(docs []Doc, opts ...Option) (*Index, error) {
 	cfg, err := resolveConfig(opts)
 	if err != nil {
 		return nil, err
 	}
 	index := &Index{ids: make([]string, len(docs)), nDocs: len(docs), config: cfg}
+	seen := make(map[string]struct{}, len(docs))
 	for doc, d := range docs {
+		if _, ok := seen[d.ID]; ok {
+			return nil, fmt.Errorf("bm25: duplicate document id %q", d.ID)
+		}
+		seen[d.ID] = struct{}{}
 		index.ids[doc] = d.ID
 		index.fields[nameField].addText(int32(doc), d.Name)
 		index.fields[textField].addText(int32(doc), d.Text)
@@ -172,7 +187,12 @@ func NewFromTerms(docs []TermDoc, opts ...Option) (*Index, error) {
 		return nil, err
 	}
 	index := &Index{ids: make([]string, len(docs)), nDocs: len(docs), config: cfg}
+	seen := make(map[string]struct{}, len(docs))
 	for doc, d := range docs {
+		if _, ok := seen[d.ID]; ok {
+			return nil, fmt.Errorf("bm25: duplicate document id %q", d.ID)
+		}
+		seen[d.ID] = struct{}{}
 		index.ids[doc] = d.ID
 		if err := index.fields[nameField].addTerms(int32(doc), d.ID, "name", d.Name); err != nil {
 			return nil, err
@@ -187,6 +207,11 @@ func NewFromTerms(docs []TermDoc, opts ...Option) (*Index, error) {
 
 // fieldIndex holds the per-field statistics a BM25 score needs: each
 // document's field length and the postings of every term.
+//
+// Document numbers, offsets, frequencies and document frequencies are
+// int32: the regime is a few thousand short documents, and a corpus with
+// more than 2^31 postings or a term repeated more than 2^31 times is far
+// outside it (addTerms rejects the frequency, addText would wrap).
 //
 // The postings are a flat, term-major slice instead of a
 // map[term]map[doc]tf: a Go map costs ~200 bytes before it holds
@@ -368,44 +393,108 @@ type termMatch struct {
 	prefix bool
 }
 
-// termMatches expands the unique query terms to index terms: each term
-// itself plus, when prefix weighting is enabled, every index term that
-// has it as a proper prefix. A term that is both an exact query term
-// and another term's prefix hit keeps the exact form.
-func (ix *Index) termMatches(terms []string) []termMatch {
-	matches := make([]termMatch, 0, len(terms)*2)
-	index := make(map[string]int, len(terms))
-	add := func(term string, prefix bool) {
-		at, ok := index[term]
-		if !ok {
-			index[term] = len(matches)
-			matches = append(matches, termMatch{
-				term: term, df: ix.docFreq(term), prefix: prefix,
-			})
-			return
-		}
-		if !prefix {
-			matches[at].prefix = false
-		}
+// termGroup is one unique query term together with every index term it
+// resolves to.
+type termGroup struct {
+	matches []termMatch
+}
+
+// termMatches expands the unique query terms to groups of index terms:
+// each term itself plus, when prefix weighting is enabled, every index
+// term that has it as a proper prefix. An index term that several query
+// terms resolve to is scored once, in the group of the first query term
+// that reached it, at the exact weight if any query term equals it — so
+// a term that is both a query term and another term's prefix hit is not
+// scored twice.
+func (ix *Index) termMatches(terms []string) []termGroup {
+	groups := make([]termGroup, 0, len(terms))
+	type placement struct {
+		group int
+		at    int
 	}
+	claimed := make(map[string]placement, len(terms)*2)
 	for _, term := range terms {
+		group := termGroup{matches: make([]termMatch, 0, 2)}
+		add := func(candidate string, prefix bool) {
+			if at, ok := claimed[candidate]; ok {
+				if !prefix {
+					groups[at.group].matches[at.at].prefix = false
+				}
+				return
+			}
+			claimed[candidate] = placement{group: len(groups), at: len(group.matches)}
+			group.matches = append(group.matches, termMatch{
+				term: candidate, df: ix.docFreq(candidate), prefix: prefix,
+			})
+		}
 		add(term, false)
-		if ix.config.prefixWeight == 0 {
+		if ix.config.prefixWeight > 0 {
+			for field := range ix.fields {
+				ix.fields[field].eachPrefix(term, func(entry termEntry) {
+					add(entry.term, true)
+				})
+			}
+		}
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+// idf is the Okapi inverse document frequency with the usual smoothing:
+// a term that appears in every document keeps a small positive weight
+// instead of collapsing to zero.
+func (ix *Index) idf(df int) float64 {
+	return math.Log(1 + (float64(ix.nDocs)-float64(df)+0.5)/(float64(df)+0.5))
+}
+
+// addToScores folds one query term's contribution into scores: per
+// field, the group's best match for a document, never the sum over the
+// group. A document that prefixes four expansions of one query term
+// would otherwise outrank a document that contains that term. best
+// holds the running maximum while a group is scored and touched lists
+// the documents it was written for, so resetting costs the postings a
+// group actually has rather than the size of the corpus. touched is
+// reused across groups and returned for the next one.
+func (ix *Index) addToScores(scores, best []float64, touched []int32, group termGroup) []int32 {
+	k1, b := ix.config.k1, ix.config.b
+	for field, boost := range fieldBoosts {
+		f := &ix.fields[field]
+		if f.avg == 0 {
 			continue
 		}
-		for field := range ix.fields {
-			ix.fields[field].eachPrefix(term, func(entry termEntry) {
-				add(entry.term, true)
-			})
+		for _, match := range group.matches {
+			weight := boost
+			if match.prefix {
+				weight *= ix.config.prefixWeight
+			}
+			idf := ix.idf(match.df)
+			for _, p := range f.postingsOf(match.term) {
+				tf := float64(p.tf)
+				denom := tf + k1*(1-b+b*float64(f.lengths[p.doc])/f.avg)
+				score := weight * idf * tf * (k1 + 1) / denom
+				if score > best[p.doc] {
+					if best[p.doc] == 0 {
+						touched = append(touched, p.doc)
+					}
+					best[p.doc] = score
+				}
+			}
 		}
+		for _, doc := range touched {
+			scores[doc] += best[doc]
+			best[doc] = 0
+		}
+		touched = touched[:0]
 	}
-	return matches
+	return touched
 }
 
 // Search ranks documents against query with BM25 over both the name
 // and text fields and returns at most limit results in descending
 // score. Query terms also match by prefix when prefix weighting is
-// enabled (see WithPrefixWeight).
+// enabled (see WithPrefixWeight); a query term contributes the best of
+// its exact and prefix matches, so prefix noise never sums past an
+// exact hit.
 //
 // Ties keep the order of the documents as they were passed to New, so
 // a caller that needs a specific tie-break sorts its documents first
@@ -419,9 +508,10 @@ func (ix *Index) Search(query string, limit int) []Result {
 // whose index terms did not come from Tokenize (see TermDoc): the
 // terms must be split the same way the indexed fields were, or
 // queries cannot match. Repeated terms count once, as in Search.
-// Terms that are not index terms simply score nothing, so a caller
-// cannot distinguish "no such term" from "no match for it" — pass the
-// terms you would have passed to Search's tokenizer.
+// A term that is neither an index term nor a prefix of one scores
+// nothing, so a caller cannot distinguish "no such term" from "no
+// match for it" — pass the terms you would have passed to Search's
+// tokenizer.
 func (ix *Index) SearchTerms(query []string, limit int) []Result {
 	terms := uniqueTerms(query)
 	if len(terms) == 0 || ix.nDocs == 0 {
@@ -429,27 +519,13 @@ func (ix *Index) SearchTerms(query []string, limit int) []Result {
 	}
 
 	scores := make([]float64, ix.nDocs)
-	k1, b := ix.config.k1, ix.config.b
-	// One score per document, accumulated term by term, so the work is
-	// proportional to the postings a term actually has rather than to
-	// documents × matched terms.
-	for _, match := range ix.termMatches(terms) {
-		idf := math.Log(1 +
-			(float64(ix.nDocs)-float64(match.df)+0.5)/(float64(match.df)+0.5))
-		for field, boost := range fieldBoosts {
-			f := &ix.fields[field]
-			if f.avg == 0 {
-				continue
-			}
-			if match.prefix {
-				boost *= ix.config.prefixWeight
-			}
-			for _, p := range f.postingsOf(match.term) {
-				tf := float64(p.tf)
-				denom := tf + k1*(1-b+b*float64(f.lengths[p.doc])/f.avg)
-				scores[p.doc] += boost * idf * tf * (k1 + 1) / denom
-			}
-		}
+	best := make([]float64, ix.nDocs)
+	touched := make([]int32, 0, 16)
+	// One score per document, accumulated query term by query term, so
+	// the work is proportional to the postings a term actually has
+	// rather than to documents × matched terms.
+	for _, group := range ix.termMatches(terms) {
+		touched = ix.addToScores(scores, best, touched, group)
 	}
 
 	ranked := make([]Result, 0, ix.nDocs)
