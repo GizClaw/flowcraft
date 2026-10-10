@@ -28,8 +28,10 @@ const (
 	laneName = "entity"
 	// AlgorithmVersion names the lane's algorithm identity. v3 matches with the
 	// shared kernel's tokenizer instead of splitting on whitespace, so a CJK
-	// entity is found inside a sentence. Keys an older version stored still
-	// match, but they count as their own vocabulary entry.
+	// entity is found inside a sentence. A key an older version stored still
+	// matches when its token stream is a contiguous run of the query's, but it
+	// counts as a vocabulary entry of its own and splits the IDF weight of the
+	// same entity written both ways.
 	AlgorithmVersion = "deterministic-entity-v3"
 
 	// entitySaturationMinEntries and entitySaturationShare gate ubiquitous
@@ -266,9 +268,15 @@ func normalizeEntities(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		entity := normalizeEntityText(value)
-		if entity != "" {
-			normalized = append(normalized, entity)
+		// A value that tokenizes to nothing — empty text, or punctuation
+		// only — can never match a query, so it is dropped instead of
+		// being kept as a vocabulary entry that only raises the IDF
+		// denominator and the ubiquity gate. An artifact left with no
+		// entity at all is a delete on the delta path, as before.
+		if entity == "" || len(corebm25.Tokenize(entity)) == 0 {
+			continue
 		}
+		normalized = append(normalized, entity)
 	}
 	normalized = uniqueStrings(normalized)
 	sort.Strings(normalized)
@@ -278,10 +286,12 @@ func normalizeEntities(values []string) []string {
 // normalizeEntityText case folds one entity value and collapses its whitespace.
 // Punctuation stays: the match compares token streams, which drop it anyway,
 // while keeping it leaves two spellings distinguishable in the vocabulary the
-// IDF weights are counted over. The key must stay the text and not the tokens,
-// because a token stream is not reversible — re-tokenizing an entity's bigram
-// would emit its characters a second time — and the match needs to tokenize the
-// stored key back into the run the query is searched for.
+// IDF weights are counted over (a value that is nothing but punctuation has no
+// token stream at all and normalizeEntities drops it). The key must stay the
+// text and not the tokens, because a token stream is not reversible —
+// re-tokenizing an entity's bigram would emit its characters a second time —
+// and the match needs to tokenize the stored key back into the run the query is
+// searched for.
 func normalizeEntityText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }

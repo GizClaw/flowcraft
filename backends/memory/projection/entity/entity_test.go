@@ -141,10 +141,10 @@ func TestEntityExtractsMentionFromNormalQueryAndTypedFact(t *testing.T) {
 }
 
 // TestEntityMatchesCJKEntityWithoutWordBoundaries pins the tokenizer contract
-// for the entity lane: an entity with no whitespace word boundary is stored as
-// the kernel's tokens joined by spaces, and a sentence that mentions it
-// normalizes to a token stream containing that entity's tokens, so the mention
-// is extracted. A whitespace tokenizer would have compared one long run
+// for the entity lane: the stored key is the folded entity text, never its
+// tokens, and matching tokenizes that key back with the kernel, so a sentence
+// that mentions the entity contains the same tokens as a contiguous run and the
+// mention is extracted. A whitespace tokenizer would have compared one long run
 // against another and never matched.
 func TestEntityMatchesCJKEntityWithoutWordBoundaries(t *testing.T) {
 	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
@@ -208,6 +208,40 @@ func TestEntityDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 				t.Fatalf("results = %+v, %v", results, err)
 			}
 		})
+	}
+}
+
+// TestEntityValuesThatTokenizeToNothingAreDropped pins what the lane does
+// with a value the kernel cannot tokenize at all: a value that is only
+// punctuation used to be filtered out, and keeping it would leave a
+// vocabulary entry that can never match anything while still raising the
+// IDF denominator and the ubiquity gate. On the delta path an artifact left
+// with no usable entity keeps its old meaning: delete.
+func TestEntityValuesThatTokenizeToNothingAreDropped(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := index.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{entityArtifact("fact-1", `["...", "OpenAI"]`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "..."}); err != nil || len(results) != 0 {
+		t.Fatalf("punctuation search = %+v, %v, want none", results, err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"}); err != nil || len(results) != 1 {
+		t.Fatalf("OpenAI search = %+v, %v, want one hit", results, err)
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Upserts: []component.Artifact{entityArtifact("fact-1", `["..."]`)},
+		SourceRevision: "r1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"}); err != nil || len(results) != 0 {
+		t.Fatalf("search after the punctuation-only upsert = %+v, %v, want none", results, err)
 	}
 }
 

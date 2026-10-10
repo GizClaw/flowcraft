@@ -106,10 +106,11 @@ func TestBM25MatchingUsesKernelTokens(t *testing.T) {
 	// A fragment matches on its own, including one that never was a whole
 	// word of the run: the kernel indexes the run's bigrams, which is what
 	// replaces a segmentation dictionary.
+	fragmentResults := search("世界")
 	fragments := map[string]bool{}
-	for _, result := range search("世界") {
+	for _, result := range fragmentResults {
 		if result.Score <= 0 {
-			t.Fatalf("query 世界 = %+v, want positive scores", results)
+			t.Fatalf("query 世界 = %+v, want positive scores", fragmentResults)
 		}
 		fragments[result.ID] = true
 	}
@@ -167,6 +168,50 @@ func TestBM25DatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 				t.Fatalf("results = %+v, %v", results, err)
 			}
 		})
+	}
+}
+
+// TestBM25DeleteStopsMatching pins what the bounded-delta test above leaves
+// open: it deletes a document but only ever queries words the *new* document
+// carries, so a lane that kept the deleted document's terms would pass it.
+// Here the deleted document has a term of its own, and it has to stop
+// matching while its neighbour keeps matching.
+func TestBM25DeleteStopsMatching(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Projection: "facts",
+		Artifacts: []component.Artifact{
+			artifact("keep", "shared alpha"),
+			artifact("gone", "shared omega"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	search := func(query string) []component.Candidate {
+		t.Helper()
+		results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: query})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return results
+	}
+	if results := search("omega"); len(results) != 1 || results[0].ID != "gone" {
+		t.Fatalf("search(omega) = %s, want only gone", describeCandidates(results))
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, DeleteIDs: []string{"gone"}, SourceRevision: "r1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results := search("omega"); len(results) != 0 {
+		t.Fatalf("search(omega) after the delete = %s, want none", describeCandidates(results))
+	}
+	if results := search("alpha"); len(results) != 1 || results[0].ID != "keep" {
+		t.Fatalf("search(alpha) after the delete = %s, want only keep", describeCandidates(results))
 	}
 }
 

@@ -29,8 +29,13 @@ func TestDetectSupersedesContradictingStableFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The similarity window is the point of the fixture, not decoration:
+	// below 0.5 nothing supersedes at all, and the pair shares five of its
+	// nine tokens (5/9 = 0.556), so an upper bound catches a similarity
+	// that saturates to 1 instead of measuring the overlap.
 	if len(plan.Supersedes) != 1 || plan.Supersedes[0].FactID != "old" ||
-		plan.Supersedes[0].SupersededBy != "new" || plan.Supersedes[0].Similarity < 0.5 {
+		plan.Supersedes[0].SupersededBy != "new" ||
+		plan.Supersedes[0].Similarity < 0.5 || plan.Supersedes[0].Similarity > 0.7 {
 		t.Fatalf("plan = %#v", plan)
 	}
 	// A different entity must not be superseded.
@@ -64,8 +69,12 @@ func TestDetectSupersedesCJKFactWithoutWordBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 12 shared tokens out of a 22-token union (0.545): the window is what
+	// pins the splitter, since a whitespace splitter scores this pair at 0
+	// and no consolidation would happen at all.
 	if len(plan.Supersedes) != 1 || plan.Supersedes[0].FactID != "old" ||
-		plan.Supersedes[0].SupersededBy != "new" || plan.Supersedes[0].Similarity < 0.5 {
+		plan.Supersedes[0].SupersededBy != "new" ||
+		plan.Supersedes[0].Similarity < 0.5 || plan.Supersedes[0].Similarity > 0.7 {
 		t.Fatalf("plan = %#v", plan)
 	}
 	// Sharing an entity is not on its own a contradiction: a CJK fact about

@@ -255,24 +255,40 @@ rebuilding the lane.
 The retrieval lanes tokenize with the shared kernel (`core/utils/bm25`), the
 same splitter the tool catalog searches with: ASCII splits into words, CJK into
 single characters plus adjacent bigrams, so a Chinese query matches a document
-that mentions it without a segmentation dictionary. Tokenization is not part of
-the lane identity, and the policy digest does not carry it either, so nothing
-re-derives a workspace because a splitter changed. Entries an earlier splitter
-wrote stay where they are, and what it leaves behind depends on the lane. The
-BM25 lane persists its terms, so a CJK document it indexed as one long word is
-out of reach of the characters and bigrams a query produces now; rebuilding the
-lane, or re-deriving the generation, is what restores it, and `FullRebuild` is
-the projection-side entry point for that -- no host call reaches it yet. The
-entity lane re-tokenizes its stored keys on every search and keeps matching,
-though such a key stays a vocabulary entry of its own and splits the IDF count
-of the same entity written both ways. ASCII is unaffected in both lanes: the two
-splitters agree token for token.
+that mentions it without a segmentation dictionary. (The catalog additionally
+ignores single-rune ASCII terms -- see `docs/guides/tool.md`.) Tokenization is
+not part of the lane identity, and the policy digest does not carry it either,
+so nothing re-derives a workspace because a splitter changed. Entries an earlier
+splitter wrote stay where they are, and what it leaves behind depends on the
+lane. The BM25 lane persists its terms, so a CJK document it indexed as one long
+word is out of reach of the characters and bigrams a query produces now;
+rebuilding the lane, or re-deriving the generation, is what restores it, and
+`FullRebuild` is the projection-side entry point for that -- no host call
+reaches it yet. The entity lane re-tokenizes its stored keys on every search, so
+a stored key keeps matching as long as its token stream is a contiguous run of
+the query's; a key several tokens long (whitespace or punctuation inside it)
+still fails to match, as it always did. Such a key also stays a vocabulary entry
+of its own and splits the IDF weight of the same entity written both ways. ASCII
+is unaffected in both lanes: the two splitters agree token for token.
+
+One consequence of the splitter is worth knowing before turning it on for an
+existing workspace: a CJK character contributes up to three terms (itself and
+two bigrams), so the same character count reads as a longer document to the
+length normalisation, and the fusion lane's query-length bucket is chosen by
+token count -- a CJK query can land in a different bucket than it did under the
+previous tokenizer and cross a deployment's configured `min_score` in either
+direction. The BM25 lane is unaffected by that part: it scores with prefix
+matching off and matches persisted terms exactly.
 
 The algorithm versions of the lines this changed name the splitter they were
 built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v2`,
-`bm25-query-sigmoid-v2`), but no code reads them: a mismatch does not by itself
-rebuild a lane or re-derive a generation, so carrying a workspace across the
-change is an operator's call, as described above.
+`bm25-query-sigmoid-v2`). Only the last has a reader: it rides on every
+candidate's score term as its calibration version
+(`fusion.BM25CalibrationVersion`), so a consumer can see which calibration
+produced a score. The other three are declarations -- nothing compares them, so
+a mismatch does not by itself rebuild a lane or re-derive a generation, and
+carrying a workspace across the change is an operator's call, as described
+above.
 
 ## Integrity and evaluation
 

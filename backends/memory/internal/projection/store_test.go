@@ -160,6 +160,43 @@ func TestSelectorKeyCoversMatchesRequestKeys(t *testing.T) {
 	if SelectorKey(corememory.Metadata{"unrelated": "x"}) != SelectorKey(nil) {
 		t.Error("fingerprint changes for metadata that does not narrow a read")
 	}
+	// The coupling itself, over a matrix of selectors and addresses rather
+	// than the two keys the fingerprint happens to read today: whenever
+	// MatchesRequest answers two requests differently for one address, the
+	// fingerprint has to separate them too. A key MatchesRequest consults
+	// but SelectorKey ignores — one added later, like the generation_id the
+	// provider also puts in metadata — would let a cached selection outlive
+	// the request it was built for.
+	addresses := []component.CandidateAddress{
+		{Kind: corememory.ContextRawMessage, ConversationID: "c1"},
+		{Kind: corememory.ContextRawMessage, ConversationID: "c2"},
+		{Kind: corememory.ContextDocumentChunk, DatasetID: "d1"},
+		{Kind: corememory.ContextDocumentChunk, DatasetID: "d2"},
+	}
+	variants := []corememory.Metadata{
+		nil,
+		{"conversation_id": "c1"},
+		{"conversation_id": "c2"},
+		{"dataset_ids": `["d1"]`},
+		{"dataset_ids": `["d2"]`},
+		{"conversation_id": "c1", "dataset_ids": `["d1"]`},
+		{"conversation_id": "c1", "generation_id": "generation-1"},
+	}
+	for _, left := range variants {
+		for _, right := range variants {
+			for _, address := range addresses {
+				leftMatches, leftErr := MatchesRequest(left, address)
+				rightMatches, rightErr := MatchesRequest(right, address)
+				if leftErr != nil || rightErr != nil {
+					t.Fatalf("MatchesRequest(%v, %+v): %v, %v", left, address, leftErr, rightErr)
+				}
+				if leftMatches != rightMatches && SelectorKey(left) == SelectorKey(right) {
+					t.Errorf("SelectorKey(%v) == SelectorKey(%v), but MatchesRequest differs for %+v",
+						left, right, address)
+				}
+			}
+		}
+	}
 }
 
 type faultKV struct {

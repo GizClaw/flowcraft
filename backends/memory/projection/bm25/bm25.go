@@ -25,8 +25,10 @@ const (
 	laneName = "bm25"
 	// AlgorithmVersion names the lane's algorithm identity: the Okapi scoring
 	// formula together with the tokenizer its persisted terms come from. v2
-	// tokenizes with the shared kernel, so terms an older tokenizer wrote are
-	// only matchable once the lane is rebuilt.
+	// tokenizes with the shared kernel. An older tokenizer's ASCII terms
+	// still match, because the two splitters agree token for token there; the
+	// CJK terms it wrote as one long run stay out of reach of the characters
+	// and bigrams a query produces now until the lane is rebuilt.
 	AlgorithmVersion = "okapi-bm25-v2"
 )
 

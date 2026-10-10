@@ -85,6 +85,14 @@ agents:
 (see Scope above). `output` (and `render.output`) must be a non-reserved
 board variable name — the `__` prefix is reserved for the engine.
 
+`min_score` filters the calibrated score, so it moves with the lane's
+calibration version. The BM25 calibration picks its bucket by query length
+in tokens and a CJK character tokenizes into itself plus two bigrams, so a
+Chinese query can land in a different bucket — and cross the cut in either
+direction — than it did under an earlier tokenizer. Each candidate's score
+term carries `calibration_version` for callers that need to see which
+calibration produced a number.
+
 ### `memory.turn` commit hook (`hook.commit`)
 
 Pushes each completed turn's channel into the assembly as durable memory:
