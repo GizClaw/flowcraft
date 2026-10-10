@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // LocalWorkspace implements Workspace backed by a local directory.
@@ -167,8 +167,8 @@ func (w *LocalWorkspace) ReadLimited(_ context.Context, path string, maxBytes in
 	defer func() {
 		if cerr := f.Close(); cerr != nil {
 			telemetry.WarnErr(context.Background(), "workspace: close after limited read", cerr,
-				otellog.String("op", "read_limited"),
-				otellog.String("path", path))
+				attribute.String("op", "read_limited"),
+				attribute.String("path", path))
 		}
 	}()
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
@@ -211,8 +211,8 @@ func (w *LocalWorkspace) Append(ctx context.Context, path string, data []byte) e
 	defer func() {
 		if cerr := f.Close(); cerr != nil {
 			telemetry.WarnErr(ctx, "workspace: close after append", cerr,
-				otellog.String("op", "append"),
-				otellog.String("path", path))
+				attribute.String("op", "append"),
+				attribute.String("path", path))
 		}
 	}()
 	if _, err := f.Write(data); err != nil {
@@ -346,18 +346,14 @@ func (w *LocalWorkspace) Stat(_ context.Context, path string) (fs.FileInfo, erro
 }
 
 // containedIn reports whether path is root itself or directly under
-// it. Paths are case-insensitive on Windows, so the prefix check must
-// fold case there; on case-sensitive filesystems it is byte-exact.
-// Used only to classify errors; the os.Root handle is the boundary.
+// it. On Windows the filesystem folds case, so the comparison must
+// too; elsewhere it is byte-exact. Used only to classify errors; the
+// os.Root handle is the boundary.
 func containedIn(path, root string) bool {
-	if path == root {
-		return true
-	}
 	if runtime.GOOS == "windows" {
-		return strings.HasPrefix(strings.ToLower(path),
-			strings.ToLower(root)+string(filepath.Separator))
+		return pathsafe.WithinFold(root, path)
 	}
-	return strings.HasPrefix(path, root+string(filepath.Separator))
+	return pathsafe.Within(root, path)
 }
 
 // evalExistingPrefix resolves symlinks for the longest existing ancestor

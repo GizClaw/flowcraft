@@ -1,7 +1,9 @@
 # golangci-lint configuration (schema v2).
 #
-# CI scope today: sdk, sdkx (see .github/workflows/ci.yml).
-# examples/forge and tools/releasegate are intentionally not gated yet.
+# CI scope: the in-workspace modules except examples/forge (core, craft,
+# examples/anvil, backends/*, driver/*) — see .github/workflows/ci.yml.
+# examples/forge pins released versions and tools/releasegate stays out of
+# the gate.
 #
 # The enabled set mirrors golangci-lint's "standard" linters, made explicit so
 # future additions are deliberate changes.

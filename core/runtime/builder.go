@@ -294,14 +294,15 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	router := event.NewRouter(bus)
 	registry := newAgentRegistry(result)
 	initial := &Generation{
-		id:          1,
-		doc:         doc,
-		registry:    registry,
-		result:      result,
-		bus:         bus,
-		hostFactory: hostFactory,
-		resolver:    generationResolver{registry: registry, result: result},
-		catalog:     liveCatalog,
+		id:                 1,
+		doc:                doc,
+		registry:           registry,
+		result:             result,
+		bus:                bus,
+		hostFactory:        hostFactory,
+		resolver:           generationResolver{registry: registry, result: result},
+		catalog:            liveCatalog,
+		agentRemoveTimeout: cfg.Agents.RemoveTimeout,
 	}
 	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),

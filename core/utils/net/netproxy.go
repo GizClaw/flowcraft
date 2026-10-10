@@ -21,7 +21,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/net/proxy"
 )
 
@@ -544,7 +544,7 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if _, err := io.Copy(target, client); err != nil {
 			telemetry.Debug(r.Context(), "netproxy: tunnel upstream copy ended with error",
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+				attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 		if err := target.Close(); err != nil {
 			telemetry.WarnErr(r.Context(), "netproxy: close tunnel target after copy failed", err)

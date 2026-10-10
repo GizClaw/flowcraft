@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ScopedWorkspace wraps a Workspace with dual-mode permission enforcement:
@@ -253,7 +253,7 @@ type defaultViolationLogger struct{}
 
 func (defaultViolationLogger) LogViolation(ctx context.Context, r ViolationRecord) {
 	telemetry.Warn(ctx, "workspace: access violation",
-		otellog.String("op", r.Operation),
-		otellog.String("path", r.Path),
-		otellog.String("reason", r.Reason))
+		attribute.String("op", r.Operation),
+		attribute.String("path", r.Path),
+		attribute.String("reason", r.Reason))
 }

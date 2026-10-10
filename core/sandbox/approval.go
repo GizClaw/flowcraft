@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
 // ExecRequest is a snapshot of one Runner.Exec call (or one
@@ -309,11 +309,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		resolved, err := EvalExistingPrefix(abs)
-		if err != nil {
-			resolved = abs
-		}
-		if resolved != real && !strings.HasPrefix(resolved, real+string(filepath.Separator)) {
+		if !pathsafe.RealWithin(real, abs) {
 			return fmt.Sprintf("workdir %q resolves outside root %q", wd, real), true
 		}
 		return "", false

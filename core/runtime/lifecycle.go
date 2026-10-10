@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type registerOptions struct {
@@ -44,8 +44,9 @@ type removeOptions struct {
 type UnregisterAgentOption func(*removeOptions) error
 
 // WithRemoveTimeout bounds how long UnregisterAgent waits for active
-// turns to finish before giving up. On timeout the agent is left in
-// place (registration intact, sessions intact) and the call is retryable.
+// turns to finish before giving up, replacing the document's
+// runtime.agents.remove_timeout. On timeout the agent is left in place
+// (registration intact, sessions intact) and the call is retryable.
 func WithRemoveTimeout(d time.Duration) UnregisterAgentOption {
 	return func(o *removeOptions) error {
 		if d <= 0 {
@@ -55,6 +56,24 @@ func WithRemoveTimeout(d time.Duration) UnregisterAgentOption {
 		o.timeout = d
 		return nil
 	}
+}
+
+// AgentRemoveTimeout returns the bound the runtime's document sets for
+// a dynamic agent removal's drain (runtime.agents.remove_timeout), and
+// whether it sets one. It is the default UnregisterAgent applies when
+// the call gives no WithRemoveTimeout; false means a removal is bounded
+// only by the caller's context.
+func (r *Runtime) AgentRemoveTimeout() (time.Duration, bool) {
+	if r == nil {
+		return 0, false
+	}
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.current == nil {
+		return 0, false
+	}
+	timeout := r.current.agentRemoveTimeout
+	return timeout, timeout > 0
 }
 
 // RegisterAgent assembles and registers a new agent at runtime: the
@@ -111,14 +130,16 @@ func (r *Runtime) RegisterAgent(
 			"runtime: agent %q is a deployed agent", name)
 	}
 
-	instance, err := deploy.BindAgent(ctx, r.resources, r.result, r.loader, nil, nil, name, def)
+	instance, err := deploy.BindAgent(
+		ctx, r.resources, r.result, r.loader,
+		r.result.Resolver(), r.result.Secrets(), name, def)
 	if err != nil {
 		return nil, err
 	}
 	closeInstance := func() {
 		if cerr := instance.Close(); cerr != nil {
 			telemetry.WarnErr(ctx, "runtime: close agent after registration failure", cerr,
-				otellog.String(telemetry.AttrAgentID, name))
+				attribute.String(telemetry.AttrAgentID, name))
 		}
 	}
 
@@ -172,16 +193,18 @@ func (r *Runtime) RegisterAgent(
 		Description: def.Card.Description,
 	})
 	telemetry.Info(ctx, "runtime agent registered",
-		otellog.String(telemetry.AttrAgentID, name),
-		otellog.String("agent.card.name", def.Card.Name))
+		attribute.String(telemetry.AttrAgentID, name),
+		attribute.String("agent.card.name", def.Card.Name))
 	return instance, nil
 }
 
 // UnregisterAgent removes a dynamically registered agent: new session
 // activity is blocked, live sessions are drained (active turns are
-// allowed to finish, bounded by ctx or WithRemoveTimeout), and the
-// agent's engine and hooks are closed. Unknown names are an idempotent
-// no-op; deployed (static) agents cannot be removed at runtime.
+// allowed to finish, bounded by WithRemoveTimeout, the document's
+// runtime.agents.remove_timeout, or the caller's context, in that
+// order), and the agent's engine and hooks are closed. Unknown names
+// are an idempotent no-op; deployed (static) agents cannot be removed
+// at runtime.
 func (r *Runtime) UnregisterAgent(
 	ctx context.Context,
 	name string,
@@ -226,10 +249,17 @@ func (r *Runtime) UnregisterAgent(
 		return nil // idempotent: unknown name
 	}
 
+	// The document's bound is the fallback: a call that gives no
+	// WithRemoveTimeout still drains under the runtime's configured bound
+	// instead of waiting out the caller's context.
+	timeout := options.timeout
+	if timeout <= 0 && r.current != nil {
+		timeout = r.current.agentRemoveTimeout
+	}
 	removeCtx := ctx
-	if options.timeout > 0 {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		removeCtx, cancel = context.WithTimeout(ctx, options.timeout)
+		removeCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	if err := r.manager.RemoveAgent(removeCtx, name); err != nil {
@@ -238,11 +268,11 @@ func (r *Runtime) UnregisterAgent(
 		// is still visible, and let the caller retry.
 		if rerr := r.registry.Put(name, entry); rerr != nil {
 			telemetry.WarnErr(ctx, "runtime: restore agent after remove drain failed", rerr,
-				otellog.String(telemetry.AttrAgentID, name))
+				attribute.String(telemetry.AttrAgentID, name))
 		}
 		telemetry.Error(ctx, "runtime agent removal failed",
-			otellog.String(telemetry.AttrAgentID, name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 	if r.liveCatalog != nil {
@@ -250,8 +280,8 @@ func (r *Runtime) UnregisterAgent(
 	}
 	if err := entry.instance.Close(); err != nil {
 		telemetry.Error(ctx, "runtime agent removal failed",
-			otellog.String(telemetry.AttrAgentID, name),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 	r.publishLifecycleEvent(ctx, SubjectAgentRemoved(name), AgentLifecycleEvent{
@@ -260,8 +290,8 @@ func (r *Runtime) UnregisterAgent(
 		Description: entry.instance.Card.Description,
 	})
 	telemetry.Info(ctx, "runtime agent removed",
-		otellog.String(telemetry.AttrAgentID, name),
-		otellog.String("agent.card.name", entry.instance.Card.Name))
+		attribute.String(telemetry.AttrAgentID, name),
+		attribute.String("agent.card.name", entry.instance.Card.Name))
 	return nil
 }
 

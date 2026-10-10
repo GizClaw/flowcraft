@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
 // ResolveMany resolves every path in paths. A nil slice returns nil.
@@ -37,13 +38,7 @@ func Resolve(root, p string) (string, error) {
 	}
 	value := filepath.Clean(filepath.Join(root, p))
 	cleanRoot := filepath.Clean(root)
-	relative, err := filepath.Rel(cleanRoot, value)
-	if err != nil {
-		return "", errdefs.Validationf(
-			"resolve relative path %q: %v", p, err)
-	}
-	if relative == ".." ||
-		(len(relative) > 3 && relative[:3] == ".."+string(filepath.Separator)) {
+	if !pathsafe.Within(cleanRoot, value) {
 		return "", errdefs.Validationf(
 			"relative path %q escapes workspace root", p)
 	}
@@ -57,9 +52,7 @@ func Resolve(root, p string) (string, error) {
 		return "", errdefs.Validationf(
 			"resolve relative path %q: %v", p, err)
 	}
-	relative, err = filepath.Rel(realRoot, realValue)
-	if err != nil || relative == ".." ||
-		(len(relative) > 3 && relative[:3] == ".."+string(filepath.Separator)) {
+	if !pathsafe.Within(realRoot, realValue) {
 		return "", errdefs.Validationf(
 			"relative path %q escapes workspace root through a symlink", p)
 	}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // DefaultPrefixSeparator joins a server name to a tool name when
@@ -169,6 +170,99 @@ func (s *Source) Tools() []sdktool.Tool {
 // nothing until the background retry brings it up.
 func (s *Source) LazyTools() []sdktool.LazyTool { return nil }
 
+// CallTool invokes one tool on a connected server directly, bypassing
+// the tool registry. The tool result is returned as raw JSON (the
+// shape plugin-provided graph nodes consume): the text content when
+// the server sent any, the structured content when it did not, and
+// "{}" when the result carries neither. Non-JSON text is returned as a
+// JSON string, so the caller always receives valid JSON.
+func (s *Source) CallTool(
+	ctx context.Context,
+	serverName, toolName string,
+	args any,
+) (json.RawMessage, error) {
+	s.mu.Lock()
+	srv := s.servers[serverName]
+	s.mu.Unlock()
+	if srv == nil {
+		return nil, errdefs.NotFoundf(
+			"mcp: server %q is not configured", serverName)
+	}
+	session, err := srv.currentSession()
+	if err != nil {
+		return nil, err
+	}
+	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		srv.noteCallFailure(session, err)
+		return nil, errdefs.NotAvailablef(
+			"mcp: server %q: call tool %q: %v", serverName, toolName, err)
+	}
+	text := strings.TrimSpace(resultContent(res).Text())
+	if res != nil && res.IsError {
+		if text == "" {
+			structured, err := structuredPayload(res)
+			if err != nil {
+				return nil, err
+			}
+			if structured != nil {
+				return nil, errors.New(string(structured))
+			}
+			text = fmt.Sprintf("mcp tool %q reported an error", toolName)
+		}
+		return nil, errors.New(text)
+	}
+	return callPayload(res, text)
+}
+
+// callPayload renders a successful tool result as the JSON body direct
+// callers consume. Text wins when the server sent any: that is the
+// shape the "writes" contract of a plugin graph node is written
+// against. Structured content is the fallback, because SEP-2106 lets a
+// server return data without a text mirror — the Python SDK and
+// hand-rolled servers do — and dropping it would collapse a real
+// result into "{}" without an error.
+func callPayload(
+	res *mcpsdk.CallToolResult,
+	text string,
+) (json.RawMessage, error) {
+	if text == "" {
+		structured, err := structuredPayload(res)
+		if err != nil {
+			return nil, err
+		}
+		if structured != nil {
+			return structured, nil
+		}
+		return json.RawMessage("{}"), nil
+	}
+	if json.Valid([]byte(text)) {
+		return json.RawMessage(text), nil
+	}
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return nil, errdefs.Internal(err)
+	}
+	return encoded, nil
+}
+
+// structuredPayload renders a result's structured content as JSON, or
+// nil when the server sent none.
+func structuredPayload(res *mcpsdk.CallToolResult) (json.RawMessage, error) {
+	if res == nil || res.StructuredContent == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		return nil, errdefs.Internal(
+			fmt.Errorf("mcp: encode structured tool result: %w", err))
+	}
+	return encoded, nil
+}
+
 // Attach implements tool.RegistryAttacher. The registrar receives
 // every runtime tool publication. Connected servers' current
 // projections are published immediately — duplicates of the
@@ -190,7 +284,7 @@ func (s *Source) Attach(r sdktool.Registrar) {
 	for _, t := range current {
 		if err := r.Add(t); err != nil && !errdefs.IsConflict(err) {
 			telemetry.WarnErr(s.baseCtx, "mcp: publish tool failed", err,
-				otellog.String("tool", t.Definition().Name))
+				attribute.String("tool", t.Definition().Name))
 		}
 	}
 }
@@ -572,7 +666,7 @@ func abandonAttach(ctx context.Context, srv *server, session *mcpsdk.ClientSessi
 	srv.mu.Unlock()
 	if err := session.Close(); err != nil {
 		telemetry.WarnErr(ctx, "mcp: close abandoned server session failed", err,
-			otellog.String("mcp.server", srv.name))
+			attribute.String("mcp.server", srv.name))
 	}
 }
 
@@ -671,7 +765,7 @@ func (s *Source) publish(added, removed []sdktool.Tool) {
 	for _, t := range added {
 		if err := reg.Add(t); err != nil && !errdefs.IsConflict(err) {
 			telemetry.WarnErr(s.baseCtx, "mcp: publish tool failed", err,
-				otellog.String("tool", t.Definition().Name))
+				attribute.String("tool", t.Definition().Name))
 		}
 	}
 	for _, t := range removed {
@@ -738,7 +832,7 @@ func (s *Source) retryLoop(srv *server) {
 				return
 			}
 			telemetry.WarnErr(s.baseCtx, "mcp: server attach failed, will retry", err,
-				otellog.String("server", srv.name))
+				attribute.String("server", srv.name))
 			backoff = s.nextBackoff(backoff)
 			continue
 		}
@@ -756,7 +850,7 @@ func (s *Source) retryLoop(srv *server) {
 			return
 		}
 		telemetry.WarnErr(s.baseCtx, "mcp: server connect failed, will retry", err,
-			otellog.String("server", srv.name))
+			attribute.String("server", srv.name))
 		backoff = s.nextBackoff(backoff)
 	}
 }
@@ -765,12 +859,12 @@ func (s *Source) retryLoop(srv *server) {
 // waiters with it. Required servers get an explicit mention so a host
 // that declared one knows its startup contract was not met.
 func (s *Source) giveUp(srv *server, msg string, err error) {
-	attrs := []otellog.KeyValue{
-		otellog.String("server", srv.name),
-		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	attrs := []attribute.KeyValue{
+		attribute.String("server", srv.name),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()),
 	}
 	if srv.cfg.required {
-		attrs = append(attrs, otellog.Bool("required", true))
+		attrs = append(attrs, attribute.Bool("required", true))
 	}
 	telemetry.Error(s.baseCtx, "mcp: "+msg, attrs...)
 	srv.markReady(err)
@@ -896,15 +990,15 @@ func (s *Source) sessionLost(srv *server, session *mcpsdk.ClientSession, reason 
 		return // a newer session replaced the dead one; its watcher owns it
 	}
 
-	attrs := []otellog.KeyValue{otellog.String("server", srv.name)}
+	attrs := []attribute.KeyValue{attribute.String("server", srv.name)}
 	if reason != nil {
-		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, reason.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, reason.Error()))
 	}
 	telemetry.Warn(s.baseCtx, "mcp: server connection lost, reconnecting", attrs...)
 
 	if err := session.Close(); err != nil {
 		telemetry.WarnErr(s.baseCtx, "mcp: close dead server session failed", err,
-			otellog.String("server", srv.name))
+			attribute.String("server", srv.name))
 	}
 	s.scheduleRetry(srv)
 }

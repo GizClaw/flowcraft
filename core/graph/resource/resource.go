@@ -29,7 +29,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Stable dependency names used by deployment documents.
@@ -204,10 +204,10 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 func logBuildWarnings(ctx context.Context, name string, warnings []coregraph.Warning) {
 	for _, w := range warnings {
 		telemetry.Warn(ctx, "graph build warning",
-			otellog.String(telemetry.AttrGraphName, name),
-			otellog.String("graph.warning.kind", string(w.Kind)),
-			otellog.String(telemetry.AttrNodeID, w.NodeID),
-			otellog.String("graph.warning.message", w.Message),
+			attribute.String(telemetry.AttrGraphName, name),
+			attribute.String("graph.warning.kind", string(w.Kind)),
+			attribute.String(telemetry.AttrNodeID, w.NodeID),
+			attribute.String("graph.warning.message", w.Message),
 		)
 	}
 }

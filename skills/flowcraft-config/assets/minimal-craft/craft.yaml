@@ -1,0 +1,75 @@
+# Minimal craft application: an inline deploy with one agent, plus the
+# craft-level sections a real app usually sets (ui, plugins, host_tools).
+#
+# Parse with craft.ParseDefinition; validate factory resolution with the
+# host build. The standalone validator does not cover craft.yaml.
+
+craft:
+  id: hello
+  name: Hello Craft
+  version: 0.1.0
+  min_host_version: 0.1.0
+
+# The host application's own frontend delivery. The shell serves these
+# assets; craft only carries the declaration.
+ui:
+  assets: dist
+  entry: dist/index.html
+
+plugins:
+  roots: [plugins]          # directories the host scans for user plugins
+  tool_registry: tools      # resource that receives plugin tools
+  node_targets: [assistant] # agents that receive plugin node types
+
+host_tools:
+  # Primitives that must never reach a plugin. A disabled primitive is
+  # not exposed and host_about reports it.
+  disable: [open_url]
+  # Select named impls registered by a capability's ServiceRegistrar,
+  # e.g.:
+  #   services:
+  #     secrets: {impl: keyring}
+  # The impl must be registered or craft.New fails.
+
+deploy:
+  version: v1
+  resources:
+    events:
+      kind: event.Bus
+      impl: memory
+    ws:
+      kind: workspace.Workspace
+      impl: local
+      settings:
+        file: ./workspace.yaml
+    provider:
+      kind: inference.Provider
+      impl: openai
+      settings:
+        file: ./inference.yaml
+    infer:
+      kind: inference.Assembly
+      impl: unified
+      deps:
+        provider: provider
+    tools:
+      kind: tool.Assembly
+      impl: memory
+  agents:
+    assistant:
+      card:
+        name: Assistant
+        description: Handles interactive requests; carries plugin tools.
+      engine:
+        kind: agent.Engine
+        impl: graph
+        deps:
+          inference: infer
+          workspace: ws
+          tools: tools
+        settings:
+          graph: {file: ./graphs/assistant.json}
+  runtime:
+    event_bus: events
+    sessions:
+      idle_timeout: 10m

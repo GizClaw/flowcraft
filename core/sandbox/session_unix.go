@@ -20,7 +20,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/rs/xid"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -155,7 +155,7 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		if err := startWithCleanSignalMask(cmd.Start); err != nil {
 			if cerr := stdin.Close(); cerr != nil {
 				telemetry.WarnErr(ctx, "sandbox: close stdin pipe after start failure", cerr,
-					otellog.String("sandbox.session_id", s.id))
+					attribute.String("sandbox.session_id", s.id))
 			}
 			return nil, classifyStartError(cmd.Path, err)
 		}
@@ -446,8 +446,8 @@ func (s *localSession) Close() error {
 		case <-time.After(sessionKillTimeout):
 			telemetry.Warn(context.Background(),
 				"sandbox: process group did not exit after SIGKILL on close",
-				otellog.String("sandbox.session_id", s.id),
-				otellog.Int("sandbox.pgid", s.pgid))
+				attribute.String("sandbox.session_id", s.id),
+				attribute.Int("sandbox.pgid", s.pgid))
 		}
 	}
 	s.mu.Lock()
@@ -457,7 +457,7 @@ func (s *localSession) Close() error {
 	if ptmx != nil {
 		if err := ptmx.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "sandbox: close pty master failed", err,
-				otellog.String("sandbox.session_id", s.id))
+				attribute.String("sandbox.session_id", s.id))
 		}
 	}
 	s.mu.Lock()
@@ -467,7 +467,7 @@ func (s *localSession) Close() error {
 	if stdin != nil && stdin != ptmx {
 		if err := stdin.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "sandbox: close session stdin failed", err,
-				otellog.String("sandbox.session_id", s.id))
+				attribute.String("sandbox.session_id", s.id))
 		}
 	}
 	s.out.close()
@@ -530,8 +530,8 @@ func (s *localSession) signal(ctx context.Context, force bool) error {
 func (s *localSession) killGroup(sig syscall.Signal, msg string) {
 	if err := syscall.Kill(-s.pgid, sig); err != nil {
 		telemetry.WarnErr(context.Background(), msg, err,
-			otellog.String("sandbox.session_id", s.id),
-			otellog.Int("sandbox.pgid", s.pgid))
+			attribute.String("sandbox.session_id", s.id),
+			attribute.Int("sandbox.pgid", s.pgid))
 	}
 }
 
@@ -550,7 +550,7 @@ func (s *localSession) reap() {
 	if ptmx != nil {
 		if err := ptmx.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
-				otellog.String("sandbox.session_id", s.id))
+				attribute.String("sandbox.session_id", s.id))
 		}
 	}
 	// The pty copier may still hold bytes read before the child's last

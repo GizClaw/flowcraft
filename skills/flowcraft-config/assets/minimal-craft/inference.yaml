@@ -1,0 +1,26 @@
+# inference.Provider/openai settings (referenced via
+# deploy.resources.provider.settings.file in craft.yaml).
+#
+# One driver serves the whole OpenAI wire family: endpoint says where the
+# API is and how it authenticates, wire says which dialect it speaks, and
+# models declares the line-up. Replace the model and the key with your
+# own.
+id: deepseek
+spec:
+  api: responses
+  endpoint:
+    base_url: https://api.deepseek.com
+  wire:
+    reasoning_channel: text
+  models:
+    - name: deepseek-flash
+      kind: generate
+      capabilities:
+        inputs: [text, image, data, tool_call, tool_result]
+        outputs: [text]
+      limits:
+        max_input_tokens: 1000000
+        max_output_tokens: 384000
+profiles:
+  - secrets:
+      api_key: ${env:DEEPSEEK_API_KEY}

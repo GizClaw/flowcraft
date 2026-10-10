@@ -6,18 +6,21 @@
 package utils
 
 import (
+	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-
-	"golang.org/x/net/http2"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Protocol selects the transport family built by [NewRoundTripper].
@@ -40,7 +43,8 @@ type Config struct {
 	// ClientTimeout bounds the whole request (http.Client.Timeout).
 	ClientTimeout time.Duration
 
-	// TLSClientConfig is used for TLS dialing. Nil uses system roots.
+	// TLSClientConfig is used for TLS dialing. Nil uses system roots. It
+	// is cloned before use, so one config may back several clients.
 	TLSClientConfig *tls.Config
 
 	// ResponseHeaderTimeout bounds the wait for HTTP/1.1 response headers.
@@ -182,25 +186,32 @@ func applyOptions(options []Option) Config {
 }
 
 func buildBaseTransport(config Config) http.RoundTripper {
+	// The transport writes NextProtos in place, so hand each transport its
+	// own copy: a config shared by an HTTP/2 and an HTTP/1.1 client would
+	// otherwise leave the HTTP/1.1 client offering h2. (Server.ServeTLS
+	// clones for the same reason; Transport does not.)
+	tlsConfig := config.TLSClientConfig.Clone()
 	switch config.Protocol {
 	case ProtocolHTTP2:
-		http1 := newTransport()
-		http1.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-		http1.TLSClientConfig = config.TLSClientConfig
-		h2, err := http2.ConfigureTransports(http1)
-		if err != nil {
-			panic("utils: configure h2: " + err.Error())
+		transport := newTransport()
+		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+		transport.TLSClientConfig = tlsConfig
+		transport.IdleConnTimeout = config.IdleConnTimeout
+		// HTTP/2 comes from the standard library now: the cloned default
+		// transport keeps ForceAttemptHTTP2, so ALPN negotiates h2, and
+		// HTTP2Config takes the health-check knobs the x/net transport
+		// used to own (ReadIdleTimeout maps to SendPingTimeout).
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout:  config.PingInterval,
+			PingTimeout:      config.PingTimeout,
+			WriteByteTimeout: config.WriteByteTimeout,
 		}
-		h2.ReadIdleTimeout = config.PingInterval
-		h2.PingTimeout = config.PingTimeout
-		h2.WriteByteTimeout = config.WriteByteTimeout
-		h2.IdleConnTimeout = config.IdleConnTimeout
-		return http1
+		return transport
 	case ProtocolHTTP1:
 		transport := newTransport()
 		transport.ForceAttemptHTTP2 = false
 		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-		transport.TLSClientConfig = config.TLSClientConfig
+		transport.TLSClientConfig = tlsConfig
 		return transport
 	default:
 		panic("utils: unknown protocol")
@@ -209,12 +220,53 @@ func buildBaseTransport(config Config) http.RoundTripper {
 
 // newTransport returns a connection-pooling base transport tuned for a
 // small number of provider hosts.
+//
+// http.DefaultTransport is cloned while it still is the standard
+// *http.Transport. Once something wrapped it (an httpprobe, a test
+// transport), the assertion the clone needs would panic and a wrapper's
+// semantics cannot be carried through the RoundTripper interface, so
+// the fallback builds a fresh transport with the same defaults net/http
+// ships in DefaultTransport.
 func newTransport() *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+	} else {
+		warnWrappedTransport()
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
 	transport.MaxIdleConns = 128
 	transport.MaxIdleConnsPerHost = 32
 	transport.IdleConnTimeout = 90 * time.Second
 	return transport
+}
+
+// warnWrappedTransportOnce keeps the warning to one per process: the
+// fallback runs for every client the process builds.
+var warnWrappedTransportOnce sync.Once
+
+// warnWrappedTransport reports what the fallback cannot carry: once
+// something wrapped http.DefaultTransport (an httpprobe, an
+// application's TLS or dialer wrapper), the clone is impossible through
+// the RoundTripper interface and every client built here stays
+// invisible to that wrapper.
+func warnWrappedTransport() {
+	warnWrappedTransportOnce.Do(func() {
+		telemetry.Warn(context.Background(),
+			"utils: http.DefaultTransport is wrapped; building a fresh provider transport without the wrapper",
+			attribute.String("wrapped_type", fmt.Sprintf("%T", http.DefaultTransport)))
+	})
 }
 
 // RetryConfig bounds the retry behaviour.

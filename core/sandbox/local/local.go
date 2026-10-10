@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
+	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -297,7 +298,7 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sandbox/local: resolve workdir: %w", err)
 	}
-	if real != r.rootDir && !strings.HasPrefix(real, r.rootDir+string(filepath.Separator)) {
+	if !pathsafe.Within(r.rootDir, real) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil

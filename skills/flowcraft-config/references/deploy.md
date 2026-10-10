@@ -88,9 +88,13 @@ cores too, but there it reads as "use the default 100" rather than
 | `delegation.Directory` | `local` | `core/delegation` |
 | `delegation.SessionProvider` | `random` | `core/delegation` |
 | `checkpoint.Store` | `workspace` | `core/agent/checkpoint/workspace` |
+| `hooks.Runner` | `local` | `core/hooks` |
+| `hooks.SubagentObserver` | `local` | `core/hooks` |
 
 The table is informational: the validator accepts any kind that fits the
 resource envelope, and only the host build can construct these factories.
+The `hooks.*` kinds need a core release that carries `core/hooks`; on an
+older pin the strict registry lookup rejects them.
 
 Engine dependencies must match the graph engine's declared dep names:
 `inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`,

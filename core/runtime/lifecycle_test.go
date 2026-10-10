@@ -73,6 +73,24 @@ runtime:
 `)
 }
 
+// lifecycleDocRemoveTimeout is lifecycleDoc with the runtime's removal
+// bound set: the documents otherwise describe the same deployment.
+func lifecycleDocRemoveTimeout(t *testing.T, timeout string) deploy.Document {
+	t.Helper()
+	return parseRuntimeDoc(t, `version: v1
+resources:
+  events: {kind: event.Bus, impl: test}
+agents:
+  bot:
+    card: {name: Bot}
+    engine: {kind: agent.Engine, impl: test}
+runtime:
+  event_bus: events
+  sessions: {idle_timeout: 1h, sink_buffer: 8}
+  agents: {remove_timeout: `+timeout+`}
+`)
+}
+
 func buildLifecycleApp(
 	t *testing.T,
 	doc deploy.Document,
@@ -255,6 +273,112 @@ func TestRuntimeUnregisterAgentDrainTimeout(t *testing.T) {
 	}
 	if _, ok := app.Agent("dyn"); ok {
 		t.Fatal("agent still present after successful removal")
+	}
+}
+
+// TestRuntimeUnregisterAgentDocumentTimeout covers
+// runtime.agents.remove_timeout as the removal default: a call that
+// gives no WithRemoveTimeout drains under the document's bound instead
+// of waiting out an unbounded caller context.
+func TestRuntimeUnregisterAgentDocumentTimeout(t *testing.T) {
+	release := make(chan struct{})
+	app, _ := buildLifecycleApp(
+		t, lifecycleDocRemoveTimeout(t, "50ms"), blockingRunEngine(release))
+
+	if timeout, ok := app.AgentRemoveTimeout(); !ok || timeout != 50*time.Millisecond {
+		t.Fatalf("AgentRemoveTimeout = %v, %v; want 50ms, true", timeout, ok)
+	}
+
+	if _, err := app.RegisterAgent(
+		context.Background(), "dyn", dynamicDefinition("Dyn")); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	lease, err := app.Sessions().GetOrCreate(
+		context.Background(), keyFor("dyn", "conv"))
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(context.Background(), agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// No option and an unbounded context: only the document's bound can
+	// stop the drain, so the elapsed time is what proves it was applied.
+	start := time.Now()
+	err = app.UnregisterAgent(context.Background(), "dyn")
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("UnregisterAgent took %v, want the document's 50ms bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("UnregisterAgent error = %v, want DeadlineExceeded", err)
+	}
+	if _, ok := app.Agent("dyn"); !ok {
+		t.Fatal("agent disappeared after failed removal")
+	}
+
+	close(release)
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	if err := app.UnregisterAgent(context.Background(), "dyn"); err != nil {
+		t.Fatalf("retry UnregisterAgent: %v", err)
+	}
+	if _, ok := app.Agent("dyn"); ok {
+		t.Fatal("agent still present after successful removal")
+	}
+}
+
+// TestRuntimeUnregisterAgentOptionOverridesDocument pins the order:
+// WithRemoveTimeout replaces the document's bound for that call.
+func TestRuntimeUnregisterAgentOptionOverridesDocument(t *testing.T) {
+	release := make(chan struct{})
+	app, _ := buildLifecycleApp(
+		t, lifecycleDocRemoveTimeout(t, "1h"), blockingRunEngine(release))
+
+	if _, err := app.RegisterAgent(
+		context.Background(), "dyn", dynamicDefinition("Dyn")); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	lease, err := app.Sessions().GetOrCreate(
+		context.Background(), keyFor("dyn", "conv"))
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(context.Background(), agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The document's hour-long bound cannot be what stopped this drain.
+	start := time.Now()
+	err = app.UnregisterAgent(
+		context.Background(), "dyn", WithRemoveTimeout(50*time.Millisecond))
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("UnregisterAgent took %v, want the option's 50ms bound", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("UnregisterAgent error = %v, want DeadlineExceeded", err)
+	}
+
+	close(release)
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("turn Wait: %v", err)
+	}
+	if err := app.UnregisterAgent(context.Background(), "dyn"); err != nil {
+		t.Fatalf("retry UnregisterAgent: %v", err)
+	}
+	if _, ok := app.Agent("dyn"); ok {
+		t.Fatal("agent still present after successful removal")
+	}
+}
+
+// TestRuntimeAgentRemoveTimeoutUnset pins the default: a document
+// without the key reports no configured bound.
+func TestRuntimeAgentRemoveTimeoutUnset(t *testing.T) {
+	app, _ := buildLifecycleApp(t, lifecycleDoc(t), simpleRunEngine())
+	if timeout, ok := app.AgentRemoveTimeout(); ok || timeout != 0 {
+		t.Fatalf("AgentRemoveTimeout = %v, %v; want 0, false", timeout, ok)
 	}
 }
 

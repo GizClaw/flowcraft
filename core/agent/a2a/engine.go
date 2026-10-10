@@ -15,7 +15,6 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -122,21 +121,21 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 	}
 	ctx, span := telemetry.Tracer().Start(ctx, "a2a.execute", trace.WithAttributes(spanAttrs...))
 	started := time.Now()
-	runLogAttrs := []otellog.KeyValue{
-		otellog.String(telemetry.AttrEngineKind, engineKind),
-		otellog.String(telemetry.AttrRunID, run.RunID),
-		otellog.String(telemetry.AttrAgentID, run.AgentID),
+	runLogAttrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrEngineKind, engineKind),
+		attribute.String(telemetry.AttrRunID, run.RunID),
+		attribute.String(telemetry.AttrAgentID, run.AgentID),
 	}
 	if run.TaskID != "" {
-		runLogAttrs = append(runLogAttrs, otellog.String(telemetry.AttrTaskID, run.TaskID))
+		runLogAttrs = append(runLogAttrs, attribute.String(telemetry.AttrTaskID, run.TaskID))
 	}
 	telemetry.Info(ctx, "a2a run started", runLogAttrs...)
 	defer func() {
 		status := execStatus(runErr)
 		span.SetAttributes(attribute.String(telemetry.AttrRunStatus, status))
 		if runErr != nil {
-			attrs := append([]otellog.KeyValue(nil), runLogAttrs...)
-			attrs = append(attrs, otellog.String(telemetry.AttrRunStatus, status))
+			attrs := append([]attribute.KeyValue(nil), runLogAttrs...)
+			attrs = append(attrs, attribute.String(telemetry.AttrRunStatus, status))
 			switch {
 			case errdefs.IsInterrupted(runErr):
 				span.SetStatus(codes.Ok, status)
@@ -147,12 +146,12 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 			default:
 				span.RecordError(runErr)
 				span.SetStatus(codes.Error, runErr.Error())
-				attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, runErr.Error()))
+				attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, runErr.Error()))
 				telemetry.Error(ctx, "a2a run failed", attrs...)
 			}
 		} else {
 			span.SetStatus(codes.Ok, status)
-			telemetry.Info(ctx, "a2a run completed", append([]otellog.KeyValue(nil), runLogAttrs...)...)
+			telemetry.Info(ctx, "a2a run completed", append([]attribute.KeyValue(nil), runLogAttrs...)...)
 		}
 		span.End()
 		recordExec(ctx, run, status, time.Since(started))
@@ -160,7 +159,7 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 
 	if err := publishRunEvent(ctx, host, run, agent.SubjectRunStart(run.RunID), nil); err != nil {
 		telemetry.WarnErr(ctx, "a2a: run start event publish failed", err,
-			otellog.String(telemetry.AttrRunID, run.RunID))
+			attribute.String(telemetry.AttrRunID, run.RunID))
 	}
 	defer func() {
 		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runEndPublishTimeout)
@@ -171,7 +170,7 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 				attribute.String(telemetry.AttrRunID, run.RunID),
 			))
 			telemetry.WarnErr(ctx, "a2a: run end event publish failed", err,
-				otellog.String(telemetry.AttrRunID, run.RunID))
+				attribute.String(telemetry.AttrRunID, run.RunID))
 		}
 	}()
 
@@ -417,8 +416,8 @@ func (x *executor) cancelRemote() {
 	_, err := x.client.CancelTask(x.eng.opts.rpcCtx(ctx), &a2aprotocol.CancelTaskRequest{ID: x.taskID})
 	if err != nil {
 		telemetry.WarnErr(ctx, "a2a: best-effort remote task cancel failed", err,
-			otellog.String(telemetry.AttrRunID, x.run.RunID),
-			otellog.String("a2a.task_id", string(x.taskID)))
+			attribute.String(telemetry.AttrRunID, x.run.RunID),
+			attribute.String("a2a.task_id", string(x.taskID)))
 	}
 }
 
@@ -673,7 +672,7 @@ func (x *executor) appendAgentMessage(ctx context.Context, m *a2aprotocol.Messag
 					stepActorFor(x.run.AgentID),
 					agent.StreamDeltaPayload{Type: agent.StreamDeltaPart, Part: tp}); err != nil {
 					telemetry.WarnErr(ctx, "a2a: stream delta publish failed", err,
-						otellog.String(telemetry.AttrRunID, x.run.RunID))
+						attribute.String(telemetry.AttrRunID, x.run.RunID))
 				}
 			}
 		}
@@ -706,7 +705,7 @@ func (x *executor) checkpoint(ctx context.Context) {
 	})
 	if err != nil {
 		telemetry.Warn(ctx, "a2a: failed to encode checkpoint payload",
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
 	cp := agent.Checkpoint{
@@ -724,7 +723,7 @@ func (x *executor) checkpoint(ctx context.Context) {
 	}
 	if err := x.host.Checkpoint(ctx, cp); err != nil {
 		telemetry.Warn(ctx, "a2a: checkpoint rejected by host",
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 }
 
@@ -905,8 +904,8 @@ func publishStepEvent(ctx context.Context, host agent.Host, run agent.Run, subje
 	stampLineage(&env, run)
 	if err := host.Publish(ctx, env); err != nil {
 		telemetry.WarnErr(ctx, "a2a: step event publish failed", err,
-			otellog.String("event.subject", string(env.Subject)),
-			otellog.String(telemetry.AttrRunID, run.RunID))
+			attribute.String("event.subject", string(env.Subject)),
+			attribute.String(telemetry.AttrRunID, run.RunID))
 	}
 }
 

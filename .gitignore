@@ -29,6 +29,8 @@
 !go.work
 !core/
 !core/**
+!craft/
+!craft/**
 !driver/
 !driver/**
 !examples/

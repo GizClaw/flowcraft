@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "parallel",
+      "transport": "http",
+      "url": "https://search.parallel.ai/mcp",
+      "headers": {"User-Agent": "FlowCraft/parallel-mcp-example"},
+      "required": true,
+      "http_timeout": "60s"
+    }
+  ]
+}

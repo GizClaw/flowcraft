@@ -10,7 +10,7 @@ package telemetry
 //     learn what to filter on.
 //
 // The constants are deliberately *strings*, not typed wrappers around
-// attribute.Key / otellog.KeyValue. Producer call sites typically wrap
+// attribute.Key / attribute.KeyValue. Producer call sites typically wrap
 // them inline (`attribute.String(telemetry.AttrRunID, id)`) — wrapping
 // at this layer would force an OTel SDK import on every consumer that
 // only wants the canonical name (e.g. an envelope header value).

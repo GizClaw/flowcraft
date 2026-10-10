@@ -1,3 +1,3 @@
 module github.com/GizClaw/flowcraft/tools/releasegate
 
-go 1.25.0
+go 1.26.0

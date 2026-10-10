@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // StreamExportRegistry is the runtime-owned bridge between the
@@ -68,7 +68,7 @@ func (r *StreamExportRegistry) RegisterConversation(contextID string, sink agent
 	if _, existing := r.conversations[contextID]; existing {
 		telemetry.Debug(context.Background(),
 			"runtime stream export: replacing conversation sink",
-			otellog.String("runtime.stream_export.context", contextID))
+			attribute.String("runtime.stream_export.context", contextID))
 	}
 	r.conversations[contextID] = wrapped
 	r.mu.Unlock()

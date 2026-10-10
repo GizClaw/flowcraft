@@ -104,9 +104,28 @@ resources:
 - Backends are ordinary resource factories: the built-in `env` store reads
   environment variables and the built-in `file` store reads one file per
   secret under a configured `base` directory (escaping the base is rejected,
-  trailing newlines are stripped, and file size is capped). External backends
-  (keychain, vault, ...) register their own `secret.Store` impls with zero
-  core changes.
+  trailing newlines are stripped, and file size is capped). Other backends
+  (vault, 1Password, Secret Service, ...) register their own `secret.Store`
+  impls with zero core changes.
+- The `backends/secret` module ships a `keychain` impl: one encrypted 0600
+  file per secret under a 0700 `dir`, sealed with AES-256-GCM under a
+  machine-local 32-byte key stored beside it as `.key`. It protects against
+  accidental exposure — backups, file sharing, casual reads — rather than
+  against another process running as the same user; a true OS credential
+  store would be a different backend. Files without the seal magic are
+  rejected instead of read as plaintext, and the same store backs the
+  app-side `keychain.Manager` (Get/Set/Delete for settings pages and CLIs).
+  Register it with `keychain.Register(reg)` and deploy it like any store:
+
+  ```yaml
+  resources:
+    secret.keychain:
+      kind: secret.Store
+      impl: keychain
+      settings:
+        id: keychain
+        dir: /path/to/secrets
+  ```
 
 agents:
   assistant:

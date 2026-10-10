@@ -226,6 +226,51 @@ func TestDecodeConfig_DynamicCatalog(t *testing.T) {
 	}
 }
 
+func TestDecodeConfigAgents(t *testing.T) {
+	for name, tc := range map[string]struct {
+		runtimeYAML string
+		timeout     time.Duration
+	}{
+		"configured": {
+			runtimeYAML: `  event_bus: events
+  agents:
+    remove_timeout: 5s
+`,
+			timeout: 5 * time.Second,
+		},
+		"absent":        {runtimeYAML: "  event_bus: events\n"},
+		"empty section": {runtimeYAML: "  event_bus: events\n  agents: {}\n"},
+		"null value":    {runtimeYAML: "  event_bus: events\n  agents: {remove_timeout: }\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := parseRuntimeDocument(t, tc.runtimeYAML)
+			cfg, err := DecodeConfig(context.Background(), doc)
+			if err != nil {
+				t.Fatalf("DecodeConfig: %v", err)
+			}
+			if cfg.Agents.RemoveTimeout != tc.timeout {
+				t.Fatalf("Agents.RemoveTimeout = %v, want %v",
+					cfg.Agents.RemoveTimeout, tc.timeout)
+			}
+		})
+	}
+
+	for name, runtimeYAML := range map[string]string{
+		"bad duration":    "  event_bus: events\n  agents: {remove_timeout: soon}\n",
+		"unitless number": "  event_bus: events\n  agents: {remove_timeout: 5}\n",
+		"zero":            "  event_bus: events\n  agents: {remove_timeout: 0s}\n",
+		"negative":        "  event_bus: events\n  agents: {remove_timeout: -1s}\n",
+		"unknown field":   "  event_bus: events\n  agents: {remove_timeout: 5s, hot: true}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := parseRuntimeDocument(t, runtimeYAML)
+			if _, err := DecodeConfig(context.Background(), doc); !errdefs.IsValidation(err) {
+				t.Fatalf("DecodeConfig error = %v, want validation", err)
+			}
+		})
+	}
+}
+
 func TestDecodeConfigRejectsUnknownSessionField(t *testing.T) {
 	doc := parseRuntimeDocument(t, `  event_bus: events
   sessions:

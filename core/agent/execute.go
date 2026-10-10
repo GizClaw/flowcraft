@@ -14,7 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Execute executes one turn of ag against eng with the given req.
@@ -159,16 +159,16 @@ func Execute(
 	toolAllowList = append([]string(nil), toolAllowList...)
 	obs := composeObservers(rc.hooks)
 
-	runLogAttrs := func() []otellog.KeyValue {
-		attrs := []otellog.KeyValue{
-			otellog.String(telemetry.AttrAgentID, id.AgentID),
-			otellog.String(telemetry.AttrRunID, id.RunID),
+	runLogAttrs := func() []attribute.KeyValue {
+		attrs := []attribute.KeyValue{
+			attribute.String(telemetry.AttrAgentID, id.AgentID),
+			attribute.String(telemetry.AttrRunID, id.RunID),
 		}
 		if id.TaskID != "" {
-			attrs = append(attrs, otellog.String(telemetry.AttrTaskID, id.TaskID))
+			attrs = append(attrs, attribute.String(telemetry.AttrTaskID, id.TaskID))
 		}
 		if id.ConversationID != "" {
-			attrs = append(attrs, otellog.String(telemetry.AttrConversationID, id.ConversationID))
+			attrs = append(attrs, attribute.String(telemetry.AttrConversationID, id.ConversationID))
 		}
 		return attrs
 	}
@@ -323,8 +323,8 @@ func Execute(
 			obs.OnRunRevise(ctx, id, res, attempt+1)
 		}
 		attrs := append(runLogAttrs(),
-			otellog.Int("agent.attempt", attempt),
-			otellog.String(telemetry.AttrRunStatus, string(res.Status)))
+			attribute.Int("agent.attempt", attempt),
+			attribute.String(telemetry.AttrRunStatus, string(res.Status)))
 		telemetry.Warn(ctx, "agent run revised and will retry", attrs...)
 	}
 
@@ -425,36 +425,36 @@ func logRunError(ctx context.Context, id Identity, msg string, err error) {
 	if err == nil {
 		return
 	}
-	attrs := []otellog.KeyValue{
-		otellog.String(telemetry.AttrAgentID, id.AgentID),
-		otellog.String(telemetry.AttrRunID, id.RunID),
-		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	attrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrAgentID, id.AgentID),
+		attribute.String(telemetry.AttrRunID, id.RunID),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()),
 	}
 	if id.TaskID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrTaskID, id.TaskID))
+		attrs = append(attrs, attribute.String(telemetry.AttrTaskID, id.TaskID))
 	}
 	telemetry.Error(ctx, msg, attrs...)
 }
 
 // logRunOutcome records the terminal status of one Execute call so the
 // agent layer is visible in logs even when the engine logs nothing.
-func logRunOutcome(ctx context.Context, id Identity, res *Result, base func() []otellog.KeyValue) {
+func logRunOutcome(ctx context.Context, id Identity, res *Result, base func() []attribute.KeyValue) {
 	if res == nil {
 		return
 	}
-	attrs := append(base(), otellog.String(telemetry.AttrRunStatus, string(res.Status)))
+	attrs := append(base(), attribute.String(telemetry.AttrRunStatus, string(res.Status)))
 	attrs = append(attrs,
-		otellog.Int("agent.attempts", res.Attempts),
-		otellog.Bool("agent.committed", res.Committed))
+		attribute.Int("agent.attempts", res.Attempts),
+		attribute.Bool("agent.committed", res.Committed))
 	if res.Err != nil {
-		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, res.Err.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, res.Err.Error()))
 	}
 	switch res.Status {
 	case StatusCompleted:
 		telemetry.Info(ctx, "agent run completed", attrs...)
 	case StatusInterrupted:
 		if res.Cause != "" {
-			attrs = append(attrs, otellog.String("agent.cause", string(res.Cause)))
+			attrs = append(attrs, attribute.String("agent.cause", string(res.Cause)))
 		}
 		telemetry.Warn(ctx, "agent run interrupted", attrs...)
 	case StatusCanceled:

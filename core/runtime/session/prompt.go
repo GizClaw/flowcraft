@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type promptState uint8
@@ -229,8 +229,8 @@ func (t *Turn) publishPromptResolved(host agent.Host, promptID string, status Pr
 	stampTurnLineage(&envelope, t)
 	if err := host.Publish(ctx, envelope); err != nil {
 		telemetry.WarnErr(ctx, "runtime session: prompt resolved event publish failed", err,
-			otellog.String(telemetry.AttrRunID, t.runID),
-			otellog.String("event.subject", string(SubjectPromptResolved(t.runID))))
+			attribute.String(telemetry.AttrRunID, t.runID),
+			attribute.String("event.subject", string(SubjectPromptResolved(t.runID))))
 	}
 }
 

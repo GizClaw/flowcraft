@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Selectors struct {
@@ -829,7 +829,7 @@ func selectTarget[Request any](
 // event. Retry noise stays at Debug; fallback and circuit skips are Warn
 // because operators should be able to search for them in log queries.
 func logRouteAttempt(
-	log func(context.Context, string, ...otellog.KeyValue),
+	log func(context.Context, string, ...attribute.KeyValue),
 	ctx context.Context,
 	operation model.Operation,
 	msg string,
@@ -837,30 +837,30 @@ func logRouteAttempt(
 	next model.ModelRef,
 	err error,
 ) {
-	attrs := []otellog.KeyValue{
-		otellog.String("inference.operation", string(operation)),
-		otellog.String(telemetry.AttrLLMProvider, attempt.Target.ID.Provider),
-		otellog.String(telemetry.AttrLLMModel, attempt.Target.ID.Name),
-		otellog.String("phase", string(attempt.Phase)),
-		otellog.String("trigger", string(attempt.Trigger)),
-		otellog.String("outcome", string(attempt.Outcome)),
+	attrs := []attribute.KeyValue{
+		attribute.String("inference.operation", string(operation)),
+		attribute.String(telemetry.AttrLLMProvider, attempt.Target.ID.Provider),
+		attribute.String(telemetry.AttrLLMModel, attempt.Target.ID.Name),
+		attribute.String("phase", string(attempt.Phase)),
+		attribute.String("trigger", string(attempt.Trigger)),
+		attribute.String("outcome", string(attempt.Outcome)),
 	}
 	if attempt.Number > 0 {
-		attrs = append(attrs, otellog.Int("attempt", attempt.Number))
+		attrs = append(attrs, attribute.Int("attempt", attempt.Number))
 	}
 	if attempt.ErrorKind != "" {
-		attrs = append(attrs, otellog.String("error_kind", string(attempt.ErrorKind)))
+		attrs = append(attrs, attribute.String("error_kind", string(attempt.ErrorKind)))
 	}
 	if attempt.Circuit != "" {
-		attrs = append(attrs, otellog.String("circuit", attempt.Circuit))
+		attrs = append(attrs, attribute.String("circuit", attempt.Circuit))
 	}
 	if next.ID != (model.ModelID{}) {
 		attrs = append(attrs,
-			otellog.String("next.provider", next.ID.Provider),
-			otellog.String("next.model", next.ID.Name))
+			attribute.String("next.provider", next.ID.Provider),
+			attribute.String("next.model", next.ID.Name))
 	}
 	if err != nil {
-		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	log(ctx, msg, attrs...)
 }
