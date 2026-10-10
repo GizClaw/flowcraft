@@ -22,7 +22,7 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
 ## Modules
 
 - **`core`** — The single platform module: agent execution, graph, tool,
-  model, message, inference, memory contracts, event bus, telemetry,
+  model, message, skills, inference, memory contracts, event bus, telemetry,
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
 - **`craft`** — Application assembly on top of `core`: the `craft.yaml`
@@ -339,6 +339,9 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 - [Tool System](docs/guides/tool.md) — `core/tool`: LLM function-calling
   contract, the Registry / Catalog / Executor split, middleware chain, and
   the MCP bridge.
+- [Agent Skills](docs/guides/skill.md) — `core/skill`: SKILL.md discovery
+  and parsing, BM25 ranking over names and descriptions, and the per-turn
+  `## Skills` section; lifecycle and authoring stay with the caller.
 - [Event Bus](docs/guides/event.md) — `core/event`: subject-routed
   publish/subscribe, in-process `MemoryBus`, host capability wiring,
   backpressure policies.
