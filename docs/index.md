@@ -28,6 +28,9 @@ retrieval, runtime orchestration, and voice. Source on
 - [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
   command-hook runner, the frozen event vocabulary, the invocation
   contract, and the trust rules for plugin-contributed sources.
+- [Media & Attachments](guides/media.md) — `core/message/media`:
+  attachment classification, image normalization budgets, and the
+  `media.attachments` prepare hook.
 
 ### State and execution boundary
 

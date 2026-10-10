@@ -476,6 +476,28 @@ agents:
 `output` var; recall is hard-partitioned by scope. `memory.turn` commits
 the turn's channel idempotently per run id.
 
+## media attachments
+
+```yaml
+agents:
+  assistant:
+    prepare:
+      - type: media.attachments       # hook.prepare attachment normalizer
+        settings:
+          work_dir: /workspace              # optional; paths under it render relative
+          passthrough_kinds: [video]        # optional; audio / video / file parts survive as parts
+          audio_marker: "[audio file] "     # optional; per-kind label (defaults shown)
+          video_marker: "[video file] "
+          file_marker: "[file] "
+```
+
+`media.attachments` flattens every audio / video / file part into a
+text line naming its path unless the kind is listed in
+`passthrough_kinds`, and rewrites URL-sourced image / audio / video
+parts that point at a local file into inline bytes before the engine
+reads the board. Images are never flattened. See
+[Media & Attachments](../../../docs/guides/media.md).
+
 ## event bus
 
 ```yaml
