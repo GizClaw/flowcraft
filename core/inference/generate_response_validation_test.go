@@ -82,14 +82,18 @@ func TestGenerateResponseValidationDetailsNameEveryCheck(t *testing.T) {
 		}}
 	}
 	textRequest := responseValidationRequest(Intent{Text: &TextIntent{}})
+	badToolCall := message.ToolCallPart{Call: message.ToolCall{
+		ID: "call-1", Name: "known",
+	}}
 
 	cases := []struct {
-		name     string
-		request  GenerateRequest
-		response GenerateResponse
-		check    generateResponseCheck
-		detail   string
-		stream   string
+		name      string
+		request   GenerateRequest
+		response  GenerateResponse
+		check     generateResponseCheck
+		detail    string
+		stream    string
+		wantError string
 	}{
 		{
 			name:     "message role",
@@ -154,20 +158,38 @@ func TestGenerateResponseValidationDetailsNameEveryCheck(t *testing.T) {
 			stream:   "stream.finish.mismatch",
 		},
 		{
-			name:     "part normalization",
-			request:  textRequest,
-			response: responseValidationResponse(nil),
-			check:    generateResponseCheckPart,
-			detail:   "generate.validation.part",
-			stream:   "stream.finish.validation.part",
+			name:      "part normalization",
+			request:   textRequest,
+			response:  responseValidationResponse(nil),
+			check:     generateResponseCheckPart,
+			detail:    "generate.validation.part",
+			stream:    "stream.finish.validation.part",
+			wantError: "content part 0: content part is nil",
 		},
 		{
-			name:     "normalization before invalid media",
+			name:      "normalization before invalid media",
+			request:   textRequest,
+			response:  responseValidationResponse(message.ImagePart{}, nil),
+			check:     generateResponseCheckPart,
+			detail:    "generate.validation.part",
+			stream:    "stream.finish.validation.part",
+			wantError: "content part 1: content part is nil",
+		},
+		{
+			name:     "malformed tool call before invalid image",
 			request:  textRequest,
-			response: responseValidationResponse(message.ImagePart{}, nil),
-			check:    generateResponseCheckPart,
-			detail:   "generate.validation.part",
-			stream:   "stream.finish.validation.part",
+			response: responseValidationResponse(badToolCall, message.ImagePart{}),
+			check:    generateResponseCheckToolCall,
+			detail:   "generate.validation.tool_call",
+			stream:   "stream.finish.tool_call",
+		},
+		{
+			name:     "invalid image before malformed tool call",
+			request:  textRequest,
+			response: responseValidationResponse(message.ImagePart{}, badToolCall),
+			check:    generateResponseCheckToolCall,
+			detail:   "generate.validation.tool_call",
+			stream:   "stream.finish.tool_call",
 		},
 		{
 			name:     "unsupported part",
@@ -342,6 +364,9 @@ func TestGenerateResponseValidationDetailsNameEveryCheck(t *testing.T) {
 			var checkErr *generateResponseCheckError
 			if !errors.As(err, &checkErr) {
 				t.Fatalf("ValidateFor error = %T %v, want generateResponseCheckError", err, err)
+			}
+			if tc.wantError != "" && err.Error() != tc.wantError {
+				t.Fatalf("ValidateFor error = %q, want %q", err, tc.wantError)
 			}
 			if checkErr.check == "" {
 				t.Fatal("validation error must name a nonempty check")

@@ -60,10 +60,10 @@ func (r GenerateResponse) validate() (generateResponseCheck, []message.Part, err
 		// Normalize every part before message validation so structural failures
 		// take precedence over invalid media or other message-level checks.
 		parts = make([]message.Part, 0, len(r.Message.Content.Parts))
-		for _, part := range r.Message.Content.Parts {
+		for i, part := range r.Message.Content.Parts {
 			normalized, err := message.NormalizePart(part)
 			if err != nil {
-				return generateResponseCheckPart, nil, err
+				return generateResponseCheckPart, nil, fmt.Errorf("content part %d: %w", i, err)
 			}
 			parts = append(parts, normalized)
 		}
@@ -304,21 +304,29 @@ func (r GenerateResponse) validateFor(request GenerateRequest) (generateResponse
 }
 
 func responseMessageValidationCheck(parts []message.Part) generateResponseCheck {
+	// Keep malformed tool calls on their stable terminal label regardless of
+	// position; otherwise, the first invalid part in source order wins.
+	var firstCheck generateResponseCheck
 	for _, part := range parts {
 		if err := part.Validate(); err != nil {
+			check := generateResponseCheckMessage
 			switch part.(type) {
 			case message.ImagePart:
-				return generateResponseCheckImageMedia
+				check = generateResponseCheckImageMedia
 			case message.AudioPart:
-				return generateResponseCheckAudioMedia
+				check = generateResponseCheckAudioMedia
 			case message.VideoPart:
-				return generateResponseCheckVideoMedia
+				check = generateResponseCheckVideoMedia
 			case message.ToolCallPart:
 				return generateResponseCheckToolCall
-			default:
-				return generateResponseCheckMessage
+			}
+			if firstCheck == "" {
+				firstCheck = check
 			}
 		}
+	}
+	if firstCheck != "" {
+		return firstCheck
 	}
 	return generateResponseCheckMessage
 }
