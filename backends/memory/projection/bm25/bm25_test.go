@@ -3,6 +3,7 @@ package bm25
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 func TestBM25HappyPathUnicodeAndStableTie(t *testing.T) {
@@ -51,6 +53,80 @@ func TestBM25EmptyQueryReturnsEmpty(t *testing.T) {
 	})
 	if err != nil || len(results) != 0 {
 		t.Fatalf("empty query = %+v, %v", results, err)
+	}
+}
+
+// TestBM25MatchingUsesKernelTokens guards the contract between the lane and
+// the shared scoring kernel: the lane persists the kernel's tokens
+// (core/utils/bm25.Tokenize) and Search tokenizes the query with that same
+// splitter, which emits a CJK run as characters plus adjacent bigrams. A
+// Chinese document is therefore reachable by the run and by a fragment of it,
+// while the lane keeps prefix matching off, so an ASCII fragment still does
+// not match a longer word.
+func TestBM25MatchingUsesKernelTokens(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := index.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Projection: "facts",
+		Artifacts: []component.Artifact{
+			artifact("run", "你好世界"),
+			artifact("parts", "世界 检索 文档"),
+			artifact("ascii", "hello world"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	search := func(query string) []component.Candidate {
+		t.Helper()
+		results, err := index.Search(context.Background(), component.SearchRequest{
+			Scope: scope, Query: query,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return results
+	}
+	ids := func(results []component.Candidate) []string {
+		names := make([]string, 0, len(results))
+		for _, result := range results {
+			names = append(names, result.ID)
+		}
+		return names
+	}
+
+	// The whole run matches, and the document that is the run outranks the one
+	// that only shares characters with it.
+	results := search("你好世界")
+	if len(results) != 2 || results[0].ID != "run" || results[0].Score <= results[1].Score {
+		t.Fatalf("query 你好世界 = %+v, want run ahead of parts", results)
+	}
+	// A fragment matches on its own, including one that never was a whole
+	// word of the run: the kernel indexes the run's bigrams, which is what
+	// replaces a segmentation dictionary.
+	fragments := map[string]bool{}
+	for _, result := range search("世界") {
+		if result.Score <= 0 {
+			t.Fatalf("query 世界 = %+v, want positive scores", results)
+		}
+		fragments[result.ID] = true
+	}
+	if !fragments["run"] || !fragments["parts"] || len(fragments) != 2 {
+		t.Fatalf("query 世界 = %v, want both CJK documents", fragments)
+	}
+	// Space-separated CJK words still match their terms.
+	if results := search("检索 文档"); len(results) != 1 || results[0].ID != "parts" {
+		t.Fatalf("query 检索 文档 = %+v, want only parts", results)
+	}
+	// ASCII keeps whole-word matching: a five-rune prefix of "hello" is not a
+	// term of the index and the lane scores prefixes with weight zero.
+	if got := ids(search("hello")); len(got) != 1 || got[0] != "ascii" {
+		t.Fatalf("query hello = %v, want only ascii", got)
+	}
+	if got := ids(search("hell")); len(got) != 0 {
+		t.Fatalf("query hell = %v, want no hits (prefix matching is off)", got)
 	}
 }
 
@@ -150,6 +226,168 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 		fullResults[0].Score != results[0].Score {
 		t.Fatalf("full results = %+v, %v; delta = %+v", fullResults, err, results)
 	}
+}
+
+// TestBM25KernelCacheReusesScoringPerSelector pins the lane's kernel cache.
+// An unchanged (identity, selector) pair reuses one kernel, and a selector
+// change must not: the selector narrows the scored document set, and average
+// length and document frequency — the terms a BM25 score is made of — are
+// properties of that set.
+func TestBM25KernelCacheReusesScoringPerSelector(t *testing.T) {
+	index, scope := twoConversationIndex(t)
+	search := func(conversation string) []component.Candidate {
+		t.Helper()
+		results, err := index.Search(context.Background(), component.SearchRequest{
+			Scope: scope, Query: "needle",
+			Metadata: corememory.Metadata{"conversation_id": conversation},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return results
+	}
+
+	c1 := search("c1")
+	if len(c1) != 1 || c1[0].ID != "alpha" {
+		t.Fatalf("conversation c1 results = %s, want only alpha", describeCandidates(c1))
+	}
+	firstKernel := cachedKernelOf(t, index)
+
+	// The same request must reuse the kernel and answer identically.
+	repeat := search("c1")
+	if cachedKernelOf(t, index) != firstKernel {
+		t.Fatal("identical request rebuilt the kernel")
+	}
+	if describeCandidates(repeat) != describeCandidates(c1) {
+		t.Fatalf("identical request rescored: %s, want %s",
+			describeCandidates(repeat), describeCandidates(c1))
+	}
+
+	// A different selector selects a different set, so it must not answer
+	// from the kernel built for the previous one.
+	c2 := search("c2")
+	if cachedKernelOf(t, index) == firstKernel {
+		t.Fatal("selector change reused the previous kernel")
+	}
+	if len(c2) != 1 || c2[0].ID != "beta" {
+		t.Fatalf("conversation c2 results = %s, want only beta", describeCandidates(c2))
+	}
+
+	// Switching back re-selects c1's set and scores identically again.
+	if back := search("c1"); describeCandidates(back) != describeCandidates(c1) {
+		t.Fatalf("c1 rescored after c2: %s, want %s", describeCandidates(back), describeCandidates(c1))
+	}
+}
+
+// TestBM25KernelCacheFollowsBuildIdentity pins invalidation: a delta that
+// rewrites the projection must produce a new kernel, or the lane keeps
+// answering from a build that no longer exists.
+func TestBM25KernelCacheFollowsBuildIdentity(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{artifact("alpha", "needle")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	search := func(query string) []component.Candidate {
+		t.Helper()
+		results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: query})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return results
+	}
+	if results := search("needle"); len(results) != 1 || results[0].ID != "alpha" {
+		t.Fatalf("results before delta = %s, want only alpha", describeCandidates(results))
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Upserts: []component.Artifact{artifact("beta", "newcomer")}, SourceRevision: "r1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A stale kernel would answer nothing here.
+	if results := search("newcomer"); len(results) != 1 || results[0].ID != "beta" {
+		t.Fatalf("results after delta = %s, want only beta", describeCandidates(results))
+	}
+	if results := search("needle"); len(results) != 1 || results[0].ID != "alpha" {
+		t.Fatalf("results after delta = %s, want only alpha", describeCandidates(results))
+	}
+}
+
+// TestBM25KernelCacheConcurrentSearches reads the cache from concurrent
+// searches whose selectors alternate, keeping hits and misses overlapped.
+func TestBM25KernelCacheConcurrentSearches(t *testing.T) {
+	index, scope := twoConversationIndex(t)
+	var wait sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		conversation, want := "c1", "alpha"
+		if worker%2 == 1 {
+			conversation, want = "c2", "beta"
+		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for i := 0; i < 25; i++ {
+				results, err := index.Search(context.Background(), component.SearchRequest{
+					Scope: scope, Query: "needle",
+					Metadata: corememory.Metadata{"conversation_id": conversation},
+				})
+				if err != nil {
+					t.Errorf("conversation %s: %v", conversation, err)
+					return
+				}
+				if len(results) != 1 || results[0].ID != want {
+					t.Errorf("conversation %s results = %s, want only %s",
+						conversation, describeCandidates(results), want)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+}
+
+// twoConversationIndex builds one fact per conversation selector, with
+// different term frequencies so the two scored sets differ.
+func twoConversationIndex(t *testing.T) (*Index, corememory.Scope) {
+	t.Helper()
+	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	alpha := artifact("alpha", "needle")
+	alpha.Metadata["conversation_id"] = "c1"
+	beta := artifact("beta", "needle needle needle")
+	beta.Metadata["conversation_id"] = "c2"
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{alpha, beta},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return index, scope
+}
+
+func cachedKernelOf(t *testing.T, index *Index) *corebm25.Index {
+	t.Helper()
+	index.mu.Lock()
+	defer index.mu.Unlock()
+	if index.cached == nil {
+		t.Fatal("no kernel cached")
+	}
+	return index.cached.kernel
+}
+
+func describeCandidates(results []component.Candidate) string {
+	var description strings.Builder
+	for _, result := range results {
+		fmt.Fprintf(&description, "%s=%.17g;", result.ID, result.Score)
+	}
+	return description.String()
 }
 
 type bm25Meter struct {

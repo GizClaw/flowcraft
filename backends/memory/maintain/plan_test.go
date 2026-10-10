@@ -47,6 +47,42 @@ func TestDetectSupersedesContradictingStableFact(t *testing.T) {
 	}
 }
 
+// TestDetectSupersedesCJKFactWithoutWordBoundaries pins what the kernel
+// tokenizer buys the soft merge: two facts whose only difference sits inside a
+// run of CJK characters share most of their tokens once the run is tokenized
+// into characters and bigrams, so the pair reads as a contradiction. Split on
+// whitespace the two runs are unrelated single tokens and the pair never
+// merges.
+func TestDetectSupersedesCJKFactWithoutWordBoundaries(t *testing.T) {
+	older := planFact("old", "海维喜欢喝美式咖啡", []string{"海维"},
+		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := planFact("new", "海维喜欢喝拿铁咖啡", []string{"海维"},
+		time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	plan, err := Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, older},
+	}, newer.EventTime.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].FactID != "old" ||
+		plan.Supersedes[0].SupersededBy != "new" || plan.Supersedes[0].Similarity < 0.5 {
+		t.Fatalf("plan = %#v", plan)
+	}
+	// Sharing an entity is not on its own a contradiction: a CJK fact about
+	// the same subject stays unmerged when its tokens barely overlap.
+	unrelated := planFact("other", "海维住在上海", []string{"海维"},
+		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	plan, err = Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, unrelated},
+	}, newer.EventTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 0 {
+		t.Fatalf("unrelated facts superseded: %#v", plan.Supersedes)
+	}
+}
+
 // TestDetectDecaysAgedFacts pins the decay half-life.
 func TestDetectDecaysAgedFacts(t *testing.T) {
 	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)

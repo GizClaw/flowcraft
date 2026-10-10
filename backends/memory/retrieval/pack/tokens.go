@@ -1,35 +1,10 @@
-package textutil
+package pack
 
 import (
-	"strings"
 	"unicode"
 
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
-
-// Tokens performs Unicode-aware case folding and splits at non letters/digits.
-func Tokens(value string) []string {
-	value = strings.ToLower(value)
-	return strings.FieldsFunc(value, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-}
-
-func Unique(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
-}
 
 // EstimatedTokens estimates the token cost of text without a tokenizer. The
 // unit is a quarter token: ASCII runes cost one unit, other non-ASCII runes
@@ -37,6 +12,15 @@ func Unique(values []string) []string {
 // estimate is deliberately conservative for non-Latin scripts, where a plain
 // "runes / 4" heuristic undercounts by up to 4x. Pure ASCII keeps the
 // historical ceil(runes/4) result.
+//
+// This is the module's one cost model, and it is not the tokenizer the
+// retrieval lanes match with: matching is the shared kernel's
+// (core/utils/bm25), which splits CJK into single characters plus adjacent
+// bigrams so a fragment stays matchable, counting one CJK character as up to
+// three terms. Cost is what a provider bills, where one CJK character is
+// roughly one token, so budgets — this package's packing, the retrieval
+// budgets, the recent lane — are all bounded by this estimator and never by
+// the kernel's tokenizer.
 func EstimatedTokens(text string) int {
 	if text == "" {
 		return 0
@@ -50,8 +34,8 @@ func EstimatedTokens(text string) int {
 
 // ContentTokens estimates the token cost of message content: the estimated
 // cost of its text parts, or one token for content that carries no text but
-// does carry parts. It mirrors pack.RuneCounter so every budget site accounts
-// for content the same way.
+// does carry parts. Every budget site accounts for content this way, so one
+// way of counting keeps a payload's cost the same wherever it is bounded.
 func ContentTokens(content coremessage.Content) int {
 	text := content.Text()
 	if text == "" {

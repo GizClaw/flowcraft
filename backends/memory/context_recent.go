@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
+	"github.com/GizClaw/flowcraft/backends/memory/retrieval/pack"
 	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -96,7 +96,7 @@ func packRecent(
 		if err != nil {
 			return corememory.ContextResult{}, err
 		}
-		item.TokenCount = textutil.ContentTokens(record.Message.Content)
+		item.TokenCount = pack.ContentTokens(record.Message.Content)
 		if len(selected) == 0 {
 			// The newest turn is bounded, never dropped.
 			bounded, cut := retrieval.TruncateItemContent(item, maxTokens, maxChars)

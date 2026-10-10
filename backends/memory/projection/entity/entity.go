@@ -1,4 +1,10 @@
 // Package entity implements an independent metadata-entity retrieval lane.
+// Entity values are stored case-folded and whitespace-collapsed, and a mention
+// is found by tokenizing the stored key and the query with the shared kernel
+// (core/utils/bm25.Tokenize) and looking for the key's tokens as a contiguous
+// run. That is what lets the lane match text with no whitespace word
+// boundaries — a CJK entity inside a sentence — without owning a tokenizer of
+// its own.
 package entity
 
 import (
@@ -13,14 +19,18 @@ import (
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 const (
-	laneName         = "entity"
-	AlgorithmVersion = "deterministic-entity-v2"
+	laneName = "entity"
+	// AlgorithmVersion names the lane's algorithm identity. v3 matches with the
+	// shared kernel's tokenizer instead of splitting on whitespace, so a CJK
+	// entity is found inside a sentence. Keys an older version stored still
+	// match, but they count as their own vocabulary entry.
+	AlgorithmVersion = "deterministic-entity-v3"
 
 	// entitySaturationMinEntries and entitySaturationShare gate ubiquitous
 	// entities out of query matching: once a corpus has at least
@@ -61,8 +71,12 @@ type snapshot struct {
 }
 
 type entry struct {
-	ID       string                     `json:"id"`
-	Name     string                     `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Entities holds normalized match keys, not the raw metadata values:
+	// case-folded, whitespace-collapsed, deduplicated and sorted. The keys stay
+	// text rather than tokens, so the match can tokenize both the stored key
+	// and the query back into the run they came from.
 	Entities []string                   `json:"entities"`
 	Source   corememory.SourceRef       `json:"source"`
 	Address  component.CandidateAddress `json:"address"`
@@ -251,14 +265,43 @@ func parseEntities(raw string) ([]string, error) {
 func normalizeEntities(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
-		entity := strings.Join(textutil.Tokens(value), " ")
+		entity := normalizeEntityText(value)
 		if entity != "" {
 			normalized = append(normalized, entity)
 		}
 	}
-	normalized = textutil.Unique(normalized)
+	normalized = uniqueStrings(normalized)
 	sort.Strings(normalized)
 	return normalized
+}
+
+// normalizeEntityText case folds one entity value and collapses its whitespace.
+// Punctuation stays: the match compares token streams, which drop it anyway,
+// while keeping it leaves two spellings distinguishable in the vocabulary the
+// IDF weights are counted over. The key must stay the text and not the tokens,
+// because a token stream is not reversible — re-tokenizing an entity's bigram
+// would emit its characters a second time — and the match needs to tokenize the
+// stored key back into the run the query is searched for.
+func normalizeEntityText(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
+}
+
+// uniqueStrings keeps each distinct non-empty value once, in first-appearance
+// order, so two raw values that normalize to the same entity stay one entry.
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 // extractEntities is deterministic dictionary mention extraction over the
@@ -268,7 +311,7 @@ func normalizeEntities(values []string) []string {
 // Ubiquitous entities are gated out once the corpus is large enough, and the
 // selection is capped so a long query cannot vote with dozens of entities.
 func selectQueryEntities(query string, entries []entry) ([]string, map[string]float64) {
-	queryTokens := textutil.Tokens(query)
+	queryTokens := corebm25.Tokenize(query)
 	if len(entries) == 0 || len(queryTokens) == 0 {
 		return nil, nil
 	}
@@ -286,7 +329,7 @@ func selectQueryEntities(query string, entries []entry) ([]string, map[string]fl
 	mentioned := make(map[string]struct{})
 	idf := make(map[string]float64, len(frequency))
 	for entity, count := range frequency {
-		entityTokens := textutil.Tokens(entity)
+		entityTokens := corebm25.Tokenize(entity)
 		if !containsTokens(queryTokens, entityTokens) {
 			continue
 		}
@@ -313,6 +356,10 @@ func selectQueryEntities(query string, entries []entry) ([]string, map[string]fl
 	return result, idf
 }
 
+// containsTokens reports whether the query's token stream contains the
+// entity's tokens as a contiguous run. Both sides are kernel tokens, so a CJK
+// entity matches a query that mentions it even though the two share no word
+// boundary to split on.
 func containsTokens(query, entity []string) bool {
 	if len(entity) == 0 || len(entity) > len(query) {
 		return false

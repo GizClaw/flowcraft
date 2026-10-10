@@ -135,6 +135,33 @@ func TestMatchesRequestAppliesDatasetOnlyToDocumentKinds(t *testing.T) {
 	}
 }
 
+// TestSelectorKeyCoversMatchesRequestKeys couples the read-side selectors
+// to the fingerprint that callers cache a selection under: flipping any
+// metadata key MatchesRequest consults must flip the fingerprint, and keys
+// it ignores must not. A key added to MatchesRequest without being added to
+// SelectorKey — and to this list — would let a cached selection outlive the
+// request it was built for.
+func TestSelectorKeyCoversMatchesRequestKeys(t *testing.T) {
+	selector := func(conversation, datasets string) corememory.Metadata {
+		return corememory.Metadata{"conversation_id": conversation, "dataset_ids": datasets}
+	}
+	base := selector("c1", `["d1"]`)
+	if SelectorKey(base) != SelectorKey(selector("c1", `["d1"]`)) {
+		t.Fatal("fingerprint is not stable for identical selectors")
+	}
+	for name, flipped := range map[string]corememory.Metadata{
+		"conversation_id": selector("c2", `["d1"]`),
+		"dataset_ids":     selector("c1", `["d2"]`),
+	} {
+		if SelectorKey(flipped) == SelectorKey(base) {
+			t.Errorf("fingerprint ignores %s, which MatchesRequest consults", name)
+		}
+	}
+	if SelectorKey(corememory.Metadata{"unrelated": "x"}) != SelectorKey(nil) {
+		t.Error("fingerprint changes for metadata that does not narrow a read")
+	}
+}
+
 type faultKV struct {
 	storage.Store
 	failActive bool

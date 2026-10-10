@@ -11,15 +11,18 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 const (
 	AlgorithmVersion         = "weighted-sum-v1"
 	RRFAlgorithmVersion      = "rrf-v1"
 	CosineCalibrationVersion = "cosine-v1"
-	BM25CalibrationVersion   = "bm25-query-sigmoid-v1"
+	// BM25CalibrationVersion carries the query-length buckets: v2 counts the
+	// shared kernel's tokens, so a CJK query contributes characters and
+	// bigrams and lands in a longer bucket than v1 gave it.
+	BM25CalibrationVersion = "bm25-query-sigmoid-v2"
 
 	defaultRRFK = 60.0
 )
@@ -188,7 +191,9 @@ func (calibrator Cosine) Calibrate(input CalibrationInput) ([]float64, error) {
 }
 
 // BM25QuerySigmoid uses the researched query-length buckets. Midpoint is the
-// raw BM25 score yielding 0.5; Steepness controls the sigmoid slope.
+// raw BM25 score yielding 0.5; Steepness controls the sigmoid slope. Query
+// length counts the shared kernel's tokens — the same splitter the BM25 lane
+// indexes with — so the buckets measure the query the way the lane scores it.
 type BM25QuerySigmoid struct{}
 
 func (BM25QuerySigmoid) Version() string { return BM25CalibrationVersion }
@@ -197,7 +202,7 @@ func (BM25QuerySigmoid) Calibrate(input CalibrationInput) ([]float64, error) {
 	if err := finiteScores(input.Scores); err != nil {
 		return nil, err
 	}
-	queryLength := len(textutil.Tokens(input.Query))
+	queryLength := len(corebm25.Tokenize(input.Query))
 	if queryLength == 0 {
 		return make([]float64, len(input.Scores)), nil
 	}

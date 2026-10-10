@@ -140,6 +140,37 @@ func TestEntityExtractsMentionFromNormalQueryAndTypedFact(t *testing.T) {
 	}
 }
 
+// TestEntityMatchesCJKEntityWithoutWordBoundaries pins the tokenizer contract
+// for the entity lane: an entity with no whitespace word boundary is stored as
+// the kernel's tokens joined by spaces, and a sentence that mentions it
+// normalizes to a token stream containing that entity's tokens, so the mention
+// is extracted. A whitespace tokenizer would have compared one long run
+// against another and never matched.
+func TestEntityMatchesCJKEntityWithoutWordBoundaries(t *testing.T) {
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	value := entityArtifact("typed", "")
+	value.Entities = []string{"海维"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{value},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "海维昨天在会议上说了什么？",
+	})
+	if err != nil || len(results) != 1 || results[0].ID != "typed" || results[0].Score != 1 {
+		t.Fatalf("results = %+v, %v", results, err)
+	}
+	// A query that does not mention the entity stays out of the lane.
+	empty, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "昨天发生了什么事情？",
+	})
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("mention-free query = %+v, %v", empty, err)
+	}
+}
+
 func TestEntityDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 	kinds := []corememory.ContextItemKind{
 		corememory.ContextDocumentResource,
