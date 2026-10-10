@@ -246,7 +246,7 @@ func TestValidateForUndefinedTool(t *testing.T) {
 		t.Fatalf("undefined tool error = %+v, want call 0 ghost", ute)
 	}
 
-	wrapped := newResponseValidationError(OperationGenerate, err)
+	wrapped := newResponseValidationError(OperationGenerate, "generate", err)
 	if wrapped.Kind != UndefinedTool {
 		t.Fatalf("wrapped kind = %q, want %q", wrapped.Kind, UndefinedTool)
 	}
@@ -279,7 +279,7 @@ func TestResponseValidationDetailNamesFailedCheck(t *testing.T) {
 		},
 		FinishReason: FinishCompleted,
 	}
-	err := newResponseValidationError(OperationGenerate, resp.ValidateFor(req))
+	err := newResponseValidationError(OperationGenerate, "generate", resp.ValidateFor(req))
 	if err.Detail != "generate.validation.no_text" {
 		t.Fatalf("Detail = %q, want generate.validation.no_text", err.Detail)
 	}

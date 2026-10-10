@@ -57,6 +57,8 @@ func (r GenerateResponse) validate() (generateResponseCheck, []message.Part, err
 			)
 		}
 	} else {
+		// Normalize every part before message validation so structural failures
+		// take precedence over invalid media or other message-level checks.
 		parts = make([]message.Part, 0, len(r.Message.Content.Parts))
 		for _, part := range r.Message.Content.Parts {
 			normalized, err := message.NormalizePart(part)
@@ -149,9 +151,6 @@ const (
 func responseCheckError(check generateResponseCheck, err error) error {
 	if err == nil {
 		return nil
-	}
-	if check == "" {
-		panic("generate response validation error requires a check")
 	}
 	return &generateResponseCheckError{check: check, err: err}
 }

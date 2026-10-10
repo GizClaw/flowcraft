@@ -377,7 +377,7 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	response.Usage.Model = s.model
 	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := response.ValidateFor(s.request); err != nil {
-		out := newResponseValidationError(OperationGenerate, s.withProviderID(err))
+		out := newResponseValidationError(OperationGenerate, "stream.finish", s.withProviderID(err))
 		if requestID, ok := errdefs.RequestID(out); ok {
 			out.RequestID = requestID
 		}
