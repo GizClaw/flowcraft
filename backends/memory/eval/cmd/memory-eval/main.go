@@ -31,6 +31,9 @@ func main() {
 		"how turns with an image are ingested: annotation | native | both. "+
 			"native attaches the image itself, but remote urls are rejected by the multimodal embedder, "+
 			"so it needs images materialized inline first")
+	noDatePrefix := flag.Bool("no-date-prefix", false,
+		"convert turns without the session date prefix the loader otherwise writes into their text; "+
+			"the two conversions differ in exactly this step, so running with and without it measures how much of a temporal score rests on the prefix")
 	maxItems := flag.Int("max-items", 20, "context budget items")
 	maxTokens := flag.Int("max-tokens", 4096, "context budget tokens")
 	recentItems := flag.Int("recent-items", 20, "assembly recent.max_items")
@@ -73,10 +76,11 @@ func main() {
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
 	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
-		Scope:   evalScope,
-		Budget:  corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
-		Images:  *imageMode,
-		Samples: *samples,
+		Scope:    evalScope,
+		Budget:   corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
+		Images:   *imageMode,
+		Samples:  *samples,
+		Dateless: *noDatePrefix,
 	})
 	must(err)
 	fmt.Printf("dataset: scenarios=%d turns=%d questions=%d skipped=%d skipped_adversarial=%d",
@@ -258,6 +262,11 @@ func main() {
 			"temporal_hint":        strconv.FormatBool(*temporalHint),
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
+			// Whether the loader wrote each session's date into its turns'
+			// text. The date is dataset content, but carrying it in the
+			// prompt is the loader's choice, so the two configurations
+			// cannot share a fingerprint.
+			"date_prefix": strconv.FormatBool(!*noDatePrefix),
 			// How evidence recall was matched, which the store decides: turn
 			// identity where ingest tagged the messages, committed text where it
 			// did not. The two do not score the same, so a report stored under

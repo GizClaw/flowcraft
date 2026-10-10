@@ -369,6 +369,11 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
   questions. Off by default and recorded in the fingerprint; see
   "Reference protocol vs this harness" for what it measured.
+- `-no-date-prefix`: convert turns without the session date prefix the loader
+  otherwise writes into each turn's text (`[1:00 pm on 1 May, 2023] Alice: ...`
+  → `Alice: ...`); the two conversions differ in exactly this step, so running
+  with and without it measures what the prefix contributes to a temporal
+  score. Recorded in the fingerprint as `date_prefix`.
 - `-resume`: skip scenarios already recorded in `-out`, so an interrupted
   long run continues where it stopped. Each scenario is retried up to three
   times before the run fails. Results are stamped with a fingerprint (code

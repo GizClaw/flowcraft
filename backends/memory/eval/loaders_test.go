@@ -86,6 +86,41 @@ func TestLoadLoCoMo(t *testing.T) {
 	}
 }
 
+// The session date prefix is a rendering choice rather than dataset content:
+// the dateless conversion drops exactly the "[<date>] " prefix while speaker,
+// body, dataset ids and the image annotation stay identical, so two stores
+// built from the two arms hold the same turns up to this one step.
+func TestLoadLoCoMoDatePrefix(t *testing.T) {
+	options := LoaderOptions{Scope: Scope{RuntimeID: "eval"}}
+	prefixed, _, err := LoadLoCoMo([]byte(loCoMoFixture), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prefixed[0].Turns[0].Messages[0].Content.Text(); got != "[1:00 pm on 1 May, 2023] Alice: I like tea." {
+		t.Fatalf("prefixed text = %q", got)
+	}
+	options.Dateless = true
+	dateless, _, err := LoadLoCoMo([]byte(loCoMoFixture), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dateless[0].Turns[0].Messages[0].Content.Text(); got != "Alice: I like tea." {
+		t.Fatalf("dateless text = %q", got)
+	}
+	if got := dateless[0].Turns[1].Messages[0].Content.Text(); got != "Bob: I adopted a dog." {
+		t.Fatalf("dateless text = %q", got)
+	}
+	if got := dateless[0].Turns[0].Messages[1].Content.Text(); got != "Bob: Nice. [shared image: a tea cup]" {
+		t.Fatalf("dateless image turn = %q", got)
+	}
+	if ids := dateless[0].Turns[0].DatasetIDs; len(ids) != 2 || ids[0] != "D1:1" || ids[1] != "D1:2" {
+		t.Fatalf("dateless dataset ids = %#v", ids)
+	}
+	if len(dateless[0].Turns) != len(prefixed[0].Turns) {
+		t.Fatalf("turn count changed: %d -> %d", len(prefixed[0].Turns), len(dateless[0].Turns))
+	}
+}
+
 func TestLoadLongMemEvalOrdersSessions(t *testing.T) {
 	scenarios, stats, err := LoadLongMemEval([]byte(longMemEvalFixture), LoaderOptions{Scope: Scope{RuntimeID: "eval"}})
 	if err != nil {

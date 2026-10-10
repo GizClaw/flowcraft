@@ -48,6 +48,13 @@ type LoaderOptions struct {
 	// reference. It is the shape of a native store whose fetches all succeeded,
 	// which is the one a diagnostic wants to compare against.
 	ReferenceImages bool
+	// Dateless converts turns without the session date prefix the LoCoMo
+	// rendering writes into every message ("[1:00 pm on 1 May, 2023] Alice:
+	// ..."). Nothing else about a turn changes -- speaker, body, dataset id,
+	// image annotation stay what they were -- so a run over each conversion
+	// measures what the prefix contributes to a temporal score, with the
+	// turns themselves held fixed.
+	Dateless bool
 }
 
 // LoaderStats summarizes one conversion.
@@ -141,7 +148,7 @@ func LoadLoCoMo(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, er
 		turns, ok := loCoMoTurns(sample, imagePolicy{
 			mode:       options.Images,
 			references: options.ReferenceImages,
-		}, fetcher, &stats)
+		}, options.Dateless, fetcher, &stats)
 		if !ok {
 			stats.Skipped++
 			continue
@@ -258,7 +265,7 @@ func (policy imagePolicy) attaches() bool {
 	return policy.mode == "native" || policy.mode == "both"
 }
 
-func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
+func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, dateless bool, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
 	var speakerA, speakerB string
 	_ = json.Unmarshal(sample.Conversation["speaker_a"], &speakerA)
 	_ = json.Unmarshal(sample.Conversation["speaker_b"], &speakerB)
@@ -325,7 +332,10 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 				speaker = string(role)
 			}
 			text := speaker + ": " + body
-			if current.dateTime != "" {
+			// The date is dataset content, but carrying it in the text is
+			// the loader's choice; the dateless conversion drops exactly
+			// this step.
+			if current.dateTime != "" && !dateless {
 				text = "[" + current.dateTime + "] " + text
 			}
 			parts := []coremessage.Part{coremessage.TextPart{Text: text}}
