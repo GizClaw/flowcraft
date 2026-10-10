@@ -353,12 +353,9 @@ func (s *dynamicSession) search(ctx context.Context, query string, limit int) ([
 		if !policy.exposureOf(def.Name).searchable() {
 			continue
 		}
-		docs = append(docs, searchDoc{
-			name: def.Name,
-			text: def.Name + " " + def.Description,
-		})
+		docs = append(docs, searchDoc{name: def.Name, description: def.Description})
 	}
-	return bm25Search(docs, query, limit), nil
+	return bm25Search(docs, query, limit)
 }
 
 func (s *dynamicSession) Load(ctx context.Context) error {
