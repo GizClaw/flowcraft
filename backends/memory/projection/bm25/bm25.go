@@ -1,4 +1,7 @@
-// Package bm25 implements a Unicode-aware BM25 retrieval projection.
+// Package bm25 implements a Unicode-aware BM25 retrieval projection. Its
+// persisted terms are the shared kernel's tokens (core/utils/bm25.Tokenize),
+// the same splitter the kernel tokenizes queries with, so a stored document
+// stays matchable without the lane owning a tokenizer of its own.
 package bm25
 
 import (
@@ -9,17 +12,24 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 const (
-	laneName         = "bm25"
-	AlgorithmVersion = "okapi-bm25-v1"
+	laneName = "bm25"
+	// AlgorithmVersion names the lane's algorithm identity: the Okapi scoring
+	// formula together with the tokenizer its persisted terms come from. v2
+	// tokenizes with the shared kernel. An older tokenizer's ASCII terms
+	// still match, because the two splitters agree token for token there; the
+	// CJK terms it wrote as one long run stay out of reach of the characters
+	// and bigrams a query produces now until the lane is rebuilt.
+	AlgorithmVersion = "okapi-bm25-v2"
 )
 
 type Thresholds = projectionstore.Thresholds
@@ -37,6 +47,20 @@ type Index struct {
 	projection string
 	k1         float64
 	b          float64
+
+	mu     sync.Mutex
+	cached *cachedKernel
+}
+
+// cachedKernel is the last kernel index the lane built, with the
+// (identity, selector) pair it was built for. Identity is the store's
+// content key — the same one its materialized cache trusts — and the
+// selector fingerprint covers the metadata keys MatchesRequest narrows
+// on.
+type cachedKernel struct {
+	identity string
+	selector string
+	kernel   *corebm25.Index
 }
 
 // AuditDigests independently recomputes and validates active projection digests.
@@ -125,7 +149,7 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 		if err := artifact.Validate(); err != nil {
 			return fmt.Errorf("bm25 projection: artifact %d: %w", i, err)
 		}
-		tokens := textutil.Tokens(artifact.Content.Text())
+		tokens := corebm25.Tokenize(artifact.Content.Text())
 		terms := make(map[string]int)
 		for _, token := range tokens {
 			terms[token]++
@@ -163,7 +187,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 		if err := artifact.Validate(); err != nil {
 			return fmt.Errorf("bm25 projection: artifact %q: %w", artifact.ID, err)
 		}
-		tokens := textutil.Tokens(artifact.Content.Text())
+		tokens := corebm25.Tokenize(artifact.Content.Text())
 		terms := make(map[string]int)
 		for _, token := range tokens {
 			terms[token]++
@@ -194,13 +218,11 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if strings.TrimSpace(request.Query) == "" {
 		return []component.Candidate{}, nil
 	}
-	build, _, err := index.store.Materialize(ctx, request.Scope, index.projection)
+	build, active, err := index.store.Materialize(ctx, request.Scope, index.projection)
 	if err != nil {
 		return nil, fmt.Errorf("bm25 projection: %w", err)
 	}
-	query := textutil.Unique(textutil.Tokens(request.Query))
 	selected := make([]doc, 0, len(build.Documents))
-	selectedLength := 0
 	for _, document := range build.Documents {
 		matches, err := projectionstore.MatchesRequest(request.Metadata, document.Address)
 		if err != nil {
@@ -208,57 +230,83 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 		}
 		if matches {
 			selected = append(selected, document)
-			selectedLength += document.Length
 		}
 	}
-	averageLength := 0.0
-	if len(selected) > 0 {
-		averageLength = float64(selectedLength) / float64(len(selected))
+	// Scoring belongs to the shared kernel (core/utils/bm25), which owns
+	// one BM25 implementation for every catalog in the platform. It is
+	// derived from exactly two inputs the lane can name — the build
+	// identity and the selector — so the lane caches it under that pair.
+	kernel, err := index.kernelFor(active.Identity, build, selected, request.Metadata)
+	if err != nil {
+		return nil, err
 	}
-	documentFrequency := make(map[string]int, len(query))
+	documents := make(map[string]doc, len(selected))
 	for _, document := range selected {
-		for _, term := range query {
-			if document.Terms[term] > 0 {
-				documentFrequency[term]++
-			}
-		}
+		documents[document.ID] = document
 	}
-	results := make([]component.Candidate, 0, len(selected))
-	n := float64(len(selected))
-	for _, document := range selected {
-		score := 0.0
-		for _, term := range query {
-			frequency := float64(document.Terms[term])
-			if frequency == 0 {
-				continue
-			}
-			df := float64(documentFrequency[term])
-			idf := math.Log(1 + (n-df+0.5)/(df+0.5))
-			lengthRatio := 0.0
-			if averageLength > 0 {
-				lengthRatio = float64(document.Length) / averageLength
-			}
-			score += idf * frequency * (build.K1 + 1) /
-				(frequency + build.K1*(1-build.B+build.B*lengthRatio))
-		}
-		if score == 0 {
-			continue
-		}
+	ranked := kernel.Search(request.Query, request.Limit)
+	results := make([]component.Candidate, 0, len(ranked))
+	for _, hit := range ranked {
+		document := documents[hit.ID]
 		results = append(results, component.Candidate{
-			ID: document.ID, Lane: laneName, Name: document.Name, Score: score,
+			ID: document.ID, Lane: laneName, Name: document.Name, Score: hit.Score,
 			Source: document.Source, Address: document.Address, Metadata: document.Metadata.Clone(),
 		})
 	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].ID < results[j].ID
-		}
-		return results[i].Score > results[j].Score
-	})
-	if request.Limit > 0 && len(results) > request.Limit {
-		results = results[:request.Limit]
-	}
 	return results, nil
+}
+
+// kernelFor returns the kernel index that scores one materialized build
+// under one selector, reusing the previous kernel when neither changed.
+//
+// Both belong in the key. The build identity is the store's content key —
+// the same one its materialized cache trusts — and the selector narrows
+// the scored document set, while a kernel's average length and document
+// frequencies are properties of that set: the same snapshot under a
+// different selector is a different index.
+//
+// The entry holds the kernel only. A kernel keeps term statistics rather
+// than document text, so a hit shares a small immutable structure instead
+// of retaining the projection's documents, and the single entry bounds
+// the cache the way the store's materialized cache is bounded.
+//
+// The lane supplies what only it knows: the per-document term frequencies
+// it persisted, the snapshot's k1/b, the selector-narrowed document set
+// and the absence of prefix matching. The splitter is the kernel's on both
+// sides — the stored terms were built with Tokenize and Search tokenizes
+// the query the same way — so the two sides cannot drift apart, at the
+// price of a lane whose entries were persisted by an older tokenizer
+// staying unmatchable until they are rebuilt.
+func (index *Index) kernelFor(
+	identity string,
+	build snapshot,
+	selected []doc,
+	metadata corememory.Metadata,
+) (*corebm25.Index, error) {
+	selector := projectionstore.SelectorKey(metadata)
+	index.mu.Lock()
+	cached := index.cached
+	index.mu.Unlock()
+	if cached != nil && cached.identity == identity && cached.selector == selector {
+		return cached.kernel, nil
+	}
+	indexed := make([]corebm25.TermDoc, 0, len(selected))
+	for _, document := range selected {
+		indexed = append(indexed, corebm25.TermDoc{ID: document.ID, Text: document.Terms})
+	}
+	// Input order is the kernel's tie-break, and the lane has always
+	// broken ties by ID: sort first, then the kernel's stable ranking
+	// reproduces that order.
+	sort.Slice(indexed, func(i, j int) bool { return indexed[i].ID < indexed[j].ID })
+	kernel, err := corebm25.NewFromTerms(indexed,
+		corebm25.WithK1(build.K1), corebm25.WithB(build.B), corebm25.WithPrefixWeight(0))
+	if err != nil {
+		return nil, fmt.Errorf("bm25 projection: %w", err)
+	}
+	index.mu.Lock()
+	index.cached = &cachedKernel{identity: identity, selector: selector, kernel: kernel}
+	index.mu.Unlock()
+	return kernel, nil
 }
 
 func (index *Index) validateRequest(request component.ProjectionRequest) error {

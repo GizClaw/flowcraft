@@ -138,6 +138,44 @@ func TestSearcherReturnsOnlyActiveManifestRecords(t *testing.T) {
 	}
 }
 
+// TestSearcherMatchesCJKQueries pins the lane's splitter: the summary lane
+// scored with a whitespace splitter of its own, so a Chinese query
+// tokenized to one long run that no record could ever contain and the lane
+// silently dropped every candidate.
+func TestSearcherMatchesCJKQueries(t *testing.T) {
+	ctx := context.Background()
+	store := newSummaryStore(t, newTestWorkspace(t))
+	record := summaryRequest("summary-1")
+	record.Text, record.Content = "海维昨天在会议上说了什么", textContent("海维昨天在会议上说了什么")
+	record.GenerationID = "generation-1"
+	if _, err := store.Add(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishActive(ctx, Manifest{
+		Scope: summaryScope, ConversationID: "conversation", GenerationID: "generation-1",
+		RecordIDs: []string{"summary-1"}, CoverageRange: CoverageRange{StartSeq: 1, EndSeq: 1},
+		FrontierDigest: "frontier",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	searcher := &Searcher{Store: store}
+	for _, query := range []string{"海维昨天在会议上说了什么？", "会议", "海维"} {
+		got, err := searcher.Search(ctx, component.SearchRequest{
+			Scope: summaryScope, Query: query,
+			Metadata: corememory.Metadata{"conversation_id": "conversation"},
+		})
+		if err != nil || len(got) != 1 || got[0].ID != "summary-1" || got[0].Score <= 0 {
+			t.Fatalf("search(%q)=%#v err=%v", query, got, err)
+		}
+	}
+	if got, err := searcher.Search(ctx, component.SearchRequest{
+		Scope: summaryScope, Query: "unrelated wording",
+		Metadata: corememory.Metadata{"conversation_id": "conversation"},
+	}); err != nil || len(got) != 0 {
+		t.Fatalf("unrelated search=%#v err=%v", got, err)
+	}
+}
+
 func TestSummaryStoreAddDoesNotListRecords(t *testing.T) {
 	ctx := context.Background()
 	kvStore, err := storage.NewWorkspaceKV(newTestWorkspace(t))
