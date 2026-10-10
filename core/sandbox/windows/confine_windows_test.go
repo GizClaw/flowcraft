@@ -134,6 +134,12 @@ func TestWriteConfinementReadOnlyRejectsWrite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "out.txt")); !os.IsNotExist(err) {
 		t.Fatalf("out.txt exists after denied write: %v", err)
 	}
+	// The refusal the confinement really produced has to be one the
+	// escalation detector recognizes, or the user never gets asked.
+	if _, denied := sandbox.Denied(res); !denied {
+		t.Fatalf("Denied missed the real refusal: exit %d, stderr %q, stdout %q",
+			res.ExitCode, res.Stderr, res.Stdout)
+	}
 }
 
 func TestWriteConfinementBlocksOutsideWrite(t *testing.T) {
@@ -162,6 +168,10 @@ func TestWriteConfinementBlocksOutsideWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("target exists after denied write: %v", err)
+	}
+	if _, denied := sandbox.Denied(res); !denied {
+		t.Fatalf("Denied missed the real refusal: exit %d, stderr %q, stdout %q",
+			res.ExitCode, res.Stderr, res.Stdout)
 	}
 }
 
