@@ -249,6 +249,30 @@ func (settings *Settings) applyDefaults() {
 	}
 }
 
+// retrievalSummary renders the retrieval-side configuration -- lane weights and
+// fusion, the bm25 parameters, source quotes and rerank -- as one stable JSON
+// object with defaults applied. The derivation policy digest covers what
+// memorization writes; it does not cover what retrieval reads it with, so a
+// host stamps a run with this value to keep two retrieval configurations from
+// sharing a fingerprint.
+//
+// The object is marshalled from the settings types themselves, so a knob added
+// to Lanes, BM25 or Retrieval appears here without a second edit. bm25.k1/b
+// stay out of the object while they are zero: a zero means "the lane's
+// built-in default" (k1 = 1.2, b = 0.75), not a value this configuration
+// chose.
+func (settings Settings) retrievalSummary() (string, error) {
+	encoded, err := json.Marshal(struct {
+		Lanes     LanesSettings     `json:"lanes"`
+		BM25      BM25Settings      `json:"bm25"`
+		Retrieval RetrievalSettings `json:"retrieval"`
+	}{Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval})
+	if err != nil {
+		return "", fmt.Errorf("retrieval summary: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // Validate rejects invalid settings after defaults are applied.
 func (settings Settings) Validate() error {
 	if err := settings.Storage.validate(); err != nil {

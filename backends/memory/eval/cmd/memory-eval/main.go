@@ -268,18 +268,24 @@ func main() {
 			// that is linked in, not whether retrieval used it, and the setting
 			// lives in the deploy document: without this, two runs that differ
 			// only in that switch carry the same fingerprint.
-			"rerank":       onOff(deployment.Rerank),
+			"rerank": onOff(deployment.Rerank),
+			// The retrieval-side configuration the policy digest does not
+			// cover -- lane weights and fusion, the bm25 parameters, source
+			// quotes, rerank -- read back off the built assembly, so the
+			// document's values and the defaults are recorded together. A
+			// retrieval knob flipped in the document or in code lands here,
+			// and two retrieval configurations cannot share a fingerprint.
+			"retrieval":    deployment.Memory.RetrievalSummary(),
 			"judge_prompt": evalanswer.JudgePromptVersion,
 			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
 			// keeps the two apart (and -resume refuses to mix them).
 			"derive": deriveMode(*skipDerive),
-			// The assembly settings the policy digest does not cover (lane
-			// weights, source quotes, the recent window) live in the deploy
-			// document, so its digest pins them all. Without this, editing
-			// deploy.yaml would change results while the fingerprint stayed
-			// identical.
+			// The deploy document, byte for byte: it also pins whatever the
+			// values above do not name -- further assembly settings, the
+			// model declarations -- so editing deploy.yaml cannot change
+			// results under an unchanged fingerprint.
 			"deploy": deployDigest(*deployPath),
 			// -answer-concurrency is deliberately absent: it changes only the
 			// schedule, so it must not block resuming a run.

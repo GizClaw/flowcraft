@@ -240,6 +240,14 @@ The fingerprint's `values` map also gained `rerank`: the *effective*
 the linked-in policy version whether or not retrieval calls it, so two runs that
 differed in that switch used to share a fingerprint.
 
+`retrieval` closes the same gap for the rest of the retrieval side: lane weights
+and fusion, the bm25 parameters, `source_quotes` and `rerank`, read back off the
+built assembly (`Assembly.RetrievalSummary`, defaults applied) as one JSON
+object. The derivation policy digest covers what memorization *writes*; this
+covers what retrieval *reads it with*, as a value the report itself names
+instead of one hidden inside the deploy document's byte digest. A knob added to
+the retrieval settings types appears here without a second edit.
+
 `recent_items` and `recent_tokens` are the *effective* recent window for the same
 reason: they are read back off the built assembly (`Assembly.RecentSettings`,
 defaults applied) instead of the `-recent-items` flag. A deploy document sets

@@ -200,6 +200,10 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: policy digest: %w", err))
 	}
+	retrievalSummary, err := settings.retrievalSummary()
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
+	}
 
 	facts, err := factview.NewFactStore(logStore, kvStore, factview.WithClock(clock))
 	if err != nil {
@@ -310,6 +314,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	}
 	assembly, err := newAssembly(
 		messages, documents, documentViews, facts, summaries, catalog, seeds, settings.Recent,
+		retrievalSummary,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
 	)

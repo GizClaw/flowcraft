@@ -26,22 +26,23 @@ import (
 // append-only Log, a KV store, a scope catalog, derived views, projection
 // lanes, and the derivation worker.
 type Assembly struct {
-	messages  *msgsource.MessageStore
-	documents *docsource.DocumentStore
-	docViews  *docview.DocumentViewStore
-	facts     *factview.FactStore
-	summaries *summaryview.SummaryStore
-	catalog   *sources.ScopeCatalog
-	scopes    []corememory.Scope
-	recent    RecentSettings
-	provider  *retrieval.Provider
-	processor *worker.Processor
-	maintain  *maintain.Service
-	interval  time.Duration
-	clock     func() time.Time
-	metrics   *assemblyMetrics
-	closers   []io.Closer
-	verify    func(context.Context, corememory.Scope, string) (verify.Plan, error)
+	messages         *msgsource.MessageStore
+	documents        *docsource.DocumentStore
+	docViews         *docview.DocumentViewStore
+	facts            *factview.FactStore
+	summaries        *summaryview.SummaryStore
+	catalog          *sources.ScopeCatalog
+	scopes           []corememory.Scope
+	recent           RecentSettings
+	retrievalSummary string
+	provider         *retrieval.Provider
+	processor        *worker.Processor
+	maintain         *maintain.Service
+	interval         time.Duration
+	clock            func() time.Time
+	metrics          *assemblyMetrics
+	closers          []io.Closer
+	verify           func(context.Context, corememory.Scope, string) (verify.Plan, error)
 
 	wireOnce sync.Once
 	wireErr  error
@@ -70,6 +71,7 @@ func newAssembly(
 	catalog *sources.ScopeCatalog,
 	scopes []corememory.Scope,
 	recent RecentSettings,
+	retrievalSummary string,
 	provider *retrieval.Provider,
 	processor *worker.Processor,
 	maintainService *maintain.Service,
@@ -101,7 +103,8 @@ func newAssembly(
 		facts: facts, summaries: summaries,
 		catalog: catalog,
 		scopes:  append([]corememory.Scope(nil), scopes...),
-		recent:  recent, provider: provider, processor: processor,
+		recent:  recent, retrievalSummary: retrievalSummary,
+		provider: provider, processor: processor,
 		maintain: maintainService,
 		interval: interval, clock: clock,
 		metrics: newAssemblyMetrics(),
@@ -261,6 +264,19 @@ func (assembly *Assembly) RecentSettings() RecentSettings {
 		recent.MaxTokens = defaultRecentMaxTokens
 	}
 	return recent
+}
+
+// RetrievalSummary returns the retrieval-side configuration this assembly was
+// built with -- lane weights and fusion, the bm25 parameters, source quotes and
+// rerank -- resolved with defaults, as one stable JSON object. The derivation
+// policy digest covers what memorization writes, not what retrieval reads it
+// with, so hosts stamp a run with this value to keep two retrieval
+// configurations from sharing a fingerprint.
+func (assembly *Assembly) RetrievalSummary() string {
+	if assembly == nil {
+		return ""
+	}
+	return assembly.retrievalSummary
 }
 
 // MessageStore returns the canonical message store.
