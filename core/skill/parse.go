@@ -100,7 +100,8 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 		f.Name = fallback
 		if f.Name == "" {
 			return ParseResult{}, fmt.Errorf(
-				"skill: %s and directory name is not usable as a fallback", note)
+				"skill: %s; directory %q is not usable as a fallback",
+				note, filepath.Base(filepath.Dir(path)))
 		}
 		warnings = append(warnings,
 			fmt.Sprintf("%s; fell back to directory name %q", note, fallback))
@@ -112,10 +113,6 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 	}
 	if f.Description == "" {
 		return ParseResult{}, fmt.Errorf("skill: description is required")
-	}
-	if utf8.RuneCountInString(f.Name) > maxNameLen {
-		return ParseResult{}, fmt.Errorf(
-			"skill: name longer than %d characters", maxNameLen)
 	}
 	if utf8.RuneCountInString(f.Description) > maxDescriptionLen {
 		f.Description = truncateRunes(f.Description, maxDescriptionLen)
@@ -134,7 +131,10 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 // splitFrontmatter extracts the YAML frontmatter (between the first
 // two --- delimiters) and the Markdown body.
 func splitFrontmatter(data []byte) (front []byte, body []byte, err error) {
-	s := string(data)
+	// Editors write a UTF-8 BOM often enough that refusing the file
+	// would drop a usable skill; the mark is trimmed before the
+	// delimiter is checked, in the same lenient spirit as the decode.
+	s := strings.TrimPrefix(string(data), "\ufeff")
 	if !strings.HasPrefix(s, "---") {
 		return nil, nil, fmt.Errorf(
 			"skill: missing YAML frontmatter (expected --- ... ---)")

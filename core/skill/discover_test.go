@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDiscoverRootsAndDuplicates(t *testing.T) {
@@ -62,6 +63,68 @@ func TestDiscoverMissingRootIsSilentlyEmpty(t *testing.T) {
 		[]string{filepath.Join(t.TempDir(), "does-not-exist")})
 	if len(out.Skills) != 0 || len(out.Diagnostics) != 0 {
 		t.Fatalf("missing root = %+v, want silently empty", out)
+	}
+}
+
+// TestDiscoverSymlinkAliasCycleTerminates pins the walk's termination
+// guarantee: an alias that points back into an already-walked tree
+// must not be re-descended. Directories are tracked by canonical path,
+// so two aliases to the root cannot double the frontier per level; the
+// walk returns promptly instead of growing until the caller's context
+// deadline stops it.
+func TestDiscoverSymlinkAliasCycleTerminates(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "real", "name: real\ndescription: real skill\n")
+	for _, alias := range []string{"alias-a", "alias-b"} {
+		if err := os.Symlink(root, filepath.Join(root, alias)); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	out := Discover(ctx, []string{root})
+	elapsed := time.Since(start)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Discover needed the deadline to return (%v): %v", elapsed, err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Discover took %v, want a prompt walk", elapsed)
+	}
+	if len(out.Skills) != 1 || out.Skills[0].Name != "real" {
+		t.Fatalf("Discover() = %+v, want only the real skill", out.Skills)
+	}
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("Discover() diagnostics = %+v, want none", out.Diagnostics)
+	}
+}
+
+// TestDiscoverDeduplicatesRepeatedRoots pins the root bookkeeping: a
+// root configured twice, or reached again through a symlink, is walked
+// once, its skills are collected once, and it is listed once in
+// Outcome.Roots.
+func TestDiscoverDeduplicatesRepeatedRoots(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "solo", "name: solo\ndescription: solo skill\n")
+
+	roots := []string{root, root}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err == nil {
+		roots = append(roots, alias)
+	} else {
+		t.Logf("symlink unsupported: %v", err)
+	}
+
+	out := Discover(context.Background(), roots)
+	if len(out.Skills) != 1 || out.Skills[0].Name != "solo" {
+		t.Fatalf("Discover() = %+v, want solo once", out.Skills)
+	}
+	if len(out.Roots) != 1 {
+		t.Fatalf("Outcome.Roots = %v, want the root listed once", out.Roots)
+	}
+	if len(out.ScanRoots) != len(roots) {
+		t.Fatalf("Outcome.ScanRoots = %v, want every configured root", out.ScanRoots)
 	}
 }
 

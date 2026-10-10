@@ -49,11 +49,12 @@ description: Draft release notes from a merged PR list. Use when preparing a rel
 
 | Field | Rule |
 | --- | --- |
-| `name` | lowercase letters, digits and hyphens, ≤ 64 characters. Missing or invalid names fall back to the slugified directory name, with a warning. |
+| `name` | lowercase letters, digits and hyphens, ≤ 64 characters. Missing or invalid names fall back to the slugified directory name, with a warning; a directory name with no ASCII left to slugify (a fully non-ASCII directory) has no fallback and is an error diagnostic. |
 | `description` | required; truncated to 1024 characters (runes, not bytes). |
 | `metadata.short-description` | optional non-standard extension, surfaced for compact listings. |
 | file size | ≤ 256 KiB; larger files are refused by discovery and by the body readers. |
 | other fields | tolerated: the frontmatter decode is lenient, so vendor extensions (`license`, `version`, …) do not fail the parse. |
+| encoding | a UTF-8 BOM before the frontmatter and CRLF line endings are accepted. |
 
 The standard expects `name` to equal the directory name; a mismatch
 is accepted with a warning. Only malformed files fail the parse
@@ -73,6 +74,10 @@ every root:
 - symlinks are followed only while their target stays inside one of
   the roots, and a skill reachable through several roots (or through
   a symlinked directory) is collected once, under its canonical path;
+  directories are tracked by canonical path too, so an alias pointing
+  back into a walked tree is not re-descended — discovery terminates
+  on any tree, however it is linked, and a root configured twice is
+  walked and listed once;
 - parse failures never fail the pass: they land in `Diagnostics`,
   where `Warning` marks a tolerated shape issue and distinguishes it
   from a file that could not load.
@@ -95,7 +100,7 @@ use.
 | `List()` | every discovered skill, sorted by name then path |
 | `ByName(name)` | resolve one name to the canonical first path |
 | `Diagnostics()` | the non-fatal issues of the last discovery |
-| `Roots()` | configured roots that contained at least one skill |
+| `Roots()` | the configured roots that contributed at least one skill — de-duplicated, in configuration order |
 | `TopN()` / `MinScore()` | the configured ranking defaults |
 
 `Options.Disabled` excludes skill names or absolute `SKILL.md` paths

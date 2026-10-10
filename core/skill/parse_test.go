@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +146,63 @@ func TestOversizedSkillRejected(t *testing.T) {
 	}
 	if _, err := ParseFile(path); err == nil {
 		t.Fatal("oversized SKILL.md accepted by ParseFile")
+	}
+}
+
+// TestParseToleratesLeadingBOM pins the lenient edge: editors write a
+// UTF-8 BOM often enough that refusing the file would drop a usable
+// skill, so the byte-order mark is trimmed before the frontmatter
+// delimiter is checked. The body readers share the split.
+func TestParseToleratesLeadingBOM(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "bom-skill")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte(
+		"\ufeff---\nname: bom-skill\ndescription: d\n---\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile(BOM) = %v, want tolerated", err)
+	}
+	if res.Metadata.Name != "bom-skill" {
+		t.Fatalf("name = %q, want bom-skill", res.Metadata.Name)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", res.Warnings)
+	}
+
+	svc := NewService(context.Background(), Options{Roots: []string{root}})
+	_, body, err := svc.ReadFull("bom-skill")
+	if err != nil || !strings.Contains(body, "body") {
+		t.Fatalf("ReadFull(BOM) = %q, %v", body, err)
+	}
+}
+
+// TestParseNamelessSkillInNonASCIIDirectory documents the one fallback
+// dead end: a missing name in a directory that carries no ASCII to
+// slugify (文档, say) leaves nothing usable, so the file is reported as
+// an error diagnostic and skipped rather than loading under an
+// invented name.
+func TestParseNamelessSkillInNonASCIIDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "文档")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte(
+		"---\ndescription: d\n---\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseFile(path)
+	if err == nil {
+		t.Fatal("nameless skill in a non-ASCII directory must not load")
+	}
+	if !strings.Contains(err.Error(), "not usable as a fallback") {
+		t.Fatalf("err = %v, want the fallback note", err)
 	}
 }

@@ -122,3 +122,17 @@ func TestReadFullAndReadByPath(t *testing.T) {
 		t.Fatal("ReadByPath(stale/outside path) should fail")
 	}
 }
+
+// TestFilterDisabledLeavesInputAlone pins the filter's non-mutating
+// contract: the registry keeps the discovered outcome in its snapshot,
+// and an in-place filter would silently rewrite the caller's slice.
+func TestFilterDisabledLeavesInputAlone(t *testing.T) {
+	in := []Metadata{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+	got := filterDisabled(in, []string{"b"})
+	if len(got) != 2 || got[0].Name != "a" || got[1].Name != "c" {
+		t.Fatalf("filterDisabled = %+v, want a and c", got)
+	}
+	if in[1].Name != "b" {
+		t.Fatalf("filterDisabled overwrote its input: %+v", in)
+	}
+}

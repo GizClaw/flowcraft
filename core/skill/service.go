@@ -103,9 +103,10 @@ func (s *Service) reload() {
 	})
 }
 
-// filterDisabled drops skills whose name or path matches the disabled
-// list: an absolute path matches the canonical path exactly, anything
-// else matches the name.
+// filterDisabled returns the skills that survive the disabled list: an
+// absolute path matches the canonical path exactly, anything else
+// matches the name. The input slice is left untouched — callers keep
+// it in the snapshot.
 func filterDisabled(skills []Metadata, disabled []string) []Metadata {
 	if len(disabled) == 0 {
 		return skills
@@ -126,7 +127,7 @@ func filterDisabled(skills []Metadata, disabled []string) []Metadata {
 	if len(names) == 0 && len(paths) == 0 {
 		return skills
 	}
-	out := skills[:0]
+	out := make([]Metadata, 0, len(skills))
 	for _, sk := range skills {
 		if names[sk.Name] || paths[filepath.Clean(sk.Path)] {
 			continue
@@ -218,7 +219,11 @@ func (s *Service) ReadByPath(path string) (Metadata, string, error) {
 // readBody re-reads one SKILL.md through the snapshot's roots: the
 // file is resolved again, refused when it left the roots after
 // discovery, size-capped again, and returned with frontmatter
-// stripped.
+// stripped. The read opens the resolved path, not the discovered one,
+// so only a swap of the resolved file itself can race the containment
+// check — accepted: the roots are trusted content directories, and a
+// writer able to swap files inside them already decides what the
+// model reads.
 func (s *Service) readBody(sk Metadata) (string, error) {
 	snap := s.snapshot.Load()
 	resolved, err := filepath.EvalSymlinks(sk.Path)
