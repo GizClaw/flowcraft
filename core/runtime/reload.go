@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -17,12 +18,83 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-type reloadOptions struct{}
+// reloadOptions collects the replacements one Reload call carries. A
+// field is only applied when its replace flag is set: the zero value
+// (no options) leaves every build-time input of the Runtime in place.
+type reloadOptions struct {
+	externals        map[string]ExternalResource
+	replaceExternals bool
+	resolver         *resource.ReferenceResolver
+	replaceResolver  bool
+	hostDecorator    HostFactoryDecorator
+	replaceHost      bool
+	resultDecorator  ResultHostFactoryDecorator
+	replaceResult    bool
+}
 
-// ReloadOption configures one Reload call. The option set is reserved
-// for future policy (e.g. dropping vs failing on re-bind); v1 has no
-// options.
+// ReloadOption configures one Reload call. The options replace the
+// inputs the new generation is built with — the injected externals, the
+// expansion resolver, the host factory decorators — when they differ
+// from the ones the Runtime was built with or a previous reload
+// installed. A successful reload keeps the replacement as the Runtime's
+// input (a later Reload without the option builds with it); an aborted
+// reload changes nothing.
 type ReloadOption func(*reloadOptions) error
+
+// WithReloadExternals replaces the injected external dependency values
+// the generation this Reload builds is assembled with. The set is
+// replaced, not merged: nil or empty means the generation is built with
+// no externals. Names, contracts and values are validated exactly as in
+// [Builder.WithExternalResources], but a name the Runtime was not built
+// with is allowed — this is the option that injects it. External values
+// stay caller-owned: the Runtime neither wires nor closes them.
+func WithReloadExternals(externals []ExternalResource) ReloadOption {
+	return func(o *reloadOptions) error {
+		validated, err := validateExternalResourceList(externals)
+		if err != nil {
+			return err
+		}
+		o.externals = validated
+		o.replaceExternals = true
+		return nil
+	}
+}
+
+// WithReloadResolver replaces the expansion resolver the generation this
+// Reload builds is expanded with, for every resource, agent engine and
+// hook settings subtree. A nil resolver builds the generation with the
+// built-in schemes only, which is what a Runtime built without
+// [Builder.WithResolver] expands with.
+func WithReloadResolver(resolver *resource.ReferenceResolver) ReloadOption {
+	return func(o *reloadOptions) error {
+		o.resolver = resolver
+		o.replaceResolver = true
+		return nil
+	}
+}
+
+// WithReloadHostFactory replaces the host factory decorator the
+// generation this Reload builds is served with. Unlike
+// [Builder.WithHostFactory], a nil decorator is meaningful: the
+// generation runs with the base host factory and no decoration.
+func WithReloadHostFactory(decorator HostFactoryDecorator) ReloadOption {
+	return func(o *reloadOptions) error {
+		o.hostDecorator = decorator
+		o.replaceHost = true
+		return nil
+	}
+}
+
+// WithReloadResultHostFactory replaces the deployment-aware host factory
+// decorator the generation this Reload builds is served with. A nil
+// decorator removes the decoration. See [Builder.WithResultHostFactory].
+func WithReloadResultHostFactory(decorator ResultHostFactoryDecorator) ReloadOption {
+	return func(o *reloadOptions) error {
+		o.resultDecorator = decorator
+		o.replaceResult = true
+		return nil
+	}
+}
 
 // ReloadResult describes one successful generation swap.
 type ReloadResult struct {
@@ -50,6 +122,14 @@ type ReloadResult struct {
 //     generation; the old generation retires and closes once its
 //     in-flight turns drain.
 //
+// The generation can be built with replacement inputs through
+// ReloadOptions (WithReloadExternals, WithReloadResolver,
+// WithReloadHostFactory, WithReloadResultHostFactory). Each option
+// replaces the Runtime's corresponding build-time input for the new
+// generation and, once the swap commits, is retained — a later Reload
+// without the option builds with the replacement. An aborted reload
+// leaves every retained input untouched.
+//
 // In-flight turns always complete on the generation they started on;
 // the next Start uses the new generation. Reload is serialized with
 // RegisterAgent / UnregisterAgent / Close via lifecycleMu.
@@ -66,12 +146,13 @@ func (r *Runtime) Reload(
 		return nil, errdefs.Validationf(
 			"runtime: Reload context is required")
 	}
+	override := &reloadOptions{}
 	for _, option := range opts {
 		if ptr.IsNil(option) {
 			return nil, errdefs.Validationf(
 				"runtime: ReloadOption must not be nil")
 		}
-		if err := option(&reloadOptions{}); err != nil {
+		if err := option(override); err != nil {
 			return nil, err
 		}
 	}
@@ -113,9 +194,27 @@ func (r *Runtime) Reload(
 		return fail(err)
 	}
 
-	// Build the new deployment result transactionally.
+	// Build the new deployment result transactionally. The generation's
+	// externals, resolver and host decorations are the retained ones
+	// unless this reload replaces them.
+	injected := r.externalResources
+	if override.replaceExternals {
+		injected = override.externals
+	}
+	resolver := r.resolver
+	if override.replaceResolver {
+		resolver = override.resolver
+	}
+	hostDecorator := r.hostDecorator
+	if override.replaceHost {
+		hostDecorator = override.hostDecorator
+	}
+	resultHostDecorator := r.resultHostDecorator
+	if override.replaceResult {
+		resultHostDecorator = override.resultDecorator
+	}
 	effective, err := effectiveExternalResources(
-		cfg.ExternalDeps, r.externalResources, true)
+		cfg.ExternalDeps, injected, true)
 	if err != nil {
 		return fail(err)
 	}
@@ -130,8 +229,8 @@ func (r *Runtime) Reload(
 	if r.loader != nil {
 		deployOptions = append(deployOptions, deploy.WithLoader(r.loader))
 	}
-	if r.resolver != nil {
-		deployOptions = append(deployOptions, deploy.WithResolver(r.resolver))
+	if resolver != nil {
+		deployOptions = append(deployOptions, deploy.WithResolver(resolver))
 	}
 	deployBuilder := deploy.NewBuilder(r.resources, deployOptions...)
 	newResult, err := deployBuilder.Deploy(ctx, doc)
@@ -211,14 +310,14 @@ func (r *Runtime) Reload(
 				"generation's bus; each generation must own its bus"))
 	}
 
-	// Rebuild the host factory with the same decoration policy.
+	// Rebuild the host factory with this generation's decoration policy.
 	baseHostFactory, err := newBaseHostFactory(newBus, newCheckpoints)
 	if err != nil {
 		return nil, abort(err)
 	}
 	hostFactory := session.HostFactory(baseHostFactory)
-	if r.hostDecorator != nil {
-		hostFactory, err = r.hostDecorator(baseHostFactory)
+	if hostDecorator != nil {
+		hostFactory, err = hostDecorator(baseHostFactory)
 		if err != nil {
 			return nil, abort(fmt.Errorf(
 				"runtime reload decorate host factory: %w", err))
@@ -228,8 +327,8 @@ func (r *Runtime) Reload(
 				"runtime reload host factory decorator returned nil"))
 		}
 	}
-	if r.resultHostDecorator != nil {
-		hostFactory, err = r.resultHostDecorator(newResult, hostFactory)
+	if resultHostDecorator != nil {
+		hostFactory, err = resultHostDecorator(newResult, hostFactory)
 		if err != nil {
 			return nil, abort(fmt.Errorf(
 				"runtime reload decorate host factory with deployment: %w", err))
@@ -435,6 +534,21 @@ func (r *Runtime) Reload(
 	r.liveCatalog = newCatalog
 	r.bus = newBus
 	r.nextGenID = newGenID
+	// The swap committed, so this generation's inputs become the
+	// retained ones: a later Reload without the option builds with
+	// exactly what this generation was built with.
+	if override.replaceExternals {
+		r.externalResources = override.externals
+	}
+	if override.replaceResolver {
+		r.resolver = override.resolver
+	}
+	if override.replaceHost {
+		r.hostDecorator = override.hostDecorator
+	}
+	if override.replaceResult {
+		r.resultHostDecorator = override.resultDecorator
+	}
 
 	reboundNames := sortedKeys(newEntries)
 	sort.Strings(drained)
