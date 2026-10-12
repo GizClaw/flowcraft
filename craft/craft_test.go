@@ -336,6 +336,99 @@ deploy:
 	}
 }
 
+// TestReloadRuntimeWithReplacesRuntimeOptions covers the reload that
+// carries new runtime inputs: the generation is composed with the
+// options the caller passed, and the key keeps them afterwards — a later
+// plain reload or ReloadAll recomposes with them instead of the ones
+// OpenRuntime stored.
+func TestReloadRuntimeWithReplacesRuntimeOptions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	def, err := ParseDefinition([]byte(`
+craft:
+  id: test
+  name: Test
+  version: 0.1.0
+deploy:
+` + indent(testDeploy, "  ")))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	c, err := New(def, Options{
+		ConfigDir:    dir,
+		DataDir:      dir,
+		Capabilities: []Capability{testCapability{}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Two overlays that are told apart by the resource they declare.
+	writeOverlay := func(name, kind string) RuntimeOptions {
+		t.Helper()
+		file := name + ".yaml"
+		content := "resources:\n  " + kind + ":\n" +
+			"    kind: test.RuntimeContext\n" +
+			"    deps:\n      runtime: craft.runtime\n"
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600); err != nil {
+			t.Fatalf("write overlay %s: %v", file, err)
+		}
+		return RuntimeOptions{Layers: []deploy.Layer{{
+			Name:     name,
+			Priority: 30,
+			Source:   resource.Source{File: file},
+			BaseDir:  dir,
+		}}}
+	}
+	first := writeOverlay("first", "gen1")
+	second := writeOverlay("second", "gen2")
+	rt, err := c.OpenRuntime(ctx, DefaultKey, first)
+	if err != nil {
+		t.Fatalf("OpenRuntime: %v", err)
+	}
+	has := func(kind string) bool {
+		t.Helper()
+		_, ok := rt.Resource(kind)
+		return ok
+	}
+	if !has("gen1") || has("gen2") {
+		t.Fatal("the generation opened with the first overlay is not the one serving")
+	}
+
+	if err := c.ReloadRuntimeWith(ctx, DefaultKey, second, ReasonManual); err != nil {
+		t.Fatalf("ReloadRuntimeWith: %v", err)
+	}
+	if !has("gen2") || has("gen1") {
+		t.Fatal("ReloadRuntimeWith did not compose the generation with the options it was given")
+	}
+
+	// The key now holds the replacement options: a plain reload must
+	// recompose from the second overlay, not fall back to the first.
+	if err := c.ReloadRuntime(ctx, DefaultKey, ReasonManual); err != nil {
+		t.Fatalf("ReloadRuntime: %v", err)
+	}
+	if !has("gen2") || has("gen1") {
+		t.Fatal("ReloadRuntime reused the options the runtime was opened with")
+	}
+	if err := c.ReloadAll(ctx, ReasonConfig); err != nil {
+		t.Fatalf("ReloadAll: %v", err)
+	}
+	if !has("gen2") || has("gen1") {
+		t.Fatal("ReloadAll reused the options the runtime was opened with")
+	}
+
+	if err := c.ReloadRuntimeWith(ctx, "missing", RuntimeOptions{},
+		ReasonManual); !errors.Is(err, ErrRuntimeNotFound) {
+		t.Fatalf("ReloadRuntimeWith(missing) = %v, want ErrRuntimeNotFound", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestReloadRuntimeRollsBackWhenBindingFails covers the half of a reload
 // that happens after the runtime has already swapped generations: a
 // binder that fails there has to leave the caller with the generation it

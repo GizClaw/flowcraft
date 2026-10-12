@@ -325,6 +325,10 @@ func (c *Craft) OpenRuntime(
 // ReloadRuntime recomposes the layers for key and atomically replaces
 // the runtime's deployment generation. In-flight turns stay on the
 // previous generation. It is serialized with ReloadAll and SyncAgents.
+//
+// The runtime options the key was opened with — or the ones a previous
+// ReloadRuntimeWith stored — are reused; ReloadRuntimeWith replaces
+// them.
 func (c *Craft) ReloadRuntime(
 	ctx context.Context,
 	key RuntimeKey,
@@ -335,14 +339,56 @@ func (c *Craft) ReloadRuntime(
 	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
-	return c.reloadRuntimeLocked(ctx, key, reason)
+	opts, ok := c.runtimeOptions(key)
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
+	}
+	return c.reloadRuntimeLocked(ctx, key, opts, reason)
+}
+
+// ReloadRuntimeWith is ReloadRuntime with fresh runtime options: the
+// next generation is composed and built with opts — new layers, values
+// or externals — and once it is serving and bound, opts become the
+// options the key holds, so a later ReloadRuntime or ReloadAll
+// recomposes with them. A reload that fails leaves the key on the
+// options it was serving with, exactly as it leaves the generation.
+//
+// It exists because the per-runtime inputs are not frozen at open time
+// for every application: a shell that owns a deploy overlay on disk
+// re-reads it for each reload (a settings change), and without this the
+// only way to hand craft the new layers would be CloseRuntime followed
+// by OpenRuntime — the interruption of in-flight turns the generation
+// swap exists to avoid.
+func (c *Craft) ReloadRuntimeWith(
+	ctx context.Context,
+	key RuntimeKey,
+	opts RuntimeOptions,
+	reason Reason,
+) error {
+	if ptr.IsNil(ctx) {
+		return errdefs.Validationf("craft: ReloadRuntimeWith context is required")
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.reloadRuntimeLocked(ctx, key, opts, reason)
+}
+
+// runtimeOptions returns the options the key's runtime is served with,
+// regardless of whether that runtime is open.
+func (c *Craft) runtimeOptions(key RuntimeKey) (RuntimeOptions, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	opts, ok := c.runtimeOpts[key]
+	return opts, ok
 }
 
 // reloadRuntimeLocked is ReloadRuntime's body; callers hold
-// lifecycleMu.
+// lifecycleMu and pass the options the next generation is composed
+// with.
 func (c *Craft) reloadRuntimeLocked(
 	ctx context.Context,
 	key RuntimeKey,
+	opts RuntimeOptions,
 	reason Reason,
 ) error {
 	c.mu.Lock()
@@ -351,7 +397,6 @@ func (c *Craft) reloadRuntimeLocked(
 		return ErrCraftClosed
 	}
 	rt, ok := c.runtimes[key]
-	opts := c.runtimeOpts[key]
 	previous, havePrevious := c.runtimeDocs[key]
 	c.mu.Unlock()
 	if !ok {
@@ -376,6 +421,7 @@ func (c *Craft) reloadRuntimeLocked(
 	}
 	c.mu.Lock()
 	c.runtimeDocs[key] = doc
+	c.runtimeOpts[key] = opts
 	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadCompleted, RuntimeEvent{Key: key, Reason: reason})
 	return nil
@@ -428,7 +474,8 @@ func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
 	defer c.lifecycleMu.Unlock()
 	var errs []error
 	for _, key := range c.Runtimes() {
-		if err := c.reloadRuntimeLocked(ctx, key, reason); err != nil {
+		opts, _ := c.runtimeOptions(key)
+		if err := c.reloadRuntimeLocked(ctx, key, opts, reason); err != nil {
 			errs = append(errs, fmt.Errorf("runtime %q: %w", key, err))
 		}
 	}
