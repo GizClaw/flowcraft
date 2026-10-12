@@ -78,6 +78,15 @@ func TestIngestTagsDatasetTurns(t *testing.T) {
 	if len(want) == 0 {
 		t.Fatal("the loader named no dataset turns, so this probe could not tell an untagged store from a tagged one")
 	}
+	// A fresh workspace carries no ids until ingest writes them, so the rule
+	// evidence recall is graded by can only be measured once the ingest phase is
+	// done: measured before it, this store would be stamped committed-text while
+	// every question below is graded by turn id.
+	resolver := host.NewMessageProvenance(store, scope)
+	if rule, tagged := evidenceMatching(ctx, resolver, scenarios); tagged != 0 || rule != "committed-text" {
+		t.Fatalf("evidenceMatching over the untouched store = %q (tagged=%d), want %q over no conversation",
+			rule, tagged, "committed-text")
+	}
 	if err := eval.Ingest(ctx, built.Memory, scenario); err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +107,12 @@ func TestIngestTagsDatasetTurns(t *testing.T) {
 	// The runner's own guard decides whether it warns about an untagged store
 	// and which rule it stamps in the fingerprint, so it has to agree with the
 	// records it just read.
-	resolver := host.NewMessageProvenance(store, scope)
 	if !resolver.CarriesTurnIDs(ctx, scenario.ConversationID, 64) {
 		t.Fatal("CarriesTurnIDs reports no turn ids after every record was tagged")
+	}
+	if rule, tagged := evidenceMatching(ctx, resolver, scenarios); rule != "turn-id" || tagged != len(scenarios) {
+		t.Fatalf("evidenceMatching after ingest = %q (tagged=%d), want %q over every conversation",
+			rule, tagged, "turn-id")
 	}
 	// Re-ingesting is a replay, not a repair: the ids are written by ingest, so
 	// the only way to reach a workspace that predates them is to ingest into a
