@@ -59,8 +59,9 @@ builds the deployment with its own factory registry, or at runtime.
     key that used to select a namespace is rejected with the migration path.
     Driver control facts without a capability kind of their own are
     declaration leaves too (Bytedance `max_resolution`/`video`, MiniMax
-    `wire_model`/`video`); leave one out and the endpoint's own validation
-    decides instead of the driver rejecting locally — host build.
+    `wire_model`/`video`, DashScope `image`/`video`); leave one out and the
+    endpoint's own validation decides instead of the driver rejecting
+    locally — host build.
 18. `effort_none` (OpenAI/Azure) and the top-level `dimensions:` key
     (OpenAI/Azure/Bytedance) were removed: strict decoding reports them as
     unknown fields. OpenAI-family reasoning off is implied by

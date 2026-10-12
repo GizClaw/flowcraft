@@ -83,8 +83,10 @@ Driver control facts that no capability kind expresses are declaration
 leaves: Bytedance declares `max_resolution` and the Seedance `video`
 parameter matrix per video model, and MiniMax declares `wire_model` (the
 token an alias addresses) and its `video` surface (task API, duration and
-resolution tiers, frame roles). A control fact the deployment leaves out
-compiles with syntax-only validation instead of a driver-side assumption.
+resolution tiers, frame roles). DashScope declares its `image`/`video`
+surface blocks the same way (see "DashScope media surfaces" below). A control
+fact the deployment leaves out compiles with syntax-only validation instead
+of a driver-side assumption.
 
 Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
 compiles on that provider surface; models whose wire cannot turn reasoning
@@ -167,6 +169,123 @@ crosses a model or an account by accident. Set the key when you have verified
 that several models or credentials accept each other's traces: reasoning
 payloads are verified against the model and account that minted them, and a
 mismatch is a provider 400 that no retry can repair.
+
+### DashScope media surfaces (Wan)
+
+`impl: dashscope` speaks Alibaba Cloud Model Studio's native protocol — the
+surfaces the OpenAI-compatible endpoint does not carry — so its spec is flat
+and names no `api`, `endpoint`, or `wire` block:
+
+```yaml
+provider:
+  kind: inference.Provider
+  impl: dashscope
+  settings:
+    id: alibaba
+    spec:
+      base_url: https://dashscope.aliyuncs.com   # or the workspace host
+      workspace_id: ws-1                         # optional; X-DashScope-WorkSpace
+      poll_interval_millis: 5000                 # async task polling pace
+      models:
+        - name: wanx-v1
+          kind: image
+          capabilities: {inputs: [text, image], outputs: [image]}
+          image:
+            reference_image: true     # input.ref_img (垫图) on this model
+            prompt_limit: 800
+            sizes: ["1024*1024", "720*1280", "1280*720"]
+        - name: wan2.6-t2v
+          kind: video
+          capabilities: {inputs: [text], outputs: [video]}
+          video:
+            size_param: size          # tier+ratio resolve a concrete 宽*高
+            resolutions: ["720P", "1080P"]
+            sizes: {"720P": {"16:9": "1280*720", "9:16": "720*1280"}}
+            min_duration: 2
+            max_duration: 15
+            audio_switch: true
+            negative_prompt: true     # input.negative_prompt
+        - name: wan3-frames
+          kind: video
+          capabilities: {inputs: [text, image], outputs: [video]}
+          video:
+            media: {first_frame: true, last_frame: true}   # input.media, 首尾帧
+            resolutions: ["1080P", "720P", "480P"]
+            min_duration: 2
+            max_duration: 30
+            audio_switch: true
+            smart_duration: true
+            prompt_limit: 20000
+        - name: wan3-refer
+          wire_model: wan3.0-video  # the same model, the reference mode
+          kind: video
+          capabilities: {inputs: [text, image, video, audio, file], outputs: [video]}
+          video:
+            media: {reference_images: 10, reference_videos: 5, reference_audios: 5, file: true, link: true}
+            resolutions: ["1080P", "720P", "480P"]
+            min_duration: 2
+            max_duration: 30
+            audio_switch: true
+            smart_duration: true
+            prompt_limit: 20000
+    profiles:
+      - secrets:
+          api_key: ${env:DASHSCOPE_API_KEY}
+```
+
+`kind` is `image` or `video`; the driver serves no generate or embed
+surface. `image` declares the surface (`api: sync` for the Wan 2.6+
+single-call multimodal endpoint, empty for the async task pipeline), whether
+the model edits (`edit`, which requires the `function` option) or takes a
+reference image (`reference_image`), the size envelope (`sizes`, or
+`min_edge`/`max_edge`, or `min_pixels`/`max_pixels`), `count_max`,
+`prompt_limit`, and `format`. `video` declares the input shape (`input`:
+`t2v` default, `i2v`, or `kf2v`), how the resolution rides the wire
+(`size_param`: `resolution` sends the tier token, `size` resolves one
+through the `sizes` table), the accepted `resolutions`/`ratios`/`durations`
+(or `min_duration`/`max_duration`), the audio channel (`audio` for an input
+soundtrack, `audio_switch` for a generated one), `shot_type`, `template`,
+`negative_prompt`, and `prompt_limit`. The Wan 3.0 all-in-one models take
+every asset through `input.media` instead of those flat keys, so their
+declarations carry a `media` block in place of `input`: `first_frame` and
+`last_frame` accept the first and second image parts, `reference_images`,
+`reference_videos`, and `reference_audios` cap how many entries of each kind
+one request may carry (10/5/5 on wan3.0, whose videos and audios are further
+bounded by the platform at 15 seconds per kind), and `file`/`link` add the
+document channel — a file part and the `video_options` `link` URL. Entries
+keep the order the caller wrote the parts in, which is what the prompt's
+图1/视频1/音频1 refer to, and `smart_duration: true` admits the code-chosen
+length (`video_options` `smart_duration`, sent as duration -1) in place of a
+requested one. A ratio nobody asked for stays off the wire, which is the
+surface's `adaptive` default; the ratios a declaration lists are the concrete
+ones. The platform refuses first/last frames together with any
+other asset, and a lone input image would have no single home, so one
+declaration names one mode and the same wire model is declared twice to
+serve both. A request carries a prompt, media, or both. A Wan 3.0 render
+carries an AAC soundtrack even when the request named no audio, while a
+2.x file stays video-only unless a model declaring `audio_switch` is asked
+for a soundtrack. Media arrives as provider
+URLs with a 24-hour retention window; neither kind streams a response, and
+the interleaved sync surface's event stream is folded before the caller
+sees it. That surface is also the one with a rule the declaration cannot
+see: without `enable_interleave` the last message must carry 1 to 4 input
+images, so a text-only prompt belongs to the interleaved mode. API keys are
+bound to the region they were created in, so a deployment serving several
+hosts declares one profile per host and overrides `base_url` (and
+`workspace_id`) in that profile's `spec`.
+
+Knobs with no canonical field ride the driver's own extensions:
+`image_options` carries `negative_prompt`, `prompt_extend`, `watermark`,
+`style` and the reference-image pair `ref_strength`/`ref_mode`, the edit
+selector `function` with `is_sketch`/`upscale_factor`, and `enable_interleave`
+(text-and-image output on the sync surface); `video_options` carries
+`negative_prompt`, `prompt_extend`, `shot_type`, `audio`, `template`, and the
+media surface's `link` (a public web page as source material) and
+`smart_duration`. An option a model's declaration does not enable is
+rejected at compile time rather than dropped — including one the surface
+never documents, such as `negative_prompt` on the Wan 3.0 media array — and
+an extension addressed to the other operation is rejected as invalid for
+this one.
 
 ## inference assembly
 
