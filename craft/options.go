@@ -72,10 +72,12 @@ type RuntimeOptions struct {
 	// Externals are values injected into this runtime only.
 	Externals []deploy.ExternalResource
 	// HostDecorators wrap the runtime's base host factory for this
-	// runtime; craft-wide decorators come from capabilities.
+	// runtime; craft-wide decorators come from capabilities. A runtime
+	// holds one decorator, so the craft-wide and per-runtime
+	// decorators together may not exceed one.
 	HostDecorators []runtime.HostFactoryDecorator
 	// ResultHostDecorators wrap the host factory with access to the
-	// assembled deployment for this runtime.
+	// assembled deployment for this runtime. A runtime holds one.
 	ResultHostDecorators []runtime.ResultHostFactoryDecorator
 	// Values feed ${craft:NAME} and the craft.runtime external for
 	// this runtime, overriding craft-level values.

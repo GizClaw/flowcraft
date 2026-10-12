@@ -196,8 +196,19 @@ replaces them — layers, `Values`, externals, host decorators — and the
 replacement becomes the options the key holds once its generation is
 serving and bound, so a later `ReloadRuntime` or `ReloadAll` recomposes
 with it too. A reload that fails leaves the key on the options it was
-serving with, exactly as it leaves the generation, and an unknown key is
-`ErrRuntimeNotFound` (`craft: runtime not found`).
+serving with, exactly as it leaves the generation. An unknown key is
+`ErrRuntimeNotFound` (`craft: runtime not found`) and a closed Craft is
+`ErrCraftClosed` (`craft: closed`) for both entry points.
+
+Craft hands the replacement to the runtime as `runtime.ReloadOption`s:
+the composed externals (`WithReloadExternals`), the `${craft:...}`
+resolver built from the merged `Values` (`WithReloadResolver`) and the
+host factory decorations (`WithReloadHostFactory` /
+`WithReloadResultHostFactory`). Every channel is passed on every reload,
+so the generation is built with exactly the options at hand; the
+decorator channel carries nil when the options have none, which is how a
+reload drops the previous generation's decoration instead of leaving it
+in place.
 
 Craft's per-runtime inputs are therefore not frozen at open time. A shell
 that owns a deploy overlay on disk — one it re-reads on every settings
