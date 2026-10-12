@@ -122,7 +122,8 @@ Layers merge in this order, later layers winning:
    entry in declaration order;
 2. capability layers (`Layers`), in capability order;
 3. craft-level `Options.Layers`;
-4. per-runtime layers passed to `OpenRuntime`.
+4. per-runtime layers passed to `OpenRuntime` (or to `ReloadRuntimeWith`
+   for a later generation).
 
 `core/deploy.LoadLayers` performs the merge and keeps provenance. Roots
 are `Options.ConfigDir`, `Options.DataDir` and `Options.AppHome` (which
@@ -161,6 +162,7 @@ document's `runtime.external_deps`.
 | `Start(ctx)` | starts the host primitive server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
 | `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`. |
+| `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. |
 | `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. |
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
@@ -186,6 +188,22 @@ processes, open sessions, and the runtime's craft-plane consumers.
 Reloads are serialized with each other and with `SyncAgents` through the
 lifecycle lock: an agent pass never observes a reload of this Craft in
 flight.
+
+**Reload options.** The `RuntimeOptions` a key was opened with are kept
+with the key, and a reload recomposes from them, so a reload carries a
+changed document but the same per-runtime inputs. `ReloadRuntimeWith`
+replaces them — layers, `Values`, externals, host decorators — and the
+replacement becomes the options the key holds once its generation is
+serving and bound, so a later `ReloadRuntime` or `ReloadAll` recomposes
+with it too. A reload that fails leaves the key on the options it was
+serving with, exactly as it leaves the generation, and an unknown key is
+`ErrRuntimeNotFound` (`craft: runtime not found`).
+
+Craft's per-runtime inputs are therefore not frozen at open time. A shell
+that owns a deploy overlay on disk — one it re-reads on every settings
+save — hands craft the new layers through `ReloadRuntimeWith` instead of
+`CloseRuntime` + `OpenRuntime`, which would interrupt the in-flight turns
+the generation swap exists to protect.
 
 Craft-plane events (exact subjects): `craft.started` (empty
 `RuntimeEvent`), `craft.runtime.opened` / `craft.runtime.closed`
@@ -613,8 +631,16 @@ machine, signal-aware `Run`, and the blue-green `Replace`.
   then `<UserConfigDir>/craft/craft.yaml`; a miss is `craft manager:
   craft.yaml not found`.
 - **Paths and lock.** `Paths{ConfigDir, DataDir, AppHome}`. With `Lock`
-  set, `DataDir` is required and the manager takes
-  `<DataDir>/craft.lock` (or `craft-<profile>.lock`). A second instance is
+  set, the manager takes `<DataDir>/craft.lock` (or
+  `craft-<profile>.lock`), so a `DataDir` is required — unless `LockPath`
+  names the file explicitly, which is how a shell that already owns a
+  lock spelling (a state root's `gui.lock`, the file another instance of
+  it locks and raises through) points the manager at that file instead of
+  leaving a second, unaware lock beside it; the derived name is untouched
+  while `LockPath` is empty. `LockOptions` are passed through to
+  `core/utils/lock`: `WithVersion` and `WithEndpoint` land in the holder
+  record, so `OnLockHeld` — and a launch that reads the record to raise
+  the holder — can name its build and reach it. A second instance is
   `craft manager: another instance holds <path>`; a stale lock left by a
   crash must be removed manually.
 - **State machine.** `idle → starting → running → draining → stopping →
