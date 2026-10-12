@@ -161,9 +161,9 @@ document's `runtime.external_deps`.
 | `New(def, opts)` | validates the definition, registers capability factories and service impls, and (with `opts.Plugins`) the plugin node factory and the UI registry. Builds no runtime. |
 | `Start(ctx)` | starts the host primitive server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
-| `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`. |
-| `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. Returns that generation's `*runtime.ReloadResult`; a failed reload returns none. |
-| `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. A closed Craft has nothing to reload and returns nil. |
+| `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`; reports no generation — `ReloadRuntimeWith` is the entry point that returns one. |
+| `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. Returns that generation's `*runtime.ReloadResult`; a failed reload returns none, and its error names the generation serving instead. |
+| `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. A closed Craft has nothing to reload and returns nil. Reports no generation: one per key is not one answer. |
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
@@ -182,8 +182,13 @@ exists`), and an unknown key is `ErrRuntimeNotFound`. Calling
 deployment document and hands it to `Runtime.Reload`, which builds a new
 deployment generation, rebinds dynamic agents, and atomically swaps it
 in. In-flight turns stay on the generation they started on; the retired
-generation closes once it drains. Everything outside the document is
-preserved: the resource registry, the plugin host and its child
+generation closes once it drains. Generation ids are allocated per
+attempt — including attempts that fail before the swap — so they are
+monotonic but not contiguous. A reload whose bind fails is rolled back
+to the document it was serving under a *fresh* id, which the error
+names: what a caller was last returned is not what serves after a
+failure. Everything outside the document is preserved: the resource
+registry, the plugin host and its child
 processes, open sessions, and the runtime's craft-plane consumers.
 Reloads are serialized with each other and with `SyncAgents` through the
 lifecycle lock: an agent pass never observes a reload of this Craft in
@@ -195,10 +200,15 @@ changed document but the same per-runtime inputs. `ReloadRuntimeWith`
 replaces them — layers, `Values`, externals, host decorators — and the
 replacement becomes the options the key holds once its generation is
 serving and bound, so a later `ReloadRuntime` or `ReloadAll` recomposes
-with it too. A reload that fails leaves the key on the options it was
-serving with, exactly as it leaves the generation. An unknown key is
-`ErrRuntimeNotFound` (`craft: runtime not found`) and a closed Craft is
-`ErrCraftClosed` (`craft: closed`) for both entry points.
+with it too. A reload that fails leaves the key on the options and
+inputs it was serving with; the generation is the half that moves, and
+the error names what serves. An unknown key is `ErrRuntimeNotFound`
+(`craft: runtime not found`) and a closed Craft is `ErrCraftClosed`
+(`craft: closed`) for both entry points. `CloseRuntime` and `Close` do
+not wait for a reload in flight — they take the runtime out from under
+it — and such a reload fails rather than report a generation nothing
+serves: `ErrRuntimeNotFound` for a closed key, `ErrCraftClosed` for a
+closed Craft.
 
 Craft hands the replacement to the runtime as `runtime.ReloadOption`s:
 the composed externals (`WithReloadExternals`), the `${craft:...}`
@@ -219,7 +229,8 @@ the generation swap exists to protect.
 Craft-plane events (exact subjects): `craft.started` (empty
 `RuntimeEvent`), `craft.runtime.opened` / `craft.runtime.closed`
 (`RuntimeEvent{key}`), `craft.reload.started` / `.completed` / `.failed`
-(`RuntimeEvent{key, reason, error}`), `craft.manager.state`
+(`RuntimeEvent{key, reason, error}`, with no generation id: the id a
+swap installed is `ReloadRuntimeWith`'s return value), `craft.manager.state`
 (`ManagerStateEvent`), `craft.group.instance.state`
 (`GroupInstanceEvent`), and `craft.ui.changed`
 (`ui.ChangedEvent{revision}`, published by the UI registry). `Reason`

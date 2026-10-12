@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -245,6 +247,38 @@ func (b *binderCapability) count() int {
 	return len(b.calls)
 }
 
+// parkingBinder holds the bind of one call until the test releases it, so
+// a test can interleave a close with a reload that has already swapped
+// generations but not finished binding.
+type parkingBinder struct {
+	parkAt  int
+	entered chan struct{}
+	release chan struct{}
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (*parkingBinder) Name() string { return "parking" }
+
+func (*parkingBinder) Register(*resource.Registry) error { return nil }
+
+func (b *parkingBinder) BindRuntime(
+	_ context.Context,
+	_ RuntimeKey,
+	_ *runtime.Runtime,
+) error {
+	b.mu.Lock()
+	b.calls++
+	park := b.calls == b.parkAt
+	b.mu.Unlock()
+	if park {
+		close(b.entered)
+		<-b.release
+	}
+	return nil
+}
+
 type externalCapability struct{}
 
 func (externalCapability) Name() string { return "external" }
@@ -404,8 +438,10 @@ deploy:
 	if err != nil {
 		t.Fatalf("ReloadRuntimeWith: %v", err)
 	}
-	if result == nil || result.GenerationID == 0 {
-		t.Fatalf("ReloadRuntimeWith result = %+v, want the generation it installed",
+	// The runtime was opened one generation ago and core numbers the
+	// first one 1: this reload installs 2 and replaces 1.
+	if result == nil || result.GenerationID != 2 || result.PreviousID != 1 {
+		t.Fatalf("ReloadRuntimeWith result = %+v, want generation 2 replacing 1",
 			result)
 	}
 	if !has("gen2") || has("gen1") {
@@ -508,12 +544,12 @@ base_layers:
     deps:
       runtime: craft.runtime
 `)
-	err = c.ReloadRuntime(ctx, DefaultKey, ReasonManual)
-	if err == nil {
+	reloadErr := c.ReloadRuntime(ctx, DefaultKey, ReasonManual)
+	if reloadErr == nil {
 		t.Fatal("ReloadRuntime bound a generation its binder refused")
 	}
-	if !strings.Contains(err.Error(), "rolled back") {
-		t.Fatalf("ReloadRuntime = %v, want it to report the rollback", err)
+	if !strings.Contains(reloadErr.Error(), "rolled back") {
+		t.Fatalf("ReloadRuntime = %v, want it to report the rollback", reloadErr)
 	}
 	if got := binder.count(); got != 3 {
 		t.Fatalf("binder calls = %d, want the open, the failed reload and the rebind",
@@ -524,6 +560,26 @@ base_layers:
 	}
 	if _, ok := rt.Resource("context"); !ok {
 		t.Fatal("the previous generation is not serving after the rollback")
+	}
+
+	// The rollback re-installs the previous document under a fresh
+	// generation id — core allocates one per attempt, so the failed call
+	// and its rollback each consumed one — and the error names the id
+	// that ends up serving, because the caller's own id no longer
+	// describes it. The next reload is the proof: it replaces exactly
+	// the generation the error named.
+	result, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
+		ReasonManual)
+	if err != nil {
+		t.Fatalf("ReloadRuntimeWith after the rollback: %v", err)
+	}
+	if result == nil {
+		t.Fatal("ReloadRuntimeWith after the rollback returned no generation")
+	}
+	if want := fmt.Sprintf("generation %d", result.PreviousID); !strings.Contains(
+		reloadErr.Error(), want) {
+		t.Fatalf("ReloadRuntime = %v, want it to name %s, the generation "+
+			"serving after the rollback", reloadErr, want)
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -739,10 +795,16 @@ func TestReloadRuntimeWithRollbackRestoresInputs(t *testing.T) {
 	}
 
 	// The reload installs the replacement inputs and then fails to bind
-	// the generation it built with them.
-	_, err = c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"), ReasonManual)
+	// the generation it built with them. A failed reload reports no
+	// generation: the error, not a result, says what serves.
+	result, err := c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"),
+		ReasonManual)
 	if err == nil {
 		t.Fatal("ReloadRuntimeWith bound a generation its binder refused")
+	}
+	if result != nil {
+		t.Fatalf("ReloadRuntimeWith result = %+v, want none for a failed reload",
+			result)
 	}
 	if !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("ReloadRuntimeWith = %v, want it to report the rollback", err)
@@ -883,7 +945,7 @@ func TestReloadFailedWithKeepsPreviousOptions(t *testing.T) {
 		Source:   resource.Source{File: "absent.yaml"},
 		BaseDir:  dir,
 	}}
-	_, err = c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
+	result, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
 		Layers: missing,
 		Values: map[string]string{"name": "gen2"},
 		Externals: []deploy.ExternalResource{{
@@ -893,6 +955,10 @@ func TestReloadFailedWithKeepsPreviousOptions(t *testing.T) {
 	}, ReasonManual)
 	if err == nil {
 		t.Fatal("ReloadRuntimeWith with a missing layer file succeeded")
+	}
+	if result != nil {
+		t.Fatalf("ReloadRuntimeWith result = %+v, want none for a failed reload",
+			result)
 	}
 	if err := c.ReloadRuntime(ctx, DefaultKey, ReasonManual); err != nil {
 		t.Fatalf("ReloadRuntime after the failure: %v", err)
@@ -939,6 +1005,127 @@ func TestReloadErrorsAfterClose(t *testing.T) {
 	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
 		ReasonManual); !errors.Is(err, ErrCraftClosed) {
 		t.Fatalf("ReloadRuntimeWith after Close = %v, want ErrCraftClosed", err)
+	}
+}
+
+// TestReloadRejectsNilContext pins the nil-context guard of both reload
+// entry points: neither a panic nor a reload, and no result.
+func TestReloadRejectsNilContext(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, ctx := reloadTestCraft(t, dir, testCapability{})
+	if _, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{}); err != nil {
+		t.Fatalf("OpenRuntime: %v", err)
+	}
+	// Through a variable: passing a literal nil context is what
+	// staticcheck's SA1012 forbids, and this is the one place the guard
+	// is the thing under test.
+	var nilCtx context.Context
+	if err := c.ReloadRuntime(nilCtx, DefaultKey, ReasonManual); err == nil ||
+		!strings.Contains(err.Error(), "context is required") {
+		t.Fatalf("ReloadRuntime(nil) = %v, want the context error", err)
+	}
+	result, err := c.ReloadRuntimeWith(nilCtx, DefaultKey, RuntimeOptions{},
+		ReasonManual)
+	if err == nil || !strings.Contains(err.Error(), "context is required") {
+		t.Fatalf("ReloadRuntimeWith(nil) = %v, want the context error", err)
+	}
+	if result != nil {
+		t.Fatalf("ReloadRuntimeWith(nil) result = %+v, want none", result)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestReloadFailsWhenItsRuntimeIsClosedUnderIt covers the interleaving
+// the write-back is skipped for: CloseRuntime and Close take the table
+// lock alone, so either can take a runtime out from under a reload parked
+// in its bind, after the swap committed. The reload must not report that
+// generation as installed — the runtime it describes is gone — so it
+// fails with the sentinel a caller would meet on the next call, and no
+// craft.reload.completed reaches the plane.
+func TestReloadFailsWhenItsRuntimeIsClosedUnderIt(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		close func(context.Context, *Craft) error
+		want  error
+	}{{
+		name: "CloseRuntime",
+		close: func(ctx context.Context, c *Craft) error {
+			return c.CloseRuntime(ctx, DefaultKey)
+		},
+		want: ErrRuntimeNotFound,
+	}, {
+		name:  "Close",
+		close: func(_ context.Context, c *Craft) error { return c.Close() },
+		want:  ErrCraftClosed,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			binder := &parkingBinder{
+				parkAt: 2, entered: entered, release: release,
+			}
+			c, ctx := reloadTestCraft(t, dir, testCapability{}, binder)
+			if _, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{}); err != nil {
+				t.Fatalf("OpenRuntime: %v", err)
+			}
+			var mu sync.Mutex
+			completed := false
+			detach, err := c.Attach(ctx, PatternCraft(), event.SinkFunc(
+				func(_ context.Context, envelope event.Envelope) error {
+					mu.Lock()
+					defer mu.Unlock()
+					if envelope.Subject == SubjectReloadCompleted {
+						completed = true
+					}
+					return nil
+				}))
+			if err != nil {
+				t.Fatalf("Attach: %v", err)
+			}
+			defer detach()
+
+			var (
+				result *runtime.ReloadResult
+				reload error
+			)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				result, reload = c.ReloadRuntimeWith(ctx, DefaultKey,
+					RuntimeOptions{}, ReasonManual)
+			}()
+			<-entered
+			// The reload has committed its swap and is inside the bind;
+			// the close wins the table lock before the write-back.
+			if cerr := tc.close(ctx, c); cerr != nil {
+				t.Fatalf("%s: %v", tc.name, cerr)
+			}
+			close(release)
+			<-done
+
+			if !errors.Is(reload, tc.want) {
+				t.Fatalf("ReloadRuntimeWith = %v, want %v", reload, tc.want)
+			}
+			if result != nil {
+				t.Fatalf("ReloadRuntimeWith result = %+v, want none for a "+
+					"runtime that was closed under it", result)
+			}
+			time.Sleep(50 * time.Millisecond) // let any published event be delivered
+			mu.Lock()
+			reported := completed
+			mu.Unlock()
+			if reported {
+				t.Fatal("the reload published craft.reload.completed for a " +
+					"generation nothing is bound to")
+			}
+		})
 	}
 }
 

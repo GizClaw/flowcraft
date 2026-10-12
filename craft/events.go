@@ -35,7 +35,9 @@ const (
 func PatternCraft() event.Pattern { return event.Pattern("craft.>") }
 
 // RuntimeEvent is the payload of craft.runtime.* and craft.reload.*
-// events.
+// events. The reload events carry no generation id, deliberately: the id
+// a swap installed is the return value of ReloadRuntimeWith, and every
+// reload entry point publishes the same payload.
 type RuntimeEvent struct {
 	Key    RuntimeKey `json:"key"`
 	Reason Reason     `json:"reason,omitempty"`
