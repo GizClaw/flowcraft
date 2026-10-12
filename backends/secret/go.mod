@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/backends/secret
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/core v0.4.11
+require github.com/GizClaw/flowcraft/core v0.5.1
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -11,6 +11,8 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/rs/xid v1.6.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
