@@ -181,7 +181,10 @@ func TestGenerateStreamToolCallConflictDetail(t *testing.T) {
 }
 
 func TestGenerateStreamToolCallFinishMismatchDetail(t *testing.T) {
-	events := []GenerateStreamEvent{{FinishReason: FinishToolCalls}}
+	events := []GenerateStreamEvent{
+		{PartIndex: 0, Delta: TextPartDelta{Text: "done"}},
+		{FinishReason: FinishToolCalls},
+	}
 	stream := detailTestStream(events, toolStreamRequest(t))
 	err := nextStreamError(t, stream)
 	if err.Detail != "stream.finish.mismatch" {
@@ -205,6 +208,23 @@ func TestGenerateStreamUndefinedToolDetail(t *testing.T) {
 	}
 	if err.Detail != "stream.finish.undefined_tool" {
 		t.Fatalf("Detail = %q, want stream.finish.undefined_tool", err.Detail)
+	}
+}
+
+func TestGenerateStreamValidationDetailNamesFailedCheck(t *testing.T) {
+	stream := detailTestStream([]GenerateStreamEvent{
+		{PartIndex: 0, Delta: ReasoningDelta{Text: "thinking", Signature: "sig"}},
+		{FinishReason: FinishCompleted},
+	}, textStreamRequest(t))
+	err := nextStreamError(t, stream)
+	if err.Kind != InvalidProviderResponse {
+		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+	}
+	if err.Detail != "stream.finish.validation.no_text" {
+		t.Fatalf("Detail = %q, want stream.finish.validation.no_text", err.Detail)
+	}
+	if got := err.Error(); got != "invalid_provider_response during generate: stream.finish.validation.no_text" {
+		t.Fatalf("Error() = %q", got)
 	}
 }
 
