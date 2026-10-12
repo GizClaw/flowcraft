@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/a2aproject/a2a-go/v2 v2.4.0
 	github.com/creack/pty v1.1.24
+	github.com/disintegration/imaging v1.6.2
 	github.com/dop251/goja v0.0.0-20260219130522-0ba9a5494a59
 	github.com/expr-lang/expr v1.17.8
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -49,6 +50,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
+	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect

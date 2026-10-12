@@ -10,12 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
-const AlgorithmVersion = "maintain-v1"
+// AlgorithmVersion names the maintenance policy. v2 measures fact similarity
+// over the shared kernel's tokens, so facts without whitespace word boundaries
+// (CJK text) compare by character and bigram overlap instead of reading as
+// entirely dissimilar.
+const AlgorithmVersion = "maintain-v2"
 
 // Config tunes one maintenance pass.
 type Config struct {
@@ -210,7 +214,9 @@ func normalizeEntity(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// textSimilarity is token Jaccard similarity over the two facts.
+// textSimilarity is token Jaccard similarity over the two facts, where tokens
+// are the shared kernel's (core/utils/bm25.Tokenize), the same splitter the
+// retrieval lanes match with.
 func textSimilarity(left, right string) float64 {
 	leftTokens := tokenSet(left)
 	rightTokens := tokenSet(right)
@@ -231,7 +237,7 @@ func textSimilarity(left, right string) float64 {
 }
 
 func tokenSet(value string) map[string]struct{} {
-	tokens := textutil.Tokens(value)
+	tokens := corebm25.Tokenize(value)
 	set := make(map[string]struct{}, len(tokens))
 	for _, token := range tokens {
 		set[token] = struct{}{}

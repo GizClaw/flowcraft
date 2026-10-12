@@ -73,6 +73,24 @@ func TestBM25QueryAdaptiveSigmoidFixtures(t *testing.T) {
 	}
 }
 
+// TestBM25QuerySigmoidBucketsCJKQueryByKernelTokens pins that the calibration
+// measures query length with the splitter the BM25 lane indexes with: four
+// Chinese characters are seven kernel tokens (characters plus bigrams), which
+// is the <= 9 bucket whose midpoint is 9. Counting characters instead would
+// have put the same query in the <= 3 bucket with a midpoint of 5 and
+// calibrated the lane's scores against a query it never scored.
+func TestBM25QuerySigmoidBucketsCJKQueryByKernelTokens(t *testing.T) {
+	calibrator := BM25QuerySigmoid{}
+	midpoint, err := calibrator.Calibrate(CalibrationInput{Query: "你好世界", Scores: []float64{9}})
+	if err != nil || midpoint[0] != .5 {
+		t.Fatalf("midpoint = %v, %v, want 0.5", midpoint, err)
+	}
+	below, err := calibrator.Calibrate(CalibrationInput{Query: "你好世界", Scores: []float64{5}})
+	if err != nil || below[0] >= .5 {
+		t.Fatalf("below midpoint = %v, %v, want < 0.5", below, err)
+	}
+}
+
 func TestFusionRenormalizesFailuresAndDeduplicates(t *testing.T) {
 	failing := searcherFunc(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
 		return nil, errors.New("offline")

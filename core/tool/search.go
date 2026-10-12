@@ -1,10 +1,11 @@
 package tool
 
 import (
-	"math"
 	"sort"
 	"strings"
-	"unicode"
+	"unicode/utf8"
+
+	"github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 // SearchHit is one tool_search result.
@@ -14,135 +15,84 @@ type SearchHit struct {
 	Score       float64 `json:"score"`
 }
 
+// searchDoc is one searchable catalog entry.
 type searchDoc struct {
-	name string
-	text string
+	name        string
+	description string
 }
 
 // defaultSearchLimit is used when tool_search omits limit.
 const defaultSearchLimit = 8
 
-// bm25Search ranks docs against query with Okapi BM25 (k1=1.2, b=0.75,
-// smoothed IDF). Scores are computed on the fly: the tool catalog is
-// bounded (hundreds to low thousands), so no persistent index is
-// warranted. Ties break by name, keeping results deterministic.
-func bm25Search(docs []searchDoc, query string, limit int) []SearchHit {
-	queryTerms := tokenize(query)
-	if len(queryTerms) == 0 || len(docs) == 0 {
-		return []SearchHit{}
+// bm25Search ranks docs against query with the shared BM25 kernel.
+// Documents are indexed by name, so the kernel's stable ranking breaks
+// score ties by name. Limit <= 0 means the defaultSearchLimit.
+func bm25Search(docs []searchDoc, query string, limit int) ([]SearchHit, error) {
+	queryTerms := catalogTerms(query)
+	if len(docs) == 0 || len(queryTerms) == 0 {
+		return []SearchHit{}, nil
 	}
 	if limit <= 0 {
 		limit = defaultSearchLimit
 	}
-	if limit > len(docs) {
-		limit = len(docs)
+	// The kernel resolves ties by the order documents arrived in and the
+	// catalog has always resolved them by name, so the index input is
+	// sorted — this function's own slice, never the caller's.
+	indexed := make([]bm25.TermDoc, 0, len(docs))
+	descriptions := make(map[string]string, len(docs))
+	for _, doc := range docs {
+		description := strings.TrimSpace(doc.description)
+		indexed = append(indexed, bm25.TermDoc{
+			ID:   doc.name,
+			Name: termFrequencies(catalogTerms(doc.name)),
+			Text: termFrequencies(catalogTerms(description)),
+		})
+		descriptions[doc.name] = description
 	}
-
-	const k1, b = 1.2, 0.75
-	termFreqs := make([]map[string]int, len(docs))
-	df := make(map[string]int)
-	avgDL := 0.0
-	for i, doc := range docs {
-		terms := tokenize(doc.text)
-		freqs := make(map[string]int, len(terms))
-		for _, term := range terms {
-			freqs[term]++
-		}
-		termFreqs[i] = freqs
-		for term := range freqs {
-			df[term]++
-		}
-		avgDL += float64(len(terms))
+	sort.Slice(indexed, func(i, j int) bool { return indexed[i].ID < indexed[j].ID })
+	index, err := bm25.NewFromTerms(indexed)
+	if err != nil {
+		return nil, err
 	}
-	n := float64(len(docs))
-	if n > 0 {
-		avgDL /= n
-	}
-	if avgDL <= 0 {
-		avgDL = 1
-	}
-
-	idf := make(map[string]float64, len(df))
-	for term, occurrences := range df {
-		idf[term] = math.Log(1 + (n-float64(occurrences)+0.5)/(float64(occurrences)+0.5))
-	}
-
-	queryUnique := make(map[string]struct{}, len(queryTerms))
-	for _, term := range queryTerms {
-		queryUnique[term] = struct{}{}
-	}
-
-	type scored struct {
-		index int
-		score float64
-	}
-	scores := make([]scored, 0, len(docs))
-	for i, freqs := range termFreqs {
-		score := 0.0
-		dl := 0
-		for term := range freqs {
-			dl += freqs[term]
-		}
-		for term := range queryUnique {
-			tf := float64(freqs[term])
-			if tf == 0 {
-				continue
-			}
-			denominator := tf + k1*(1-b+b*float64(dl)/avgDL)
-			score += idf[term] * (tf * (k1 + 1)) / denominator
-		}
-		if score > 0 {
-			scores = append(scores, scored{index: i, score: score})
-		}
-	}
-	sort.Slice(scores, func(i, j int) bool {
-		if scores[i].score != scores[j].score {
-			return scores[i].score > scores[j].score
-		}
-		return docs[scores[i].index].name < docs[scores[j].index].name
-	})
-	if len(scores) > limit {
-		scores = scores[:limit]
-	}
-
-	hits := make([]SearchHit, 0, len(scores))
-	for _, s := range scores {
-		doc := docs[s.index]
-		description := ""
-		if trimmed := strings.TrimSpace(strings.TrimPrefix(doc.text, doc.name)); trimmed != "" {
-			description = trimmed
-		}
+	results := index.SearchTerms(queryTerms, limit)
+	hits := make([]SearchHit, 0, len(results))
+	for _, result := range results {
 		hits = append(hits, SearchHit{
-			Name:        doc.name,
-			Description: description,
-			Score:       s.score,
+			Name:        result.ID,
+			Description: descriptions[result.ID],
+			Score:       result.Score,
 		})
 	}
-	return hits
+	return hits, nil
 }
 
-// tokenize lowercases and splits into Unicode letter/digit runs of at
-// least two characters. Tool descriptions are short and provider-facing,
-// so no stopword list is applied — every meaningful token contributes.
-func tokenize(s string) []string {
-	lower := strings.ToLower(s)
-	runes := []rune(lower)
-	var tokens []string
-	start := -1
-	for i, r := range runes {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			if start < 0 {
-				start = i
-			}
+// catalogTerms tokenizes value with the kernel's splitter and then drops
+// single-rune ASCII tokens. A bare "a" or "1" is below the two-rune
+// minimum the catalog has always used for ASCII words: it matches almost
+// every definition, and with prefix matching on it expands to every term
+// starting with that letter, so one filler word in a query is enough to
+// pull unrelated definitions into the discovery pool. Single CJK
+// characters stay — they are whole words there, and the kernel's bigrams
+// need them to match a fragment.
+func catalogTerms(value string) []string {
+	tokens := bm25.Tokenize(value)
+	kept := tokens[:0]
+	for _, token := range tokens {
+		if len(token) == 1 && token[0] < utf8.RuneSelf {
 			continue
 		}
-		if start >= 0 && i-start >= 2 {
-			tokens = append(tokens, string(runes[start:i]))
-		}
-		start = -1
+		kept = append(kept, token)
 	}
-	if start >= 0 && len(runes)-start >= 2 {
-		tokens = append(tokens, string(runes[start:]))
+	return kept
+}
+
+// termFrequencies counts the terms of one field, the shape the kernel's
+// TermDoc wants. Length is the sum of the counts, so a document's length
+// counts exactly the terms the same function indexed.
+func termFrequencies(tokens []string) map[string]int {
+	counts := make(map[string]int, len(tokens))
+	for _, token := range tokens {
+		counts[token]++
 	}
-	return tokens
+	return counts
 }

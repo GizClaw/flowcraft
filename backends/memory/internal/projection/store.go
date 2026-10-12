@@ -790,6 +790,16 @@ func nilInterface(value any) bool {
 	}
 }
 
+// SelectorKey returns a stable key for the metadata a read-side selection
+// depends on. Callers that cache a selector-dependent value across requests
+// key it on this fingerprint together with the projection identity. It exists
+// next to MatchesRequest because the two must agree: they name the same
+// metadata keys, and a cached selection is only valid for the fingerprint it
+// was built under.
+func SelectorKey(metadata corememory.Metadata) string {
+	return chainDigest("selector", metadata["conversation_id"], metadata["dataset_ids"])
+}
+
 // MatchesRequest applies the read-side conversation/dataset selectors encoded
 // by the ContextProvider without weakening the hard Scope partition.
 func MatchesRequest(metadata corememory.Metadata, address component.CandidateAddress) (bool, error) {

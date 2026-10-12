@@ -4,10 +4,10 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
+	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 // Searcher exposes immutable summary records as a real retrieval lane.
@@ -32,10 +32,11 @@ func (searcher *Searcher) Search(ctx context.Context, request component.SearchRe
 	if generation := request.Metadata["generation_id"]; generation != "" && generation != manifest.GenerationID {
 		return []component.Candidate{}, nil
 	}
-	query := terms(request.Query)
+	query := corebm25.Tokenize(request.Query)
 	result := make([]component.Candidate, 0, len(records))
 	for _, record := range records {
-		score := lexicalScore(query, terms(record.Text+" "+strings.Join(record.Topics, " ")))
+		score := lexicalScore(query,
+			corebm25.Tokenize(record.Text+" "+strings.Join(record.Topics, " ")))
 		if score == 0 && len(query) > 0 {
 			continue
 		}
@@ -60,12 +61,11 @@ func (searcher *Searcher) Search(ctx context.Context, request component.SearchRe
 	return result, nil
 }
 
-func terms(value string) []string {
-	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-}
-
+// lexicalScore is the share of the query's terms the record mentions. Both
+// sides are tokenized with the shared kernel (core/utils/bm25), the same
+// splitter the projection lanes match with: ASCII word runs, and CJK as
+// single characters plus adjacent bigrams, so a Chinese query matches a
+// record that mentions it instead of tokenizing to one unmatchable run.
 func lexicalScore(query, text []string) float64 {
 	if len(query) == 0 {
 		return 1

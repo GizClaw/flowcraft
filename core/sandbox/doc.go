@@ -51,8 +51,9 @@
 //
 // WithDefaults fixes daemon-owned policy, AllowCommands adds a hard
 // command-name gate, and WithApproval adds a fail-closed human decision
-// tripwire. The recommended local composition lives in
-// core/sandbox.ComposeLocal.
+// tripwire; [Escalation] adds the second question a refusal needs:
+// whether this one command may leave the confine. The recommended
+// local composition lives in core/sandbox.ComposeLocal.
 //
 // # Sessions and Exec
 //
@@ -93,6 +94,7 @@
 //   - File journal engine: journal/ (core/sandbox/journal)
 //   - One-shot view: exec.go (Exec / ExecOptions / ExecResult)
 //   - Composition: decorator.go, approval.go, compose.go
+//   - Escalation: escalation.go (Denied / Escalator / Escalation)
 //   - Resource: local/resource.go (sandbox.Runner/local)
 //   - Wire transport: transport/ (replaceable Protocol + framed client/server)
 package sandbox

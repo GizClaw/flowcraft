@@ -17,6 +17,10 @@ retrieval, runtime orchestration, and voice. Source on
 - [Tool System](guides/tool.md) — `core/tool`: LLM function-calling
   contract, Registry / Catalog / Executor split, middleware chain,
   built-in tool adapters and the MCP bridge.
+- [Agent Skills](guides/skill.md) — `core/skill`: SKILL.md discovery
+  and parsing, BM25 ranking over names and descriptions, and the
+  per-turn `## Skills` section; lifecycle and authoring stay with the
+  caller.
 - [Event Bus](guides/event.md) — `core/event`: subject-routed
   publish/subscribe, in-process `MemoryBus`, host capability
   wiring, backpressure policies.
@@ -28,6 +32,10 @@ retrieval, runtime orchestration, and voice. Source on
 - [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
   command-hook runner, the frozen event vocabulary, the invocation
   contract, and the trust rules for plugin-contributed sources.
+- [Media & Attachments](guides/media.md) — `core/media`:
+  attachment classification, image normalization budgets, and the
+  `media.attachments` prepare hook; the vocabulary stays in
+  `core/message/media`.
 
 ### State and execution boundary
 

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/fusion"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/hydrate"
+	"github.com/GizClaw/flowcraft/backends/memory/retrieval/pack"
 	messagesource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
@@ -666,7 +666,7 @@ func (provider *Provider) recentCandidates(ctx context.Context, request corememo
 		used := 0
 		start := len(records)
 		for start > 0 {
-			count := textutil.ContentTokens(records[start-1].Message.Content)
+			count := pack.ContentTokens(records[start-1].Message.Content)
 			if used+count > maxTokens {
 				break
 			}

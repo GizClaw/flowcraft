@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
@@ -35,14 +34,16 @@ type TokenCounter interface {
 // Counter is retained as a source-compatible alias.
 type Counter = TokenCounter
 
-// RuneCounter estimates the token cost of content without a tokenizer:
-// ASCII runes cost a quarter token, other non-ASCII runes half a token, and
-// CJK/Hangul runes a full token, rounded up with a minimum of one token for
-// non-empty content. Pure ASCII keeps the historical ceil(runes/4) result.
+// RuneCounter is the default TokenCounter: EstimatedTokens over the content's
+// text, so packing, the retrieval budgets and the recent lane all bound the
+// same payload by the same number. It estimates cost without a tokenizer,
+// which keeps budget accounting independent of any provider's tokenizer; see
+// EstimatedTokens for the unit and for why it is not the tokenizer the
+// retrieval lanes match with.
 type RuneCounter struct{}
 
 func (RuneCounter) Count(_ context.Context, content coremessage.Content) (int, error) {
-	return textutil.ContentTokens(content), nil
+	return ContentTokens(content), nil
 }
 
 type ClassBudgets struct {

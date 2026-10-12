@@ -3,7 +3,6 @@ package retrieval
 import (
 	"unicode/utf8"
 
-	"github.com/GizClaw/flowcraft/backends/memory/internal/textutil"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/pack"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
@@ -59,7 +58,7 @@ func TruncateItemContent(item corememory.ContextItem, maxTokens, maxChars int) (
 		return item, false
 	}
 	text := item.Content.Text()
-	if (maxTokens <= 0 || textutil.EstimatedTokens(text) <= maxTokens) &&
+	if (maxTokens <= 0 || pack.EstimatedTokens(text) <= maxTokens) &&
 		(maxChars <= 0 || utf8.RuneCountInString(text) <= maxChars) {
 		return item, false
 	}
@@ -74,7 +73,7 @@ func TruncateItemContent(item corememory.ContextItem, maxTokens, maxChars int) (
 		}
 		bounded := textPart.Text
 		if remainingTokens > 0 {
-			cut, truncated := textutil.TruncateToTokens(bounded, remainingTokens)
+			cut, truncated := pack.TruncateToTokens(bounded, remainingTokens)
 			if truncated {
 				bounded, changed = cut, true
 			}
@@ -89,7 +88,7 @@ func TruncateItemContent(item corememory.ContextItem, maxTokens, maxChars int) (
 			bounded, changed = "", true
 		}
 		if maxTokens > 0 {
-			remainingTokens -= textutil.EstimatedTokens(bounded)
+			remainingTokens -= pack.EstimatedTokens(bounded)
 		}
 		if maxChars > 0 {
 			remainingChars -= utf8.RuneCountInString(bounded)
@@ -103,6 +102,6 @@ func TruncateItemContent(item corememory.ContextItem, maxTokens, maxChars int) (
 		return item, false
 	}
 	item.Content = content
-	item.TokenCount = textutil.EstimatedTokens(content.Text())
+	item.TokenCount = pack.EstimatedTokens(content.Text())
 	return item, true
 }
