@@ -9,6 +9,7 @@ use (
 	./craft
 	./driver/anthropic
 	./driver/bytedance
+	./driver/dashscope
 	./driver/minimax
 	./driver/openai
 	./examples/anvil
