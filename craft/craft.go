@@ -357,7 +357,10 @@ func (c *Craft) ReloadRuntime(
 	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
-	return c.reloadRuntimeLocked(ctx, key, nil, reason)
+	if _, err := c.reloadRuntimeLocked(ctx, key, nil, reason); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ReloadRuntimeWith is ReloadRuntime with fresh runtime options: the
@@ -380,14 +383,19 @@ func (c *Craft) ReloadRuntime(
 // only way to hand craft the new layers would be CloseRuntime followed
 // by OpenRuntime — the interruption of in-flight turns the generation
 // swap exists to avoid.
+//
+// The returned result carries the generation the swap installed, which
+// is what a caller logs or reports alongside the reload; a failed
+// reload returns no result, since no new generation is serving.
 func (c *Craft) ReloadRuntimeWith(
 	ctx context.Context,
 	key RuntimeKey,
 	opts RuntimeOptions,
 	reason Reason,
-) error {
+) (*runtime.ReloadResult, error) {
 	if ptr.IsNil(ctx) {
-		return errdefs.Validationf("craft: ReloadRuntimeWith context is required")
+		return nil, errdefs.Validationf(
+			"craft: ReloadRuntimeWith context is required")
 	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
@@ -403,16 +411,16 @@ func (c *Craft) reloadRuntimeLocked(
 	key RuntimeKey,
 	opts *RuntimeOptions,
 	reason Reason,
-) error {
+) (*runtime.ReloadResult, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return ErrCraftClosed
+		return nil, ErrCraftClosed
 	}
 	rt, ok := c.runtimes[key]
 	if !ok {
 		c.mu.Unlock()
-		return fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
+		return nil, fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
 	}
 	// A key in runtimes always has its record: the table and the record
 	// are written and deleted together under mu.
@@ -427,23 +435,24 @@ func (c *Craft) reloadRuntimeLocked(
 	if err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return err
+		return nil, err
 	}
 	reloadOptions, err := c.reloadOptions(*opts, externals, resolver)
 	if err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return err
+		return nil, err
 	}
-	if _, err := rt.Reload(ctx, doc, reloadOptions...); err != nil {
+	result, err := rt.Reload(ctx, doc, reloadOptions...)
+	if err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return fmt.Errorf("craft: reload runtime %q: %w", key, err)
+		return nil, fmt.Errorf("craft: reload runtime %q: %w", key, err)
 	}
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return c.rollbackReload(ctx, key, rt, record, recorded, err)
+		return nil, c.rollbackReload(ctx, key, rt, record, recorded, err)
 	}
 	c.mu.Lock()
 	// Write the generation and its inputs back only while that runtime is
@@ -462,7 +471,7 @@ func (c *Craft) reloadRuntimeLocked(
 	}
 	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadCompleted, RuntimeEvent{Key: key, Reason: reason})
-	return nil
+	return result, nil
 }
 
 // rollbackReload undoes a reload whose bind failed after the runtime had
@@ -528,7 +537,7 @@ func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
 	for _, key := range c.Runtimes() {
 		// A nil opts means the options the key holds, which every open
 		// key has; reloadRuntimeLocked reads them under mu.
-		if err := c.reloadRuntimeLocked(ctx, key, nil, reason); err != nil {
+		if _, err := c.reloadRuntimeLocked(ctx, key, nil, reason); err != nil {
 			errs = append(errs, fmt.Errorf("runtime %q: %w", key, err))
 		}
 	}

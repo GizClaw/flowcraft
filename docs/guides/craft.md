@@ -162,7 +162,7 @@ document's `runtime.external_deps`.
 | `Start(ctx)` | starts the host primitive server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
 | `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`. |
-| `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. |
+| `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. Returns that generation's `*runtime.ReloadResult`; a failed reload returns none. |
 | `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. A closed Craft has nothing to reload and returns nil. |
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |

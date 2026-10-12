@@ -400,8 +400,13 @@ deploy:
 		t.Fatal("the generation opened with the first overlay is not the one serving")
 	}
 
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, second, ReasonManual); err != nil {
+	result, err := c.ReloadRuntimeWith(ctx, DefaultKey, second, ReasonManual)
+	if err != nil {
 		t.Fatalf("ReloadRuntimeWith: %v", err)
+	}
+	if result == nil || result.GenerationID == 0 {
+		t.Fatalf("ReloadRuntimeWith result = %+v, want the generation it installed",
+			result)
 	}
 	if !has("gen2") || has("gen1") {
 		t.Fatal("ReloadRuntimeWith did not compose the generation with the options it was given")
@@ -422,7 +427,7 @@ deploy:
 		t.Fatal("ReloadAll reused the options the runtime was opened with")
 	}
 
-	if err := c.ReloadRuntimeWith(ctx, "missing", RuntimeOptions{},
+	if _, err := c.ReloadRuntimeWith(ctx, "missing", RuntimeOptions{},
 		ReasonManual); !errors.Is(err, ErrRuntimeNotFound) {
 		t.Fatalf("ReloadRuntimeWith(missing) = %v, want ErrRuntimeNotFound", err)
 	}
@@ -652,7 +657,7 @@ func TestReloadRuntimeWithReplacesRuntimeInputs(t *testing.T) {
 		t.Fatalf("generation 1 probe = %+v, want value one, name gen1", got)
 	}
 
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"),
+	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"),
 		ReasonManual); err != nil {
 		t.Fatalf("ReloadRuntimeWith: %v", err)
 	}
@@ -735,7 +740,7 @@ func TestReloadRuntimeWithRollbackRestoresInputs(t *testing.T) {
 
 	// The reload installs the replacement inputs and then fails to bind
 	// the generation it built with them.
-	err = c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"), ReasonManual)
+	_, err = c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"), ReasonManual)
 	if err == nil {
 		t.Fatal("ReloadRuntimeWith bound a generation its binder refused")
 	}
@@ -785,7 +790,7 @@ func TestReloadRuntimeWithReplacesHostDecorators(t *testing.T) {
 		t.Fatalf("decorator calls after open = %d/%d, want 1/0", first, second)
 	}
 
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
+	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
 		HostDecorators: []runtime.HostFactoryDecorator{decorator(&second)},
 	}, ReasonManual); err != nil {
 		t.Fatalf("ReloadRuntimeWith: %v", err)
@@ -804,7 +809,7 @@ func TestReloadRuntimeWithReplacesHostDecorators(t *testing.T) {
 
 	// Options without decorators remove the retained one instead of
 	// leaving it on the next generation.
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
+	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
 		ReasonManual); err != nil {
 		t.Fatalf("ReloadRuntimeWith without decorators: %v", err)
 	}
@@ -825,7 +830,7 @@ func TestReloadRuntimeWithReplacesHostDecorators(t *testing.T) {
 		t.Fatalf("OpenRuntime with two decorators = %v, want the one-decorator error",
 			err)
 	}
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
+	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
 		HostDecorators: two,
 	}, ReasonManual); err == nil || !strings.Contains(err.Error(), "a runtime holds one") {
 		t.Fatalf("ReloadRuntimeWith with two decorators = %v, want the one-decorator error",
@@ -878,7 +883,7 @@ func TestReloadFailedWithKeepsPreviousOptions(t *testing.T) {
 		Source:   resource.Source{File: "absent.yaml"},
 		BaseDir:  dir,
 	}}
-	err = c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
+	_, err = c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
 		Layers: missing,
 		Values: map[string]string{"name": "gen2"},
 		Externals: []deploy.ExternalResource{{
@@ -921,7 +926,7 @@ func TestReloadErrorsAfterClose(t *testing.T) {
 	if err := c.ReloadRuntime(ctx, "missing", ReasonManual); !errors.Is(err, ErrRuntimeNotFound) {
 		t.Fatalf("ReloadRuntime(missing) = %v, want ErrRuntimeNotFound", err)
 	}
-	if err := c.ReloadRuntimeWith(ctx, "missing", RuntimeOptions{},
+	if _, err := c.ReloadRuntimeWith(ctx, "missing", RuntimeOptions{},
 		ReasonManual); !errors.Is(err, ErrRuntimeNotFound) {
 		t.Fatalf("ReloadRuntimeWith(missing) = %v, want ErrRuntimeNotFound", err)
 	}
@@ -931,7 +936,7 @@ func TestReloadErrorsAfterClose(t *testing.T) {
 	if err := c.ReloadRuntime(ctx, DefaultKey, ReasonManual); !errors.Is(err, ErrCraftClosed) {
 		t.Fatalf("ReloadRuntime after Close = %v, want ErrCraftClosed", err)
 	}
-	if err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
+	if _, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{},
 		ReasonManual); !errors.Is(err, ErrCraftClosed) {
 		t.Fatalf("ReloadRuntimeWith after Close = %v, want ErrCraftClosed", err)
 	}
