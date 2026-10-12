@@ -163,7 +163,7 @@ document's `runtime.external_deps`.
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
 | `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`. |
 | `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. |
-| `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. |
+| `ReloadAll(ctx, reason)` | reloads every open runtime; failures are joined with their key. A closed Craft has nothing to reload and returns nil. |
 | `DrainRuntime` / `Drain` | wait for active turns to finish naturally (one runtime / all). |
 | `CloseRuntime(ctx, key)` | drains, closes and removes one runtime. |
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
@@ -886,6 +886,19 @@ func main() {
 		log.Fatal(err)
 	}
 	if _, err := c.OpenRuntime(ctx, craft.DefaultKey, craft.RuntimeOptions{}); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("craft %s running", def.Craft.ID)
+}
+```
+
+Copy `assets/minimal-craft` from the `flowcraft-config` skill for a fuller
+starting point: an inline deploy with one agent, explicit `ui`, `plugins`
+and `host_tools` sections, and a sample plugin directory. For a runnable host
+application that exercises keyed runtimes, per-runtime values and layers, tools,
+reload, plugin hot-plug and the host primitives, see `examples/anvil` and its
+README.
+s{}); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("craft %s running", def.Craft.ID)

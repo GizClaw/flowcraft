@@ -40,16 +40,17 @@ type Craft struct {
 	// ReloadRuntime, CloseRuntime and Close. It only ever guards the
 	// table below; binder callbacks run after the mutation and outside
 	// it.
-	mu          sync.Mutex
-	started     bool
-	closed      bool
-	opening     map[RuntimeKey]struct{}
-	runtimes    map[RuntimeKey]*runtime.Runtime
-	runtimeOpts map[RuntimeKey]RuntimeOptions
-	// runtimeDocs holds, per key, the document whose generation is bound
-	// and serving. It is what a reload that fails after the runtime
-	// already swapped generations is rolled back to.
-	runtimeDocs map[RuntimeKey]deploy.Document
+	mu       sync.Mutex
+	started  bool
+	closed   bool
+	opening  map[RuntimeKey]struct{}
+	runtimes map[RuntimeKey]*runtime.Runtime
+	// runtimeRecords holds, per key, what craft knows about the
+	// generation that key is serving: the document it is bound to, the
+	// options it was composed with and the inputs it was built with.
+	// They move together, and they are what a reload that fails after
+	// the runtime already swapped generations is rolled back to.
+	runtimeRecords map[RuntimeKey]runtimeRecord
 
 	// startMu serializes Start against itself. Every other mutation is
 	// guarded by mu alone; Start is the one that runs long enough (it
@@ -67,6 +68,20 @@ type Craft struct {
 	// SyncAgents last applied for each agent name: the applied set the
 	// next pass diffs against. Guarded by lifecycleMu.
 	agentRevs map[RuntimeKey]map[string]string
+}
+
+// runtimeRecord is the state craft keeps for one open key: the document
+// whose generation is bound and serving, the options it was composed
+// with, and the inputs it was built with. The inputs are kept because a
+// reload can replace them as well: the core runtime retains them once
+// its generation swap commits, so the rollback of a reload whose bind
+// fails has to hand the previous ones back, or the restored document
+// would serve the failed call's values and externals.
+type runtimeRecord struct {
+	doc       deploy.Document
+	opts      RuntimeOptions
+	externals []deploy.ExternalResource
+	resolver  *resource.ReferenceResolver
 }
 
 // New validates the definition and builds the shared services. No
@@ -120,18 +135,17 @@ func New(def Definition, opts Options) (*Craft, error) {
 
 	bus := event.NewMemoryBus()
 	c := &Craft{
-		def:         def,
-		opts:        opts,
-		caps:        caps,
-		registry:    registry,
-		bus:         bus,
-		router:      event.NewRouter(bus),
-		plugins:     opts.Plugins,
-		opening:     make(map[RuntimeKey]struct{}),
-		runtimes:    make(map[RuntimeKey]*runtime.Runtime),
-		runtimeOpts: make(map[RuntimeKey]RuntimeOptions),
-		runtimeDocs: make(map[RuntimeKey]deploy.Document),
-		agentRevs:   make(map[RuntimeKey]map[string]string),
+		def:            def,
+		opts:           opts,
+		caps:           caps,
+		registry:       registry,
+		bus:            bus,
+		router:         event.NewRouter(bus),
+		plugins:        opts.Plugins,
+		opening:        make(map[RuntimeKey]struct{}),
+		runtimes:       make(map[RuntimeKey]*runtime.Runtime),
+		runtimeRecords: make(map[RuntimeKey]runtimeRecord),
+		agentRevs:      make(map[RuntimeKey]map[string]string),
 	}
 	if c.plugins != nil {
 		uiRegistry, err := ui.NewRegistry(c.plugins, c)
@@ -305,16 +319,19 @@ func (c *Craft) OpenRuntime(
 	}
 	delete(c.opening, key)
 	c.runtimes[key] = rt
-	c.runtimeOpts[key] = opts
-	c.runtimeDocs[key] = doc
+	c.runtimeRecords[key] = runtimeRecord{
+		doc:       doc,
+		opts:      opts,
+		externals: externals,
+		resolver:  resolver,
+	}
 	c.mu.Unlock()
 
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		_ = rt.Close()
 		c.mu.Lock()
 		delete(c.runtimes, key)
-		delete(c.runtimeOpts, key)
-		delete(c.runtimeDocs, key)
+		delete(c.runtimeRecords, key)
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -348,8 +365,14 @@ func (c *Craft) ReloadRuntime(
 // externals, host decorators — and once it is serving and bound, opts
 // become the options the key holds, so a later ReloadRuntime or
 // ReloadAll recomposes with them. A reload that fails leaves the key on
-// the options it was serving with, exactly as it leaves the generation,
-// and reports the same errors as ReloadRuntime.
+// the options and inputs it was serving with, exactly as it leaves the
+// generation, and reports the same errors as ReloadRuntime: a bind that
+// fails after the runtime has already swapped generations is rolled back
+// to the recorded document rebuilt with the recorded inputs. If even
+// that rollback fails, the error says which half is live — the runtime
+// then serves the unbound generation the failed call built while craft's
+// records still describe the previous one, so the next reload composes
+// from that document.
 //
 // It exists because the per-runtime inputs are not frozen at open time
 // for every application: a shell that owns a deploy overlay on disk
@@ -391,13 +414,13 @@ func (c *Craft) reloadRuntimeLocked(
 		c.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
 	}
+	// A key in runtimes always has its record: the table and the record
+	// are written and deleted together under mu.
+	record, recorded := c.runtimeRecords[key]
 	if opts == nil {
-		// A key in runtimes always has its options: both maps are
-		// written and deleted together under mu.
-		stored := c.runtimeOpts[key]
+		stored := record.opts
 		opts = &stored
 	}
-	previous, havePrevious := c.runtimeDocs[key]
 	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadStarted, RuntimeEvent{Key: key, Reason: reason})
 	doc, externals, resolver, err := c.compose(ctx, key, *opts)
@@ -420,17 +443,22 @@ func (c *Craft) reloadRuntimeLocked(
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return c.rollbackReload(ctx, key, rt, previous, havePrevious, err)
+		return c.rollbackReload(ctx, key, rt, record, recorded, err)
 	}
 	c.mu.Lock()
-	// Write the generation and its options back only while that runtime
-	// is the one this reload was for: a concurrent CloseRuntime (or
+	// Write the generation and its inputs back only while that runtime is
+	// the one this reload was for: a concurrent CloseRuntime (or
 	// Close) removed the key, and a reopened key must not inherit the
-	// reload's state. Both maps are written together, and Close swaps
-	// them for fresh ones, so a closed Craft is left alone too.
+	// reload's state. The whole record is replaced at once, and Close
+	// swaps the table for a fresh one, so a closed Craft is left alone
+	// too.
 	if !c.closed && c.runtimes[key] == rt {
-		c.runtimeDocs[key] = doc
-		c.runtimeOpts[key] = *opts
+		c.runtimeRecords[key] = runtimeRecord{
+			doc:       doc,
+			opts:      *opts,
+			externals: externals,
+			resolver:  resolver,
+		}
 	}
 	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadCompleted, RuntimeEvent{Key: key, Reason: reason})
@@ -438,26 +466,34 @@ func (c *Craft) reloadRuntimeLocked(
 }
 
 // rollbackReload undoes a reload whose bind failed after the runtime had
-// already committed the new generation, by reloading the document that
-// was bound and serving before the call. A caller that sees an error
-// then still has the generation it had, which is what "failed reload"
-// has to mean; if even the rollback fails, the error says exactly which
-// half is live so nobody assumes the previous generation is serving.
+// already committed the new generation, by reloading the recorded
+// document — with the inputs that generation was built with, since the
+// failed call's are the ones retained right now. A caller that sees an
+// error then still has the generation it had, which is what "failed
+// reload" has to mean; if even the rollback fails, the error says
+// exactly which half is live so nobody assumes the previous generation
+// is serving.
 func (c *Craft) rollbackReload(
 	ctx context.Context,
 	key RuntimeKey,
 	rt *runtime.Runtime,
-	previous deploy.Document,
-	havePrevious bool,
+	record runtimeRecord,
+	recorded bool,
 	cause error,
 ) error {
 	failure := fmt.Errorf("craft: reload runtime %q: bind: %w", key, cause)
-	if !havePrevious {
+	if !recorded {
 		return fmt.Errorf(
 			"%w (the new generation is serving but unbound; no previous "+
 				"document is recorded to roll back to)", failure)
 	}
-	if _, err := rt.Reload(ctx, previous); err != nil {
+	options, err := c.reloadOptions(record.opts, record.externals, record.resolver)
+	if err != nil {
+		return fmt.Errorf(
+			"%w (rolling back to the previous generation failed: %v; "+
+				"the new generation is serving but unbound)", failure, err)
+	}
+	if _, err := rt.Reload(ctx, record.doc, options...); err != nil {
 		return fmt.Errorf(
 			"%w (rolling back to the previous generation failed: %v; "+
 				"the new generation is serving but unbound)", failure, err)
@@ -476,6 +512,12 @@ func (c *Craft) rollbackReload(
 // failures are aggregated with the runtime key. It holds the lifecycle
 // lock across the whole pass, so neither a single-runtime reload nor an
 // agent sync can interleave with it.
+//
+// It reports no error on a closed Craft: closing empties the runtime
+// table, so there is nothing left to reload and the pass is a no-op —
+// unlike the single-key entry points, which are keyed and report
+// ErrCraftClosed. A shell that wants to know whether the pass reached
+// any runtime can ask Runtimes first.
 func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
 	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("craft: ReloadAll context is required")
@@ -530,8 +572,7 @@ func (c *Craft) CloseRuntime(ctx context.Context, key RuntimeKey) error {
 	rt, ok := c.runtimes[key]
 	if ok {
 		delete(c.runtimes, key)
-		delete(c.runtimeOpts, key)
-		delete(c.runtimeDocs, key)
+		delete(c.runtimeRecords, key)
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -636,8 +677,7 @@ func (c *Craft) Close() error {
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	runtimes := c.runtimes
 	c.runtimes = make(map[RuntimeKey]*runtime.Runtime)
-	c.runtimeOpts = make(map[RuntimeKey]RuntimeOptions)
-	c.runtimeDocs = make(map[RuntimeKey]deploy.Document)
+	c.runtimeRecords = make(map[RuntimeKey]runtimeRecord)
 	c.mu.Unlock()
 
 	var errs []error

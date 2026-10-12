@@ -679,6 +679,89 @@ func TestReloadRuntimeWithReplacesRuntimeInputs(t *testing.T) {
 	}
 }
 
+// TestReloadRuntimeWithRollbackRestoresInputs covers the rollback of a
+// reload that carried replacement inputs: the runtime swaps the new
+// generation in before the bind, so the core side has already retained
+// the replacement externals and resolver when the bind fails. The
+// restored generation therefore has to be rebuilt with the inputs the
+// previous one was serving with — not with the failed call's, which is
+// what a rollback that reloads the document alone would leave serving.
+func TestReloadRuntimeWithRollbackRestoresInputs(t *testing.T) {
+	dir := t.TempDir()
+	binder := &binderCapability{failAt: 2, failErr: errors.New("registry is locked")}
+	c, ctx := reloadTestCraft(t, dir, testCapability{}, reloadProbeCapability{}, binder)
+	overlay := "resources:\n  probe:\n    kind: test.ReloadProbe\n" +
+		"    settings:\n      name: \"${craft:name}\"\n" +
+		"    deps:\n      db: db\n"
+	if err := os.WriteFile(filepath.Join(dir, "overlay.yaml"),
+		[]byte(overlay), 0o600); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+	layers := []deploy.Layer{{
+		Name:     "overlay",
+		Priority: 30,
+		Source:   resource.Source{File: "overlay.yaml"},
+		BaseDir:  dir,
+	}}
+	options := func(name, db string) RuntimeOptions {
+		return RuntimeOptions{
+			Layers: layers,
+			Values: map[string]string{"name": name},
+			Externals: []deploy.ExternalResource{{
+				External: deploy.External{Name: "db", Contract: "db.Pool"},
+				Value:    db,
+			}},
+		}
+	}
+	rt, err := c.OpenRuntime(ctx, DefaultKey, options("gen1", "one"))
+	if err != nil {
+		t.Fatalf("OpenRuntime: %v", err)
+	}
+	probe := func() reloadProbe {
+		t.Helper()
+		value, ok := rt.Resource("probe")
+		if !ok {
+			t.Fatal("probe resource missing")
+		}
+		got, ok := value.(reloadProbe)
+		if !ok {
+			t.Fatalf("probe resource is %T", value)
+		}
+		return got
+	}
+	if got := probe(); got.Value != "one" || got.Name != "gen1" {
+		t.Fatalf("generation 1 probe = %+v, want value one, name gen1", got)
+	}
+
+	// The reload installs the replacement inputs and then fails to bind
+	// the generation it built with them.
+	err = c.ReloadRuntimeWith(ctx, DefaultKey, options("gen2", "two"), ReasonManual)
+	if err == nil {
+		t.Fatal("ReloadRuntimeWith bound a generation its binder refused")
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("ReloadRuntimeWith = %v, want it to report the rollback", err)
+	}
+	if got := probe(); got.Value != "one" || got.Name != "gen1" {
+		t.Fatalf("probe after the rolled-back reload = %+v, want the inputs "+
+			"the previous generation was serving with", got)
+	}
+
+	// The rollback re-retained them too: the next reload rebuilds with
+	// the previous generation's inputs, so the failed call cannot leak
+	// into any later generation either.
+	if err := c.ReloadRuntime(ctx, DefaultKey, ReasonManual); err != nil {
+		t.Fatalf("ReloadRuntime: %v", err)
+	}
+	if got := probe(); got.Value != "one" || got.Name != "gen1" {
+		t.Fatalf("probe after a plain reload = %+v, want the previous "+
+			"generation's inputs", got)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestReloadRuntimeWithReplacesHostDecorators covers the decorator
 // channels of a reload: the options' decorators are the ones the new
 // generation is decorated with, a plain reload re-applies them, and
