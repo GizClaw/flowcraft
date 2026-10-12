@@ -12,7 +12,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.5.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.5.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 | `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
@@ -20,6 +20,12 @@ Release PR before their tags are published.
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.5.2` - 2026-10-12
+
+### Changed
+
+- fix(core/runtime): the reload contract now documents what a reload actually does — ReloadResult's fields state the id allocation rule (ids are allocated per attempt, a reload that fails before the swap consumes one too, so they are monotonic but not contiguous and PreviousID need not equal the id an earlier successful call reported; a caller correlates by the ids it is told, never by counting), that PreviousID is 0 only when there was no generation to replace, and that ReboundAgents and DrainedAgents are sorted by name and name the dynamic agents re-bound against the new generation and the deployed agents the new document removed whose sessions were drained, while Reload's docs say the returned result names what the committed swap did — the generation now serving, the one it replaced, and the agents it re-bound and drained — and that an aborted reload returns no result; the change is comment-only, and the patch exists because the struct is now advertised through craft's ReloadRuntimeWith return value — the rule a caller correlates by has to live on the type.
 
 ## `core/v0.5.1` - 2026-10-12
 
