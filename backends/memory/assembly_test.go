@@ -311,6 +311,50 @@ func TestCommitTurnAndRecentContext(t *testing.T) {
 	}
 }
 
+// TestObservedAtAnchorReachesTheAnswerSideEvidence wires the switch through the
+// factory's retrieval assembly: with observed_at_anchor on, the raw message
+// items a context request serves read "[anchor] text"; with the default
+// settings the same conversation serves bare text.
+func TestObservedAtAnchorReachesTheAnswerSideEvidence(t *testing.T) {
+	ctx := context.Background()
+	const anchor = "2026-09-18T12:30:00Z"
+	contextText := func(t *testing.T, settings string) string {
+		t.Helper()
+		assembly, _ := newTestAssembly(t, settings)
+		t.Cleanup(func() { _ = assembly.Close() })
+		if err := assembly.CommitTurn(ctx, corememory.Turn{
+			Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "run-1",
+			Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "hello")},
+			Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := assembly.Context(ctx, corememory.ContextRequest{
+			Scope: testScope(), ConversationID: "conv-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Items) != 1 {
+			t.Fatalf("items = %d, want 1", len(result.Items))
+		}
+		return result.Items[0].Content.Text()
+	}
+	const anchoredSettings = `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "recent": {"max_items": 8, "max_tokens": 4096},
+  "interval": "0",
+  "observed_at_anchor": true
+}`
+	if got, want := contextText(t, anchoredSettings), "["+anchor+"] hello"; got != want {
+		t.Fatalf("anchored context text = %q, want %q", got, want)
+	}
+	if got := contextText(t, testSettings); got != "hello" {
+		t.Fatalf("default context text = %q, want it bare", got)
+	}
+}
+
 // A host that imports a conversation keeps the source's own identifiers on the
 // messages it commits, and they come back on the recent items: that is the
 // channel the eval harness traces a recalled item back to a dataset turn with,

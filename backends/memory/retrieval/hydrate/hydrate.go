@@ -32,6 +32,9 @@ type Composite struct {
 	Facts     *factview.FactStore
 	Chunks    *documentview.DocumentViewStore
 	Summaries *summaryview.SummaryStore
+	// ObservedAtAnchor renders each raw message's observation anchor as a text
+	// prefix on the hydrated content (memory.Settings.ObservedAtAnchor).
+	ObservedAtAnchor bool
 }
 
 var _ Hydrator = (*Composite)(nil)
@@ -75,8 +78,12 @@ func (hydrator *Composite) Hydrate(ctx context.Context, scope corememory.Scope, 
 		if candidate.Source != source {
 			return corememory.ContextItem{}, errors.New("hydrate: message candidate provenance is stale or invalid")
 		}
+		content := record.Message.Content.Clone()
+		if hydrator.ObservedAtAnchor {
+			content = record.AnchoredContent(content)
+		}
 		return corememory.ContextItem{
-			ID: record.ID, Kind: corememory.ContextRawMessage, Content: record.Message.Content.Clone(),
+			ID: record.ID, Kind: corememory.ContextRawMessage, Content: content,
 			Address: contextAddress(address), Score: candidate.Score, Sources: []corememory.SourceRef{source},
 			Metadata:    record.Metadata.Clone(),
 			MessageRole: record.Message.Role, Sequence: record.Seq, Timestamp: record.CreatedAt,

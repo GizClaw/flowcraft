@@ -268,8 +268,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	providerConfig := retrieval.ProviderConfig{
 		Fusion:   fusor,
 		Messages: messages,
-		Hydrator: &hydrate.Composite{Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries},
-		Packer:   pack.New(nil),
+		Hydrator: &hydrate.Composite{
+			Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries,
+			ObservedAtAnchor: settings.ObservedAtAnchor,
+		},
+		Packer: pack.New(nil),
 		// The fact store owns the published generation, and the read plane
 		// resolves through it: the summary branch labels every record with the
 		// generation that published it, so a request that names the active one
@@ -279,9 +282,10 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 			MaxItems:  settings.Recent.MaxItems,
 			MaxTokens: settings.Recent.MaxTokens,
 		},
-		SourceQuotes:  settings.Retrieval.SourceQuotes,
-		ExpandParents: true,
-		ScoreAdjuster: maintainStore,
+		SourceQuotes:     settings.Retrieval.SourceQuotes,
+		ObservedAtAnchor: settings.ObservedAtAnchor,
+		ExpandParents:    true,
+		ScoreAdjuster:    maintainStore,
 	}
 	if settings.Retrieval.Rerank && !settings.Generate.isZero() {
 		reranker, rerankErr := rerank.New(engine, settings.Generate.ref())

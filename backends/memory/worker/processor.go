@@ -940,7 +940,7 @@ func chatSource(commit msgsource.Commit, generation string, observedAtAnchor boo
 			text.WriteByte('\n')
 		}
 		if observedAtAnchor {
-			if anchor := strings.TrimSpace(record.Metadata[corememory.ObservedAtMetadataKey]); anchor != "" {
+			if anchor := record.ObservedAt(); anchor != "" {
 				text.WriteByte('[')
 				text.WriteString(anchor)
 				text.WriteString("] ")
