@@ -146,6 +146,13 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 	if eventTime.IsZero() {
 		eventTime = now
 	}
+	ingestedAt := request.IngestedAt
+	if ingestedAt.IsZero() {
+		// Only a direct writer without a source commit leaves this empty; the
+		// derivation worker passes the commit's time, so re-derived history
+		// keeps its own chronology instead of the rebuild's.
+		ingestedAt = now
+	}
 	sourceDigest := strings.TrimSpace(request.SourceDigest)
 	if sourceDigest == "" {
 		sourceDigest = digestSources(request.Provenance)
@@ -159,7 +166,7 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 		Scope: request.Scope, ConversationID: request.ConversationID,
 		Text: text, Content: factTextContent(text), Entities: NormalizeEntities(request.Entities),
 		Predicate: NormalizeText(request.Predicate), TemporalDetail: NormalizeText(request.TemporalDetail),
-		EventTime: eventTime, LinkedMemoryIDs: normalizeIDs(request.LinkedMemoryIDs, request.ID),
+		EventTime: eventTime, IngestedAt: ingestedAt, LinkedMemoryIDs: normalizeIDs(request.LinkedMemoryIDs, request.ID),
 		Provenance:   append([]corememory.SourceRef(nil), request.Provenance...),
 		SourceDigest: sourceDigest, TransformSignature: transformSignature,
 		Metadata: request.Metadata.Clone(), CreatedAt: now,

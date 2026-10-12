@@ -171,6 +171,41 @@ func TestFactStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	}
 }
 
+// TestFactStoreKeepsEventAndIngestionTimeApart pins the two as separate
+// queryable values: an explicit ingestion time survives the store untouched
+// and stays distinct from the event time, while a request that carries neither
+// falls back to the store's clock like its event_time sibling.
+func TestFactStoreKeepsEventAndIngestionTimeApart(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	store := newFactStore(t, newTestWorkspace(t), WithClock(func() time.Time { return now }))
+	eventTime := time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)
+	ingestedAt := time.Date(2026, 9, 15, 9, 30, 0, 0, time.UTC)
+	dated := factRequest("dated", "dated text")
+	dated.EventTime = eventTime
+	dated.IngestedAt = ingestedAt
+	if _, err := store.Add(ctx, dated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add(ctx, factRequest("stamped", "stamped text")); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := store.List(ctx, factScope, "conversation", ListOptions{})
+	if err != nil || len(facts) != 2 {
+		t.Fatalf("list = %#v, %v", facts, err)
+	}
+	byID := make(map[string]Fact, len(facts))
+	for _, fact := range facts {
+		byID[fact.ID] = fact
+	}
+	if got := byID["dated"]; !got.EventTime.Equal(eventTime) || !got.IngestedAt.Equal(ingestedAt) {
+		t.Fatalf("dated times = %v / %v, want %v / %v", got.EventTime, got.IngestedAt, eventTime, ingestedAt)
+	}
+	if got := byID["stamped"]; !got.EventTime.Equal(now) || !got.IngestedAt.Equal(now) {
+		t.Fatalf("stamped times = %v / %v, want the store clock", got.EventTime, got.IngestedAt)
+	}
+}
+
 func factRequest(id, text string) AddRequest {
 	return AddRequest{
 		ID: id, Generation: factGeneration, Scope: factScope, ConversationID: "conversation",

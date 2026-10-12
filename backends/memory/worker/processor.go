@@ -984,13 +984,18 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact, genera
 	metadata := addressMetadata(artifact.Metadata, corememory.ContextFact, commit.ConversationID, "", "", artifact.ID)
 	addScopeMetadata(metadata, commit.Scope)
 	metadata["commit_version"] = strconv.FormatUint(commit.Version, 10)
+	ingestedAt := commit.CreatedAt.UTC()
 	eventTime, _ := time.Parse(time.RFC3339Nano, artifact.Metadata["event_time"])
 	if eventTime.IsZero() {
 		// A deriver that could not date the fact leaves event_time unset; the
-		// fact view requires one, and the commit's creation time is the only
-		// timestamp we actually know. Dating it 1970 would make it look
-		// simultaneous with every other undated fact and decay it to nothing.
-		eventTime = commit.CreatedAt.UTC()
+		// commit's creation time is the only timestamp we actually know. The
+		// fact keeps it as its ingestion time and marks the event time as an
+		// inference, so a reader can tell a dated fact from an undated one
+		// instead of reading the fallback as a stated date. Dating it 1970
+		// would make it look simultaneous with every other undated fact and
+		// decay it to nothing.
+		eventTime = ingestedAt
+		metadata[factview.EventTimeInferredMetadataKey] = "true"
 	}
 	return factview.AddRequest{
 		ID: artifact.ID, Generation: generation, Scope: commit.Scope, ConversationID: commit.ConversationID,
@@ -998,7 +1003,7 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact, genera
 		CanonicalHash: artifact.Metadata["canonical_hash"],
 		Entities:      decodeMetadataStrings(artifact.Metadata["entities"]),
 		Predicate:     artifact.Metadata["predicate"], TemporalDetail: artifact.Metadata["temporal_detail"],
-		EventTime: eventTime, LinkedMemoryIDs: decodeMetadataStrings(artifact.Metadata["linked_memory_ids"]),
+		EventTime: eventTime, IngestedAt: ingestedAt, LinkedMemoryIDs: decodeMetadataStrings(artifact.Metadata["linked_memory_ids"]),
 		SourceDigest:       artifact.Metadata["source_digest"],
 		TransformSignature: artifact.Metadata["transform_signature"],
 	}
