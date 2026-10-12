@@ -98,9 +98,21 @@ func WithReloadResultHostFactory(decorator ResultHostFactoryDecorator) ReloadOpt
 
 // ReloadResult describes one successful generation swap.
 type ReloadResult struct {
-	GenerationID  uint64
-	PreviousID    uint64
+	// GenerationID is the generation serving after the swap. Ids are
+	// allocated per attempt — a reload that fails before the swap
+	// consumes one too — so they are monotonic but not contiguous:
+	// PreviousID need not equal the id an earlier successful call
+	// reported, and a caller correlates by the ids it is told, never by
+	// counting.
+	GenerationID uint64
+	// PreviousID is the generation GenerationID replaced, or 0 when the
+	// runtime had no generation to replace.
+	PreviousID uint64
+	// ReboundAgents names the dynamic agents re-bound against the new
+	// generation, sorted by name.
 	ReboundAgents []string
+	// DrainedAgents names the deployed agents the new document removed,
+	// whose sessions were drained, sorted by name.
 	DrainedAgents []string
 }
 
@@ -121,6 +133,10 @@ type ReloadResult struct {
 //  7. Atomically swaps the manager epoch and the runtime's current
 //     generation; the old generation retires and closes once its
 //     in-flight turns drain.
+//
+// The returned result names what the committed swap did: the generation
+// now serving, the one it replaced, and the agents it re-bound and
+// drained. An aborted reload returns no result.
 //
 // The generation can be built with replacement inputs through
 // ReloadOptions (WithReloadExternals, WithReloadResolver,
