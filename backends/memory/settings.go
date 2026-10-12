@@ -51,6 +51,14 @@ type Settings struct {
 	Lanes      LanesSettings     `json:"lanes,omitempty"`
 	Retrieval  RetrievalSettings `json:"retrieval,omitempty"`
 	Projection string            `json:"projection,omitempty"`
+	// ObservedAtAnchor renders each message's observed_at anchor as a text
+	// prefix in the derivation source, so the extractor can resolve relative
+	// time references against the time the message was actually observed.
+	// Only a message that carries the anchor gets the prefix; one without it
+	// keeps its untimestamped text rather than borrowing the commit time,
+	// which over a bulk import would degrade to an "import day" label. It
+	// changes what the extractor reads and is off by default.
+	ObservedAtAnchor bool `json:"observed_at_anchor,omitempty"`
 	// Derive tunes the derivation scan itself. Concurrency only changes the
 	// schedule (how many conversations of a scope are derived at once), never
 	// what is derived, so it stays out of the policy digest.

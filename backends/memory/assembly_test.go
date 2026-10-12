@@ -642,6 +642,62 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
 		t.Fatalf("projection namespace must change the digest (err=%v)", err)
 	}
+	derivation = base
+	derivation.ObservedAtAnchor = true
+	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
+		t.Fatalf("the observed_at anchor must change the digest (err=%v)", err)
+	}
+}
+
+// sourceRecorder records the derivation source of every commit it derives.
+type sourceRecorder struct{ sources []string }
+
+func (recorder *sourceRecorder) Derive(_ context.Context, input component.Artifact) ([]component.Artifact, error) {
+	recorder.sources = append(recorder.sources, input.Content.Text())
+	return nil, nil
+}
+
+// TestObservedAtAnchorReachesTheDerivationSource wires the switch through the
+// factory: with observed_at_anchor on, a committed message carrying the
+// observed_at metadata reaches the deriver as "[anchor] role: content"; with
+// the default settings the same turn derives from bare text and the metadata
+// stays invisible, as it always was.
+func TestObservedAtAnchorReachesTheDerivationSource(t *testing.T) {
+	ctx := context.Background()
+	const anchor = "2026-09-18T12:30:00Z"
+	derive := func(t *testing.T, settings string) string {
+		t.Helper()
+		recorder := &sourceRecorder{}
+		assembly, _ := newTestAssemblyWith(t, settings, WithDeriver(recorder), WithDeriverVersion("source-recorder-v1"))
+		t.Cleanup(func() { _ = assembly.Close() })
+		if err := assembly.CommitTurn(ctx, corememory.Turn{
+			Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "run-1",
+			Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "we talked about beverages")},
+			Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := assembly.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(recorder.sources) != 1 {
+			t.Fatalf("derive calls = %d, want 1", len(recorder.sources))
+		}
+		return recorder.sources[0]
+	}
+	const anchoredSettings = `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "recent": {"max_items": 8, "max_tokens": 4096},
+  "interval": "0",
+  "observed_at_anchor": true
+}`
+	if got, want := derive(t, anchoredSettings), "["+anchor+"] user: we talked about beverages"; got != want {
+		t.Fatalf("anchored derivation source = %q, want %q", got, want)
+	}
+	if got, want := derive(t, testSettings), "user: we talked about beverages"; got != want {
+		t.Fatalf("default derivation source = %q, want %q", got, want)
+	}
 }
 
 // TestCustomDeriverChangesPolicyDigest pins the gap the review found: the

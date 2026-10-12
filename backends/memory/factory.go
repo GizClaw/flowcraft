@@ -303,7 +303,8 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Facts: facts, Deriver: deriver, KnowledgeDeriver: chunker, Compactor: compactor,
 		Indexers: indexers, Checkpoints: workerCheckpoints,
 		Projection: settings.Projection, PolicyDigest: digest,
-		Concurrency: settings.Derive.Concurrency,
+		ObservedAtAnchor: settings.ObservedAtAnchor,
+		Concurrency:      settings.Derive.Concurrency,
 	})
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: processor: %w", err))
@@ -559,14 +560,18 @@ type policyInput struct {
 	Projection string          `json:"projection,omitempty"`
 	Deriver    string          `json:"deriver,omitempty"`
 	Algorithms []string        `json:"algorithms,omitempty"`
+	// ObservedAtAnchor changes the text the extractor reads, so it belongs to
+	// the derivation identity. It marshals away when off (the default), so
+	// adding the field leaves existing watermarks where they are.
+	ObservedAtAnchor bool `json:"observed_at_anchor,omitempty"`
 }
 
 func policyDigest(settings Settings, deriverPolicy string) (string, error) {
 	encoded, err := json.Marshal(policyInput{
 		Generate: settings.Generate, Embed: settings.Embed,
 		Fact: settings.Fact, Summary: settings.Summary, Chunk: settings.Chunk,
-		Projection: settings.Projection,
-		Deriver:    deriverPolicy,
+		Projection: settings.Projection, ObservedAtAnchor: settings.ObservedAtAnchor,
+		Deriver: deriverPolicy,
 		Algorithms: []string{
 			chat.AlgorithmVersion, chat.LinkAlgorithmVersion, chat.CanonicalAlgorithmVersion,
 			knowledge.AlgorithmVersion, summaryderive.AlgorithmVersion,
