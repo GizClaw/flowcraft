@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -280,6 +281,19 @@ scope:
 		turn.Messages[0].Content.Text() != "hello" ||
 		turn.Messages[1].Content.Text() != "world" {
 		t.Fatalf("turn messages = %+v", turn.Messages)
+	}
+	// The finalizer knows one observation time: when it ran. It stamps
+	// that instead of leaving derivation to fall back on ingest time.
+	anchor := turn.Metadata[sdkmemory.ObservedAtMetadataKey]
+	if anchor == "" {
+		t.Fatalf("committed turn carries no observed_at: %+v", turn.Metadata)
+	}
+	stamped, err := time.Parse(time.RFC3339Nano, anchor)
+	if err != nil {
+		t.Fatalf("observed_at %q: %v", anchor, err)
+	}
+	if delta := time.Since(stamped); delta < 0 || delta > time.Minute {
+		t.Fatalf("observed_at %v is not commit time", stamped)
 	}
 }
 

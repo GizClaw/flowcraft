@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -204,6 +205,13 @@ func (TurnCommitter) New(ctx context.Context, input resource.Input) (any, error)
 		return sink.CommitTurn(ctx, sdkmemory.Turn{
 			Scope: settings.Scope.scope(), ConversationID: conversationID,
 			IdempotencyKey: identity.RunID, Messages: messages,
+			// The finalizer commits the messages of a just-finished run, so
+			// commit time is the arrival time the host actually knows; the
+			// stamp is what a reader anchors on rather than the storage
+			// time of the record.
+			Metadata: sdkmemory.Metadata{
+				sdkmemory.ObservedAtMetadataKey: time.Now().UTC().Format(time.RFC3339Nano),
+			},
 		})
 	}), nil
 }
