@@ -62,6 +62,16 @@ type Options struct {
 	Paths          Paths
 	// Lock enables the DataDir+Profile single-instance lock.
 	Lock bool
+	// LockPath overrides the lock file the single-instance lock is taken
+	// on. Empty derives it from Paths.DataDir and Profile
+	// (craft.lock / craft-<profile>.lock). A shell that already owns a
+	// lock spelling — a state root's gui.lock, say — points this at that
+	// file instead of leaving a second, unaware lock beside it.
+	LockPath string
+	// LockOptions are extra options for the lock itself (see
+	// core/utils/lock): WithVersion and WithEndpoint record what a
+	// rejected launch needs to name and reach the holder.
+	LockOptions []lock.Option
 	// OnLockHeld is consulted when another live instance already holds the
 	// lock. The holder record arrives as lock.Info (pid, kind, start,
 	// version, optional endpoint), so a shell can forward its arguments to
@@ -106,9 +116,10 @@ func New(opts Options) (*Manager, error) {
 		return nil, errdefs.Validationf(
 			"craft manager: Build or Capabilities is required")
 	}
-	if opts.Lock && strings.TrimSpace(opts.Paths.DataDir) == "" {
+	if opts.Lock && strings.TrimSpace(opts.Paths.DataDir) == "" &&
+		strings.TrimSpace(opts.LockPath) == "" {
 		return nil, errdefs.Validationf(
-			"craft manager: Lock requires Paths.DataDir")
+			"craft manager: Lock requires Paths.DataDir or LockPath")
 	}
 	if opts.Restart.Backoff <= 0 {
 		opts.Restart.Backoff = time.Second
@@ -495,6 +506,15 @@ func lockPath(dataDir, profile string) string {
 	return filepath.Join(dataDir, name)
 }
 
+// lockPath resolves the lock file this manager takes: the explicit
+// LockPath, or the DataDir+Profile derivation.
+func (m *Manager) lockPath() string {
+	if path := strings.TrimSpace(m.opts.LockPath); path != "" {
+		return path
+	}
+	return lockPath(m.opts.Paths.DataDir, m.opts.Profile)
+}
+
 // acquireLock takes the single-instance lock of this manager's DataDir and
 // profile.
 //
@@ -505,8 +525,8 @@ func lockPath(dataDir, profile string) string {
 // so the manager starts without it after a warning, unless OnLockUnavailable
 // refuses. A nil handle means exactly that: no lock was taken, start anyway.
 func (m *Manager) acquireLock(ctx context.Context) (*lock.Handle, error) {
-	path := lockPath(m.opts.Paths.DataDir, m.opts.Profile)
-	handle, err := lock.Acquire(ctx, path, lockKind)
+	path := m.lockPath()
+	handle, err := lock.Acquire(ctx, path, lockKind, m.opts.LockOptions...)
 	if err == nil {
 		return handle, nil
 	}

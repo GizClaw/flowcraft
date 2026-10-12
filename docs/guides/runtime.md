@@ -113,14 +113,18 @@ External values are borrowed, not owned:
 
 - They never participate in `Wire` / deployment binding, `Close`,
   `Runtime.Drain`, or dynamic agent rebinding lifecycle.
-- They are not rebuilt or replaced by `Reload`; every generation
-  receives the same injected object.
+- They are never rebuilt by `Reload`: a generation receives the injected
+  object, unless the reload replaces the set with
+  `WithReloadExternals`.
 - They are hidden from `Runtime.Resource` and `Result.Names` — they
   exist only as dependencies.
-- `Reload` may shrink the declared set, but may not require an external
-  value that was not injected when the Runtime was built.
-- The application is responsible for closing external values after all
-  Runtimes sharing them are closed.
+- `Reload` may shrink or grow the declared set. A reload may not require
+  a value that is neither injected at build time nor part of the
+  reload's replacement set; `WithReloadExternals` is how a generation
+  receives a name the Runtime was not built with.
+- The application is responsible for closing external values — including
+  the ones a reload replaced — after all Runtimes sharing them are
+  closed.
 
 External dependencies cannot serve runtime-managed roles: `event_bus`,
 `checkpoint_store`, and `dynamic_catalog.tools` resource names must be
@@ -418,6 +422,30 @@ Semantics:
   `generation_id`, `previous_generation_id`, `rebound_agents`,
   `drained_agents`, and `error` (on failure). See [event.md](event.md)
   for the event namespaces.
+
+Reload options replace the inputs a generation is built with, for the
+cases the document alone cannot express (a per-tenant external value, a
+workspace-scoped expansion resolver, a decorator per generation):
+
+```go
+_, err := app.Reload(ctx, newDoc,
+    runtime.WithReloadExternals([]runtime.ExternalResource{db, cache}),
+    runtime.WithReloadResolver(workspaceResolver),
+    runtime.WithReloadHostFactory(decorate),
+)
+```
+
+- `WithReloadExternals` replaces the injected external values (the whole
+  set, not a merge), `WithReloadResolver` the expansion resolver, and
+  `WithReloadHostFactory` / `WithReloadResultHostFactory` the host
+  factory decorations.
+- A replacement is validated like the builder's option of the same kind,
+  with one difference: a nil value is meaningful — nil externals, a nil
+  resolver and a nil decorator each mean "none", which is what removes a
+  decorator instead of leaving the retained one in place.
+- Once the swap commits the replacement is retained: a later `Reload`
+  without the option builds with it. A reload that aborts leaves every
+  retained input, and the serving generation, exactly as they were.
 
 ## Host decorators
 

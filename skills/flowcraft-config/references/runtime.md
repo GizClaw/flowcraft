@@ -104,6 +104,13 @@ new one is built and swapped. Progress is published as
 failed reload aborts before any swap and the old generation stays in
 service.
 
+`ReloadOption`s replace the inputs a generation is built with when the
+document cannot express them: `WithReloadExternals`, `WithReloadResolver`,
+`WithReloadHostFactory` and `WithReloadResultHostFactory`. A nil value
+means none (which is how a decorator is removed); a committed swap retains
+the replacement, so a later plain `Reload` builds with it, and an aborted
+reload changes nothing.
+
 ## Sources of truth
 
 `core/runtime/config.go`, `core/runtime/lifecycle.go`,

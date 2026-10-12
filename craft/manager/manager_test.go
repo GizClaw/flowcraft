@@ -122,6 +122,95 @@ func TestManagerLifecycleAndLock(t *testing.T) {
 	}
 }
 
+// TestManagerLockPathAndLockOptions covers the two knobs a shell that
+// already owns a lock spelling needs: the file the lock is taken on, and
+// the holder record's version/endpoint (what a rejected launch reads to
+// name and reach the holder).
+func TestManagerLockPathAndLockOptions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeDefinition(t, dir)
+	lockFile := filepath.Join(dir, "gui.lock")
+	opts := Options{
+		DefinitionPath: path,
+		Paths:          Paths{DataDir: dir},
+		Lock:           true,
+		LockPath:       lockFile,
+		LockOptions: []lock.Option{
+			lock.WithVersion("9.9.9"),
+			lock.WithEndpoint("unix:///tmp/gui.sock"),
+		},
+		Capabilities: []craft.Capability{testCapability{}},
+	}
+	m, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Fatalf("explicit lock file: %v", err)
+	}
+	// The derivation is not taken: one instance locks one file, and a
+	// shell that points the manager at its own spelling must not end up
+	// with a second, unaware lock beside it.
+	if _, err := os.Stat(lockPath(dir, "")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("derived lock file exists beside the explicit one (err=%v)", err)
+	}
+	recorded, ok := lock.ReadInfo(lockFile)
+	if !ok {
+		t.Fatalf("no holder record in %s", lockFile)
+	}
+	if recorded.Version != "9.9.9" || recorded.Endpoint != "unix:///tmp/gui.sock" {
+		t.Fatalf("record = %+v, want version 9.9.9 and the raise endpoint", recorded)
+	}
+
+	var seen lock.Info
+	second := opts
+	second.OnLockHeld = func(info lock.Info) error {
+		seen = info
+		return nil
+	}
+	other, err := New(second)
+	if err != nil {
+		t.Fatalf("New second: %v", err)
+	}
+	if err := other.Start(context.Background()); err == nil {
+		t.Fatal("second manager started on a held lock")
+	}
+	if seen.Version != "9.9.9" || seen.Endpoint != "unix:///tmp/gui.sock" {
+		t.Fatalf("OnLockHeld saw %+v, want the recorded version and endpoint", seen)
+	}
+}
+
+// TestManagerLockPathAloneSatisfiesLock: an explicit path answers the
+// DataDir question, so a shell whose lock root is not a data root can
+// still enable the lock.
+func TestManagerLockPathAloneSatisfiesLock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeDefinition(t, dir)
+	lockFile := filepath.Join(dir, "state", "gui.lock")
+	m, err := New(Options{
+		DefinitionPath: path,
+		Lock:           true,
+		LockPath:       lockFile,
+		Capabilities:   []craft.Capability{testCapability{}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Fatalf("explicit lock file: %v", err)
+	}
+}
+
 type nilRunner struct{ called bool }
 
 func (r *nilRunner) Run(context.Context, *craft.Craft) error {

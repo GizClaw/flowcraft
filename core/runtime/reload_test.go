@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -949,4 +950,358 @@ func assistantCount(board *agent.Board) int {
 		}
 	}
 	return count
+}
+
+// markerHostDecorator tags every host of a generation with gen, so a
+// turn can report which decorator built it.
+func markerHostDecorator(gen int) HostFactoryDecorator {
+	return func(base session.HostFactory) (session.HostFactory, error) {
+		return session.HostFactoryFunc(func(
+			ctx context.Context,
+			request session.HostRequest,
+		) (agent.Host, error) {
+			host, err := base.NewHost(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return markerHost{Host: host, gen: gen}, nil
+		}), nil
+	}
+}
+
+// markerResultHostDecorator is markerHostDecorator for the
+// deployment-aware decorator slot.
+func markerResultHostDecorator(gen int) ResultHostFactoryDecorator {
+	return func(_ *deploy.Result, base session.HostFactory) (session.HostFactory, error) {
+		return markerHostDecorator(gen)(base)
+	}
+}
+
+// markerDoc is the reload-shaped document the decorator tests run
+// turns on.
+func markerDoc(t *testing.T) deploy.Document {
+	t.Helper()
+	return reloadDoc(t, `  bot:
+    card: {name: Bot}
+    engine: {kind: marker-engine}
+`, "")
+}
+
+// TestReloadReplacesHostDecorator covers the host factory decorator as a
+// reload input: WithReloadHostFactory replaces the decoration the new
+// generation is served with, a successful reload retains the
+// replacement, and a nil decorator removes it.
+func TestReloadReplacesHostDecorator(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	engine := &markerEngineFactory{markers: make(chan int, 8)}
+	reg := resource.NewRegistry()
+	reg.MustRegister(engine)
+	reg.MustRegister(event.NewFactory())
+
+	doc := markerDoc(t)
+	builder := NewBuilder(reg)
+	if err := builder.WithHostFactory(markerHostDecorator(1)); err != nil {
+		t.Fatalf("WithHostFactory: %v", err)
+	}
+	app, err := builder.Build(ctx, doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 1); marker != 1 {
+		t.Fatalf("generation 1 turn marker = %d, want 1", marker)
+	}
+	if _, err := app.Reload(ctx, doc,
+		WithReloadHostFactory(markerHostDecorator(2))); err != nil {
+		t.Fatalf("Reload with replacement decorator: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 2); marker != 2 {
+		t.Fatalf("turn marker after the replacement = %d, want 2", marker)
+	}
+	// The replacement is retained: a reload without the option builds
+	// with the same decoration policy.
+	if _, err := app.Reload(ctx, doc); err != nil {
+		t.Fatalf("Reload after the replacement: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 2); marker != 2 {
+		t.Fatalf("turn marker after a plain reload = %d, want 2", marker)
+	}
+	// A nil decorator removes the retained one.
+	if _, err := app.Reload(ctx, doc, WithReloadHostFactory(nil)); err != nil {
+		t.Fatalf("Reload clearing the decorator: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 0); marker != 0 {
+		t.Fatalf("turn marker after clearing the decorator = %d, want 0", marker)
+	}
+}
+
+// TestReloadReplacesResultHostDecorator is the same contract for the
+// deployment-aware decorator slot.
+func TestReloadReplacesResultHostDecorator(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	engine := &markerEngineFactory{markers: make(chan int, 8)}
+	reg := resource.NewRegistry()
+	reg.MustRegister(engine)
+	reg.MustRegister(event.NewFactory())
+
+	doc := markerDoc(t)
+	builder := NewBuilder(reg)
+	if err := builder.WithResultHostFactory(markerResultHostDecorator(1)); err != nil {
+		t.Fatalf("WithResultHostFactory: %v", err)
+	}
+	app, err := builder.Build(ctx, doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 1); marker != 1 {
+		t.Fatalf("generation 1 turn marker = %d, want 1", marker)
+	}
+	if _, err := app.Reload(ctx, doc,
+		WithReloadResultHostFactory(markerResultHostDecorator(2))); err != nil {
+		t.Fatalf("Reload with replacement decorator: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 2); marker != 2 {
+		t.Fatalf("turn marker after the replacement = %d, want 2", marker)
+	}
+	if _, err := app.Reload(ctx, doc); err != nil {
+		t.Fatalf("Reload after the replacement: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 2); marker != 2 {
+		t.Fatalf("turn marker after a plain reload = %d, want 2", marker)
+	}
+	if _, err := app.Reload(ctx, doc, WithReloadResultHostFactory(nil)); err != nil {
+		t.Fatalf("Reload clearing the decorator: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 0); marker != 0 {
+		t.Fatalf("turn marker after clearing the decorator = %d, want 0", marker)
+	}
+}
+
+// TestReloadReplacesExternalsAndResolver covers the reload that rebuilds
+// a generation with different build-time inputs: the injected external
+// values and the expansion resolver are the replacement ones, a
+// successful reload retains them for later reloads, and an aborted
+// reload leaves the retained inputs alone.
+func TestReloadReplacesExternalsAndResolver(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	records := &captureRecorder{}
+	reg := resource.NewRegistry()
+	reg.MustRegister(event.NewFactory())
+	reg.MustRegister(appendEngineFactory{})
+	reg.MustRegister(resolverCaptureFactory{records: records})
+	reg.MustRegister(runtimeExternalConsumerFactory{})
+	reg.MustRegister(noDeleteStoreFactory{})
+
+	doc := func(extraResources, runtimeSection, settings string) deploy.Document {
+		t.Helper()
+		parsed := parseRuntimeDoc(t, `version: v1
+resources:
+  events: {kind: event.Bus, impl: memory}
+  consumer:
+    kind: test.ExternalConsumer
+    impl: runtime
+    deps:
+      db: db
+`+extraResources+`agents:
+  bot:
+    card: {name: Bot}
+    engine: {kind: append-engine}
+runtime:
+  event_bus: events
+`+runtimeSection)
+		parsed.Resources["cap"] = resource.Resource{
+			Kind:     captureKind,
+			Impl:     captureImpl,
+			Settings: json.RawMessage(settings),
+		}
+		return parsed
+	}
+	declared := "  external_deps:\n    - name: db\n      contract: db.Pool\n"
+	// A name the Runtime was not built with: the replacement set is
+	// what injects it, so the declaration alone would fail the reload.
+	withCache := declared + "    - name: cache\n      contract: cache.Store\n"
+	sessions := "  sessions: {idle_timeout: 1h, sink_buffer: 8}\n"
+	plain := doc("", sessions+declared, `{"root": "${ocws:cfg}"}`)
+	replaced := doc("", sessions+withCache,
+		`{"root": "${ocws:cfg}", "name": "${ocws:extra}"}`)
+	// A reload that fails after the new generation was built: the
+	// document asks for resume without a Deleter store, so the swap is
+	// aborted with the replacement externals already consumed.
+	aborted := doc(
+		"  cps: {kind: agent.CheckpointStore, impl: nodelete}\n",
+		"  checkpoint_store: cps\n"+
+			"  sessions: {idle_timeout: 1h, sink_buffer: 8, resume: true}\n"+
+			declared,
+		`{"root": "${ocws:cfg}", "name": "${ocws:extra}"}`)
+
+	pools := []*runtimeExternalPool{{}, {}, {}}
+	external := func(pool *runtimeExternalPool) []ExternalResource {
+		return []ExternalResource{{
+			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
+			Value:              pool,
+		}}
+	}
+	builder := NewBuilder(reg)
+	if err := builder.WithExternalResource(external(pools[0])[0]); err != nil {
+		t.Fatalf("WithExternalResource: %v", err)
+	}
+	if err := builder.WithResolver(ocwsResolver(
+		map[string]string{"cfg": "one"})); err != nil {
+		t.Fatalf("WithResolver: %v", err)
+	}
+	app, err := builder.Build(ctx, plain)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	consumer := func() *runtimeExternalConsumer {
+		t.Helper()
+		value, ok := app.Resource("consumer")
+		if !ok {
+			t.Fatal("Resource(consumer) missing")
+		}
+		got, ok := value.(*runtimeExternalConsumer)
+		if !ok {
+			t.Fatalf("Resource(consumer) is %T", value)
+		}
+		return got
+	}
+	if consumer().pool != pools[0] {
+		t.Fatal("initial generation did not receive the injected pool")
+	}
+	assertEntries(t, records.got(), []captureEntry{{root: "one"}})
+
+	// The replacement resolver resolves a name the built one does not
+	// have, so an unchanged resolver would fail this reload instead of
+	// silently expanding with the old values.
+	if _, err := app.Reload(ctx, replaced,
+		WithReloadExternals(append(external(pools[1]), ExternalResource{
+			ExternalDependency: ExternalDependency{Name: "cache", Contract: "cache.Store"},
+			Value:              "cache-value",
+		})),
+		WithReloadResolver(ocwsResolver(map[string]string{
+			"cfg": "two", "extra": "added",
+		}))); err != nil {
+		t.Fatalf("Reload with replacement inputs: %v", err)
+	}
+	assertEntries(t, records.got(), []captureEntry{
+		{root: "one"},
+		{root: "two", name: "added"},
+	})
+	if consumer().pool != pools[1] {
+		t.Fatal("reloaded generation did not receive the replacement pool")
+	}
+
+	// Both replacements are retained: a reload without the options
+	// builds with the same values and resolver.
+	if _, err := app.Reload(ctx, replaced); err != nil {
+		t.Fatalf("Reload after the replacements: %v", err)
+	}
+	assertEntries(t, records.got(), []captureEntry{
+		{root: "one"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+	})
+	if consumer().pool != pools[1] {
+		t.Fatal("plain reload dropped the retained replacement pool")
+	}
+
+	// An aborted reload does not retain its replacement: the built
+	// generation used it, the committed runtime keeps the previous one.
+	if _, err := app.Reload(ctx, aborted,
+		WithReloadExternals(external(pools[2]))); !errdefs.IsValidation(err) {
+		t.Fatalf("aborted reload error = %v, want validation", err)
+	}
+	assertEntries(t, records.got(), []captureEntry{
+		{root: "one"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+	})
+	if consumer().pool != pools[1] {
+		t.Fatal("aborted reload replaced the serving generation's pool")
+	}
+	if _, err := app.Reload(ctx, replaced); err != nil {
+		t.Fatalf("Reload after the aborted one: %v", err)
+	}
+	if consumer().pool != pools[1] {
+		t.Fatal("aborted reload retained its replacement pool")
+	}
+	assertEntries(t, records.got(), []captureEntry{
+		{root: "one"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+		{root: "two", name: "added"},
+	})
+}
+
+// TestReloadOptionValidation pins that a rejected option set never
+// reaches the current generation.
+func TestReloadOptionValidation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	reg := resource.NewRegistry()
+	reg.MustRegister(event.NewFactory())
+	reg.MustRegister(appendEngineFactory{})
+	doc := reloadDoc(t, `  bot:
+    card: {name: Bot}
+    engine: {kind: append-engine}
+`, "")
+	app, err := NewBuilder(reg).Build(ctx, doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	pool := &runtimeExternalPool{}
+	db := func(value any) ExternalResource {
+		return ExternalResource{
+			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
+			Value:              value,
+		}
+	}
+	cases := []struct {
+		name   string
+		option ReloadOption
+		check  func(error) bool
+	}{
+		{
+			name:   "nil option",
+			option: nil,
+			check:  errdefs.IsValidation,
+		},
+		{
+			name:   "duplicate external name",
+			option: WithReloadExternals([]ExternalResource{db(pool), db(pool)}),
+			check:  errdefs.IsConflict,
+		},
+		{
+			name:   "external without a value",
+			option: WithReloadExternals([]ExternalResource{db(nil)}),
+			check:  errdefs.IsValidation,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := app.Reload(ctx, doc, tc.option); !tc.check(err) {
+				t.Fatalf("Reload = %v, want the rejected option set", err)
+			}
+			if app.current.id != 1 {
+				t.Fatalf("generation id after the rejected option = %d, want 1",
+					app.current.id)
+			}
+		})
+	}
 }

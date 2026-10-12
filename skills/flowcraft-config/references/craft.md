@@ -292,7 +292,7 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `hostmcp: tool "x" already registered` | duplicate primitive name |
 | `craft manager: craft.yaml not found` | definition not located |
 | `craft manager: another instance holds <path>` | lock held |
-| `craft manager: Lock requires Paths.DataDir` | lock without data dir |
+| `craft manager: Lock requires Paths.DataDir or LockPath` | lock with neither a data dir nor an explicit lock path |
 | `craft manager: Replace requires a running Craft` | replace while stopped |
 | `craft manager group: max instances reached (N)` | `MaxInstances` hit |
 
