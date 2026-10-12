@@ -374,6 +374,12 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   → `Alice: ...`); the two conversions differ in exactly this step, so running
   with and without it measures what the prefix contributes to a temporal
   score. Recorded in the fingerprint as `date_prefix`.
+- `-observed-at=off|metadata`: `metadata` writes each session date time
+  into the messages as `observed_at` metadata (RFC3339 UTC) instead of
+  text -- the anchor shape a prefix-less production path receives. It
+  requires `-no-date-prefix` (the two are renderings of one fact, never
+  both). Recorded in the fingerprint as `observed_at`; the loader stats
+  report how many messages carried an anchor.
 - `-resume`: skip scenarios already recorded in `-out`, so an interrupted
   long run continues where it stopped. Each scenario is retried up to three
   times before the run fails. Results are stamped with a fingerprint (code

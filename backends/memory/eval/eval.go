@@ -48,6 +48,14 @@ type Turn struct {
 	// resolve evidence recall; it is never sent to retrieval, so it cannot
 	// become an oracle channel.
 	DatasetIDs []string `json:"dataset_ids,omitempty"`
+	// ObservedAt optionally carries each message observation anchor
+	// (RFC3339 UTC, positionally aligned with Messages), written into
+	// the committed message under the core memory observed_at key. An
+	// observed-at conversion fills it with the session date time; a
+	// session whose date is unknown or unparsable leaves the entries
+	// empty. Like DatasetIDs it is never sent to retrieval, so it
+	// cannot become an oracle channel.
+	ObservedAt []string `json:"observed_at,omitempty"`
 }
 
 // Question asks for content that the memory should return.
@@ -221,10 +229,14 @@ func Ingest(ctx context.Context, runner Runner, scenario Scenario) error {
 			return fmt.Errorf("memory eval: turn %d has %d dataset ids for %d messages",
 				index, len(turn.DatasetIDs), len(turn.Messages))
 		}
+		if len(turn.ObservedAt) > 0 && len(turn.ObservedAt) != len(turn.Messages) {
+			return fmt.Errorf("memory eval: turn %d has %d observed_at entries for %d messages",
+				index, len(turn.ObservedAt), len(turn.Messages))
+		}
 		if err := runner.CommitTurn(ctx, corememory.Turn{
 			Scope: scope, ConversationID: scenario.ConversationID,
 			IdempotencyKey: turn.IdempotencyKey, Messages: turn.Messages,
-			MessageMetadata: datasetTurnMetadata(turn.DatasetIDs),
+			MessageMetadata: messageMetadata(turn),
 		}); err != nil {
 			return fmt.Errorf("memory eval: commit turn %d: %w", index, err)
 		}
@@ -232,19 +244,31 @@ func Ingest(ctx context.Context, runner Runner, scenario Scenario) error {
 	return nil
 }
 
-// datasetTurnMetadata tags each message with the dataset turn it was loaded
-// from, so the store keeps the identity alongside the message. Messages the
-// dataset does not name (or names with an empty id) stay untagged rather than
-// carrying an empty tag that would look like a resolved turn.
-func datasetTurnMetadata(datasetIDs []string) []corememory.Metadata {
-	if len(datasetIDs) == 0 {
+// messageMetadata merges the per-message tags ingest keeps on the committed
+// message: the dataset turn identity the grading side reads back, and the
+// observed_at anchor an observed-at conversion wrote. A message the dataset
+// does not name -- or whose session carried no anchor -- stays untagged
+// rather than carrying an empty tag that would look like a resolved value.
+func messageMetadata(turn Turn) []corememory.Metadata {
+	if len(turn.DatasetIDs) == 0 && len(turn.ObservedAt) == 0 {
 		return nil
 	}
-	metadata := make([]corememory.Metadata, len(datasetIDs))
-	for index, id := range datasetIDs {
-		if trimmed := strings.TrimSpace(id); trimmed != "" {
-			metadata[index] = corememory.Metadata{DatasetTurnMetadataKey: trimmed}
+	metadata := make([]corememory.Metadata, len(turn.Messages))
+	tag := func(index int, key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
 		}
+		if metadata[index] == nil {
+			metadata[index] = corememory.Metadata{}
+		}
+		metadata[index][key] = value
+	}
+	for index, id := range turn.DatasetIDs {
+		tag(index, DatasetTurnMetadataKey, id)
+	}
+	for index, anchor := range turn.ObservedAt {
+		tag(index, corememory.ObservedAtMetadataKey, anchor)
 	}
 	return metadata
 }

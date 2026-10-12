@@ -34,6 +34,10 @@ func main() {
 	noDatePrefix := flag.Bool("no-date-prefix", false,
 		"convert turns without the session date prefix the loader otherwise writes into their text; "+
 			"the two conversions differ in exactly this step, so running with and without it measures how much of a temporal score rests on the prefix")
+	observedAt := flag.String("observed-at", "off",
+		"write each session date time into the message metadata as observed_at instead of the text: "+
+			"off | metadata. metadata is the dateless conversion plus the anchor, so it requires -no-date-prefix; "+
+			"it is how a prefix-less production path receives its temporal anchor")
 	maxItems := flag.Int("max-items", 20, "context budget items")
 	maxTokens := flag.Int("max-tokens", 4096, "context budget tokens")
 	recentItems := flag.Int("recent-items", 20, "assembly recent.max_items")
@@ -76,11 +80,12 @@ func main() {
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
 	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
-		Scope:    evalScope,
-		Budget:   corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
-		Images:   *imageMode,
-		Samples:  *samples,
-		Dateless: *noDatePrefix,
+		Scope:      evalScope,
+		Budget:     corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
+		Images:     *imageMode,
+		Samples:    *samples,
+		Dateless:   *noDatePrefix,
+		ObservedAt: *observedAt,
 	})
 	must(err)
 	fmt.Printf("dataset: scenarios=%d turns=%d questions=%d skipped=%d skipped_adversarial=%d",
@@ -290,6 +295,13 @@ func main() {
 			// prompt is the loader's choice, so the two configurations
 			// cannot share a fingerprint.
 			"date_prefix": strconv.FormatBool(!*noDatePrefix),
+			// Whether the loader wrote each session date into the messages
+			// as their observed_at metadata instead of their text. The text
+			// prefix and the metadata anchor are alternative renderings of
+			// the same fact (the loader refuses to write both), so this
+			// key and date_prefix move together: `metadata` here is the
+			// prefix-less shape a production path gets its anchor through.
+			"observed_at": *observedAt,
 			// How evidence recall was matched, which the store decides: turn
 			// identity where ingest tagged the messages, committed text where it
 			// did not. The two do not score the same, so a report stored under
