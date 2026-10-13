@@ -54,6 +54,18 @@ type Host struct {
 	entryLocks map[string]*sync.Mutex
 	envHook    func(Entry, map[string]string) error
 	stopped    func(string)
+	// stopHooks are the additive OnStopped subscriptions. They are
+	// deliberately separate from stopped above: craft's token
+	// revocation must not depend on what an application subscribes to.
+	stopHooks   []stopHook
+	stopHookSeq uint64
+}
+
+// stopHook is one OnStopped subscription. Subscriptions are identified
+// by sequence number because func values cannot be compared.
+type stopHook struct {
+	id uint64
+	fn func(string, StopReason)
 }
 
 // NewHost opens a plugin host over a store.
@@ -88,7 +100,10 @@ func NewHost(opts HostOptions) (*Host, error) {
 func (h *Host) Store() *Store { return h.store }
 
 // SetPluginHooks installs the per-plugin env injector and the
-// stopped-plugin callback. It must be called before Start.
+// stopped-plugin callback. It must be called before Start. An
+// application that wants a stop notification of its own subscribes
+// with [Host.OnStopped] instead: that seam is additive, so using it
+// cannot displace this wiring.
 func (h *Host) SetPluginHooks(
 	env func(Entry, map[string]string) error,
 	stopped func(string),
@@ -97,6 +112,107 @@ func (h *Host) SetPluginHooks(
 	h.envHook = env
 	h.stopped = stopped
 	h.mu.Unlock()
+}
+
+// StopReason explains why a plugin stopped.
+type StopReason string
+
+const (
+	// StopRequested is a stop the application asked for: disabling the
+	// plugin, uninstalling it, or closing the host.
+	StopRequested StopReason = "requested"
+
+	// StopFailed is a process the host did not stop: the plugin's MCP
+	// server is gone and the background reconnect gave up on it,
+	// because the command cannot be started at all (missing, not
+	// executable) or because the server rejects the connection. The
+	// entry keeps its state — enabled, with its tools still projected
+	// — and the application decides what the loss means.
+	StopFailed StopReason = "failed"
+)
+
+// OnStopped subscribes to plugin stops. The callback receives the
+// plugin id and why it stopped: StopRequested for a stop the
+// application asked for, after the process is gone and its tools have
+// left the shared set; StopFailed for a process that stopped on its own
+// and could not be reconnected, with the entry and its tools left as
+// they are so the application decides what the loss means.
+//
+// Multiple subscriptions are allowed and the returned function
+// unsubscribes this one; calling it more than once is safe. Stops
+// happen whether or not anyone subscribed — craft's own wiring (token
+// revocation) is independent of these subscriptions. A callback runs on
+// the goroutine that stopped the plugin (or, for StopFailed, on the MCP
+// retry goroutine), so it should return promptly and must not call back
+// into the host for the same plugin: that stop already holds the
+// plugin's entry lock.
+func (h *Host) OnStopped(fn func(id string, reason StopReason)) func() {
+	if fn == nil {
+		return func() {}
+	}
+	h.mu.Lock()
+	h.stopHookSeq++
+	sub := stopHook{id: h.stopHookSeq, fn: fn}
+	h.stopHooks = append(h.stopHooks, sub)
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			for i, candidate := range h.stopHooks {
+				if candidate.id == sub.id {
+					h.stopHooks = append(h.stopHooks[:i], h.stopHooks[i+1:]...)
+					return
+				}
+			}
+		})
+	}
+}
+
+// stopSubscribers snapshots the current subscriptions, so notifications
+// run without the host lock held.
+func (h *Host) stopSubscribers() []func(string, StopReason) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]func(string, StopReason), 0, len(h.stopHooks))
+	for _, sub := range h.stopHooks {
+		out = append(out, sub.fn)
+	}
+	return out
+}
+
+// notifyStopped reports a stop the host performed. The internal hook
+// runs first and unconditionally — it is what revokes the plugin's host
+// tokens — and the subscribers hear about it afterwards.
+func (h *Host) notifyStopped(id string) {
+	h.mu.Lock()
+	stopped := h.stopped
+	h.mu.Unlock()
+	if stopped != nil {
+		stopped(id)
+	}
+	for _, fn := range h.stopSubscribers() {
+		fn(id, StopRequested)
+	}
+}
+
+// notifyLost reports a process that stopped on its own and whose
+// reconnect gave up. Only subscribers hear about it: the host did not
+// stop the plugin — the entry keeps its state and its tools — so the
+// internal hook (and with it token revocation) stays tied to the stops
+// the application requests. A loss that races the host's own close is
+// not reported.
+func (h *Host) notifyLost(id string) {
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
+		return
+	}
+	for _, fn := range h.stopSubscribers() {
+		fn(id, StopFailed)
+	}
 }
 
 // Tools returns the shared tool aggregator.
@@ -438,7 +554,6 @@ func (h *Host) stopEntryLocked(ctx context.Context, id string) error {
 	h.mu.Lock()
 	_, running := h.sources[id]
 	delete(h.sources, id)
-	stopped := h.stopped
 	h.mu.Unlock()
 	if !running {
 		return nil
@@ -446,9 +561,7 @@ func (h *Host) stopEntryLocked(ctx context.Context, id string) error {
 	drainCtx, cancel := context.WithTimeout(ctx, h.drainTimeout)
 	defer cancel()
 	err := h.tools.RemovePlugin(drainCtx, id)
-	if stopped != nil {
-		stopped(id)
-	}
+	h.notifyStopped(id)
 	return err
 }
 
@@ -473,7 +586,13 @@ func (h *Host) mcpSource(
 			_ = source.Close()
 			return nil, err
 		}
-		options := []mcp.ServerOption{mcp.WithPrefix(namespaces[i])}
+		options := []mcp.ServerOption{
+			mcp.WithPrefix(namespaces[i]),
+			// The server name and the failure itself are already in
+			// the MCP telemetry; the host only needs to know that the
+			// entry lost a process it cannot get back.
+			mcp.WithServerLost(func(string, error) { h.notifyLost(entry.ID) }),
+		}
 		if err := source.AddServer(ctx, name, transport, options...); err != nil {
 			_ = source.Close()
 			return nil, err
