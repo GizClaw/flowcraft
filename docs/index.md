@@ -17,6 +17,10 @@ retrieval, runtime orchestration, and voice. Source on
 - [Tool System](guides/tool.md) — `core/tool`: LLM function-calling
   contract, Registry / Catalog / Executor split, middleware chain,
   built-in tool adapters and the MCP bridge.
+- [Agent Skills](guides/skill.md) — `core/skill`: SKILL.md discovery
+  and parsing, BM25 ranking over names and descriptions, and the
+  per-turn `## Skills` section; lifecycle and authoring stay with the
+  caller.
 - [Event Bus](guides/event.md) — `core/event`: subject-routed
   publish/subscribe, in-process `MemoryBus`, host capability
   wiring, backpressure policies.

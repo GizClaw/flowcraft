@@ -40,16 +40,17 @@ type Craft struct {
 	// ReloadRuntime, CloseRuntime and Close. It only ever guards the
 	// table below; binder callbacks run after the mutation and outside
 	// it.
-	mu          sync.Mutex
-	started     bool
-	closed      bool
-	opening     map[RuntimeKey]struct{}
-	runtimes    map[RuntimeKey]*runtime.Runtime
-	runtimeOpts map[RuntimeKey]RuntimeOptions
-	// runtimeDocs holds, per key, the document whose generation is bound
-	// and serving. It is what a reload that fails after the runtime
-	// already swapped generations is rolled back to.
-	runtimeDocs map[RuntimeKey]deploy.Document
+	mu       sync.Mutex
+	started  bool
+	closed   bool
+	opening  map[RuntimeKey]struct{}
+	runtimes map[RuntimeKey]*runtime.Runtime
+	// runtimeRecords holds, per key, what craft knows about the
+	// generation that key is serving: the document it is bound to, the
+	// options it was composed with and the inputs it was built with.
+	// They move together, and they are what a reload that fails after
+	// the runtime already swapped generations is rolled back to.
+	runtimeRecords map[RuntimeKey]runtimeRecord
 
 	// startMu serializes Start against itself. Every other mutation is
 	// guarded by mu alone; Start is the one that runs long enough (it
@@ -67,6 +68,20 @@ type Craft struct {
 	// SyncAgents last applied for each agent name: the applied set the
 	// next pass diffs against. Guarded by lifecycleMu.
 	agentRevs map[RuntimeKey]map[string]string
+}
+
+// runtimeRecord is the state craft keeps for one open key: the document
+// whose generation is bound and serving, the options it was composed
+// with, and the inputs it was built with. The inputs are kept because a
+// reload can replace them as well: the core runtime retains them once
+// its generation swap commits, so the rollback of a reload whose bind
+// fails has to hand the previous ones back, or the restored document
+// would serve the failed call's values and externals.
+type runtimeRecord struct {
+	doc       deploy.Document
+	opts      RuntimeOptions
+	externals []deploy.ExternalResource
+	resolver  *resource.ReferenceResolver
 }
 
 // New validates the definition and builds the shared services. No
@@ -120,18 +135,17 @@ func New(def Definition, opts Options) (*Craft, error) {
 
 	bus := event.NewMemoryBus()
 	c := &Craft{
-		def:         def,
-		opts:        opts,
-		caps:        caps,
-		registry:    registry,
-		bus:         bus,
-		router:      event.NewRouter(bus),
-		plugins:     opts.Plugins,
-		opening:     make(map[RuntimeKey]struct{}),
-		runtimes:    make(map[RuntimeKey]*runtime.Runtime),
-		runtimeOpts: make(map[RuntimeKey]RuntimeOptions),
-		runtimeDocs: make(map[RuntimeKey]deploy.Document),
-		agentRevs:   make(map[RuntimeKey]map[string]string),
+		def:            def,
+		opts:           opts,
+		caps:           caps,
+		registry:       registry,
+		bus:            bus,
+		router:         event.NewRouter(bus),
+		plugins:        opts.Plugins,
+		opening:        make(map[RuntimeKey]struct{}),
+		runtimes:       make(map[RuntimeKey]*runtime.Runtime),
+		runtimeRecords: make(map[RuntimeKey]runtimeRecord),
+		agentRevs:      make(map[RuntimeKey]map[string]string),
 	}
 	if c.plugins != nil {
 		uiRegistry, err := ui.NewRegistry(c.plugins, c)
@@ -305,16 +319,19 @@ func (c *Craft) OpenRuntime(
 	}
 	delete(c.opening, key)
 	c.runtimes[key] = rt
-	c.runtimeOpts[key] = opts
-	c.runtimeDocs[key] = doc
+	c.runtimeRecords[key] = runtimeRecord{
+		doc:       doc,
+		opts:      opts,
+		externals: externals,
+		resolver:  resolver,
+	}
 	c.mu.Unlock()
 
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		_ = rt.Close()
 		c.mu.Lock()
 		delete(c.runtimes, key)
-		delete(c.runtimeOpts, key)
-		delete(c.runtimeDocs, key)
+		delete(c.runtimeRecords, key)
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -325,6 +342,16 @@ func (c *Craft) OpenRuntime(
 // ReloadRuntime recomposes the layers for key and atomically replaces
 // the runtime's deployment generation. In-flight turns stay on the
 // previous generation. It is serialized with ReloadAll and SyncAgents.
+//
+// The runtime options the key was opened with — or the ones a previous
+// successful ReloadRuntimeWith stored — compose the next generation;
+// ReloadRuntimeWith replaces them. A closed Craft is ErrCraftClosed, an
+// unknown key ErrRuntimeNotFound.
+//
+// Its outcome is the craft-plane pair craft.reload.started /
+// .completed (or .failed), because the generation a swap installs is not
+// what every caller needs. ReloadRuntimeWith is the entry point that
+// returns it, and the one the failure contract is written on.
 func (c *Craft) ReloadRuntime(
 	ctx context.Context,
 	key RuntimeKey,
@@ -335,91 +362,201 @@ func (c *Craft) ReloadRuntime(
 	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
-	return c.reloadRuntimeLocked(ctx, key, reason)
+	_, err := c.reloadRuntimeLocked(ctx, key, nil, reason)
+	return err
 }
 
-// reloadRuntimeLocked is ReloadRuntime's body; callers hold
-// lifecycleMu.
+// ReloadRuntimeWith is ReloadRuntime with fresh runtime options: the
+// next generation is composed and built with opts — new layers, Values,
+// externals, host decorators — and once it is serving and bound, opts
+// become the options the key holds, so a later ReloadRuntime or
+// ReloadAll recomposes with them. A reload that fails leaves the key on
+// the options and inputs it was serving with, and reports the same
+// errors as ReloadRuntime: a bind that fails after the runtime has
+// already swapped generations is rolled back to the recorded document
+// rebuilt with the recorded inputs. If even that rollback fails, the
+// error says which half is live — the runtime then serves the unbound
+// generation the failed call built while craft's records still describe
+// the previous one, so the next reload composes from that document.
+//
+// It exists because the per-runtime inputs are not frozen at open time
+// for every application: a shell that owns a deploy overlay on disk
+// re-reads it for each reload (a settings change), and without this the
+// only way to hand craft the new layers would be CloseRuntime followed
+// by OpenRuntime — the interruption of in-flight turns the generation
+// swap exists to avoid.
+//
+// The returned result carries the generation the swap installed, which
+// is what a caller logs or reports alongside the reload. A failed
+// reload returns no result: its error says what is serving instead, and
+// that is not always the generation the caller last saw — core
+// allocates an id per attempt, so a rolled-back reload serves the
+// previous document under a fresh id, which the error names.
+func (c *Craft) ReloadRuntimeWith(
+	ctx context.Context,
+	key RuntimeKey,
+	opts RuntimeOptions,
+	reason Reason,
+) (*runtime.ReloadResult, error) {
+	if ptr.IsNil(ctx) {
+		return nil, errdefs.Validationf("craft: ReloadRuntimeWith context is required")
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.reloadRuntimeLocked(ctx, key, &opts, reason)
+}
+
+// reloadRuntimeLocked is the body of both reload entry points; callers
+// hold lifecycleMu. A nil opts means the options the key holds — the
+// ones OpenRuntime stored, or the ones a previous successful
+// ReloadRuntimeWith stored. The result is core's: the generation the
+// swap installed, or nothing on failure, when the error says what serves.
 func (c *Craft) reloadRuntimeLocked(
 	ctx context.Context,
 	key RuntimeKey,
+	opts *RuntimeOptions,
 	reason Reason,
-) error {
+) (*runtime.ReloadResult, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return ErrCraftClosed
+		return nil, ErrCraftClosed
 	}
 	rt, ok := c.runtimes[key]
-	opts := c.runtimeOpts[key]
-	previous, havePrevious := c.runtimeDocs[key]
-	c.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q", ErrRuntimeNotFound, key)
 	}
+	// A key in runtimes always has its record: the table and the record
+	// are written and deleted together under mu.
+	record, recorded := c.runtimeRecords[key]
+	if opts == nil {
+		stored := record.opts
+		opts = &stored
+	}
+	c.mu.Unlock()
 	c.publish(ctx, SubjectReloadStarted, RuntimeEvent{Key: key, Reason: reason})
-	doc, _, _, err := c.compose(ctx, key, opts)
+	doc, externals, resolver, err := c.compose(ctx, key, *opts)
 	if err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return err
+		return nil, err
 	}
-	if _, err := rt.Reload(ctx, doc); err != nil {
+	reloadOptions, err := c.reloadOptions(*opts, externals, resolver)
+	if err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return fmt.Errorf("craft: reload runtime %q: %w", key, err)
+		return nil, err
+	}
+	result, err := rt.Reload(ctx, doc, reloadOptions...)
+	if err != nil {
+		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
+			Key: key, Reason: reason, Error: err.Error()})
+		return nil, fmt.Errorf("craft: reload runtime %q: %w", key, err)
 	}
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
 			Key: key, Reason: reason, Error: err.Error()})
-		return c.rollbackReload(ctx, key, rt, previous, havePrevious, err)
+		return nil, c.rollbackReload(ctx, key, rt, record, recorded,
+			result.GenerationID, err)
 	}
 	c.mu.Lock()
-	c.runtimeDocs[key] = doc
+	// Write the generation and its inputs back only while that runtime is
+	// the one this reload was for: a concurrent CloseRuntime (or
+	// Close) removed the key, and a reopened key must not inherit the
+	// reload's state. The whole record is replaced at once, and Close
+	// swaps the table for a fresh one, so a closed Craft is left alone
+	// too. A skipped write-back fails the reload below: the generation it
+	// swapped belongs to a runtime the caller no longer has.
+	applied := !c.closed && c.runtimes[key] == rt
+	if applied {
+		c.runtimeRecords[key] = runtimeRecord{
+			doc:       doc,
+			opts:      *opts,
+			externals: externals,
+			resolver:  resolver,
+		}
+	}
+	closed := c.closed
 	c.mu.Unlock()
+	if !applied {
+		// The key is no longer this runtime's: a concurrent CloseRuntime
+		// (or Close) took it away while this reload was composing or
+		// binding, so the swap it made is not the key's to serve, and
+		// reporting it would name a generation nothing is bound to.
+		err := fmt.Errorf("%w: %q (closed while the reload was in flight)",
+			ErrRuntimeNotFound, key)
+		if closed {
+			err = fmt.Errorf("%w (the reload was in flight)", ErrCraftClosed)
+		}
+		c.publish(ctx, SubjectReloadFailed, RuntimeEvent{
+			Key: key, Reason: reason, Error: err.Error()})
+		return nil, err
+	}
 	c.publish(ctx, SubjectReloadCompleted, RuntimeEvent{Key: key, Reason: reason})
-	return nil
+	return result, nil
 }
 
 // rollbackReload undoes a reload whose bind failed after the runtime had
-// already committed the new generation, by reloading the document that
-// was bound and serving before the call. A caller that sees an error
-// then still has the generation it had, which is what "failed reload"
-// has to mean; if even the rollback fails, the error says exactly which
-// half is live so nobody assumes the previous generation is serving.
+// already committed the new generation, by reloading the recorded
+// document — with the inputs that generation was built with, since the
+// failed call's are the ones retained right now. A caller that sees an
+// error then still has the document it had, which is what "failed
+// reload" has to mean; the generation is the part it cannot assume,
+// because core allocates an id per attempt. Every error here therefore
+// names the generation that serves: installed is the id the failed swap
+// installed, and the rollback's own id comes back from its swap. If even
+// the rollback fails, the error says which half is live so nobody
+// assumes the previous generation is serving.
 func (c *Craft) rollbackReload(
 	ctx context.Context,
 	key RuntimeKey,
 	rt *runtime.Runtime,
-	previous deploy.Document,
-	havePrevious bool,
+	record runtimeRecord,
+	recorded bool,
+	installed uint64,
 	cause error,
 ) error {
 	failure := fmt.Errorf("craft: reload runtime %q: bind: %w", key, cause)
-	if !havePrevious {
+	if !recorded {
 		return fmt.Errorf(
-			"%w (the new generation is serving but unbound; no previous "+
-				"document is recorded to roll back to)", failure)
+			"%w (generation %d is serving but unbound; no previous "+
+				"document is recorded to roll back to)", failure, installed)
 	}
-	if _, err := rt.Reload(ctx, previous); err != nil {
+	options, err := c.reloadOptions(record.opts, record.externals, record.resolver)
+	if err != nil {
 		return fmt.Errorf(
-			"%w (rolling back to the previous generation failed: %v; "+
-				"the new generation is serving but unbound)", failure, err)
+			"%w (rolling back to the previous document failed: %v; "+
+				"generation %d is serving but unbound)", failure, err, installed)
+	}
+	rollback, err := rt.Reload(ctx, record.doc, options...)
+	if err != nil {
+		return fmt.Errorf(
+			"%w (rolling back to the previous document failed: %v; "+
+				"generation %d is serving but unbound)", failure, err, installed)
 	}
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		return fmt.Errorf(
-			"%w (the previous generation is serving but rebinding it "+
-				"failed: %v)", failure, err)
+			"%w (the previous document is serving on generation %d but "+
+				"rebinding it failed: %v)", failure, rollback.GenerationID, err)
 	}
 	return fmt.Errorf(
-		"%w (the reload was rolled back; the previous generation is serving)",
-		failure)
+		"%w (the reload was rolled back; generation %d serves what the "+
+			"runtime served before)", failure, rollback.GenerationID)
 }
 
 // ReloadAll reloads every open runtime. Each runtime is transactional;
 // failures are aggregated with the runtime key. It holds the lifecycle
 // lock across the whole pass, so neither a single-runtime reload nor an
-// agent sync can interleave with it.
+// agent sync can interleave with it. It reports no generation — one per
+// key is not one answer — so a caller that needs the id a swap installed
+// reloads that key with ReloadRuntimeWith instead.
+//
+// It reports no error on a closed Craft: closing empties the runtime
+// table, so there is nothing left to reload and the pass is a no-op —
+// unlike the single-key entry points, which are keyed and report
+// ErrCraftClosed. A shell that wants to know whether the pass reached
+// any runtime can ask Runtimes first.
 func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
 	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("craft: ReloadAll context is required")
@@ -428,7 +565,9 @@ func (c *Craft) ReloadAll(ctx context.Context, reason Reason) error {
 	defer c.lifecycleMu.Unlock()
 	var errs []error
 	for _, key := range c.Runtimes() {
-		if err := c.reloadRuntimeLocked(ctx, key, reason); err != nil {
+		// A nil opts means the options the key holds, which every open
+		// key has; reloadRuntimeLocked reads them under mu.
+		if _, err := c.reloadRuntimeLocked(ctx, key, nil, reason); err != nil {
 			errs = append(errs, fmt.Errorf("runtime %q: %w", key, err))
 		}
 	}
@@ -472,8 +611,7 @@ func (c *Craft) CloseRuntime(ctx context.Context, key RuntimeKey) error {
 	rt, ok := c.runtimes[key]
 	if ok {
 		delete(c.runtimes, key)
-		delete(c.runtimeOpts, key)
-		delete(c.runtimeDocs, key)
+		delete(c.runtimeRecords, key)
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -578,8 +716,7 @@ func (c *Craft) Close() error {
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	runtimes := c.runtimes
 	c.runtimes = make(map[RuntimeKey]*runtime.Runtime)
-	c.runtimeOpts = make(map[RuntimeKey]RuntimeOptions)
-	c.runtimeDocs = make(map[RuntimeKey]deploy.Document)
+	c.runtimeRecords = make(map[RuntimeKey]runtimeRecord)
 	c.mu.Unlock()
 
 	var errs []error
@@ -638,13 +775,21 @@ func (c *Craft) buildRuntime(
 			return nil, fmt.Errorf("craft: runtime externals: %w", err)
 		}
 	}
-	for _, decorator := range c.hostDecorators(opts) {
-		if err := builder.WithHostFactory(decorator); err != nil {
+	hostDecorator, err := c.hostDecorator(opts)
+	if err != nil {
+		return nil, err
+	}
+	if hostDecorator != nil {
+		if err := builder.WithHostFactory(hostDecorator); err != nil {
 			return nil, fmt.Errorf("craft: host decorator: %w", err)
 		}
 	}
-	for _, decorator := range c.resultHostDecorators(opts) {
-		if err := builder.WithResultHostFactory(decorator); err != nil {
+	resultDecorator, err := c.resultHostDecorator(opts)
+	if err != nil {
+		return nil, err
+	}
+	if resultDecorator != nil {
+		if err := builder.WithResultHostFactory(resultDecorator); err != nil {
 			return nil, fmt.Errorf("craft: result host decorator: %w", err)
 		}
 	}
@@ -655,26 +800,81 @@ func (c *Craft) buildRuntime(
 	return rt, nil
 }
 
-func (c *Craft) hostDecorators(opts RuntimeOptions) []runtime.HostFactoryDecorator {
+// hostDecorator returns the host factory decorator the runtime is built
+// and reloaded with, composed from the craft-wide capabilities and the
+// per-runtime options. A runtime holds one decorator, so more than one
+// is a validation error — the same error an open and a reload report.
+func (c *Craft) hostDecorator(
+	opts RuntimeOptions,
+) (runtime.HostFactoryDecorator, error) {
 	var out []runtime.HostFactoryDecorator
 	for _, capability := range c.caps {
 		if contributor, ok := capability.(HostDecorators); ok {
 			out = append(out, contributor.HostFactoryDecorators()...)
 		}
 	}
-	return append(out, opts.HostDecorators...)
+	switch out = append(out, opts.HostDecorators...); len(out) {
+	case 0:
+		return nil, nil
+	case 1:
+		return out[0], nil
+	default:
+		return nil, errdefs.Validationf(
+			"craft: %d host decorators: a runtime holds one", len(out))
+	}
 }
 
-func (c *Craft) resultHostDecorators(
+// resultHostDecorator is hostDecorator for the deployment-aware slot.
+func (c *Craft) resultHostDecorator(
 	opts RuntimeOptions,
-) []runtime.ResultHostFactoryDecorator {
+) (runtime.ResultHostFactoryDecorator, error) {
 	var out []runtime.ResultHostFactoryDecorator
 	for _, capability := range c.caps {
 		if contributor, ok := capability.(ResultHostDecorators); ok {
 			out = append(out, contributor.ResultHostFactoryDecorators()...)
 		}
 	}
-	return append(out, opts.ResultHostDecorators...)
+	switch out = append(out, opts.ResultHostDecorators...); len(out) {
+	case 0:
+		return nil, nil
+	case 1:
+		return out[0], nil
+	default:
+		return nil, errdefs.Validationf(
+			"craft: %d result host decorators: a runtime holds one", len(out))
+	}
+}
+
+// reloadOptions returns the core options that build the next generation
+// of one runtime with the inputs the Craft options describe: the
+// externals compose produced, the ${craft:...} resolver for the composed
+// values, and the host factory decoration of the options the reload
+// carries. Every channel is passed, so the generation is built with
+// exactly these inputs instead of merging with the ones the previous
+// generation was built with.
+func (c *Craft) reloadOptions(
+	opts RuntimeOptions,
+	externals []deploy.ExternalResource,
+	resolver *resource.ReferenceResolver,
+) ([]runtime.ReloadOption, error) {
+	options := []runtime.ReloadOption{
+		runtime.WithReloadExternals(toRuntimeExternals(externals)),
+		runtime.WithReloadResolver(resolver),
+	}
+	// A nil decorator is passed as such: it removes the retained one
+	// instead of leaving the previous generation's decoration in place.
+	hostDecorator, err := c.hostDecorator(opts)
+	if err != nil {
+		return nil, err
+	}
+	options = append(options, runtime.WithReloadHostFactory(hostDecorator))
+	resultDecorator, err := c.resultHostDecorator(opts)
+	if err != nil {
+		return nil, err
+	}
+	options = append(options,
+		runtime.WithReloadResultHostFactory(resultDecorator))
+	return options, nil
 }
 
 // toRuntimeExternals converts the deploy-level external values into the

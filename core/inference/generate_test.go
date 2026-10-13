@@ -246,7 +246,7 @@ func TestValidateForUndefinedTool(t *testing.T) {
 		t.Fatalf("undefined tool error = %+v, want call 0 ghost", ute)
 	}
 
-	wrapped := newResponseValidationError(OperationGenerate, err)
+	wrapped := newResponseValidationError(OperationGenerate, "generate", err)
 	if wrapped.Kind != UndefinedTool {
 		t.Fatalf("wrapped kind = %q, want %q", wrapped.Kind, UndefinedTool)
 	}
@@ -257,6 +257,31 @@ func TestValidateForUndefinedTool(t *testing.T) {
 	}
 	if !errdefs.IsValidation(wrapped) {
 		t.Fatalf("wrapped error must classify as validation, got %v", wrapped)
+	}
+}
+
+func TestResponseValidationDetailNamesFailedCheck(t *testing.T) {
+	req := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
+				Intent:  Intent{Text: &TextIntent{}},
+			},
+		},
+	}
+	resp := GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "thinking", Signature: "sig"},
+			}},
+		},
+		FinishReason: FinishCompleted,
+	}
+	err := newResponseValidationError(OperationGenerate, "generate", resp.ValidateFor(req))
+	if err.Detail != "generate.validation.no_text" {
+		t.Fatalf("Detail = %q, want generate.validation.no_text", err.Detail)
 	}
 }
 

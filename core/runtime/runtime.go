@@ -36,23 +36,24 @@ type Runtime struct {
 	loader    *resource.Loader
 	// resolver is retained from the Builder (like loader) so a later
 	// Reload rebuilds generations with the same custom expansion
-	// schemes as the initial build.
+	// schemes as the initial build, unless a reload replaces it with
+	// WithReloadResolver.
 	resolver *resource.ReferenceResolver
 	bus      event.Bus
 	// hostDecorator is retained from the Builder so a later Reload can
 	// rebuild a host factory for a new deployment generation with the
-	// exact same decoration policy.
+	// exact same decoration policy; WithReloadHostFactory replaces it.
 	hostDecorator HostFactoryDecorator
 	// resultHostDecorator is retained from the Builder so a later Reload
 	// re-applies the deployment-aware decoration to the new generation's
-	// host factory.
+	// host factory; WithReloadResultHostFactory replaces it.
 	resultHostDecorator ResultHostFactoryDecorator
 	// current is the active deployment generation. Reload replaces it
 	// atomically; Close retires and closes it.
 	current *Generation
 	// externalResources are caller-owned dependency values injected by
-	// the Builder. They outlive every generation and are never closed
-	// by the Runtime.
+	// the Builder, or replaced by a reload (WithReloadExternals). They
+	// outlive every generation and are never closed by the Runtime.
 	externalResources map[string]ExternalResource
 	// nextGenID allocates generation ids.
 	nextGenID uint64
