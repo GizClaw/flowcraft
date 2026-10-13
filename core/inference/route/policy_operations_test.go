@@ -100,6 +100,7 @@ func TestRetryPolicyLookupCoversVocabulary(t *testing.T) {
 		Generate:      &RetryPolicy{MaxAttempts: 2},
 		Embed:         &RetryPolicy{MaxAttempts: 2},
 		Transcription: &RetryPolicy{MaxAttempts: 2},
+		Decision:      &RetryPolicy{MaxAttempts: 2},
 	}
 	for _, operation := range model.Operations() {
 		if policies.policyFor(operation) == nil {

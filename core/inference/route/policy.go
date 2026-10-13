@@ -135,6 +135,7 @@ type Policy struct {
 	Generate       []Pool                `json:"generate,omitempty"`
 	Embed          []Pool                `json:"embed,omitempty"`
 	Transcription  []Pool                `json:"transcription,omitempty"`
+	Decision       []Pool                `json:"decision,omitempty"`
 	Retry          *RetryConfig          `json:"retry,omitempty"`
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
 }
@@ -144,6 +145,7 @@ func (p Policy) Clone() Policy {
 		Generate:      clonePools(p.Generate),
 		Embed:         clonePools(p.Embed),
 		Transcription: clonePools(p.Transcription),
+		Decision:      clonePools(p.Decision),
 	}
 	if p.Retry != nil {
 		retry := p.Retry.Clone()
@@ -157,7 +159,7 @@ func (p Policy) Clone() Policy {
 }
 
 func (p Policy) Validate() error {
-	total := len(p.Generate) + len(p.Embed) + len(p.Transcription)
+	total := len(p.Generate) + len(p.Embed) + len(p.Transcription) + len(p.Decision)
 	if total == 0 {
 		return fmt.Errorf("route policy has no pools")
 	}
@@ -208,6 +210,7 @@ func (p Policy) poolsByOperation() []operationPools {
 		{operation: model.OperationGenerate, pools: p.Generate},
 		{operation: model.OperationEmbed, pools: p.Embed},
 		{operation: model.OperationTranscription, pools: p.Transcription},
+		{operation: model.OperationDecision, pools: p.Decision},
 	}
 }
 
@@ -232,6 +235,7 @@ type RetryConfig struct {
 	Generate      *RetryPolicyConfig `json:"generate,omitempty"`
 	Embed         *RetryPolicyConfig `json:"embed,omitempty"`
 	Transcription *RetryPolicyConfig `json:"transcription,omitempty"`
+	Decision      *RetryPolicyConfig `json:"decision,omitempty"`
 }
 
 // UnmarshalJSON enforces the JSON-only DTO boundary strictly: unknown fields
@@ -253,6 +257,7 @@ func (c RetryConfig) Clone() RetryConfig {
 		Generate:      c.Generate.Clone(),
 		Embed:         c.Embed.Clone(),
 		Transcription: c.Transcription.Clone(),
+		Decision:      c.Decision.Clone(),
 	}
 }
 
@@ -271,6 +276,7 @@ func (c RetryConfig) byOperation() []retryConfigEntry {
 		{operation: model.OperationGenerate, config: c.Generate},
 		{operation: model.OperationEmbed, config: c.Embed},
 		{operation: model.OperationTranscription, config: c.Transcription},
+		{operation: model.OperationDecision, config: c.Decision},
 	}
 }
 

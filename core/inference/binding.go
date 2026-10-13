@@ -24,6 +24,7 @@ type Binding struct {
 	generate   GenerateOperations
 	embed      EmbedDriver
 	transcribe TranscribeOperations
+	decision   DecisionDriver
 	// unbound carries, per operation the reference's credential profile does
 	// not allow, the rejection the per-call path returns. Binding one
 	// operation the profile refuses must not fail the whole handle: a model
@@ -59,6 +60,8 @@ func (a *Assembly) Bind(ctx context.Context, ref ModelRef) (*Binding, error) {
 			binding.embed, err = model.Openers.Embed(ctx, ref)
 		case OperationTranscription:
 			binding.transcribe, err = model.Openers.Transcribe(ctx, ref)
+		case OperationDecision:
+			binding.decision, err = model.Openers.Decision(ctx, ref)
 		default:
 			err = fmt.Errorf("unsupported operation %q", operation)
 		}
@@ -193,6 +196,26 @@ func (b *Binding) PrepareTranscribeSession(
 		return nil, err
 	}
 	return instrumentTranscribeSessionCall(prepared), nil
+}
+
+// PrepareDecision compiles one decision request against the bound driver.
+func (b *Binding) PrepareDecision(
+	ctx context.Context,
+	request DecisionRequest,
+) (*Prepared[DecisionResponse], error) {
+	if err := b.operationRejection(OperationDecision); err != nil {
+		return nil, err
+	}
+	if b == nil || b.decision == nil {
+		return nil, NewError(
+			UnsupportedOperation, OperationDecision, "",
+			fmt.Errorf("model %q has no decision driver", b.refName()))
+	}
+	prepared, err := b.decision.Prepare(ctx, b.ref, request)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentDecisionCall(prepared), nil
 }
 
 func (b *Binding) refName() string {

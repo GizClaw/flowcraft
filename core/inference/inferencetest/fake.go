@@ -258,6 +258,29 @@ func (f transcribeSessionSelectorFunc) SelectTranscribeSession(
 	return f(ctx, req)
 }
 
+// StaticDecisionSelector returns a route.DecisionSelector that always
+// selects ref on the primary tier — the smallest router wiring for
+// tests that need the decision route path without a policy engine.
+func StaticDecisionSelector(ref model.ModelRef) route.DecisionSelector {
+	return decisionSelectorFunc(func(context.Context, inference.DecisionRequest) (route.Decision, error) {
+		return route.Decision{
+			Operation: model.OperationDecision,
+			Tier:      "primary",
+			Proposed:  ref,
+			Selected:  ref,
+		}, nil
+	})
+}
+
+type decisionSelectorFunc func(context.Context, inference.DecisionRequest) (route.Decision, error)
+
+func (f decisionSelectorFunc) SelectDecision(
+	ctx context.Context,
+	req inference.DecisionRequest,
+) (route.Decision, error) {
+	return f(ctx, req)
+}
+
 // eventStream is a ProviderStream over canned events.
 type eventStream struct {
 	events []inference.GenerateStreamEvent

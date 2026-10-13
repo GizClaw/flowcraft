@@ -21,7 +21,9 @@ import (
 // build time so fallback never returns a previously attempted target. Scores
 // remain deployment metadata for custom selectors and do not affect this
 // behavior. The Transcription pools serve both the unary Transcribe selector
-// and the transcription session selector.
+// and the transcription session selector. Decision selection honors the
+// request's model hint like generate does, without a capability filter:
+// decision requests carry no output kinds to match against.
 //
 // The returned Selectors hold flattened copies of the policy's targets, so
 // later mutation of the Policy does not affect routing. An operation with no
@@ -33,6 +35,7 @@ func (p Policy) Selectors(assembly *inference.Assembly) Selectors {
 	generate := newPolicyRoute(model.OperationGenerate, p.Generate, assembly)
 	embed := newPolicyRoute(model.OperationEmbed, p.Embed, assembly)
 	transcribe := newPolicyRoute(model.OperationTranscription, p.Transcription, assembly)
+	decision := newPolicyRoute(model.OperationDecision, p.Decision, assembly)
 	return Selectors{
 		Generate:                  generate,
 		GenerateFallback:          generate,
@@ -42,6 +45,8 @@ func (p Policy) Selectors(assembly *inference.Assembly) Selectors {
 		TranscribeFallback:        transcribe,
 		TranscribeSession:         transcribe,
 		TranscribeSessionFallback: transcribe,
+		Decision:                  decision,
+		DecisionFallback:          decision,
 	}
 }
 
@@ -361,4 +366,40 @@ func (r *policyRoute) NextTranscribeSession(
 	attempt Attempt,
 ) (model.ModelRef, bool, error) {
 	return r.nextTarget("", attempt)
+}
+
+func (r *policyRoute) SelectDecision(
+	_ context.Context,
+	request inference.DecisionRequest,
+) (Decision, error) {
+	if len(r.targets) == 0 {
+		return Decision{}, NewError(
+			NoRoute,
+			r.operation,
+			fmt.Errorf("route policy has no %s pools", r.operation),
+		)
+	}
+	if hinted := r.hintTarget(request.ModelHint); hinted != nil {
+		return Decision{
+			Operation: r.operation,
+			Tier:      hinted.tier,
+			Proposed:  hinted.model,
+			Selected:  hinted.model,
+		}, nil
+	}
+	first := r.targets[0]
+	return Decision{
+		Operation: r.operation,
+		Tier:      first.tier,
+		Proposed:  first.model,
+		Selected:  first.model,
+	}, nil
+}
+
+func (r *policyRoute) NextDecision(
+	_ context.Context,
+	request inference.DecisionRequest,
+	attempt Attempt,
+) (model.ModelRef, bool, error) {
+	return r.nextTarget(request.ModelHint, attempt)
 }
