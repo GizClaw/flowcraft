@@ -58,8 +58,9 @@ type Host struct {
 	enableTimeout time.Duration
 	tools         *ToolSet
 	// awaitingReady lists the plugins whose enable is in flight, so a
-	// terminal loss the enable is about to report itself is not reported
-	// through the loss seam as well (see notifyLost).
+	// terminal loss that arrives while one waits is held for the call
+	// that is asking for the plugin instead of being reported from under
+	// it (see notifyLost and finishEnable).
 	awaitingReady map[string]bool
 
 	mu      sync.Mutex
@@ -72,6 +73,18 @@ type Host struct {
 	entryLocks map[string]*sync.Mutex
 	envHook    func(Entry, map[string]string) error
 	stopped    func(string)
+	// deferredLoss lists the plugins whose terminal loss arrived while an
+	// enable was in flight. The enable in flight narrates its plugin's
+	// failure, so the loss waits for it: reported if the enable stands
+	// and its own report if the enable rolls back.
+	deferredLoss map[string]bool
+	// lost lists the plugins whose process gave up on its own. The entry
+	// keeps its state and its tools — the loss was reported, and whether
+	// the plugin stays enabled is the application's decision — but the
+	// source behind it has no process and no reconnection coming, so an
+	// enable of this plugin replaces it instead of finding it "already
+	// running".
+	lost map[string]bool
 	// stopHooks are the additive OnStopped subscriptions. They are
 	// deliberately separate from stopped above: craft's token
 	// revocation must not depend on what an application subscribes to.
@@ -113,6 +126,8 @@ func NewHost(opts HostOptions) (*Host, error) {
 		sources:       make(map[string]Source),
 		entryLocks:    make(map[string]*sync.Mutex),
 		awaitingReady: make(map[string]bool),
+		deferredLoss:  make(map[string]bool),
+		lost:          make(map[string]bool),
 	}
 	if host.newSource == nil {
 		host.newSource = host.mcpSource
@@ -220,34 +235,86 @@ func (h *Host) stopSubscribers() []func(string, StopReason) {
 // runs first and unconditionally — it is what revokes the plugin's host
 // tokens — and the subscribers hear about it afterwards.
 func (h *Host) notifyStopped(id string, reason StopReason) {
+	h.runStoppedHook(id)
+	for _, fn := range h.stopSubscribers() {
+		fn(id, reason)
+	}
+}
+
+// runStoppedHook runs the internal stopped hook without reporting a stop
+// to the subscribers. It is the half of a stop that is not an
+// application-facing event: the token revocation of a process the host
+// let go of, whether or not a subscriber should learn about it.
+func (h *Host) runStoppedHook(id string) {
 	h.mu.Lock()
 	stopped := h.stopped
 	h.mu.Unlock()
 	if stopped != nil {
 		stopped(id)
 	}
-	for _, fn := range h.stopSubscribers() {
-		fn(id, reason)
-	}
 }
 
 // notifyLost reports a process that stopped on its own and whose
 // reconnect gave up. Only subscribers hear about it: the host did not
 // stop the plugin — the entry keeps its state and its tools — so the
-// internal hook (and with it token revocation) stays tied to the stops
-// the application requests. A loss that races the host's own close is
-// not reported, and neither is the loss of a plugin whose enable is in
-// flight or whose source the host no longer tracks: the first is the
-// enable's own report — it rolls back and says StopRolledBack — and the
-// second is a plugin no one is waiting on, because the application (or
-// that same rollback) already took it away.
+// internal hook (and with it token revocation) does not run for the loss
+// itself: it runs when the source is finally let go of, which is an
+// application-requested stop, a rollback, or the replacement an enable
+// opens. A loss that races the host's own close is
+// not reported, and neither is the loss of a plugin whose source the
+// host no longer tracks: that plugin is one no one is waiting on,
+// because the application (or a rollback) already took it away.
+//
+// A loss that arrives while an enable is in flight is held rather than
+// reported or dropped: the enable in flight is what narrates its
+// plugin's failure, so the loss waits for [Host.finishEnable] to decide
+// whether that call reported it (a rollback) or whether the application
+// still has to hear it.
 func (h *Host) notifyLost(id string) {
 	h.mu.Lock()
-	closed := h.closed
-	awaiting := h.awaitingReady[id]
-	_, running := h.sources[id]
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
+	if _, tracked := h.sources[id]; !tracked {
+		h.mu.Unlock()
+		return
+	}
+	if h.awaitingReady[id] {
+		h.deferredLoss[id] = true
+		h.mu.Unlock()
+		return
+	}
+	h.lost[id] = true
 	h.mu.Unlock()
-	if closed || awaiting || !running {
+	for _, fn := range h.stopSubscribers() {
+		fn(id, StopFailed)
+	}
+}
+
+// finishEnable ends one enable's wait. A loss that arrived while the
+// enable was in flight was held for it, and report says what becomes of
+// it: the loss is the application's to hear when the enable stands —
+// recorded enabled, with a process that gave up and no other report —
+// and stays quiet when the enable rolled back (that call is the report)
+// or when the host is closing (a loss that races the host's own close is
+// not reported either).
+//
+// The enable in flight ends here rather than after the caller returns,
+// so the flag and the held loss are resolved under one lock: a loss
+// arriving after it, or during the delivery below, is reported by
+// [Host.notifyLost] itself.
+func (h *Host) finishEnable(id string, report bool) {
+	h.mu.Lock()
+	delete(h.awaitingReady, id)
+	held := h.deferredLoss[id]
+	delete(h.deferredLoss, id)
+	deliver := held && report && !h.closed
+	if deliver {
+		h.lost[id] = true
+	}
+	h.mu.Unlock()
+	if !deliver {
 		return
 	}
 	for _, fn := range h.stopSubscribers() {
@@ -344,6 +411,14 @@ func (h *Host) Start(ctx context.Context) error {
 // timeout, the entry is recorded enabled, and the source keeps
 // reconnecting in the background.
 //
+// Enabling a plugin that is still running starts nothing, and enabling
+// one whose source gave up is a start: the process behind that source is
+// gone (the application heard about it through [Host.OnStopped]), so the
+// dead source is replaced and this call reports whether the replacement
+// came up. A loss that arrives while the wait runs is that call's to
+// narrate: the rollback is its report, and an enable that stands hands
+// the loss on once it ends.
+//
 // The wait runs while the plugin's entry lock is held, so a disable or a
 // Close racing this enable waits for it, bounded by that timeout.
 func (h *Host) SetEnabled(
@@ -364,13 +439,14 @@ func (h *Host) SetEnabled(
 	lock.Lock()
 	defer lock.Unlock()
 	if enabled {
-		// A terminal loss while this enable is in flight is this call's
-		// own report: the rollback below says StopRolledBack, so the loss
-		// seam stays quiet for it — a loss that races the host's own
-		// action is not reported, the same way one that races Close is
-		// not (see notifyLost).
+		// A loss that arrives while this enable waits is held for it: the
+		// call in flight is what narrates its plugin's failure, so what
+		// becomes of the loss is decided here — the rollback below is its
+		// report, while an enable that stands hands it on to the
+		// application (see finishEnable).
+		stands := false
 		h.setAwaitingReady(id, true)
-		defer h.setAwaitingReady(id, false)
+		defer func() { h.finishEnable(id, stands) }()
 		source, err := h.startEntryLocked(ctx, entry)
 		if err != nil {
 			return err
@@ -404,6 +480,10 @@ func (h *Host) SetEnabled(
 			_ = h.stopEntryLocked(ctx, id, StopRolledBack)
 			return err
 		}
+		// The plugin is up and the record says so: the enable stands, and
+		// anything the wait collected is a loss the application has not
+		// heard about yet.
+		stands = true
 		return nil
 	}
 	if err := h.stopEntryLocked(ctx, id, StopRequested); err != nil {
@@ -564,11 +644,24 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 		h.mu.Unlock()
 		return nil, errdefs.NotAvailablef("plugin host: closed")
 	}
-	if _, running := h.sources[entry.ID]; running {
+	// A plugin whose source gave up is not a running plugin: the entry
+	// still says enabled and its tools are still projected — the loss was
+	// reported, and whether the plugin stays enabled is the application's
+	// call — but the process is gone with no reconnection coming, so an
+	// enable of this plugin replaces the source instead of finding it
+	// "already running" and reporting a start that never happened.
+	gaveUp := h.lost[entry.ID]
+	delete(h.lost, entry.ID)
+	if gaveUp {
+		delete(h.sources, entry.ID)
+	} else if _, running := h.sources[entry.ID]; running {
 		h.mu.Unlock()
 		return nil, nil
 	}
 	h.mu.Unlock()
+	if gaveUp {
+		h.releaseGaveUp(ctx, entry.ID)
+	}
 	source, err := h.openSource(ctx, entry)
 	if err != nil {
 		return nil, err
@@ -594,6 +687,23 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	return source, nil
 }
 
+// releaseGaveUp drops one plugin's recorded source — a process that gave
+// up on its own — and releases it before its replacement is opened: the
+// tools it still projected are removed, its resources closed, and the
+// internal stopped hook run, so the host token minted for the dead
+// process is revoked before the new source mints its own. Nothing is
+// reported: the loss was the report, and replacing a source that gave up
+// is not a stop the application asked for.
+func (h *Host) releaseGaveUp(ctx context.Context, id string) {
+	drainCtx, cancel := context.WithTimeout(ctx, h.drainTimeout)
+	defer cancel()
+	if err := h.tools.RemovePlugin(drainCtx, id); err != nil {
+		telemetry.WarnErr(ctx, "plugin host: releasing a plugin that gave up failed",
+			err, attribute.String("plugin", id))
+	}
+	h.runStoppedHook(id)
+}
+
 // entryLock returns the mutex that serializes one plugin's start and
 // stop.
 func (h *Host) entryLock(id string) *sync.Mutex {
@@ -614,6 +724,7 @@ func (h *Host) forgetSource(id string, source Source) {
 	h.mu.Lock()
 	if h.sources[id] == source {
 		delete(h.sources, id)
+		delete(h.lost, id)
 	}
 	h.mu.Unlock()
 }
@@ -690,6 +801,7 @@ func (h *Host) stopEntryLocked(
 	h.mu.Lock()
 	_, running := h.sources[id]
 	delete(h.sources, id)
+	delete(h.lost, id)
 	h.mu.Unlock()
 	if !running {
 		return nil

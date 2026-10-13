@@ -55,11 +55,20 @@ func (s *readySource) WaitReady(ctx context.Context, timeout time.Duration) erro
 	f := s.factory
 	f.mu.Lock()
 	f.calls = append(f.calls, timeout)
+	wait := f.wait
 	f.mu.Unlock()
-	if f.wait == nil {
+	if wait == nil {
 		return nil
 	}
-	return f.wait(ctx, timeout)
+	return wait(ctx, timeout)
+}
+
+// answerWait scripts what the next readiness wait says. It is set after
+// the host exists, so a wait that reports a loss can reach it.
+func (f *readyFactory) answerWait(wait func(ctx context.Context, timeout time.Duration) error) {
+	f.mu.Lock()
+	f.wait = wait
+	f.mu.Unlock()
 }
 
 func (f *readyFactory) waits() []time.Duration {
@@ -378,11 +387,17 @@ func TestHostStartDoesNotWait(t *testing.T) {
 // enable started instead of leaving a process behind a closed host.
 func TestHostEnableWaitDoesNotHoldUpClose(t *testing.T) {
 	t.Parallel()
+	var host *Host
+	var events *stopEvents
 	factory := newReadyFactory(func(ctx context.Context, _ time.Duration) error {
+		// A loss that races the close is not reported either: the host
+		// is closing, and the stop below is what the application hears
+		// about this plugin.
+		host.notifyLost("hello")
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	host, _, events, _ := startReadyHost(
+	host, _, events, _ = startReadyHost(
 		t, HostOptions{EnableTimeout: 200 * time.Millisecond}, factory)
 	// The helper registers its own Close; this test closes the host
 	// first, and Close is idempotent.
@@ -429,6 +444,9 @@ func TestHostEnableWaitDoesNotHoldUpClose(t *testing.T) {
 type realPlugin struct {
 	host  *Host
 	store *Store
+	// dataRoot is where the plugin's data directory lives, which is where
+	// a helper process records its pid.
+	dataRoot string
 }
 
 // realPluginHost starts a host over a store holding the one plugin the
@@ -436,10 +454,11 @@ type realPlugin struct {
 // under test.
 func realPluginHost(t *testing.T, root string, opts HostOptions) *realPlugin {
 	t.Helper()
+	dataRoot := t.TempDir()
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
 		StateDir:    t.TempDir(),
-		DataDirRoot: t.TempDir(),
+		DataDirRoot: dataRoot,
 	})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -456,7 +475,7 @@ func realPluginHost(t *testing.T, root string, opts HostOptions) *realPlugin {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = host.Close() })
-	return &realPlugin{host: host, store: store}
+	return &realPlugin{host: host, store: store, dataRoot: dataRoot}
 }
 
 // helperManifest is a manifest whose stdio server is this test binary

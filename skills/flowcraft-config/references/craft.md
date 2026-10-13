@@ -158,7 +158,10 @@ refuses the connection comes back as that error, with the process stopped
 and the entry left disabled (`StopRolledBack`). A server that is not
 there yet is not a failure: the entry is recorded enabled and the source
 keeps reconnecting, and a loss that turns out to be terminal is reported
-as `StopFailed`. `Host.Start` replays the enabled set without waiting.
+as `StopFailed`. Enabling a plugin that was reported `StopFailed` starts
+it again — the source that gave up is replaced — and a loss that lands
+while an enable waits is reported once that call returns. `Host.Start`
+replays the enabled set without waiting.
 
 ### UI delivery
 
