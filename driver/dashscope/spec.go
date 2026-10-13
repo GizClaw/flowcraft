@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
@@ -48,6 +49,14 @@ type Spec struct {
 	// PollIntervalMillis paces task polling; defaults to 5000. Declared
 	// values below one millisecond keep the default rather than spinning.
 	PollIntervalMillis resource.Int `json:"poll_interval_millis,omitempty"`
+	// ReasoningScope declares the verification scope this deployment's
+	// reasoning traces belong to. DashScope emits reasoning traces and
+	// consumes them back only on models declared with
+	// generate.replay_reasoning, so the scope is what keeps a trace from
+	// being replayed to an address that cannot verify it: it replaces the
+	// derived scope — provider, model, and credential profile — and unset
+	// keeps that conservative default.
+	ReasoningScope string `json:"reasoning_scope,omitempty"`
 	// Models declares the line-up this deployment serves. It is the only
 	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
@@ -79,6 +88,16 @@ type ModelSpec struct {
 	Image ImageParams `json:"image,omitempty"`
 	// Video declares the video-surface facts for a kind "video" model.
 	Video VideoParams `json:"video,omitempty"`
+	// Generate declares the text-generation facts for a kind "generate"
+	// model.
+	Generate GenerateParams `json:"generate,omitempty"`
+	// Embed declares the text-embedding facts for a kind "embed" model.
+	Embed EmbedParams `json:"embed,omitempty"`
+	// TTS declares the speech-synthesis facts for a kind "tts" model.
+	TTS TTSParams `json:"tts,omitempty"`
+	// Transcribe declares the file-transcription facts for a kind
+	// "transcribe" model.
+	Transcribe TranscribeParams `json:"transcribe,omitempty"`
 }
 
 // ImageParams declares the image-surface facts for a kind "image" model.
@@ -227,6 +246,11 @@ var workspaceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // platform documents: a digit count followed by P (720P) or K (4K).
 var resolutionPattern = regexp.MustCompile(`^[0-9]+[PK]$`)
 
+// languageCodePattern checks a declared language code: the platform's list is
+// two-letter codes (zh, en, ja, ...), with an optional region or script
+// subtag for codes a deployment pins more precisely.
+var languageCodePattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]+)*$`)
+
 // Validate checks the model declaration for structural sanity: the kind is
 // one this driver serves, the declaration facts land on the right kind, and
 // every declared fact is well-formed. It deliberately does not check
@@ -236,10 +260,11 @@ func (m ModelSpec) Validate() error {
 		return fmt.Errorf("invalid model name %q", m.Name)
 	}
 	switch modelKind(m.Kind) {
-	case kindImage, kindVideo:
+	case kindImage, kindVideo, kindGenerate, kindEmbed, kindTTS,
+		kindTranscribe:
 	default:
 		return fmt.Errorf(
-			"model %q declares unsupported kind %q; this driver serves the Wan image and video families (kind \"image\" or \"video\") — text generation and embeddings ride the openai driver's compatibility endpoint (impl: openai)",
+			"model %q declares unsupported kind %q; this driver serves the Wan media families (kind \"image\" or \"video\"), native text generation (kind \"generate\"), text embeddings (kind \"embed\"), native speech synthesis (kind \"tts\"), and native file transcription (kind \"transcribe\")",
 			m.Name,
 			m.Kind,
 		)
@@ -253,16 +278,312 @@ func (m ModelSpec) Validate() error {
 	if !m.Video.empty() && modelKind(m.Kind) != kindVideo {
 		return fmt.Errorf("model %q sets video parameters on kind %q", m.Name, m.Kind)
 	}
+	if !m.Generate.empty() && modelKind(m.Kind) != kindGenerate {
+		return fmt.Errorf("model %q sets generate parameters on kind %q", m.Name, m.Kind)
+	}
+	if !m.Embed.empty() && modelKind(m.Kind) != kindEmbed {
+		return fmt.Errorf("model %q sets embed parameters on kind %q", m.Name, m.Kind)
+	}
+	if !m.TTS.empty() && modelKind(m.Kind) != kindTTS {
+		return fmt.Errorf("model %q sets tts parameters on kind %q", m.Name, m.Kind)
+	}
+	if !m.Transcribe.empty() && modelKind(m.Kind) != kindTranscribe {
+		return fmt.Errorf(
+			"model %q sets transcribe parameters on kind %q", m.Name, m.Kind)
+	}
 	if err := m.Image.Validate(); err != nil {
 		return fmt.Errorf("model %q: image: %w", m.Name, err)
 	}
 	if err := m.Video.Validate(); err != nil {
 		return fmt.Errorf("model %q: video: %w", m.Name, err)
 	}
+	if err := m.Generate.Validate(); err != nil {
+		return fmt.Errorf("model %q: generate: %w", m.Name, err)
+	}
+	if err := m.Embed.Validate(); err != nil {
+		return fmt.Errorf("model %q: embed: %w", m.Name, err)
+	}
+	if err := m.TTS.Validate(); err != nil {
+		return fmt.Errorf("model %q: tts: %w", m.Name, err)
+	}
+	if err := m.Transcribe.Validate(); err != nil {
+		return fmt.Errorf("model %q: transcribe: %w", m.Name, err)
+	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return fmt.Errorf("model %q: %w", m.Name, err)
 	}
 	return m.Limits.Validate()
+}
+
+// GenerateParams declares the text-generation facts for a kind "generate"
+// model: which protocol surface the model speaks, whether its input consumes
+// reasoning traces back, and which wire parameter the canonical
+// output-token control lowers to.
+type GenerateParams struct {
+	// API selects the protocol surface: "" (the classic text-generation
+	// endpoint, string content) or "multimodal" (the multimodal-generation
+	// endpoint, array content and typed media entries, which the Qwen3.5+
+	// commercial families and the VL/Omni models require even for text
+	// input).
+	API string `json:"api,omitempty"`
+	// ReplayReasoning declares that the model's input consumes
+	// reasoning_content on assistant turns. Multi-turn tool calling on
+	// thinking models that require the trace back (the Kimi deployments)
+	// sets it; everywhere else the trace rides out only, and a replayed one
+	// drops with the reason on the compile report.
+	ReplayReasoning bool `json:"replay_reasoning,omitempty"`
+	// MaxTokensParam selects the wire parameter the canonical
+	// max_output_tokens control lowers to: "" or "max_tokens" (limits the
+	// answer and, on thinking models, excludes the trace) or
+	// "max_completion_tokens" (limits answer plus trace; the platform's
+	// recommendation for thinking models).
+	MaxTokensParam string `json:"max_tokens_param,omitempty"`
+}
+
+// Validate checks the generate declaration for structural sanity.
+func (p GenerateParams) Validate() error {
+	switch p.API {
+	case generateAPIText, generateAPIMultimodal:
+	default:
+		return fmt.Errorf(
+			"unknown api %q, want %q (text-generation surface) or %q",
+			p.API, generateAPIText, generateAPIMultimodal,
+		)
+	}
+	switch p.MaxTokensParam {
+	case maxTokensParamAnswer, maxTokensParamMaxTokens, maxTokensParamCompletion:
+	default:
+		return fmt.Errorf(
+			"unknown max_tokens_param %q, want %q or %q",
+			p.MaxTokensParam, maxTokensParamMaxTokens, maxTokensParamCompletion,
+		)
+	}
+	return nil
+}
+
+// empty reports whether the declaration names no generate-surface fact.
+func (p GenerateParams) empty() bool {
+	return p.API == generateAPIText && !p.ReplayReasoning &&
+		p.MaxTokensParam == maxTokensParamAnswer
+}
+
+// EmbedParams declares the text-embedding facts for a kind "embed" model.
+type EmbedParams struct {
+	// BatchMax caps how many texts ride one request. The platform's cap is
+	// per model version — 10 for text-embedding-v3/v4, 20 for
+	// qwen3.7-text-embedding, 25 for v1/v2 — so a declaration raises it
+	// where the model allows. Zero uses the conservative default of 10,
+	// which every version accepts.
+	BatchMax int `json:"batch_max,omitempty"`
+	// Dimensions whitelists the vector sizes this model accepts — the
+	// platform's exact-size constraint, which the canonical
+	// custom_embed_dimensions capability cannot state. Empty leaves the
+	// requested size to the endpoint.
+	Dimensions []int `json:"dimensions,omitempty"`
+	// Instruct declares that the model accepts the retrieval instruction
+	// (text-embedding-v4 and qwen3.7-text-embedding do; v1-v3 do not).
+	Instruct bool `json:"instruct,omitempty"`
+}
+
+// Validate checks the embed declaration for structural sanity.
+func (p EmbedParams) Validate() error {
+	if p.BatchMax < 0 {
+		return fmt.Errorf("batch_max must not be negative")
+	}
+	seen := make(map[int]struct{}, len(p.Dimensions))
+	for _, dimension := range p.Dimensions {
+		if dimension <= 0 {
+			return fmt.Errorf("dimensions must be positive, not %d", dimension)
+		}
+		if _, exists := seen[dimension]; exists {
+			return fmt.Errorf("dimensions repeats %d", dimension)
+		}
+		seen[dimension] = struct{}{}
+	}
+	return nil
+}
+
+// TTSParams declares the speech-synthesis surface facts for one kind "tts"
+// model: the Qwen-TTS family rides the multimodal-generation surface with
+// input.text, the required input.voice, and the optional input.language_type,
+// and answers with one WAV file whose payload is raw PCM.
+//
+// The surface has no format control, so the format facts describe the answer
+// rather than a knob: the canonical request's encoding, sample-rate, and
+// channel values are checked against them, and an ask the model does not serve
+// is refused at compile time rather than answered in another shape.
+type TTSParams struct {
+	// PromptLimit caps the request text in characters; the platform's own
+	// cap is per model (600 on qwen3-tts-flash). Zero leaves the length to
+	// the endpoint.
+	PromptLimit int `json:"prompt_limit,omitempty"`
+	// LanguageSelect declares that the model accepts input.language_type
+	// (the Qwen-TTS models do). A declaration without it refuses a
+	// requested voice language rather than dropping it silently.
+	LanguageSelect bool `json:"language_select,omitempty"`
+	// Encoding is the canonical payload encoding the model serves — pcm16
+	// on the Qwen-TTS family, whose answer is a WAV container around raw
+	// PCM. Required on kind "tts": a canonical audio intent has to name an
+	// encoding (the canonical format validates one), so a declaration that
+	// names none could serve no request at all.
+	Encoding media.AudioEncoding `json:"encoding,omitempty"`
+	// SampleRateHz and Channels declare the served stream's shape. An
+	// encoding the canonical format calls raw — pcm16, pcm24, float32 —
+	// requires both, because the canonical format requires them alongside
+	// it, and a request's values have to match the declaration's.
+	SampleRateHz int `json:"sample_rate_hz,omitempty"`
+	Channels     int `json:"channels,omitempty"`
+}
+
+// Validate checks the speech declaration for structural sanity.
+func (p TTSParams) Validate() error {
+	if p.PromptLimit < 0 {
+		return fmt.Errorf("prompt_limit must not be negative")
+	}
+	raw := false
+	switch p.Encoding {
+	case "":
+	case media.AudioEncodingPCM16, media.AudioEncodingPCM24, media.AudioEncodingFloat32:
+		raw = true
+	case media.AudioEncodingMP3, media.AudioEncodingOpus,
+		media.AudioEncodingAAC, media.AudioEncodingFLAC:
+	default:
+		return fmt.Errorf(
+			"unknown encoding %q; the canonical alphabet holds pcm16, pcm24, float32, mp3, opus, aac, and flac",
+			p.Encoding,
+		)
+	}
+	if p.SampleRateHz < 0 {
+		return fmt.Errorf("sample_rate_hz must not be negative")
+	}
+	if p.Channels < 0 {
+		return fmt.Errorf("channels must not be negative")
+	}
+	if raw && (p.SampleRateHz == 0 || p.Channels == 0) {
+		return fmt.Errorf(
+			"the raw encoding %q requires sample_rate_hz and channels: a pcm16 request carries both",
+			p.Encoding,
+		)
+	}
+	return nil
+}
+
+// empty reports whether the declaration names no speech-surface fact.
+func (p TTSParams) empty() bool {
+	return p.PromptLimit == 0 && !p.LanguageSelect && p.Encoding == "" &&
+		p.SampleRateHz == 0 && p.Channels == 0
+}
+
+// TranscribeParams declares the file-transcription facts for a kind
+// "transcribe" model. The canonical operation carries one audio file, a
+// language hint, a prompt, and the timestamps ask; the native pipeline
+// lowers those onto input.file_urls and the parameters object, and every
+// further parameter the platform documents is declared here.
+//
+// The sync flash models (qwen-audio-3.x-asr-flash, fun-asr-flash) and the
+// realtime WebSocket surface are not served by this kind: it speaks the
+// asynchronous file pipeline only, which is the surface every non-realtime
+// recognition model shares.
+type TranscribeParams struct {
+	// Context declares the surface accepts input.context, the channel the
+	// canonical prompt lowers to: one user turn carrying a vocabulary, a
+	// prior transcript, or domain terms that bias recognition.
+	Context bool `json:"context,omitempty"`
+	// PromptLimit caps the prompt in characters. The platform caps the
+	// context (400 characters on the filetrans families) and truncates
+	// silently past its cap, so a declared limit refuses a longer prompt
+	// instead of shipping a request the caller did not write. Zero leaves
+	// the length to the endpoint.
+	PromptLimit int `json:"prompt_limit,omitempty"`
+	// LanguageHints declares the surface accepts parameters.language_hints.
+	// A declaration without it refuses a requested language rather than
+	// dropping it silently.
+	LanguageHints bool `json:"language_hints,omitempty"`
+	// Languages lists the language codes the model accepts, e.g. [zh en].
+	// Empty leaves the code set to the endpoint's own validation.
+	Languages []string `json:"languages,omitempty"`
+	// Timestamps declares the surface accepts the canonical timestamps
+	// control, lowered to parameters.timestamp_alignment_enabled. The
+	// result's sentence and word timing is decoded whenever the platform
+	// reports it; the declaration governs the request control alone.
+	Timestamps bool `json:"timestamps,omitempty"`
+	// DisfluencyRemoval declares parameters.disfluency_removal_enabled, the
+	// filler-word filter (on by default on the models that carry it).
+	DisfluencyRemoval bool `json:"disfluency_removal,omitempty"`
+	// SpecialWordFilter declares parameters.special_word_filter, the
+	// sensitive-word handling spec.
+	SpecialWordFilter bool `json:"special_word_filter,omitempty"`
+	// Vocabulary declares parameters.vocabulary_id and parameters.vocabulary,
+	// the prebuilt and inline hotword channels.
+	Vocabulary bool `json:"vocabulary,omitempty"`
+	// KeepDialect declares parameters.keep_dialect, which keeps dialect
+	// wording instead of normalizing it to Mandarin (qwen-audio-3.1).
+	KeepDialect bool `json:"keep_dialect,omitempty"`
+	// Channel declares the surface accepts parameters.channel_id, the audio
+	// track selector. The canonical request carries one transcript, so a
+	// declaration serves one track per request.
+	Channel bool `json:"channel,omitempty"`
+}
+
+// Validate checks the transcription declaration for structural sanity.
+func (p TranscribeParams) Validate() error {
+	if p.PromptLimit < 0 {
+		return fmt.Errorf("prompt_limit must not be negative")
+	}
+	seen := make(map[string]struct{}, len(p.Languages))
+	for _, code := range p.Languages {
+		if !languageCodePattern.MatchString(code) {
+			return fmt.Errorf(
+				"language %q must be a code like zh or en", code)
+		}
+		if _, exists := seen[code]; exists {
+			return fmt.Errorf("languages repeats %q", code)
+		}
+		seen[code] = struct{}{}
+	}
+	return nil
+}
+
+// empty reports whether the declaration names no transcription fact.
+func (p TranscribeParams) empty() bool {
+	return !p.Context && p.PromptLimit == 0 && !p.LanguageHints &&
+		len(p.Languages) == 0 && !p.Timestamps && !p.DisfluencyRemoval &&
+		!p.SpecialWordFilter && !p.Vocabulary && !p.KeepDialect && !p.Channel
+}
+
+// empty reports whether the declaration names no embed-surface fact.
+func (p EmbedParams) empty() bool {
+	return p.BatchMax == 0 && len(p.Dimensions) == 0 && !p.Instruct
+}
+
+// maxReasoningScopeLen bounds the declared scope token: it lands in a
+// compile-report reason, so it stays short and printable.
+const maxReasoningScopeLen = 128
+
+// validateReasoningScope checks the declared verification scope. The token is
+// opaque to the driver, but the comparison is exact, so surrounding
+// whitespace and control characters are rejected rather than normalized.
+func validateReasoningScope(scope string) error {
+	if scope == "" {
+		return nil
+	}
+	if strings.TrimSpace(scope) != scope {
+		return fmt.Errorf(
+			"reasoning_scope must not have surrounding whitespace")
+	}
+	if len(scope) > maxReasoningScopeLen {
+		return fmt.Errorf(
+			"reasoning_scope is %d bytes, at most %d are allowed",
+			len(scope), maxReasoningScopeLen,
+		)
+	}
+	for _, char := range scope {
+		if unicode.IsControl(char) {
+			return fmt.Errorf(
+				"reasoning_scope must not contain control characters")
+		}
+	}
+	return nil
 }
 
 // Validate checks the image declaration for structural sanity.
@@ -461,6 +782,9 @@ func (s Spec) Validate() error {
 	}
 	if s.PollIntervalMillis < 0 {
 		return fmt.Errorf("poll_interval_millis must not be negative")
+	}
+	if err := validateReasoningScope(s.ReasoningScope); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for _, declared := range s.Models {

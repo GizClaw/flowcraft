@@ -170,7 +170,7 @@ that several models or credentials accept each other's traces: reasoning
 payloads are verified against the model and account that minted them, and a
 mismatch is a provider 400 that no retry can repair.
 
-### DashScope media surfaces (Wan)
+### DashScope native surfaces
 
 `impl: dashscope` speaks Alibaba Cloud Model Studio's native protocol — the
 surfaces the OpenAI-compatible endpoint does not carry — so its spec is flat
@@ -228,13 +228,45 @@ provider:
             audio_switch: true
             smart_duration: true
             prompt_limit: 20000
+        - name: qwen3.8-max
+          kind: generate
+          capabilities: {inputs: [text, image, video, audio], outputs: [text], hosted_web_search: true}
+          generate:
+            api: multimodal           # the Qwen3.5+ shape, typed content entries
+            max_tokens_param: max_completion_tokens
+            replay_reasoning: true    # multi-turn tool calling with thinking on
+        - name: qwen3.7-text-embedding
+          kind: embed
+          capabilities: {inputs: [text], outputs: [text], custom_embed_dimensions: true}
+          embed:
+            batch_max: 20             # this version's cap; zero uses the safe 10
+            dimensions: [2560, 1024]  # the exact sizes the model accepts
+            instruct: true            # accepts a retrieval instruction
+        - name: qwen3-tts-flash
+          kind: tts
+          capabilities: {inputs: [text], outputs: [audio]}
+          tts:
+            prompt_limit: 600         # the model's own cap, in characters
+            language_select: true     # takes input.language_type
+            encoding: pcm16           # the payload the WAV answer carries
+            sample_rate_hz: 24000     # verified against the served header
+            channels: 1
+        - name: paraformer-v2
+          kind: transcribe
+          capabilities: {inputs: [audio], outputs: [text]}
+          transcribe:
+            context: true             # takes input.context (the canonical prompt)
+            prompt_limit: 400         # the family's own cap, in characters
+            language_hints: true      # takes parameters.language_hints
+            languages: [zh, en]       # the codes the model accepts
+            timestamps: true          # takes timestamp_alignment_enabled
     profiles:
       - secrets:
           api_key: ${env:DASHSCOPE_API_KEY}
 ```
 
-`kind` is `image` or `video`; the driver serves no generate or embed
-surface. `image` declares the surface (`api: sync` for the Wan 2.6+
+`kind` is `image`, `video`, `generate`, `embed`, `tts`, or `transcribe`. `image` declares the
+surface (`api: sync` for the Wan 2.6+
 single-call multimodal endpoint, empty for the async task pipeline), whether
 the model edits (`edit`, which requires the `function` option) or takes a
 reference image (`reference_image`), the size envelope (`sizes`, or
@@ -286,6 +318,58 @@ rejected at compile time rather than dropped — including one the surface
 never documents, such as `negative_prompt` on the Wan 3.0 media array — and
 an extension addressed to the other operation is rejected as invalid for
 this one.
+
+`generate` declares which text surface the model rides (`api`: empty for the
+classic text-generation endpoint, `multimodal` for the array-content surface
+the Qwen3.5+ families require even for text input), the wire parameter the
+canonical output budget lowers to (`max_tokens_param`: `max_tokens` limits the
+answer and excludes the thinking trace, `max_completion_tokens` limits both and
+is the platform's recommendation for thinking models), and `replay_reasoning`
+for the thinking models whose input consumes `reasoning_content` again, which
+multi-turn tool calling needs. Everything canonical rides the native request:
+streaming (`X-DashScope-Sse` with `parameters.incremental_output`), tool
+calls, structured output, the thinking controls, media input on the multimodal
+surface, and hosted web search, whose retrieved sources come back as the
+response's `web_search` output. `generate_options` carries the knobs without a
+canonical field: `seed`, `top_k`, `repetition_penalty`, `presence_penalty`,
+`stop`, `parallel_tool_calls`, `enable_search` with its `search_options`,
+`thinking_budget`, and `vl_high_resolution_images`. `embed` declares
+`batch_max` (how many texts one request carries; zero uses the conservative 10
+every model version accepts), the exact vector sizes the model serves
+(`dimensions` — the platform takes a size, not a bound, so the canonical
+capability cannot state it), and `instruct` for the versions that accept a
+retrieval instruction; `embed_options` carries the query/document `text_type`
+and that `instruct` string, and each batch's token counts are summed into the
+response.
+
+`tts` declares the speech surface: the request text becomes `input.text`, the
+canonical voice becomes `input.voice`, and `language_select` admits
+`input.language_type`. The surface takes no format control, so `encoding`,
+`sample_rate_hz`, and `channels` describe what the model serves — the answer is
+a WAV file around that payload — and a canonical request naming another
+encoding (or another rate or channel count) is refused at compile time rather
+than answered in a shape the caller did not choose. `encoding` is required: the
+canonical audio format always carries one, so a declaration that names none
+could serve no request. `prompt_limit` caps the text in characters. The answer
+part states the declared payload and names no media type (the canonical
+alphabet has no WAV container token), so a caller that needs the container
+reads its RIFF header; the platform's URL is valid for 24 hours.
+
+`transcribe` declares the file-transcription surface: the canonical audio
+source becomes `input.file_urls` — it has to be a URL, because the platform
+fetches the file itself, so inline bytes reject — the canonical language hint
+becomes `language_hints`, the prompt `input.context`, and the timestamps ask
+`timestamp_alignment_enabled`. `context`, `language_hints`, `timestamps`,
+`disfluency_removal`, `special_word_filter`, `vocabulary`, `channel`, and
+`keep_dialect` declare which parameters the model family serves — an option a
+declaration leaves off rejects rather than riding the wire — and `languages`
+lists the codes the model accepts, with `prompt_limit` capping the prompt in
+characters. The terminal query's `transcription_url` points at the result
+file, the one artifact the driver fetches itself, because the transcript is
+the answer rather than a pointer at one: the decoded result carries the
+joined text, the sentence and word timing when the platform reports it, and
+the task's billed duration. The sync flash models and the realtime WebSocket
+surface are not served by this kind.
 
 ## inference assembly
 

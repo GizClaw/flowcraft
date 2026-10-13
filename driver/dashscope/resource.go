@@ -91,6 +91,15 @@ func buildProvider(
 			extensionVideo: inference.ExtensionDecoderFor(func() *VideoOptions {
 				return &VideoOptions{Provider: settings.ID}
 			}),
+			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
+				return &GenerateOptions{Provider: settings.ID}
+			}),
+			extensionEmbed: inference.ExtensionDecoderFor(func() *EmbedOptions {
+				return &EmbedOptions{Provider: settings.ID}
+			}),
+			extensionTranscribe: inference.ExtensionDecoderFor(func() *TranscribeOptions {
+				return &TranscribeOptions{Provider: settings.ID}
+			}),
 		},
 	}
 	for _, profile := range settings.Profiles {
@@ -146,24 +155,48 @@ func openersFor(
 	}
 
 	var openers inference.Openers
-	openers.Generate = func(
-		ctx context.Context,
-		model model.ModelRef,
-	) (inference.GenerateOperations, error) {
-		cls, err := open(ctx, model.Profile)
-		if err != nil {
-			return inference.GenerateOperations{}, err
+	switch modelKind(declared.Kind) {
+	case kindImage, kindVideo, kindGenerate, kindTTS:
+		openers.Generate = func(
+			ctx context.Context,
+			model model.ModelRef,
+		) (inference.GenerateOperations, error) {
+			cls, err := open(ctx, model.Profile)
+			if err != nil {
+				return inference.GenerateOperations{}, err
+			}
+			switch modelKind(declared.Kind) {
+			case kindImage:
+				return openImage(cls, spec, declared, id)
+			case kindVideo:
+				return openVideo(cls, spec, declared, id)
+			case kindTTS:
+				return openTTS(cls, declared, id)
+			default:
+				return openGenerate(cls, spec, declared, id, model.Profile)
+			}
 		}
-		switch modelKind(declared.Kind) {
-		case kindImage:
-			return openImage(cls, spec, declared, id)
-		case kindVideo:
-			return openVideo(cls, spec, declared, id)
-		default:
-			return inference.GenerateOperations{}, fmt.Errorf(
-				"dashscope: model %q has unsupported kind %q",
-				id.Name, declared.Kind,
-			)
+	case kindEmbed:
+		openers.Embed = func(
+			ctx context.Context,
+			model model.ModelRef,
+		) (inference.EmbedDriver, error) {
+			cls, err := open(ctx, model.Profile)
+			if err != nil {
+				return nil, err
+			}
+			return openEmbed(cls, declared, id)
+		}
+	case kindTranscribe:
+		openers.Transcribe = func(
+			ctx context.Context,
+			model model.ModelRef,
+		) (inference.TranscribeOperations, error) {
+			cls, err := open(ctx, model.Profile)
+			if err != nil {
+				return inference.TranscribeOperations{}, err
+			}
+			return openTranscribe(cls, spec, declared, id)
 		}
 	}
 	return openers

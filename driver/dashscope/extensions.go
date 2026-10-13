@@ -2,6 +2,8 @@ package dashscope
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -27,6 +29,12 @@ const providerID = "dashscope"
 const extensionImage = "image_options"
 
 const extensionVideo = "video_options"
+
+const extensionGenerate = "generate_options"
+
+const extensionEmbed = "embed_options"
+
+const extensionTranscribe = "transcribe_options"
 
 // extensionProvider resolves the deployment provider ID an extension
 // targets, defaulting to the driver name.
@@ -237,4 +245,304 @@ func (o VideoOptions) Validate() error {
 		return fmt.Errorf("unknown shot_type %q, want single or multi", o.ShotType)
 	}
 	return nil
+}
+
+// GenerateOptions carries text-generation settings that have no canonical
+// representation: the sampler's remaining dials, the platform's server-side
+// search switches, the thinking budget, and the VL surfaces' high-resolution
+// switch.
+type GenerateOptions struct {
+	// Provider targets a deployment provider ID other than "dashscope".
+	// Attempts for any other provider leave the extension inert rather than
+	// rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// Seed pins the sampler where the model supports a deterministic seed.
+	Seed *int64 `json:"seed,omitempty"`
+	// TopK caps the candidate pool; must be positive.
+	TopK *int `json:"top_k,omitempty"`
+	// RepetitionPenalty penalizes tokens already present in the output
+	// (1.0 is neutral); the platform's own bound decides the range.
+	RepetitionPenalty *float64 `json:"repetition_penalty,omitempty"`
+	// PresencePenalty shifts the sampler by whether a token already
+	// appeared; the platform's own bound decides the range.
+	PresencePenalty *float64 `json:"presence_penalty,omitempty"`
+	// Stop lists the sequences that end the generation. The platform caps
+	// the list at four entries.
+	Stop []string `json:"stop,omitempty"`
+	// ParallelToolCalls allows several tool calls in one turn. Unset leaves
+	// the platform default in place.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+	// EnableSearch turns the platform's server-side web search on or off.
+	// Only models declaring capabilities.hosted_web_search accept it; the
+	// retrieved sources come back as the response's SearchOutput.
+	EnableSearch *bool `json:"enable_search,omitempty"`
+	// SearchOptions tunes the retrieval strategy and the answer
+	// annotations. It requires EnableSearch true: search_option only apply
+	// while search is enabled.
+	SearchOptions *SearchOptions `json:"search_options,omitempty"`
+	// ThinkingBudget caps the thinking tokens on models whose reasoning has
+	// a depth dial; a request that disables thinking cannot bind a budget.
+	ThinkingBudget *int `json:"thinking_budget,omitempty"`
+	// VlHighResolutionImages lifts the input-image pixel cap of the VL
+	// models to the platform's high-resolution ceiling; only models
+	// declaring image input accept it.
+	VlHighResolutionImages *bool `json:"vl_high_resolution_images,omitempty"`
+}
+
+// SearchOptions is the search_options sub-object of GenerateOptions.
+type SearchOptions struct {
+	// Strategy selects the retrieval policy: "turbo", "max", or "agent".
+	// Which strategies a model serves is the platform's fact — some
+	// families reject "agent" — so the driver validates the documented
+	// vocabulary and leaves support to the endpoint.
+	Strategy string `json:"strategy,omitempty"`
+	// EnableSource attaches the source list to the answer.
+	EnableSource *bool `json:"enable_source,omitempty"`
+	// EnableCitation marks the answer text with citation markers.
+	EnableCitation *bool `json:"enable_citation,omitempty"`
+	// CitationFormat overrides the citation marker format the platform
+	// documents as "[<number>]".
+	CitationFormat string `json:"citation_format,omitempty"`
+}
+
+func (o GenerateOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o GenerateOptions) ExtensionID() string { return extensionGenerate }
+
+// Clone returns a deep copy: the pointer leaves are the caller's values, not
+// shared ones.
+func (o GenerateOptions) Clone() inference.Extension {
+	o.Seed = ptr.Clone(o.Seed)
+	o.TopK = ptr.Clone(o.TopK)
+	o.RepetitionPenalty = ptr.Clone(o.RepetitionPenalty)
+	o.PresencePenalty = ptr.Clone(o.PresencePenalty)
+	o.Stop = append([]string(nil), o.Stop...)
+	o.ParallelToolCalls = ptr.Clone(o.ParallelToolCalls)
+	o.EnableSearch = ptr.Clone(o.EnableSearch)
+	if o.SearchOptions != nil {
+		cloned := *o.SearchOptions
+		cloned.EnableSource = ptr.Clone(o.SearchOptions.EnableSource)
+		cloned.EnableCitation = ptr.Clone(o.SearchOptions.EnableCitation)
+		o.SearchOptions = &cloned
+	}
+	o.ThinkingBudget = ptr.Clone(o.ThinkingBudget)
+	o.VlHighResolutionImages = ptr.Clone(o.VlHighResolutionImages)
+	return o
+}
+
+func (o GenerateOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.Seed != nil {
+		fields = append(fields, "seed")
+	}
+	if o.TopK != nil {
+		fields = append(fields, "top_k")
+	}
+	if o.RepetitionPenalty != nil {
+		fields = append(fields, "repetition_penalty")
+	}
+	if o.PresencePenalty != nil {
+		fields = append(fields, "presence_penalty")
+	}
+	if len(o.Stop) > 0 {
+		fields = append(fields, "stop")
+	}
+	if o.ParallelToolCalls != nil {
+		fields = append(fields, "parallel_tool_calls")
+	}
+	if o.EnableSearch != nil {
+		fields = append(fields, "enable_search")
+	}
+	if o.SearchOptions != nil {
+		fields = append(fields, "search_options")
+	}
+	if o.ThinkingBudget != nil {
+		fields = append(fields, "thinking_budget")
+	}
+	if o.VlHighResolutionImages != nil {
+		fields = append(fields, "vl_high_resolution_images")
+	}
+	return fields
+}
+
+func (o GenerateOptions) Validate() error {
+	if o.TopK != nil && *o.TopK <= 0 {
+		return fmt.Errorf("top_k must be positive")
+	}
+	if o.ThinkingBudget != nil && *o.ThinkingBudget <= 0 {
+		return fmt.Errorf("thinking_budget must be positive")
+	}
+	for _, stop := range o.Stop {
+		if stop == "" {
+			return fmt.Errorf("stop sequences must not be empty")
+		}
+	}
+	if o.SearchOptions != nil {
+		if err := o.SearchOptions.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate checks the search tuning for structural sanity.
+func (o SearchOptions) Validate() error {
+	switch o.Strategy {
+	case "", "turbo", "max", "agent":
+	default:
+		return fmt.Errorf(
+			"unknown search strategy %q, want turbo, max, or agent",
+			o.Strategy,
+		)
+	}
+	if o.CitationFormat != "" && o.EnableCitation != nil && !*o.EnableCitation {
+		return fmt.Errorf(
+			"citation_format requires citations to be enabled")
+	}
+	return nil
+}
+
+// EmbedOptions carries text-embedding settings that have no canonical
+// representation: the query/document role hint of asymmetric retrieval and the
+// retrieval instruction the newer models accept.
+type EmbedOptions struct {
+	// Provider targets a deployment provider ID other than "dashscope".
+	// Attempts for any other provider leave the extension inert rather than
+	// rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// TextType marks the input as a retrieval "query" or a stored
+	// "document". Unset leaves the platform default (document).
+	TextType string `json:"text_type,omitempty"`
+	// Instruct adds a retrieval instruction for query embeddings; only
+	// deployments declaring embed.instruct accept it, and it binds only
+	// with TextType "query".
+	Instruct string `json:"instruct,omitempty"`
+}
+
+func (o EmbedOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o EmbedOptions) ExtensionID() string { return extensionEmbed }
+
+func (o EmbedOptions) Clone() inference.Extension { return o }
+
+func (o EmbedOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.TextType != "" {
+		fields = append(fields, "text_type")
+	}
+	if o.Instruct != "" {
+		fields = append(fields, "instruct")
+	}
+	return fields
+}
+
+func (o EmbedOptions) Validate() error {
+	switch o.TextType {
+	case "", "query", "document":
+	default:
+		return fmt.Errorf(
+			"unknown text_type %q, want query or document", o.TextType,
+		)
+	}
+	return nil
+}
+
+// TranscribeOptions carries file-transcription settings that have no canonical
+// representation: the track selector, the filler-word filter, the
+// sensitive-word spec, and the prebuilt and inline hotword channels. Each knob
+// is honored only on models whose declaration names it, because the platform
+// documents the parameter set per model family.
+//
+// Speaker diarization is deliberately absent. The platform's
+// parameters.diarization_enabled makes the result carry speaker_id on every
+// sentence, and the canonical transcription response has no field for a
+// speaker: offering the switch would bill the caller for labels this driver
+// could not deliver. It joins the extension when the canonical response grows
+// a home for speakers.
+type TranscribeOptions struct {
+	// Provider targets a deployment provider ID other than "dashscope".
+	// Attempts for any other provider leave the extension inert rather than
+	// rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// ChannelID selects the audio track to recognize, from 0. Unset leaves
+	// the platform default (the first track). Tracks are billed
+	// independently, and the canonical response carries one transcript, so
+	// the driver sends exactly one index.
+	ChannelID *int `json:"channel_id,omitempty"`
+	// DisfluencyRemoval filters filler words from the transcript. Unset
+	// leaves the provider's own default in place.
+	DisfluencyRemoval *bool `json:"disfluency_removal_enabled,omitempty"`
+	// SpecialWordFilter carries the sensitive-word handling spec, e.g.
+	// "nonsense:1" or "block:bad,awful".
+	SpecialWordFilter string `json:"special_word_filter,omitempty"`
+	// VocabularyID references a prebuilt hotword list.
+	VocabularyID string `json:"vocabulary_id,omitempty"`
+	// Vocabulary carries inline hotwords keyed by the term, weighted 1-5 (or
+	// 50 for a super hotword).
+	Vocabulary map[string]int `json:"vocabulary,omitempty"`
+	// KeepDialect keeps dialect wording instead of normalizing it to
+	// Mandarin; only qwen-audio-3.1-asr-flash-filetrans reads it.
+	KeepDialect *bool `json:"keep_dialect,omitempty"`
+}
+
+func (o TranscribeOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o TranscribeOptions) ExtensionID() string { return extensionTranscribe }
+
+// Clone returns a deep copy: the map and the pointer leaves are the caller's
+// values, not shared ones.
+func (o TranscribeOptions) Clone() inference.Extension {
+	o.ChannelID = ptr.Clone(o.ChannelID)
+	o.DisfluencyRemoval = ptr.Clone(o.DisfluencyRemoval)
+	o.KeepDialect = ptr.Clone(o.KeepDialect)
+	o.Vocabulary = maps.Clone(o.Vocabulary)
+	return o
+}
+
+func (o TranscribeOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.ChannelID != nil {
+		fields = append(fields, "channel_id")
+	}
+	if o.DisfluencyRemoval != nil {
+		fields = append(fields, "disfluency_removal_enabled")
+	}
+	if o.SpecialWordFilter != "" {
+		fields = append(fields, "special_word_filter")
+	}
+	if o.VocabularyID != "" {
+		fields = append(fields, "vocabulary_id")
+	}
+	if len(o.Vocabulary) > 0 {
+		fields = append(fields, "vocabulary")
+	}
+	if o.KeepDialect != nil {
+		fields = append(fields, "keep_dialect")
+	}
+	return fields
+}
+
+func (o TranscribeOptions) Validate() error {
+	if o.ChannelID != nil && *o.ChannelID < 0 {
+		return fmt.Errorf(
+			"channel_id must not be negative, not %d", *o.ChannelID)
+	}
+	for _, term := range sortedVocabularyKeys(o.Vocabulary) {
+		weight := o.Vocabulary[term]
+		if (weight < 1 || weight > 5) && weight != 50 {
+			return fmt.Errorf(
+				"vocabulary weight for %q must be 1-5 or 50, not %d",
+				term, weight,
+			)
+		}
+	}
+	return nil
+}
+
+// sortedVocabularyKeys renders the vocabulary keys in a stable order so a
+// validation error names the same term on every run.
+func sortedVocabularyKeys(vocabulary map[string]int) []string {
+	keys := make([]string, 0, len(vocabulary))
+	for term := range vocabulary {
+		keys = append(keys, term)
+	}
+	slices.Sort(keys)
+	return keys
 }

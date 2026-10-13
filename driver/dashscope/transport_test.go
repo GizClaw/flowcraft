@@ -33,11 +33,28 @@ type recordedCall struct {
 type fakePlatform struct {
 	mu    sync.Mutex
 	calls []recordedCall
+	// base is the server's own address, filled in when the fake starts; a
+	// responder that has to name a link the driver will fetch — the
+	// transcription result file — builds it from here.
+	base string
 
 	create func(body map[string]any) (int, string)
 	query  func(taskID string) (int, string)
 	sync   func(body map[string]any) (int, string)
+	// generate answers the text surfaces' unary calls, stream the
+	// event-stream shape they take when the sse header is set, and embed
+	// the text-embedding surface.
+	generate func(body map[string]any) (int, string)
+	embed    func(body map[string]any) (int, string)
+	stream   func(body map[string]any) (int, string)
+	// artifact answers the result-file fetches: the transcription task's
+	// transcription_url points back at this fake, so the download the driver
+	// performs itself is scripted like every other call.
+	artifact func(path string) (int, string)
 }
+
+// artifactPathPrefix is where the fake serves scripted result files.
+const artifactPathPrefix = "/artifacts/"
 
 func (p *fakePlatform) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,10 +84,41 @@ func (p *fakePlatform) handler() http.Handler {
 			}, "")
 		case r.URL.Path == imagePathMultimodal:
 			p.answer(w, func(string) (int, string) {
-				if p.sync == nil {
+				if call.sse == "enable" && p.stream != nil {
+					return p.stream(call.body)
+				}
+				responder := p.sync
+				if responder == nil {
+					responder = p.generate
+				}
+				if responder == nil {
 					return http.StatusOK, "{}"
 				}
-				return p.sync(call.body)
+				return responder(call.body)
+			}, "")
+		case r.URL.Path == generatePathText:
+			p.answer(w, func(string) (int, string) {
+				if call.sse == "enable" && p.stream != nil {
+					return p.stream(call.body)
+				}
+				if p.generate == nil {
+					return http.StatusOK, "{}"
+				}
+				return p.generate(call.body)
+			}, "")
+		case r.URL.Path == embedPathText:
+			p.answer(w, func(string) (int, string) {
+				if p.embed == nil {
+					return http.StatusOK, "{}"
+				}
+				return p.embed(call.body)
+			}, "")
+		case strings.HasPrefix(r.URL.Path, artifactPathPrefix):
+			p.answer(w, func(string) (int, string) {
+				if p.artifact == nil {
+					return http.StatusOK, "{}"
+				}
+				return p.artifact(r.URL.Path)
 			}, "")
 		default:
 			p.answer(w, func(string) (int, string) {
@@ -116,6 +164,7 @@ func testClients(t *testing.T, platform *fakePlatform) *mediaClient {
 	t.Helper()
 	server := httptest.NewServer(platform.handler())
 	t.Cleanup(server.Close)
+	platform.base = server.URL
 	return newMediaClient("sk-test", server.URL, "", Spec{})
 }
 

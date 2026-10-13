@@ -35,8 +35,9 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   by the application (`plugin.Installer`).
 - **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance,
-  MiniMax, and DashScope (Alibaba Cloud Model Studio's native Wan image and
-  video surfaces).
+  MiniMax, and DashScope (Alibaba Cloud Model Studio's native surfaces: text
+  generation, embeddings, speech synthesis, file transcription, and the Wan
+  image and video families).
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
   (`backends/checkpoint`), the long-term memory backend with its eval
   harness (`backends/memory`), and the encrypted keychain secret store
@@ -295,7 +296,7 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 - Providers registered as factories: OpenAI (OpenAI, Azure, DeepSeek, Kimi and
   compatible gateways), Anthropic (Anthropic and compatible Messages
   endpoints), ByteDance, MiniMax, and DashScope (Alibaba Cloud Model Studio's
-  native Wan image and video surfaces).
+  native text, embedding, speech, image, and video surfaces).
 
 ### Application assembly and plugins (`craft`)
 

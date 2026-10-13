@@ -25,6 +25,7 @@ const (
 	codeDataInspection  = "DataInspectionFailed"
 	codeIPInfringement  = "IPInfringementSuspect"
 	codeInvalidTask     = "InvalidTaskId"
+	codeInvalidFile     = "InvalidFile"
 	codeInternalError   = "InternalError"
 	codeServiceUnready  = "ServiceUnavailable"
 	codeUnsupportedMode = "UnsupportedModel"
@@ -79,6 +80,7 @@ func classifyCode(code string, err error) error {
 		strings.HasPrefix(code, codeDataInspection),
 		strings.HasPrefix(code, codeIPInfringement),
 		strings.HasPrefix(code, codeInvalidTask),
+		strings.HasPrefix(code, codeInvalidFile),
 		strings.HasPrefix(code, codeUnsupportedMode):
 		return errdefs.Validation(err)
 	case strings.HasPrefix(code, codeInternalError),

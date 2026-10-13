@@ -129,6 +129,80 @@ func TestModelSpecValidate(t *testing.T) {
 			reason: "video parameters on kind",
 		},
 		{
+			name:   "tts parameters on a generate model",
+			model:  ModelSpec{Name: "qwen3.7-max", Kind: "generate", TTS: TTSParams{PromptLimit: 600}},
+			reason: "sets tts parameters on kind",
+		},
+		{
+			name:   "negative speech prompt limit",
+			model:  ModelSpec{Name: "qwen3-tts-flash", Kind: "tts", TTS: TTSParams{PromptLimit: -1}},
+			reason: "must not be negative",
+		},
+		{
+			name:   "speech encoding outside the canonical alphabet",
+			model:  ModelSpec{Name: "qwen3-tts-flash", Kind: "tts", TTS: TTSParams{Encoding: "ogg"}},
+			reason: "unknown encoding",
+		},
+		{
+			name: "raw speech encoding without a rate and channel count",
+			model: ModelSpec{
+				Name: "qwen3-tts-flash",
+				Kind: "tts",
+				TTS:  TTSParams{Encoding: media.AudioEncodingPCM16},
+			},
+			reason: "requires sample_rate_hz and channels",
+		},
+		{
+			name:   "unknown generate surface",
+			model:  ModelSpec{Name: "qwen3.7-max", Kind: "generate", Generate: GenerateParams{API: "responses"}},
+			reason: "unknown api",
+		},
+		{
+			name:   "unknown max tokens parameter",
+			model:  ModelSpec{Name: "qwen3.7-max", Kind: "generate", Generate: GenerateParams{MaxTokensParam: "tokens"}},
+			reason: "unknown max_tokens_param",
+		},
+		{
+			name:   "generate parameters on a video model",
+			model:  ModelSpec{Name: "wan2.2-t2v-plus", Kind: "video", Generate: GenerateParams{ReplayReasoning: true}},
+			reason: "generate parameters on kind",
+		},
+		{
+			name:   "embed parameters on a generate model",
+			model:  ModelSpec{Name: "qwen3.7-max", Kind: "generate", Embed: EmbedParams{BatchMax: 5}},
+			reason: "embed parameters on kind",
+		},
+		{
+			name:   "negative embed batch",
+			model:  ModelSpec{Name: "qwen3.7-text-embedding", Kind: "embed", Embed: EmbedParams{BatchMax: -1}},
+			reason: "batch_max must not be negative",
+		},
+		{
+			name:   "repeated embedding dimension",
+			model:  ModelSpec{Name: "qwen3.7-text-embedding", Kind: "embed", Embed: EmbedParams{Dimensions: []int{1024, 1024}}},
+			reason: "dimensions repeats",
+		},
+		{
+			name:   "transcribe parameters on a generate model",
+			model:  ModelSpec{Name: "qwen3.7-max", Kind: "generate", Transcribe: TranscribeParams{Context: true}},
+			reason: "sets transcribe parameters on kind",
+		},
+		{
+			name:   "negative transcription prompt limit",
+			model:  ModelSpec{Name: "paraformer-v2", Kind: "transcribe", Transcribe: TranscribeParams{PromptLimit: -1}},
+			reason: "must not be negative",
+		},
+		{
+			name:   "transcription language that is not a code",
+			model:  ModelSpec{Name: "paraformer-v2", Kind: "transcribe", Transcribe: TranscribeParams{Languages: []string{"zh_CN"}}},
+			reason: "must be a code like zh or en",
+		},
+		{
+			name:   "transcription languages repeat a code",
+			model:  ModelSpec{Name: "paraformer-v2", Kind: "transcribe", Transcribe: TranscribeParams{Languages: []string{"zh", "zh"}}},
+			reason: "repeats",
+		},
+		{
 			name:   "media declaration with no channel",
 			model:  ModelSpec{Name: "wan3.0-video", Kind: "video", Video: VideoParams{Media: &MediaParams{}}},
 			reason: "media declares no channel",
@@ -252,6 +326,140 @@ func TestValidateModelFamilyContract(t *testing.T) {
 	if err := validateModel(image); err == nil {
 		t.Error("the image family accepted video output")
 	}
+
+	// The text families: text generation publishes text and reaches media
+	// only through the multimodal surface; embeddings embed text.
+	generate := ModelSpec{
+		Name: "qwen3.7-max",
+		Kind: "generate",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartText},
+			Outputs: []message.PartKind{message.PartText},
+		},
+	}
+	if err := validateModel(generate); err != nil {
+		t.Errorf("generate family: %v", err)
+	}
+	mediaOnText := generate
+	mediaOnText.Capabilities.Inputs =
+		[]message.PartKind{message.PartText, message.PartImage}
+	if err := validateModel(mediaOnText); err == nil {
+		t.Error("the text surface accepted an image input declaration")
+	}
+	mediaOnText.Generate.API = generateAPIMultimodal
+	if err := validateModel(mediaOnText); err != nil {
+		t.Errorf("multimodal surface: %v", err)
+	}
+	noText := generate
+	noText.Capabilities.Outputs = []message.PartKind{message.PartImage}
+	if err := validateModel(noText); err == nil {
+		t.Error("the generate family accepted a non-text output")
+	}
+	embed := ModelSpec{
+		Name: "qwen3.7-text-embedding",
+		Kind: "embed",
+		Capabilities: model.ModelCapabilities{
+			Inputs: []message.PartKind{message.PartText},
+		},
+	}
+	if err := validateModel(embed); err != nil {
+		t.Errorf("embed family: %v", err)
+	}
+	withImage := embed
+	withImage.Capabilities.Inputs =
+		[]message.PartKind{message.PartText, message.PartImage}
+	if err := validateModel(withImage); err == nil {
+		t.Error("the embed family accepted an image input declaration")
+	}
+
+	// The speech family publishes one audio stream and speaks text; its
+	// declaration has to state the encoding it serves, because the canonical
+	// format always carries one.
+	speech := ModelSpec{
+		Name: "qwen3-tts-flash",
+		Kind: "tts",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartText},
+			Outputs: []message.PartKind{message.PartAudio},
+		},
+		TTS: TTSParams{
+			Encoding:     media.AudioEncodingPCM16,
+			SampleRateHz: 24000,
+			Channels:     1,
+		},
+	}
+	if err := validateModel(speech); err != nil {
+		t.Errorf("speech family: %v", err)
+	}
+	noAudio := speech
+	noAudio.Capabilities.Outputs = []message.PartKind{message.PartText}
+	if err := validateModel(noAudio); err == nil {
+		t.Error("the speech family accepted a non-audio output")
+	}
+	extraOutput := speech
+	extraOutput.Capabilities.Outputs =
+		[]message.PartKind{message.PartAudio, message.PartText}
+	if err := validateModel(extraOutput); err == nil {
+		t.Error("the speech family accepted a text output alongside audio")
+	}
+	mediaInput := speech
+	mediaInput.Capabilities.Inputs =
+		[]message.PartKind{message.PartText, message.PartAudio}
+	if err := validateModel(mediaInput); err == nil {
+		t.Error("the speech family accepted a media input declaration")
+	}
+	searching := speech
+	searching.Capabilities.HostedWebSearch = true
+	if err := validateModel(searching); err == nil {
+		t.Error("the speech family accepted hosted web search")
+	}
+	undeclared := speech
+	undeclared.TTS.Encoding = ""
+	if err := validateModel(undeclared); err == nil {
+		t.Error("the speech family accepted a declaration without an encoding")
+	}
+
+	// The transcription family reads one audio file and publishes text; the
+	// canonical request carries one source and the result is the transcript,
+	// so a declaration naming any other modality would never compile.
+	transcription := ModelSpec{
+		Name: "paraformer-v2",
+		Kind: "transcribe",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartAudio},
+			Outputs: []message.PartKind{message.PartText},
+		},
+		Transcribe: TranscribeParams{Context: true},
+	}
+	if err := validateModel(transcription); err != nil {
+		t.Errorf("transcription family: %v", err)
+	}
+	textInput := transcription
+	textInput.Capabilities.Inputs = []message.PartKind{message.PartText}
+	if err := validateModel(textInput); err == nil {
+		t.Error("the transcription family accepted a text input declaration")
+	}
+	audioOutput := transcription
+	audioOutput.Capabilities.Outputs = []message.PartKind{message.PartAudio}
+	if err := validateModel(audioOutput); err == nil {
+		t.Error("the transcription family accepted an audio output")
+	}
+	thinking := transcription
+	thinking.Capabilities.Reasoning =
+		model.ReasoningCapability{Kind: model.ReasoningToggle}
+	if err := validateModel(thinking); err == nil {
+		t.Error("the transcription family accepted a reasoning channel")
+	}
+	embedDimensions := transcription
+	embedDimensions.Capabilities.CustomEmbedDimensions = true
+	if err := validateModel(embedDimensions); err == nil {
+		t.Error("the transcription family accepted custom embed dimensions")
+	}
+	searchingTranscription := transcription
+	searchingTranscription.Capabilities.HostedWebSearch = true
+	if err := validateModel(searchingTranscription); err == nil {
+		t.Error("the transcription family accepted hosted web search")
+	}
 }
 
 func TestSpecValidate(t *testing.T) {
@@ -276,6 +484,11 @@ func TestSpecValidate(t *testing.T) {
 			name:   "duplicate model",
 			spec:   Spec{Models: []ModelSpec{{Name: "wanx-v1", Kind: "image", Capabilities: imageCapabilities()}, {Name: "wanx-v1", Kind: "image", Capabilities: imageCapabilities()}}},
 			reason: "duplicate model declaration",
+		},
+		{
+			name:   "reasoning scope with surrounding whitespace",
+			spec:   Spec{ReasoningScope: " dashscope/east "},
+			reason: "must not have surrounding whitespace",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

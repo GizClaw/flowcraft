@@ -196,6 +196,104 @@ var testDeclarations = map[string]ModelSpec{
 			PromptLimit:   20000,
 		},
 	},
+	// The text-generation surfaces: qwen3.7-max rides the classic string
+	// surface with the toggle thinking dial, hosted search, and the
+	// max_completion_tokens lowering; qwen3.8-max rides the multimodal
+	// surface with always-on thinking, media input, and reasoning replay.
+	"qwen3.7-max": {
+		Name: "qwen3.7-max",
+		Kind: "generate",
+		Capabilities: model.ModelCapabilities{
+			Inputs:          []message.PartKind{message.PartText},
+			Outputs:         []message.PartKind{message.PartText},
+			HostedWebSearch: true,
+			Reasoning:       model.ReasoningCapability{Kind: model.ReasoningToggle},
+		},
+		Generate: GenerateParams{MaxTokensParam: maxTokensParamCompletion},
+	},
+	"qwen3.8-max": {
+		Name: "qwen3.8-max",
+		Kind: "generate",
+		Capabilities: model.ModelCapabilities{
+			Inputs: []message.PartKind{
+				message.PartText, message.PartImage,
+				message.PartVideo, message.PartAudio,
+			},
+			Outputs:   []message.PartKind{message.PartText},
+			Reasoning: model.ReasoningCapability{Kind: model.ReasoningAlways},
+		},
+		Generate: GenerateParams{
+			API:             generateAPIMultimodal,
+			ReplayReasoning: true,
+		},
+	},
+	"qwen3.7-text-embedding": {
+		Name: "qwen3.7-text-embedding",
+		Kind: "embed",
+		Capabilities: model.ModelCapabilities{
+			Inputs:                []message.PartKind{message.PartText},
+			CustomEmbedDimensions: true,
+		},
+		Embed: EmbedParams{
+			BatchMax:   2,
+			Dimensions: []int{2560, 1024},
+			Instruct:   true,
+		},
+	},
+	// qwen3-tts-flash is the speech family: text in, one WAV file out,
+	// on the multimodal-generation surface the text models use.
+	"qwen3-tts-flash": {
+		Name: "qwen3-tts-flash",
+		Kind: "tts",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartText},
+			Outputs: []message.PartKind{message.PartAudio},
+		},
+		TTS: TTSParams{
+			PromptLimit:    600,
+			LanguageSelect: true,
+			Encoding:       media.AudioEncodingPCM16,
+			SampleRateHz:   24000,
+			Channels:       1,
+		},
+	},
+	// paraformer-v2 is the file-transcription family at its fullest: the
+	// async recognition pipeline with every documented parameter declared.
+	"paraformer-v2": {
+		Name: "paraformer-v2",
+		Kind: "transcribe",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartAudio},
+			Outputs: []message.PartKind{message.PartText},
+		},
+		Transcribe: TranscribeParams{
+			Context:           true,
+			PromptLimit:       400,
+			LanguageHints:     true,
+			Languages:         []string{"zh", "en"},
+			Timestamps:        true,
+			DisfluencyRemoval: true,
+			SpecialWordFilter: true,
+			Vocabulary:        true,
+			Channel:           true,
+		},
+	},
+	// fun-asr is the same pipeline with a narrower parameter set: no
+	// context channel and no timestamp calibration, so the canonical prompt
+	// and timestamps asks have to reject against it.
+	"fun-asr": {
+		Name: "fun-asr",
+		Kind: "transcribe",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartAudio},
+			Outputs: []message.PartKind{message.PartText},
+		},
+		Transcribe: TranscribeParams{
+			LanguageHints: true,
+			Languages:     []string{"zh", "en", "ja"},
+			Vocabulary:    true,
+		},
+	},
 }
 
 func testDeclaration(t *testing.T, name string) ModelSpec {
@@ -248,6 +346,28 @@ func audioPart(t *testing.T, url string) message.AudioPart {
 	return message.AudioPart{Source: source}
 }
 
+// audioURLSource builds a URL audio source for the transcription surface,
+// which reads a source rather than a part.
+func audioURLSource(t *testing.T, url string) media.AudioSource {
+	t.Helper()
+	source, err := media.NewAudioURL(url, "audio/wav")
+	if err != nil {
+		t.Fatalf("NewAudioURL: %v", err)
+	}
+	return source
+}
+
+// audioBytesSource builds an inline audio source: the shape the
+// file-transcription surface cannot fetch and therefore rejects.
+func audioBytesSource(t *testing.T, data []byte) media.AudioSource {
+	t.Helper()
+	source, err := media.NewAudioBytes(data, "audio/wav")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	return source
+}
+
 func videoPart(t *testing.T, url string) message.VideoPart {
 	t.Helper()
 	source, err := media.NewVideoURL(url, "video/mp4")
@@ -296,6 +416,91 @@ func compileVideoWire(
 		return videoWire{}, compiled.Report, err
 	}
 	return compiled.Wire, compiled.Report, nil
+}
+
+func compileGenerateWire(
+	t *testing.T,
+	declared ModelSpec,
+	request inference.GenerateRequest,
+	shape inference.GenerateExecutionShape,
+) (generateWire, inference.CompileReport, error) {
+	t.Helper()
+	scope := inference.ReasoningScope("", providerID, declared.Name, "")
+	compiled, err := compileGenerate(declared, scope, declared.Name)(
+		context.Background(),
+		testModelRef(declared.Name),
+		request,
+		shape,
+	)
+	if err != nil {
+		return generateWire{}, compiled.Report, err
+	}
+	return compiled.Wire, compiled.Report, nil
+}
+
+func compileEmbedWire(
+	t *testing.T,
+	declared ModelSpec,
+	request inference.EmbedRequest,
+) (embedWire, inference.CompileReport, error) {
+	t.Helper()
+	compiled, err := compileEmbed(declared, declared.Name)(
+		context.Background(),
+		testModelRef(declared.Name),
+		request,
+	)
+	if err != nil {
+		return embedWire{}, compiled.Report, err
+	}
+	return compiled.Wire, compiled.Report, nil
+}
+
+func compileTTSWire(
+	t *testing.T,
+	declared ModelSpec,
+	request inference.GenerateRequest,
+	shape inference.GenerateExecutionShape,
+) (ttsWire, inference.CompileReport, error) {
+	t.Helper()
+	compiled, err := compileTTS(declared, declared.Name)(
+		context.Background(),
+		testModelRef(declared.Name),
+		request,
+		shape,
+	)
+	if err != nil {
+		return ttsWire{}, compiled.Report, err
+	}
+	return compiled.Wire, compiled.Report, nil
+}
+
+func compileTranscribeWire(
+	t *testing.T,
+	declared ModelSpec,
+	request inference.TranscriptionRequest,
+) (transcribeWire, inference.CompileReport, error) {
+	t.Helper()
+	compiled, err := compileTranscribe(declared, declared.Name)(
+		context.Background(),
+		testModelRef(declared.Name),
+		request,
+	)
+	if err != nil {
+		return transcribeWire{}, compiled.Report, err
+	}
+	return compiled.Wire, compiled.Report, nil
+}
+
+func generateOptionsField(name string) inference.FieldID {
+	return inference.ExtensionField(name).Qualify(GenerateOptions{})
+}
+
+func embedOptionsField(name string) inference.FieldID {
+	return inference.ExtensionField(name).Qualify(EmbedOptions{})
+}
+
+func transcribeOptionsField(name string) inference.FieldID {
+	return inference.ExtensionField(name).Qualify(TranscribeOptions{})
 }
 
 // rejectedReason returns the reason recorded against a rejected field.
