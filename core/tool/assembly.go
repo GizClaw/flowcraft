@@ -80,11 +80,6 @@ func NewAssembly(sources []Source, opts ...AssemblyOption) (*Assembly, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, src := range sources {
-		if attacher, ok := src.(RegistryAttacher); ok {
-			attacher.Attach(registry)
-		}
-	}
 	mws := o.middleware
 	if policy != nil {
 		// Dynamic sessions keep their discovery pool fresh on every

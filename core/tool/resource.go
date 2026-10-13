@@ -42,19 +42,7 @@ func (RegistryFactory) New(_ context.Context, in resource.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"tool: registry requires at least one tool source")
 	}
-	registry, err := NewRegistry(sources)
-	if err != nil {
-		return nil, err
-	}
-	// Attach sources that publish tools after construction (a refresh,
-	// a background MCP connect) so a registry mount point stays live
-	// exactly like an assembly mount point.
-	for _, src := range sources {
-		if attacher, ok := src.(RegistryAttacher); ok {
-			attacher.Attach(registry)
-		}
-	}
-	return registry, nil
+	return NewRegistry(sources)
 }
 
 // Register adds the memory registry factory to r.

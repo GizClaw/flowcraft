@@ -483,15 +483,24 @@ func (h *Host) mcpSource(
 }
 
 // mcpChild adapts one mcp.Source to the plugin Source contract and
-// exposes direct tool calls against the plugin's primary server.
+// exposes direct tool calls against the plugin's primary server. It
+// forwards both halves of the tool attach protocol to the inner
+// source, so a registry that builds from the adapter also lets go of
+// it when that registry closes.
 type mcpChild struct {
 	source *mcp.Source
 	server string
 }
 
+var (
+	_ tool.RegistryAttacher = (*mcpChild)(nil)
+	_ tool.RegistryDetacher = (*mcpChild)(nil)
+)
+
 func (c *mcpChild) Tools() []tool.Tool         { return c.source.Tools() }
 func (c *mcpChild) LazyTools() []tool.LazyTool { return c.source.LazyTools() }
 func (c *mcpChild) Attach(r tool.Registrar)    { c.source.Attach(r) }
+func (c *mcpChild) Detach(r tool.Registrar)    { c.source.Detach(r) }
 func (c *mcpChild) Close() error               { return c.source.Close() }
 
 func (c *mcpChild) CallTool(

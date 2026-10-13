@@ -237,6 +237,34 @@ func TestSource_InitialConnectPublishesTools(t *testing.T) {
 	}
 }
 
+// TestSource_DetachDropsClosedRegistrar covers the detach half of the
+// attach protocol: a registry that closes is dropped so later
+// publications cannot target it, while a source attached to several
+// registries keeps publishing to the ones that are still live.
+func TestSource_DetachDropsClosedRegistrar(t *testing.T) {
+	src := NewSource()
+	t.Cleanup(func() { _ = src.Close() })
+	attached := newRecordingRegistrar()
+	src.Attach(attached)
+
+	other := newRecordingRegistrar()
+	src.Detach(other)
+	src.mu.Lock()
+	held := src.registrar
+	src.mu.Unlock()
+	if held != attached {
+		t.Fatalf("registrar after an unrelated Detach = %v, want the attached one", held)
+	}
+
+	src.Detach(attached)
+	src.mu.Lock()
+	held = src.registrar
+	src.mu.Unlock()
+	if held != nil {
+		t.Fatalf("registrar after Detach = %v, want nil", held)
+	}
+}
+
 // TestSource_AddServerDoesNotBlockOnHungServer is the regression test
 // for the startup stall: a server that accepts the transport but never
 // completes the handshake must not hold AddServer past a small bound,

@@ -289,6 +289,20 @@ func (s *Source) Attach(r sdktool.Registrar) {
 	}
 }
 
+// Detach implements tool.RegistryDetacher: the registry closed, so
+// stop publishing to it. Later publications would only log warnings
+// against a dead registry.
+func (s *Source) Detach(r sdktool.Registrar) {
+	if r == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.registrar == r {
+		s.registrar = nil
+	}
+	s.mu.Unlock()
+}
+
 // server is one live or connecting server plus its exposed tools.
 type server struct {
 	name      string
@@ -1019,4 +1033,5 @@ func (srv *server) noteCallFailure(session *mcpsdk.ClientSession, err error) {
 var (
 	_ sdktool.Source           = (*Source)(nil)
 	_ sdktool.RegistryAttacher = (*Source)(nil)
+	_ sdktool.RegistryDetacher = (*Source)(nil)
 )

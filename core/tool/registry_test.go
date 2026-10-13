@@ -303,6 +303,46 @@ func TestRegistry_ConcurrentAddRemove(t *testing.T) {
 	}
 }
 
+// attachSource observes both ends of the attach protocol: whether the
+// registry handed it a registrar at construction, and the close
+// notification that follows.
+type attachSource struct {
+	attached bool
+	detaches int
+	last     tool.Registrar
+}
+
+func (a *attachSource) Tools() []tool.Tool         { return nil }
+func (a *attachSource) LazyTools() []tool.LazyTool { return nil }
+func (a *attachSource) Attach(tool.Registrar)      { a.attached = true }
+func (a *attachSource) Detach(r tool.Registrar)    { a.detaches++; a.last = r }
+
+func TestRegistry_AttachesOnBuildAndDetachesOnClose(t *testing.T) {
+	src := &attachSource{}
+	reg, err := tool.NewRegistry([]tool.Source{src})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if !src.attached {
+		t.Fatal("source never received the registrar")
+	}
+	if err := reg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if src.detaches != 1 {
+		t.Fatalf("Detach calls = %d, want 1", src.detaches)
+	}
+	if src.last != reg {
+		t.Fatal("Detach did not receive the closed registry")
+	}
+	if err := reg.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if src.detaches != 1 {
+		t.Fatalf("second Close detached again: %d calls", src.detaches)
+	}
+}
+
 func containsDefinition(defs []message.ToolDefinition, name string) bool {
 	for _, def := range defs {
 		if def.Name == name {
