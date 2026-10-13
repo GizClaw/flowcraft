@@ -445,7 +445,7 @@ func (h *Host) SetEnabled(
 		// report, while an enable that stands hands it on to the
 		// application (see finishEnable).
 		stands := false
-		h.setAwaitingReady(id, true)
+		h.setAwaitingReady(id)
 		defer func() { h.finishEnable(id, stands) }()
 		source, err := h.startEntryLocked(ctx, entry)
 		if err != nil {
@@ -492,15 +492,11 @@ func (h *Host) SetEnabled(
 	return h.store.SetEnabled(id, false)
 }
 
-// setAwaitingReady records whether an enable of one plugin is in
-// flight.
-func (h *Host) setAwaitingReady(id string, awaiting bool) {
+// setAwaitingReady records that one plugin's enable is in flight. The
+// end of that enable is [Host.finishEnable], which clears it.
+func (h *Host) setAwaitingReady(id string) {
 	h.mu.Lock()
-	if awaiting {
-		h.awaitingReady[id] = true
-	} else {
-		delete(h.awaitingReady, id)
-	}
+	h.awaitingReady[id] = true
 	h.mu.Unlock()
 }
 
