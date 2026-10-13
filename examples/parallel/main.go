@@ -60,6 +60,10 @@ func run(ctx context.Context, spec []byte, client *http.Client, query, fetchURL 
 		return err
 	}
 	defer func() { _ = registry.Close() }()
+	// Pinned core v0.4.9 attaches sources from the assembly, not from
+	// NewRegistry, so the example publishes explicitly. Drop this line
+	// once the pin moves past the release that adds
+	// tool.RegistryDetacher, which makes NewRegistry attach on its own.
 	source.Attach(registry)
 	if err := source.WaitReady(ctx, "parallel", 0); err != nil {
 		return fmt.Errorf("connect Parallel MCP: %w", err)
