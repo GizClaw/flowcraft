@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,10 +87,25 @@ func decisionResponseJSON() string {
 		],
 		"usage": {
 			"input_tokens": 120, "output_tokens": 30, "total_tokens": 150,
-			"input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 0},
+			"input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 12},
 			"output_tokens_details": {"reasoning_tokens": 8}
 		}
 	}`
+}
+
+// decisionPath is the route the standalone Decisions surface serves, relative
+// to the endpoint root. The SDK owns it and the driver never states it, so the
+// offline suites pin it here: a dependency bump that renamed the surface would
+// otherwise redden only the gated live lane.
+const decisionPath = "/decisions"
+
+// assertDecisionRoute pins the method and route one captured request arrived
+// on.
+func assertDecisionRoute(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost || r.URL.Path != decisionPath {
+		t.Errorf("call = %s %s, want POST %s", r.Method, r.URL.Path, decisionPath)
+	}
 }
 
 // decisionBody renders one compiled request the way it reaches the wire.
@@ -149,6 +166,12 @@ func TestConformanceDecisionCompiler(t *testing.T) {
 				choices[2].(map[string]any)["description"] != "the boolean" {
 				t.Fatalf("boolean choice = %+v", choices[2])
 			}
+			// A description the caller never declared stays off the wire: the
+			// surface reads an empty string as a declared rubric, which is the
+			// one shape decisionOptional exists to prevent.
+			if _, ok := choices[0].(map[string]any)["description"]; ok {
+				t.Fatalf("undeclared choice description rode the wire: %+v", choices[0])
+			}
 			score := questions[2].(map[string]any)
 			levels := score["levels"].([]any)
 			if score["type"] != "score" || len(levels) != 3 {
@@ -157,6 +180,12 @@ func TestConformanceDecisionCompiler(t *testing.T) {
 			if levels[1].(map[string]any)["label"] != "medium" ||
 				levels[1].(map[string]any)["description"] != "usable with review" {
 				t.Fatalf("level = %+v", levels[1])
+			}
+			for _, index := range []int{0, 2} {
+				if _, ok := levels[index].(map[string]any)["description"]; ok {
+					t.Fatalf("undeclared level description rode the wire: %+v",
+						levels[index])
+				}
 			}
 			if _, ok := body["safety_identifier"]; ok {
 				t.Fatalf("safety_identifier rides without an extension: %+v", body)
@@ -279,6 +308,47 @@ func TestConformanceDecisionCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
+				// The parts carrier draws on the same byte budget as the text
+				// and json carriers: neither part is oversized on its own, so
+				// only the aggregate check refuses this request.
+				Name: "text parts past the input bound",
+				Request: func() inference.DecisionRequest {
+					request := decisionRequestFixture()
+					half := strings.Repeat("a", decisionMaxInputBytes/2+1)
+					request.Input = inference.DecisionInput{
+						Parts: []message.Part{
+							message.TextPart{Text: half},
+							message.TextPart{Text: half},
+						},
+					}
+					return request
+				},
+				Field: inference.FieldDecisionInputPartText,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
+				// An inline image is sent as a data URI about a third larger
+				// than the bytes it holds, which is what the bound counts:
+				// the source below is under the bound and the part is not.
+				Name: "inline image past the input bound",
+				Request: func() inference.DecisionRequest {
+					request := decisionRequestFixture()
+					source, err := media.NewImageBytes(
+						bytes.Repeat([]byte{0xAB}, decisionMaxInputBytes/4*3+1<<20),
+						"image/png",
+					)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Input = inference.DecisionInput{
+						Parts: []message.Part{message.ImagePart{Source: source}},
+					}
+					return request
+				},
+				Field: inference.FieldDecisionInputPartImage,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
 				Name: "extension for another operation",
 				Request: func() inference.DecisionRequest {
 					request := decisionRequestFixture()
@@ -338,7 +408,8 @@ func TestConformanceDecisionCompilerWithoutImageInput(t *testing.T) {
 }
 
 func TestConformanceDecisionUnary(t *testing.T) {
-	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		assertDecisionRoute(t, r)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, decisionResponseJSON())
 	})
@@ -368,7 +439,8 @@ func TestConformanceDecisionUnary(t *testing.T) {
 // TestDecisionWire pins the whole path once: the request body the surface
 // receives, and the canonical answers the response decodes into.
 func TestDecisionWire(t *testing.T) {
-	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		assertDecisionRoute(t, r)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, decisionResponseJSON())
 	})
@@ -423,7 +495,12 @@ func TestDecisionWire(t *testing.T) {
 	if len(choice.Probabilities) != 3 {
 		t.Fatalf("distribution = %+v", choice.Probabilities)
 	}
-	// The typed option survives the round trip: index 2 is the boolean.
+	// The typed pair survives the round trip in both directions: index 1 is
+	// the string "true" and index 2 is the boolean true, and neither is
+	// coerced into the other on the way back.
+	if value := choice.Probabilities[1].Value; value != inference.NewDecisionStringChoice("true") {
+		t.Fatalf("string option = %+v", value)
+	}
 	if value := choice.Probabilities[2].Value; value != inference.NewDecisionBooleanChoice(true) {
 		t.Fatalf("typed option = %+v", value)
 	}
@@ -444,6 +521,9 @@ func TestDecisionWire(t *testing.T) {
 	}
 	if usage.Input.CacheReadTokens == nil || *usage.Input.CacheReadTokens != 20 {
 		t.Fatalf("cache reads = %+v", usage.Input)
+	}
+	if usage.Input.CacheWriteTokens == nil || *usage.Input.CacheWriteTokens != 12 {
+		t.Fatalf("cache writes = %+v", usage.Input)
 	}
 	if usage.Output.ReasoningTokens == nil || *usage.Output.ReasoningTokens != 8 {
 		t.Fatalf("reasoning tokens = %+v", usage.Output)
@@ -521,6 +601,178 @@ func TestDecisionInputCarriers(t *testing.T) {
 	})
 }
 
+// TestDecisionUnsupportedPartKindRefused pins the refusal for a part kind a
+// decision input cannot carry. Core refuses such a kind before the compiler
+// runs (its part table has rows for text and image only, and DecisionInput
+// .Validate rejects the rest), so this drives the compiler itself — the way
+// the unary suite and the conformance harness do — and pins what those callers
+// get: a structured rejection on a field the request really carries, not a
+// panic out of the generate part table, whose miss means vocabulary drift
+// rather than a kind this wire cannot send.
+func TestDecisionUnsupportedPartKindRefused(t *testing.T) {
+	compile := compileDecisionFor("gpt-6-luna", declarations["gpt-6-luna"])
+
+	t.Run("with a part field to name", func(t *testing.T) {
+		request := decisionRequestFixture()
+		request.Input = inference.DecisionInput{
+			Parts: []message.Part{
+				message.TextPart{Text: "the evidence"},
+				message.AudioPart{},
+			},
+		}
+		compiled, err := compile(
+			context.Background(), openaiModel("gpt-6-luna"), request)
+		if err == nil {
+			t.Fatal("Compile accepted audio evidence")
+		}
+		if !inference.IsKind(err, inference.UnsupportedFeature) {
+			t.Fatalf("error = %v, want unsupported_feature", err)
+		}
+		var inferenceErr *inference.Error
+		if !errors.As(err, &inferenceErr) ||
+			inferenceErr.Field != inference.FieldDecisionInputPartText {
+			t.Fatalf("error context = %+v, want the text part field", inferenceErr)
+		}
+		// The reason names the part, and it rides the cause rather than
+		// Error()'s redacted text.
+		cause := errors.Unwrap(err)
+		if cause == nil ||
+			!strings.Contains(cause.Error(), "audio evidence is not supported") {
+			t.Fatalf("cause = %v, want the refused kind in it", cause)
+		}
+		// The refusal lands on a field the request activates, so the report
+		// stays one the runtime accepts for a failed compile.
+		if err := compiled.Report.ValidateFailure(
+			model.OperationDecision, request.ActiveFields(),
+		); err != nil {
+			t.Fatalf("rejection report: %v", err)
+		}
+	})
+
+	t.Run("with no part field at all", func(t *testing.T) {
+		// A parts carrier made only of kinds the surface cannot carry
+		// activates no part field, so there is no field of its own to report
+		// the refusal on; the text part field stands in. Core's validator is
+		// what keeps this out of the runtime, and the driver must still not
+		// panic on the way there.
+		request := decisionRequestFixture()
+		request.Input = inference.DecisionInput{
+			Parts: []message.Part{message.VideoPart{}},
+		}
+		_, err := compile(context.Background(), openaiModel("gpt-6-luna"), request)
+		if err == nil {
+			t.Fatal("Compile accepted video evidence")
+		}
+		var inferenceErr *inference.Error
+		if !errors.As(err, &inferenceErr) ||
+			inferenceErr.Field != inference.FieldDecisionInputPartText {
+			t.Fatalf("error context = %+v, want the text part field", inferenceErr)
+		}
+	})
+}
+
+// TestDecisionBoundsAtTheCeiling pins the other side of every bound: a request
+// that sits exactly on the surface's maximum compiles and reaches the wire
+// whole. The refusals next door only prove the checks reject past the bound, so
+// a comparison flipped to `>=` — refusing the documented maximum — would keep
+// the rest of the suite green.
+func TestDecisionBoundsAtTheCeiling(t *testing.T) {
+	compile := compileDecisionFor("gpt-6-luna", declarations["gpt-6-luna"])
+	compileRequest := func(
+		t *testing.T,
+		request inference.DecisionRequest,
+	) openai.DecisionNewParams {
+		t.Helper()
+		compiled, err := compile(
+			context.Background(), openaiModel("gpt-6-luna"), request)
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		return compiled.Wire
+	}
+
+	t.Run("questions", func(t *testing.T) {
+		request := inference.DecisionRequest{
+			Input: inference.DecisionInput{Text: "the evidence"},
+		}
+		for index := 0; index < decisionMaxQuestions; index++ {
+			request.Questions = append(request.Questions, inference.DecisionQuestion{
+				Name:         fmt.Sprintf("q%d", index),
+				Kind:         inference.DecisionQuestionPredicate,
+				Instructions: "Is this true?",
+			})
+		}
+		body := decisionBody(t, compileRequest(t, request))
+		questions, ok := body["questions"].([]any)
+		if !ok || len(questions) != decisionMaxQuestions {
+			t.Fatalf("questions = %d, want %d", len(questions), decisionMaxQuestions)
+		}
+	})
+
+	t.Run("choices", func(t *testing.T) {
+		request := decisionRequestFixture()
+		choices := make([]inference.DecisionChoice, 0, decisionMaxChoices)
+		for index := 0; index < decisionMaxChoices; index++ {
+			choices = append(choices, inference.DecisionChoice{
+				Value: inference.NewDecisionStringChoice(fmt.Sprintf("option-%d", index)),
+			})
+		}
+		request.Questions[1].Choices = choices
+		body := decisionBody(t, compileRequest(t, request))
+		compiled := body["questions"].([]any)[1].(map[string]any)["choices"].([]any)
+		if len(compiled) != decisionMaxChoices {
+			t.Fatalf("choices = %d, want %d", len(compiled), decisionMaxChoices)
+		}
+	})
+
+	t.Run("levels", func(t *testing.T) {
+		request := decisionRequestFixture()
+		levels := make([]inference.DecisionLevel, 0, decisionMaxLevels)
+		for index := 0; index < decisionMaxLevels; index++ {
+			levels = append(levels, inference.DecisionLevel{
+				Label: fmt.Sprintf("level-%d", index),
+			})
+		}
+		request.Questions[2].Levels = levels
+		body := decisionBody(t, compileRequest(t, request))
+		compiled := body["questions"].([]any)[2].(map[string]any)["levels"].([]any)
+		if len(compiled) != decisionMaxLevels {
+			t.Fatalf("levels = %d, want %d", len(compiled), decisionMaxLevels)
+		}
+	})
+
+	t.Run("images", func(t *testing.T) {
+		request := decisionRequestFixture()
+		parts := make([]message.Part, 0, decisionMaxImages)
+		for index := 0; index < decisionMaxImages; index++ {
+			source, err := media.NewImageURL(
+				fmt.Sprintf("https://example.com/%d.png", index), "image/png")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, message.ImagePart{Source: source})
+		}
+		request.Input = inference.DecisionInput{Parts: parts}
+		body := decisionBody(t, compileRequest(t, request))
+		compiled := body["input"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(compiled) != decisionMaxImages {
+			t.Fatalf("images = %d, want %d", len(compiled), decisionMaxImages)
+		}
+	})
+
+	t.Run("input bytes", func(t *testing.T) {
+		request := decisionRequestFixture()
+		request.Input = inference.DecisionInput{
+			Text: strings.Repeat("a", decisionMaxInputBytes),
+		}
+		body := decisionBody(t, compileRequest(t, request))
+		evidence, ok := body["input"].(string)
+		if !ok || len(evidence) != decisionMaxInputBytes {
+			t.Fatalf("input = %d bytes, want %d", len(evidence), decisionMaxInputBytes)
+		}
+	})
+}
+
 // TestDecisionDecode pins the strict reading of one answer at a time: what the
 // decoder refuses, and the one kind that carries no value (refusal).
 func TestDecisionDecode(t *testing.T) {
@@ -564,6 +816,35 @@ func TestDecisionDecode(t *testing.T) {
 			want: "carries no distribution",
 		},
 		{
+			// A missing chosen value is the surface's own contract
+			// violation: the value check reports it as such rather than as
+			// the parse error a null would look like.
+			name: "choice without a chosen value",
+			answer: `{"type":"choice","name":"q","choice":null,"confidence":0.9,` +
+				`"probabilities":[{"value":"a","probability":1}]}`,
+			want: "carries no chosen value",
+		},
+		{
+			name: "choice without the chosen field at all",
+			answer: `{"type":"choice","name":"q","confidence":0.9,` +
+				`"probabilities":[{"value":"a","probability":1}]}`,
+			want: "carries no chosen value",
+		},
+		{
+			name: "choice option without a value",
+			answer: `{"type":"choice","name":"q","choice":"a","confidence":0.9,` +
+				`"probabilities":[{"probability":1}]}`,
+			want: "option 0 carries no value",
+		},
+		{
+			name: "choice distribution rounded past the tolerance",
+			answer: `{"type":"choice","name":"q","choice":"a","confidence":0.9,` +
+				`"probabilities":[{"value":"a","probability":0.334},` +
+				`{"value":"b","probability":0.334},` +
+				`{"value":"c","probability":0.334}]}`,
+			want: "sums to 1.002",
+		},
+		{
 			name: "choice without a confidence",
 			answer: `{"type":"choice","name":"q","choice":"a",` +
 				`"probabilities":[{"value":"a","probability":1}]}`,
@@ -592,6 +873,14 @@ func TestDecisionDecode(t *testing.T) {
 			answer: `{"type":"score","name":"q","score":0,"confidence":0.5,` +
 				`"probabilities":[{"value":4294967296,"label":"low","probability":1}]}`,
 			want: "names index 4294967296",
+		},
+		{
+			// The index places the level: read as 0, a dropped one would
+			// answer a question the caller can act on.
+			name: "score level without an index",
+			answer: `{"type":"score","name":"q","score":0,"confidence":0.5,` +
+				`"probabilities":[{"label":"low","probability":1}]}`,
+			want: "level 0 carries no index",
 		},
 		{
 			name: "score without a confidence",
@@ -648,6 +937,100 @@ func TestDecisionDecode(t *testing.T) {
 			t.Fatalf("refusal carries another kind's fields: %+v", answer)
 		}
 	})
+
+	t.Run("distributions within the tolerance", func(t *testing.T) {
+		// An option rounded to three decimals is what the tolerance exists
+		// for: thirds sum to 0.999, and a wire that rounds each one is not a
+		// contract violation. Tightening the constant to an exact sum would
+		// redden every real response, so the accepted side is pinned here.
+		for _, answer := range []string{
+			`{"type":"choice","name":"q","choice":"a","confidence":0.9,` +
+				`"probabilities":[{"value":"a","probability":0.333},` +
+				`{"value":"b","probability":0.333},` +
+				`{"value":"c","probability":0.333}]}`,
+			`{"type":"score","name":"q","score":0.9,"confidence":0.5,` +
+				`"probabilities":[{"value":0,"label":"low","probability":0.333},` +
+				`{"value":1,"label":"mid","probability":0.333},` +
+				`{"value":2,"label":"high","probability":0.333}]}`,
+			// A surface that reports no labels is accepted: core reconciles
+			// a non-empty label against the question and tolerates an empty
+			// one, so refusing a missing label would make the driver
+			// stricter than the layer it feeds without protecting anything.
+			// The index is the placement fact, and that one is required.
+			`{"type":"score","name":"q","score":0.9,"confidence":0.5,` +
+				`"probabilities":[{"value":0,"probability":1}]}`,
+		} {
+			var union openai.DecisionAnswerUnion
+			if err := json.Unmarshal([]byte(answer), &union); err != nil {
+				t.Fatalf("fixture is not a decision answer: %v", err)
+			}
+			response, err := decodeDecision(
+				context.Background(),
+				decisionRaw{answers: []openai.DecisionAnswerUnion{union}},
+			)
+			if err != nil {
+				t.Fatalf("decode refused a rounded distribution: %v", err)
+			}
+			if len(response.Answers) != 1 {
+				t.Fatalf("answers = %+v", response.Answers)
+			}
+		}
+	})
+}
+
+// TestDecisionDecodeErrorEchoIsBounded pins that the provider text a decode
+// error repeats is a fragment. The answer's position and the question's name
+// already locate the failure, and this framework treats a decode error's cause
+// as diagnostic text, so a provider must not be able to put its whole payload
+// into a deployment's log line.
+func TestDecisionDecodeErrorEchoIsBounded(t *testing.T) {
+	long := strings.Repeat("a", 4096)
+	// A value of an unsupported type is the reachable way to a long echo: the
+	// surface's own decoding produces a value that parses as JSON but is
+	// neither a string nor a boolean.
+	array := "[" + strings.Repeat("1,", 2048) + "1]"
+	for _, tc := range []struct {
+		name string
+		// answer is the wire answer, and echoed is the provider text the
+		// decoder reads out of it, which is what the error must repeat only
+		// in part.
+		answer string
+		echoed string
+	}{
+		{
+			name:   "answer type",
+			answer: `{"type":"` + long + `","name":"q"}`,
+			echoed: long,
+		},
+		{
+			name: "option value",
+			answer: `{"type":"choice","name":"q","choice":"a","confidence":0.5,` +
+				`"probabilities":[{"value":` + array + `,"probability":1}]}`,
+			echoed: array,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var union openai.DecisionAnswerUnion
+			if err := json.Unmarshal([]byte(tc.answer), &union); err != nil {
+				t.Fatalf("fixture is not a decision answer: %v", err)
+			}
+			_, err := decodeDecision(
+				context.Background(),
+				decisionRaw{answers: []openai.DecisionAnswerUnion{union}},
+			)
+			if err == nil {
+				t.Fatal("decode accepted the answer")
+			}
+			message := err.Error()
+			if !strings.Contains(message, tc.echoed[:decisionEchoBytes]) {
+				t.Errorf("error = %q, want the head of the provider value", message)
+			}
+			if strings.Contains(message, tc.echoed[:decisionEchoBytes+1]) {
+				t.Errorf("error repeats more than %d bytes: %q",
+					decisionEchoBytes, message)
+			}
+		})
+	}
 }
 
 // TestDecisionTransportErrors pins that a failed call reaches the caller in

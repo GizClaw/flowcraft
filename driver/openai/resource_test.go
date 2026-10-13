@@ -3,6 +3,8 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -36,6 +38,83 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	if provider.ID != "openai" || len(provider.Profiles) != 1 ||
 		len(provider.Models) != len(fixtureNames) {
 		t.Fatalf("provider = %+v", provider)
+	}
+}
+
+// TestResourceDecisionOpenerServesTheWire drives the decision opener of a
+// provider built the way a deployment builds one: a settings document, a
+// profile carrying the credential, and declared models. Every other offline
+// decision test binds the pipeline from fixtures, so this is the one that
+// covers what only the assembled provider carries — the profile the opener
+// resolves, the key it attaches, and the declaration the compiler narrows to.
+func TestResourceDecisionOpenerServesTheWire(t *testing.T) {
+	t.Setenv("OPENAI_TEST_KEY", "sk-test")
+	var auth string
+	server, capture := newCapturedOpenAI(t, func(
+		w http.ResponseWriter,
+		r *http.Request,
+		_ map[string]any,
+	) {
+		assertDecisionRoute(t, r)
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, decisionResponseJSON())
+	})
+	defer server.Close()
+
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
+			"id": "openai",
+			"spec": {"endpoint": {"base_url": "`+server.URL+`"}, "models": `+
+			fixtureModelsJSON(t, "gpt-6-luna")+`},
+			"profiles": [{
+				"id": "default",
+				"operations": ["decision"],
+				"secrets": {"api_key": "${env:OPENAI_TEST_KEY}"}
+			}]
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider, ok := value.(inference.ProviderDefinition)
+	if !ok {
+		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
+	}
+	var declared *inference.ModelImplementation
+	for index := range provider.Models {
+		if provider.Models[index].Descriptor.ID.Name == "gpt-6-luna" {
+			declared = &provider.Models[index]
+		}
+	}
+	if declared == nil {
+		t.Fatal("gpt-6-luna missing from the provider's models")
+	}
+
+	driver, err := declared.Openers.Decision(
+		context.Background(), openaiModel("gpt-6-luna"))
+	if err != nil {
+		t.Fatalf("decision opener: %v", err)
+	}
+	response, err := driver.Execute(
+		context.Background(), openaiModel("gpt-6-luna"), decisionRequestFixture())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if response.Model != "gpt-6-luna-2026-09-01" || len(response.Answers) != 3 {
+		t.Fatalf("response = %+v", response)
+	}
+	body := capture.body(0)
+	if body["model"] != "gpt-6-luna" || body["input"] != "the evidence" {
+		t.Fatalf("body = %+v", body)
+	}
+	// The opener resolved the profile's secret reference, so the key the
+	// settings document declared is what authenticated the call.
+	if auth != "Bearer sk-test" {
+		t.Fatalf("Authorization = %q, want the profile's key", auth)
 	}
 }
 

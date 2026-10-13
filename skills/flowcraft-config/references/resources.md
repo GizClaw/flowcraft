@@ -101,6 +101,19 @@ top-level `dimensions:` key is gone, drivers without an embed family reject
 the leaf, and a family that constrains sizes still validates the requested
 value against its own facts at compile time.
 
+`kind: decision` declares a model that answers questions rather than producing
+content, so it is the one kind whose declaration carries no
+`capabilities.outputs`: it states the evidence it takes (`inputs: [text]`, plus
+`image` where the endpoint accepts image evidence) and nothing about output
+kinds. The OpenAI driver serves it on the standalone `decisions` surface
+(gpt-6-luna and compatible endpoints) and enforces that surface's own bounds at
+compile time — option, level, question, and image counts, plus a byte bound
+every evidence carrier draws on — because the canonical layer owns only the
+two-option minimum. `decision_options` carries the surface settings that have
+no canonical field (`safety_identifier`, the provider's abuse-monitoring
+identifier for the end user) the same way `generate_options` carries its own.
+The router pools this workload as `decision` ([deploy.md](deploy.md)).
+
 Routing prefers targets whose declared outputs cover the request intent
 and skips declared-incompatible tiers.
 

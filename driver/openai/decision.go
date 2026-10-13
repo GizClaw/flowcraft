@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
@@ -39,8 +40,17 @@ const (
 	// decisionMaxImages bounds the image parts one request may carry, across
 	// the whole evidence input.
 	decisionMaxImages = 128
-	// decisionMaxInputBytes bounds the string carriers: the text evidence,
-	// and the serialized json evidence that lowers to one.
+	// decisionMaxInputBytes bounds the evidence input, counted as the bytes
+	// one request carries: the text evidence by its length, the serialized
+	// json evidence by its length, and every part by what it compiles to —
+	// a linked image as its URL, an inline one as the data URI about a third
+	// larger than the bytes it holds. All three carriers draw on the one
+	// bound, so no carrier is a way around it.
+	//
+	// Question text is not counted. The surface publishes no per-question
+	// byte bound to enforce (core requires only non-empty instructions), so
+	// how much prose a question carries is the caller's budget; this bound
+	// is about the evidence, which is what a caller does not write by hand.
 	decisionMaxInputBytes = 10 << 20
 	// decisionDistributionTolerance bounds the rounding a full distribution
 	// may carry. The surface publishes complete distributions, so a sum
@@ -57,11 +67,32 @@ type decisionRaw struct {
 	usage   rawUsage
 }
 
-// decisionPartField maps a content kind onto the ledger field its rejection
-// reports. The canonical layer refuses any kind outside text and image before
-// the compiler runs, so a missing row here is a driver bug, not a request the
-// provider should have seen.
-var decisionPartField = partField(inference.DecisionInputPartField)
+// decisionPartRefusalField names the field an unsupported part kind is refused
+// on. Core's decision part table has rows for text and image only and answers
+// (FieldID, false) for every other kind, which is why partField is the wrong
+// helper here: a miss on that table is a kind this wire cannot carry, not the
+// vocabulary drift partField panics on. The refusal names the part field this
+// input activates for the parts it does carry, so the report covers a field
+// the request really has. The text part field stands in for a parts carrier
+// made only of kinds the surface cannot carry — the one state core's own
+// validator rules out before the compiler is asked.
+func decisionPartRefusalField(input inference.DecisionInput) inference.FieldID {
+	for _, part := range input.Parts {
+		if field, ok := inference.DecisionInputPartField(part.Kind()); ok {
+			return field
+		}
+	}
+	return inference.FieldDecisionInputPartText
+}
+
+// decisionInputTooLarge is the rejection reason every evidence carrier shares.
+// carried counts the bytes one request would put on the wire, which for an
+// inline image is the data URI it travels as rather than the bytes it holds.
+func decisionInputTooLarge(carried int) string {
+	return fmt.Sprintf(
+		"input is %d bytes, the decisions surface accepts at most %d",
+		carried, decisionMaxInputBytes)
+}
 
 func compileDecision(
 	modelName string,
@@ -113,7 +144,10 @@ func compileDecision(
 // the canonical json carrier has no structured field here and lowers to its
 // serialized text (the state the caller declared, spelled the one way this
 // wire can carry it), and parts become a single user message. A kind the
-// surface cannot carry is rejected through the ledger rather than dropped.
+// surface cannot carry is rejected through the ledger rather than dropped, and
+// every carrier draws on the same byte budget: the parts route inlines image
+// bytes, so without it a caller could put a gigabyte into one request that the
+// text carrier would have refused at compile time.
 func compileDecisionInput(
 	input inference.DecisionInput,
 	declared ModelSpec,
@@ -122,10 +156,10 @@ func compileDecisionInput(
 	switch {
 	case input.Text != "":
 		if len(input.Text) > decisionMaxInputBytes {
-			ledger.Reject(inference.FieldDecisionInputText, fmt.Sprintf(
-				"input is %d bytes, the decisions surface accepts at most %d",
-				len(input.Text), decisionMaxInputBytes,
-			))
+			ledger.Reject(
+				inference.FieldDecisionInputText,
+				decisionInputTooLarge(len(input.Text)),
+			)
 			return openai.DecisionNewParamsInputUnion{}
 		}
 		return openai.DecisionNewParamsInputUnion{
@@ -134,10 +168,10 @@ func compileDecisionInput(
 	case len(bytes.TrimSpace(input.JSON)) > 0:
 		evidence := string(input.JSON)
 		if len(evidence) > decisionMaxInputBytes {
-			ledger.Reject(inference.FieldDecisionInputJSON, fmt.Sprintf(
-				"input is %d bytes, the decisions surface accepts at most %d",
-				len(evidence), decisionMaxInputBytes,
-			))
+			ledger.Reject(
+				inference.FieldDecisionInputJSON,
+				decisionInputTooLarge(len(evidence)),
+			)
 			return openai.DecisionNewParamsInputUnion{}
 		}
 		return openai.DecisionNewParamsInputUnion{
@@ -145,11 +179,21 @@ func compileDecisionInput(
 		}
 	}
 
+	refusal := decisionPartRefusalField(input)
 	parts := make([]openai.DecisionInputPartUnionParam, 0, len(input.Parts))
+	carried := 0
 	images := 0
 	for index, part := range input.Parts {
 		switch value := part.(type) {
 		case message.TextPart:
+			carried += len(value.Text)
+			if carried > decisionMaxInputBytes {
+				ledger.Reject(
+					inference.FieldDecisionInputPartText,
+					decisionInputTooLarge(carried),
+				)
+				continue
+			}
 			parts = append(parts, openai.DecisionInputPartParamOfInputText(value.Text))
 		case message.ImagePart:
 			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
@@ -166,14 +210,23 @@ func compileDecisionInput(
 				))
 				continue
 			}
+			uri := sourceURI(value.Source)
+			carried += len(uri)
+			if carried > decisionMaxInputBytes {
+				ledger.Reject(
+					inference.FieldDecisionInputPartImage,
+					decisionInputTooLarge(carried),
+				)
+				continue
+			}
 			parts = append(parts, openai.DecisionInputPartUnionParam{
 				OfInputImage: &openai.DecisionInputImageParam{
-					ImageURL: sourceURI(value.Source),
+					ImageURL: uri,
 				},
 			})
 		default:
 			ledger.Reject(
-				decisionPartField(part.Kind()),
+				refusal,
 				fmt.Sprintf("decision input part %d: %s evidence is not supported",
 					index, part.Kind()),
 			)
@@ -407,12 +460,19 @@ func decodeDecisionAnswer(
 		}, nil
 	}
 	return inference.DecisionAnswer{}, fmt.Errorf(
-		"unknown decision answer type %q", union.Type)
+		"unknown decision answer type %q", decisionEcho(union.Type))
 }
 
 func decodeDecisionChoice(
 	answer openai.DecisionAnswerChoice,
 ) (inference.DecisionAnswer, error) {
+	// The wire declares the chosen value required, so a missing one is the
+	// provider's own contract violation rather than a parse problem the
+	// value check below would report as malformed JSON.
+	if !answer.JSON.Choice.Valid() {
+		return inference.DecisionAnswer{}, errors.New(
+			"the choice answer carries no chosen value")
+	}
 	chosen, err := decodeTypedChoice(answer.Choice.RawJSON())
 	if err != nil {
 		return inference.DecisionAnswer{}, fmt.Errorf("chosen value: %w", err)
@@ -421,6 +481,10 @@ func decodeDecisionChoice(
 		[]inference.DecisionOptionProbability, 0, len(answer.Probabilities))
 	var total float64
 	for index, option := range answer.Probabilities {
+		if !option.JSON.Value.Valid() {
+			return inference.DecisionAnswer{}, fmt.Errorf(
+				"option %d carries no value", index)
+		}
 		value, err := decodeTypedChoice(option.Value.RawJSON())
 		if err != nil {
 			return inference.DecisionAnswer{}, fmt.Errorf(
@@ -460,6 +524,16 @@ func decodeDecisionScore(
 		[]inference.DecisionLevelProbability, 0, len(answer.Probabilities))
 	var total float64
 	for index, level := range answer.Probabilities {
+		// The index places the level, so it is required: a missing one would
+		// silently read as level 0, and core reconciles the answer against
+		// the question by that number. The label is copied rather than
+		// required — core checks a non-empty label against the question and
+		// tolerates an empty one, so a surface that reports no labels still
+		// answers with levels every caller can read.
+		if !level.JSON.Value.Valid() {
+			return inference.DecisionAnswer{}, fmt.Errorf(
+				"level %d carries no index", index)
+		}
 		if level.Value < 0 || level.Value > math.MaxInt32 {
 			return inference.DecisionAnswer{}, fmt.Errorf(
 				"level %d names index %d", index, level.Value)
@@ -496,7 +570,7 @@ func decodeTypedChoice(raw string) (inference.DecisionChoiceValue, error) {
 	var decoded any
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 		return inference.DecisionChoiceValue{}, fmt.Errorf(
-			"choice value %s is not JSON: %w", raw, err)
+			"choice value %s is not JSON: %w", decisionEcho(raw), err)
 	}
 	switch value := decoded.(type) {
 	case string:
@@ -505,7 +579,28 @@ func decodeTypedChoice(raw string) (inference.DecisionChoiceValue, error) {
 		return inference.NewDecisionBooleanChoice(value), nil
 	}
 	return inference.DecisionChoiceValue{}, fmt.Errorf(
-		"choice value %s is neither a string nor a boolean", raw)
+		"choice value %s is neither a string nor a boolean", decisionEcho(raw))
+}
+
+// decisionEchoBytes bounds the provider text a decode error repeats. The
+// answer's position and the question's name already locate the failure, so the
+// echo is a fragment: a provider must not be able to put a megabyte of its own
+// text into an error a deployment logs. (DashScope caps the same provider text
+// at 4 KiB; a value this long is a contract violation either way.)
+const decisionEchoBytes = 64
+
+// decisionEcho renders provider text for a decode error, cut at
+// decisionEchoBytes. The cut backs up to a rune boundary so the message stays
+// valid UTF-8 whatever the provider sent.
+func decisionEcho(raw string) string {
+	if len(raw) <= decisionEchoBytes {
+		return raw
+	}
+	cut := decisionEchoBytes
+	for cut > 0 && !utf8.RuneStart(raw[cut]) {
+		cut--
+	}
+	return raw[:cut] + "..."
 }
 
 // checkDecisionDistribution refuses a distribution the surface cannot have

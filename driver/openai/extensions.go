@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message/media"
@@ -550,7 +551,37 @@ func (o DecisionOptions) ActiveFields() []inference.ExtensionField {
 	return []inference.ExtensionField{"safety_identifier"}
 }
 
-func (o DecisionOptions) Validate() error { return nil }
+// decisionIdentifierLimit bounds the safety identifier. The surface expects a
+// hash of the end user rather than an account id, so a few hundred bytes is
+// generous; anything longer is a deployment mistake, not an identifier.
+const decisionIdentifierLimit = 256
+
+func (o DecisionOptions) Validate() error {
+	identifier := o.SafetyIdentifier
+	if identifier == "" {
+		return nil
+	}
+	if strings.TrimSpace(identifier) != identifier {
+		return fmt.Errorf(
+			"safety_identifier %q must not be blank or carry surrounding space",
+			identifier,
+		)
+	}
+	if len(identifier) > decisionIdentifierLimit {
+		return fmt.Errorf(
+			"safety_identifier is %d bytes, at most %d are allowed",
+			len(identifier),
+			decisionIdentifierLimit,
+		)
+	}
+	for _, char := range identifier {
+		if unicode.IsControl(char) {
+			return fmt.Errorf(
+				"safety_identifier must not carry control characters")
+		}
+	}
+	return nil
+}
 
 func (o DecisionOptions) Clone() inference.Extension { return o }
 
