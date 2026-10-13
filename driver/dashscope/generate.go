@@ -405,10 +405,13 @@ func (l lowerer) assistant(
 	return []map[string]any{wire}, nil
 }
 
-// replayReasoning collects the trace text of a reasoning part when the
-// declaration consumes one back, and drops it with the reason otherwise: the
-// platform rejects a trace it cannot verify, and a trace produced for another
-// verification scope can never be verified here.
+// replayTrace collects the trace text of a reasoning part when the
+// declaration consumes one back, and drops it with the reason otherwise.
+// Provenance is the first question: the platform verifies a trace against the
+// model and account that produced it, so a trace another target stamped — and
+// one that carries no stamp at all — can never be verified here and would fail
+// the whole turn the way no retry can repair. Both drops report rather than
+// send.
 func (l lowerer) replayTrace(
 	collect *[]string,
 	part message.ReasoningPart,
@@ -421,11 +424,13 @@ func (l lowerer) replayTrace(
 			field,
 			"this model's input does not consume reasoning_content; set generate.replay_reasoning where the platform requires the trace back",
 		)
-	case part.Source != "" && l.reasonScope != "" && part.Source != l.reasonScope:
-		l.ledger.Drop(
-			field,
-			"the trace was produced for another verification scope",
-		)
+	case part.Source == "":
+		l.ledger.Drop(field, "reasoning trace carries no provenance")
+	case part.Source != l.reasonScope:
+		l.ledger.Drop(field, fmt.Sprintf(
+			"reasoning trace was verified by scope %q, not %q",
+			part.Source, l.reasonScope,
+		))
 	case part.Text == "":
 		l.ledger.Drop(field, "the trace carries no text to replay")
 	default:

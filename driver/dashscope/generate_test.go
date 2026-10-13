@@ -447,8 +447,25 @@ func TestCompileGenerateContinuation(t *testing.T) {
 	if !ok || decision.Disposition != inference.Dropped {
 		t.Fatalf("foreign trace decision = %+v", decision)
 	}
-	if !strings.Contains(decision.Reason, "another verification scope") {
+	if !strings.Contains(decision.Reason, "other/scope") ||
+		!strings.Contains(decision.Reason, "dashscope/qwen3.8-max") {
 		t.Errorf("foreign trace reason = %q", decision.Reason)
+	}
+
+	// A trace with no provenance is not replayed either: nothing in the
+	// conversation says which target can verify it.
+	_, report, err = compileGenerateWire(
+		t, replay, toolTurn(""), inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	decision, ok = decisionFor(report, inference.FieldGenerateContextReasoning)
+	if !ok || decision.Disposition != inference.Dropped {
+		t.Fatalf("unscoped trace decision = %+v", decision)
+	}
+	if !strings.Contains(decision.Reason, "no provenance") {
+		t.Errorf("unscoped trace reason = %q", decision.Reason)
 	}
 
 	// The classic surface does not consume traces at all without the
