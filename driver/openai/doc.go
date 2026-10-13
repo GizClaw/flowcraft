@@ -45,6 +45,19 @@
 //     ImageOptions.Moderation lowers the generation-side content filter.
 //   - Generate AudioIntent: speech API (gpt-4o-mini-tts and friends).
 //   - Embed: embeddings API (text-embedding-3 family).
+//   - Decision: the standalone `decisions` surface (gpt-6-luna and
+//     compatible endpoints). One evidence input — text, structured json
+//     lowered to its serialized text, or user messages carrying text and
+//     image parts — plus an ordered question list of predicate, choice, and
+//     score questions, answered in one unary call whose answers keep the
+//     question order. The driver enforces the surface's own bounds at
+//     compile time (255 options, 10 levels, 200 questions, 128 images, a
+//     10 MiB input) because the canonical layer owns only the two-option
+//     minimum, and it reads the response strictly: an answer without a
+//     name, a distribution that does not sum to one, or a value whose type
+//     changed in flight is a provider error, not a value to guess at.
+//     `decision_options` carries the surface settings with no canonical
+//     field (safety_identifier today).
 //
 // Realtime (gpt-realtime) is intentionally absent: the pinned openai-go now
 // ships a WebSocket transport and the realtime REST surfaces (calls, client

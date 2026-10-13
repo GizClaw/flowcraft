@@ -17,6 +17,7 @@ const (
 	extensionGenerate = "generate_options"
 	extensionImage    = "image_options"
 	extensionTTS      = "tts_options"
+	extensionDecision = "decision_options"
 )
 
 // extensionProvider resolves the deployment provider ID an extension targets,
@@ -523,6 +524,35 @@ func (o TTSOptions) Clone() inference.Extension {
 	o.Instructions = ptr.Clone(o.Instructions)
 	return o
 }
+
+// ---------------------------------------------------------------------------
+// Decision.
+// ---------------------------------------------------------------------------
+
+// DecisionOptions carries Decisions-surface settings that have no canonical
+// representation.
+type DecisionOptions struct {
+	// Provider targets a deployment provider ID other than "openai".
+	Provider string `json:"-"`
+	// SafetyIdentifier is a stable, privacy-preserving identifier for the
+	// end user, used by the provider for abuse monitoring. Send a hash, not
+	// an email or account id.
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+}
+
+func (o DecisionOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o DecisionOptions) ExtensionID() string { return extensionDecision }
+
+func (o DecisionOptions) ActiveFields() []inference.ExtensionField {
+	if o.SafetyIdentifier == "" {
+		return nil
+	}
+	return []inference.ExtensionField{"safety_identifier"}
+}
+
+func (o DecisionOptions) Validate() error { return nil }
+
+func (o DecisionOptions) Clone() inference.Extension { return o }
 
 // validServiceTier reports whether value names a documented processing tier.
 // "ultrafast" is published by the Responses surface only; the compiler

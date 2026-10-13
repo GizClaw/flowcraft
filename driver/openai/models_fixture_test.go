@@ -50,6 +50,15 @@ func generateChatCapabilities() model.ModelCapabilities {
 	}
 }
 
+// decisionCapabilities is the common declaration for the decision family:
+// evidence in, typed answers out. A decision model produces no content kind,
+// so it declares no output.
+func decisionCapabilities() model.ModelCapabilities {
+	return model.ModelCapabilities{
+		Inputs: []message.PartKind{message.PartText, message.PartImage},
+	}
+}
+
 // openaiEffortMap is the canonical-to-wire identity map: OpenAI's
 // reasoning.effort accepts the canonical five verbatim.
 var openaiEffortMap = map[model.ReasoningEffort]string{
@@ -165,6 +174,15 @@ var declarations = map[string]testTarget{
 		"text-embedding-ada-002", kindEmbed,
 		model.ModelCapabilities{},
 	).withLimits(model.ModelLimits{}.WithMaxInputTokens(8_192)),
+	"gpt-6-luna": testModel(
+		"gpt-6-luna", kindDecision, decisionCapabilities(),
+	),
+	// A text-only decision target: a compatible endpoint need not accept
+	// image evidence, and the compiler refuses what a declaration omits.
+	"gpt-6-luna-text": testModel(
+		"gpt-6-luna-text", kindDecision,
+		model.ModelCapabilities{Inputs: []message.PartKind{message.PartText}},
+	),
 }
 
 // fixtureNames lists every declaration in the fixture set.
@@ -174,6 +192,8 @@ var fixtureNames = []string{
 	"gpt-4.1-nano",
 	"text-embedding-3-large",
 	"text-embedding-ada-002",
+	"gpt-6-luna",
+	"gpt-6-luna-text",
 }
 
 // fixtureModelsJSON renders the named fixture declarations as the models
@@ -253,6 +273,22 @@ func compileEmbedFor(
 	target testTarget,
 ) inference.Compiler[inference.EmbedRequest, openai.EmbeddingNewParams] {
 	return compileEmbed(name, target.spec, target.dialect)
+}
+
+func compileDecisionFor(
+	name string,
+	target testTarget,
+) inference.Compiler[inference.DecisionRequest, openai.DecisionNewParams] {
+	return compileDecision(name, target.spec, target.dialect)
+}
+
+func openDecisionFor(
+	cls *clients,
+	target testTarget,
+	id model.ModelID,
+	profile string,
+) (inference.DecisionDriver, error) {
+	return openDecision(cls, target.spec, target.dialect, id, profile)
 }
 
 func compileGenerateTuningFor(
