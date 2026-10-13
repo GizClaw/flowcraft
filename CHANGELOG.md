@@ -12,7 +12,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.5.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.5.3` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 | `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
@@ -20,6 +20,12 @@ Release PR before their tags are published.
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.5.3` - 2026-10-13
+
+### Changed
+
+- feat(core): stamp the observation time on a committed turn — the memory.turn finalizer commits the messages of a just-finished run, so commit time is the arrival time the host actually knows, and it now writes that as an RFC3339 timestamp under the message-level key core/memory.ObservedAtMetadataKey names ("observed_at"); the key's contract is that writers stamp it only where the observation time is known — a live host at commit, an importer from the session time the source conversation carries, through the same per-message metadata channel that already carries the source's own identifiers — and that a reader must never synthesize it from anything else, because CreatedAt is the storage time of the record and falling back on it would date a bulk import of old history to import day, which is worse than no anchor at all; a missing anchor therefore stays missing, which is what the message-level metadata doc now says beside the identity rule it already carried. The core hook test asserts a committed turn carries the anchor, that it parses as RFC3339Nano and that it is within a minute of commit time, which pins "the finalizer stamps the time it observed the turn" as the contract rather than a convention.
 
 ## `core/v0.5.2` - 2026-10-12
 
