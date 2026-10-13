@@ -616,7 +616,10 @@ still returns the excerpt.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host
-should `WaitReady` on:
+should `WaitReady` on. A failure a retry can fix (unreachable, timed out)
+is retried with backoff; one it cannot (a rejected connection, or a stdio
+command the OS cannot start) is logged and given up instead of churning
+forever, which a `WaitReady` caller sees as a returned error:
 
 ```yaml
 sim:
