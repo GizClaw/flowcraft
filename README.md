@@ -35,9 +35,9 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   by the application (`plugin.Installer`).
 - **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance,
-  MiniMax, and DashScope (Alibaba Cloud Model Studio's native surfaces: text
+  MiniMax, DashScope (Alibaba Cloud Model Studio's native surfaces: text
   generation, embeddings, speech synthesis, file transcription, and the Wan
-  image and video families).
+  image and video families), and TypeSafe (the System One decision surface).
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
   (`backends/checkpoint`), the long-term memory backend with its eval
   harness (`backends/memory`), and the encrypted keychain secret store
@@ -66,11 +66,11 @@ the layers they need.
 the GoTemplate context renderer.
 
 This mirrors the inference pattern: `core/inference` is generic, and each
-provider driver (`openai`, `anthropic`, `bytedance`, `minimax`, `dashscope`)
-is a registered factory. A deployment points one of them at any endpoint
-speaking that wire family — DeepSeek and GLM ride the OpenAI driver, for
-example — so the document's provider id (`openai`, `deepseek`, …) names the
-deployment, not the module. Memory implementations plug in the same way —
+provider driver (`openai`, `anthropic`, `bytedance`, `minimax`, `dashscope`,
+`typesafe`) is a registered factory. A deployment points one of them at any
+endpoint speaking that wire family — DeepSeek and GLM ride the OpenAI driver,
+for example — so the document's provider id (`openai`, `deepseek`, …) names
+the deployment, not the module. Memory implementations plug in the same way —
 each registers under its own `impl:` name with its own parameters (the
 flowcraft memory module is one such app-registered implementation); `core`
 owns only the contracts and glue.
@@ -291,12 +291,14 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 
 ### Unified inference runtime (`core/inference` + `driver/*`)
 
-- One runtime for Generate / Embed / Transcription (Realtime reserved), with exact
-  `ModelRef` addressing and compile-time capability checks.
+- One runtime for Generate / Embed / Decision / Transcription (Realtime
+  reserved), with exact `ModelRef` addressing and compile-time capability
+  checks.
 - Providers registered as factories: OpenAI (OpenAI, Azure, DeepSeek, Kimi and
   compatible gateways), Anthropic (Anthropic and compatible Messages
-  endpoints), ByteDance, MiniMax, and DashScope (Alibaba Cloud Model Studio's
-  native text, embedding, speech, image, and video surfaces).
+  endpoints), ByteDance, MiniMax, DashScope (Alibaba Cloud Model Studio's
+  native text, embedding, speech, image, and video surfaces), and TypeSafe
+  (the System One decision surface).
 
 ### Application assembly and plugins (`craft`)
 

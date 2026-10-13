@@ -12,6 +12,7 @@ use (
 	./driver/dashscope
 	./driver/minimax
 	./driver/openai
+	./driver/typesafe
 	./examples/anvil
 	./examples/forge
 )
