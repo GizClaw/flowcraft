@@ -49,13 +49,16 @@ func (i DecisionInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(wire)
 }
 
+// UnmarshalJSON decodes the carriers strictly: a field sibling to text, json,
+// or parts is rejected rather than dropped, matching how the rest of the
+// package treats unknown request fields.
 func (i *DecisionInput) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Text  string            `json:"text"`
 		JSON  json.RawMessage   `json:"json"`
 		Parts []json.RawMessage `json:"parts"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeStrict(data, &wire); err != nil {
 		return fmt.Errorf("decode decision input: %w", err)
 	}
 	decoded := DecisionInput{Text: wire.Text, JSON: wire.JSON}

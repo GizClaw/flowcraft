@@ -365,3 +365,18 @@ func TestDecisionRequestJSONRoundTrip(t *testing.T) {
 		)
 	}
 }
+
+// TestDecisionInputRejectsUnknownFields pins the strict decode: a typo
+// sibling to a carrier is rejected like every other canonical request field.
+// A lenient decode would drop it, and the script bridge's outer
+// DisallowUnknownFields never reaches inside this custom unmarshaler.
+func TestDecisionInputRejectsUnknownFields(t *testing.T) {
+	var input DecisionInput
+	err := json.Unmarshal([]byte(`{"text":"evidence","txt":"typo"}`), &input)
+	if err == nil {
+		t.Fatal("Unmarshal accepted an unknown sibling field")
+	}
+	if !strings.Contains(err.Error(), `unknown field "txt"`) {
+		t.Fatalf("Unmarshal = %v, want the unknown field named", err)
+	}
+}
