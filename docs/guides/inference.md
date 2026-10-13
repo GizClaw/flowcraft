@@ -144,8 +144,8 @@ and every published capability has to be written out; the `catalog` key that
 used to select a namespace is retired and rejected with the migration path.
 Driver control facts that no capability kind expresses are declared per
 model too (Bytedance's `max_resolution` and `video` parameter matrix,
-MiniMax's `wire_model` and `video` surface, DashScope's `image` and `video`
-surface blocks).
+MiniMax's `wire_model` and `video` surface, DashScope's `image`, `video`,
+`generate`, `embed`, `tts`, and `transcribe` surface blocks).
 
 Capability declarations are promises validated per provider surface: a
 model published with reasoning kind `toggle` must compile
@@ -324,8 +324,8 @@ anything, and core keys are forwarded verbatim.
 `request_metadata` forwarding is implemented by the OpenAI driver, which
 covers OpenAI, Azure, DeepSeek, Kimi and any compatible endpoint configured
 through its `endpoint` block. Anthropic, MiniMax, Bytedance, and DashScope
-are the current exceptions: their official Messages/Ark/Wan surfaces do not
-model arbitrary request metadata and the drivers deliberately keep their
+are the current exceptions: their official Messages/Ark/Model Studio surfaces
+do not model arbitrary request metadata and the drivers deliberately keep their
 native transport paths, so canonical metadata is not forwarded until those
 SDKs/providers add a native channel.
 
@@ -495,7 +495,10 @@ neither has it.
 A media call is a purchase, so a lane that generates anything is gated
 explicitly on top of holding a credential — a populated `.env` must not turn
 `make test` into a bill. `driver/dashscope/live_test.go` is the reference:
-`DASHSCOPE_LIVE=1` for stills, `DASHSCOPE_LIVE_VIDEO=1` for clips, and
+`DASHSCOPE_LIVE=1` for stills, `DASHSCOPE_LIVE_TEXT=1` for the text and
+embedding surfaces, `DASHSCOPE_LIVE_TTS=1` for speech synthesis,
+`DASHSCOPE_LIVE_ASR=1` for file transcription,
+`DASHSCOPE_LIVE_VIDEO=1` for clips, and
 `DASHSCOPE_LIVE_KEYFRAMES=1` or `DASHSCOPE_LIVE_WAN3=1` stacked on the video
 gate for the two surfaces whose create call already buys a render. Setting
 `DASHSCOPE_LIVE_DUMP` keeps a run's recordings, which turns a live

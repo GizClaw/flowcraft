@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +44,13 @@ import (
 //	                            it cannot be probed cheaply
 //	DASHSCOPE_LIVE_WAN3=1   the Wan 3.0 media-array lanes, stacked on the video
 //	                        opt-in; the array's create call is the purchase
+//	DASHSCOPE_LIVE_TEXT=1   the text-generation and embedding lanes: one
+//	                        short generation, one streamed generation, and
+//	                        one embedding batch
+//	DASHSCOPE_LIVE_TTS=1    the speech-synthesis lane: one short synthesis,
+//	                        a fraction of a cent at the platform's rate
+//	DASHSCOPE_LIVE_ASR=1    the file-transcription lane: one recognition over
+//	                        a platform sample URL, a fraction of a cent
 //	DASHSCOPE_BASE_URL      host override; defaults to the Beijing host
 //	DASHSCOPE_LIVE_DUMP     directory to keep the recorded transcripts in
 //
@@ -57,6 +66,9 @@ const (
 	envLiveVideo  = "DASHSCOPE_LIVE_VIDEO"
 	envLiveFrames = "DASHSCOPE_LIVE_KEYFRAMES"
 	envLiveWan3   = "DASHSCOPE_LIVE_WAN3"
+	envLiveText   = "DASHSCOPE_LIVE_TEXT"
+	envLiveTTS    = "DASHSCOPE_LIVE_TTS"
+	envLiveASR    = "DASHSCOPE_LIVE_ASR"
 	envLiveBase   = "DASHSCOPE_BASE_URL"
 	envLiveDump   = "DASHSCOPE_LIVE_DUMP"
 
@@ -89,12 +101,49 @@ func liveKeyOnly(t *testing.T) liveConfig {
 	return config
 }
 
+// liveSpeech gates the lane that synthesizes audio. One short sentence is a
+// fraction of a cent, but it is still a call: the lane asks to be opted into
+// like the text one.
+func liveSpeech(t *testing.T) liveConfig {
+	t.Helper()
+	config := liveKeyOnly(t)
+	if liveValue(envLiveTTS) == "" {
+		t.Skipf("live lane: %s is unset; skipping the paid call", envLiveTTS)
+	}
+	return config
+}
+
+// liveTranscripts gates the lane that recognizes an audio file. One short
+// recognition is a fraction of a cent, but it is still a call, so the lane
+// asks to be opted into like the text and speech ones.
+func liveTranscripts(t *testing.T) liveConfig {
+	t.Helper()
+	config := liveKeyOnly(t)
+	if liveValue(envLiveASR) == "" {
+		t.Skipf("live lane: %s is unset; skipping the paid call", envLiveASR)
+	}
+	return config
+}
+
 // liveImages gates the lanes that produce an image.
 func liveImages(t *testing.T) liveConfig {
 	t.Helper()
 	config := liveKeyOnly(t)
 	if liveValue(envLiveImage) == "" {
 		t.Skipf("live lane: %s is unset; skipping the paid call", envLiveImage)
+	}
+	return config
+}
+
+// liveTexts gates the lanes that call the text surfaces. A short generation
+// and one embedding batch are the cheapest calls this module can make, but
+// they are still calls, so they ask to be opted into like every other
+// credentialed lane.
+func liveTexts(t *testing.T) liveConfig {
+	t.Helper()
+	config := liveKeyOnly(t)
+	if liveValue(envLiveText) == "" {
+		t.Skipf("live lane: %s is unset; skipping the paid call", envLiveText)
 	}
 	return config
 }
@@ -324,7 +373,7 @@ func newLiveHarness(t *testing.T, config liveConfig) *liveHarness {
 	rawSpec, err := json.Marshal(Spec{
 		BaseURL:            base,
 		PollIntervalMillis: resource.Int(livePollMillis),
-		Models:             liveModels(),
+		Models:             liveDeclarations(),
 	})
 	if err != nil {
 		t.Fatalf("live harness: marshal spec: %v", err)
@@ -357,6 +406,20 @@ func newLiveHarness(t *testing.T, config liveConfig) *liveHarness {
 	return harness
 }
 
+// openers returns the model implementation the built definition exposes for
+// one declared model name.
+func (h *liveHarness) openers(name string) inference.Openers {
+	h.t.Helper()
+	id := model.ModelID{Provider: liveProviderID, Name: name}
+	for _, implementation := range h.definition.Models {
+		if implementation.Descriptor.ID == id {
+			return implementation.Openers
+		}
+	}
+	h.t.Fatalf("live harness: %s is not part of the definition", name)
+	return inference.Openers{}
+}
+
 // generate runs one unary generate call through the assembled driver: compile,
 // then execute against the real endpoint.
 func (h *liveHarness) generate(
@@ -369,13 +432,7 @@ func (h *liveHarness) generate(
 		ID:      model.ModelID{Provider: liveProviderID, Name: name},
 		Profile: liveProfileID,
 	}
-	var openers inference.Openers
-	for _, implementation := range h.definition.Models {
-		if implementation.Descriptor.ID == reference.ID {
-			openers = implementation.Openers
-			break
-		}
-	}
+	openers := h.openers(name)
 	if openers.Generate == nil {
 		h.t.Fatalf("live harness: %s declares no generate openers", name)
 	}
@@ -394,6 +451,134 @@ func (h *liveHarness) generate(
 			name, err, truncate(h.lastResponse()))
 	}
 	return response, explanation
+}
+
+// embed runs one embedding call through the assembled driver.
+func (h *liveHarness) embed(
+	ctx context.Context,
+	name string,
+	request inference.EmbedRequest,
+) inference.EmbedResponse {
+	h.t.Helper()
+	reference := model.ModelRef{
+		ID:      model.ModelID{Provider: liveProviderID, Name: name},
+		Profile: liveProfileID,
+	}
+	openers := h.openers(name)
+	if openers.Embed == nil {
+		h.t.Fatalf("live harness: %s declares no embed driver", name)
+	}
+	driver, err := openers.Embed(ctx, reference)
+	if err != nil {
+		h.t.Fatalf("live harness: open %s: %v", name, err)
+	}
+	prepared, err := driver.Prepare(ctx, reference, request)
+	if err != nil {
+		h.t.Fatalf("live harness: prepare %s: %v", name, err)
+	}
+	response, err := prepared.Execute(ctx)
+	if err != nil {
+		h.t.Fatalf("live harness: execute %s: %v; last answer: %s",
+			name, err, truncate(h.lastResponse()))
+	}
+	return response
+}
+
+// transcribe runs one unary file-transcription call through the assembled
+// driver: compile, then execute against the real endpoint.
+func (h *liveHarness) transcribe(
+	ctx context.Context,
+	name string,
+	request inference.TranscriptionRequest,
+) (inference.TranscriptionResponse, inference.Explanation) {
+	h.t.Helper()
+	reference := model.ModelRef{
+		ID:      model.ModelID{Provider: liveProviderID, Name: name},
+		Profile: liveProfileID,
+	}
+	openers := h.openers(name)
+	if openers.Transcribe == nil {
+		h.t.Fatalf("live harness: %s declares no transcribe openers", name)
+	}
+	operations, err := openers.Transcribe(ctx, reference)
+	if err != nil {
+		h.t.Fatalf("live harness: open %s: %v", name, err)
+	}
+	if operations.Unary == nil {
+		h.t.Fatalf("live harness: %s declares no unary transcription driver", name)
+	}
+	prepared, err := operations.Unary.Prepare(ctx, reference, request)
+	if err != nil {
+		h.t.Fatalf("live harness: prepare %s: %v", name, err)
+	}
+	explanation := prepared.Explanation()
+	response, err := prepared.Execute(ctx)
+	if err != nil {
+		h.t.Fatalf("live harness: execute %s: %v; last answer: %s",
+			name, err, truncate(h.lastResponse()))
+	}
+	return response, explanation
+}
+
+// stream drains one streaming generate call through the assembled driver and
+// returns the accumulated result plus how many text deltas arrived, so a lane
+// can tell an endpoint that streamed from one that answered in one frame.
+func (h *liveHarness) stream(
+	ctx context.Context,
+	name string,
+	request inference.GenerateRequest,
+) (inference.GenerateResponse, inference.Explanation, int) {
+	h.t.Helper()
+	reference := model.ModelRef{
+		ID:      model.ModelID{Provider: liveProviderID, Name: name},
+		Profile: liveProfileID,
+	}
+	openers := h.openers(name)
+	if openers.Generate == nil {
+		h.t.Fatalf("live harness: %s declares no generate openers", name)
+	}
+	operations, err := openers.Generate(ctx, reference)
+	if err != nil {
+		h.t.Fatalf("live harness: open %s: %v", name, err)
+	}
+	if operations.Stream == nil {
+		h.t.Fatalf("live harness: %s declares no stream driver", name)
+	}
+	prepared, err := operations.Stream.PrepareStream(ctx, reference, request)
+	if err != nil {
+		h.t.Fatalf("live harness: prepare stream %s: %v", name, err)
+	}
+	explanation := prepared.Explanation()
+	stream, err := prepared.Execute(ctx)
+	if err != nil {
+		h.t.Fatalf("live harness: open stream %s: %v; last answer: %s",
+			name, err, truncate(h.lastResponse()))
+	}
+	defer func() {
+		if err := stream.Close(); err != nil {
+			h.t.Errorf("live harness: close stream %s: %v", name, err)
+		}
+	}()
+	deltas := 0
+	for {
+		event, err := stream.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			h.t.Fatalf("live harness: stream %s: %v; last answer: %s",
+				name, err, truncate(h.lastResponse()))
+		}
+		switch event.Delta.(type) {
+		case inference.TextPartDelta, *inference.TextPartDelta:
+			deltas++
+		}
+	}
+	response, err := stream.Result()
+	if err != nil {
+		h.t.Fatalf("live harness: stream result %s: %v", name, err)
+	}
+	return response, explanation, deltas
 }
 
 // lastResponse returns the platform's own bytes for the most recent call, so
@@ -717,6 +902,93 @@ func isMP4(head []byte) bool {
 // liveModels declares the line-up the live lanes exercise. A deployment
 // declares what it serves; these are the declarations the lanes then hold the
 // platform's own answers against.
+// liveDeclarations is every model the lanes address: the media line-up plus
+// the text and speech models the newer lanes declare.
+func liveDeclarations() []ModelSpec {
+	return append(
+		append(append(liveModels(), liveTextModels()...), liveSpeechModels()...),
+		liveTranscribeModels()...,
+	)
+}
+
+// liveSpeechModels declares the model the speech lane addresses: the Qwen-TTS
+// flash model, whose single WAV answer the lane reads back to check the
+// declared payload shape against the platform's own bytes.
+func liveSpeechModels() []ModelSpec {
+	return []ModelSpec{
+		{
+			Name: "qwen3-tts-flash",
+			Kind: "tts",
+			Capabilities: model.ModelCapabilities{
+				Inputs:  []message.PartKind{message.PartText},
+				Outputs: []message.PartKind{message.PartAudio},
+			},
+			TTS: TTSParams{
+				PromptLimit:    600,
+				LanguageSelect: true,
+				Encoding:       media.AudioEncodingPCM16,
+				SampleRateHz:   24000,
+				Channels:       1,
+			},
+		},
+	}
+}
+
+// liveTranscribeModels declares the model the transcription lane addresses:
+// the asynchronous file pipeline's paraformer-v2, with every control the lane
+// exercises declared.
+func liveTranscribeModels() []ModelSpec {
+	return []ModelSpec{
+		{
+			Name: "paraformer-v2",
+			Kind: "transcribe",
+			Capabilities: model.ModelCapabilities{
+				Inputs:  []message.PartKind{message.PartAudio},
+				Outputs: []message.PartKind{message.PartText},
+			},
+			Transcribe: TranscribeParams{
+				Context:       true,
+				PromptLimit:   400,
+				LanguageHints: true,
+				Languages:     []string{"zh", "en"},
+				Timestamps:    true,
+			},
+		},
+	}
+}
+
+// liveTextModels declares the models the text lanes address: one generate
+// model on the multimodal surface the Qwen3.5+ families require even for text
+// input, and one embedding model whose declared batch cap of two makes a
+// three-item request prove the batching rather than assume it.
+func liveTextModels() []ModelSpec {
+	return []ModelSpec{
+		{
+			Name: "qwen3.8-flash",
+			Kind: "generate",
+			Capabilities: model.ModelCapabilities{
+				Inputs:    []message.PartKind{message.PartText, message.PartImage},
+				Outputs:   []message.PartKind{message.PartText},
+				Reasoning: model.ReasoningCapability{Kind: model.ReasoningToggle},
+			},
+			Generate: GenerateParams{API: generateAPIMultimodal},
+		},
+		{
+			Name: "qwen3.7-text-embedding",
+			Kind: "embed",
+			Capabilities: model.ModelCapabilities{
+				Inputs:                []message.PartKind{message.PartText},
+				CustomEmbedDimensions: true,
+			},
+			Embed: EmbedParams{
+				BatchMax:   2,
+				Dimensions: []int{2560, 1024},
+				Instruct:   true,
+			},
+		},
+	}
+}
+
 func liveModels() []ModelSpec {
 	return []ModelSpec{
 		{
@@ -1588,4 +1860,302 @@ func truncate(raw []byte) string {
 		return string(raw)
 	}
 	return string(raw[:limit]) + fmt.Sprintf("... (%d bytes)", len(raw))
+}
+
+// ----------------------------------------------------------------- text lane
+
+// TestLiveTextGeneration runs the native text surfaces against the real
+// endpoint: a unary generation, a streamed one, and one embedding request the
+// declared batch cap splits in two. Both halves of "correct" are checked where
+// they can be seen — the endpoint proves the wire shape, the recorded
+// transcript proves the driver sent the shape its compile report described.
+func TestLiveTextGeneration(t *testing.T) {
+	config := liveTexts(t)
+	harness := newLiveHarness(t, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	maxTokens := 32
+	thinking := false
+	prompt := "用一句话说明什么是流式输出。"
+	request := userRequest(
+		[]message.Part{message.TextPart{Text: prompt}},
+		inference.Intent{Text: &inference.TextIntent{
+			MaxOutputTokens:  &maxTokens,
+			ReasoningEnabled: &thinking,
+		}},
+	)
+
+	response, explanation := harness.generate(ctx, "qwen3.8-flash", request)
+	if text := strings.TrimSpace(liveText(t, response)); text == "" {
+		t.Fatalf("live lane: the unary generation answered no text; answer %s",
+			truncate(harness.lastResponse()))
+	}
+	call := harness.first(generatePathMultimodal)
+	if got := liveHeader(call, headerSSE); got != "" {
+		t.Errorf("live lane: a unary call carries %s = %q", headerSSE, got)
+	}
+	body := liveBody(t, call)
+	if got := liveNested(t, body, "model"); got != "qwen3.8-flash" {
+		t.Errorf("live lane: model = %v", got)
+	}
+	if got := liveNested(t, body, "input", "messages", "0", "content", "0", "text"); got != prompt {
+		t.Errorf("live lane: message content = %v, want %q", got, prompt)
+	}
+	if liveHasKey(body, "result_format") {
+		t.Error("live lane: the multimodal surface carried result_format")
+	}
+	liveDelivered(t, explanation, call,
+		inference.FieldGenerateIntentTextMaxOutputTokens, body, "max_tokens")
+	liveDelivered(t, explanation, call,
+		inference.FieldGenerateIntentReasoningEnabled, body, "enable_thinking")
+
+	streamed, streamExplanation, deltas := harness.stream(ctx, "qwen3.8-flash", request)
+	if deltas == 0 {
+		t.Error("live lane: the stream delivered no text delta")
+	}
+	if text := strings.TrimSpace(liveText(t, streamed)); text == "" {
+		t.Errorf("live lane: the stream accumulated no text; answer %s",
+			truncate(harness.lastResponse()))
+	}
+	if streamed.Usage.TotalTokens <= 0 {
+		t.Errorf("live lane: the streamed result reported no usage: %+v", streamed.Usage)
+	}
+	exchanges := harness.exchanges()
+	streamCall := exchanges[len(exchanges)-1]
+	if got := liveHeader(streamCall, headerSSE); got != "enable" {
+		t.Errorf("live lane: a streamed call carries %s = %q, want enable", headerSSE, got)
+	}
+	streamBody := liveBody(t, streamCall)
+	liveDelivered(t, streamExplanation, streamCall,
+		inference.FieldGenerateExecutionStream, streamBody, "incremental_output")
+
+	embedRequest := inference.EmbedRequest{
+		Items: []inference.EmbedItem{
+			embedTextItem("杭州以西湖著称。"),
+			embedTextItem("杭州是浙江省的省会。"),
+			embedTextItem("杭州位于中国东部。"),
+		},
+	}
+	embedded := harness.embed(ctx, "qwen3.7-text-embedding", embedRequest)
+	if len(embedded.Embeddings) != len(embedRequest.Items) {
+		t.Fatalf("live lane: %d embeddings for %d items",
+			len(embedded.Embeddings), len(embedRequest.Items))
+	}
+	for index, embedding := range embedded.Embeddings {
+		if len(embedding.Vector) == 0 {
+			t.Errorf("live lane: embedding %d carries no vector", index)
+		}
+	}
+	if embedded.Usage.InputTokens <= 0 {
+		t.Errorf("live lane: the embedding batch reported no tokens: %+v", embedded.Usage)
+	}
+	batches := 0
+	for _, exchange := range harness.exchanges() {
+		if exchange.Path == embedPathText {
+			batches++
+		}
+	}
+	if batches != 2 {
+		t.Errorf("live lane: %d embedding calls, want 2: the declared batch cap is two",
+			batches)
+	}
+	t.Logf("live lane: text ok — chat %q, stream %d deltas / %d tokens, embedding dim %d",
+		truncate([]byte(liveText(t, response))), deltas, streamed.Usage.TotalTokens,
+		len(embedded.Embeddings[0].Vector))
+}
+
+// --------------------------------------------------------------- speech lane
+
+// TestLiveSpeechSynthesis runs the native speech surface against the real
+// endpoint: the request shape the platform documents, the answer's URL, and —
+// the reason the lane downloads it — the payload the declaration claims to
+// serve, which only the platform's own bytes can confirm.
+func TestLiveSpeechSynthesis(t *testing.T) {
+	config := liveSpeech(t)
+	harness := newLiveHarness(t, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	request := userRequest(
+		[]message.Part{message.TextPart{Text: "今天天气真不错，适合出去走走。"}},
+		inference.Intent{Audio: &inference.AudioIntent{
+			Voice: media.VoiceSpec{ID: "Cherry", Language: "Chinese"},
+			Format: media.AudioFormat{
+				Encoding:     media.AudioEncodingPCM16,
+				SampleRateHz: 24000,
+				Channels:     1,
+			},
+		}},
+	)
+	response, explanation := harness.generate(ctx, "qwen3-tts-flash", request)
+	call := harness.first(generatePathMultimodal)
+	if got := liveHeader(call, headerSSE); got != "" {
+		t.Errorf("live lane: a unary speech call carries %s = %q", headerSSE, got)
+	}
+	body := liveBody(t, call)
+	if got := liveNested(t, body, "model"); got != "qwen3-tts-flash" {
+		t.Errorf("live lane: model = %v", got)
+	}
+	if got := liveNested(t, body, "input", "voice"); got != "Cherry" {
+		t.Errorf("live lane: input.voice = %v", got)
+	}
+	if got := liveNested(t, body, "input", "language_type"); got != "Chinese" {
+		t.Errorf("live lane: input.language_type = %v", got)
+	}
+	if liveHasKey(body, "parameters") {
+		t.Errorf("live lane: the speech surface carried a parameters block: %s", call.Body)
+	}
+	liveDelivered(t, explanation, call,
+		inference.FieldGenerateIntentAudioVoice, body, "voice")
+	// The format asks ride no wire field: the surface has no control for
+	// them, and the driver answers with the shape the declaration states.
+	for _, field := range []inference.FieldID{
+		inference.FieldGenerateIntentAudioFormatEncoding,
+		inference.FieldGenerateIntentAudioFormatSampleRate,
+		inference.FieldGenerateIntentAudioFormatChannels,
+	} {
+		liveNative(t, explanation, field)
+	}
+
+	if len(response.Message.Content.Parts) != 1 {
+		t.Fatalf("live lane: parts = %#v", response.Message.Content.Parts)
+	}
+	audio, ok := response.Message.Content.Parts[0].(message.AudioPart)
+	if !ok {
+		t.Fatalf("live lane: part = %T", response.Message.Content.Parts[0])
+	}
+	if audio.Source.Kind() != media.SourceURL {
+		t.Fatalf("live lane: source kind = %v", audio.Source.Kind())
+	}
+	if audio.Format == nil || *audio.Format != (media.AudioFormat{
+		Encoding:     media.AudioEncodingPCM16,
+		SampleRateHz: 24000,
+		Channels:     1,
+	}) {
+		t.Errorf("live lane: format = %+v", audio.Format)
+	}
+	payload := liveArtifact(t, audio.Source.URL())
+	channels, rate, bits := liveWAVFormat(t, payload)
+	if channels != 1 || rate != 24000 || bits != 16 {
+		t.Errorf(
+			"live lane: the platform served %d ch / %d Hz / %d bit; the declaration says 1 / 24000 / 16",
+			channels, rate, bits)
+	}
+	t.Logf("live lane: speech ok — %d bytes of %d Hz mono %d-bit PCM in a WAV container",
+		len(payload), rate, bits)
+}
+
+// liveNative asserts the report called a field native without naming a wire
+// key: the surface carries no control for it, and the answer's shape — which
+// the lane reads back — is what stands in for the field.
+func liveNative(
+	t *testing.T,
+	explanation inference.Explanation,
+	field inference.FieldID,
+) {
+	t.Helper()
+	decision, ok := decisionFor(explanationReport(t, explanation), field)
+	if !ok {
+		t.Fatalf("live lane: %s carries no decision", field)
+	}
+	if decision.Disposition != inference.Native {
+		t.Errorf("live lane: %s disposition = %s (%s), want native",
+			field, decision.Disposition, decision.Reason)
+	}
+}
+
+// liveWAVFormat reads a RIFF/WAVE payload's format chunk: the served rate,
+// channel count, and sample width are facts only the bytes can settle.
+func liveWAVFormat(t *testing.T, payload []byte) (channels, rate, bits int) {
+	t.Helper()
+	if len(payload) < 44 || string(payload[:4]) != "RIFF" ||
+		string(payload[8:12]) != "WAVE" {
+		head := payload
+		if len(head) > 16 {
+			head = head[:16]
+		}
+		t.Fatalf("live lane: the answer is not a RIFF/WAVE file: % x", head)
+	}
+	index := bytes.Index(payload, []byte("fmt "))
+	if index < 0 || index+24 > len(payload) {
+		t.Fatalf("live lane: the RIFF file carries no readable fmt chunk")
+	}
+	value := payload[index+8:]
+	channels = int(binary.LittleEndian.Uint16(value[2:4]))
+	rate = int(binary.LittleEndian.Uint32(value[4:8]))
+	bits = int(binary.LittleEndian.Uint16(value[14:16]))
+	return channels, rate, bits
+}
+
+// ------------------------------------------------------- transcription lane
+
+// TestLiveFileTranscription runs the native file-transcription pipeline
+// against the real endpoint: the submitted file URL, the task poll, the
+// result file the driver fetches from the platform's own host, and the
+// transcript the declaration promises to serve. The sample is the platform's
+// own public one, because the surface requires a URL the endpoint can fetch
+// itself.
+func TestLiveFileTranscription(t *testing.T) {
+	config := liveTranscripts(t)
+	harness := newLiveHarness(t, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	const sample = "https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/paraformer/hello_world_female2.wav"
+	request := inference.TranscriptionRequest{
+		Audio:      audioURLSource(t, sample),
+		Language:   "zh",
+		Prompt:     "阿里巴巴 达摩院",
+		Timestamps: true,
+	}
+	response, explanation := harness.transcribe(ctx, "paraformer-v2", request)
+	if text := strings.TrimSpace(response.Text); text == "" {
+		t.Fatalf("live lane: the transcription answered no text; answer %s",
+			truncate(harness.lastResponse()))
+	}
+	if len(response.Segments) == 0 {
+		t.Error("live lane: the transcript carries no segments")
+	}
+	if response.Language != "zh" {
+		t.Errorf("live lane: language = %q, want the hint the request carried",
+			response.Language)
+	}
+	duration := int64(0)
+	if response.DurationMillis == nil || *response.DurationMillis <= 0 {
+		t.Errorf("live lane: duration = %v, want the source duration",
+			response.DurationMillis)
+	} else {
+		duration = *response.DurationMillis
+	}
+	if response.Usage.AudioDurationMillis == nil ||
+		*response.Usage.AudioDurationMillis <= 0 {
+		t.Errorf("live lane: billed duration = %v, want the task's usage",
+			response.Usage.AudioDurationMillis)
+	}
+	call := harness.first(transcribePath)
+	if got := liveHeader(call, headerAsync); got != "enable" {
+		t.Errorf("live lane: the create call carries %s = %q, want enable",
+			headerAsync, got)
+	}
+	body := liveBody(t, call)
+	if got := liveNested(t, body, "model"); got != "paraformer-v2" {
+		t.Errorf("live lane: model = %v", got)
+	}
+	if got := liveNested(t, body, "input", "file_urls", "0"); got != sample {
+		t.Errorf("live lane: file url = %v, want %q", got, sample)
+	}
+	if got := liveNested(t, body, "parameters", "language_hints", "0"); got != "zh" {
+		t.Errorf("live lane: language hint = %v", got)
+	}
+	liveDelivered(t, explanation, call,
+		inference.FieldTranscriptionAudio, body, "file_urls")
+	liveDelivered(t, explanation, call,
+		inference.FieldTranscriptionLanguage, body, "language_hints")
+	liveDelivered(t, explanation, call,
+		inference.FieldTranscriptionPrompt, body, "context")
+	liveDelivered(t, explanation, call,
+		inference.FieldTranscriptionTimestamps, body, "timestamp_alignment_enabled")
+	t.Logf("live lane: transcription ok — %d segments, %d characters, duration %d ms",
+		len(response.Segments), len([]rune(response.Text)), duration)
 }

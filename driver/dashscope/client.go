@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -243,6 +244,49 @@ func (c *mediaClient) getJSON(ctx context.Context, path string, out any) error {
 		return fmt.Errorf("dashscope: decode %s response: %w", path, err)
 	}
 	return nil
+}
+
+// artifactLimit bounds one downloaded result file. A transcription result for
+// hours of audio is large, but nowhere near this.
+const artifactLimit = 64 << 20
+
+// getArtifact downloads one result link — the transcription_url the terminal
+// task query names. The link is signed and lives on the platform's result
+// host, so the call carries no credential: the signature is in the URL, and
+// sending the account key to a host that never asked for it would spread the
+// credential for nothing.
+func (c *mediaClient) getArtifact(ctx context.Context, link string) ([]byte, error) {
+	parsed, err := url.Parse(link)
+	if err != nil || parsed.Host == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf(
+			"dashscope: result link %q is not an http(s) URL", link)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return nil, fmt.Errorf("dashscope: build result request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dashscope: fetch result file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, errdefs.ClassifyStatus(resp.StatusCode, fmt.Errorf(
+			"dashscope: fetch result file: HTTP %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(snippet)),
+		))
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, artifactLimit+1))
+	if err != nil {
+		return nil, fmt.Errorf("dashscope: read result file: %w", err)
+	}
+	if len(payload) > artifactLimit {
+		return nil, fmt.Errorf(
+			"dashscope: result file exceeds %d bytes", artifactLimit)
+	}
+	return payload, nil
 }
 
 // sseResponseLimit bounds one streamed response. The interleaved surface

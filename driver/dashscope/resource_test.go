@@ -213,7 +213,7 @@ func TestFactoryRejectsBadSettings(t *testing.T) {
 		},
 		{
 			name:     "unsupported kind",
-			settings: `{"id":"dashscope","spec":{"models":[{"name":"qwen3.8-max","kind":"generate","capabilities":{"outputs":["text"]}}]}}`,
+			settings: `{"id":"dashscope","spec":{"models":[{"name":"qwen3.8-max","kind":"unknown","capabilities":{"outputs":["text"]}}]}}`,
 			reason:   "unsupported kind",
 		},
 		{
@@ -390,5 +390,153 @@ func TestFactoryWireModelAliasLowers(t *testing.T) {
 	}
 	if wire.model != "wan2.2-t2v-plus-2026-03-01" {
 		t.Errorf("wire model = %q, want the declared alias", wire.model)
+	}
+}
+
+// TestFactoryWiresTextFamilies pins the text, speech, and transcription
+// families' wiring: their extension decoders are registered, and each kind
+// opens exactly the operations it serves — both execution shapes for
+// generation, the single embedding driver for embeddings, the unary speech
+// driver for synthesis, and the unary file driver for transcription.
+func TestFactoryWiresTextFamilies(t *testing.T) {
+	settings := map[string]any{
+		"id": "dashscope",
+		"spec": map[string]any{
+			"models": []map[string]any{
+				{
+					"name": "qwen3.7-max",
+					"kind": "generate",
+					"capabilities": map[string]any{
+						"inputs":  []string{"text"},
+						"outputs": []string{"text"},
+					},
+					"generate": map[string]any{
+						"max_tokens_param": "max_completion_tokens",
+					},
+				},
+				{
+					"name": "qwen3.7-text-embedding",
+					"kind": "embed",
+					"capabilities": map[string]any{
+						"inputs": []string{"text"},
+					},
+					"embed": map[string]any{
+						"batch_max":  20,
+						"dimensions": []int{2560, 1024},
+					},
+				},
+				{
+					"name": "qwen3-tts-flash",
+					"kind": "tts",
+					"capabilities": map[string]any{
+						"inputs":  []string{"text"},
+						"outputs": []string{"audio"},
+					},
+					"tts": map[string]any{
+						"prompt_limit":    600,
+						"language_select": true,
+						"encoding":        "pcm16",
+						"sample_rate_hz":  24000,
+						"channels":        1,
+					},
+				},
+				{
+					"name": "paraformer-v2",
+					"kind": "transcribe",
+					"capabilities": map[string]any{
+						"inputs":  []string{"audio"},
+						"outputs": []string{"text"},
+					},
+					"transcribe": map[string]any{
+						"context":        true,
+						"prompt_limit":   400,
+						"language_hints": true,
+						"languages":      []string{"zh", "en"},
+						"timestamps":     true,
+					},
+				},
+			},
+		},
+		"profiles": []map[string]any{{
+			"id":         "beijing",
+			"operations": []string{"generate", "embed", "transcription"},
+			"secrets":    map[string]any{"api_key": "sk-test"},
+		}},
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	value, err := Factory().New(
+		context.Background(), resource.Input{Settings: raw})
+	if err != nil {
+		t.Fatalf("factory.New: %v", err)
+	}
+	provider, ok := value.(inference.ProviderDefinition)
+	if !ok {
+		t.Fatalf("factory returned %T", value)
+	}
+	for _, name := range []string{
+		extensionImage, extensionVideo, extensionGenerate, extensionEmbed,
+		extensionTranscribe,
+	} {
+		if _, ok := provider.ExtensionDecoders[name]; !ok {
+			t.Errorf("extension decoders are missing %q", name)
+		}
+	}
+	generate := declaredModel(t, provider, "qwen3.7-max")
+	if generate.Openers.Generate == nil || generate.Openers.Embed != nil {
+		t.Fatalf("generate openers = %+v", generate.Openers)
+	}
+	operations, err := generate.Openers.Generate(
+		context.Background(),
+		model.ModelRef{ID: generate.Descriptor.ID, Profile: "beijing"},
+	)
+	if err != nil {
+		t.Fatalf("open generate: %v", err)
+	}
+	if operations.Unary == nil || operations.Stream == nil {
+		t.Errorf("text generation opened %+v", operations)
+	}
+	embed := declaredModel(t, provider, "qwen3.7-text-embedding")
+	if embed.Openers.Embed == nil || embed.Openers.Generate != nil {
+		t.Fatalf("embed openers = %+v", embed.Openers)
+	}
+	if _, err := embed.Openers.Embed(
+		context.Background(),
+		model.ModelRef{ID: embed.Descriptor.ID, Profile: "beijing"},
+	); err != nil {
+		t.Fatalf("open embed: %v", err)
+	}
+	speech := declaredModel(t, provider, "qwen3-tts-flash")
+	if speech.Openers.Generate == nil || speech.Openers.Embed != nil {
+		t.Fatalf("speech openers = %+v", speech.Openers)
+	}
+	speechOperations, err := speech.Openers.Generate(
+		context.Background(),
+		model.ModelRef{ID: speech.Descriptor.ID, Profile: "beijing"},
+	)
+	if err != nil {
+		t.Fatalf("open speech: %v", err)
+	}
+	if speechOperations.Unary == nil || speechOperations.Stream != nil {
+		t.Errorf("speech synthesis opened %+v; the surface serves the unary shape only",
+			speechOperations)
+	}
+	transcribe := declaredModel(t, provider, "paraformer-v2")
+	if transcribe.Openers.Transcribe == nil ||
+		transcribe.Openers.Generate != nil || transcribe.Openers.Embed != nil {
+		t.Fatalf("transcribe openers = %+v", transcribe.Openers)
+	}
+	transcribeOperations, err := transcribe.Openers.Transcribe(
+		context.Background(),
+		model.ModelRef{ID: transcribe.Descriptor.ID, Profile: "beijing"},
+	)
+	if err != nil {
+		t.Fatalf("open transcribe: %v", err)
+	}
+	if transcribeOperations.Unary == nil || transcribeOperations.Session != nil {
+		t.Errorf("file transcription opened %+v; the async pipeline serves the unary shape only",
+			transcribeOperations)
 	}
 }

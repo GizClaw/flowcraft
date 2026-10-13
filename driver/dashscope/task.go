@@ -3,6 +3,7 @@ package dashscope
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -40,18 +41,23 @@ type taskCreate struct {
 	Message   string `json:"message"`
 }
 
-// taskResultItem is one entry of an image task's result list: the link, or
-// the failure that kept the entry from producing one.
+// taskResultItem is one entry of a task's result list. Image tasks carry the
+// generated link, transcription tasks the transcription_url behind which the
+// transcript sits, and a subtask that failed carries the code and message that
+// kept the entry from producing a result at all.
 type taskResultItem struct {
-	URL     string `json:"url"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	URL              string `json:"url"`
+	TranscriptionURL string `json:"transcription_url"`
+	SubtaskStatus    string `json:"subtask_status"`
+	Code             string `json:"code"`
+	Message          string `json:"message"`
 }
 
 // taskQuery is the envelope the task endpoint returns. Image tasks carry
 // their links in output.results (one entry per image, each able to fail on
-// its own), video tasks carry output.video_url, and a terminal failure
-// carries output.code/output.message.
+// its own), video tasks carry output.video_url, transcription tasks carry
+// output.results[].transcription_url, and a terminal failure carries
+// output.code/output.message.
 type taskQuery struct {
 	Output struct {
 		TaskID     string           `json:"task_id"`
@@ -64,6 +70,10 @@ type taskQuery struct {
 	Usage struct {
 		ImageCount int64 `json:"image_count"`
 		VideoCount int64 `json:"video_count"`
+		// Duration is the task's billed duration in seconds — the unit the
+		// platform reports usage in for video and speech tasks alike, as a
+		// JSON number that may carry a fraction (5.0) or not (9).
+		Duration *float64 `json:"duration"`
 	} `json:"usage"`
 	RequestID string `json:"request_id"`
 	Code      string `json:"code"`
@@ -173,4 +183,26 @@ func imageURLs(query taskQuery) ([]string, error) {
 		return nil, fmt.Errorf("dashscope: image generation returned no images")
 	}
 	return urls, nil
+}
+
+// transcriptionURL reads the result link out of a succeeded transcription
+// task. A subtask can fail on its own — an unreachable file, say — while the
+// task as a whole reports SUCCEEDED, because one failing entry does not mark
+// the siblings failed, so the link and the subtask status both have to say
+// success before the result file is fetched.
+func transcriptionURL(query taskQuery) (string, error) {
+	if len(query.Output.Results) == 0 {
+		return "", fmt.Errorf("dashscope: file transcription returned no results")
+	}
+	result := query.Output.Results[0]
+	if strings.EqualFold(result.SubtaskStatus, taskStatusFailed) ||
+		result.TranscriptionURL == "" {
+		failure := errorBody{Code: result.Code, Message: result.Message}
+		if failure.Code != "" || failure.Message != "" {
+			return "", failure.failure("file transcription", http.StatusOK)
+		}
+		return "", fmt.Errorf(
+			"dashscope: file transcription returned no result link")
+	}
+	return result.TranscriptionURL, nil
 }
