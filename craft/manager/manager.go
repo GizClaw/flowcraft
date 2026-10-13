@@ -58,8 +58,21 @@ type Options struct {
 	// DefinitionPath is the explicit craft.yaml path; empty triggers
 	// the standard lookup order in LocateDefinition.
 	DefinitionPath string
-	Profile        string
-	Paths          Paths
+	// Definition supplies the definition bytes directly — the path for
+	// a shell whose definition is embedded in the binary. When
+	// non-empty the manager parses them instead of locating and
+	// reading a file, in which case DefinitionPath is ignored and
+	// DefinitionDir anchors the definition's own file references.
+	// Replace keeps taking the replacement definition as its argument.
+	Definition []byte
+	// DefinitionDir anchors the file references an embedded definition
+	// carries (base_layers with a file source, config overlays). It is
+	// ignored while the definition is read from a file, which anchors
+	// at the directory of the path it was found at. Empty means the
+	// process working directory.
+	DefinitionDir string
+	Profile       string
+	Paths         Paths
 	// Lock enables the DataDir+Profile single-instance lock.
 	Lock bool
 	// LockPath overrides the lock file the single-instance lock is taken
@@ -105,6 +118,7 @@ type Manager struct {
 	state   State
 	current *craft.Craft
 	lock    *lock.Handle
+	defDir  string
 	subs    map[uint64]func(State)
 	nextSub uint64
 	closed  bool
@@ -204,23 +218,13 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.notifyState(StateFailed)
 		return err
 	}
-	path := m.opts.DefinitionPath
-	if strings.TrimSpace(path) == "" {
-		located, err := LocateDefinition("", os.LookupEnv, mustGetwd(), executableDir())
-		if err != nil {
-			return fail(err)
-		}
-		path = located
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fail(errdefs.Validationf(
-			"craft manager: read definition: %v", err))
-	}
-	def, err := craft.ParseDefinition(raw)
+	def, defDir, err := m.definition()
 	if err != nil {
 		return fail(err)
 	}
+	m.mu.Lock()
+	m.defDir = defDir
+	m.mu.Unlock()
 	if m.opts.Migrate != nil {
 		if err := m.opts.Migrate(ctx, m.opts.Paths); err != nil {
 			return fail(fmt.Errorf("craft manager: migrate: %w", err))
@@ -258,6 +262,41 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
+// definition resolves the definition this Manager starts from and the
+// directory its file references anchor at: the Options.Definition bytes
+// alongside Options.DefinitionDir when the shell embeds them, otherwise
+// the craft.yaml LocateDefinition finds — Options.DefinitionPath, the
+// standard lookup order, then the read — alongside the directory of the
+// path it was found at, so a definition found somewhere else than the
+// working directory anchors at itself rather than at the caller's cwd.
+func (m *Manager) definition() (craft.Definition, string, error) {
+	if len(m.opts.Definition) > 0 {
+		def, err := craft.ParseDefinition(m.opts.Definition)
+		if err != nil {
+			return craft.Definition{}, "", err
+		}
+		return def, m.opts.DefinitionDir, nil
+	}
+	path := m.opts.DefinitionPath
+	if strings.TrimSpace(path) == "" {
+		located, err := LocateDefinition("", os.LookupEnv, mustGetwd(), executableDir())
+		if err != nil {
+			return craft.Definition{}, "", err
+		}
+		path = located
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return craft.Definition{}, "", errdefs.Validationf(
+			"craft manager: read definition: %v", err)
+	}
+	def, err := craft.ParseDefinition(raw)
+	if err != nil {
+		return craft.Definition{}, "", err
+	}
+	return def, filepath.Dir(path), nil
+}
+
 func (m *Manager) build(
 	ctx context.Context,
 	def craft.Definition,
@@ -265,11 +304,14 @@ func (m *Manager) build(
 	if m.opts.Build != nil {
 		return m.opts.Build(ctx, def, m.opts.Paths)
 	}
+	m.mu.Lock()
+	defDir := m.defDir
+	m.mu.Unlock()
 	return craft.New(def, craft.Options{
 		ConfigDir:     m.opts.Paths.ConfigDir,
 		DataDir:       m.opts.Paths.DataDir,
 		AppHome:       m.opts.Paths.AppHome,
-		DefinitionDir: filepath.Dir(m.opts.DefinitionPath),
+		DefinitionDir: defDir,
 		Capabilities:  m.opts.Capabilities,
 	})
 }

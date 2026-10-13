@@ -661,7 +661,18 @@ machine, signal-aware `Run`, and the blue-green `Replace`.
 - **Definition lookup.** `LocateDefinition` tries the explicit path,
   `$CRAFT_DEFINITION`, the working directory, the executable directory,
   then `<UserConfigDir>/craft/craft.yaml`; a miss is `craft manager:
-  craft.yaml not found`.
+  craft.yaml not found`. `Options.Definition` short-circuits the whole
+  lookup: a non-empty byte slice is parsed in place (and `DefinitionPath`
+  is ignored), which is the path for a shell whose definition is embedded
+  in the binary. Bytes go through the same `ParseDefinition` validation a
+  file does.
+- **Definition anchor.** The directory a definition's own file
+  references resolve against (`DefinitionDir` on `craft.Options`, so
+  `base_layers` with a file source and config overlays) is the directory
+  the definition was found in — the located path, not
+  `Options.DefinitionPath` and not the working directory. An embedded
+  definition has no directory of its own, so `Options.DefinitionDir`
+  names it; empty means the working directory.
 - **Paths and lock.** `Paths{ConfigDir, DataDir, AppHome}`. With `Lock`
   set, the manager takes `<DataDir>/craft.lock` (or
   `craft-<profile>.lock`), so a `DataDir` is required — unless `LockPath`

@@ -81,6 +81,83 @@ func TestLocateDefinition(t *testing.T) {
 	}
 }
 
+// TestManagerStartsFromDefinitionBytes pins the embedded-definition
+// seam: the shell hands the bytes over and the manager never looks for
+// a file. The stale DefinitionPath this test carries is deliberately
+// ignored, and the anchor for the definition's own file references
+// comes from DefinitionDir.
+func TestManagerStartsFromDefinitionBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	anchor := filepath.Join(dir, "config")
+	manager := newTestManager(t, "", dir, func(opts *Options) {
+		opts.Definition = []byte(definition)
+		opts.DefinitionPath = filepath.Join(dir, "missing.yaml")
+		opts.DefinitionDir = anchor
+	})
+	ctx := context.Background()
+	if err := manager.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if manager.Craft() == nil {
+		t.Fatal("no Craft after start")
+	}
+	if state := manager.State(); state != StateRunning {
+		t.Fatalf("state = %s, want running", state)
+	}
+	if manager.defDir != anchor {
+		t.Fatalf("definition anchor = %q, want %q", manager.defDir, anchor)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestManagerAnchorsALocatedDefinitionAtItsDirectory pins the other
+// half of the anchor rule: a definition the lookup order found anchors
+// at the directory it was found in. DefinitionPath is empty here, so
+// taking the anchor from the configured path would anchor the Craft —
+// and everything a definition-level file reference resolves against —
+// at the process working directory instead.
+func TestManagerAnchorsALocatedDefinitionAtItsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CRAFT_DEFINITION", writeDefinition(t, dir))
+	manager := newTestManager(t, "", t.TempDir(), nil)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	if manager.defDir != dir {
+		t.Fatalf("definition anchor = %q, want %q", manager.defDir, dir)
+	}
+}
+
+// TestManagerRejectsInvalidDefinitionBytes pins that bytes go through
+// the same validation as a file: a definition missing its version
+// refuses the start and fails the manager instead of building a Craft
+// from nonsense.
+func TestManagerRejectsInvalidDefinitionBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	manager := newTestManager(t, "", dir, func(opts *Options) {
+		opts.Definition = []byte("craft: {id: test}")
+	})
+	err := manager.Start(context.Background())
+	if err == nil {
+		t.Fatal("starting from an invalid definition succeeded")
+	}
+	if state := manager.State(); state != StateFailed {
+		t.Fatalf("state = %s, want failed", state)
+	}
+	if manager.Craft() != nil {
+		t.Fatal("a failed start left a Craft behind")
+	}
+}
+
 func TestManagerLifecycleAndLock(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
