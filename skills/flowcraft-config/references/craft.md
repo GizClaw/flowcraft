@@ -97,8 +97,14 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   confined to the plugin root; UI asset ≤ 10 MiB.
 - `mcp.transport`: `stdio` (default; needs `command`) or `http` (needs
   `url`). `command`/`args` carrying a path separator are resolved against
-  the plugin root; bare names go through `PATH`. `mcp` and `mcpServers`
-  in the same manifest is rejected.
+  the plugin root and must exist there — the same resolution the host
+  performs when it spawns, so a manifest that installs is one the host
+  can start. A path-shaped `command` must be a regular file — exec
+  cannot run a directory or anything else — while a path-shaped argument
+  only has to exist, because an argument may name a directory on purpose
+  (`go run ./server`). Bare names go through `PATH` and are not checked,
+  and an argument starting with `-` is never resolved. `mcp` and
+  `mcpServers` in the same manifest is rejected.
 - Tool names are namespaced per server: one server publishes under the
   plugin's namespace, several publish under the plugin's plus the
   server's `name` (or its position, when unnamed). Two of a plugin's own
@@ -264,6 +270,8 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin <id>: at most N skills\|hooks\|MCP servers\|graph nodes` | over limit |
 | `plugin <id>: mcp server 0 requires command` | stdio without `command` |
 | `plugin <id>: mcp server 0 requires url` | http without `url` |
+| `plugin <id>: mcp server 0 command "./x": ...` | path-shaped stdio `command` missing under the plugin root, or not a runnable regular file |
+| `plugin <id>: mcp server 0 arg "./x": ...` | path-shaped stdio argument missing under the plugin root |
 | `plugin <id>: mcp and mcpServers are mutually exclusive` | both set |
 | `plugin <id>: the kraft field is no longer supported; ...` | removed field |
 | `plugin: path "X" escapes the plugin root` | path outside the root |
