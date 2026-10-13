@@ -19,8 +19,8 @@ type Options struct {
 	AppHome   string
 
 	// DefinitionDir anchors definition-level file references
-	// (base_layers with a file source). Empty means the process working
-	// directory.
+	// (base_layers with a file source) and the default loader's
+	// ${base:...} expansion. Empty means the process working directory.
 	DefinitionDir string
 
 	// Assets resolves definition-level embed references (base_layers
