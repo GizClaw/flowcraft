@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/openai
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.4.9
+	github.com/GizClaw/flowcraft/core v0.6.0
 	github.com/openai/openai-go/v3 v3.77.0
 	go.opentelemetry.io/otel v1.45.0
 )
