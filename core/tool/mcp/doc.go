@@ -43,10 +43,14 @@
 // that cannot be reached is not a startup failure — the Source keeps
 // retrying with exponential backoff and publishes the server's tools
 // to the registry the moment a connection succeeds — and a hung server
-// cannot stall the host past a background attempt. Hosts that need a
-// server up before proceeding mark it required and call
-// [Source.WaitReady]; everything else converges while the host keeps
-// starting.
+// cannot stall the host past a background attempt. A server that cannot
+// be started at all — a command that is missing, not executable, or not
+// a runnable file — or one that rejects the connection is given up
+// instead, so a permanently broken declaration does not churn against
+// the environment forever; [WithServerLost] reports that give-up to a
+// host that wants to know. Hosts that need a server up before
+// proceeding mark it required and call [Source.WaitReady]; everything
+// else converges while the host keeps starting.
 //
 // # Namespacing
 //

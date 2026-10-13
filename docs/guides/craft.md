@@ -572,6 +572,16 @@ from the payload ([External Hooks](hooks.md)). Disable/update drops the
 plugin's tools from every registry and waits for in-flight calls before
 the source closes.
 
+`plugin.Host.OnStopped` reports every stop with a `plugin.StopReason`:
+`plugin.StopRequested` for a stop the application asked for (disable,
+uninstall, close) and `plugin.StopFailed` when a plugin's MCP server died
+on its own and the reconnect could not start the command again. A
+`StopFailed` loss leaves the entry alone — enabled, with its tools still
+projected — so the application decides whether to disable or uninstall
+the plugin, and knows why its tool calls are failing in the meantime.
+Transient losses that reconnect in place are not reported, so a
+self-healing plugin does not flap the observer.
+
 ## Plugin graph nodes
 
 Each manifest `nodes` entry becomes an executable graph node: craft
