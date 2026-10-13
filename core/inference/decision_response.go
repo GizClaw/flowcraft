@@ -46,10 +46,12 @@ type DecisionLevelProbability struct {
 
 // DecisionAnswer is the answer to one question. Which fields are populated
 // follows Kind: predicate carries Probability; choice carries Choice,
-// Probabilities, and Confidence; score carries Score, Levels, and Confidence;
-// refusal carries only Name. A predicate has no confidence on any wire: that
-// derived value exists for distributions, and the canonical layer never mints
-// one for a single probability.
+// Probabilities, and Confidence; score carries Score — the probability-
+// weighted value across the question's levels, so it stays inside
+// [0, len(levels)-1] — Levels, and Confidence; refusal carries only Name. A
+// predicate has no confidence on any wire: that derived value exists for
+// distributions, and the canonical layer never mints one for a single
+// probability.
 type DecisionAnswer struct {
 	Name          string                      `json:"name"`
 	Kind          DecisionAnswerKind          `json:"kind"`
@@ -228,7 +230,10 @@ func validateDecisionProbability(value float64) error {
 // ValidateFor checks the response against the request it answers: one answer
 // per question in question order, each answer carrying its question's name,
 // and each answer's kind matching the question's kind — except refusal, which
-// may replace any question's answer.
+// may replace any question's answer. A typed answer is reconciled with the
+// question's declared values: level indexes and labels, the score against the
+// level range, and a choice answer's values — the chosen one and every
+// distributed one — against the offered options.
 func (a DecisionAnswer) ValidateFor(question DecisionQuestion) error {
 	if err := a.Validate(); err != nil {
 		return err
@@ -243,6 +248,9 @@ func (a DecisionAnswer) ValidateFor(question DecisionQuestion) error {
 	if a.Kind != want {
 		return fmt.Errorf(
 			"answer kind %q does not match question kind %q", a.Kind, want)
+	}
+	if a.Kind == DecisionAnswerChoice {
+		return a.validateChoiceFor(question)
 	}
 	if a.Kind != DecisionAnswerScore {
 		return nil
@@ -262,6 +270,43 @@ func (a DecisionAnswer) ValidateFor(question DecisionQuestion) error {
 				level.Level,
 				level.Label,
 				question.Levels[level.Level].Label,
+			)
+		}
+	}
+	if *a.Score < 0 || *a.Score > float64(len(question.Levels)-1) {
+		return fmt.Errorf(
+			"answer score %v is outside the question's level range [0, %d]",
+			*a.Score,
+			len(question.Levels)-1,
+		)
+	}
+	return nil
+}
+
+// validateChoiceFor reconciles a choice answer with the question's option
+// set: the chosen value and every distributed value must be one of the
+// question's declared options. This is the checkpoint between a driver's
+// legend mapping — where typed values get swapped or mislabelled, the string
+// "true" for the boolean true among them — and every caller; distribution
+// completeness and its sum stay driver-owned, as validateDecisionProbability
+// documents.
+func (a DecisionAnswer) validateChoiceFor(question DecisionQuestion) error {
+	offered := make(map[DecisionChoiceValue]struct{}, len(question.Choices))
+	for _, choice := range question.Choices {
+		offered[choice.Value] = struct{}{}
+	}
+	if _, ok := offered[*a.Choice]; !ok {
+		return fmt.Errorf(
+			"choice answer %s is not one of the question's options",
+			a.Choice.Describe(),
+		)
+	}
+	for index, option := range a.Probabilities {
+		if _, ok := offered[option.Value]; !ok {
+			return fmt.Errorf(
+				"choice answer option %d %s is not one of the question's options",
+				index,
+				option.Value.Describe(),
 			)
 		}
 	}

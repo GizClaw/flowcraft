@@ -243,6 +243,41 @@ func TestDecisionResponseValidateFor(t *testing.T) {
 			},
 			want: `is labelled "medium", want "high"`,
 		},
+		{
+			name: "choice outside the question's options",
+			mutate: func(r *DecisionResponse) {
+				unknown := NewDecisionStringChoice("maybe")
+				r.Answers[1].Choice = &unknown
+				r.Answers[1].Probabilities = []DecisionOptionProbability{
+					{Value: unknown, Probability: 1},
+				}
+			},
+			want: `choice answer "maybe" is not one of the question's options`,
+		},
+		{
+			name: "choice distribution value outside the question's options",
+			mutate: func(r *DecisionResponse) {
+				// The question offers the boolean true; a driver mapping the
+				// legend onto the string "true" must not ship silently.
+				r.Answers[1].Probabilities[1].Value =
+					NewDecisionStringChoice("true")
+			},
+			want: `choice answer option 1 "true" is not one of the question's options`,
+		},
+		{
+			name: "score above the question's levels",
+			mutate: func(r *DecisionResponse) {
+				*r.Answers[2].Score = 42
+			},
+			want: "outside the question's level range [0, 1]",
+		},
+		{
+			name: "score below the question's levels",
+			mutate: func(r *DecisionResponse) {
+				*r.Answers[2].Score = -0.5
+			},
+			want: "outside the question's level range [0, 1]",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
