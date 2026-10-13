@@ -312,9 +312,9 @@ func TestCommitTurnAndRecentContext(t *testing.T) {
 }
 
 // TestObservedAtAnchorReachesTheAnswerSideEvidence wires the switch through the
-// factory's retrieval assembly: with observed_at_anchor on, the raw message
-// items a context request serves read "[anchor] text"; with the default
-// settings the same conversation serves bare text.
+// factory's retrieval assembly: by default the raw message items a context
+// request serves read "[anchor] text", and observed_at_anchor: false opts out
+// of the anchored reading.
 func TestObservedAtAnchorReachesTheAnswerSideEvidence(t *testing.T) {
 	ctx := context.Background()
 	const anchor = "2026-09-18T12:30:00Z"
@@ -340,18 +340,18 @@ func TestObservedAtAnchorReachesTheAnswerSideEvidence(t *testing.T) {
 		}
 		return result.Items[0].Content.Text()
 	}
-	const anchoredSettings = `{
+	const optOutSettings = `{
   "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
   "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
   "recent": {"max_items": 8, "max_tokens": 4096},
   "interval": "0",
-  "observed_at_anchor": true
+  "observed_at_anchor": false
 }`
-	if got, want := contextText(t, anchoredSettings), "["+anchor+"] hello"; got != want {
-		t.Fatalf("anchored context text = %q, want %q", got, want)
+	if got, want := contextText(t, testSettings), "["+anchor+"] hello"; got != want {
+		t.Fatalf("default context text = %q, want %q", got, want)
 	}
-	if got := contextText(t, testSettings); got != "hello" {
-		t.Fatalf("default context text = %q, want it bare", got)
+	if got := contextText(t, optOutSettings); got != "hello" {
+		t.Fatalf("opted-out context text = %q, want it bare", got)
 	}
 }
 
@@ -687,9 +687,10 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 		t.Fatalf("projection namespace must change the digest (err=%v)", err)
 	}
 	derivation = base
-	derivation.ObservedAtAnchor = true
+	anchorOff := false
+	derivation.ObservedAtAnchor = &anchorOff
 	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
-		t.Fatalf("the observed_at anchor must change the digest (err=%v)", err)
+		t.Fatalf("the observed_at anchor opt-out must change the digest (err=%v)", err)
 	}
 }
 
@@ -702,10 +703,9 @@ func (recorder *sourceRecorder) Derive(_ context.Context, input component.Artifa
 }
 
 // TestObservedAtAnchorReachesTheDerivationSource wires the switch through the
-// factory: with observed_at_anchor on, a committed message carrying the
-// observed_at metadata reaches the deriver as "[anchor] role: content"; with
-// the default settings the same turn derives from bare text and the metadata
-// stays invisible, as it always was.
+// factory: by default a committed message carrying the observed_at metadata
+// reaches the deriver as "[anchor] role: content", while observed_at_anchor:
+// false derives the same turn from bare text and keeps the metadata invisible.
 func TestObservedAtAnchorReachesTheDerivationSource(t *testing.T) {
 	ctx := context.Background()
 	const anchor = "2026-09-18T12:30:00Z"
@@ -729,18 +729,18 @@ func TestObservedAtAnchorReachesTheDerivationSource(t *testing.T) {
 		}
 		return recorder.sources[0]
 	}
-	const anchoredSettings = `{
+	const optOutSettings = `{
   "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
   "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
   "recent": {"max_items": 8, "max_tokens": 4096},
   "interval": "0",
-  "observed_at_anchor": true
+  "observed_at_anchor": false
 }`
-	if got, want := derive(t, anchoredSettings), "["+anchor+"] user: we talked about beverages"; got != want {
-		t.Fatalf("anchored derivation source = %q, want %q", got, want)
-	}
-	if got, want := derive(t, testSettings), "user: we talked about beverages"; got != want {
+	if got, want := derive(t, testSettings), "["+anchor+"] user: we talked about beverages"; got != want {
 		t.Fatalf("default derivation source = %q, want %q", got, want)
+	}
+	if got, want := derive(t, optOutSettings), "user: we talked about beverages"; got != want {
+		t.Fatalf("opted-out derivation source = %q, want %q", got, want)
 	}
 }
 

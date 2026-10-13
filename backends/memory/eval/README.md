@@ -376,7 +376,9 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   score. Recorded in the fingerprint as `date_prefix`.
 - `-observed-at=off|metadata`: `metadata` writes each session date time
   into the messages as `observed_at` metadata (RFC3339 UTC) instead of
-  text -- the anchor shape a prefix-less production path receives. It
+  text -- the anchor shape a prefix-less production path receives, and the
+  shape the assembly reads by default: `observed_at_anchor` is on, so the
+  anchor reaches the extraction source and the answer-side evidence. It
   requires `-no-date-prefix` (the two are renderings of one fact, never
   both). Recorded in the fingerprint as `observed_at`; the loader stats
   report how many messages carried an anchor.

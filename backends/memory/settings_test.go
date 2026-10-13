@@ -35,6 +35,46 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	}
 }
 
+// TestObservedAtAnchorDefaultsOn pins the tri-state switch and the policy
+// identity it carries: a document that does not name the key derives with the
+// anchor, an explicit false opts out, and only the opt-out moves the derivation
+// policy digest -- an absent key and an explicit true are one policy.
+func TestObservedAtAnchorDefaultsOn(t *testing.T) {
+	settingsWith := func(anchor *bool) Settings {
+		settings := Settings{ObservedAtAnchor: anchor}
+		settings.applyDefaults()
+		return settings
+	}
+	on, off := true, false
+	if !settingsWith(nil).anchorObservedAt() {
+		t.Fatal("an absent observed_at_anchor must derive with the anchor")
+	}
+	if !settingsWith(&on).anchorObservedAt() {
+		t.Fatal("an explicit true must derive with the anchor")
+	}
+	if settingsWith(&off).anchorObservedAt() {
+		t.Fatal("an explicit false must opt out")
+	}
+	defaultDigest, err := policyDigest(settingsWith(nil), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDigest, err := policyDigest(settingsWith(&on), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDigest != defaultDigest {
+		t.Fatal("the default and an explicit true must be one policy")
+	}
+	offDigest, err := policyDigest(settingsWith(&off), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offDigest == defaultDigest {
+		t.Fatal("the opt-out must change the derivation policy digest")
+	}
+}
+
 // TestAssemblyStampsTheRetrievalSummary wires the same value through the
 // factory: what an assembly reports is the summary of the settings it was
 // resolved with, so a retrieval block in a settings document reaches a host

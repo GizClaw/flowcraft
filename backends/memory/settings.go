@@ -56,9 +56,15 @@ type Settings struct {
 	// time references against the time the message was actually observed.
 	// Only a message that carries the anchor gets the prefix; one without it
 	// keeps its untimestamped text rather than borrowing the commit time,
-	// which over a bulk import would degrade to an "import day" label. It
-	// changes what the extractor reads and is off by default.
-	ObservedAtAnchor bool `json:"observed_at_anchor,omitempty"`
+	// which over a bulk import would degrade to an "import day" label.
+	//
+	// It is on by default, and the pointer carries the tri-state a bool
+	// cannot: an absent key derives with the anchor, an explicit
+	// `observed_at_anchor: false` asks for the untimestamped reading a 1.4.0
+	// workspace derived, and an explicit true is the default spelled out. It
+	// changes what the extractor reads, so it is part of the derivation
+	// policy digest.
+	ObservedAtAnchor *bool `json:"observed_at_anchor,omitempty"`
 	// Derive tunes the derivation scan itself. Concurrency only changes the
 	// schedule (how many conversations of a scope are derived at once), never
 	// what is derived, so it stays out of the policy digest.
@@ -255,6 +261,14 @@ func (settings *Settings) applyDefaults() {
 	if strings.TrimSpace(settings.Lanes.Fusion) == "" {
 		settings.Lanes.Fusion = "rrf"
 	}
+}
+
+// anchorObservedAt resolves the tri-state observed_at_anchor setting: only an
+// explicit false opts out, so a document that does not name the key -- or names
+// it true -- derives with the anchor. Every consumer reads the switch through
+// this, so "absent means on" is stated once instead of at each call site.
+func (settings Settings) anchorObservedAt() bool {
+	return settings.ObservedAtAnchor == nil || *settings.ObservedAtAnchor
 }
 
 // retrievalSummary renders the retrieval-side configuration -- lane weights and

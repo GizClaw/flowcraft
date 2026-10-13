@@ -270,7 +270,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Messages: messages,
 		Hydrator: &hydrate.Composite{
 			Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries,
-			ObservedAtAnchor: settings.ObservedAtAnchor,
+			ObservedAtAnchor: settings.anchorObservedAt(),
 		},
 		Packer: pack.New(nil),
 		// The fact store owns the published generation, and the read plane
@@ -283,7 +283,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 			MaxTokens: settings.Recent.MaxTokens,
 		},
 		SourceQuotes:     settings.Retrieval.SourceQuotes,
-		ObservedAtAnchor: settings.ObservedAtAnchor,
+		ObservedAtAnchor: settings.anchorObservedAt(),
 		ExpandParents:    true,
 		ScoreAdjuster:    maintainStore,
 	}
@@ -307,7 +307,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Facts: facts, Deriver: deriver, KnowledgeDeriver: chunker, Compactor: compactor,
 		Indexers: indexers, Checkpoints: workerCheckpoints,
 		Projection: settings.Projection, PolicyDigest: digest,
-		ObservedAtAnchor: settings.ObservedAtAnchor,
+		ObservedAtAnchor: settings.anchorObservedAt(),
 		Concurrency:      settings.Derive.Concurrency,
 	})
 	if err != nil {
@@ -565,8 +565,9 @@ type policyInput struct {
 	Deriver    string          `json:"deriver,omitempty"`
 	Algorithms []string        `json:"algorithms,omitempty"`
 	// ObservedAtAnchor changes the text the extractor reads, so it belongs to
-	// the derivation identity. It marshals away when off (the default), so
-	// adding the field leaves existing watermarks where they are.
+	// the derivation identity. The anchored reading is the default and marshals
+	// as true; only the explicit opt-out drops the field, so turning it off is a
+	// policy of its own rather than a missing one.
 	ObservedAtAnchor bool `json:"observed_at_anchor,omitempty"`
 }
 
@@ -574,7 +575,7 @@ func policyDigest(settings Settings, deriverPolicy string) (string, error) {
 	encoded, err := json.Marshal(policyInput{
 		Generate: settings.Generate, Embed: settings.Embed,
 		Fact: settings.Fact, Summary: settings.Summary, Chunk: settings.Chunk,
-		Projection: settings.Projection, ObservedAtAnchor: settings.ObservedAtAnchor,
+		Projection: settings.Projection, ObservedAtAnchor: settings.anchorObservedAt(),
 		Deriver: deriverPolicy,
 		Algorithms: []string{
 			chat.AlgorithmVersion, chat.LinkAlgorithmVersion, chat.CanonicalAlgorithmVersion,
