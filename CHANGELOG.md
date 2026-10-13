@@ -12,7 +12,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.5.4` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.6.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 | `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
@@ -20,6 +20,12 @@ Release PR before their tags are published.
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.6.0` - 2026-10-13
+
+### Changed
+
+- feat(core/inference): add the decision workload — the fourth operation after generate, embed, and transcription: one unary call that answers an ordered list of typed questions about a single piece of evidence. core/inference/model gains OperationDecision; the canonical layer carries exactly one evidence carrier per request — plain text, one structured json value, or ordered text and image parts — plus an ordered question list of predicate (a probability), choice (typed options, so the string "true" and the boolean true stay two options), and score (ordered levels) questions, and returns one answer per question in request order, each echoing the question's required, non-empty, unique name, with a refusal allowed to replace any single answer while the rest are still answered. The canonical layer enforces only the two-option minimum and leaves vendor bounds to the driver, reconciles a choice answer's chosen and distributed values against the question's options, holds a score inside [0, len(levels)-1], requires each answer level to repeat its question's label, refuses a field sibling to an evidence carrier instead of dropping it, and has no stream or session shape because neither wire streams. DecisionDriver{Explain, Prepare, Execute} and BindDecision join the provider SPI with Openers.Decision and Assembly.Decision/PrepareDecision/ExplainDecision; the route tables gain their decision column — pools, retry policy, circuit breaker, a selector that honours model_hint the way generate does minus the output-kind filter (decision requests carry no output kinds), and the no-pools NoRoute path — with its own telemetry instrumentation; inferencetest ships a decision fake, a static selector, and a unary conformance suite. The ledger gains the decision.* field set, so every active field — carriers, questions, request metadata, extensions — is dispositioned by the compiler rather than dropped. core/agent/bindings exposes decision, routeDecision, explainDecision, and routeExplainDecision to scripts. A decision result is not transcript content: a host that wants one in the message stream projects it through message.NewJSONContent. TestPolicyTablesCoverOperationVocabulary gates every per-operation table against the operation vocabulary, and the selection and fallback paths carry their own tests (SelectDecision and NextDecision at full statement coverage). docs/guides/inference.md gains the workload section, with the Routing section naming four operation areas, and docs/guides/graph.md plus the flowcraft-config references document the script bindings, the router pools, and the deploy-side model kind.
 
 ## `core/v0.5.4` - 2026-10-13
 
