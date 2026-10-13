@@ -54,16 +54,17 @@ const protocolVersion20260728 = "2026-07-28"
 //
 // Connection is best-effort and runs entirely in the background.
 // AddServer validates and registers a server, schedules its first
-// connect attempt, and returns immediately; a failure that is the
-// server's fault — unreachable, missing binary, timeout — schedules
-// background reconnection with exponential backoff instead of failing
-// the host, and the tools are published to the attached
-// [sdktool.Registrar] when the server comes up. A failure that is our
-// configuration's fault (validation, rejection) is logged and the
-// connection is given up; hosts that need a server to be up can await
-// it explicitly with [Source.WaitReady]. Once connected, a server that
-// dies is reconnected the same way: its tools stay visible, and calls
-// fail with per-server NotAvailable until the connection is restored.
+// connect attempt, and returns immediately; a failure a retry can fix —
+// unreachable, timed out — schedules background reconnection with
+// exponential backoff instead of failing the host, and the tools are
+// published to the attached [sdktool.Registrar] when the server comes
+// up. A failure retrying cannot fix (a rejected connection, a command
+// the OS cannot start) is logged and the connection is given up; hosts
+// that need a server to be up can await it explicitly with
+// [Source.WaitReady], and hosts that want to observe the give-up itself
+// install [WithServerLost]. Once connected, a server that dies is
+// reconnected the same way: its tools stay visible, and calls fail with
+// per-server NotAvailable until the connection is restored.
 type Source struct {
 	mu        sync.Mutex
 	servers   map[string]*server
@@ -389,6 +390,7 @@ type serverConfig struct {
 	clientVer   string
 	clientOpts  *mcpsdk.ClientOptions
 	onListError func(server string, err error)
+	onLost      func(server string, err error)
 	resources   bool
 	required    bool
 	liveness    *time.Duration
@@ -435,6 +437,20 @@ func WithListErrorHandler(fn func(server string, err error)) ServerOption {
 	return func(c *serverConfig) { c.onListError = fn }
 }
 
+// WithServerLost installs a callback for the terminal failure of one
+// server: the background loop gave up because the peer rejected the
+// connection or because the command cannot be started at all (missing,
+// not executable, not a runnable file). Transient losses are not
+// reported — a server that dies and reconnects keeps its tools and
+// comes back in place — so a subscriber sees one notification per
+// server that is not coming back rather than a flap on every
+// reconnect. The callback runs on the retry goroutine once the
+// terminal state is recorded and should return promptly; the loop is
+// finished with the server either way.
+func WithServerLost(fn func(server string, err error)) ServerOption {
+	return func(c *serverConfig) { c.onLost = fn }
+}
+
 // WithResources bridges the server's MCP resources into two registry
 // tools — <prefix>list_resources and <prefix>read_resource.
 func WithResources(enabled bool) ServerOption {
@@ -446,7 +462,8 @@ func WithResources(enabled bool) ServerOption {
 // start without the server, which should mark it required and then
 // await [Source.WaitReady] so a background give-up (validation,
 // rejection, source closed) surfaces as an error instead of a silent
-// missing tool set.
+// missing tool set. [WithServerLost] is the notification half of the
+// same seam: it reports the give-up itself.
 func WithRequired() ServerOption {
 	return func(c *serverConfig) { c.required = true }
 }
@@ -526,8 +543,9 @@ func (s *Source) AddServer(
 
 // WaitReady blocks until the named server has connected and its tools
 // are published, or fails fast when the background loop gives up on it
-// (validation/rejection), the source closes, or timeout elapses. A
-// non-positive timeout waits only on ctx. Once a server has connected,
+// (a rejected connection, an unrunnable command), the source closes, or
+// timeout elapses. A non-positive timeout waits only on ctx. Once a
+// server has connected,
 // WaitReady returns nil immediately even if the connection later drops
 // and reconnects — the host-startup question is "is it up yet", not
 // "is it up right now".
@@ -852,9 +870,11 @@ func (s *Source) retryLoop(srv *server) {
 		}
 
 		if errdefs.IsValidation(err) {
-			// The peer is there but rejects us — retrying cannot fix a
+			// Terminal: either the peer is there and rejects us, or
+			// the command cannot be started at all (connectError maps
+			// both to Validation). Retrying cannot fix a
 			// configuration problem, so stop instead of churning.
-			s.giveUp(srv, "server rejected connection, giving up", err)
+			s.giveUp(srv, "server cannot connect, giving up", err)
 			s.clearRetrying(srv.name)
 			return
 		}
@@ -882,6 +902,13 @@ func (s *Source) giveUp(srv *server, msg string, err error) {
 	}
 	telemetry.Error(s.baseCtx, "mcp: "+msg, attrs...)
 	srv.markReady(err)
+	// The give-up is the last thing that will happen to this server,
+	// so it is what an observer of the terminal loss is told about.
+	// The callback runs on the retry goroutine, after the terminal
+	// state is recorded; it must return promptly.
+	if srv.cfg.onLost != nil {
+		srv.cfg.onLost(srv.name, err)
+	}
 }
 
 // nextBackoff doubles cur up to the configured maximum.

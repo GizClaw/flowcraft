@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -227,6 +228,14 @@ func (m Manifest) Validate(root string) error {
 	if root == "" {
 		return nil
 	}
+	// The stdio command is checked here, where the root is already
+	// known: "the file is not there" belongs to install, not to a
+	// background spawn that would otherwise retry it in silence.
+	for i, server := range servers {
+		if err := server.validatePaths(m.ID, i, root); err != nil {
+			return err
+		}
+	}
 	for i, rel := range m.Skills {
 		if err := checkRelativePath(m.ID, "skills", i, rel, root); err != nil {
 			return err
@@ -245,15 +254,22 @@ func (m Manifest) Validate(root string) error {
 	return nil
 }
 
-func (s MCPServer) validate(id string, index int) error {
+// effectiveTransport is the transport after the defaulting rules that
+// validate and buildTransport share: an explicit transport wins, then a
+// url means http, anything else is stdio.
+func (s MCPServer) effectiveTransport() string {
 	transport := strings.TrimSpace(s.Transport)
 	if transport == "" {
 		if s.URL != "" {
-			transport = "http"
-		} else {
-			transport = "stdio"
+			return "http"
 		}
+		return "stdio"
 	}
+	return transport
+}
+
+func (s MCPServer) validate(id string, index int) error {
+	transport := s.effectiveTransport()
 	switch transport {
 	case "stdio":
 		if strings.TrimSpace(s.Command) == "" {
@@ -283,6 +299,56 @@ func (s MCPServer) validate(id string, index int) error {
 	return nil
 }
 
+// validatePaths checks the stdio command and its path-bearing arguments
+// against the plugin root. It mirrors [ResolveCommand] — the same
+// separator test, the same skip for flags — so that a manifest which
+// installs is one the plugin host can actually spawn: install-time
+// checks and spawn-time resolution cannot disagree about which files
+// must exist. Bare names stay unchecked: a bare command is a PATH
+// lookup, and a bare argument is not a path at all. The command must
+// not be a directory, because exec cannot run one; an argument only has
+// to exist, because an argument may name a directory on purpose
+// ("go run ./server" takes a package path).
+func (s MCPServer) validatePaths(id string, index int, root string) error {
+	if s.effectiveTransport() != "stdio" {
+		return nil
+	}
+	command := strings.TrimSpace(s.Command)
+	if carriesSeparator(command) {
+		if err := checkExecPath(
+			id, fmt.Sprintf("mcp server %d command", index), command, root,
+		); err != nil {
+			return err
+		}
+	}
+	for _, arg := range s.Args {
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			// ResolveCommand leaves flags alone — the value after the
+			// "=" may be a path that is not ours to resolve — so the
+			// check must too.
+			continue
+		}
+		if !carriesSeparator(arg) {
+			continue
+		}
+		// Only existence: what an argument means is the child's
+		// business, and a directory is a legitimate package path.
+		if _, err := checkPath(
+			id, fmt.Sprintf("mcp server %d arg", index), arg, root,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// carriesSeparator reports whether a command or argument names a path
+// rather than a bare word; it is the test ResolveCommand applies.
+func carriesSeparator(value string) bool {
+	return strings.ContainsRune(value, '/') ||
+		strings.ContainsRune(value, filepath.Separator)
+}
+
 func checkRelativePath(id, field string, index int, rel, root string) error {
 	if _, err := checkPath(id, field, rel, root); err != nil {
 		return errdefs.Validationf("%v (index %d)", err, index)
@@ -291,22 +357,50 @@ func checkRelativePath(id, field string, index int, rel, root string) error {
 }
 
 func checkPath(id, field, rel, root string) (string, error) {
-	if len(rel) > maxPathLen {
-		return "", errdefs.Validationf(
-			"plugin %s: %s path exceeds %d characters", id, field, maxPathLen)
-	}
-	path, err := ResolvePath(root, rel)
+	path, info, err := statPluginPath(id, field, rel, root)
 	if err != nil {
-		return "", errdefs.Validationf("plugin %s: %s: %v", id, field, err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", errdefs.Validationf(
-			"plugin %s: %s %q: %v", id, field, rel, err)
+		return "", err
 	}
 	if info.IsDir() && field == "ui.entry" {
 		return "", errdefs.Validationf(
 			"plugin %s: ui.entry %q is a directory", id, rel)
 	}
-	return filepath.Clean(path), nil
+	return path, nil
+}
+
+// checkExecPath is the executable-shaped variant of checkPath: the path
+// must exist and must be a regular file, because exec cannot run
+// anything else (os.Stat follows symlinks, so a link to a script counts).
+func checkExecPath(id, field, rel, root string) error {
+	_, info, err := statPluginPath(id, field, rel, root)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		what := "is not a regular file"
+		if info.IsDir() {
+			what = "is a directory"
+		}
+		return errdefs.Validationf(
+			"plugin %s: %s %q %s", id, field, rel, what)
+	}
+	return nil
+}
+
+// statPluginPath resolves rel inside root and stats it.
+func statPluginPath(id, field, rel, root string) (string, os.FileInfo, error) {
+	if len(rel) > maxPathLen {
+		return "", nil, errdefs.Validationf(
+			"plugin %s: %s path exceeds %d characters", id, field, maxPathLen)
+	}
+	path, err := ResolvePath(root, rel)
+	if err != nil {
+		return "", nil, errdefs.Validationf("plugin %s: %s: %v", id, field, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", nil, errdefs.Validationf(
+			"plugin %s: %s %q: %v", id, field, rel, err)
+	}
+	return filepath.Clean(path), info, nil
 }
