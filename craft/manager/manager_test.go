@@ -81,24 +81,73 @@ func TestLocateDefinition(t *testing.T) {
 	}
 }
 
+// baseLayerDefinition declares its layers through base.yaml beside the
+// definition, so the anchor the Craft received is observable: the layer
+// loads only where that file is found.
+const baseLayerDefinition = `craft: {id: test, version: 0.1.0}
+base_layers:
+  - name: base
+    file: base.yaml
+`
+
+// baseLayerDocument is what base.yaml carries: the deploy document the
+// inline definition above declares.
+const baseLayerDocument = `version: v1
+resources:
+  bus: {kind: event.Bus, impl: memory}
+runtime:
+  event_bus: bus
+`
+
+func writeFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+// openDefaultRuntime opens one runtime over the started Craft. Layer
+// composition is where the anchor is spent, so this is where its
+// delivery is observable.
+func openDefaultRuntime(t *testing.T, manager *Manager) {
+	t.Helper()
+	if _, err := manager.Craft().OpenRuntime(
+		context.Background(), "main", craft.RuntimeOptions{},
+	); err != nil {
+		t.Fatalf("OpenRuntime: %v", err)
+	}
+}
+
 // TestManagerStartsFromDefinitionBytes pins the embedded-definition
 // seam: the shell hands the bytes over and the manager never looks for
-// a file. The stale DefinitionPath this test carries is deliberately
-// ignored, and the anchor for the definition's own file references
-// comes from DefinitionDir.
+// a file — the stale DefinitionPath is deliberately ignored — while the
+// anchor for the definition's own file references comes from
+// DefinitionDir. The assertion is the behavior, not the field: the file
+// base layer loads, and the runtime opens, only when the Craft receives
+// that anchor rather than the stale path's directory.
 func TestManagerStartsFromDefinitionBytes(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	anchor := filepath.Join(dir, "config")
-	manager := newTestManager(t, "", dir, func(opts *Options) {
-		opts.Definition = []byte(definition)
-		opts.DefinitionPath = filepath.Join(dir, "missing.yaml")
+	anchor := filepath.Join(t.TempDir(), "config")
+	writeFile(t, anchor, "base.yaml", baseLayerDocument)
+	manager := newTestManager(t, "", t.TempDir(), func(opts *Options) {
+		opts.Definition = []byte(baseLayerDefinition)
+		opts.DefinitionPath = filepath.Join(t.TempDir(), "missing.yaml")
 		opts.DefinitionDir = anchor
 	})
 	ctx := context.Background()
 	if err := manager.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 	if manager.Craft() == nil {
 		t.Fatal("no Craft after start")
 	}
@@ -108,20 +157,44 @@ func TestManagerStartsFromDefinitionBytes(t *testing.T) {
 	if manager.defDir != anchor {
 		t.Fatalf("definition anchor = %q, want %q", manager.defDir, anchor)
 	}
-	if err := manager.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	openDefaultRuntime(t, manager)
+}
+
+// TestManagerStartsFromDefinitionBytesWithoutAnAnchor pins the
+// documented default of DefinitionDir: empty means the process working
+// directory, so base.yaml beside it loads. An empty anchor that reached
+// the Craft as "" used to fail the runtime with `file source requires a
+// base dir`, long after and far from the option that caused it.
+func TestManagerStartsFromDefinitionBytesWithoutAnAnchor(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.yaml", baseLayerDocument)
+	t.Chdir(dir)
+	manager := newTestManager(t, "", t.TempDir(), func(opts *Options) {
+		opts.Definition = []byte(baseLayerDefinition)
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	openDefaultRuntime(t, manager)
 }
 
 // TestManagerAnchorsALocatedDefinitionAtItsDirectory pins the other
 // half of the anchor rule: a definition the lookup order found anchors
-// at the directory it was found in. DefinitionPath is empty here, so
-// taking the anchor from the configured path would anchor the Craft —
-// and everything a definition-level file reference resolves against —
-// at the process working directory instead.
+// at the directory it was found in. The working directory is a fresh
+// temp dir here, so an anchor taken from anywhere else — from the
+// configured DefinitionPath, which is empty, or from the working
+// directory — leaves base.yaml behind and the runtime unopened.
 func TestManagerAnchorsALocatedDefinitionAtItsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("CRAFT_DEFINITION", writeDefinition(t, dir))
+	path := writeFile(t, dir, "craft.yaml", baseLayerDefinition)
+	writeFile(t, dir, "base.yaml", baseLayerDocument)
+	t.Chdir(t.TempDir())
+	t.Setenv("CRAFT_DEFINITION", path)
 	manager := newTestManager(t, "", t.TempDir(), nil)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -134,6 +207,30 @@ func TestManagerAnchorsALocatedDefinitionAtItsDirectory(t *testing.T) {
 	if manager.defDir != dir {
 		t.Fatalf("definition anchor = %q, want %q", manager.defDir, dir)
 	}
+	openDefaultRuntime(t, manager)
+}
+
+// TestManagerIgnoresDefinitionDirForAFileDefinition pins that the
+// option only speaks for an embedded definition: a definition read from
+// a file anchors at the file's directory even when DefinitionDir names
+// another one, which is why the named directory here is left empty.
+func TestManagerIgnoresDefinitionDirForAFileDefinition(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "craft.yaml", baseLayerDefinition)
+	writeFile(t, dir, "base.yaml", baseLayerDocument)
+	manager := newTestManager(t, path, t.TempDir(), func(opts *Options) {
+		opts.DefinitionDir = t.TempDir()
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	openDefaultRuntime(t, manager)
 }
 
 // TestManagerRejectsInvalidDefinitionBytes pins that bytes go through

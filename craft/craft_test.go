@@ -120,6 +120,41 @@ base_layers:
 	assertLifecycle(t, c)
 }
 
+// TestCraftLifecycleBaseLayersInWorkingDirectory pins the documented
+// default of Options.DefinitionDir: empty means the process working
+// directory, so a file base layer beside it loads without the caller
+// naming an anchor.
+func TestCraftLifecycleBaseLayersInWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "base.yaml"), []byte(testDeploy), 0o600,
+	); err != nil {
+		t.Fatalf("write base layer: %v", err)
+	}
+	t.Chdir(dir)
+	def, err := ParseDefinition([]byte(`
+craft:
+  id: test
+  name: Test
+  version: 0.1.0
+base_layers:
+  - name: base
+    file: base.yaml
+`))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	c, err := New(def, Options{
+		ConfigDir:    dir,
+		DataDir:      dir,
+		Capabilities: []Capability{testCapability{}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	assertLifecycle(t, c)
+}
+
 func TestCraftLifecycleEmbeddedLayers(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

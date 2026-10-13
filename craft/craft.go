@@ -93,6 +93,14 @@ func New(def Definition, opts Options) (*Craft, error) {
 	if opts.AppHome == "" {
 		opts.AppHome = opts.DataDir
 	}
+	if opts.DefinitionDir == "" {
+		// Empty means the process working directory: definition-level
+		// file references need a base dir to resolve against, and
+		// ${base:...} is registered only for a non-empty one. Materialize
+		// the documented default here instead of failing later, at the
+		// first runtime that composes a layer.
+		opts.DefinitionDir = "."
+	}
 	if opts.Loader == nil {
 		loaderOpts := []resource.LoaderOption{
 			resource.WithBaseDir(opts.DefinitionDir),

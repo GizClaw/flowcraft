@@ -667,12 +667,17 @@ machine, signal-aware `Run`, and the blue-green `Replace`.
   in the binary. Bytes go through the same `ParseDefinition` validation a
   file does.
 - **Definition anchor.** The directory a definition's own file
-  references resolve against (`DefinitionDir` on `craft.Options`, so
-  `base_layers` with a file source and config overlays) is the directory
-  the definition was found in — the located path, not
-  `Options.DefinitionPath` and not the working directory. An embedded
-  definition has no directory of its own, so `Options.DefinitionDir`
-  names it; empty means the working directory.
+  references resolve against is the directory the definition was found
+  in — the located path, not `Options.DefinitionPath` and not the
+  working directory. `base_layers` entries with a file source read from
+  there, and so does the default loader's `${base:...}` expansion (a
+  shell-supplied `Options.Loader` anchors wherever it says). Layers the
+  shell passes itself — `Options.Layers`, `OpenRuntime` layers — carry
+  their own `BaseDir` and are not anchored here. An embedded definition
+  has no directory of its own, so `Options.DefinitionDir` names it;
+  empty means the working directory. `Replace` builds with whichever
+  anchor `Start` resolved: the replacement definition has no directory
+  of its own.
 - **Paths and lock.** `Paths{ConfigDir, DataDir, AppHome}`. With `Lock`
   set, the manager takes `<DataDir>/craft.lock` (or
   `craft-<profile>.lock`), so a `DataDir` is required — unless `LockPath`

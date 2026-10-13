@@ -66,10 +66,11 @@ type Options struct {
 	// Replace keeps taking the replacement definition as its argument.
 	Definition []byte
 	// DefinitionDir anchors the file references an embedded definition
-	// carries (base_layers with a file source, config overlays). It is
-	// ignored while the definition is read from a file, which anchors
-	// at the directory of the path it was found at. Empty means the
-	// process working directory.
+	// carries (base_layers with a file source). It is ignored while the
+	// definition is read from a file, which anchors at the directory of
+	// the path it was found at. Empty means the process working
+	// directory. Replace reuses whichever anchor Start resolved: the
+	// replacement definition has no directory of its own.
 	DefinitionDir string
 	Profile       string
 	Paths         Paths
