@@ -29,6 +29,11 @@
 // The walk starts from the pack, not from the probe: a probe wide enough to say
 // "retrieval never had this turn" is by design wide enough to have it, so its
 // pool is the wrong place to ask what one hop from the real retrieval adds.
+//
+// The assembly also hands this command the pool each real request chose from --
+// every hydrated, eligible item, before the pack budget cut it. A missed turn is
+// marked in-pool when that pool carried it, which is the measurement the widened
+// read can only bound: the request did retrieve the turn, the budget lost it.
 package main
 
 import (
@@ -129,6 +134,10 @@ func main() {
 
 	deployment := buildDeployment(*deployPath, *recentItems)
 	defer deployment.Close()
+	// Read the pool every real request chose from, not only the pack it kept:
+	// the assembly hands it over just before packing.
+	pool := &poolCapture{}
+	deployment.Memory.ObservePool(pool.observe)
 	if *linkReach && deployment.Memory.Facts() == nil {
 		must(fmt.Errorf("memory eval: -link-reach reads the stored fact links, so it needs a deployment that wires a fact store"))
 	}
@@ -152,6 +161,7 @@ func main() {
 	} else {
 		fmt.Println("probe: off, so a turn that missed the pack cannot be told apart from one retrieval never had")
 	}
+	fmt.Println("pool: observed, so a miss the widened read found is marked in-pool when the real request's own pool carried it")
 	// The derivation the answers come from is the store's, which is not the same
 	// question as the policy this binary would derive with: a diagnostic over a
 	// workspace left behind by an older policy describes that generation.
@@ -183,6 +193,7 @@ func main() {
 		scope:   corememory.Scope(evalScope),
 		matcher: matcher,
 		walk:    walk,
+		pool:    pool,
 		options: diagnosisOptions{
 			maxItems: *maxItems, maxTokens: *maxTokens,
 			probeItems: *probeItems, probeTokens: probeTokens(*maxTokens, *maxItems, *probeItems),
@@ -225,7 +236,42 @@ type diagnoser struct {
 	scope   corememory.Scope
 	matcher *eval.Matcher
 	walk    *linkWalk
+	// pool captures the pre-pack pool of the real request, when the assembly
+	// hands it over: it is what separates "the budget cut the turn" from
+	// "retrieval never returned it".
+	pool    *poolCapture
 	options diagnosisOptions
+}
+
+// poolCapture keeps the pool of the one request whose pool is wanted. The
+// observer fires on every Context call, the widened probe included, so a capture
+// is armed only around the real request.
+type poolCapture struct {
+	armed bool
+	items []corememory.ContextItem
+}
+
+func (capture *poolCapture) observe(_ corememory.ContextRequest, items []corememory.ContextItem) {
+	if capture == nil || !capture.armed {
+		return
+	}
+	capture.items = append(capture.items[:0], items...)
+}
+
+func (capture *poolCapture) start() {
+	if capture == nil {
+		return
+	}
+	capture.armed = true
+	capture.items = capture.items[:0]
+}
+
+func (capture *poolCapture) stop() []corememory.ContextItem {
+	if capture == nil {
+		return nil
+	}
+	capture.armed = false
+	return capture.items
 }
 
 // placement says how far one dataset turn that carries a question's answer got.
@@ -244,6 +290,64 @@ const (
 	// unknown.
 	missing placement = "missing"
 )
+
+// linkPrecision is the one-hop cross-tab the boost design lives on: among the
+// pool items the budget cut, how many sit one hop from the pack's own facts, and
+// how many of those carry graded evidence. A boost earns its place only when its
+// precision beats the items it displaces, so the reading that decides is a rate
+// against the pool tail, not a count.
+type linkPrecision struct {
+	// seeds is how many fact items of the pack the walk starts from.
+	seeds int
+	// cutItems and cutEvidence are the pool items past the pack and how many of
+	// them stand on a graded turn.
+	cutItems    int
+	cutEvidence int
+	// nearItems and nearEvidence are the cut items one hop from a seed fact and
+	// how many of those stand on a graded turn.
+	nearItems    int
+	nearEvidence int
+	// packedItems and packedEvidence are the pack and its graded payload: the
+	// density a boost has to beat to be worth a slot.
+	packedItems    int
+	packedEvidence int
+}
+
+func (precision *linkPrecision) add(other linkPrecision) {
+	precision.seeds += other.seeds
+	precision.cutItems += other.cutItems
+	precision.cutEvidence += other.cutEvidence
+	precision.nearItems += other.nearItems
+	precision.nearEvidence += other.nearEvidence
+	precision.packedItems += other.packedItems
+	precision.packedEvidence += other.packedEvidence
+}
+
+// rate renders a share as a percentage, and a zero denominator as a dash: an
+// empty denominator means the run never asked the question, not that the share
+// is zero.
+func rate(part, whole int) string {
+	if whole == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", 100*float64(part)/float64(whole))
+}
+
+// lift renders how many times denser the boosted set is than the tail it is
+// drawn from. A lift at or below one says the link signal marks candidates no
+// more often on evidence than the pool tail already does.
+func lift(nearPart, nearWhole, cutPart, cutWhole int) string {
+	if nearWhole == 0 || cutWhole == 0 || cutPart == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1fx", (float64(nearPart)/float64(nearWhole))/(float64(cutPart)/float64(cutWhole)))
+}
+
+// itemKey identifies a pool item across the two lists a question keeps: the pack
+// is drawn from the pool, so the same item must compare equal in both.
+func itemKey(item corememory.ContextItem) string {
+	return string(item.Kind) + "/" + item.ID
+}
 
 // evidencePlacement records where one evidence turn ended up, and what the item
 // that carried it was.
@@ -266,9 +370,15 @@ type evidencePlacement struct {
 	// while -link-reach runs, on every turn the pack missed, and it is what
 	// separates a miss a link expansion could recover from one it could not.
 	oneHop bool
-	rank   int
-	kind   corememory.ContextItemKind
-	score  float64
+	// inPool reports that the real request's own pool carried the turn: it
+	// fetched and hydrated the item, and the pack budget cut it. A turn only
+	// the widened read found is not a budget cut, so the two are counted apart.
+	inPool bool
+	// poolRank is the turn's 1-based position in that pool.
+	poolRank int
+	rank     int
+	kind     corememory.ContextItemKind
+	score    float64
 }
 
 // topHit is one recalled long-term item as printed, with the dataset turns it
@@ -298,6 +408,11 @@ type questionReport struct {
 	kinds     map[corememory.ContextItemKind]int
 	evidence  []evidencePlacement
 	hits      []topHit
+	// poolItems is how many items the pack chose from: the pool the real
+	// request fetched and hydrated, before the budget cut it.
+	poolItems int
+	// links is the one-hop boost cross-tab, read only when the walk is on.
+	links linkPrecision
 	// linked reports that this diagnosis ran with -link-reach, so a summary
 	// can count the questions the walk covered.
 	linked bool
@@ -310,6 +425,9 @@ func (report questionReport) print(number, total int) {
 	fmt.Printf("[%3d/%d] %s  cat=%d  %q\n", number, total, report.scenario, report.category, report.query)
 	pack := fmt.Sprintf("items=%d/%d  tokens=%d  truncated=%v  latency=%s",
 		report.items, report.maxItems, report.tokens, report.truncated, report.latency.Round(time.Millisecond))
+	if report.poolItems > 0 {
+		pack += fmt.Sprintf("  pool=%d", report.poolItems)
+	}
 	if report.failed {
 		pack = "retrieval failed"
 	}
@@ -342,6 +460,11 @@ func (report questionReport) print(number, total int) {
 				if !evidence.byText {
 					line += "  id-only"
 				}
+			}
+			if evidence.inPool {
+				line += fmt.Sprintf("  in-pool=%d", evidence.poolRank)
+			} else if evidence.placement == poolOnly {
+				line += "  deeper-only"
 			}
 			if evidence.oneHop {
 				line += "  +1hop"
@@ -393,8 +516,16 @@ type summary struct {
 	byText     int
 	poolRanks  []int
 	probePacks []int
-	full       int
-	withProof  int
+	// poolOnlyInPool is how many of the turns the widened read found the real
+	// request's own pool carried too, and inPoolRanks is where they sat there:
+	// the share of the pool-only count that is a budget cut rather than a
+	// retrieval miss.
+	poolOnlyInPool int
+	inPoolRanks    []int
+	full           int
+	withProof      int
+	// links is the boost cross-tab, aggregated over the questions.
+	links linkPrecision
 	// The link-reach counts: turns the probe missed that a one-hop walk
 	// reaches, and how many questions were fully covered once that walk was
 	// allowed (linkFull of linkProof).
@@ -431,6 +562,7 @@ func (totals *summary) add(report questionReport) {
 	for kind, count := range report.kinds {
 		totals.kinds[kind] += count
 	}
+	totals.links.add(report.links)
 	if len(report.evidence) > 0 {
 		totals.withProof++
 	}
@@ -450,6 +582,12 @@ func (totals *summary) add(report questionReport) {
 			}
 		case poolOnly:
 			totals.poolRanks = append(totals.poolRanks, evidence.rank)
+			if evidence.inPool {
+				totals.poolOnlyInPool++
+			}
+		}
+		if evidence.placement != packed && evidence.inPool {
+			totals.inPoolRanks = append(totals.inPoolRanks, evidence.poolRank)
 		}
 		if evidence.placement != packed {
 			complete = false
@@ -499,6 +637,18 @@ func (totals summary) print(probed bool, walk *linkWalk) {
 		fmt.Printf("            pool-only rank: p50=%d p90=%d max=%d (the pack would have had to reach these ranks)\n",
 			nearestRank(sorted, 0.5), nearestRank(sorted, 0.9), sorted[len(sorted)-1])
 	}
+	if totals.placed[poolOnly] > 0 {
+		fmt.Printf("            pool-only: %d of %d sat in the real pool (fetched and hydrated, then cut by the pack)\n",
+			totals.poolOnlyInPool, totals.placed[poolOnly])
+		fmt.Printf("                %d were only visible under the widened read (the real read never returned them)\n",
+			totals.placed[poolOnly]-totals.poolOnlyInPool)
+	}
+	if len(totals.inPoolRanks) > 0 {
+		sorted := append([]int(nil), totals.inPoolRanks...)
+		sort.Ints(sorted)
+		fmt.Printf("            in-pool rank: p50=%d p90=%d max=%d (position in the pool the pack chose from)\n",
+			nearestRank(sorted, 0.5), nearestRank(sorted, 0.9), sorted[len(sorted)-1])
+	}
 	if len(totals.probePacks) > 0 {
 		sorted := append([]int(nil), totals.probePacks...)
 		sort.Ints(sorted)
@@ -514,6 +664,22 @@ func (totals summary) print(probed bool, walk *linkWalk) {
 			walk.reads, walk.unresolved)
 		fmt.Printf("              questions with every evidence turn packed or one hop from the pack: %d/%d\n",
 			totals.linkFull, totals.linkProof)
+		links := totals.links
+		if links.cutItems > 0 {
+			fmt.Printf("              boost cross-tab: one hop from the pack's %d fact seeds, links read both ways\n",
+				links.seeds)
+			fmt.Printf("                cut pool items: %d  evidence %d (%s)  -- the tail a boost would lift from\n",
+				links.cutItems, links.cutEvidence, rate(links.cutEvidence, links.cutItems))
+			fmt.Printf("                one hop away  : %d  evidence %d (%s)  -- lift %s\n",
+				links.nearItems, links.nearEvidence, rate(links.nearEvidence, links.nearItems),
+				lift(links.nearEvidence, links.nearItems, links.cutEvidence, links.cutItems))
+			fmt.Printf("                recall: %s of the cut evidence sits one hop from the pack\n",
+				rate(links.nearEvidence, links.cutEvidence))
+			fmt.Printf("                displacement: %.1f boosted items per question must outrank the pack's tail,\n",
+				float64(links.nearItems)/float64(totals.questions))
+			fmt.Printf("                whose own payload density is %s (%d of %d packed items)\n",
+				rate(links.packedEvidence, links.packedItems), links.packedEvidence, links.packedItems)
+		}
 	}
 	if !probed {
 		fmt.Println("  note: run again with -probe-items to split 'missing' into 'cut by the pack' and 'never retrieved'")
@@ -546,7 +712,9 @@ func (diagnoser diagnoser) question(
 		request.Budget = corememory.Budget{MaxItems: options.maxItems, MaxTokens: options.maxTokens}
 	}
 	started := time.Now()
+	diagnoser.pool.start()
 	result, err := diagnoser.memory.Context(ctx, request)
+	pool := diagnoser.pool.stop()
 	report.latency = time.Since(started)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %s %q: retrieval failed: %v\n", scenario.Name, question.Query, err)
@@ -557,6 +725,7 @@ func (diagnoser diagnoser) question(
 	report.items = len(result.Items)
 	report.tokens = result.TokenCount
 	report.truncated = result.Truncated
+	report.poolItems = len(pool)
 	for _, item := range result.Items {
 		report.sources[item.SourceClass]++
 		report.kinds[item.Kind]++
@@ -572,6 +741,12 @@ func (diagnoser diagnoser) question(
 	probed := false
 	var linked []corememory.ContextItem
 	linkedBuilt := false
+	// poolEvidence names the pool items that stand on a graded turn, whatever
+	// rank they sit at. Cover answers one turn at a time, so each item is asked
+	// for itself: an item that stands on a turn the pack covered elsewhere still
+	// counts, or the boost cross-tab would price the link signal against a
+	// payload it cannot see.
+	poolEvidence := map[string]bool{}
 	oneHop := func(turnID, turnText string) bool {
 		if diagnoser.walk == nil {
 			return false
@@ -587,6 +762,13 @@ func (diagnoser diagnoser) question(
 		if turnText == "" {
 			continue
 		}
+		if diagnoser.walk != nil {
+			for position := range pool {
+				if diagnoser.matcher.Cover(ctx, pool[position:position+1], turnID, turnText).Covered() {
+					poolEvidence[itemKey(pool[position])] = true
+				}
+			}
+		}
 		if coverage := diagnoser.matcher.Cover(ctx, result.Items, turnID, turnText); coverage.Covered() {
 			report.evidence = append(report.evidence, evidencePlacement{
 				turnID: turnID, placement: packed, raw: coverage.ViaRaw, rank: coverage.Rank + 1,
@@ -595,9 +777,18 @@ func (diagnoser diagnoser) question(
 			})
 			continue
 		}
+		// The pool the pack chose from, when the assembly hands it over: the
+		// widened read below asks how deep retrieval would reach with a bigger
+		// budget, which is a different question from whether this request's own
+		// pool carried the turn and the budget cut it.
+		inPool, poolRank := false, 0
+		if coverage := diagnoser.matcher.Cover(ctx, pool, turnID, turnText); coverage.Covered() {
+			inPool, poolRank = true, coverage.Rank+1
+		}
 		if options.probeItems <= options.maxItems {
 			report.evidence = append(report.evidence, evidencePlacement{
 				turnID: turnID, placement: missing, oneHop: oneHop(turnID, turnText),
+				inPool: inPool, poolRank: poolRank,
 			})
 			continue
 		}
@@ -611,14 +802,66 @@ func (diagnoser diagnoser) question(
 				turnID: turnID, placement: poolOnly, raw: coverage.ViaRaw, rank: coverage.Rank + 1,
 				kind: widened[coverage.Rank].Kind, score: widened[coverage.Rank].Score,
 				oneHop: oneHop(turnID, turnText),
+				inPool: inPool, poolRank: poolRank,
 			})
 			continue
 		}
 		report.evidence = append(report.evidence, evidencePlacement{
 			turnID: turnID, placement: absent, oneHop: oneHop(turnID, turnText),
+			inPool: inPool, poolRank: poolRank,
 		})
 	}
+	report.links = diagnoser.boostCrossTab(ctx, scenario.ConversationID, result.Items, pool, poolEvidence)
 	return report
+}
+
+// boostCrossTab prices the link signal on the pool the real request fetched: of
+// the items the budget cut, how many sit one hop from the pack's own facts, and
+// how many of those stand on a graded turn. It reads nothing when the walk is
+// off, and it never changes a retrieval: the packing that ran is the packing the
+// rest of the report describes.
+func (diagnoser diagnoser) boostCrossTab(
+	ctx context.Context,
+	conversationID string,
+	pack []corememory.ContextItem,
+	pool []corememory.ContextItem,
+	poolEvidence map[string]bool,
+) linkPrecision {
+	if diagnoser.walk == nil || len(pool) == 0 {
+		return linkPrecision{}
+	}
+	packed := make(map[string]bool, len(pack))
+	seeds := make([]corememory.ContextItem, 0, len(pack))
+	for _, item := range pack {
+		packed[itemKey(item)] = true
+		if item.Kind == corememory.ContextFact && item.ID != "" {
+			seeds = append(seeds, item)
+		}
+	}
+	near := diagnoser.walk.oneHopFrom(ctx, conversationID, seeds, pool)
+	links := linkPrecision{seeds: len(seeds), packedItems: len(pack)}
+	for _, item := range pack {
+		if poolEvidence[itemKey(item)] {
+			links.packedEvidence++
+		}
+	}
+	for _, item := range pool {
+		if packed[itemKey(item)] {
+			continue
+		}
+		links.cutItems++
+		evidence := poolEvidence[itemKey(item)]
+		if evidence {
+			links.cutEvidence++
+		}
+		if item.Kind == corememory.ContextFact && near[item.ID] {
+			links.nearItems++
+			if evidence {
+				links.nearEvidence++
+			}
+		}
+	}
+	return links
 }
 
 // widenedPack re-reads one question with a much larger budget. A failure is

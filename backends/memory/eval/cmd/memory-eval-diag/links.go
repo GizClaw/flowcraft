@@ -88,6 +88,48 @@ func (walk *linkWalk) neighborhood(ctx context.Context, conversationID string, p
 	return targets
 }
 
+// oneHopFrom returns the pool items that sit one hop from any of the seeds.
+//
+// Links are read in both directions: the write side stores a link on the fact
+// that produced it, so a candidate can either be named by a seed or name one,
+// and a boost that only read the forward direction would miss the second shape.
+// Seeds and candidates are both pool items, so a hit here is a candidate the
+// budget already fetched -- the question this answers is whether the link graph
+// could have raised it, not whether retrieval could have found it.
+func (walk *linkWalk) oneHopFrom(
+	ctx context.Context,
+	conversationID string,
+	seeds []corememory.ContextItem,
+	candidates []corememory.ContextItem,
+) map[string]bool {
+	set := map[string]bool{}
+	if walk == nil {
+		return set
+	}
+	seedIDs := map[string]bool{}
+	for _, seed := range seeds {
+		if seed.Kind != corememory.ContextFact || seed.ID == "" {
+			continue
+		}
+		seedIDs[seed.ID] = true
+		for _, linkID := range walk.linksOf(ctx, conversationID, seed.ID) {
+			set[linkID] = true
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate.Kind != corememory.ContextFact || candidate.ID == "" {
+			continue
+		}
+		for _, linkID := range walk.linksOf(ctx, conversationID, candidate.ID) {
+			if seedIDs[linkID] {
+				set[candidate.ID] = true
+				break
+			}
+		}
+	}
+	return set
+}
+
 // linksOf returns the link ids one fact stores, memoized. A pool item with no
 // record offers nothing to walk.
 func (walk *linkWalk) linksOf(ctx context.Context, conversationID, factID string) []string {
