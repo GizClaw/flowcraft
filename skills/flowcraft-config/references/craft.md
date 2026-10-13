@@ -148,6 +148,18 @@ still loads and enables.
 - Disabling a plugin withdraws its contributions even with permissions
   intact.
 
+### Enable waits for the plugin
+
+`Host.SetEnabled(ctx, id, true)` waits for the plugin's MCP servers,
+bounded by `HostOptions.EnableTimeout` (`DefaultEnableTimeout`, 10s; a
+negative value spawns and returns). A plugin whose command is gone or not
+executable — files can change under an installed plugin — or whose peer
+refuses the connection comes back as that error, with the process stopped
+and the entry left disabled (`StopRolledBack`). A server that is not
+there yet is not a failure: the entry is recorded enabled and the source
+keeps reconnecting, and a loss that turns out to be terminal is reported
+as `StopFailed`. `Host.Start` replays the enabled set without waiting.
+
 ### UI delivery
 
 `Craft.UI()` (`craft/ui.Registry`, nil without a plugin host) is the
