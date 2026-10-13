@@ -421,6 +421,10 @@ loops live in script-land (`tools.callAll`, then `input.role = "tool"`).
 - `transcribeSession(request)` / `routeTranscribeSession(request)` — duplex
   session handle `{send, next, result, interrupt, finish, close}`; the route
   twin attaches `trace` to the result
+- `decision(request)` / `routeDecision(request)` — evidence plus ordered
+  questions, answers in request order; the route twin gains `trace`
+- `explainDecision(request)` / `routeExplainDecision(request)` — decision
+  preflight; the route twin returns `{explanation, decision, limits}`
 
 Extensions ride an `extensions` array of `{provider, id, fields}`, resolved
 through host-registered decoders.
