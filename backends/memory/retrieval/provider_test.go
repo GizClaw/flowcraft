@@ -531,3 +531,42 @@ func (hydrator *scriptedParentHydrator) Parent(_ context.Context, _ corememory.S
 func providerText(value string) coremessage.Content {
 	return coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: value}}}
 }
+
+// TestProviderObservesThePoolThePackChoseFrom pins the diagnostic hook: the
+// observer sees every hydrated, eligible candidate -- the pool -- while the pack
+// keeps only what the budget carries. A harness that counted the pack as "what
+// retrieval had" cannot tell a budget cut from a retrieval miss.
+func TestProviderObservesThePoolThePackChoseFrom(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	facts := newFactStore(t, newTestWorkspace(t))
+	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
+	for _, id := range []string{"a", "b"} {
+		if _, err := facts.Add(ctx, factview.AddRequest{ID: id, Generation: testGeneration, Scope: scope,
+			ConversationID: "conversation", Content: providerText(id),
+			Provenance: []corememory.SourceRef{source}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	search := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
+		return []component.Candidate{providerCandidate("a", 1), providerCandidate("b", .5)}, nil
+	})
+	fusor, _ := fusion.New([]fusion.Lane{{Name: "vector", Searcher: search, Weight: 1, Calibrator: fusion.Identity{}}})
+	provider, _ := NewProviderWithConfig(ProviderConfig{
+		Fusion: fusor, Hydrator: &hydrate.Composite{Facts: facts}, Packer: pack.New(nil),
+	})
+	var observed []corememory.ContextItem
+	provider.ObservePool = func(_ corememory.ContextRequest, pool []corememory.ContextItem) {
+		observed = append(observed, pool...)
+	}
+	result, err := provider.Context(ctx, corememory.ContextRequest{
+		Scope: scope, ConversationID: "conversation", Query: "query",
+		Budget: corememory.Budget{MaxItems: 1, MaxTokens: 100},
+	})
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("pack = %d items, err = %v; want the budget to carry one", len(result.Items), err)
+	}
+	if len(observed) != 2 {
+		t.Fatalf("observer saw %d items, want the full pool of 2", len(observed))
+	}
+}

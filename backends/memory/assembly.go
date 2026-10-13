@@ -233,6 +233,19 @@ func (assembly *Assembly) ContextStageTotals() map[string]StageStat {
 	return assembly.provider.StageTotals()
 }
 
+// ObservePool installs a diagnostic observer over the pool one Context request
+// hands to the packer: every hydrated, eligible item, before the budget chooses
+// from them. A harness that sees nothing but the pack cannot tell evidence the
+// budget cut from evidence retrieval never returned, so a diagnosis reads this.
+// Install it before serving; nil clears it. The observer must not mutate the
+// slice.
+func (assembly *Assembly) ObservePool(observer func(corememory.ContextRequest, []corememory.ContextItem)) {
+	if assembly == nil || assembly.provider == nil {
+		return
+	}
+	assembly.provider.ObservePool = observer
+}
+
 // StageStat re-exports the retrieval stage timing type.
 type StageStat = retrieval.StageStat
 
