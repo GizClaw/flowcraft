@@ -52,18 +52,24 @@ func WithConflictPolicy(p ConflictPolicy) Option {
 //
 // A Registry is safe for concurrent use. Close releases every
 // contributed tool that implements io.Closer (deferred proxies
-// included) and forbids further lazy loads.
+// included), forbids further lazy loads, and detaches the sources
+// that were attached at construction.
 type Registry struct {
-	mu       sync.RWMutex
-	tools    map[string]Tool
-	order    []string
-	conflict ConflictPolicy
-	closed   bool
+	mu        sync.RWMutex
+	tools     map[string]Tool
+	order     []string
+	conflict  ConflictPolicy
+	closed    bool
+	detachers []RegistryDetacher
 }
 
 // NewRegistry builds a registry from sources in order. With the
 // default ConflictError policy a duplicate name is an error; with
-// ConflictOverwrite the later source wins.
+// ConflictOverwrite the later source wins. Sources that implement
+// [RegistryAttacher] receive the new registry's [Registrar] before
+// NewRegistry returns, so tools they discover after construction (a
+// background MCP connect, a refresh) still reach it; sources that
+// implement [RegistryDetacher] are notified when the registry closes.
 func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 	o := options{conflict: ConflictError}
 	for _, opt := range opts {
@@ -95,6 +101,16 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 			if err := r.add(newLazyProxy(lt)); err != nil {
 				return nil, err
 			}
+		}
+	}
+	for _, src := range sources {
+		attacher, ok := src.(RegistryAttacher)
+		if !ok {
+			continue
+		}
+		attacher.Attach(r)
+		if detacher, ok := src.(RegistryDetacher); ok {
+			r.detachers = append(r.detachers, detacher)
 		}
 	}
 	return r, nil
@@ -211,8 +227,9 @@ func (r *Registry) Len() int {
 }
 
 // Close releases every tool that implements io.Closer (in reverse
-// registration order) and marks the registry closed so deferred tools
-// can no longer load. It is idempotent.
+// registration order), marks the registry closed so deferred tools can
+// no longer load, and notifies every attached [RegistryDetacher]. It
+// is idempotent.
 func (r *Registry) Close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -221,6 +238,8 @@ func (r *Registry) Close() error {
 	}
 	r.closed = true
 	order := append([]string(nil), r.order...)
+	detachers := r.detachers
+	r.detachers = nil
 	r.mu.Unlock()
 
 	var first error
@@ -231,6 +250,9 @@ func (r *Registry) Close() error {
 				first = err
 			}
 		}
+	}
+	for _, detacher := range detachers {
+		detacher.Detach(r)
 	}
 	return first
 }

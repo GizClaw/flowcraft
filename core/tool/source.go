@@ -34,11 +34,24 @@ type Registrar interface {
 	Remove(name string)
 }
 
-// RegistryAttacher is an optional [Source] capability: the assembly
-// hands the built [Registry]'s [Registrar] to sources that need to
+// RegistryAttacher is an optional [Source] capability: [NewRegistry]
+// hands the new [Registry]'s [Registrar] to sources that need to
 // publish tools after construction (background connects, refresh).
 type RegistryAttacher interface {
 	Attach(r Registrar)
+}
+
+// RegistryDetacher is an optional [RegistryAttacher] counterpart: the
+// registry calls Detach when it closes, so the attacher can drop the
+// registrar it was handed. Without it, a source that outlives the
+// registries it is attached to (a host ToolSet attached once per
+// runtime generation) keeps every closed registry, and the tools it
+// holds, reachable from a process-lifetime object.
+type RegistryDetacher interface {
+	// Detach reports that r, the registry this source was attached to,
+	// has closed and released its tools. A source attached to several
+	// registries is told about each as it closes.
+	Detach(r Registrar)
 }
 
 // LazyTool is a deferred tool descriptor contributed by a Source.
