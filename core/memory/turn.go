@@ -16,6 +16,16 @@ type TurnSink interface {
 	CommitTurn(context.Context, Turn) error
 }
 
+// ObservedAtMetadataKey names the message-level metadata key that anchors a
+// message to the time it was observed: an RFC3339 timestamp carried on the
+// committed record. Writers stamp it only where that time is actually known --
+// a live host when it commits the turn (the arrival time it has), an importer
+// from the session time the source conversation carries -- and leave it absent
+// otherwise. A reader must not synthesize it from anything else: CreatedAt is
+// the storage time of the record, and a bulk import of old history would turn
+// it into an "import day" anchor, which is worse than none.
+const ObservedAtMetadataKey = "observed_at"
+
 type Turn struct {
 	Scope          Scope
 	ConversationID string
@@ -25,7 +35,9 @@ type Turn struct {
 	// aligned with Messages. A host importing a conversation from elsewhere
 	// keeps the source's own identifiers here (a dataset turn id, for example)
 	// so a derived item can be traced back to the imported message by identity
-	// instead of being recognized by its text. An empty entry falls back to
+	// instead of being recognized by its text; the observation anchor
+	// (ObservedAtMetadataKey) travels the same channel. An empty entry falls
+	// back to
 	// Metadata, which applies to the whole turn.
 	MessageMetadata []Metadata
 	Metadata        Metadata

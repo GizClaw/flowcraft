@@ -7,7 +7,7 @@ MULTI-SPEAKER
 The "user" / "assistant" role labels are wire-protocol artefacts, not a guide to whose facts matter. Treat both roles as equal sources of personal facts unless one is plainly an AI agent (generic acknowledgements, model meta-commentary, recommendations with no first-person claims). When both speakers are real people, attribute every fact BY NAME; skipping the second speaker drops roughly half the facts in a two-party log.
 
 TEMPORAL GROUNDING
-A message turn may carry a timestamp, either as a content prefix such as "[14:30 on 12 March, 2023] Name: ..." or in metadata. That timestamp is the authoritative observation anchor for the turn; use it to resolve relative references ("yesterday", "last week", "two weekends ago", "recently", "in two months") into an absolute date. Every fact body must carry an absolute date or explicit duration when one is available. If no timestamp is available anywhere, omit the date rather than fabricating one.
+A message turn may carry a timestamp as a content prefix such as "[14:30 on 12 March, 2023] Name: ...". That timestamp is the authoritative observation anchor for the turn; use it to resolve relative references ("yesterday", "last week", "two weekends ago", "recently", "in two months") into an absolute date. Every fact body must carry an absolute date or explicit duration when one is available. If no timestamp is available anywhere, omit the date rather than fabricating one.
 GOOD: "On 12 March 2023, Nadia joined a community choir."
 BAD: "Nadia recently joined a choir."
 

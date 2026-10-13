@@ -71,6 +71,9 @@ type Config struct {
 	Checkpoints      CheckpointStore
 	Projection       string
 	PolicyDigest     string
+	// ObservedAtAnchor renders each record's observed_at anchor as a text
+	// prefix in the derivation source (memory.Settings.ObservedAtAnchor).
+	ObservedAtAnchor bool
 	PageSize         int
 	// Concurrency bounds how many conversations of one scope are derived in
 	// parallel. Zero or one keeps the sequential pass. Each conversation keeps
@@ -93,19 +96,20 @@ func (processor *Processor) PolicyDigest() string {
 // Processor scans canonical messages and publishes facts plus projection
 // deltas exactly once per policy-scoped watermark.
 type Processor struct {
-	messages      MessageReader
-	documents     DocumentReader
-	documentViews *docview.DocumentViewStore
-	facts         *factview.FactStore
-	deriver       component.Deriver
-	knowledge     component.Deriver
-	compactor     *summaryderive.Compactor
-	indexers      []ProjectionIndexer
-	checkpoints   CheckpointStore
-	projection    string
-	policyDigest  string
-	pageSize      int
-	concurrency   int
+	messages         MessageReader
+	documents        DocumentReader
+	documentViews    *docview.DocumentViewStore
+	facts            *factview.FactStore
+	deriver          component.Deriver
+	knowledge        component.Deriver
+	compactor        *summaryderive.Compactor
+	indexers         []ProjectionIndexer
+	checkpoints      CheckpointStore
+	projection       string
+	policyDigest     string
+	observedAtAnchor bool
+	pageSize         int
+	concurrency      int
 
 	// running tracks the conversations with a pass in flight in this processor,
 	// so a sweep can refuse to race one. See quiesce.go.
@@ -164,8 +168,9 @@ func NewProcessor(config Config) (*Processor, error) {
 		facts: config.Facts, deriver: config.Deriver, knowledge: config.KnowledgeDeriver,
 		compactor: config.Compactor,
 		indexers:  indexers, checkpoints: config.Checkpoints,
-		projection: config.Projection, policyDigest: config.PolicyDigest, pageSize: pageSize,
-		concurrency: concurrency,
+		projection: config.Projection, policyDigest: config.PolicyDigest,
+		observedAtAnchor: config.ObservedAtAnchor,
+		pageSize:         pageSize, concurrency: concurrency,
 	}, nil
 }
 
@@ -857,7 +862,7 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 	if processor.deriver == nil {
 		return artifacts, nil
 	}
-	derived, err := processor.deriver.Derive(ctx, chatSource(commit, processor.policyDigest))
+	derived, err := processor.deriver.Derive(ctx, chatSource(commit, processor.policyDigest, processor.observedAtAnchor))
 	if err != nil {
 		return nil, fmt.Errorf("memory worker: derive commit %q: %w", commit.ID, err)
 	}
@@ -922,12 +927,24 @@ func (processor *Processor) compact(ctx context.Context, commit msgsource.Commit
 	return nil
 }
 
-func chatSource(commit msgsource.Commit, generation string) component.Artifact {
+// chatSource renders the derivation input for one commit. With observedAtAnchor
+// set, a record that carries the observed_at anchor is rendered as
+// "[anchor] role: content" -- the shape the eval loader's date prefix uses --
+// and a record without one is rendered bare: the anchor is the message's own
+// observation time or nothing, never the commit time.
+func chatSource(commit msgsource.Commit, generation string, observedAtAnchor bool) component.Artifact {
 	var text strings.Builder
 	sources := make([]corememory.SourceRef, 0, len(commit.Records))
 	for _, record := range commit.Records {
 		if text.Len() > 0 {
 			text.WriteByte('\n')
+		}
+		if observedAtAnchor {
+			if anchor := record.ObservedAt(); anchor != "" {
+				text.WriteByte('[')
+				text.WriteString(anchor)
+				text.WriteString("] ")
+			}
 		}
 		text.WriteString(string(record.Message.Role))
 		text.WriteString(": ")
@@ -967,13 +984,18 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact, genera
 	metadata := addressMetadata(artifact.Metadata, corememory.ContextFact, commit.ConversationID, "", "", artifact.ID)
 	addScopeMetadata(metadata, commit.Scope)
 	metadata["commit_version"] = strconv.FormatUint(commit.Version, 10)
+	ingestedAt := commit.CreatedAt.UTC()
 	eventTime, _ := time.Parse(time.RFC3339Nano, artifact.Metadata["event_time"])
 	if eventTime.IsZero() {
 		// A deriver that could not date the fact leaves event_time unset; the
-		// fact view requires one, and the commit's creation time is the only
-		// timestamp we actually know. Dating it 1970 would make it look
-		// simultaneous with every other undated fact and decay it to nothing.
-		eventTime = commit.CreatedAt.UTC()
+		// commit's creation time is the only timestamp we actually know. The
+		// fact keeps it as its ingestion time and marks the event time as an
+		// inference, so a reader can tell a dated fact from an undated one
+		// instead of reading the fallback as a stated date. Dating it 1970
+		// would make it look simultaneous with every other undated fact and
+		// decay it to nothing.
+		eventTime = ingestedAt
+		metadata[factview.EventTimeInferredMetadataKey] = "true"
 	}
 	return factview.AddRequest{
 		ID: artifact.ID, Generation: generation, Scope: commit.Scope, ConversationID: commit.ConversationID,
@@ -981,7 +1003,7 @@ func factAddRequest(commit msgsource.Commit, artifact component.Artifact, genera
 		CanonicalHash: artifact.Metadata["canonical_hash"],
 		Entities:      decodeMetadataStrings(artifact.Metadata["entities"]),
 		Predicate:     artifact.Metadata["predicate"], TemporalDetail: artifact.Metadata["temporal_detail"],
-		EventTime: eventTime, LinkedMemoryIDs: decodeMetadataStrings(artifact.Metadata["linked_memory_ids"]),
+		EventTime: eventTime, IngestedAt: ingestedAt, LinkedMemoryIDs: decodeMetadataStrings(artifact.Metadata["linked_memory_ids"]),
 		SourceDigest:       artifact.Metadata["source_digest"],
 		TransformSignature: artifact.Metadata["transform_signature"],
 	}

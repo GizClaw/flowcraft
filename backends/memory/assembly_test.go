@@ -311,6 +311,50 @@ func TestCommitTurnAndRecentContext(t *testing.T) {
 	}
 }
 
+// TestObservedAtAnchorReachesTheAnswerSideEvidence wires the switch through the
+// factory's retrieval assembly: by default the raw message items a context
+// request serves read "[anchor] text", and observed_at_anchor: false opts out
+// of the anchored reading.
+func TestObservedAtAnchorReachesTheAnswerSideEvidence(t *testing.T) {
+	ctx := context.Background()
+	const anchor = "2026-09-18T12:30:00Z"
+	contextText := func(t *testing.T, settings string) string {
+		t.Helper()
+		assembly, _ := newTestAssembly(t, settings)
+		t.Cleanup(func() { _ = assembly.Close() })
+		if err := assembly.CommitTurn(ctx, corememory.Turn{
+			Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "run-1",
+			Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "hello")},
+			Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := assembly.Context(ctx, corememory.ContextRequest{
+			Scope: testScope(), ConversationID: "conv-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Items) != 1 {
+			t.Fatalf("items = %d, want 1", len(result.Items))
+		}
+		return result.Items[0].Content.Text()
+	}
+	const optOutSettings = `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "recent": {"max_items": 8, "max_tokens": 4096},
+  "interval": "0",
+  "observed_at_anchor": false
+}`
+	if got, want := contextText(t, testSettings), "["+anchor+"] hello"; got != want {
+		t.Fatalf("default context text = %q, want %q", got, want)
+	}
+	if got := contextText(t, optOutSettings); got != "hello" {
+		t.Fatalf("opted-out context text = %q, want it bare", got)
+	}
+}
+
 // A host that imports a conversation keeps the source's own identifiers on the
 // messages it commits, and they come back on the recent items: that is the
 // channel the eval harness traces a recalled item back to a dataset turn with,
@@ -641,6 +685,62 @@ func TestPolicyDigestTracksDerivationNotOperations(t *testing.T) {
 	derivation.Projection = "facts-v2"
 	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
 		t.Fatalf("projection namespace must change the digest (err=%v)", err)
+	}
+	derivation = base
+	anchorOff := false
+	derivation.ObservedAtAnchor = &anchorOff
+	if digest, err := policyDigest(derivation, ""); err != nil || digest == baseDigest {
+		t.Fatalf("the observed_at anchor opt-out must change the digest (err=%v)", err)
+	}
+}
+
+// sourceRecorder records the derivation source of every commit it derives.
+type sourceRecorder struct{ sources []string }
+
+func (recorder *sourceRecorder) Derive(_ context.Context, input component.Artifact) ([]component.Artifact, error) {
+	recorder.sources = append(recorder.sources, input.Content.Text())
+	return nil, nil
+}
+
+// TestObservedAtAnchorReachesTheDerivationSource wires the switch through the
+// factory: by default a committed message carrying the observed_at metadata
+// reaches the deriver as "[anchor] role: content", while observed_at_anchor:
+// false derives the same turn from bare text and keeps the metadata invisible.
+func TestObservedAtAnchorReachesTheDerivationSource(t *testing.T) {
+	ctx := context.Background()
+	const anchor = "2026-09-18T12:30:00Z"
+	derive := func(t *testing.T, settings string) string {
+		t.Helper()
+		recorder := &sourceRecorder{}
+		assembly, _ := newTestAssemblyWith(t, settings, WithDeriver(recorder), WithDeriverVersion("source-recorder-v1"))
+		t.Cleanup(func() { _ = assembly.Close() })
+		if err := assembly.CommitTurn(ctx, corememory.Turn{
+			Scope: testScope(), ConversationID: "conv-1", IdempotencyKey: "run-1",
+			Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "we talked about beverages")},
+			Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := assembly.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(recorder.sources) != 1 {
+			t.Fatalf("derive calls = %d, want 1", len(recorder.sources))
+		}
+		return recorder.sources[0]
+	}
+	const optOutSettings = `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "recent": {"max_items": 8, "max_tokens": 4096},
+  "interval": "0",
+  "observed_at_anchor": false
+}`
+	if got, want := derive(t, testSettings), "["+anchor+"] user: we talked about beverages"; got != want {
+		t.Fatalf("default derivation source = %q, want %q", got, want)
+	}
+	if got, want := derive(t, optOutSettings), "user: we talked about beverages"; got != want {
+		t.Fatalf("opted-out derivation source = %q, want %q", got, want)
 	}
 }
 

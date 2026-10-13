@@ -54,11 +54,15 @@ type Provider struct {
 	// the context (0 disables the expansion). A fact is a paraphrase, so the
 	// wording the conversation actually used -- a title, a quoted number, a
 	// list of activities -- lives in the source turn, not in the fact.
-	SourceQuotes  int
-	ExpandParents bool
-	RecallEvents  RecallEventRecorder
-	Visibility    Visibility
-	Clock         func() time.Time
+	SourceQuotes int
+	// ObservedAtAnchor renders each raw message's observation anchor as a text
+	// prefix in the evidence the answer model reads -- folded source quotes and
+	// hydrated raw messages (memory.Settings.ObservedAtAnchor).
+	ObservedAtAnchor bool
+	ExpandParents    bool
+	RecallEvents     RecallEventRecorder
+	Visibility       Visibility
+	Clock            func() time.Time
 
 	mu          sync.RWMutex
 	diagnostics []Diagnostic
@@ -167,11 +171,14 @@ type ProviderConfig struct {
 	// the context (0 disables the expansion). A fact is a paraphrase, so the
 	// wording the conversation actually used -- a title, a quoted number, a
 	// list of activities -- lives in the source turn, not in the fact.
-	SourceQuotes  int
-	ExpandParents bool
-	RecallEvents  RecallEventRecorder
-	Visibility    Visibility
-	Clock         func() time.Time
+	SourceQuotes int
+	// ObservedAtAnchor renders each raw message's observation anchor as a text
+	// prefix in the evidence the answer model reads (memory.Settings.ObservedAtAnchor).
+	ObservedAtAnchor bool
+	ExpandParents    bool
+	RecallEvents     RecallEventRecorder
+	Visibility       Visibility
+	Clock            func() time.Time
 }
 
 type RecallEventRecorder interface {
@@ -211,12 +218,13 @@ func NewProviderWithConfig(config ProviderConfig) (*Provider, error) {
 	provider := &Provider{
 		Fusion: config.Fusion, Messages: config.Messages,
 		Hydrator: config.Hydrator, Packer: config.Packer, Recent: config.Recent,
-		ItemReranker:  config.ItemReranker,
-		ScoreAdjuster: config.ScoreAdjuster,
-		Generations:   config.Generations,
-		SourceQuotes:  config.SourceQuotes,
-		ExpandParents: config.ExpandParents,
-		RecallEvents:  config.RecallEvents, Visibility: config.Visibility, Clock: config.Clock,
+		ItemReranker:     config.ItemReranker,
+		ScoreAdjuster:    config.ScoreAdjuster,
+		Generations:      config.Generations,
+		SourceQuotes:     config.SourceQuotes,
+		ObservedAtAnchor: config.ObservedAtAnchor,
+		ExpandParents:    config.ExpandParents,
+		RecallEvents:     config.RecallEvents, Visibility: config.Visibility, Clock: config.Clock,
 	}
 	if provider.Fusion != nil {
 		provider.Fusion.ObserveLane = func(name string, elapsed time.Duration) {
@@ -777,6 +785,9 @@ func (provider *Provider) quoteText(
 		return "", false
 	}
 	text := strings.TrimSpace(record.Message.Content.Text())
+	if provider.ObservedAtAnchor {
+		text = record.AnchoredText(text)
+	}
 	provider.quoteMu.Lock()
 	switch {
 	case provider.quoteTexts == nil:

@@ -18,21 +18,32 @@ const (
 	// CanonicalAlgorithmVersion identifies the normalization and hash contract.
 	CanonicalAlgorithmVersion = "fact-canonical-v1"
 	canonicalHashDomain       = "flowcraft.memory.fact\x00v1\x00"
+	// EventTimeInferredMetadataKey marks a fact whose event_time fell back to
+	// the source commit's creation time because the deriver could not date it:
+	// the stored time is an inference, not a stated event time. A dated fact
+	// carries no such key.
+	EventTimeInferredMetadataKey = "event_time_inferred"
 )
 
 // Fact is one immutable, derived fact in a conversation.
 type Fact struct {
-	ID                 string                 `json:"id"`
-	Generation         string                 `json:"generation"`
-	CanonicalHash      string                 `json:"canonical_hash"`
-	Scope              corememory.Scope       `json:"scope"`
-	ConversationID     string                 `json:"conversation_id"`
-	Text               string                 `json:"text"`
-	Content            coremessage.Content    `json:"content"`
-	Entities           []string               `json:"entities,omitempty"`
-	Predicate          string                 `json:"predicate,omitempty"`
-	TemporalDetail     string                 `json:"temporal_detail,omitempty"`
+	ID             string              `json:"id"`
+	Generation     string              `json:"generation"`
+	CanonicalHash  string              `json:"canonical_hash"`
+	Scope          corememory.Scope    `json:"scope"`
+	ConversationID string              `json:"conversation_id"`
+	Text           string              `json:"text"`
+	Content        coremessage.Content `json:"content"`
+	Entities       []string            `json:"entities,omitempty"`
+	Predicate      string              `json:"predicate,omitempty"`
+	TemporalDetail string              `json:"temporal_detail,omitempty"`
+	// EventTime is when the fact's event happened, as the deriver dated it; a
+	// fallback to the source commit's time is marked inferred in Metadata
+	// (EventTimeInferredMetadataKey). IngestedAt is when the messages behind
+	// the fact were committed -- not when the fact was written, so a
+	// re-derivation of old conversations keeps their own chronology.
 	EventTime          time.Time              `json:"event_time"`
+	IngestedAt         time.Time              `json:"ingested_at"`
 	LinkedMemoryIDs    []string               `json:"linked_memory_ids,omitempty"`
 	Provenance         []corememory.SourceRef `json:"provenance"`
 	SourceDigest       string                 `json:"source_digest"`
@@ -56,6 +67,7 @@ type AddRequest struct {
 	Predicate          string
 	TemporalDetail     string
 	EventTime          time.Time
+	IngestedAt         time.Time
 	LinkedMemoryIDs    []string
 	Provenance         []corememory.SourceRef
 	SourceDigest       string

@@ -48,6 +48,23 @@ type LoaderOptions struct {
 	// reference. It is the shape of a native store whose fetches all succeeded,
 	// which is the one a diagnostic wants to compare against.
 	ReferenceImages bool
+	// Dateless converts turns without the session date prefix the LoCoMo
+	// rendering writes into every message ("[1:00 pm on 1 May, 2023] Alice:
+	// ..."). Nothing else about a turn changes -- speaker, body, dataset id,
+	// image annotation stay what they were -- so a run over each conversion
+	// measures what the prefix contributes to a temporal score, with the
+	// turns themselves held fixed.
+	Dateless bool
+	// ObservedAt selects whether the conversion writes each session date time
+	// into the messages as the observed_at metadata anchor instead of their
+	// text:
+	//   "" or "off"  -- no anchor (the historical conversion, byte for byte)
+	//   "metadata"   -- every message of a session carries the session date
+	//                   time as an RFC3339 observed_at; requires Dateless,
+	//                   because the metadata anchor and the text prefix are
+	//                   two renderings of the same fact and a turn carrying
+	//                   both would reach derivation with two anchors.
+	ObservedAt string
 }
 
 // LoaderStats summarizes one conversion.
@@ -76,6 +93,14 @@ type LoaderStats struct {
 	// adversarial/unanswerable (LoCoMo category 5). It is reported apart from
 	// Skipped so an excluded slice of the benchmark is never implicit.
 	SkippedAdversarial int `json:"skipped_adversarial,omitempty"`
+	// ObservedAtAnchored counts the messages whose conversion wrote an
+	// observed_at anchor into their metadata, and ObservedAtUnparsed
+	// counts the sessions whose date string the conversion could not
+	// parse -- an unparsable date leaves the messages without an anchor
+	// rather than guessing one. Both are reported so anchor coverage is
+	// a reading on the run, not an assumption.
+	ObservedAtAnchored int `json:"observed_at_anchored,omitempty"`
+	ObservedAtUnparsed int `json:"observed_at_unparsed,omitempty"`
 }
 
 // ImageFailureCounts breaks the failed image fetches down by cause. A failure
@@ -125,6 +150,10 @@ func LoadLoCoMo(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, er
 	if err := json.Unmarshal(data, &samples); err != nil {
 		return nil, LoaderStats{}, fmt.Errorf("memory eval: parse locomo: %w", err)
 	}
+	observedAt, err := options.observedAtMode()
+	if err != nil {
+		return nil, LoaderStats{}, err
+	}
 	var (
 		scenarios []Scenario
 		stats     LoaderStats
@@ -141,7 +170,7 @@ func LoadLoCoMo(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, er
 		turns, ok := loCoMoTurns(sample, imagePolicy{
 			mode:       options.Images,
 			references: options.ReferenceImages,
-		}, fetcher, &stats)
+		}, options.Dateless, observedAt == "metadata", fetcher, &stats)
 		if !ok {
 			stats.Skipped++
 			continue
@@ -258,7 +287,38 @@ func (policy imagePolicy) attaches() bool {
 	return policy.mode == "native" || policy.mode == "both"
 }
 
-func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
+// observedAtMode normalizes LoaderOptions.ObservedAt and enforces its pairing
+// with Dateless: the metadata anchor replaces the text prefix, so a
+// conversion that would carry both is rejected rather than silently
+// doubling the anchor.
+func (options LoaderOptions) observedAtMode() (string, error) {
+	switch strings.TrimSpace(options.ObservedAt) {
+	case "", "off":
+		return "off", nil
+	case "metadata":
+		if !options.Dateless {
+			return "", errors.New("memory eval: observed_at=metadata writes the anchor into metadata instead of the text, so it requires the dateless conversion")
+		}
+		return "metadata", nil
+	default:
+		return "", fmt.Errorf("memory eval: unknown observed_at mode %q (want off|metadata)", options.ObservedAt)
+	}
+}
+
+// loCoMoDateTimeLayout is the shape of every session date_time value in
+// locomo10.json: "1:56 pm on 8 May, 2023". A value in no known layout is
+// left without an anchor rather than guessed at.
+const loCoMoDateTimeLayout = "3:04 pm on 2 January, 2006"
+
+func parseLoCoMoDateTime(value string) (time.Time, bool) {
+	parsed, err := time.Parse(loCoMoDateTimeLayout, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, dateless, observedAt bool, fetcher *imageFetcher, stats *LoaderStats) ([]Turn, bool) {
 	var speakerA, speakerB string
 	_ = json.Unmarshal(sample.Conversation["speaker_a"], &speakerA)
 	_ = json.Unmarshal(sample.Conversation["speaker_b"], &speakerB)
@@ -287,6 +347,17 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 		if err := json.Unmarshal(sample.Conversation[current.key], &rawTurns); err != nil {
 			continue
 		}
+		// The observation anchor is a property of the session: every
+		// message exchanged in one session was observed at the session
+		// date time, so the conversion stamps them all with it.
+		sessionAnchor := ""
+		if observedAt && strings.TrimSpace(current.dateTime) != "" {
+			if parsed, ok := parseLoCoMoDateTime(current.dateTime); ok {
+				sessionAnchor = parsed.Format(time.RFC3339)
+			} else {
+				stats.ObservedAtUnparsed++
+			}
+		}
 		// Only a conversion that downloads needs the pool: a reference
 		// conversion has nothing to wait for, and fetching a picture it will
 		// never inline is how a run with no use for the bytes spends minutes
@@ -304,6 +375,7 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 		}
 		messages := make([]coremessage.Message, 0, len(rawTurns))
 		datasetIDs := make([]string, 0, len(rawTurns))
+		observedAts := make([]string, 0, len(rawTurns))
 		for _, raw := range rawTurns {
 			role := coremessage.RoleUser
 			switch raw.Speaker {
@@ -325,7 +397,10 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 				speaker = string(role)
 			}
 			text := speaker + ": " + body
-			if current.dateTime != "" {
+			// The date is dataset content, but carrying it in the text is
+			// the loader's choice; the dateless conversion drops exactly
+			// this step.
+			if current.dateTime != "" && !dateless {
 				text = "[" + current.dateTime + "] " + text
 			}
 			parts := []coremessage.Part{coremessage.TextPart{Text: text}}
@@ -359,6 +434,10 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 				Role: role, Content: coremessage.Content{Parts: parts},
 			})
 			datasetIDs = append(datasetIDs, raw.DiaID)
+			observedAts = append(observedAts, sessionAnchor)
+			if sessionAnchor != "" {
+				stats.ObservedAtAnchored++
+			}
 		}
 		if len(messages) == 0 {
 			continue
@@ -366,10 +445,14 @@ func loCoMoTurns(sample loCoMoRawSample, policy imagePolicy, fetcher *imageFetch
 		if !hasNonEmpty(datasetIDs) {
 			datasetIDs = nil
 		}
+		if !hasNonEmpty(observedAts) {
+			observedAts = nil
+		}
 		turns = append(turns, Turn{
 			IdempotencyKey: "locomo/" + sample.SampleID + "/" + current.key,
 			Messages:       messages,
 			DatasetIDs:     datasetIDs,
+			ObservedAt:     observedAts,
 		})
 	}
 	stats.ImagesShrunk = fetcher.shrunkCount()

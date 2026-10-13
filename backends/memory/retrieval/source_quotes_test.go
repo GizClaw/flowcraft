@@ -146,3 +146,53 @@ func TestSourceQuoteCacheIsScoped(t *testing.T) {
 		t.Fatalf("scope B did not fold its own turn: %q", text)
 	}
 }
+
+// TestWithSourceQuotesAnchorsTheSourceTurnWhenEnabled pins the answer-side
+// rendering of the anchor on folded quotes: the quoted turn arrives as
+// "[anchor] text" when the switch is on -- the shape the derivation source
+// renders -- and the same quote stays bare under the default configuration.
+func TestWithSourceQuotesAnchorsTheSourceTurnWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "memories"}
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := messagesource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const anchor = "2023-05-08T13:56:00Z"
+	records, err := messages.Append(ctx, messagesource.AppendRequest{
+		Scope: scope, ConversationID: "conv-1", IdempotencyKey: "turn-1",
+		Messages: []coremessage.Message{coremessage.NewTextMessage(coremessage.RoleUser, "Melanie read Becoming Nicole last week.")},
+		Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := corememory.SourceRef{
+		Kind: corememory.SourceMessage,
+		ID:   records[0].ConversationID + "/" + records[0].ID,
+	}
+	fact := corememory.ContextItem{
+		ID: "fact-1", Kind: corememory.ContextFact, SourceClass: corememory.ContextSourceLongTerm,
+		Content: coremessage.NewTextContent("Melanie read a book Caroline recommended."),
+		Sources: []corememory.SourceRef{source},
+	}
+	anchored := (&Provider{Messages: messages, SourceQuotes: 1, ObservedAtAnchor: true}).
+		withSourceQuotes(ctx, scope, []corememory.ContextItem{fact})
+	if text := anchored[0].Content.Text(); !strings.Contains(text, "Source turn: ["+anchor+"] Melanie read Becoming Nicole") {
+		t.Fatalf("quote was not anchored: %q", text)
+	}
+	plain := (&Provider{Messages: messages, SourceQuotes: 1}).
+		withSourceQuotes(ctx, scope, []corememory.ContextItem{fact})
+	if text := plain[0].Content.Text(); strings.Contains(text, anchor) {
+		t.Fatalf("default quote carries an anchor: %q", text)
+	}
+}

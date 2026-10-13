@@ -31,6 +31,13 @@ func main() {
 		"how turns with an image are ingested: annotation | native | both. "+
 			"native attaches the image itself, but remote urls are rejected by the multimodal embedder, "+
 			"so it needs images materialized inline first")
+	noDatePrefix := flag.Bool("no-date-prefix", false,
+		"convert turns without the session date prefix the loader otherwise writes into their text; "+
+			"the two conversions differ in exactly this step, so running with and without it measures how much of a temporal score rests on the prefix")
+	observedAt := flag.String("observed-at", "off",
+		"write each session date time into the message metadata as observed_at instead of the text: "+
+			"off | metadata. metadata is the dateless conversion plus the anchor, so it requires -no-date-prefix; "+
+			"it is how a prefix-less production path receives its temporal anchor")
 	maxItems := flag.Int("max-items", 20, "context budget items")
 	maxTokens := flag.Int("max-tokens", 4096, "context budget tokens")
 	recentItems := flag.Int("recent-items", 20, "assembly recent.max_items")
@@ -73,10 +80,12 @@ func main() {
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
 	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
-		Scope:   evalScope,
-		Budget:  corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
-		Images:  *imageMode,
-		Samples: *samples,
+		Scope:      evalScope,
+		Budget:     corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
+		Images:     *imageMode,
+		Samples:    *samples,
+		Dateless:   *noDatePrefix,
+		ObservedAt: *observedAt,
 	})
 	must(err)
 	fmt.Printf("dataset: scenarios=%d turns=%d questions=%d skipped=%d skipped_adversarial=%d",
@@ -140,14 +149,6 @@ func main() {
 	// recalled -- by dataset turn id where ingest tagged the messages, and by
 	// committed text where the store predates that tagging.
 	resolver := host.NewMessageProvenance(deployment.Memory.MessageStore(), corememory.Scope(evalScope))
-	evidenceRule, taggedConversations := evidenceMatching(context.Background(), resolver, scenarios)
-	if taggedConversations < len(scenarios) {
-		fmt.Fprintf(os.Stderr,
-			"warning: %d of %d conversations hold no dataset turn ids (ingested before ingest tagged messages):\n"+
-				"  their evidence recall is matched by committed text only, so a rendering difference between\n"+
-				"  the loader and the store hides a turn. Re-ingest into a fresh workspace for comparable numbers.\n",
-			len(scenarios)-taggedConversations, len(scenarios))
-	}
 	options := eval.Options{
 		Provenance:  resolver,
 		Concurrency: *answerConcurrency,
@@ -231,6 +232,37 @@ func main() {
 		}
 		return measured
 	}
+	completed := map[string]eval.Report{}
+	var previous partialRun
+	if *resume && *out == "" {
+		must(fmt.Errorf("memory eval: -resume needs -out: there is nowhere to read previous results from"))
+	}
+	if *resume {
+		previous = loadPartialRun(*out)
+		completed = previous.Reports
+	}
+	pending := 0
+	if *prepareAll && !*skipDerive {
+		var err error
+		pending, err = ingestAllScenarios(context.Background(), deployment.Memory, scenarios, completed)
+		must(err)
+	}
+	// The rule evidence recall is graded by is a property of the store the run grades,
+	// and ingest is what writes the dataset turn ids: measured before the ingest phase,
+	// a fresh workspace would be stamped committed-text while this run matches every hit
+	// by turn id. So the fingerprint is fixed once the store is prepared -- and with it
+	// the resume check, which is why the previous run is read above but compared below,
+	// and why the derivation pass waits until after both. A run without -prepare-all
+	// ingests inside the loop, so its label can only describe the store as it found it.
+	evidenceRule, taggedConversations := evidenceMatching(context.Background(), resolver, scenarios)
+	if taggedConversations < len(scenarios) {
+		fmt.Fprintf(os.Stderr,
+			"warning: %d of %d conversations carry no dataset turn ids (evidence recall is matched by committed\n"+
+				"  text): a rendering difference between the loader and the store hides a turn, and the two rules do\n"+
+				"  not score the same. Ingest writes the ids on the first commit; a store that already holds these\n"+
+				"  conversations replays their commits, so a fresh workspace is the only way to bring them up to date.\n",
+			len(scenarios)-taggedConversations, len(scenarios))
+	}
 	fingerprint := eval.Fingerprint{
 		Revision:     buildRevision(),
 		Dataset:      eval.DatasetDigest(raw),
@@ -258,6 +290,18 @@ func main() {
 			"temporal_hint":        strconv.FormatBool(*temporalHint),
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
+			// Whether the loader wrote each session's date into its turns'
+			// text. The date is dataset content, but carrying it in the
+			// prompt is the loader's choice, so the two configurations
+			// cannot share a fingerprint.
+			"date_prefix": strconv.FormatBool(!*noDatePrefix),
+			// Whether the loader wrote each session date into the messages
+			// as their observed_at metadata instead of their text. The text
+			// prefix and the metadata anchor are alternative renderings of
+			// the same fact (the loader refuses to write both), so this
+			// key and date_prefix move together: `metadata` here is the
+			// prefix-less shape a production path gets its anchor through.
+			"observed_at": *observedAt,
 			// How evidence recall was matched, which the store decides: turn
 			// identity where ingest tagged the messages, committed text where it
 			// did not. The two do not score the same, so a report stored under
@@ -268,24 +312,33 @@ func main() {
 			// that is linked in, not whether retrieval used it, and the setting
 			// lives in the deploy document: without this, two runs that differ
 			// only in that switch carry the same fingerprint.
-			"rerank":       onOff(deployment.Rerank),
+			"rerank": onOff(deployment.Rerank),
+			// The retrieval-side configuration the policy digest does not
+			// cover -- lane weights and fusion, the bm25 parameters, source
+			// quotes, rerank -- read back off the built assembly, so the
+			// document's values and the defaults are recorded together. A
+			// retrieval knob flipped in the document or in code lands here,
+			// and two retrieval configurations cannot share a fingerprint.
+			"retrieval":    deployment.Memory.RetrievalSummary(),
 			"judge_prompt": evalanswer.JudgePromptVersion,
 			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
 			// keeps the two apart (and -resume refuses to mix them).
 			"derive": deriveMode(*skipDerive),
-			// The assembly settings the policy digest does not cover (lane
-			// weights, source quotes, the recent window) live in the deploy
-			// document, so its digest pins them all. Without this, editing
-			// deploy.yaml would change results while the fingerprint stayed
-			// identical.
+			// The deploy document, byte for byte: it also pins whatever the
+			// values above do not name -- further assembly settings, the
+			// model declarations -- so editing deploy.yaml cannot change
+			// results under an unchanged fingerprint.
 			"deploy": deployDigest(*deployPath),
 			// -answer-concurrency is deliberately absent: it changes only the
 			// schedule, so it must not block resuming a run.
 		},
 	}
 	fmt.Printf("fingerprint: %s\n", fingerprint)
+	// Say what the store holds once the ingest phase has landed: the report's
+	// own library field is read back at the end of the run, so this line is the
+	// state the numbers below build on.
 	if state := currentLibrary(); state != nil {
 		fmt.Printf("library: %s\n", state)
 		// Answering from the stored derivation measures whatever the store holds.
@@ -299,31 +352,23 @@ func main() {
 				state.Underived, state.Conversations, state.PolicyDigest)
 		}
 	}
-
+	if *resume && !previous.Fingerprint.Empty() && !previous.Fingerprint.Equal(fingerprint) {
+		if !*resumeAnyway {
+			must(fmt.Errorf("memory eval: %s was produced under a different configuration\n"+
+				"  recorded: %s\n  current:  %s\n"+
+				"re-run without -resume, or pass -resume-anyway to mix them on purpose",
+				*out, previous.Fingerprint, fingerprint))
+		}
+		fmt.Fprintf(os.Stderr, "warning: resuming across fingerprints (recorded: %s; current: %s)\n",
+			previous.Fingerprint, fingerprint)
+	}
+	// The derivation pass runs after the fingerprint (and the resume check
+	// above) so a run that would refuse to resume does not pay for it first.
+	if pending > 0 {
+		fmt.Printf("prepared %d scenarios; running one derivation pass\n", pending)
+		must(deriveAllScenarios(context.Background(), deployment.Memory))
+	}
 	reports := make([]eval.Report, 0, len(scenarios))
-	completed := map[string]eval.Report{}
-	if *resume && *out == "" {
-		must(fmt.Errorf("memory eval: -resume needs -out: there is nowhere to read previous results from"))
-	}
-	if *resume && *out != "" {
-		previous := loadPartialRun(*out)
-		if !previous.Fingerprint.Empty() && !previous.Fingerprint.Equal(fingerprint) {
-			if !*resumeAnyway {
-				must(fmt.Errorf("memory eval: %s was produced under a different configuration\n"+
-					"  recorded: %s\n  current:  %s\n"+
-					"re-run without -resume, or pass -resume-anyway to mix them on purpose",
-					*out, previous.Fingerprint, fingerprint))
-			}
-			fmt.Fprintf(os.Stderr, "warning: resuming across fingerprints (recorded: %s; current: %s)\n",
-				previous.Fingerprint, fingerprint)
-		}
-		completed = previous.Reports
-	}
-	if *prepareAll && !*skipDerive {
-		if err := prepareAllScenarios(context.Background(), deployment.Memory, scenarios, completed); err != nil {
-			must(err)
-		}
-	}
 	for index, scenario := range scenarios {
 		if report, ok := completed[scenario.Name]; ok {
 			reports = append(reports, report)
@@ -560,6 +605,12 @@ func judgeFingerprint(judgeProvider, judgeModel, answerProvider, answerModel str
 // ingest tagging leaves only the committed text to compare, and the two rules do
 // not score the same, so the fingerprint carries which one a run measured under
 // instead of claiming the code's own.
+//
+// It reads the store, so it must run once the store holds what the run grades:
+// after the ingest phase, never before it. A fresh workspace carries no ids
+// until ingest writes them, and re-ingesting a store that already holds the
+// sessions replays their commits instead of tagging them, so a measurement
+// taken earlier names a rule the run does not use.
 func evidenceMatching(ctx context.Context, resolver host.MessageProvenance, scenarios []eval.Scenario) (string, int) {
 	tagged := 0
 	for _, scenario := range scenarios {
@@ -593,29 +644,34 @@ func deployDigest(path string) string {
 	return eval.DatasetDigest(raw)
 }
 
-// prepareAllScenarios ingests every scenario that still needs measuring and
-// then pays for a single derivation pass. The worker fans out over the
-// conversations that have pending commits, which is what makes
-// derive.concurrency worth setting; per-scenario runs only ever have one.
-//
-// A derive pass is resumable: a conversation that fails keeps its watermark, so
-// retrying the pass picks it up where it stopped. Parallel derivation raises the
-// transient provider error rate, so the retry is part of running this way.
-func prepareAllScenarios(ctx context.Context, runner eval.Runner, scenarios []eval.Scenario, completed map[string]eval.Report) error {
+// ingestAllScenarios commits every scenario that still needs measuring and
+// reports how many it prepared. -prepare-all ingests before the fingerprint is
+// fixed, because ingest is what writes the dataset turn ids the evidence label
+// is measured from; the caller then pays for a single derivation pass over the
+// result (deriveAllScenarios) once the run knows it is keeping this output.
+func ingestAllScenarios(ctx context.Context, runner eval.Runner, scenarios []eval.Scenario, completed map[string]eval.Report) (int, error) {
 	pending := 0
 	for _, scenario := range scenarios {
 		if _, done := completed[scenario.Name]; done {
 			continue
 		}
 		if err := eval.Ingest(ctx, runner, scenario); err != nil {
-			return err
+			return pending, err
 		}
 		pending++
 	}
-	if pending == 0 {
-		return nil
-	}
-	fmt.Printf("prepared %d scenarios; running one derivation pass\n", pending)
+	return pending, nil
+}
+
+// deriveAllScenarios runs one derivation pass over everything ingested so far.
+// The worker fans out over the conversations that have pending commits, which
+// is what makes derive.concurrency worth setting; per-scenario runs only ever
+// have one.
+//
+// A derive pass is resumable: a conversation that fails keeps its watermark, so
+// retrying the pass picks it up where it stopped. Parallel derivation raises the
+// transient provider error rate, so the retry is part of running this way.
+func deriveAllScenarios(ctx context.Context, runner eval.Runner) error {
 	var err error
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err = eval.Derive(ctx, runner); err == nil {

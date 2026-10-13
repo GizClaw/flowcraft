@@ -246,3 +246,35 @@ func TestRunMatchesDerivedEvidenceByTurnIdentity(t *testing.T) {
 		t.Fatalf("derived item counted as raw: %#v", report.Questions[0])
 	}
 }
+
+// The observation anchor rides the same per-message metadata channel as the
+// dataset turn id, so an observed-at conversion reaches the store; the
+// harness never forwards it to retrieval.
+func TestIngestWritesObservedAtMetadata(t *testing.T) {
+	runner := &evidenceRunner{}
+	scenario := evidenceScenario()
+	scenario.Turns[0].ObservedAt = []string{"2023-05-01T13:00:00Z", ""}
+	if _, err := RunWithOptions(context.Background(), runner, scenario, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.committed) != 1 {
+		t.Fatalf("committed turns = %d, want 1", len(runner.committed))
+	}
+	turn := runner.committed[0]
+	if got := turn.MessageMetadata[0][corememory.ObservedAtMetadataKey]; got != "2023-05-01T13:00:00Z" {
+		t.Fatalf("observed_at = %q, want the session anchor", got)
+	}
+	if got := turn.MessageMetadata[1][corememory.ObservedAtMetadataKey]; got != "" {
+		t.Fatalf("empty observed_at entry leaked as %q", got)
+	}
+}
+
+// Anchors align with messages exactly like dataset ids do: a misaligned
+// conversion would silently attach one session date to another turn.
+func TestRunRejectsMisalignedObservedAt(t *testing.T) {
+	scenario := evidenceScenario()
+	scenario.Turns[0].ObservedAt = []string{"2023-05-01T13:00:00Z"}
+	if _, err := RunWithOptions(context.Background(), &evidenceRunner{}, scenario, Options{}); err == nil {
+		t.Fatal("misaligned observed_at entries were accepted")
+	}
+}

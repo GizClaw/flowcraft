@@ -79,8 +79,20 @@ lanes:
   fusion: rrf
 retrieval:
   rerank: false
+observed_at_anchor: true
 interval: 1m
 ```
+
+`observed_at_anchor` is on by default. With it, the derivation source renders
+each message's `observed_at` anchor -- the time the message was observed, which
+the host stamps on a live turn and an importer takes from the source's own
+session -- as a text prefix (`[2026-09-18T12:30:00Z] Alice: ...`), so a relative
+time reference resolves against when the message was observed instead of being
+reconstructed from the conversation alone. The same prefix labels the raw
+message evidence an answer model reads. A message without the anchor keeps its
+untimestamped text: borrowing the commit time would date a bulk import to import
+day. `observed_at_anchor: false` restores the untimestamped reading; the switch
+is part of the derivation policy digest, so changing it re-derives the scope.
 
 `generate` and `embed` are optional: without them the assembly serves the
 recent and lexical/entity lanes. `interval: "0"` disables the background

@@ -2,6 +2,7 @@ package hydrate
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
@@ -148,6 +149,70 @@ func newSummaryStore(t *testing.T, ws workspace.Workspace, options ...summaryvie
 		t.Fatal(err)
 	}
 	return store
+}
+
+// TestCompositeAnchorsRawMessagesThatCarryObservedAt pins the answer-side half
+// of the observed_at contract: with the switch on, a hydrated raw message
+// whose record carries the anchor reads "[anchor] text", a record without one
+// stays bare, and the default configuration leaves the text alone.
+func TestCompositeAnchorsRawMessagesThatCarryObservedAt(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	ws := newTestWorkspace(t)
+	messages := newMessageStore(t, ws)
+	const anchor = "2023-05-08T13:56:00Z"
+	records, err := messages.Append(ctx, messagesource.AppendRequest{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
+		Messages: []coremessage.Message{coremessage.NewTextMessage(coremessage.RoleUser, "message text")},
+		Metadata: corememory.Metadata{corememory.ObservedAtMetadataKey: anchor},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := messages.Append(ctx, messagesource.AppendRequest{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn-2",
+		Messages: []coremessage.Message{coremessage.NewTextMessage(coremessage.RoleUser, "no anchor")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || len(bare) != 1 {
+		t.Fatalf("appended %d and %d records, want 1 and 1", len(records), len(bare))
+	}
+	address := func(record messagesource.Record) component.CandidateAddress {
+		return component.CandidateAddress{
+			Kind: corememory.ContextRawMessage, ConversationID: "conversation", ItemID: record.ID,
+		}
+	}
+	source := func(record messagesource.Record) corememory.SourceRef {
+		return corememory.SourceRef{
+			Kind: corememory.SourceMessage, ID: "conversation/" + record.ID,
+			Revision: strconv.FormatUint(record.Seq, 10),
+		}
+	}
+	anchored := &Composite{Messages: messages, ObservedAtAnchor: true}
+	item, err := anchored.Hydrate(ctx, scope, hydratedCandidate(address(records[0]), source(records[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[" + anchor + "] message text"; item.Content.Text() != want {
+		t.Fatalf("anchored raw message = %q, want %q", item.Content.Text(), want)
+	}
+	item, err = anchored.Hydrate(ctx, scope, hydratedCandidate(address(bare[0]), source(bare[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Content.Text() != "no anchor" {
+		t.Fatalf("anchorless raw message = %q, want it bare", item.Content.Text())
+	}
+	plain := &Composite{Messages: messages}
+	item, err = plain.Hydrate(ctx, scope, hydratedCandidate(address(records[0]), source(records[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Content.Text() != "message text" {
+		t.Fatalf("default raw message = %q, want it bare", item.Content.Text())
+	}
 }
 
 func hydratedCandidate(address component.CandidateAddress, source corememory.SourceRef) component.Candidate {

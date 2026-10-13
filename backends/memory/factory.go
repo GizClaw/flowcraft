@@ -200,6 +200,10 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: policy digest: %w", err))
 	}
+	retrievalSummary, err := settings.retrievalSummary()
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
+	}
 
 	facts, err := factview.NewFactStore(logStore, kvStore, factview.WithClock(clock))
 	if err != nil {
@@ -264,8 +268,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	providerConfig := retrieval.ProviderConfig{
 		Fusion:   fusor,
 		Messages: messages,
-		Hydrator: &hydrate.Composite{Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries},
-		Packer:   pack.New(nil),
+		Hydrator: &hydrate.Composite{
+			Messages: messages, Facts: facts, Chunks: documentViews, Summaries: summaries,
+			ObservedAtAnchor: settings.anchorObservedAt(),
+		},
+		Packer: pack.New(nil),
 		// The fact store owns the published generation, and the read plane
 		// resolves through it: the summary branch labels every record with the
 		// generation that published it, so a request that names the active one
@@ -275,9 +282,10 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 			MaxItems:  settings.Recent.MaxItems,
 			MaxTokens: settings.Recent.MaxTokens,
 		},
-		SourceQuotes:  settings.Retrieval.SourceQuotes,
-		ExpandParents: true,
-		ScoreAdjuster: maintainStore,
+		SourceQuotes:     settings.Retrieval.SourceQuotes,
+		ObservedAtAnchor: settings.anchorObservedAt(),
+		ExpandParents:    true,
+		ScoreAdjuster:    maintainStore,
 	}
 	if settings.Retrieval.Rerank && !settings.Generate.isZero() {
 		reranker, rerankErr := rerank.New(engine, settings.Generate.ref())
@@ -299,7 +307,8 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Facts: facts, Deriver: deriver, KnowledgeDeriver: chunker, Compactor: compactor,
 		Indexers: indexers, Checkpoints: workerCheckpoints,
 		Projection: settings.Projection, PolicyDigest: digest,
-		Concurrency: settings.Derive.Concurrency,
+		ObservedAtAnchor: settings.anchorObservedAt(),
+		Concurrency:      settings.Derive.Concurrency,
 	})
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: processor: %w", err))
@@ -310,6 +319,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	}
 	assembly, err := newAssembly(
 		messages, documents, documentViews, facts, summaries, catalog, seeds, settings.Recent,
+		retrievalSummary,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
 	)
@@ -554,14 +564,19 @@ type policyInput struct {
 	Projection string          `json:"projection,omitempty"`
 	Deriver    string          `json:"deriver,omitempty"`
 	Algorithms []string        `json:"algorithms,omitempty"`
+	// ObservedAtAnchor changes the text the extractor reads, so it belongs to
+	// the derivation identity. The anchored reading is the default and marshals
+	// as true; only the explicit opt-out drops the field, so turning it off is a
+	// policy of its own rather than a missing one.
+	ObservedAtAnchor bool `json:"observed_at_anchor,omitempty"`
 }
 
 func policyDigest(settings Settings, deriverPolicy string) (string, error) {
 	encoded, err := json.Marshal(policyInput{
 		Generate: settings.Generate, Embed: settings.Embed,
 		Fact: settings.Fact, Summary: settings.Summary, Chunk: settings.Chunk,
-		Projection: settings.Projection,
-		Deriver:    deriverPolicy,
+		Projection: settings.Projection, ObservedAtAnchor: settings.anchorObservedAt(),
+		Deriver: deriverPolicy,
 		Algorithms: []string{
 			chat.AlgorithmVersion, chat.LinkAlgorithmVersion, chat.CanonicalAlgorithmVersion,
 			knowledge.AlgorithmVersion, summaryderive.AlgorithmVersion,

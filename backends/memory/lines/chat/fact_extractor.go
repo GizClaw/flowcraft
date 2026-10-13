@@ -48,7 +48,12 @@ const (
 	// string -- so the prompt was partly tuned to one dataset. The examples now
 	// describe the same rules with invented people and dates. Existing
 	// workspaces must re-derive.
-	AlgorithmVersion          = "1.4.0"
+	// 1.5.0: the derivation source renders each message's observed_at anchor by
+	// default (memory.Settings.ObservedAtAnchor, formerly off), so the text the
+	// extractor reads is the anchored one unless a workspace opts out. The
+	// prompt did not change; the input contract did, and existing workspaces
+	// must re-derive onto it.
+	AlgorithmVersion          = "1.5.0"
 	LinkAlgorithmVersion      = "fact-link-vector-v2"
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
 	TransformSignatureSimple  = "fact-extract-simple-v1"

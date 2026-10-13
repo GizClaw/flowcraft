@@ -240,6 +240,14 @@ The fingerprint's `values` map also gained `rerank`: the *effective*
 the linked-in policy version whether or not retrieval calls it, so two runs that
 differed in that switch used to share a fingerprint.
 
+`retrieval` closes the same gap for the rest of the retrieval side: lane weights
+and fusion, the bm25 parameters, `source_quotes` and `rerank`, read back off the
+built assembly (`Assembly.RetrievalSummary`, defaults applied) as one JSON
+object. The derivation policy digest covers what memorization *writes*; this
+covers what retrieval *reads it with*, as a value the report itself names
+instead of one hidden inside the deploy document's byte digest. A knob added to
+the retrieval settings types appears here without a second edit.
+
 `recent_items` and `recent_tokens` are the *effective* recent window for the same
 reason: they are read back off the built assembly (`Assembly.RecentSettings`,
 defaults applied) instead of the `-recent-items` flag. A deploy document sets
@@ -361,6 +369,19 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
   questions. Off by default and recorded in the fingerprint; see
   "Reference protocol vs this harness" for what it measured.
+- `-no-date-prefix`: convert turns without the session date prefix the loader
+  otherwise writes into each turn's text (`[1:00 pm on 1 May, 2023] Alice: ...`
+  → `Alice: ...`); the two conversions differ in exactly this step, so running
+  with and without it measures what the prefix contributes to a temporal
+  score. Recorded in the fingerprint as `date_prefix`.
+- `-observed-at=off|metadata`: `metadata` writes each session date time
+  into the messages as `observed_at` metadata (RFC3339 UTC) instead of
+  text -- the anchor shape a prefix-less production path receives, and the
+  shape the assembly reads by default: `observed_at_anchor` is on, so the
+  anchor reaches the extraction source and the answer-side evidence. It
+  requires `-no-date-prefix` (the two are renderings of one fact, never
+  both). Recorded in the fingerprint as `observed_at`; the loader stats
+  report how many messages carried an anchor.
 - `-resume`: skip scenarios already recorded in `-out`, so an interrupted
   long run continues where it stopped. Each scenario is retried up to three
   times before the run fails. Results are stamped with a fingerprint (code
@@ -428,6 +449,12 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
   missed the pack is reported as `missing` and says nothing about retrieval.
   The rank is a bound rather than a measurement: the top of the ranking is
   stable, near-ties below it can still move (see "Measurement noise").
+- `-link-reach` walks the fact links the write side stores (`linked_memory_ids`)
+  one hop out of the probed pool, and a missed evidence turn that lands inside
+  the walk is marked `+1hop`. The summary's `one hop` count is the ceiling a
+  link-expanded pool could reach on this sample — the walk reads what the store
+  already holds and changes nothing about retrieval. It needs `-probe-items`:
+  it expands the pool the probe names, not the pack.
 - `-skip-derive` diagnoses the derivation the workspace already holds — the one
   the run under investigation read — instead of ingesting and deriving first.
   The header prints the library state, and warns when the store's derivation
