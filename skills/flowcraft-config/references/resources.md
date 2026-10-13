@@ -237,7 +237,7 @@ provider:
             replay_reasoning: true    # multi-turn tool calling with thinking on
         - name: qwen3.7-text-embedding
           kind: embed
-          capabilities: {inputs: [text], outputs: [text], custom_embed_dimensions: true}
+          capabilities: {inputs: [text], custom_embed_dimensions: true}
           embed:
             batch_max: 20             # this version's cap; zero uses the safe 10
             dimensions: [2560, 1024]  # the exact sizes the model accepts
@@ -338,9 +338,10 @@ canonical field: `seed`, `top_k`, `repetition_penalty`, `presence_penalty`,
 every model version accepts), the exact vector sizes the model serves
 (`dimensions` — the platform takes a size, not a bound, so the canonical
 capability cannot state it), and `instruct` for the versions that accept a
-retrieval instruction; `embed_options` carries the query/document `text_type`
-and that `instruct` string, and each batch's token counts are summed into the
-response.
+retrieval instruction. The family publishes no generate output, so an `embed`
+declaration carries no `capabilities.outputs`; `embed_options` carries the
+query/document `text_type` and that `instruct` string, and each batch's token
+counts are summed into the response.
 
 `tts` declares the speech surface: the request text becomes `input.text`, the
 canonical voice becomes `input.voice`, and `language_select` admits
