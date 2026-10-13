@@ -28,8 +28,10 @@ type Caller interface {
 
 // ToolSet aggregates every enabled plugin's tools and fans additions
 // and removals out to every attached registry (one per runtime
-// generation). It implements tool.Source and tool.RegistryAttacher, so
-// it can be injected as the craft.plugins external.
+// generation). It implements tool.Source, tool.RegistryAttacher and
+// tool.RegistryDetacher, so it can be injected as the craft.plugins
+// external: a generation attaches when it builds and detaches when it
+// closes.
 type ToolSet struct {
 	mu         sync.Mutex
 	children   map[string]*childEntry
@@ -98,7 +100,20 @@ func (t *ToolSet) Attach(registrar tool.Registrar) {
 	}
 }
 
+// Detach implements tool.RegistryDetacher: the generation that built
+// the registrar has closed, so stop fanning plugin publications out to
+// it. Without this, the retired generation stays reachable from this
+// process-wide set for as long as the host lives.
+func (t *ToolSet) Detach(registrar tool.Registrar) {
+	if t == nil || registrar == nil {
+		return
+	}
+	t.prune(registrar)
+}
+
 // Attached reports how many live downstream registries are attached.
+// Closed registries detach, so the count tracks live runtime
+// generations.
 func (t *ToolSet) Attached() int {
 	if t == nil {
 		return 0
@@ -264,7 +279,8 @@ func (t *ToolSet) removeFromPlugin(id, name string) {
 	}
 }
 
-// prune drops a registry that rejected a publication (typically a
+// prune drops a registry that is no longer live: its close was
+// reported through Detach, or it rejected a publication (typically a
 // closed registry from a retired generation).
 func (t *ToolSet) prune(registrar tool.Registrar) {
 	t.mu.Lock()
@@ -309,3 +325,9 @@ func (t trackedTool) Execute(
 	defer t.flight.end()
 	return t.Tool.Execute(ctx, arguments)
 }
+
+var (
+	_ tool.Source           = (*ToolSet)(nil)
+	_ tool.RegistryAttacher = (*ToolSet)(nil)
+	_ tool.RegistryDetacher = (*ToolSet)(nil)
+)
