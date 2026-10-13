@@ -149,6 +149,30 @@ func TestResourceFactoryRejectsBadSettings(t *testing.T) {
 			want:     "must be an http(s) URL",
 		},
 		{
+			// Only almost right: a scheme and nothing else would answer
+			// every call with a URL the transport cannot use.
+			name:     "base url without a host",
+			settings: `{"id":"typesafe","spec":{"endpoint":{"base_url":"https://"}},"profiles":[]}`,
+			want:     "has no host",
+		},
+		{
+			name:     "base url with a query",
+			settings: `{"id":"typesafe","spec":{"endpoint":{"base_url":"https://gw.example.com/v1?tenant=7"}},"profiles":[]}`,
+			want:     "carries a query or fragment",
+		},
+		{
+			name:     "base url with credentials in it",
+			settings: `{"id":"typesafe","spec":{"endpoint":{"base_url":"https://user:pw@gw.example.com/v1"}},"profiles":[]}`,
+			want:     "carries credentials",
+		},
+		{
+			// A space in the host is a URL net/http refuses at request
+			// time, which would turn a typo into a per-call failure.
+			name:     "base url with a space in it",
+			settings: `{"id":"typesafe","spec":{"endpoint":{"base_url":"https://exa mple.com/v1"}},"profiles":[]}`,
+			want:     "endpoint.base_url",
+		},
+		{
 			name:     "static header that is not a header name",
 			settings: `{"id":"typesafe","spec":{"endpoint":{"headers":{"X Tenant":"acme"}}},"profiles":[]}`,
 			want:     "is not a header name",
@@ -162,6 +186,15 @@ func TestResourceFactoryRejectsBadSettings(t *testing.T) {
 			name:     "duplicate model declaration",
 			settings: `{"id":"typesafe","spec":{"models":[{"name":"jev-latest","kind":"decision"},{"name":"jev-latest","kind":"decision"}]},"profiles":[]}`,
 			want:     "duplicate model declaration",
+		},
+		{
+			// The second profile's key would silently win, and the first
+			// would be unreachable: a collision at build time beats a
+			// credential nobody can see.
+			name: "duplicate profile id",
+			settings: `{"id":"typesafe","profiles":[{"id":"primary","secrets":{"api_key":"sk-one"}},
+				{"id":"primary","secrets":{"api_key":"sk-two"}}]}`,
+			want: `duplicate profile "primary"`,
 		},
 		{
 			name:     "model name outside the alias grammar",

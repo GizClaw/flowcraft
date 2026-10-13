@@ -75,7 +75,7 @@ cores too, but there it reads as "use the default 100" rather than
 | `event.Bus` | `memory` | `core/event` |
 | `workspace.Workspace` | `local` | `core/workspace` |
 | `sandbox.Runner` | `local`, `bwrap`, `seatbelt` | `core/sandbox/{local,bwrap,seatbelt}` |
-| `inference.Provider` | `openai`, `anthropic`, `bytedance`, `minimax`, `dashscope` | core contract; `openai` serves the whole OpenAI wire family (OpenAI, Azure, DeepSeek, Kimi, gateways) and `anthropic` the whole Messages family (Anthropic, MiniMax text, compatible endpoints) through their endpoint/wire/models settings, while `dashscope` speaks Alibaba Cloud Model Studio's native surfaces (text generation, embeddings, speech synthesis, file transcription, and the Wan image/video families) |
+| `inference.Provider` | `openai`, `anthropic`, `bytedance`, `minimax`, `dashscope`, `typesafe` | core contract; `openai` serves the whole OpenAI wire family (OpenAI, Azure, DeepSeek, Kimi, gateways) and `anthropic` the whole Messages family (Anthropic, MiniMax text, compatible endpoints) through their endpoint/wire/models settings, while `dashscope` speaks Alibaba Cloud Model Studio's native surfaces (text generation, embeddings, speech synthesis, file transcription, and the Wan image/video families) and `typesafe` speaks TypeSafe's System One decision surface |
 | `inference.Assembly` | `unified` | `core/inference` |
 | `inference.Router` | `unified` | `core/inference/route` |
 | `tool.Registry` | `memory` | `core/tool` |

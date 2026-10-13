@@ -230,26 +230,20 @@ func systemOneBody(t *testing.T, params systemOneParams) map[string]any {
 	return body
 }
 
-// decodeWireBytes runs the two steps the transport runs on an answer body: it
-// decodes the scripted bytes into the wire shape and folds the answer map onto
-// the request order — which is where the ids come from — then hands the result
-// to the decoder. A decode test can therefore script bytes instead of a server
-// and still exercise the placement the decode depends on.
+// decodeWireBytes hands a scripted answer body to the decoder the way the
+// transport does: the body as it arrived, beside the placement that carries the
+// ids. A decode test can therefore script bytes instead of a server and still
+// exercise the fold the decode depends on.
 func decodeWireBytes(
 	t *testing.T,
 	body string,
 	params systemOneParams,
 ) (inference.DecisionResponse, error) {
 	t.Helper()
-	var response wireResponse
-	if err := json.Unmarshal([]byte(body), &response); err != nil {
-		t.Fatalf("scripted response is not decodable: %v", err)
-	}
-	raw, err := orderAnswers(response, params)
-	if err != nil {
-		return inference.DecisionResponse{}, err
-	}
-	return decodeDecision(context.Background(), raw)
+	return decodeDecision(context.Background(), decisionRaw{
+		placement: params.placement,
+		body:      []byte(body),
+	})
 }
 
 // rejectionFor returns the rejection the report recorded for field.

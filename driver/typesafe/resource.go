@@ -105,11 +105,21 @@ func buildProvider(
 		return inference.ProviderDefinition{}, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
+	declaredProfiles := make(map[string]struct{}, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
 		if profile.ID == "" {
 			return inference.ProviderDefinition{}, fmt.Errorf(
 				"typesafe provider: a profile is missing its id")
 		}
+		// Two profiles under one id would leave the second one's api_key
+		// silently in force and the first one's unreachable: the map below
+		// would keep the last, and the definition would list the id twice.
+		// A refusal names the collision instead.
+		if _, duplicate := declaredProfiles[profile.ID]; duplicate {
+			return inference.ProviderDefinition{}, fmt.Errorf(
+				"typesafe provider: duplicate profile %q", profile.ID)
+		}
+		declaredProfiles[profile.ID] = struct{}{}
 		material, err := newProfileMaterial(ctx, profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err

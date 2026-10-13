@@ -135,7 +135,8 @@ func TestTransportSystemOneRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
-	if raw.model != "jev-1.13.0" || len(raw.answers) != 3 {
+	if raw.truncated || len(raw.placement) != 3 ||
+		!strings.Contains(string(raw.body), `"jev-1.13.0"`) {
 		t.Fatalf("raw = %+v", raw)
 	}
 
@@ -200,6 +201,16 @@ func TestTransportErrorClassification(t *testing.T) {
 			name:   "401 unauthorized",
 			status: http.StatusUnauthorized,
 			check:  errdefs.IsUnauthorized,
+		},
+		{
+			// The route answers a *missing* key with 403 where the vendor's
+			// status table names 401 for "missing or invalid API key"; the
+			// wrong-key 401 above is what the table describes. Both are
+			// permanent, and the vendor's own message rides along either
+			// way.
+			name:   "403 forbidden",
+			status: http.StatusForbidden,
+			check:  errdefs.IsForbidden,
 		},
 		{
 			name:   "422 unprocessable",
@@ -337,6 +348,68 @@ func TestTransportRetryBudget(t *testing.T) {
 	}
 }
 
+// TestTransportReadsTheRequestIDTheRouteSets pins where a failure's request id
+// comes from now that the vendor's own header name is known: the route sets
+// x-typesafe-request-id on every failure it answers, and a deployment behind a
+// proxy may see the conventional x-request-id instead. Reading only the
+// conventional name leaves the failures the route itself answered without the
+// id that correlates them.
+func TestTransportReadsTheRequestIDTheRouteSets(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "the route's own header",
+			headers: map[string]string{requestIDHeader: "req_01a134f6"},
+			want:    "req_01a134f6",
+		},
+		{
+			name:    "a gateway's header",
+			headers: map[string]string{gatewayRequestIDHeader: "gw-7"},
+			want:    "gw-7",
+		},
+		{
+			name: "both, and the route's wins",
+			headers: map[string]string{
+				requestIDHeader:        "req_01a134f6",
+				gatewayRequestIDHeader: "gw-7",
+			},
+			want: "req_01a134f6",
+		},
+		{
+			name:    "neither, and the failure carries none",
+			headers: nil,
+			want:    "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := &fakeRoute{
+				status:  http.StatusUnauthorized,
+				body:    `{"detail":{"error_type":"authentication_error"}}`,
+				headers: tc.headers,
+			}
+			cls := testClients(t, route, Spec{})
+			_, err := transportDecision(cls)(
+				context.Background(), compileForTest(t, decisionRequestFixture()))
+			if err == nil {
+				t.Fatal("transport succeeded, want the route's failure")
+			}
+			id, ok := errdefs.RequestID(err)
+			if tc.want == "" {
+				if ok {
+					t.Errorf("request id = %q, want none", id)
+				}
+				return
+			}
+			if !ok || id != tc.want {
+				t.Errorf("request id = %q (%v), want %q", id, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TestTransportFailedExchangeIsRetryable pins the classification of a failure
 // that never reached the route: the transport saw no answer, so the failure is
 // transient by construction and the router may retry it.
@@ -361,19 +434,86 @@ func TestTransportFailedExchangeIsRetryable(t *testing.T) {
 	}
 }
 
-// TestTransportRefusesAnUnmatchedAnswerMap pins where the answer map is folded
-// onto the request order: in the transport, which is the only stage that sees
-// the compiled ids, rather than in the decoder, which never does.
-func TestTransportRefusesAnUnmatchedAnswerMap(t *testing.T) {
-	route := &fakeRoute{body: `{"model":"jev-1.13.0","answers":{"is_urgent":{"type":"noul","noul":0.9}}}`}
-	cls := testClients(t, route, Spec{})
+// TestTransportLeavesUnreadableAnswersToTheDecoder pins which stage classifies
+// what, because the class is what decides whether a paid call is sent twice.
+//
+// The transport keeps the failures a retry can fix: an exchange that failed and
+// a body that did not arrive whole. A 200 whose body cannot be read as this
+// contract is the decoder's, and core classifies it as an invalid provider
+// response — the class the runtime does not retry, since the retry would buy
+// the same body again. The vendor's own SDK draws the line in the same place:
+// it retries on status, connection, and timeout, and reports a successful
+// response whose body is structurally invalid as a response-validation error.
+func TestTransportLeavesUnreadableAnswersToTheDecoder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "a body that is not JSON",
+			body: `{"model": `,
+		},
+		{
+			name: "an answer to a question the request never asked",
+			body: `{"model":"jev-1.13.0","answers":` +
+				`{"sentiment":{"type":"noul","noul":0.5}},` +
+				`"usage":{"input_tokens":1,"output_tokens":1}}`,
+		},
+		{
+			name: "an answer with no body at all",
+			body: ``,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := &fakeRoute{body: tc.body}
+			cls := testClients(t, route, Spec{})
+			ref := typesafeModel(DefaultModel)
+			driver, err := openDecision(cls, ref.ID)
+			if err != nil {
+				t.Fatalf("openDecision: %v", err)
+			}
+			_, err = driver.Execute(
+				context.Background(), ref, decisionRequestFixture())
+			if !inference.IsKind(err, inference.InvalidProviderResponse) {
+				t.Fatalf("error = %v, want an invalid provider response", err)
+			}
+			if errdefs.IsNotAvailable(err) {
+				t.Errorf("error = %v, want a failure the router does not retry", err)
+			}
+			// The vendor's own reading of the failure reaches the caller:
+			// the message says which answer could not be read.
+			var failure *inference.Error
+			if !errors.As(err, &failure) || failure.Unwrap() == nil {
+				t.Fatalf("error = %v, want the decoder's cause attached", err)
+			}
+		})
+	}
+}
 
+// TestTransportKeepsAnIncompleteBodyRetryable pins the other half of that
+// split: a body that did not arrive whole never reached the driver as an
+// answer, so it is transient by construction and the router may retry it.
+func TestTransportKeepsAnIncompleteBodyRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			// A length the handler never delivers: the read fails.
+			w.Header().Set("Content-Length", "4096")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"model": "jev`))
+		}))
+	t.Cleanup(server.Close)
+
+	cls := &clients{
+		http: utils.NewHttpClient(),
+		key:  "sk-test",
+		base: server.URL + "/v1",
+	}
 	_, err := transportDecision(cls)(
 		context.Background(), compileForTest(t, decisionRequestFixture()))
 	if err == nil {
-		t.Fatal("transport accepted a response that answers no department question")
+		t.Fatal("transport succeeded on a body that did not arrive whole")
 	}
-	if !strings.Contains(err.Error(), `answers no question "department"`) {
-		t.Errorf("error = %v, want the unanswered question named", err)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("error = %v, want a not-available failure", err)
 	}
 }

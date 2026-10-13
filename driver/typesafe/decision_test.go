@@ -328,6 +328,118 @@ func TestDecisionRejectionReasons(t *testing.T) {
 	}
 }
 
+// TestDecisionRequestBound pins the request's byte ceiling from both sides,
+// because a bound tested only from the rejecting side is a bound whose
+// comparison can flip without a test noticing. The state and the questions draw
+// on one budget — the request's — so neither carrier is a way around it.
+func TestDecisionRequestBound(t *testing.T) {
+	// What one question adds to a request, measured through the compiler that
+	// measures it, rather than restated here.
+	measured := compileForTest(t, inference.DecisionRequest{
+		Input:     inference.DecisionInput{Text: "x"},
+		Questions: []inference.DecisionQuestion{predicateQuestion()},
+	})
+	questionBytes := questionWeight("is_urgent", measured.Questions)
+
+	// The state is counted as it marshals, so a text of this many bytes
+	// arrives as exactly decisionMaxInputBytes: the two bytes are its JSON
+	// quotes.
+	fits := decisionMaxInputBytes - questionBytes - 2
+
+	compile := func(t *testing.T, request inference.DecisionRequest) (inference.CompileReport, error) {
+		t.Helper()
+		compiled, err := compileDecision(DefaultModel)(
+			context.Background(), typesafeModel(DefaultModel), request)
+		return compiled.Report, err
+	}
+	text := func(size int) inference.DecisionRequest {
+		return inference.DecisionRequest{
+			Input:     inference.DecisionInput{Text: strings.Repeat("a", size)},
+			Questions: []inference.DecisionQuestion{predicateQuestion()},
+		}
+	}
+
+	t.Run("a request exactly at the ceiling compiles", func(t *testing.T) {
+		if _, err := compile(t, text(fits)); err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+	})
+	t.Run("a state past the ceiling is refused", func(t *testing.T) {
+		report, err := compile(t, text(decisionMaxInputBytes))
+		if err == nil {
+			t.Fatal("Compile succeeded, want the state refused")
+		}
+		assertSizeRefusal(t, report, inference.FieldDecisionInputText,
+			fmt.Sprintf("the state brings the request to %d bytes", decisionMaxInputBytes+2))
+	})
+	t.Run("the structured state draws on the same budget", func(t *testing.T) {
+		fitsJSON := decisionMaxInputBytes - questionBytes
+		structured := func(size int) inference.DecisionRequest {
+			return inference.DecisionRequest{
+				Input: inference.DecisionInput{
+					// One JSON string inside an array: four bytes of
+					// punctuation around the body.
+					JSON: []byte(`["` + strings.Repeat("a", size-4) + `"]`),
+				},
+				Questions: []inference.DecisionQuestion{predicateQuestion()},
+			}
+		}
+		if _, err := compile(t, structured(fitsJSON)); err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		report, err := compile(t, structured(decisionMaxInputBytes+1))
+		if err == nil {
+			t.Fatal("Compile succeeded, want the structured state refused")
+		}
+		assertSizeRefusal(t, report, inference.FieldDecisionInputJSON,
+			fmt.Sprintf("the state brings the request to %d bytes", decisionMaxInputBytes+1))
+	})
+	t.Run("a state inside the ceiling does not excuse the questions", func(t *testing.T) {
+		// The state fits on its own; the question after it is what crosses,
+		// and the refusal says so — the two carriers draw on one budget,
+		// which is what makes neither of them a way around it.
+		report, err := compile(t, text(fits+1))
+		if err == nil {
+			t.Fatal("Compile succeeded, want the question refused")
+		}
+		assertSizeRefusal(t, report, inference.FieldDecisionQuestionInstructions,
+			fmt.Sprintf("the question %q brings the request to %d bytes",
+				"is_urgent", decisionMaxInputBytes+1))
+	})
+	t.Run("the questions draw on the same budget", func(t *testing.T) {
+		// A state well inside the ceiling, and a choice question whose
+		// rubric alone takes the request past it: the refusal names the
+		// question that crossed, not the state that did not.
+		request := decisionRequestFixture()
+		request.Questions[1].Choices[0].Description =
+			strings.Repeat("b", decisionMaxInputBytes)
+		report, err := compile(t, request)
+		if err == nil {
+			t.Fatal("Compile succeeded, want the questions refused")
+		}
+		assertSizeRefusal(t, report, inference.FieldDecisionQuestionChoices,
+			`the question "department"`)
+	})
+}
+
+// assertSizeRefusal checks that a compile report records a size refusal against
+// field, and that its reason says how large the request had become.
+func assertSizeRefusal(
+	t *testing.T,
+	report inference.CompileReport,
+	field inference.FieldID,
+	want string,
+) {
+	t.Helper()
+	decision, ok := rejectionFor(report, field)
+	if !ok {
+		t.Fatalf("report records no rejection for %q: %+v", field, report)
+	}
+	if !strings.Contains(decision.Reason, want) {
+		t.Errorf("reason = %q, want it to contain %q", decision.Reason, want)
+	}
+}
+
 // TestDecisionStateCarriers pins how each canonical carrier reaches state. Text
 // goes out as a JSON string the model reads as text; structured evidence goes
 // out as the value it already is, which is the one place this wire is wider than
@@ -466,9 +578,11 @@ func TestDecisionDecodeAnswers(t *testing.T) {
 
 // TestDecisionDecodeRefusals pins the wire's contract one violation at a time.
 // The decoder refuses rather than guessing, so a caller never receives an answer
-// the model did not give: an unknown kind, a missing value, an incomplete
-// distribution, a value outside the question, or a legend that disagrees with
-// the distribution it describes.
+// the model did not give: a declared kind missing its value, an incomplete
+// distribution, a value outside the question, a legend that disagrees with the
+// distribution it describes, or an answer to a question nobody asked. The one
+// shape that is read rather than refused — a question with no typed answer —
+// has its own test below.
 func TestDecisionDecodeRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -476,12 +590,6 @@ func TestDecisionDecodeRefusals(t *testing.T) {
 		body    string
 		want    string
 	}{
-		{
-			name:    "unknown answer type",
-			request: predicateQuestion(),
-			body:    `{"answers": {"is_urgent": {"type": "certainty"}}}`,
-			want:    `unknown decision answer type "certainty"`,
-		},
 		{
 			name:    "noul without a probability",
 			request: predicateQuestion(),
@@ -586,12 +694,6 @@ func TestDecisionDecodeRefusals(t *testing.T) {
 			want: "carries no confidence",
 		},
 		{
-			name:    "answer map without the asked question",
-			request: choiceQuestion(),
-			body:    `{"answers": {}}`,
-			want:    `answers no question "department"`,
-		},
-		{
 			name:    "answer map carrying an id nobody asked",
 			request: choiceQuestion(),
 			body: `{"answers": {"department": {"type": "choice", "choice": "billing",` +
@@ -608,6 +710,94 @@ func TestDecisionDecodeRefusals(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestDecisionDecodeLeavesUnansweredQuestionsOpen pins the one leniency this
+// wire gets, and how far it stops. The route publishes no refusal kind, but the
+// canonical response has one: a question with no typed answer — whether the
+// route left it out of the answer map or answered it with a type this driver
+// cannot read, which is what a decline would look like — is recorded as that
+// refusal, so the answers beside it survive instead of the whole call failing.
+//
+// Everything the answer does claim is still read strictly: a declared kind
+// whose payload is missing stays a failure, which the table above pins. The
+// refusal is the driver's reading, not the model's word, so it carries nothing
+// but the question's name.
+func TestDecisionDecodeLeavesUnansweredQuestionsOpen(t *testing.T) {
+	const answered = `"department": {"type": "choice", "choice": "billing",` +
+		`"probabilities": {"billing": 0.9, "technical": 0.1, "sales": 0.0},` +
+		`"confidence": 0.8},` +
+		`"frustration": {"type": "score", "score": 1.0,` +
+		`"legend": {"0": "Calm", "1": "Frustrated", "2": "Very angry"},` +
+		`"probabilities": {"0": 0.0, "1": 1.0, "2": 0.0},` +
+		`"confidence": 0.9}`
+
+	for _, tc := range []struct {
+		name string
+		body string
+		open string
+	}{
+		{
+			name: "an answer type this driver does not know",
+			body: `{"model": "jev-1.13.0", "answers": {` +
+				`"is_urgent": {"type": "decline"},` + answered + `},` +
+				`"usage": {"input_tokens": 12, "output_tokens": 3}}`,
+			open: "is_urgent",
+		},
+		{
+			name: "a question the response leaves out",
+			body: `{"model": "jev-1.13.0", "answers": {` + answered + `},` +
+				`"usage": {"input_tokens": 12, "output_tokens": 3}}`,
+			open: "is_urgent",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, err := decodeWireBytes(
+				t, tc.body, compileForTest(t, decisionRequestFixture()))
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if len(response.Answers) != 3 {
+				t.Fatalf("answers = %d, want one per question", len(response.Answers))
+			}
+			// The wire answers in map order; the canonical list keeps the
+			// request's, which is what the sibling answers assert.
+			wantKinds := []inference.DecisionAnswerKind{
+				inference.DecisionAnswerRefusal,
+				inference.DecisionAnswerChoice,
+				inference.DecisionAnswerScore,
+			}
+			for index, answer := range response.Answers {
+				if answer.Kind != wantKinds[index] {
+					t.Errorf("answer %d kind = %q, want %q",
+						index, answer.Kind, wantKinds[index])
+				}
+			}
+			open := response.Answers[0]
+			if open.Name != tc.open {
+				t.Errorf("open answer names %q, want %q", open.Name, tc.open)
+			}
+			if open.Probability != nil || open.Choice != nil ||
+				open.Confidence != nil || open.Score != nil ||
+				len(open.Probabilities) > 0 || len(open.Levels) > 0 {
+				t.Errorf("refusal = %+v, want only the question's name", open)
+			}
+			// The siblings are the answers the wire did give, read as usual:
+			// a refusal must not flatten them.
+			if chosen := response.Answers[1].Choice; chosen == nil ||
+				chosen.String != "billing" {
+				t.Errorf("choice answer = %+v, want the chosen option", response.Answers[1])
+			}
+			if score := response.Answers[2].Score; score == nil || *score != 1.0 {
+				t.Errorf("score answer = %+v, want the value the wire sent",
+					response.Answers[2])
+			}
+			if response.Model != "jev-1.13.0" || response.Usage.TotalTokens != 15 {
+				t.Errorf("response = %+v, want the model and usage the wire sent",
+					response)
 			}
 		})
 	}

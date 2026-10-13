@@ -3,6 +3,7 @@ package typesafe
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,7 +19,9 @@ const SecretAPIKey = "api_key"
 // DefaultBaseURL is the API root used when the deployment does not override
 // endpoint.base_url. It carries the version segment the route is served under,
 // so the driver appends only the route name (/systemone) and a deployment
-// behind a compatible proxy points base_url at that proxy's version root.
+// behind a compatible proxy points base_url at that proxy's version root. The
+// route is published at POST {root}/systemone, and the vendor's OpenAPI
+// document (at {origin}/openapi.json) names it /v1/systemone.
 const DefaultBaseURL = "https://api.typesafe.ai/v1"
 
 // DefaultModel is the model alias the vendor's own examples name. It is not a
@@ -26,7 +29,9 @@ const DefaultBaseURL = "https://api.typesafe.ai/v1"
 // declaration may pin a versioned id (jev-1.13.0) instead — the alias is
 // resolved by the endpoint, which answers with the versioned id it ran — so
 // this constant exists only for whatever a deployment or a test wants to name
-// without restating the alias.
+// without restating the alias. Aliases resolving to versioned ids is the
+// vendor's own documented behavior (docs.typesafe.ai/models), and GET
+// /v1/models is the route that lists them.
 const DefaultModel = "jev-latest"
 
 // Spec is the provider-level configuration surface. It is credential-free:
@@ -144,13 +149,43 @@ func (s Spec) baseURL() string {
 	return DefaultBaseURL
 }
 
-// validateBaseURL rejects anything that is not an http(s) URL.
+// validateBaseURL rejects an endpoint root the driver cannot send a request to.
+// The route is appended to it as a path, so the value has to be an absolute
+// http(s) URL with a host and without a query or fragment — a base URL that
+// carries either would put the route inside the query instead of after it.
+//
+// Credentials in the URL are refused as well: a provider document is
+// credential-free by contract (secrets resolve per profile), so userinfo here
+// would be a secret in a file that is not the secret store, sent on every call.
+//
+// A value that is only almost right fails here, while the deployment document
+// is read, rather than at request time — where the same typo would answer every
+// call with a failure that never reached the route.
 func validateBaseURL(value string) error {
 	if value == "" {
 		return nil
 	}
-	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
-		return fmt.Errorf("endpoint.base_url must be an http(s) URL")
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("endpoint.base_url is not a URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf(
+			"endpoint.base_url must be an http(s) URL, got scheme %q",
+			parsed.Scheme,
+		)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("endpoint.base_url has no host")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf(
+			"endpoint.base_url carries credentials: secrets belong to a profile")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf(
+			"endpoint.base_url carries a query or fragment: the route is appended " +
+				"to the path")
 	}
 	return nil
 }

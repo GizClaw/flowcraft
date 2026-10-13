@@ -372,6 +372,55 @@ joined text, the sentence and word timing when the platform reports it, and
 the task's billed duration. The sync flash models and the realtime WebSocket
 surface are not served by this kind.
 
+### TypeSafe System One
+
+`impl: typesafe` speaks TypeSafe's System One protocol — one `state` value plus
+a map of typed questions, answered in one unary response — so its spec is flat
+and names no `api`, `auth`, or `wire` block:
+
+```yaml
+provider:
+  kind: inference.Provider
+  impl: typesafe
+  settings:
+    id: typesafe
+    spec:
+      endpoint:
+        base_url: https://api.typesafe.ai/v1   # optional; the driver's default
+        headers: {x-tenant: acme}              # optional static headers for a gateway
+      http_retries: 3                          # optional; wire attempts, the first one included
+      models:
+        - name: jev-latest     # the vendor's alias; the route answers with the versioned id
+          kind: decision       # the one kind this driver serves
+          capabilities: {inputs: [text]}   # one text state value, and no output kind
+    profiles:
+      - id: default
+        operations: [decision]
+        secrets:
+          api_key: ${env:TYPESAFE_API_KEY}
+```
+
+`kind` is `decision`: the route answers questions about one `state` value and
+produces no content kind, so a decision model declares text input and no output.
+The Spec is `endpoint` (`base_url`, which carries the version segment, and
+static `headers`), `http_retries`, and `models`; the profile `spec` is reserved
+and currently carries no settings, so an unknown key fails the build rather than
+being ignored. The driver ships no line-up — a declaration is the whole fact
+about a model — and `jev-latest` is the vendor's own alias.
+
+The canonical question kinds lower onto the vendor's three: `predicate` onto
+`noul` (the vendor's word for a yes/no proposition), `choice` onto `choice`, and
+`score` onto `score`, with the question's canonical name as the wire's map key.
+Two bounds are the vendor's, published and enforced at compile time: 255 options
+per choice question and 10 levels per score question. Two more are this driver's
+own policy, because the vendor publishes none: at most 128 questions per
+request, and at most 10 MiB of state plus questions together. Two declarations
+are refused rather than approximated — a boolean choice option (the wire keys
+options by their text, so `true` and `"true"` would collide) and a score level
+description (the wire carries one string per level). Image evidence is refused
+too: the route takes text, or a structured value the caller has already turned
+into text.
+
 ## inference assembly
 
 The assembly consumes provider resources through `deps`:
