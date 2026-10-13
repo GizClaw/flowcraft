@@ -76,6 +76,9 @@ const OperationEmbed = model.OperationEmbed
 // Deprecated: use model.OperationTranscription.
 const OperationTranscription = model.OperationTranscription
 
+// Deprecated: use model.OperationDecision.
+const OperationDecision = model.OperationDecision
+
 // Deprecated: use model.ModelStatusActive.
 const ModelStatusActive = model.ModelStatusActive
 

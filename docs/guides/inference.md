@@ -5,8 +5,8 @@ title: Inference Runtime
 # Inference Runtime Guide
 
 `core/inference` is the unified, instance-owned runtime for model inference.
-Active workloads are `Generate`, `Embed`, and `Transcription`; they are
-enumerated once, by `model.Operations()` in `core/inference/model`.
+Active workloads are `Generate`, `Embed`, `Transcription`, and `Decision`;
+they are enumerated once, by `model.Operations()` in `core/inference/model`.
 
 The model declaration vocabulary — identity, descriptor, capabilities,
 limits, and lifecycle — lives in `core/inference/model`. `core/inference`
@@ -253,8 +253,8 @@ resources:
         half_open_max_probes: 1   # concurrent probes while half-open; default 1
 ```
 
-The policy has three operation areas — `generate`, `embed`, and
-`transcription` — each a list of `tier` pools. A pool is an allowlist of
+The policy has four operation areas — `generate`, `embed`, `transcription`,
+and `decision` — each a list of `tier` pools. A pool is an allowlist of
 exact `model` targets plus optional normalized `score` signals
 (`quality` / `economy` / `speed` / `reliability`, all in `[0, 1]`).
 Scores guide selection only; they never claim a request is executable.
@@ -285,6 +285,9 @@ Scores guide selection only; they never claim a request is executable.
   default paths (build-time policy validation already rejects such
   targets). The hint is routing metadata — drivers never interpret it —
   and it applies to both unary `Generate` and `GenerateStream`.
+- Decision selection honors the same per-call `model_hint` with the same
+  preference semantics, minus the output-kind filter: decision requests
+  carry no output kinds to match against.
 - The `retry` section configures per-operation retries (same-target), each
   with `max_attempts`, an optional `max_total_attempts`, a `backoff`
   curve, an explicit `retryable` class list (`rate_limit`, `timeout`,
@@ -481,6 +484,53 @@ monotonic sequence; EOF ends feeding; a stream failure interrupts the
 session), and `TranscribeStream` is the one-shot open + feed + drain +
 result form. Unary `Transcribe` rejects stream sources — whole-file
 recognition takes complete audio, live audio goes through a session.
+
+See [graph.md](graph.md) for the inference node.
+
+## Decision
+
+Decision is a first-class workload for judging one piece of evidence: a
+request carries the evidence plus an ordered list of `questions`, and the
+answers come back per question. Three question kinds share that shape:
+
+- `predicate` asks how likely a statement about the input is true and
+  answers with a `probability`.
+- `choice` picks one of at least two unique options and answers with the
+  chosen value, the full probability distribution, and a `confidence`
+  derived from it. Option values are typed: the string `"true"` and the
+  boolean `true` are distinct options. Two is the only bound the canonical
+  layer enforces — provider limits (255 options today) belong to the driver
+  — and both the chosen value and every distributed value are reconciled
+  against the question's options before an answer reaches the caller.
+- `score` rates the input against ordered `levels` and answers with the
+  probability-weighted score (which may land between levels, always inside
+  the level range), the level distribution, and a `confidence`.
+
+Answers come back in request order, one per question, and every answer
+carries the question's `name`. The name is required, non-empty, and unique
+within a request: the platform wires disagree on identity (one contracts
+answers by array position and treats the name as an optional label, the
+other keys them by a caller-chosen id), so the canonical form requires the
+name and each driver maps its own wire onto it. A question the model
+declines comes back as kind `refusal` instead of an answer value; the other
+questions in the same request are still answered.
+
+Decision has exactly one execution shape: unary, and unaddressed to any
+transcript. The evidence is a single carrier — `text`, opaque `json`
+(object or array), or message `parts` (text and image only; any other kind
+is rejected rather than silently dropped). A response is the caller's
+value: a host that wants the answers in a conversation projects them into
+the transcript itself, e.g. as `message.NewJSONContent`. There is no
+streaming shape and no session — neither wire streams decisions — so the
+whole operation is one execute-phase attempt: retries, fallback, and
+circuit breakers apply to it on the same terms as the other unary
+workloads.
+
+Providers declare the operation through `Openers.Decision`, which returns a
+`DecisionDriver` (`Explain` / `Prepare` / `Execute`) built with
+`inference.BindDecision` over a compiler, a transport, and a strict
+decoder. A model without the opener reports `UnsupportedOperation` with the
+operation named, exactly as the other workloads do.
 
 See [graph.md](graph.md) for the inference node.
 

@@ -84,6 +84,20 @@ func prepareTranscribeSessionCall(
 	return operations.Session.PrepareSession(ctx, ref, request)
 }
 
+func prepareDecisionCall(
+	ctx context.Context,
+	driver DecisionDriver,
+	ref ModelRef,
+	request DecisionRequest,
+) (*Prepared[DecisionResponse], error) {
+	if ptr.IsNil(driver) {
+		return nil, NewError(
+			UnsupportedOperation, OperationDecision, "",
+			fmt.Errorf("model %q has no decision driver", ref.ID.Name))
+	}
+	return driver.Prepare(ctx, ref, request)
+}
+
 // Prepared is one attempt whose compiler work is already done: the provider
 // request is validated, compiled, and ledger-checked, and executing it
 // performs provider I/O only. It is what makes preflight and execution share a

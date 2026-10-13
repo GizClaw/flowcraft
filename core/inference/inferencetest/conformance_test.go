@@ -278,6 +278,134 @@ func TestRunTranscribeUnary(t *testing.T) {
 	})
 }
 
+// decisionTestRequest is one valid two-question decision request: a predicate
+// and a choice question with mixed value types.
+func decisionTestRequest() inference.DecisionRequest {
+	return inference.DecisionRequest{
+		Input: inference.DecisionInput{Text: "the evidence"},
+		Questions: []inference.DecisionQuestion{
+			{
+				Name:         "is_true",
+				Kind:         inference.DecisionQuestionPredicate,
+				Instructions: "is the statement true?",
+			},
+			{
+				Name:         "which",
+				Kind:         inference.DecisionQuestionChoice,
+				Instructions: "which option applies?",
+				Choices: []inference.DecisionChoice{
+					{Value: inference.NewDecisionStringChoice("yes")},
+					{Value: inference.NewDecisionBooleanChoice(true)},
+				},
+			},
+		},
+	}
+}
+
+// decisionTestResponse answers decisionTestRequest without touching the
+// decision package's canned fake, so the driver path is exercised on its own.
+func decisionTestResponse(
+	request inference.DecisionRequest,
+) inference.DecisionResponse {
+	probability := 0.5
+	chosen := inference.NewDecisionStringChoice("yes")
+	confidence := 0.9
+	return inference.DecisionResponse{
+		Answers: []inference.DecisionAnswer{
+			{
+				Name:        request.Questions[0].Name,
+				Kind:        inference.DecisionAnswerPredicate,
+				Probability: &probability,
+			},
+			{
+				Name:       request.Questions[1].Name,
+				Kind:       inference.DecisionAnswerChoice,
+				Choice:     &chosen,
+				Confidence: &confidence,
+				Probabilities: []inference.DecisionOptionProbability{
+					{
+						Value:       inference.NewDecisionStringChoice("yes"),
+						Probability: 0.6,
+					},
+					{
+						Value:       inference.NewDecisionBooleanChoice(true),
+						Probability: 0.4,
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestDecisionFakeAssembly(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	assembly := fake.Assembly(t)
+
+	request := decisionTestRequest()
+	response, err := assembly.Decision(
+		context.Background(),
+		inferencetest.DefaultFakeDecisionModel,
+		request,
+	)
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if len(response.Answers) != len(request.Questions) {
+		t.Fatalf(
+			"answers = %d, want %d",
+			len(response.Answers),
+			len(request.Questions),
+		)
+	}
+	if response.Answers[1].Kind != inference.DecisionAnswerChoice {
+		t.Fatalf("choice answer kind = %q", response.Answers[1].Kind)
+	}
+	if len(fake.Requests()) != 1 {
+		t.Fatalf("compiler requests = %d, want 1", len(fake.Requests()))
+	}
+	if fake.TransportCalls() != 1 {
+		t.Fatalf("transport calls = %d, want 1", fake.TransportCalls())
+	}
+}
+
+func TestRunDecisionUnary(t *testing.T) {
+	calls := &inferencetest.Counter{}
+	driver, err := inference.BindDecision(
+		inference.Compiler[inference.DecisionRequest, string](
+			func(
+				_ context.Context,
+				_ model.ModelRef,
+				request inference.DecisionRequest,
+			) (inference.Compiled[string], error) {
+				return inference.Compiled[string]{
+					Wire: "wire",
+					Report: inferencetest.NativeReport(
+						model.OperationDecision,
+						request.ActiveFields()...,
+					),
+				}, nil
+			},
+		),
+		countingTransport(calls, func(_ context.Context, wire string) (string, error) {
+			return wire, nil
+		}),
+		inference.Decoder[string, inference.DecisionResponse](
+			func(_ context.Context, _ string) (inference.DecisionResponse, error) {
+				return decisionTestResponse(decisionTestRequest()), nil
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("BindDecision: %v", err)
+	}
+	inferencetest.RunDecisionUnary(t, inferencetest.DecisionUnarySuite{
+		Model:          inferencetest.DefaultFakeDecisionModel,
+		Request:        decisionTestRequest,
+		Driver:         driver,
+		TransportCalls: calls.Load,
+	})
+}
+
 type scriptedRawEvent struct {
 	Text  string
 	Final bool

@@ -88,6 +88,16 @@ const (
 	FieldTranscriptionPrompt                 FieldID = "transcription.prompt"
 	FieldTranscriptionTimestamps             FieldID = "transcription.timestamps"
 	FieldTranscriptionInputFormat            FieldID = "transcription.session.input_format"
+	FieldDecisionInputText                   FieldID = "decision.input.text"
+	FieldDecisionInputJSON                   FieldID = "decision.input.json"
+	FieldDecisionInputPartText               FieldID = "decision.input.parts.text"
+	FieldDecisionInputPartImage              FieldID = "decision.input.parts.image"
+	FieldDecisionQuestionName                FieldID = "decision.questions.*.name"
+	FieldDecisionQuestionKind                FieldID = "decision.questions.*.kind"
+	FieldDecisionQuestionInstructions        FieldID = "decision.questions.*.instructions"
+	FieldDecisionQuestionChoices             FieldID = "decision.questions.*.choices"
+	FieldDecisionQuestionLevels              FieldID = "decision.questions.*.levels"
+	FieldDecisionRequestMetadata             FieldID = "decision.request.metadata"
 )
 
 type Disposition string

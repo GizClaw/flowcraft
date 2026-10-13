@@ -788,6 +788,8 @@ script-land (check `finish_reason`, call the message's tool parts via
 | `inference.transcribe(request)` / `inference.routeTranscribe(request)`       | whole-audio transcription; route twin gains `trace`                     |
 | `inference.explainTranscribe(request)` / `inference.routeExplainTranscribe(request)` | transcription preflight (exact model vs router); route twin returns `{explanation, decision, limits}` |
 | `inference.transcribeSession(request)` / `inference.routeTranscribeSession(request)` | duplex session handle `{send, next, result, interrupt, finish, close}`; route twin attaches `trace` to the result |
+| `inference.decision(request)` / `inference.routeDecision(request)`       | evidence plus ordered questions, answers in request order; route twin gains `trace` |
+| `inference.explainDecision(request)` / `inference.routeExplainDecision(request)` | decision preflight (exact model vs router); route twin returns `{explanation, decision, limits}` |
 
 Stream handle: `next()` returns one event or `null` at EOF, `result()`
 returns the accumulated `GenerateResponse` after `next()` returned `null`,

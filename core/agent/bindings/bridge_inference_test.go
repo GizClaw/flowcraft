@@ -52,6 +52,17 @@ func fakeTranscribeRouter(t *testing.T, runtime *inference.Assembly) *route.Rout
 	return router
 }
 
+func fakeDecisionRouter(t *testing.T, runtime *inference.Assembly) *route.Router {
+	t.Helper()
+	router, err := route.New(runtime, route.Selectors{
+		Decision: inferencetest.StaticDecisionSelector(inferencetest.DefaultFakeDecisionModel),
+	})
+	if err != nil {
+		t.Fatalf("route.New: %v", err)
+	}
+	return router
+}
+
 type inferenceAPI struct {
 	generate               func(raw any) (any, error)
 	route                  func(raw any) (any, error)
@@ -73,6 +84,10 @@ type inferenceAPI struct {
 	routeExplainTranscribe func(raw any) (any, error)
 	transcribeSession      func(raw any) (any, error)
 	routeTranscribeSession func(raw any) (any, error)
+	decision               func(raw any) (any, error)
+	routeDecision          func(raw any) (any, error)
+	explainDecision        func(raw any) (any, error)
+	routeExplainDecision   func(raw any) (any, error)
 }
 
 func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Router, opts ...InferenceBridgeOption) inferenceAPI {
@@ -165,6 +180,22 @@ func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Ro
 	if !ok {
 		t.Fatalf("inference.routeTranscribeSession = %T", m["routeTranscribeSession"])
 	}
+	decisionFn, ok := m["decision"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.decision = %T", m["decision"])
+	}
+	routeDecisionFn, ok := m["routeDecision"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeDecision = %T", m["routeDecision"])
+	}
+	explainDecisionFn, ok := m["explainDecision"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.explainDecision = %T", m["explainDecision"])
+	}
+	routeExplainDecisionFn, ok := m["routeExplainDecision"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeExplainDecision = %T", m["routeExplainDecision"])
+	}
 	return inferenceAPI{
 		generate:               generate,
 		route:                  routeFn,
@@ -186,6 +217,10 @@ func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Ro
 		routeExplainTranscribe: routeExplainTranscribeFn,
 		transcribeSession:      transcribeSessionFn,
 		routeTranscribeSession: routeTranscribeSessionFn,
+		decision:               decisionFn,
+		routeDecision:          routeDecisionFn,
+		explainDecision:        explainDecisionFn,
+		routeExplainDecision:   routeExplainDecisionFn,
 	}
 }
 
@@ -289,6 +324,38 @@ func transcribeSessionJSON() map[string]any {
 			"encoding":       "pcm16",
 			"sample_rate_hz": 16000,
 			"channels":       1,
+		},
+	}
+}
+
+func fakeDecisionModelJSON() map[string]any {
+	return map[string]any{
+		"id":      map[string]any{"provider": "fake", "name": "decision"},
+		"profile": "default",
+	}
+}
+
+// decisionRequestJSON is a two-question decision wire: one predicate and one
+// choice whose option values differ only by type (a string "true" would be a
+// distinct value from the boolean).
+func decisionRequestJSON() map[string]any {
+	return map[string]any{
+		"input": map[string]any{"text": "the evidence"},
+		"questions": []any{
+			map[string]any{
+				"name":         "sentiment",
+				"kind":         "predicate",
+				"instructions": "Is the evidence positive?",
+			},
+			map[string]any{
+				"name":         "tier",
+				"kind":         "choice",
+				"instructions": "Which tier handles this?",
+				"choices": []any{
+					map[string]any{"value": map[string]any{"kind": "string", "string": "fast"}},
+					map[string]any{"value": map[string]any{"kind": "boolean", "boolean": true}},
+				},
+			},
 		},
 	}
 }
@@ -1247,6 +1314,178 @@ func TestInferenceBridge_RouteExplainTranscribe_RoundTrip(t *testing.T) {
 	}
 	if _, ok := resp["limits"].(map[string]any); !ok {
 		t.Fatalf("limits = %T, want object", resp["limits"])
+	}
+}
+
+func TestInferenceBridge_Decision_RoundTrip(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	request := decisionRequestJSON()
+	request["model"] = fakeDecisionModelJSON()
+	out, err := api.decision(request)
+	if err != nil {
+		t.Fatalf("decision: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("decision response = %T, want object", out)
+	}
+	answers, ok := resp["answers"].([]any)
+	if !ok || len(answers) != 2 {
+		t.Fatalf("answers = %v, want one per question", resp["answers"])
+	}
+	first, ok := answers[0].(map[string]any)
+	if !ok || first["name"] != "sentiment" || first["kind"] != string(inference.DecisionAnswerPredicate) {
+		t.Fatalf("first answer = %v, want the sentiment predicate", answers[0])
+	}
+	if probability, ok := first["probability"].(float64); !ok || probability != 0.75 {
+		t.Fatalf("predicate probability = %v, want 0.75", first["probability"])
+	}
+	second, ok := answers[1].(map[string]any)
+	if !ok || second["name"] != "tier" || second["kind"] != string(inference.DecisionAnswerChoice) {
+		t.Fatalf("second answer = %v, want the tier choice", answers[1])
+	}
+	choice, ok := second["choice"].(map[string]any)
+	if !ok || choice["kind"] != string(inference.DecisionChoiceValueString) || choice["string"] != "fast" {
+		t.Fatalf("choice = %v, want the string %q", second["choice"], "fast")
+	}
+
+	// The canonical request reached the provider intact: evidence, the
+	// ordered questions, and the typed option values.
+	reqs := fake.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("provider saw %d requests, want one", len(reqs))
+	}
+	if reqs[0].Input.Text != "the evidence" || len(reqs[0].Questions) != 2 {
+		t.Fatalf("provider saw %+v, want the evidence and two questions", reqs[0])
+	}
+	tier := reqs[0].Questions[1]
+	if len(tier.Choices) != 2 ||
+		!tier.Choices[1].Value.Boolean ||
+		tier.Choices[1].Value.Kind != inference.DecisionChoiceValueBoolean {
+		t.Fatalf("provider saw options %+v, want the boolean true as the second", tier.Choices)
+	}
+}
+
+func TestInferenceBridge_Decision_NoRuntime(t *testing.T) {
+	api := newInferenceAPI(t, nil, nil)
+	request := decisionRequestJSON()
+	request["model"] = fakeDecisionModelJSON()
+	_, err := api.decision(request)
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired decision error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_RouteDecision_RoundTrip(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeDecisionRouter(t, runtime))
+
+	out, err := api.routeDecision(decisionRequestJSON())
+	if err != nil {
+		t.Fatalf("routeDecision: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeDecision response = %T, want object", out)
+	}
+	if answers, ok := resp["answers"].([]any); !ok || len(answers) != 2 {
+		t.Fatalf("answers = %v, want one per question", resp["answers"])
+	}
+	trace, ok := resp["trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace missing or %T, want object", resp["trace"])
+	}
+	executed, ok := trace["executed"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace.executed = %T, want object", trace["executed"])
+	}
+	id, ok := executed["id"].(map[string]any)
+	if !ok || id["provider"] != "fake" || id["name"] != "decision" {
+		t.Fatalf("trace.executed.id = %v, want fake/decision", executed["id"])
+	}
+}
+
+func TestInferenceBridge_RouteDecision_RejectsModelKey(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeDecisionRouter(t, runtime))
+
+	request := decisionRequestJSON()
+	request["model"] = fakeDecisionModelJSON()
+	_, err := api.routeDecision(request)
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("routeDecision with model key error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceBridge_ExplainDecision_RoundTrip(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	request := decisionRequestJSON()
+	request["model"] = fakeDecisionModelJSON()
+	out, err := api.explainDecision(request)
+	if err != nil {
+		t.Fatalf("explainDecision: %v", err)
+	}
+	explanation, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("explanation = %T, want object", out)
+	}
+	if explanation["Operation"] != string(model.OperationDecision) {
+		t.Fatalf("explanation.Operation = %v, want %q",
+			explanation["Operation"], model.OperationDecision)
+	}
+}
+
+func TestInferenceBridge_RouteExplainDecision_RoundTrip(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeDecisionRouter(t, runtime))
+
+	out, err := api.routeExplainDecision(decisionRequestJSON())
+	if err != nil {
+		t.Fatalf("routeExplainDecision: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplainDecision response = %T, want object", out)
+	}
+	if _, ok := resp["explanation"].(map[string]any); !ok {
+		t.Fatalf("explanation = %T, want object", resp["explanation"])
+	}
+	if _, ok := resp["decision"].(map[string]any); !ok {
+		t.Fatalf("decision = %T, want object", resp["decision"])
+	}
+	if _, ok := resp["limits"].(map[string]any); !ok {
+		t.Fatalf("limits = %T, want object", resp["limits"])
+	}
+}
+
+func TestInferenceBridge_Decision_Extensions(t *testing.T) {
+	fake := &inferencetest.DecisionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil,
+		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
+
+	request := decisionRequestJSON()
+	request["model"] = fakeDecisionModelJSON()
+	request["extensions"] = []any{map[string]any{
+		"provider": "fake",
+		"id":       "generate_options",
+		"fields":   map[string]any{"cache_key": "decide-1"},
+	}}
+	if _, err := api.decision(request); err != nil {
+		t.Fatalf("decision with extensions: %v", err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 1 || len(reqs[0].Extensions) != 1 {
+		t.Fatalf("provider saw %+v, want one extension", reqs)
+	}
+	if ext, ok := reqs[0].Extensions[0].(testExtension); !ok || ext.CacheKey != "decide-1" {
+		t.Fatalf("extension = %+v (%T), want cache_key decide-1", reqs[0].Extensions[0], reqs[0].Extensions[0])
 	}
 }
 

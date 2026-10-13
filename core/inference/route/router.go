@@ -24,6 +24,8 @@ type Selectors struct {
 	TranscribeFallback        TranscribeFallbackPolicy
 	TranscribeSession         TranscriptionSessionSelector
 	TranscribeSessionFallback TranscriptionSessionFallbackPolicy
+	Decision                  DecisionSelector
+	DecisionFallback          DecisionFallbackPolicy
 }
 
 // Decision is the selector output before inference execution. Proposed records
@@ -77,7 +79,7 @@ const (
 	// the execute/open phase with a fallback-eligible kind.
 	AttemptPhasePreflight AttemptPhase = "preflight"
 	// AttemptPhaseExecute covers unary execution (Generate, Embed,
-	// Transcribe).
+	// Transcribe, Decision).
 	AttemptPhaseExecute AttemptPhase = "execute"
 	// AttemptPhaseOpen covers stream and session opening (GenerateStream,
 	// OpenTranscription, OpenRealtime). Once an attempt opens, fallback is
@@ -203,7 +205,8 @@ func New(
 	if ptr.IsNil(selectors.Generate) &&
 		ptr.IsNil(selectors.Embed) &&
 		ptr.IsNil(selectors.Transcribe) &&
-		ptr.IsNil(selectors.TranscribeSession) {
+		ptr.IsNil(selectors.TranscribeSession) &&
+		ptr.IsNil(selectors.Decision) {
 		return nil, errdefs.Validationf("at least one route selector is required")
 	}
 	orphans := []struct {
@@ -215,6 +218,7 @@ func New(
 		{model.OperationEmbed, selectors.Embed, selectors.EmbedFallback},
 		{model.OperationTranscription, selectors.Transcribe, selectors.TranscribeFallback},
 		{model.OperationTranscription, selectors.TranscribeSession, selectors.TranscribeSessionFallback},
+		{model.OperationDecision, selectors.Decision, selectors.DecisionFallback},
 	}
 	for _, orphan := range orphans {
 		if !ptr.IsNil(orphan.fallback) && ptr.IsNil(orphan.selector) {
@@ -263,6 +267,7 @@ func validateRetryPolicies(
 	}{
 		{model.OperationGenerate, policies.Generate, selectors.Generate},
 		{model.OperationEmbed, policies.Embed, selectors.Embed},
+		{model.OperationDecision, policies.Decision, selectors.Decision},
 	}
 	for _, entry := range entries {
 		if entry.policy == nil {

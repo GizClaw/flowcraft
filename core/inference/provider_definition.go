@@ -20,12 +20,17 @@ type (
 	// duplex session). It follows OpenGenerate's runtime-owned context and
 	// local, bounded construction contract.
 	OpenTranscribe func(context.Context, ModelRef) (TranscribeOperations, error)
+	// OpenDecision materializes the decision driver. It follows
+	// OpenGenerate's runtime-owned context and local, bounded construction
+	// contract.
+	OpenDecision func(context.Context, ModelRef) (DecisionDriver, error)
 )
 
 type Openers struct {
 	Generate   OpenGenerate
 	Embed      OpenEmbed
 	Transcribe OpenTranscribe
+	Decision   OpenDecision
 }
 
 // ModelImplementation binds descriptive metadata to the operation openers that
@@ -214,6 +219,9 @@ func (openers Openers) Operations() []Operation {
 	}
 	if openers.Transcribe != nil {
 		operations = append(operations, OperationTranscription)
+	}
+	if openers.Decision != nil {
+		operations = append(operations, OperationDecision)
 	}
 	return operations
 }

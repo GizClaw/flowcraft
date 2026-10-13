@@ -140,3 +140,7 @@ Prefer routing for production deployments: the router selects per request,
 filters by declared capabilities, and applies tier fallback, retry, and
 circuit-breaker policy. Pin `model` in inference nodes only when the router
 is not wired (tests, single-target demos).
+
+Pools are declared per operation — `generate`, `embed`, `transcription`, and
+`decision` — so a deployment routing all four workloads lists all four the
+same way; [resources.md](resources.md) has the full policy shape.

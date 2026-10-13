@@ -472,6 +472,20 @@ func instrumentTranscribeCall(
 	return prepared
 }
 
+func instrumentDecisionCall(
+	prepared *Prepared[DecisionResponse],
+) *Prepared[DecisionResponse] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (DecisionResponse, error) {
+		ctx, call := startInferenceCall(ctx, OperationDecision, prepared.model)
+		response, err := inner(ctx)
+		call.stampUsage(&response.Usage)
+		call.finish(response.Metadata, response.Usage, err)
+		return response, err
+	}
+	return prepared
+}
+
 func instrumentTranscribeSessionCall(
 	prepared *Prepared[TranscriptionSession],
 ) *Prepared[TranscriptionSession] {

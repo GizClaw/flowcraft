@@ -416,7 +416,7 @@ router:
       half_open_max_probes: 1   # default 1
 ```
 
-`generate` / `embed` / `transcription` each list `tier` pools of exact
+`generate` / `embed` / `transcription` / `decision` each list `tier` pools of exact
 `model` targets plus optional `score` signals (`quality` / `economy` /
 `speed` / `reliability`, all in `[0, 1]`); scores guide selection only.
 Selection and fallback skip targets whose declared output capabilities

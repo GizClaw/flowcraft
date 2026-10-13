@@ -127,3 +127,27 @@ func (b *inferenceBindings) transcribeSession(
 	}
 	return prepared.Execute(ctx)
 }
+
+func (b *inferenceBindings) decision(
+	ctx context.Context,
+	ref model.ModelRef,
+	request inference.DecisionRequest,
+) (inference.DecisionResponse, error) {
+	prepared, err := b.cache.PrepareDecision(ctx, ref, request)
+	if err != nil {
+		return inference.DecisionResponse{}, err
+	}
+	return prepared.Execute(ctx)
+}
+
+func (b *inferenceBindings) explainDecision(
+	ctx context.Context,
+	ref model.ModelRef,
+	request inference.DecisionRequest,
+) (inference.Explanation, error) {
+	prepared, err := b.cache.PrepareDecision(ctx, ref, request)
+	if err != nil {
+		return inference.Explanation{}, err
+	}
+	return prepared.Explanation(), nil
+}

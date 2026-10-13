@@ -21,6 +21,7 @@ const (
 	OperationGenerate      Operation = "generate"
 	OperationEmbed         Operation = "embed"
 	OperationTranscription Operation = "transcription"
+	OperationDecision      Operation = "decision"
 )
 
 // Operations returns every workload this vocabulary declares, in declaration
@@ -29,7 +30,12 @@ const (
 // cover it, and tests pin that they do, so adding a workload cannot silently
 // leave one table behind.
 func Operations() []Operation {
-	return []Operation{OperationGenerate, OperationEmbed, OperationTranscription}
+	return []Operation{
+		OperationGenerate,
+		OperationEmbed,
+		OperationTranscription,
+		OperationDecision,
+	}
 }
 
 func (o Operation) Validate() error {

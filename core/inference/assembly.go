@@ -195,6 +195,23 @@ func (a *Assembly) PrepareTranscribeSession(
 	return instrumentTranscribeSessionCall(prepared), nil
 }
 
+// PrepareDecision compiles one decision request against the resolved target.
+func (a *Assembly) PrepareDecision(
+	ctx context.Context,
+	ref ModelRef,
+	req DecisionRequest,
+) (*Prepared[DecisionResponse], error) {
+	driver, err := a.openDecision(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareDecisionCall(ctx, driver, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	return instrumentDecisionCall(prepared), nil
+}
+
 // Generate executes one unary generate request against the model
 // addressed by ref.
 func (a *Assembly) Generate(
@@ -357,6 +374,33 @@ func (a *Assembly) ExplainTranscribeSession(
 	return operations.Session.Explain(ctx, ref, req)
 }
 
+// Decision executes one decision request against the model addressed by ref.
+func (a *Assembly) Decision(
+	ctx context.Context,
+	ref ModelRef,
+	req DecisionRequest,
+) (DecisionResponse, error) {
+	prepared, err := a.PrepareDecision(ctx, ref, req)
+	if err != nil {
+		return DecisionResponse{}, err
+	}
+	return prepared.Execute(ctx)
+}
+
+// ExplainDecision runs the compiler for a decision request without provider
+// I/O.
+func (a *Assembly) ExplainDecision(
+	ctx context.Context,
+	ref ModelRef,
+	req DecisionRequest,
+) (Explanation, error) {
+	driver, err := a.openDecision(ctx, ref)
+	if err != nil {
+		return Explanation{}, err
+	}
+	return driver.Explain(ctx, ref, req)
+}
+
 func (a *Assembly) openGenerate(
 	ctx context.Context,
 	ref ModelRef,
@@ -416,6 +460,25 @@ func (a *Assembly) openTranscribe(
 		return TranscribeOperations{}, err
 	}
 	return model.Openers.Transcribe(ctx, ref)
+}
+
+func (a *Assembly) openDecision(
+	ctx context.Context,
+	ref ModelRef,
+) (DecisionDriver, error) {
+	entry, model, err := a.lookupEntry(ref, OperationDecision)
+	if err != nil {
+		return nil, err
+	}
+	if model.Openers.Decision == nil {
+		return nil, NewError(
+			UnsupportedOperation, OperationDecision, "",
+			fmt.Errorf("model %q has no decision openers", ref.ID.Name))
+	}
+	if err := entry.checkProfile(ref, OperationDecision); err != nil {
+		return nil, err
+	}
+	return model.Openers.Decision(ctx, ref)
 }
 
 func (a *Assembly) lookupEntry(

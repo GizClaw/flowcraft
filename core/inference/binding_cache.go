@@ -216,3 +216,17 @@ func (c *BindingCache) PrepareTranscribeSession(
 	}
 	return binding.PrepareTranscribeSession(ctx, request)
 }
+
+// PrepareDecision compiles one decision request against the cached binding of
+// ref.
+func (c *BindingCache) PrepareDecision(
+	ctx context.Context,
+	ref ModelRef,
+	request DecisionRequest,
+) (*Prepared[DecisionResponse], error) {
+	binding, err := c.Bind(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return binding.PrepareDecision(ctx, request)
+}

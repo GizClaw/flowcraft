@@ -27,6 +27,9 @@
 //     (unary whole-file recognition and the duplex TranscriptionSession),
 //     transcribe_session.go, transcribe_stream.go (live message.Stream
 //     input pumped into a session)
+//   - Decision domain: decision_request.go, decision_response.go,
+//     decision_driver.go (one evidence input plus an ordered list of typed
+//     questions, answered in a single unary call)
 //   - Resource layer: resource.go (the resource factory), assembly.go
 //     (the inference.Assembly resource with execution), telemetry.go,
 //     route/ (the inference.Router decorator: tiers, selectors,

@@ -26,6 +26,7 @@ type RetryPolicies struct {
 	Generate      *RetryPolicy
 	Embed         *RetryPolicy
 	Transcription *RetryPolicy
+	Decision      *RetryPolicy
 }
 
 // retryPolicyEntry pairs one operation with its retry slot.
@@ -42,6 +43,7 @@ func (p RetryPolicies) byOperation() []retryPolicyEntry {
 		{operation: model.OperationGenerate, policy: p.Generate},
 		{operation: model.OperationEmbed, policy: p.Embed},
 		{operation: model.OperationTranscription, policy: p.Transcription},
+		{operation: model.OperationDecision, policy: p.Decision},
 	}
 }
 
@@ -55,6 +57,8 @@ func (p *RetryPolicies) set(operation model.Operation, policy *RetryPolicy) {
 		p.Embed = policy
 	case model.OperationTranscription:
 		p.Transcription = policy
+	case model.OperationDecision:
+		p.Decision = policy
 	}
 }
 
