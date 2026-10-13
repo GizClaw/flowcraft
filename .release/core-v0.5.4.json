@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core/tool): the attach protocol now has its counterpart — RegistryDetacher joins RegistryAttacher in core/tool/source.go as an optional Source capability, and Registry calls Detach(r) when it closes so a source that outlives the registries it attaches to can drop the Registrar it was handed; without it a host that attaches one ToolSet per runtime generation kept every retired registry — and every tool it owned — reachable from a process-lifetime object. NewRegistry now attaches sources itself and retains the detachers, which removes the duplicate attach loops in NewAssembly and RegistryFactory.New and makes a directly built registry attach exactly like a mounted one; Close releases the io.Closer tools and then notifies each detacher once, and stays idempotent. mcp.Source implements the interface as well, dropping the registrar of a closed registry so later publications cannot target it, while a source that never implements it keeps attaching as before. The tests pin that a directly built registry attaches on construction and detaches once with the closed registry on Close, that a second Close detaches no one, and that mcp.Source drops only the registrar it was attached to.",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
