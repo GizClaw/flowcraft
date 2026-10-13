@@ -159,6 +159,55 @@ func TestImageOptionsCloneDeepCopiesMask(t *testing.T) {
 	}
 }
 
+// TestDecisionOptionsValidateSafetyIdentifier pins the one leaf this extension
+// carries. The surface expects a hash of the end user, so a blank, oversized,
+// or control-character value is a deployment mistake rather than an identifier
+// — and the compile report would otherwise claim an active field the provider
+// received as garbage.
+func TestDecisionOptionsValidateSafetyIdentifier(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		identifier string
+		want       string
+	}{
+		{name: "unset"},
+		{name: "hash", identifier: strings.Repeat("a", decisionIdentifierLimit)},
+		{
+			name:       "blank",
+			identifier: "   ",
+			want:       "must not be blank",
+		},
+		{
+			name:       "surrounding space",
+			identifier: " user-hash ",
+			want:       "must not be blank",
+		},
+		{
+			name:       "control character",
+			identifier: "user\x00hash",
+			want:       "control characters",
+		},
+		{
+			name:       "oversized",
+			identifier: strings.Repeat("a", decisionIdentifierLimit+1),
+			want:       "at most 256 are allowed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (DecisionOptions{SafetyIdentifier: tc.identifier}).Validate()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageOptionsCloneDeepCopiesOutputCompression(t *testing.T) {
 	compression := 80
 	options := ImageOptions{

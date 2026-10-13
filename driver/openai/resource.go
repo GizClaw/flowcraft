@@ -84,6 +84,7 @@ const (
 	kindEmbed    modelKind = "embed"
 	kindImage    modelKind = "image"
 	kindTTS      modelKind = "tts"
+	kindDecision modelKind = "decision"
 )
 
 // buildProvider builds the OpenAI provider definition from one
@@ -117,6 +118,9 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			}),
 			extensionTTS: inference.ExtensionDecoderFor(func() *TTSOptions {
 				return &TTSOptions{Provider: settings.ID}
+			}),
+			extensionDecision: inference.ExtensionDecoderFor(func() *DecisionOptions {
+				return &DecisionOptions{Provider: settings.ID}
 			}),
 		},
 	}
@@ -207,6 +211,12 @@ func validateModel(kind modelKind, declared ModelSpec, wire dialect) error {
 		if len(declared.Capabilities.Outputs) != 0 {
 			return fmt.Errorf("embed family declares no generate output")
 		}
+	case kindDecision:
+		// A decision model answers questions; it produces no content kind,
+		// so declaring output is a capability the runtime would route on.
+		if len(declared.Capabilities.Outputs) != 0 {
+			return fmt.Errorf("decision family declares no generate output")
+		}
 	}
 	return declared.Limits.Validate()
 }
@@ -288,6 +298,19 @@ func openersFor(
 					return inference.GenerateOperations{}, err
 				}
 				return openTTS(cls, id, model.Profile)
+			},
+		}
+	case kindDecision:
+		return inference.Openers{
+			Decision: func(
+				ctx context.Context,
+				model model.ModelRef,
+			) (inference.DecisionDriver, error) {
+				cls, err := open(ctx, model.Profile)
+				if err != nil {
+					return nil, err
+				}
+				return openDecision(cls, declared, wire, id, model.Profile)
 			},
 		}
 	}

@@ -177,6 +177,12 @@ type streamRawTool struct {
 // cannot happen — core pins the table against message.PartKinds — and panics
 // rather than returning an empty field, because a decision recorded against ""
 // never reaches the report.
+//
+// Only for the tables that cover every kind (generate's). An operation whose
+// part table is deliberately narrower — a decision input carries text and
+// image and nothing else — must read core's boolean instead: there a miss is a
+// kind the wire cannot carry, not vocabulary drift, and panicking would make a
+// rejectable request a driver crash.
 func partField(
 	lookup func(message.PartKind) (inference.FieldID, bool),
 ) func(message.PartKind) inference.FieldID {

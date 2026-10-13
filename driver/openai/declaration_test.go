@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -30,7 +31,9 @@ func TestDeclaredLineUpPublishesItsFacts(t *testing.T) {
 			 "capabilities":{"inputs":["text"],"outputs":["image"]}},
 			{"name":"beta","kind":"tts","capabilities":{"outputs":["audio"]}},
 			{"name":"gamma","kind":"embed",
-			 "capabilities":{"custom_embed_dimensions":true}}
+			 "capabilities":{"custom_embed_dimensions":true}},
+			{"name":"delta","kind":"decision",
+			 "capabilities":{"inputs":["text","image"]}}
 		]}`),
 	}
 	provider, err := buildProvider(context.Background(), settings, nil)
@@ -39,11 +42,13 @@ func TestDeclaredLineUpPublishesItsFacts(t *testing.T) {
 	}
 	var names []string
 	byName := make(map[string]model.ModelDescriptor, len(provider.Models))
+	implementations := make(map[string]inference.ModelImplementation, len(provider.Models))
 	for _, impl := range provider.Models {
 		names = append(names, impl.Descriptor.ID.Name)
 		byName[impl.Descriptor.ID.Name] = impl.Descriptor
+		implementations[impl.Descriptor.ID.Name] = impl
 	}
-	if want := []string{"alpha", "beta", "gamma", "zeta"}; !slices.Equal(names, want) {
+	if want := []string{"alpha", "beta", "delta", "gamma", "zeta"}; !slices.Equal(names, want) {
 		t.Fatalf("published models = %v, want %v", names, want)
 	}
 
@@ -78,6 +83,23 @@ func TestDeclaredLineUpPublishesItsFacts(t *testing.T) {
 	if in, out := byName["gamma"].Limits.Values(); in != 0 || out != 0 {
 		t.Fatalf("undeclared limits = %d/%d, want them undeclared", in, out)
 	}
+
+	// A decision model publishes the decision operation and no output kind:
+	// the workload answers questions rather than producing content. The
+	// descriptor carries the operations, which the catalog derives from the
+	// bound openers, so the openers are what the build states here.
+	delta := byName["delta"]
+	if operations := implementations["delta"].Openers.Operations(); !slices.Equal(
+		operations, []model.Operation{model.OperationDecision},
+	) {
+		t.Fatalf("delta operations = %v, want decision", operations)
+	}
+	if !slices.Equal(
+		delta.Capabilities.Inputs,
+		[]message.PartKind{message.PartText, message.PartImage},
+	) || len(delta.Capabilities.Outputs) != 0 {
+		t.Fatalf("delta capabilities = %+v", delta.Capabilities)
+	}
 }
 
 // TestFamilyContractRejections locks the boundary between the declaration and
@@ -107,6 +129,11 @@ func TestFamilyContractRejections(t *testing.T) {
 		{
 			name: "embed with generate output",
 			raw:  `{"name":"m","kind":"embed","capabilities":{"outputs":["text"]}}`,
+			want: "declares no generate output",
+		},
+		{
+			name: "decision with generate output",
+			raw:  `{"name":"m","kind":"decision","capabilities":{"outputs":["text"]}}`,
 			want: "declares no generate output",
 		},
 		{
