@@ -86,6 +86,17 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 //     the transcription twins of explain/routeExplain;
 //     routeExplainTranscribe returns {explanation, decision, limits}.
 //
+//   - decision(request) / routeDecision(request): the decision twins of
+//     generate/route — evidence plus ordered questions, answers back in
+//     request order (a question the model declined comes back as a
+//     "refusal" answer). Exact model (model key required) vs router
+//     selection (no model key, response gains "trace"). Both are unary:
+//     decision has no streaming shape.
+//
+//   - explainDecision(request) / routeExplainDecision(request): the
+//     decision twins of explain/routeExplain; routeExplainDecision
+//     returns {explanation, decision, limits}.
+//
 //   - transcribeSession(request) / routeTranscribeSession(request):
 //     duplex speech-recognition sessions. Both return a session handle:
 //
@@ -509,6 +520,91 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 					return nil, err
 				}
 				return newTranscriptionSessionHandle(ctx, session, &trace), nil
+			},
+			"decision": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.decision: no assembly wired")
+				}
+				ref, req, extensions, err := parseInferenceModelCall[inference.DecisionRequest](
+					raw,
+					cfg.extensions,
+					"inference.decision",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				resp, err := bindings.decision(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(resp, "inference.decision response")
+			},
+			"routeDecision": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeDecision: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.DecisionRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeDecision",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				resp, trace, err := router.Decision(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				out, err := toScriptJSON(resp, "inference.routeDecision response")
+				if err != nil {
+					return nil, err
+				}
+				return attachTrace(out, trace, "inference.routeDecision")
+			},
+			"explainDecision": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.explainDecision: no assembly wired")
+				}
+				ref, req, extensions, err := parseInferenceModelCall[inference.DecisionRequest](
+					raw,
+					cfg.extensions,
+					"inference.explainDecision",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				explanation, err := bindings.explainDecision(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(explanation, "inference.explainDecision response")
+			},
+			"routeExplainDecision": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeExplainDecision: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.DecisionRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeExplainDecision",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				explanation, decision, err := router.ExplainDecision(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return routeExplainResult(
+					router,
+					explanation,
+					decision,
+					"inference.routeExplainDecision",
+				)
 			},
 			"stream": func(raw any) (any, error) {
 				if assembly == nil {
