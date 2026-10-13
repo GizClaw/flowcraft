@@ -458,7 +458,7 @@ func (totals *summary) add(report questionReport) {
 		if evidence.placement != packed {
 			complete = false
 		}
-		if evidence.placement != packed && evidence.placement != poolOnly && !(evidence.placement == absent && evidence.oneHop) {
+		if evidence.placement == missing || (evidence.placement == absent && !evidence.oneHop) {
 			linkReachable = false
 		}
 	}
