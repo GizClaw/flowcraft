@@ -22,10 +22,13 @@
 // pack were that large. The top of the ranking is stable; near-ties below it can
 // still move, so a pool rank is a bound rather than a measurement.
 //
-// -link-reach walks the links the write side already stores: for every fact in
-// the widened pool it follows the recorded linked_memory_ids one hop and marks
-// the missed evidence turns inside that walk, which is the ceiling a
-// link-expanded pool could reach -- measured without touching retrieval.
+// -link-reach walks the links the write side already stores: for every fact the
+// pack itself carried it follows the recorded linked_memory_ids one hop and
+// marks the missed evidence turns inside that walk, which is the ceiling a
+// read-side link expansion could reach -- measured without touching retrieval.
+// The walk starts from the pack, not from the probe: a probe wide enough to say
+// "retrieval never had this turn" is by design wide enough to have it, so its
+// pool is the wrong place to ask what one hop from the real retrieval adds.
 package main
 
 import (
@@ -63,7 +66,7 @@ func main() {
 	probeItems := flag.Int("probe-items", 0,
 		"re-read every question with this item budget, to tell evidence the pack cut from evidence retrieval never had (0 = off)")
 	linkReach := flag.Bool("link-reach", false,
-		"walk the stored fact links one hop out of the probed pool and report how much of the missed gold that reaches "+
+		"walk the stored fact links one hop out of the pack and report how much of the missed gold that reaches "+
 			"(an offline read: retrieval itself is unchanged)")
 	skipDerive := flag.Bool("skip-derive", false, "diagnose the derivation the workspace already holds: no ingest, no derive pass")
 	flag.Parse()
@@ -75,9 +78,6 @@ func main() {
 	if *probeItems > 0 && !probe {
 		must(fmt.Errorf("memory eval: -probe-items %d must exceed -max-items %d to say anything",
 			*probeItems, *maxItems))
-	}
-	if *linkReach && !probe {
-		must(fmt.Errorf("memory eval: -link-reach expands the pool -probe-items names, so it needs a probe wider than the pack"))
 	}
 
 	raw, err := os.ReadFile(*dataset)
@@ -261,10 +261,10 @@ type evidencePlacement struct {
 	// disagree about it (an image caption, for example), so a harness that had
 	// nothing but text would have reported the turn missing.
 	byText bool
-	// oneHop reports that the widened pool did not carry the turn but a fact one
-	// hop out of it does, over the links the pool's facts store. It is set only
-	// while -link-reach runs, and it is what separates a miss link expansion
-	// could recover from one it could not.
+	// oneHop reports that the pack did not carry the turn but a fact one hop out
+	// of the pack does, over the links the pack's facts store. It is set only
+	// while -link-reach runs, on every turn the pack missed, and it is what
+	// separates a miss a link expansion could recover from one it could not.
 	oneHop bool
 	rank   int
 	kind   corememory.ContextItemKind
@@ -450,16 +450,14 @@ func (totals *summary) add(report questionReport) {
 			}
 		case poolOnly:
 			totals.poolRanks = append(totals.poolRanks, evidence.rank)
-		case absent:
-			if evidence.oneHop {
-				totals.oneHop++
-			}
 		}
 		if evidence.placement != packed {
 			complete = false
-		}
-		if evidence.placement == missing || (evidence.placement == absent && !evidence.oneHop) {
-			linkReachable = false
+			if evidence.oneHop {
+				totals.oneHop++
+			} else {
+				linkReachable = false
+			}
 		}
 	}
 	if len(report.evidence) > 0 && complete {
@@ -509,11 +507,12 @@ func (totals summary) print(probed bool, walk *linkWalk) {
 	}
 	fmt.Printf("  questions with every evidence turn packed: %d/%d\n", totals.full, totals.withProof)
 	if walk != nil {
-		fmt.Printf("  link-reach  of the %d turns the probe missed, %d sit one hop from the pool it returned\n",
-			totals.placed[absent], totals.oneHop)
+		missed := totals.placed[poolOnly] + totals.placed[absent] + totals.placed[missing]
+		fmt.Printf("  link-reach  of the %d turns the pack missed, %d sit one hop from the pack's facts\n",
+			missed, totals.oneHop)
 		fmt.Printf("              link reads: records=%d  missing=%d -- a link can outlive the record it names\n",
 			walk.reads, walk.unresolved)
-		fmt.Printf("              questions with every evidence turn in the pool or one hop from it: %d/%d\n",
+		fmt.Printf("              questions with every evidence turn packed or one hop from the pack: %d/%d\n",
 			totals.linkFull, totals.linkProof)
 	}
 	if !probed {
@@ -565,12 +564,24 @@ func (diagnoser diagnoser) question(
 	report.hits = diagnoser.topHits(result.Items, index)
 
 	// widened is read only when the pack missed a turn, so a run without the
-	// probe pays nothing for it. linked is its one-hop neighborhood, built at
-	// most once per question and only when an absent turn asks for it.
+	// probe pays nothing for it. linked is the pack's one-hop neighborhood,
+	// built at most once per question and only when a turn the pack missed asks
+	// for it: the expansion this walk measures would start from the pool the
+	// real request retrieved, and the pack is that pool's head.
 	var widened []corememory.ContextItem
 	probed := false
 	var linked []corememory.ContextItem
 	linkedBuilt := false
+	oneHop := func(turnID, turnText string) bool {
+		if diagnoser.walk == nil {
+			return false
+		}
+		if !linkedBuilt {
+			linked = diagnoser.walk.neighborhood(ctx, scenario.ConversationID, result.Items)
+			linkedBuilt = true
+		}
+		return diagnoser.matcher.Cover(ctx, linked, turnID, turnText).Covered()
+	}
 	for _, turnID := range question.Evidence {
 		turnText := index.textByID[turnID]
 		if turnText == "" {
@@ -585,7 +596,9 @@ func (diagnoser diagnoser) question(
 			continue
 		}
 		if options.probeItems <= options.maxItems {
-			report.evidence = append(report.evidence, evidencePlacement{turnID: turnID, placement: missing})
+			report.evidence = append(report.evidence, evidencePlacement{
+				turnID: turnID, placement: missing, oneHop: oneHop(turnID, turnText),
+			})
 			continue
 		}
 		if !probed {
@@ -597,18 +610,13 @@ func (diagnoser diagnoser) question(
 			report.evidence = append(report.evidence, evidencePlacement{
 				turnID: turnID, placement: poolOnly, raw: coverage.ViaRaw, rank: coverage.Rank + 1,
 				kind: widened[coverage.Rank].Kind, score: widened[coverage.Rank].Score,
+				oneHop: oneHop(turnID, turnText),
 			})
 			continue
 		}
-		evidence := evidencePlacement{turnID: turnID, placement: absent}
-		if diagnoser.walk != nil {
-			if !linkedBuilt {
-				linked = diagnoser.walk.neighborhood(ctx, scenario.ConversationID, widened)
-				linkedBuilt = true
-			}
-			evidence.oneHop = diagnoser.matcher.Cover(ctx, linked, turnID, turnText).Covered()
-		}
-		report.evidence = append(report.evidence, evidence)
+		report.evidence = append(report.evidence, evidencePlacement{
+			turnID: turnID, placement: absent, oneHop: oneHop(turnID, turnText),
+		})
 	}
 	return report
 }

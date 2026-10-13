@@ -450,11 +450,14 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
   The rank is a bound rather than a measurement: the top of the ranking is
   stable, near-ties below it can still move (see "Measurement noise").
 - `-link-reach` walks the fact links the write side stores (`linked_memory_ids`)
-  one hop out of the probed pool, and a missed evidence turn that lands inside
-  the walk is marked `+1hop`. The summary's `one hop` count is the ceiling a
-  link-expanded pool could reach on this sample — the walk reads what the store
-  already holds and changes nothing about retrieval. It needs `-probe-items`:
-  it expands the pool the probe names, not the pack.
+  one hop out of the pack, and a missed evidence turn that lands inside the walk
+  is marked `+1hop`. The summary's `one hop` count is the ceiling a read-side
+  link expansion could reach on this sample — the walk reads what the store
+  already holds and changes nothing about retrieval. It starts from the pack,
+  not from the probe: a probe wide enough to call a turn absent has it by
+  construction, so its pool cannot answer what one hop out of the real retrieval
+  would add. Run it with or without `-probe-items`; the probe only splits the
+  misses further, it does not change the walk.
 - `-skip-derive` diagnoses the derivation the workspace already holds — the one
   the run under investigation read — instead of ingesting and deriving first.
   The header prints the library state, and warns when the store's derivation
