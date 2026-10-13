@@ -46,10 +46,11 @@
 //   - Generate AudioIntent: speech API (gpt-4o-mini-tts and friends).
 //   - Embed: embeddings API (text-embedding-3 family).
 //
-// Realtime (gpt-realtime) is intentionally absent: the pinned openai-go has
-// no WebSocket coverage and this environment's module proxy cannot serve a
-// newer SDK, so the GA protocol would be hand-rolled. It lands with a
-// capable SDK or an accepted protocol dependency.
+// Realtime (gpt-realtime) is intentionally absent: the pinned openai-go now
+// ships a WebSocket transport and the realtime REST surfaces (calls, client
+// secrets, translations), but still no session client for the GA realtime
+// protocol, so serving it means owning that protocol here. It lands with a
+// session-capable SDK or an accepted protocol dependency.
 //
 // Credentials come exclusively from config profiles: `api_key` authenticates
 // every OpenAI surface. The provider Spec redirects transport (base_url),
