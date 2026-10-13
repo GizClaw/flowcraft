@@ -574,13 +574,38 @@ the source closes.
 
 `plugin.Host.OnStopped` reports every stop with a `plugin.StopReason`:
 `plugin.StopRequested` for a stop the application asked for (disable,
-uninstall, close) and `plugin.StopFailed` when a plugin's MCP server died
-on its own and the reconnect could not start the command again. A
-`StopFailed` loss leaves the entry alone — enabled, with its tools still
-projected — so the application decides whether to disable or uninstall
-the plugin, and knows why its tool calls are failing in the meantime.
-Transient losses that reconnect in place are not reported, so a
-self-healing plugin does not flap the observer.
+uninstall, close), `plugin.StopRolledBack` for an enable the host undid
+because the plugin could not come up, and `plugin.StopFailed` when a
+plugin's MCP server died on its own and the reconnect could not start
+the command again. A `StopFailed` loss leaves the entry alone — enabled,
+with its tools still projected — so the application decides whether to
+disable or uninstall the plugin, and knows why its tool calls are
+failing in the meantime. Re-enabling is the other answer, and it is a
+start: the source that gave up is retired and a fresh one opened and
+waited for, and an enable that fails again reports the failure and
+leaves the record disabled. Transient losses that reconnect in place are
+not reported, so a self-healing plugin does not flap the observer; nor
+is a loss that races the host's own close, or one the enable in flight
+rolled back on, where the rollback is the report. A loss that arrives
+while an enable is waiting is held for that call: if the enable stands,
+the loss is reported once the call ends, so a plugin is never recorded
+enabled with a server that gave up and nothing said about it.
+
+Enabling is an answer rather than a spawn: `plugin.Host.SetEnabled`
+waits for the plugin's MCP servers, bounded by
+`HostOptions.EnableTimeout` (`plugin.DefaultEnableTimeout`, 10s; a
+negative value keeps the old spawn-and-return behavior). An enable whose
+command is gone, not executable, or refused by the peer reports that
+failure and is rolled back — the process is stopped, the entry is left
+disabled, and `OnStopped` says `StopRolledBack` — instead of recording an
+enabled plugin with no process. A server that is merely not there yet (a
+remote endpoint that is down, a child that keeps dying during startup)
+is not a failure of enable: the wait gives up at the timeout, the entry
+is recorded enabled, and the source keeps reconnecting. A plugin whose
+enable is in flight is what narrates its own failure, so the failure the
+rollback answers is not reported a second time through `OnStopped`.
+`Host.Start` does not wait: it replays what a previous session recorded,
+and an application's startup must not depend on a plugin's process.
 
 ## Plugin graph nodes
 

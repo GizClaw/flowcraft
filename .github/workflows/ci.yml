@@ -225,6 +225,22 @@ jobs:
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
+      # A driver module is consumed outside this workspace — by deployments, by
+      # the examples — where its own go.mod and go.sum are the whole story. The
+      # release workflow gates the planned modules (core, craft) with GOWORK=off,
+      # but a driver tag is not part of a planned release, so nothing checked a
+      # driver's pin or tidiness before it shipped. Build it the way a consumer
+      # does: a missing symbol or a short go.sum would otherwise fail the first
+      # deployment of the next tag under -mod=readonly.
+      - name: Build with GOWORK=off
+        if: startsWith(matrix.module, 'driver/')
+        env:
+          GOWORK: "off"
+        run: |
+          go mod tidy -diff
+          go build ./...
+          go vet ./...
+        working-directory: ${{ matrix.module }}
       # core/sandbox carries per-GOOS files the linux lane never compiles, so
       # a darwin syscall or an other-unix stub can be wrong or stop building
       # without any check going red. Cross-compile them here: same runner,

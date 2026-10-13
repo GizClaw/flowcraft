@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -12,7 +13,8 @@ import (
 )
 
 // Source is one plugin's tool contributor: a mcp.Source in production,
-// a fake in tests.
+// a fake in tests. A source may also implement [Readiness], which is
+// what lets an enable wait for the plugin instead of only spawning it.
 type Source interface {
 	Tools() []tool.Tool
 	LazyTools() []tool.LazyTool
@@ -24,6 +26,21 @@ type Source interface {
 // invocation; plugin graph nodes use it.
 type Caller interface {
 	CallTool(ctx context.Context, toolName string, args any) (json.RawMessage, error)
+}
+
+// Readiness is optionally implemented by sources that can report when
+// they are up. An enable waits on it ([Host.SetEnabled]), so a plugin that
+// cannot come up is reported by the call that asked for it; a source that
+// does not implement it is enabled without a wait, which is how every
+// source was treated before the seam existed.
+//
+// WaitReady returns nil once every server of the plugin is serving, and an
+// error when the bound (or ctx) elapses first. A Validation-class error is
+// the terminal case — the source will not come up on its own — and is what
+// makes an enable roll back; any other error means "not yet", and the
+// enable stands with the source still reconnecting.
+type Readiness interface {
+	WaitReady(ctx context.Context, timeout time.Duration) error
 }
 
 // ToolSet aggregates every enabled plugin's tools and fans additions

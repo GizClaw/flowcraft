@@ -444,7 +444,7 @@ func (m ModelSpec) Validate() error {
 	}
 	kind := modelKind(m.Kind)
 	switch kind {
-	case kindGenerate, kindEmbed, kindImage, kindTTS:
+	case kindGenerate, kindEmbed, kindImage, kindTTS, kindDecision:
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
