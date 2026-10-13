@@ -495,13 +495,16 @@ answers come back per question. Three question kinds share that shape:
 
 - `predicate` asks how likely a statement about the input is true and
   answers with a `probability`.
-- `choice` picks one of 2..255 unique options and answers with the chosen
-  value, the full probability distribution, and a `confidence` derived from
-  it. Option values are typed: the string `"true"` and the boolean `true`
-  are distinct options.
+- `choice` picks one of at least two unique options and answers with the
+  chosen value, the full probability distribution, and a `confidence`
+  derived from it. Option values are typed: the string `"true"` and the
+  boolean `true` are distinct options. Two is the only bound the canonical
+  layer enforces — provider limits (255 options today) belong to the driver
+  — and both the chosen value and every distributed value are reconciled
+  against the question's options before an answer reaches the caller.
 - `score` rates the input against ordered `levels` and answers with the
-  probability-weighted score (which may land between levels), the level
-  distribution, and a `confidence`.
+  probability-weighted score (which may land between levels, always inside
+  the level range), the level distribution, and a `confidence`.
 
 Answers come back in request order, one per question, and every answer
 carries the question's `name`. The name is required, non-empty, and unique
