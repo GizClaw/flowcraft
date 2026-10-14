@@ -69,7 +69,9 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-// The memory backend is not tagged yet. Drop this replace and pin the
-// released version when backends/memory is published (same shape as
-// examples/forge, which pins released modules without replaces).
+// backends/memory is not tagged yet: it is workspace-only for now (see
+// CONTRIBUTING.md, "Modules outside the changeset flow"). When the backend
+// is published, require the released version and drop this replace (the
+// examples/forge shape, which pins released modules without replaces).
+// Tracked by #638.
 replace github.com/GizClaw/flowcraft/backends/memory => ..
