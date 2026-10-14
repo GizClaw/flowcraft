@@ -243,9 +243,15 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 			return nil, errdefs.Validation(fmt.Errorf("memory config: summary compactor: %w", err))
 		}
 	}
-	indexers, lanes, auditors, err := buildProjections(settings, kvStore, engine)
+	projections, lanes, err := buildProjections(settings, kvStore, engine)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: projections: %w", err))
+	}
+	indexers := make([]worker.ProjectionIndexer, 0, len(projections))
+	auditors := make([]projectionAuditor, 0, len(projections))
+	for _, lane := range projections {
+		indexers = append(indexers, lane.workerIndexer())
+		auditors = append(auditors, projectionAuditor{Name: lane.Name, Auditor: lane.Auditor, Producer: lane.Producer})
 	}
 	// The summary branch is a first-class fusion lane. Appending its
 	// candidates after fusion (as an earlier revision did) skipped lane
@@ -323,6 +329,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
 		buildLaneStatus(auditors),
+		buildRepair(projections, processor, settings.Projection),
 	)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
@@ -549,48 +556,174 @@ func buildLaneStatus(
 	}
 }
 
+// buildRepair exposes the lane rebuild as the entry point Assembly.Repair
+// calls. The lanes are the ones the derivation worker writes through, so a
+// rebuild lands in the storage a query reads, and the artifacts come from the
+// worker's own canonical readers -- no deriver runs, so converging a lexical
+// lane costs no model call.
+func buildRepair(
+	projections []projectionLane,
+	processor *worker.Processor,
+	projection string,
+) func(context.Context, RepairRequest) (RepairResult, error) {
+	return func(ctx context.Context, request RepairRequest) (RepairResult, error) {
+		selected, err := selectRepairLanes(projections, request.Lanes)
+		if err != nil {
+			return RepairResult{}, err
+		}
+		// The rebuild holds the scope against derivation for its whole run,
+		// not per lane: a pass that landed between two lanes would index
+		// against the one already rebuilt.
+		release, err := processor.BeginRepair(ctx, request.Scope)
+		if err != nil {
+			return RepairResult{}, fmt.Errorf("memory assembly: repair refused: %w", err)
+		}
+		defer release()
+		artifacts, err := processor.ScopeArtifactSet(ctx, request.Scope)
+		if err != nil {
+			return RepairResult{}, fmt.Errorf("memory assembly: read canonical state: %w", err)
+		}
+		result := RepairResult{Scope: request.Scope, Artifacts: len(artifacts)}
+		for _, lane := range selected {
+			entry, err := rebuildLane(ctx, lane, projection, request.Scope, artifacts)
+			if err != nil {
+				return result, err
+			}
+			result.Lanes = append(result.Lanes, entry)
+		}
+		return result, nil
+	}
+}
+
+// rebuildLane republishes one lane from the canonical artifact set and reports
+// what it published: whether the state it replaced was stale, and the digests
+// of the state that replaced it.
+func rebuildLane(
+	ctx context.Context,
+	lane projectionLane,
+	projection string,
+	scope corememory.Scope,
+	artifacts []component.Artifact,
+) (LaneRepair, error) {
+	entry := LaneRepair{Name: lane.Name, Artifacts: len(artifacts)}
+	identity, found, err := lane.Producer.StoredProducerIdentity(ctx, scope)
+	if err != nil {
+		return LaneRepair{}, fmt.Errorf("memory assembly: read lane %q identity: %w", lane.Name, err)
+	}
+	if found {
+		entry.StaleBefore = identity.Version != lane.Producer.ProducerVersion()
+	}
+	if err := lane.Rebuilder.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: projection, Artifacts: component.CloneArtifacts(artifacts),
+	}); err != nil {
+		return LaneRepair{}, fmt.Errorf("memory assembly: rebuild lane %q: %w", lane.Name, err)
+	}
+	identity, found, err = lane.Producer.StoredProducerIdentity(ctx, scope)
+	if err != nil {
+		return LaneRepair{}, fmt.Errorf("memory assembly: read rebuilt lane %q identity: %w", lane.Name, err)
+	}
+	if found {
+		entry.SourceDigest, entry.BuildDigest = identity.SourceDigest, identity.BuildDigest
+	}
+	return entry, nil
+}
+
+// selectRepairLanes resolves a repair's lane list: an empty list means every
+// configured lane whose rebuild needs no inference, and a name that is not
+// configured is refused rather than quietly skipped.
+func selectRepairLanes(projections []projectionLane, names []string) ([]projectionLane, error) {
+	if len(names) == 0 {
+		selected := make([]projectionLane, 0, len(projections))
+		for _, lane := range projections {
+			if lane.RebuildNeedsInference {
+				continue
+			}
+			selected = append(selected, lane)
+		}
+		return selected, nil
+	}
+	byName := make(map[string]projectionLane, len(projections))
+	configured := make([]string, 0, len(projections))
+	for _, lane := range projections {
+		byName[lane.Name] = lane
+		configured = append(configured, lane.Name)
+	}
+	selected := make([]projectionLane, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		lane, ok := byName[trimmed]
+		if !ok {
+			return nil, errdefs.Validationf(
+				"memory repair: unknown lane %q (configured: %s)", name, strings.Join(configured, ", "))
+		}
+		if _, duplicate := seen[trimmed]; duplicate {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		selected = append(selected, lane)
+	}
+	return selected, nil
+}
+
+// projectionLane bundles the surfaces of one lane: what the derivation worker
+// writes through, what verification audits, what reports the producer identity
+// of the state it reads, and what a repair rebuilds.
+type projectionLane struct {
+	Name      string
+	Indexer   component.DeltaIndexer
+	Auditor   component.Auditor
+	Producer  component.Producer
+	Rebuilder component.FullRebuilder
+	// RebuildNeedsInference marks a lane whose rebuild embeds every artifact
+	// again, so a repair that was not asked for that lane leaves it alone.
+	RebuildNeedsInference bool
+}
+
+func (lane projectionLane) workerIndexer() worker.ProjectionIndexer {
+	return worker.ProjectionIndexer{Name: lane.Name, Indexer: lane.Indexer}
+}
+
 func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
 	engine *inference.Assembly,
-) ([]worker.ProjectionIndexer, []fusion.Lane, []projectionAuditor, error) {
+) ([]projectionLane, []fusion.Lane, error) {
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	entityIndex, err := entity.New(entity.Config{KV: kvStore, Projection: settings.Projection})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	indexers := []worker.ProjectionIndexer{
-		{Name: "bm25", Indexer: bm25Index},
-		{Name: "entity", Indexer: entityIndex},
+	projections := []projectionLane{
+		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index},
+		{Name: "entity", Indexer: entityIndex, Auditor: entityIndex, Producer: entityIndex, Rebuilder: entityIndex},
 	}
 	lanes := []fusion.Lane{
 		{Name: "bm25", Searcher: bm25Index, Weight: settings.Lanes.BM25.Weight, Calibrator: fusion.BM25QuerySigmoid{}},
 		{Name: "entity", Searcher: entityIndex, Weight: settings.Lanes.Entity.Weight, Calibrator: fusion.Identity{CalibrationVersion: "identity-v1"}},
 	}
-	auditors := []projectionAuditor{
-		{Name: "bm25", Auditor: bm25Index, Producer: bm25Index},
-		{Name: "entity", Auditor: entityIndex, Producer: entityIndex},
-	}
 	if settings.Embed.isZero() {
-		return indexers, lanes, auditors, nil
+		return projections, lanes, nil
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	indexers = append(indexers, worker.ProjectionIndexer{Name: "vector", Indexer: vectorIndex})
+	projections = append(projections, projectionLane{
+		Name: "vector", Indexer: vectorIndex, Auditor: vectorIndex, Producer: vectorIndex,
+		Rebuilder: vectorIndex, RebuildNeedsInference: true,
+	})
 	lanes = append(lanes, fusion.Lane{
 		Name: "vector", Searcher: vectorIndex, Weight: settings.Lanes.Vector.Weight, Calibrator: fusion.Cosine{},
 	})
-	auditors = append(auditors, projectionAuditor{Name: "vector", Auditor: vectorIndex, Producer: vectorIndex})
-	return indexers, lanes, auditors, nil
+	return projections, lanes, nil
 }
 
 // policyInput is the derivation policy identity: only settings that change the

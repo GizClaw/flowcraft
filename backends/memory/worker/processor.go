@@ -115,6 +115,10 @@ type Processor struct {
 	// so a sweep can refuse to race one. See quiesce.go.
 	runningMu sync.Mutex
 	running   map[string]int
+	// repairing tracks the scopes whose projection lanes a host is rebuilding,
+	// so a pass refuses to index beside the rebuild. It shares runningMu with
+	// running: a pass and a rebuild must not both find the scope free.
+	repairing map[string]int
 
 	statsMu sync.Mutex
 	stats   Stats
@@ -190,6 +194,11 @@ func (processor *Processor) ProcessScope(ctx context.Context, scope corememory.S
 	if err := scope.Validate(); err != nil {
 		return err
 	}
+	// A scope pass refuses as a whole while the scope's lanes are being
+	// rebuilt: every step of it indexes into those lanes.
+	if processor.underRepair(scope) {
+		return &ScopeUnderRepairError{Scope: scope}
+	}
 	conversations, err := processor.messages.ListConversations(ctx, scope)
 	if err != nil {
 		return fmt.Errorf("memory worker: list conversations: %w", err)
@@ -206,6 +215,69 @@ func (processor *Processor) ProcessScope(ctx context.Context, scope corememory.S
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// ScopeArtifactSet returns the canonical artifacts that re-index one scope's
+// lanes: every stored message, the facts of each conversation's active
+// generation, and the chunks of every document's active build. It reads
+// canonical state and calls no deriver, so a caller that re-indexes with it
+// indexes what was derived instead of deriving it again.
+//
+// The active generation is the one readers resolve. A fact of a generation no
+// reader serves is not in the set, and neither is a superseded document build:
+// re-indexing them would put entries in the lanes that hydration cannot
+// resolve.
+func (processor *Processor) ScopeArtifactSet(ctx context.Context, scope corememory.Scope) ([]component.Artifact, error) {
+	if processor == nil {
+		return nil, errors.New("memory worker: processor is required")
+	}
+	if ctx == nil {
+		return nil, errors.New("memory worker: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, err
+	}
+	artifacts := make([]component.Artifact, 0)
+	conversations, err := processor.messages.ListConversations(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("memory worker: list conversations: %w", err)
+	}
+	for _, conversationID := range conversations {
+		records, err := processor.messages.List(ctx, scope, conversationID, msgsource.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("memory worker: list messages of %q: %w", conversationID, err)
+		}
+		for _, record := range records {
+			artifacts = append(artifacts, messageArtifact(scope, conversationID, record))
+		}
+	}
+	facts, err := processor.facts.ListScope(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("memory worker: list facts: %w", err)
+	}
+	for _, fact := range facts {
+		artifacts = append(artifacts, factArtifact(fact))
+	}
+	if processor.documentViews != nil {
+		chunks, err := processor.documentViews.ListScope(ctx, scope)
+		if err != nil {
+			return nil, fmt.Errorf("memory worker: list document chunks: %w", err)
+		}
+		for _, chunk := range chunks {
+			artifacts = append(artifacts, chunkArtifact(chunk))
+		}
+	}
+	// One entry per address: a lane is keyed by artifact id, so an id the set
+	// holds twice would be indexed twice.
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
+	unique := artifacts[:0]
+	for index, artifact := range artifacts {
+		if index > 0 && artifact.ID == artifacts[index-1].ID {
+			continue
+		}
+		unique = append(unique, artifact)
+	}
+	return unique, nil
 }
 
 // processConversations derives the conversations of one scope, optionally in
@@ -287,7 +359,10 @@ func (processor *Processor) ProcessConversation(ctx context.Context, scope corem
 	// returns: a sweep reads this marker to refuse a conversation whose
 	// derivation is still running, and a failed pass must not leave the
 	// conversation looking busy for good.
-	finished := processor.beginDerivation(scope, conversationID)
+	finished, err := processor.beginDerivation(scope, conversationID)
+	if err != nil {
+		return 0, err
+	}
 	defer finished()
 	processed, err := processor.scanConversation(ctx, scope, conversationID)
 	if err != nil {
@@ -641,6 +716,14 @@ func (processor *Processor) scanConversation(ctx context.Context, scope corememo
 // processDocumentStream scans canonical document events after the stored
 // scope-wide outbox cursor.
 func (processor *Processor) processDocumentStream(ctx context.Context, scope corememory.Scope) error {
+	// The document pass indexes into the same lanes the conversation passes
+	// do, so it announces itself under the stream's own id: a rebuild refuses
+	// while it runs, and it refuses while a rebuild holds the scope.
+	finished, err := processor.beginDerivation(scope, documentStreamID)
+	if err != nil {
+		return err
+	}
+	defer finished()
 	cursor := uint64(0)
 	if watermark, found, err := processor.checkpoints.LoadWatermark(
 		ctx, scope, streamKindDocuments, documentStreamID, processor.policyDigest,
@@ -764,22 +847,29 @@ func (processor *Processor) applyKnowledgeDelta(
 	return nil
 }
 
+// chunkArtifact renders one stored document chunk for the lanes. The chunk
+// carries the document it came from and the build it belongs to, so a rebuild
+// reads the same artifact out of the view alone.
+func chunkArtifact(chunk docview.Chunk) component.Artifact {
+	artifactKind, contextKind := viewRecordKinds(chunk.Kind)
+	metadata := addressMetadata(chunk.Metadata, contextKind, "", chunk.DatasetID, chunk.DocumentID, chunk.ID)
+	addScopeMetadata(metadata, chunk.Scope)
+	metadata["document_version"] = strconv.FormatUint(chunk.DocumentVersion, 10)
+	metadata["ordinal"] = strconv.FormatUint(chunk.Ordinal, 10)
+	return component.Artifact{
+		Kind:     artifactKind,
+		ID:       projectionArtifactID("chunk", chunk.DatasetID, chunk.DocumentID, chunk.ID),
+		Content:  chunk.Content.Clone(),
+		Sources:  append([]corememory.SourceRef(nil), chunk.Provenance...),
+		Metadata: metadata,
+	}
+}
+
 func chunkArtifacts(event docsource.Event, chunks []docview.Chunk) ([]component.Artifact, []string) {
 	artifacts := make([]component.Artifact, 0, len(chunks))
 	activeIDs := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
-		artifactKind, contextKind := viewRecordKinds(chunk.Kind)
-		metadata := addressMetadata(chunk.Metadata, contextKind, "", event.DatasetID, event.DocumentID, chunk.ID)
-		addScopeMetadata(metadata, event.Scope)
-		metadata["document_version"] = strconv.FormatUint(chunk.DocumentVersion, 10)
-		metadata["ordinal"] = strconv.FormatUint(chunk.Ordinal, 10)
-		artifact := component.Artifact{
-			Kind:     artifactKind,
-			ID:       projectionArtifactID("chunk", event.DatasetID, event.DocumentID, chunk.ID),
-			Content:  chunk.Content.Clone(),
-			Sources:  append([]corememory.SourceRef(nil), chunk.Provenance...),
-			Metadata: metadata,
-		}
+		artifact := chunkArtifact(chunk)
 		artifacts = append(artifacts, artifact)
 		activeIDs = append(activeIDs, artifact.ID)
 	}
@@ -857,7 +947,7 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 	}
 	artifacts := make([]component.Artifact, 0, len(commit.Records)+4)
 	for _, record := range commit.Records {
-		artifacts = append(artifacts, messageArtifact(commit, record))
+		artifacts = append(artifacts, messageArtifact(commit.Scope, commit.ConversationID, record))
 	}
 	if processor.deriver == nil {
 		return artifacts, nil
@@ -968,12 +1058,16 @@ func chatSource(commit msgsource.Commit, generation string, observedAtAnchor boo
 	}
 }
 
-func messageArtifact(commit msgsource.Commit, record msgsource.Record) component.Artifact {
-	metadata := addressMetadata(record.Metadata, corememory.ContextRawMessage, commit.ConversationID, "", "", record.ID)
-	addScopeMetadata(metadata, commit.Scope)
+// messageArtifact renders one stored message for the lanes. The commit it
+// arrived in carries nothing the lanes index beyond the scope and conversation
+// it belongs to, so a rebuild reads the same artifact out of the message store
+// alone.
+func messageArtifact(scope corememory.Scope, conversationID string, record msgsource.Record) component.Artifact {
+	metadata := addressMetadata(record.Metadata, corememory.ContextRawMessage, conversationID, "", "", record.ID)
+	addScopeMetadata(metadata, scope)
 	metadata["message_seq"] = strconv.FormatUint(record.Seq, 10)
 	return component.Artifact{
-		Kind: chat.KindRawMessage, ID: projectionArtifactID("message", commit.ConversationID, record.ID),
+		Kind: chat.KindRawMessage, ID: projectionArtifactID("message", conversationID, record.ID),
 		Content:  record.Message.Content.Clone(),
 		Sources:  []corememory.SourceRef{messageSourceRef(record)},
 		Metadata: metadata,

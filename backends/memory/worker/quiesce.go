@@ -132,19 +132,87 @@ func (processor *Processor) RequireSettled(
 	return &UnsettledDerivationError{ConversationID: strings.TrimSpace(conversationID), State: state}
 }
 
-// beginDerivation marks a pass over one conversation as running and returns the
-// release that clears it. The marker is in-process by design: the pass a sweep
-// races is the host's own, and a durable lease would have to outlive a crashed
-// run to be worth writing, which is a different mechanism with a different
-// failure mode (a crashed pass holding a sweep off forever).
-func (processor *Processor) beginDerivation(scope corememory.Scope, conversationID string) func() {
-	key := derivationKey(scope, conversationID)
+// ErrScopeUnderRepair is the sentinel a refused derivation pass unwraps: the
+// scope's projection lanes are being rebuilt, and a pass that ran beside the
+// rebuild would index entries into a lane the rebuild is about to replace. It
+// is retryable, and it means the pass derived nothing.
+var ErrScopeUnderRepair = errors.New("memory worker: the scope's projection lanes are under repair")
+
+// ScopeUnderRepairError reports which scope refused a derivation pass.
+type ScopeUnderRepairError struct{ Scope corememory.Scope }
+
+// Error names the scope that is being rebuilt.
+func (err *ScopeUnderRepairError) Error() string {
+	if err == nil {
+		return ErrScopeUnderRepair.Error()
+	}
+	return fmt.Sprintf("memory worker: scope %s/%s/%s: %s",
+		err.Scope.RuntimeID, err.Scope.UserID, err.Scope.AgentID, ErrScopeUnderRepair)
+}
+
+// Unwrap reports the sentinel, so callers match the refusal rather than its
+// wording.
+func (err *ScopeUnderRepairError) Unwrap() error { return ErrScopeUnderRepair }
+
+// BeginRepair marks one scope's projection lanes as being rebuilt and returns
+// the release that clears the mark. It refuses -- with ErrDerivationUnsettled --
+// while a pass over the scope is running, because that pass would index beside
+// the rebuild; while the mark is held, ProcessScope and ProcessConversation
+// refuse with ErrScopeUnderRepair rather than indexing against a lane being
+// rewritten.
+//
+// Both markers are in-process, like the pass marker they pair with: the rebuild
+// is the host's own call, and a durable lease would have to outlive a crashed
+// run to be worth writing (a crashed rebuild would hold derivation off
+// forever). A rebuild that holds the mark and fails still releases it, so the
+// only cost of a failure is the work the rebuild did before it stopped.
+func (processor *Processor) BeginRepair(ctx context.Context, scope corememory.Scope) (func(), error) {
+	if processor == nil {
+		return nil, errors.New("memory worker: processor is required")
+	}
+	if ctx == nil {
+		return nil, errors.New("memory worker: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, err
+	}
 	processor.runningMu.Lock()
+	defer processor.runningMu.Unlock()
+	if conversationID, busy := processor.firstInFlightLocked(scope); busy {
+		return nil, &UnsettledDerivationError{
+			ConversationID: conversationID, State: DerivationState{InFlight: true},
+		}
+	}
+	key := scopeKey(scope)
+	if processor.repairing == nil {
+		processor.repairing = make(map[string]int)
+	}
+	processor.repairing[key]++
+	return func() {
+		processor.runningMu.Lock()
+		defer processor.runningMu.Unlock()
+		processor.repairing[key]--
+		if processor.repairing[key] <= 0 {
+			delete(processor.repairing, key)
+		}
+	}, nil
+}
+
+// beginDerivation marks a pass over one conversation as running and returns the
+// release that clears it, or refuses when the scope's lanes are under repair.
+// Both markers are taken under one lock, so a pass and a rebuild cannot both
+// decide the scope is free.
+func (processor *Processor) beginDerivation(scope corememory.Scope, conversationID string) (func(), error) {
+	processor.runningMu.Lock()
+	defer processor.runningMu.Unlock()
+	if processor.repairing[scopeKey(scope)] > 0 {
+		return nil, &ScopeUnderRepairError{Scope: scope}
+	}
+	key := derivationKey(scope, conversationID)
 	if processor.running == nil {
 		processor.running = make(map[string]int)
 	}
 	processor.running[key]++
-	processor.runningMu.Unlock()
 	return func() {
 		processor.runningMu.Lock()
 		defer processor.runningMu.Unlock()
@@ -152,7 +220,33 @@ func (processor *Processor) beginDerivation(scope corememory.Scope, conversation
 		if processor.running[key] <= 0 {
 			delete(processor.running, key)
 		}
+	}, nil
+}
+
+// firstInFlightLocked reports one pass running anywhere in the scope: a
+// conversation pass, or the document stream pass, which marks itself under the
+// stream's own id. The caller holds the marker lock.
+func (processor *Processor) firstInFlightLocked(scope corememory.Scope) (string, bool) {
+	prefix := scopeKey(scope) + "\x00"
+	for key := range processor.running {
+		if strings.HasPrefix(key, prefix) {
+			return strings.TrimPrefix(key, prefix), true
+		}
 	}
+	return "", false
+}
+
+// underRepair reports whether a rebuild of the scope's projection lanes is in
+// flight in this processor.
+func (processor *Processor) underRepair(scope corememory.Scope) bool {
+	processor.runningMu.Lock()
+	defer processor.runningMu.Unlock()
+	return processor.repairing[scopeKey(scope)] > 0
+}
+
+// scopeKey identifies one hard scope inside the marker maps.
+func scopeKey(scope corememory.Scope) string {
+	return strings.Join([]string{scope.RuntimeID, scope.UserID, scope.AgentID}, "\x00")
 }
 
 // deriving reports whether a pass over one conversation is running.
