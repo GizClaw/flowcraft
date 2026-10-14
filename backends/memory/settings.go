@@ -126,6 +126,18 @@ type FactSettings struct {
 	MaxFactChars           int    `json:"max_fact_chars,omitempty"`
 	MaxQueryChars          int    `json:"max_query_chars,omitempty"`
 	MaxEmbeddingInputChars int    `json:"max_embedding_input_chars,omitempty"`
+	// Quota names the batch cap (max_facts) in the extractor prompt and asks
+	// every fact for its own priority, so a batch over the cap is truncated by
+	// that priority instead of by position: it is how a host makes a dense turn
+	// choose what to keep, instead of keeping whatever the model wrote first.
+	//
+	// Off by default. It changes what the extractor writes, so it is part of the
+	// derivation policy digest, and switching it on re-derives the scope.
+	// fact.max_facts is the lever that makes it bite: measured over this
+	// project's own conversations, one commit of the benchmark corpus derives
+	// 12.59 facts on average with a 99th percentile of 27, so the default cap of
+	// 64 truncates nothing and the quota's only effect there is the prompt.
+	Quota bool `json:"quota,omitempty"`
 }
 
 // BM25Settings tunes the lexical lane.

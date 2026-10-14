@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/internal/textsim"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
-	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
 
 // AlgorithmVersion names the maintenance policy. v2 measures fact similarity
@@ -186,7 +186,7 @@ func DetectWithConfig(
 				if len(newer.Entities) == 0 || !sharesEntity(older.Entities, newer.Entities) {
 					continue
 				}
-				similarity := textSimilarity(older.Text, newer.Text)
+				similarity := textsim.Jaccard(older.Text, newer.Text)
 				if similarity < config.SimilarityThreshold {
 					continue
 				}
@@ -239,37 +239,6 @@ func sharesEntity(left, right []string) bool {
 
 func normalizeEntity(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
-}
-
-// textSimilarity is token Jaccard similarity over the two facts, where tokens
-// are the shared kernel's (core/utils/bm25.Tokenize), the same splitter the
-// retrieval lanes match with.
-func textSimilarity(left, right string) float64 {
-	leftTokens := tokenSet(left)
-	rightTokens := tokenSet(right)
-	if len(leftTokens) == 0 || len(rightTokens) == 0 {
-		return 0
-	}
-	shared := 0
-	for token := range leftTokens {
-		if _, ok := rightTokens[token]; ok {
-			shared++
-		}
-	}
-	union := len(leftTokens) + len(rightTokens) - shared
-	if union == 0 {
-		return 0
-	}
-	return float64(shared) / float64(union)
-}
-
-func tokenSet(value string) map[string]struct{} {
-	tokens := corebm25.Tokenize(value)
-	set := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		set[token] = struct{}{}
-	}
-	return set
 }
 
 func finite(value float64) bool {

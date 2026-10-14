@@ -53,6 +53,13 @@ const (
 	// extractor reads is the anchored one unless a workspace opts out. The
 	// prompt did not change; the input contract did, and existing workspaces
 	// must re-derive onto it.
+	//
+	// The batch quota (Config.Quota) deliberately does not bump this version. It
+	// is off by default, and turning it on is a change to Settings.Fact.Quota,
+	// which is part of the derivation policy digest and so invalidates a
+	// workspace's watermarks by itself. With the quota off the prompt and the
+	// response schema are the ones 1.5.0 sent (pinned by fact_prompt_test.go),
+	// so a workspace that leaves it off derives exactly what 1.5.0 derived.
 	AlgorithmVersion          = "1.5.0"
 	LinkAlgorithmVersion      = "fact-link-vector-v2"
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
@@ -63,26 +70,40 @@ const (
 //go:embed prompts/fact_system.tmpl
 var factPromptFS embed.FS
 
+var factSystemTmpl = template.Must(template.ParseFS(factPromptFS, "prompts/fact_system.tmpl"))
+
 var (
-	factSystemTmpl = template.Must(template.ParseFS(factPromptFS, "prompts/fact_system.tmpl"))
-	factSystem     = mustRenderFactSystem(false)
+	factSystem = renderFactSystem(promptData{})
 	// The rich schema asks for two fields the simple one does not, so the
 	// prompt has to describe them: a strict provider would otherwise reject
 	// the request or invent values for keys nobody explained.
-	factSystemRich = mustRenderFactSystem(true)
+	factSystemRich = renderFactSystem(promptData{Rich: true})
 )
 
-func mustRenderFactSystem(rich bool) string {
+// promptData is the extractor template's input: which response schema the
+// strategy asks for, whether the prompt carries the batch quota, and the fact
+// count that quota names.
+type promptData struct {
+	Rich     bool
+	Quota    bool
+	MaxFacts int
+}
+
+func renderFactSystem(data promptData) string {
 	var builder strings.Builder
-	if err := factSystemTmpl.Execute(&builder, struct{ Rich bool }{Rich: rich}); err != nil {
+	if err := factSystemTmpl.Execute(&builder, data); err != nil {
 		panic(err)
 	}
 	return strings.TrimSpace(builder.String())
 }
 
-// factSystemFor selects the prompt that matches the strategy's response
-// schema.
-func factSystemFor(strategy FactStrategy) string {
+// factSystemFor selects the prompt that matches the strategy's response schema
+// and the extractor's quota. Only the quota prompt has to be rendered here: the
+// prompts without it are the same for every extractor, and are rendered once.
+func factSystemFor(strategy FactStrategy, quota bool, maxFacts int) string {
+	if quota {
+		return renderFactSystem(promptData{Rich: strategy == StrategyRich, Quota: true, MaxFacts: maxFacts})
+	}
 	if strategy == StrategyRich {
 		return factSystemRich
 	}
@@ -120,6 +141,11 @@ type Config struct {
 	EmbedModel             *model.ModelRef
 	Facts                  *factview.FactStore
 	LinkVectorSearcher     component.VectorSearcher
+	// Quota names the batch cap in the prompt and asks every fact for its own
+	// priority, so an over-cap batch is truncated by that priority instead of by
+	// position. Off, the extractor sends the prompt and the schema it sent
+	// before the quota existed.
+	Quota bool
 }
 
 // DefaultConfig returns the bounded default simple strategy.
@@ -178,6 +204,10 @@ func (config Config) Validate() error {
 // FactExtractor batches one source artifact into at most one Generate call.
 type FactExtractor struct {
 	config Config
+	// prompt is the system prompt for this extractor's strategy and quota,
+	// rendered once here: the quota names the fact count the config
+	// allows, so the prompt cannot be one of the package-level constants.
+	prompt string
 }
 
 type modelFact struct {
@@ -187,6 +217,10 @@ type modelFact struct {
 	Predicate      string   `json:"predicate,omitempty"`
 	TemporalDetail string   `json:"temporal_detail,omitempty"`
 	EventTime      string   `json:"event_time,omitempty"`
+	// Priority is the extractor's self-assessment, and it exists only when the
+	// budget's quota asked for it: it orders an over-quota batch, and it is not
+	// a property of the stored fact.
+	Priority string `json:"priority,omitempty"`
 }
 
 type factBatch struct {
@@ -219,7 +253,10 @@ func NewFactExtractorWithConfig(config Config) (*FactExtractor, error) {
 			return nil, errors.New("chat line: inference model is required")
 		}
 	}
-	return &FactExtractor{config: config}, nil
+	return &FactExtractor{
+		config: config,
+		prompt: factSystemFor(config.Strategy, config.Quota, config.MaxFacts),
+	}, nil
 }
 
 func (extractor *FactExtractor) Derive(ctx context.Context, input component.Artifact) ([]component.Artifact, error) {
@@ -241,7 +278,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 
 	content := tailRunes(input.Content.Text(), extractor.config.TailMaxChars)
 	schema := true
-	request := extractionRequest(content, schema, extractor.config.Strategy)
+	request := extractor.extractionRequest(content, schema)
 	response, err := extractor.config.Runtime.Generate(ctx, *extractor.config.GenerateModel, request)
 	if err != nil && inference.IsKind(err, inference.UnsupportedFeature) {
 		// DeepSeek and other json_object-only providers reject schema
@@ -250,7 +287,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		// shape.
 		schema = false
 		response, err = extractor.config.Runtime.Generate(
-			ctx, *extractor.config.GenerateModel, extractionRequest(content, schema, extractor.config.Strategy),
+			ctx, *extractor.config.GenerateModel, extractor.extractionRequest(content, schema),
 		)
 	}
 	if err != nil {
@@ -260,11 +297,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	if err != nil {
 		return nil, fmt.Errorf("chat line: decode facts: %w", err)
 	}
-	if len(decoded.Facts) > extractor.config.MaxFacts {
-		// Truncate instead of failing: a chatty generation would otherwise
-		// fail the commit deterministically and replay forever.
-		decoded.Facts = decoded.Facts[:extractor.config.MaxFacts]
-	}
+	decoded.Facts = truncateFacts(decoded.Facts, extractor.config.MaxFacts, extractor.config.Quota)
 
 	eventTime := artifactEventTime(input)
 	sourceDigest := digestSources(input.Sources)
@@ -275,13 +308,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	seen := make(map[string]struct{}, len(decoded.Facts))
 	output := make([]component.Artifact, 0, len(decoded.Facts))
 	for _, item := range decoded.Facts {
-		text := factview.NormalizeText(item.Text)
-		if text == "" {
-			// json_object-only providers may name the field "fact" instead
-			// of "text" when the prompt contract is not enforced by a
-			// response schema; accept it as a lenient alias.
-			text = factview.NormalizeText(item.Fact)
-		}
+		text := factText(item)
 		if text == "" {
 			continue
 		}
@@ -341,11 +368,12 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	return output, nil
 }
 
-func extractionRequest(content string, schema bool, strategy FactStrategy) inference.GenerateRequest {
+func (extractor *FactExtractor) extractionRequest(content string, schema bool) inference.GenerateRequest {
 	intent := inference.Intent{Text: &inference.TextIntent{}}
 	if schema {
 		intent.Text.Response = &inference.ResponseFormat{
-			Kind: inference.ResponseJSONSchema, Name: "facts", Schema: schemaFor(strategy),
+			Kind: inference.ResponseJSONSchema, Name: "facts",
+			Schema: schemaFor(extractor.config.Strategy, extractor.config.Quota),
 		}
 	} else {
 		intent.Text.Response = &inference.ResponseFormat{Kind: inference.ResponseJSONObject}
@@ -353,7 +381,7 @@ func extractionRequest(content string, schema bool, strategy FactStrategy) infer
 	return inference.GenerateRequest{
 		Context: []coremessage.Message{{
 			Role:    coremessage.RoleSystem,
-			Content: coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: factSystemFor(strategy)}}},
+			Content: coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: extractor.prompt}}},
 		}},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
@@ -677,20 +705,45 @@ func (extractor *FactExtractor) addEmbeddingLinks(
 // CanonicalFactHash exposes the canonical identity contract to callers.
 func CanonicalFactHash(text string) string { return factview.CanonicalHash(text) }
 
-func schemaFor(strategy FactStrategy) json.RawMessage {
-	properties := `"text":{"type":"string"},"entities":{"type":"array","items":{"type":"string"}},"event_time":{"type":"string"}`
+// factText is a fact's text under the extraction contract: the canonical text
+// field, or the lenient "fact" alias a json_object-only provider may name it
+// instead when the prompt contract is not enforced by a response schema, in the
+// normalised form the stored record uses.
+func factText(fact modelFact) string {
+	text := factview.NormalizeText(fact.Text)
+	if text == "" {
+		text = factview.NormalizeText(fact.Fact)
+	}
+	return text
+}
+
+func schemaFor(strategy FactStrategy, quota bool) json.RawMessage {
+	properties := []string{
+		`"text":{"type":"string"}`,
+		`"entities":{"type":"array","items":{"type":"string"}}`,
+		`"event_time":{"type":"string"}`,
+	}
+	required := []string{`"text"`, `"entities"`, `"event_time"`}
+	if strategy == StrategyRich {
+		properties = append(properties, `"predicate":{"type":"string"}`, `"temporal_detail":{"type":"string"}`)
+		required = append(required, `"predicate"`, `"temporal_detail"`)
+	}
+	if quota {
+		// The quota's self-assessment travels as a plain string: the prompt
+		// documents the two values, and a provider that ignores the schema or
+		// invents a third one still decodes, because an unknown priority ranks
+		// in the middle rather than at either end.
+		properties = append(properties, `"priority":{"type":"string"}`)
+		required = append(required, `"priority"`)
+	}
 	// Every property is required, including the ones a turn may leave empty:
 	// strict structured outputs (OpenAI's json_schema mode; the same rule is
 	// spreading) reject a schema whose optional properties are absent from
 	// required. A missing detail is expressed as [] or "", never as an omitted
 	// key, and the prompt says so. DeepSeek accepts both shapes, so this also
 	// keeps one schema for every provider.
-	required := `["text","entities","event_time"]`
-	if strategy == StrategyRich {
-		properties += `,"predicate":{"type":"string"},"temporal_detail":{"type":"string"}`
-		required = `["text","entities","event_time","predicate","temporal_detail"]`
-	}
-	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["facts"],"properties":{"facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":` + required + `,"properties":{` + properties + `}}}}}`)
+	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["facts"],"properties":{"facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":[` +
+		strings.Join(required, ",") + `],"properties":{` + strings.Join(properties, ",") + `}}}}}`)
 }
 
 func tailRunes(value string, max int) string {
