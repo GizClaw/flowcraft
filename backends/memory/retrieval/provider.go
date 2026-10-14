@@ -63,6 +63,12 @@ type Provider struct {
 	RecallEvents     RecallEventRecorder
 	Visibility       Visibility
 	Clock            func() time.Time
+	// ObservePool, when set, receives the hydrated items one request hands to
+	// the packer -- the pool the budget chooses from and cuts. It exists for
+	// diagnostics: a harness that only sees the pack cannot tell "the budget
+	// cut this" from "retrieval never returned this". Production leaves it
+	// nil, and the observer must neither mutate the slice nor keep it.
+	ObservePool func(corememory.ContextRequest, []corememory.ContextItem)
 
 	mu          sync.RWMutex
 	diagnostics []Diagnostic
@@ -412,6 +418,9 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 		quotesStarted := time.Now()
 		hydrated = provider.withSourceQuotes(ctx, request.Scope, hydrated)
 		provider.recordStage("quotes", quotesStarted)
+	}
+	if provider.ObservePool != nil {
+		provider.ObservePool(request, hydrated)
 	}
 	packStarted := time.Now()
 	result, err := provider.Packer.Pack(ctx, hydrated, request.Budget)

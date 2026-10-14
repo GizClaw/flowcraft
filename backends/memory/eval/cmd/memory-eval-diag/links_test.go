@@ -80,3 +80,40 @@ func TestLinkWalkFallsBackToTextWhenUntagged(t *testing.T) {
 		t.Fatal("a turn the record's text does not hold must not count")
 	}
 }
+
+// The boost cross-tab counts a candidate the pack could have raised, so the walk
+// has to read links in both directions: a link is stored on the fact that wrote
+// it, and a candidate either names a seed or is named by one.
+func TestLinkWalkOneHopFromReadsBothDirections(t *testing.T) {
+	const conversation = "sample-1"
+	facts := fakeFactStore{
+		"sample-1/seed-a":        {ID: "seed-a", LinkedMemoryIDs: []string{"named-by-seed"}},
+		"sample-1/named-by-seed": {ID: "named-by-seed", LinkedMemoryIDs: []string{"two-hops"}},
+		"sample-1/names-seed":    {ID: "names-seed", LinkedMemoryIDs: []string{"seed-b"}},
+		"sample-1/seed-b":        {ID: "seed-b"},
+		"sample-1/two-hops":      {ID: "two-hops"},
+		"sample-1/unrelated":     {ID: "unrelated"},
+	}
+	walk := newLinkWalk(facts, eval.NewMatcher(nil), corememory.Scope{RuntimeID: "eval"})
+	seeds := []corememory.ContextItem{{ID: "seed-a", Kind: corememory.ContextFact}, {ID: "seed-b", Kind: corememory.ContextFact}}
+	pool := []corememory.ContextItem{
+		{ID: "seed-a", Kind: corememory.ContextFact},
+		{ID: "named-by-seed", Kind: corememory.ContextFact},
+		{ID: "names-seed", Kind: corememory.ContextFact},
+		{ID: "two-hops", Kind: corememory.ContextFact},
+		{ID: "unrelated", Kind: corememory.ContextFact},
+	}
+	near := walk.oneHopFrom(context.Background(), conversation, seeds, pool)
+	if !near["named-by-seed"] {
+		t.Fatalf("a candidate a seed names sits one hop out: %#v", near)
+	}
+	if !near["names-seed"] {
+		t.Fatalf("a candidate that names a seed sits one hop out too: %#v", near)
+	}
+	if near["two-hops"] {
+		t.Fatalf("two hops out must not be marked: %#v", near)
+	}
+	if near["unrelated"] {
+		t.Fatalf("an unlinked candidate must not be marked: %#v", near)
+	}
+}
