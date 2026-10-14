@@ -82,6 +82,9 @@ type Deriver interface {
 }
 
 // ProjectionRequest replaces one rebuildable projection from typed artifacts.
+//
+// Artifacts is read-only: a rebuild must not mutate the entries or keep the
+// slice past the call, because one repair hands the same set to every lane.
 type ProjectionRequest struct {
 	Scope      corememory.Scope
 	Projection string
@@ -100,6 +103,44 @@ type Auditor interface {
 	AuditDigests(context.Context, corememory.Scope) (
 		storedSource, computedSource, storedBuild, computedBuild string, found bool, err error,
 	)
+}
+
+// ProducerIdentity is the read-only identity of the state one projection lane
+// persisted: the version of the producer that wrote it together with the
+// cumulative digests its manifest carries.
+type ProducerIdentity struct {
+	// Version names the producer that wrote the state. An empty version means
+	// the state was written before lanes stamped one, which is itself a
+	// version: the producer that wrote it is unknown, not current.
+	Version string
+	// SourceDigest and BuildDigest are the cumulative digests of the active
+	// manifest: the chain of indexed inputs and the chain of builds.
+	SourceDigest string
+	BuildDigest  string
+}
+
+// Producer names the state one projection lane produces and reports the
+// identity its persisted state carries. A lane whose stored state was written
+// by another version keeps serving it -- the entries an earlier producer wrote
+// stay where they are until the lane is rebuilt -- so a mismatch is what tells
+// a host that a rebuild would change what the lane answers with.
+type Producer interface {
+	// ProducerVersion names the identity of the state this lane writes: its
+	// algorithm plus the parameters that shape a persisted record.
+	ProducerVersion() string
+	// StoredProducerIdentity reports the identity of the lane's persisted
+	// state for one scope. found is false when the lane holds no state yet,
+	// which is not a mismatch: there is nothing an earlier producer wrote.
+	StoredProducerIdentity(context.Context, corememory.Scope) (ProducerIdentity, bool, error)
+	// OtherStoredNames reports the storage names this lane's family holds
+	// state under for one scope, excluding the name this lane writes. A lane
+	// that derives its storage name from the producer identity forks one name
+	// per generation, so the state an earlier producer wrote survives under a
+	// name the running lane no longer reads: no manifest of the current name
+	// can report it, and this is what tells a host it is there. The list is
+	// empty when nothing else holds state, which is also the state of a scope
+	// that was never indexed.
+	OtherStoredNames(context.Context, corememory.Scope) ([]string, error)
 }
 
 // DocumentAddress qualifies a document within one hard scope.

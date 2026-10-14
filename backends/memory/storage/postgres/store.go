@@ -460,6 +460,39 @@ func (store *Store) List(ctx context.Context, prefix string) ([]storage.Entry, e
 	return entries, rows.Err()
 }
 
+// Keys implements storage.KeyLister: the same prefix area as List, without
+// reading the values.
+func (store *Store) Keys(ctx context.Context, prefix string) ([]string, error) {
+	if prefix != "" {
+		if err := validateName(prefix); err != nil {
+			return nil, err
+		}
+	}
+	query := `SELECT key FROM ` + store.table("kv") + ` ORDER BY key ASC`
+	var arguments []any
+	if prefix != "" {
+		query = `SELECT key FROM ` + store.table("kv") +
+			` WHERE key = $1 OR key LIKE $2 ESCAPE '\' ORDER BY key ASC`
+		arguments = []any{prefix, likePrefix(prefix)}
+	}
+	rows, err := store.pool.Query(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("storage postgres: kv keys: %w", err)
+	}
+	defer rows.Close()
+	keys := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		if prefix == "" || key == prefix || strings.HasPrefix(key, prefix+"/") {
+			keys = append(keys, key)
+		}
+	}
+	return keys, rows.Err()
+}
+
 // PutIfAbsent implements storage.PutIfAbsentStore.
 func (store *Store) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	if err := validateName(key); err != nil {

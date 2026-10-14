@@ -76,9 +76,23 @@ type ReplayRef struct {
 
 // Manifest is the sole active pointer. It is bounded by compaction thresholds,
 // never by the number of indexed entries.
+//
+// ProducerVersion records which producer wrote the state the manifest points
+// at. It is stamped when the manifest is created and an ordinary delta apply
+// leaves it alone: the stamp describes the state as a whole, so the entries a
+// newer producer appends do not make an older state current -- they leave it
+// mixed, and the stamp is what reports that a rebuild would converge it. A
+// rebuild (FullRebuild) publishes state the running producer wrote, so it
+// stamps its own version.
+//
+// The stamp is metadata about the writer rather than part of the state, so it
+// is deliberately left out of Identity (see manifestIdentity): a reader that
+// predates the field recomputes the same identity, which is what lets a build
+// without the stamp keep reading manifests one with it wrote.
 type Manifest struct {
 	SchemaVersion    int              `json:"schema_version"`
 	StorageVersion   string           `json:"storage_version"`
+	ProducerVersion  string           `json:"producer_version,omitempty"`
 	Projection       string           `json:"projection"`
 	Scope            corememory.Scope `json:"scope"`
 	Base             *BaseRef         `json:"base,omitempty"`
@@ -114,11 +128,16 @@ type segment[D any] struct {
 }
 
 type TypedOptions[B, D any] struct {
-	Thresholds    Thresholds
-	Canonicalize  func(D) D
-	ValidateBase  func(B) error
-	ValidateDelta func(D) error
-	Apply         func(*B, D) error
+	Thresholds Thresholds
+	// ProducerVersion names the identity of the state this store writes: the
+	// lane's algorithm plus the parameters that shape a persisted record. It
+	// is stamped into every manifest the store creates, and a reader compares
+	// it against the version the running producer writes with.
+	ProducerVersion string
+	Canonicalize    func(D) D
+	ValidateBase    func(B) error
+	ValidateDelta   func(D) error
+	Apply           func(*B, D) error
 }
 
 type materializedCache[B any] struct {
@@ -177,7 +196,9 @@ func (store *Store[B, D]) FullRebuild(ctx context.Context, scope corememory.Scop
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.publishBaseLocked(ctx, scope, name, payload, sourceDigest, nil)
+	// A rebuild publishes state this producer wrote, so the manifest it leaves
+	// behind names this producer rather than the one it replaced.
+	return store.publishBaseLocked(ctx, scope, name, payload, sourceDigest, store.options.ProducerVersion, nil)
 }
 
 func (store *Store[B, D]) ApplyDelta(
@@ -215,7 +236,7 @@ func (store *Store[B, D]) ApplyDelta(
 		return ApplyResult{}, err
 	}
 	if !found {
-		active = newManifest(scope, name)
+		active = store.newManifest(scope, name)
 	}
 	if active.LastApplied != nil {
 		last := active.LastApplied
@@ -259,7 +280,9 @@ func (store *Store[B, D]) ApplyDelta(
 			return ApplyResult{}, fmt.Errorf("projection: encode compacted base: %w", err)
 		}
 		replay := &ReplayRef{SourceRevision: sourceRevision, DeltaDigest: deltaDigest, SourceInput: sourceInput}
-		if err := store.publishBaseLocked(ctx, scope, name, payload, nextSource, replay); err != nil {
+		// Compaction rewrites the storage shape, not the state: the producer
+		// that wrote the entries stays the producer the manifest names.
+		if err := store.publishBaseLocked(ctx, scope, name, payload, nextSource, active.ProducerVersion, replay); err != nil {
 			return ApplyResult{}, err
 		}
 		compacted, _, err := store.loadManifestLocked(ctx, scope, name)
@@ -345,6 +368,30 @@ func (store *Store[B, D]) AuditDigestEvidence(
 	}, true, nil
 }
 
+// ProducerIdentity reports the identity of one projection's persisted state:
+// the producer version stamped into its manifest, together with the cumulative
+// digests the manifest carries. It is a bounded read -- it decodes the active
+// manifest and reads nothing else -- so a host can ask whether a lane is stale
+// without materializing it.
+func (store *Store[B, D]) ProducerIdentity(
+	ctx context.Context,
+	scope corememory.Scope,
+	name string,
+) (component.ProducerIdentity, bool, error) {
+	if err := validateAddress(scope, name); err != nil {
+		return component.ProducerIdentity{}, false, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	if err != nil || !found {
+		return component.ProducerIdentity{}, found, err
+	}
+	return component.ProducerIdentity{
+		Version: active.ProducerVersion, SourceDigest: active.SourceDigest, BuildDigest: active.BuildDigest,
+	}, true, nil
+}
+
 func (store *Store[B, D]) materializeLocked(ctx context.Context, scope corememory.Scope, name string, active Manifest) (B, error) {
 	if store.cache != nil && store.cache.identity == active.Identity {
 		return cloneTyped(store.cache.value)
@@ -402,7 +449,8 @@ func (store *Store[B, D]) materializeAuditLocked(
 	}
 	previousIdentity := manifestIdentity(Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
-		Projection: name, Scope: scope, Base: active.Base,
+		ProducerVersion: active.ProducerVersion,
+		Projection:      name, Scope: scope, Base: active.Base,
 		Segments: []SegmentRef{}, BaseSourceDigest: baseSourceDigest(active),
 		SourceDigest: baseSourceDigest(active),
 		BuildDigest:  buildDigest, BaseLastApplied: active.BaseLastApplied,
@@ -469,6 +517,7 @@ func (store *Store[B, D]) publishBaseLocked(
 	name string,
 	payload []byte,
 	sourceDigest string,
+	producerVersion string,
 	lastApplied *ReplayRef,
 ) error {
 	baseDigest := digestBytes(payload)
@@ -480,7 +529,8 @@ func (store *Store[B, D]) publishBaseLocked(
 	}
 	active := Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
-		Projection: name, Scope: scope,
+		ProducerVersion: producerVersion,
+		Projection:      name, Scope: scope,
 		Base:     &BaseRef{ID: baseDigest, Digest: baseDigest, Bytes: int64(len(payload))},
 		Segments: []SegmentRef{}, BaseSourceDigest: sourceDigest, SourceDigest: sourceDigest,
 		BuildDigest:     chainDigest("base", baseDigest),
@@ -578,10 +628,14 @@ func (store *Store[B, D]) loadManifestForAuditLocked(
 	return active, true, nil
 }
 
-func newManifest(scope corememory.Scope, name string) Manifest {
+// newManifest is the manifest of a projection that holds nothing yet. It is
+// the one place a manifest is stamped: every later write of the same state --
+// an appended segment, a compaction -- carries the version forward.
+func (store *Store[B, D]) newManifest(scope corememory.Scope, name string) Manifest {
 	active := Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
-		Projection: name, Scope: scope, Segments: []SegmentRef{},
+		ProducerVersion: store.options.ProducerVersion,
+		Projection:      name, Scope: scope, Segments: []SegmentRef{},
 	}
 	active.Identity = manifestIdentity(active)
 	return active
@@ -591,8 +645,21 @@ func baseSourceDigest(active Manifest) string {
 	return active.BaseSourceDigest
 }
 
+// manifestIdentity is the digest of what a manifest points at: every field
+// that describes the stored state. Identity and the producer stamp are left
+// out. Identity is the digest itself, and the stamp records who wrote the
+// state rather than what the state is, so a reader that does not know the
+// stamp recomputes the same identity as one that does -- a rollback to such a
+// reader keeps reading the manifests this build wrote instead of reporting
+// them corrupt. Nothing goes unchecked: the stamp is read and compared on its
+// own (ProducerIdentity, verify, Diagnostics).
+//
+// The stamp is zeroed rather than skipped in the encoding, and the field
+// marshals with omitempty, so the encoded bytes match what a reader without
+// the field produces.
 func manifestIdentity(active Manifest) string {
 	active.Identity = ""
+	active.ProducerVersion = ""
 	data, _ := json.Marshal(active)
 	return chainDigest("manifest", string(data))
 }
@@ -730,8 +797,14 @@ func stringSet(values []string) map[string]struct{} {
 }
 
 func (store *Store[B, D]) root(scope corememory.Scope, name string) string {
+	return path.Join(store.indexesPrefix(scope), encode(name))
+}
+
+// indexesPrefix is the area every index name of one family and scope lives
+// under, the parent of one lane's root.
+func (store *Store[B, D]) indexesPrefix(scope corememory.Scope) string {
 	return path.Join("projections", store.Family, "v2", "partitions", encode(scope.RuntimeID),
-		encode(scope.UserID), encode(scope.AgentID), "indexes", encode(name))
+		encode(scope.UserID), encode(scope.AgentID), "indexes")
 }
 
 func (store *Store[B, D]) activePath(scope corememory.Scope, name string) string {

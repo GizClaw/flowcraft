@@ -97,6 +97,37 @@ func (store *WorkspaceKV) List(ctx context.Context, prefix string) ([]Entry, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	keys, err := store.walkKeys(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]Entry, 0, len(keys))
+	for _, key := range keys {
+		data, err := store.ws.Read(ctx, path.Join(basePathForName(kvRoot, key)))
+		if err != nil {
+			return nil, fmt.Errorf("storage kv: read %q during list: %w", key, err)
+		}
+		entries = append(entries, Entry{Key: key, Value: data})
+	}
+	return entries, nil
+}
+
+// Keys implements KeyLister: the same walk as List, without reading what the
+// keys hold.
+func (store *WorkspaceKV) Keys(ctx context.Context, prefix string) ([]string, error) {
+	if prefix != "" {
+		if err := validateName(prefix); err != nil {
+			return nil, err
+		}
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.walkKeys(ctx, prefix)
+}
+
+// walkKeys collects the keys inside one prefix area. The caller holds the
+// lock, so the walk and the reads that may follow it see one state.
+func (store *WorkspaceKV) walkKeys(ctx context.Context, prefix string) ([]string, error) {
 	base := prefixBase(prefix)
 	basePath := kvRoot
 	if base != "" {
@@ -125,15 +156,7 @@ func (store *WorkspaceKV) List(ctx context.Context, prefix string) ([]Entry, err
 		return nil, err
 	}
 	sort.Strings(keys)
-	entries := make([]Entry, 0, len(keys))
-	for _, key := range keys {
-		data, err := store.ws.Read(ctx, path.Join(basePathForName(kvRoot, key)))
-		if err != nil {
-			return nil, fmt.Errorf("storage kv: read %q during list: %w", key, err)
-		}
-		entries = append(entries, Entry{Key: key, Value: data})
-	}
-	return entries, nil
+	return keys, nil
 }
 
 // CompareAndSwap implements CASStore.

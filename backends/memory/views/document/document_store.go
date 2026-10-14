@@ -164,6 +164,64 @@ func (store *DocumentViewStore) List(ctx context.Context, scope corememory.Scope
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
+	chunks, err := store.listActiveLocked(ctx, scope, datasetID, documentID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Chunk, 0)
+	for _, chunk := range chunks {
+		if chunk.Ordinal < options.AfterOrdinal ||
+			(chunk.Ordinal == options.AfterOrdinal && chunk.ID <= options.AfterID) {
+			continue
+		}
+		result = append(result, cloneChunk(chunk))
+		if options.Limit > 0 && len(result) == options.Limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+// ListScope returns the chunks of every document's active build in one scope,
+// ordered by (DatasetID, DocumentID, Ordinal, ID). It is the enumeration a
+// rebuild of the document lanes needs: the view is addressed by dataset and
+// document rather than by conversation, so a scope-wide reader walks the
+// scope's document keys first.
+func (store *DocumentViewStore) ListScope(ctx context.Context, scope corememory.Scope) ([]Chunk, error) {
+	if err := scope.Validate(); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return nil, errors.New("document view: context is required")
+	}
+	root, err := documentsRoot(scope)
+	if err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	addresses, err := store.documentAddressesLocked(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Chunk, 0)
+	for _, address := range addresses {
+		chunks, err := store.listActiveLocked(ctx, scope, address.DatasetID, address.DocumentID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, chunks...)
+	}
+	return result, nil
+}
+
+// listActiveLocked reads, validates and orders the chunks of one document's
+// active build. The store's lock is held by the caller.
+func (store *DocumentViewStore) listActiveLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	datasetID, documentID string,
+) ([]Chunk, error) {
 	active, ok, err := store.readActive(ctx, scope, datasetID, documentID)
 	if err != nil || !ok {
 		if !ok && err == nil {
@@ -204,18 +262,7 @@ func (store *DocumentViewStore) List(ctx context.Context, scope corememory.Scope
 		}
 		return chunks[i].Ordinal < chunks[j].Ordinal
 	})
-	result := make([]Chunk, 0)
-	for _, chunk := range chunks {
-		if chunk.Ordinal < options.AfterOrdinal ||
-			(chunk.Ordinal == options.AfterOrdinal && chunk.ID <= options.AfterID) {
-			continue
-		}
-		result = append(result, cloneChunk(chunk))
-		if options.Limit > 0 && len(result) == options.Limit {
-			break
-		}
-	}
-	return result, nil
+	return chunks, nil
 }
 
 // ListBuilds returns every build stored for one document, sorted by build id.
@@ -288,29 +335,10 @@ func (store *DocumentViewStore) RetireScopeBuilds(ctx context.Context, scope cor
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	entries, err := store.kv.List(ctx, root)
+	addresses, err := store.documentAddressesLocked(ctx, root)
 	if err != nil {
-		return 0, fmt.Errorf("document view: list documents: %w", err)
+		return 0, err
 	}
-	addresses := make([]documentAddress, 0, len(entries))
-	seen := make(map[documentAddress]struct{}, len(entries))
-	for _, entry := range entries {
-		address, err := documentAddressFromKey(root, entry.Key)
-		if err != nil {
-			return 0, fmt.Errorf("document view: decode document key %q: %w", entry.Key, err)
-		}
-		if _, ok := seen[address]; ok {
-			continue
-		}
-		seen[address] = struct{}{}
-		addresses = append(addresses, address)
-	}
-	sort.Slice(addresses, func(i, j int) bool {
-		if addresses[i].DatasetID == addresses[j].DatasetID {
-			return addresses[i].DocumentID < addresses[j].DocumentID
-		}
-		return addresses[i].DatasetID < addresses[j].DatasetID
-	})
 	removed := 0
 	for _, address := range addresses {
 		count, err := store.retireStaleBuildsLocked(ctx, scope, address.DatasetID, address.DocumentID)
@@ -325,6 +353,36 @@ func (store *DocumentViewStore) RetireScopeBuilds(ctx context.Context, scope cor
 type documentAddress struct {
 	DatasetID  string
 	DocumentID string
+}
+
+// documentAddressesLocked lists the documents of one scope, sorted by (dataset,
+// document), from the keys stored under root. The store's lock is held by the
+// caller.
+func (store *DocumentViewStore) documentAddressesLocked(ctx context.Context, root string) ([]documentAddress, error) {
+	entries, err := store.kv.List(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("document view: list documents: %w", err)
+	}
+	addresses := make([]documentAddress, 0, len(entries))
+	seen := make(map[documentAddress]struct{}, len(entries))
+	for _, entry := range entries {
+		address, err := documentAddressFromKey(root, entry.Key)
+		if err != nil {
+			return nil, fmt.Errorf("document view: decode document key %q: %w", entry.Key, err)
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	sort.Slice(addresses, func(i, j int) bool {
+		if addresses[i].DatasetID == addresses[j].DatasetID {
+			return addresses[i].DocumentID < addresses[j].DocumentID
+		}
+		return addresses[i].DatasetID < addresses[j].DatasetID
+	})
+	return addresses, nil
 }
 
 func (store *DocumentViewStore) retireStaleBuildsLocked(

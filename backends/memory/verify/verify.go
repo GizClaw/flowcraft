@@ -66,6 +66,12 @@ type ProjectionEvidence struct {
 	Name                                     string
 	StoredSourceDigest, ComputedSourceDigest string
 	StoredBuildDigest, ComputedBuildDigest   string
+	// StoredProducer and ExpectedProducer are the producer identity the lane's
+	// persisted state was stamped with and the identity the running lane
+	// writes with. They differ when the state was written by an earlier
+	// producer, which is not detectable from the digests: those are recomputed
+	// from the stored state and match whatever wrote it.
+	StoredProducer, ExpectedProducer string
 }
 
 type Input struct {
@@ -144,6 +150,11 @@ func InspectContext(ctx context.Context, scope corememory.Scope, input Input) (P
 			value.StoredSourceDigest != value.ComputedSourceDigest {
 			actions = append(actions, Action{ActionRebuild, "projection:" + value.Name, "build/source digest mismatch"})
 		}
+		if value.ExpectedProducer != "" && value.StoredProducer != value.ExpectedProducer {
+			actions = append(actions, Action{ActionRebuild, "projection:" + value.Name,
+				"producer version mismatch: stored " + producerLabel(value.StoredProducer) +
+					", expected " + value.ExpectedProducer})
+		}
 	}
 	sort.Slice(actions, func(i, j int) bool {
 		if actions[i].Target != actions[j].Target {
@@ -157,6 +168,16 @@ func InspectContext(ctx context.Context, scope corememory.Scope, input Input) (P
 		Version string
 	}{scope, actions, AlgorithmVersion})
 	return Plan{ID: digest("verify-plan", payload), Scope: scope, Actions: actions, AlgorithmVersion: AlgorithmVersion}, nil
+}
+
+// producerLabel names a stored producer identity inside an action's evidence.
+// An empty version is the state of a lane written before lanes stamped one:
+// the producer that wrote it is unknown rather than current.
+func producerLabel(version string) string {
+	if version == "" {
+		return "unstamped"
+	}
+	return version
 }
 
 func digest(domain string, value []byte) string {

@@ -105,6 +105,37 @@ func TestEntitySaturationGateSkipsUbiquitousEntities(t *testing.T) {
 	}
 }
 
+// TestEntityProducerIdentityIsTheAlgorithmVersion pins the entity lane's
+// producer identity: the lane re-tokenizes stored keys on every search, so the
+// algorithm version is the whole identity, and the version a rebuild stamps is
+// the version the index writes with.
+func TestEntityProducerIdentityIsTheAlgorithmVersion(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version := index.ProducerVersion(); version != AlgorithmVersion {
+		t.Fatalf("producer version = %q, want %q", version, AlgorithmVersion)
+	}
+	if _, found, err := index.StoredProducerIdentity(ctx, scope); err != nil || found {
+		t.Fatalf("empty lane reported state = %v, %v", found, err)
+	}
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities", Artifacts: []component.Artifact{entityArtifact("a", "openai")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	identity, found, err := index.StoredProducerIdentity(ctx, scope)
+	if err != nil || !found {
+		t.Fatalf("stored identity = %#v, %v, %v", identity, found, err)
+	}
+	if identity.Version != AlgorithmVersion || identity.SourceDigest == "" {
+		t.Fatalf("stored identity = %#v", identity)
+	}
+}
+
 func TestEntityRejectsMalformedJSON(t *testing.T) {
 	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
 	err := index.Rebuild(context.Background(), component.ProjectionRequest{

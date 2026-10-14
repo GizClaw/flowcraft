@@ -5,6 +5,7 @@ package maintain
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -69,6 +70,18 @@ func (config Config) validate() error {
 	return nil
 }
 
+// ProducerVersion names the exact pass whose findings an overlay holds: the
+// policy version plus the tuning those findings were measured with. Two
+// deployments that disagree about the tuning judge the same facts differently,
+// so an overlay records the pass that wrote it and is served only where the
+// same pass runs.
+func (config Config) ProducerVersion() string {
+	config = config.withDefaults()
+	return fmt.Sprintf("%s+similarity=%g,supersede=%g,half_life=%s,floor=%g",
+		AlgorithmVersion, config.SimilarityThreshold, config.SupersedeFactor,
+		config.DecayHalfLife, config.DecayFloor)
+}
+
 // Supersede marks one older fact as superseded by a newer one.
 type Supersede struct {
 	FactID       string  `json:"fact_id"`
@@ -101,6 +114,17 @@ type Plan struct {
 	// document.DocumentViewStore.RetireScopeBuilds for what is kept.
 	ReclaimedChunks  int    `json:"reclaimed_chunks,omitempty"`
 	AlgorithmVersion string `json:"algorithm_version"`
+	// ProducerVersion is the stamp the pass writes with its overlay: the
+	// policy version plus the tuning (see Config.ProducerVersion). A host
+	// reads an overlay only when the stamp is its own, so a policy or tuning
+	// change leaves the earlier judgments behind instead of applying them
+	// under the new rules.
+	ProducerVersion string `json:"producer_version"`
+	// IgnoredOverlay reports that this pass replaced an overlay its own policy
+	// could not read: judgments an earlier producer version or tuning wrote,
+	// which the read path was not applying. It is the flag a host logs, and
+	// the pass that sets it clears it.
+	IgnoredOverlay bool `json:"ignored_overlay,omitempty"`
 }
 
 // Detect plans one scope's soft merges and decay from its conversations.
@@ -130,7 +154,10 @@ func DetectWithConfig(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	plan := Plan{Scope: scope, AlgorithmVersion: AlgorithmVersion}
+	plan := Plan{
+		Scope: scope, AlgorithmVersion: AlgorithmVersion,
+		ProducerVersion: config.ProducerVersion(),
+	}
 	ids := make([]string, 0, len(conversations))
 	for conversation := range conversations {
 		ids = append(ids, conversation)

@@ -56,6 +56,11 @@ type Config struct {
 type Index struct {
 	store      *projectionstore.Store[snapshot, projectionstore.EntryDelta[entry]]
 	projection string
+	// producerVersion is the identity of the state this index writes. The
+	// entity lane re-tokenizes stored keys on every search, so its algorithm
+	// version is the whole identity: it has no persisted scoring parameter a
+	// build carries the way the bm25 lane does.
+	producerVersion string
 }
 
 // AuditDigests independently recomputes and validates active projection digests.
@@ -89,6 +94,7 @@ var _ component.Indexer = (*Index)(nil)
 var _ component.Searcher = (*Index)(nil)
 var _ component.DeltaIndexer = (*Index)(nil)
 var _ component.FullRebuilder = (*Index)(nil)
+var _ component.Producer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if strings.TrimSpace(config.Projection) == "" {
@@ -97,7 +103,8 @@ func New(config Config) (*Index, error) {
 	key := entityEntryKey()
 	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
-			Thresholds: config.Thresholds,
+			ProducerVersion: AlgorithmVersion,
+			Thresholds:      config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -110,11 +117,31 @@ func New(config Config) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("entity projection: %w", err)
 	}
-	return &Index{store: store, projection: config.Projection}, nil
+	return &Index{store: store, projection: config.Projection, producerVersion: AlgorithmVersion}, nil
 }
 
 func (index *Index) Rebuild(ctx context.Context, request component.ProjectionRequest) error {
 	return index.FullRebuild(ctx, request)
+}
+
+// ProducerVersion names the identity of the state this lane writes.
+func (index *Index) ProducerVersion() string { return index.producerVersion }
+
+// StoredProducerIdentity reports the identity of the lane's persisted state for
+// one scope; found is false while the lane holds no state for it.
+func (index *Index) StoredProducerIdentity(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ProducerIdentity, bool, error) {
+	return index.store.ProducerIdentity(ctx, scope, index.projection)
+}
+
+// OtherStoredNames reports the storage names this lane's family holds state
+// under for one scope, excluding the name this lane writes. The entity lane
+// keeps one name, so the list is what a deployment that changed its projection
+// name left behind.
+func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope) ([]string, error) {
+	return index.store.OtherNames(ctx, scope, index.projection)
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {

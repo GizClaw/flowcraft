@@ -46,6 +46,49 @@ func TestBM25RejectsParameters(t *testing.T) {
 	}
 }
 
+// TestBM25ProducerIdentityNamesTheScoringConfiguration guards the identity the
+// lane stamps into its manifest. The algorithm version covers the tokenizer the
+// persisted terms come from, and k1/b ride along because a delta apply rewrites
+// them from live config without moving the manifest digests: without them in
+// the identity, a parameter change would be silent.
+func TestBM25ProducerIdentityNamesTheScoringConfiguration(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	kvStore := kvFor(t)
+	index, err := New(Config{KV: kvStore, Projection: "facts", K1: 1.2, B: 0.75})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version := index.ProducerVersion(); version != "okapi-bm25-v2+k1=1.2,b=0.75" {
+		t.Fatalf("producer version = %q", version)
+	}
+	if _, found, err := index.StoredProducerIdentity(ctx, scope); err != nil || found {
+		t.Fatalf("empty lane reported state = %v, %v", found, err)
+	}
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{artifact("a", "hello")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	identity, found, err := index.StoredProducerIdentity(ctx, scope)
+	if err != nil || !found {
+		t.Fatalf("stored identity = %#v, %v, %v", identity, found, err)
+	}
+	if identity.Version != index.ProducerVersion() || identity.SourceDigest == "" || identity.BuildDigest == "" {
+		t.Fatalf("stored identity = %#v, want the version this index writes", identity)
+	}
+	// A lane built with other scoring parameters writes other state, and the
+	// versions differ: that difference is what reports the older state as
+	// stale instead of letting the next write adopt the new parameters.
+	other, err := New(Config{KV: kvStore, Projection: "facts", K1: 1.5, B: 0.75})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ProducerVersion() == index.ProducerVersion() {
+		t.Fatalf("scoring change did not change the identity: %q", other.ProducerVersion())
+	}
+}
+
 func TestBM25EmptyQueryReturnsEmpty(t *testing.T) {
 	index, _ := New(Config{KV: kvFor(t), Projection: "facts"})
 	results, err := index.Search(context.Background(), component.SearchRequest{
