@@ -227,6 +227,14 @@ func (processor *Processor) ProcessScope(ctx context.Context, scope corememory.S
 // reader serves is not in the set, and neither is a superseded document build:
 // re-indexing them would put entries in the lanes that hydration cannot
 // resolve.
+//
+// The whole set is in memory by construction: a rebuild replaces a lane's
+// state in one publication, so one repair costs one full re-index of the scope.
+// The message log is read in pages of processor.pageSize -- the page size the
+// derivation paths use -- so the set is accumulated once instead of beside a
+// second copy of the log. The facts of the active generation and the chunks of
+// the active builds are read whole, one call each: that is the shape their
+// readers offer, and they are summed into the same set either way.
 func (processor *Processor) ScopeArtifactSet(ctx context.Context, scope corememory.Scope) ([]component.Artifact, error) {
 	if processor == nil {
 		return nil, errors.New("memory worker: processor is required")
@@ -243,12 +251,23 @@ func (processor *Processor) ScopeArtifactSet(ctx context.Context, scope corememo
 		return nil, fmt.Errorf("memory worker: list conversations: %w", err)
 	}
 	for _, conversationID := range conversations {
-		records, err := processor.messages.List(ctx, scope, conversationID, msgsource.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("memory worker: list messages of %q: %w", conversationID, err)
-		}
-		for _, record := range records {
-			artifacts = append(artifacts, messageArtifact(scope, conversationID, record))
+		after := uint64(0)
+		for {
+			records, err := processor.messages.List(ctx, scope, conversationID, msgsource.ListOptions{
+				AfterSeq: after, Limit: processor.pageSize,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("memory worker: list messages of %q: %w", conversationID, err)
+			}
+			for _, record := range records {
+				artifacts = append(artifacts, messageArtifact(scope, conversationID, record))
+				if record.Seq > after {
+					after = record.Seq
+				}
+			}
+			if len(records) < processor.pageSize {
+				break
+			}
 		}
 	}
 	facts, err := processor.facts.ListScope(ctx, scope)

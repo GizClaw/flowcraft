@@ -20,19 +20,29 @@ maintenance; `core/memory` stays implementation-neutral.
 - Summaries: derived facts compact into immutable L0-L3 summary records with
   an active manifest served as its own retrieval lane.
 - Diagnostics: `Assembly.Diagnostics` reports per-scope derivation cursors,
-  pending work, and cumulative worker counters; context calls feed
-  `memory.context.requests` / `memory.context.items`
-  OpenTelemetry counters when the host initializes telemetry.
+  pending work, and cumulative worker counters, together with the state of the
+  scope's projection lanes -- the producer version each lane reads and writes,
+  whether a rebuild would change what it answers with, and the names its family
+  holds state under -- and the state of its maintenance overlay.
+  `Assembly.LaneStatus` and `Assembly.OverlayStatus` are those two reports for
+  one scope; context calls feed `memory.context.requests` /
+  `memory.context.items` OpenTelemetry counters when the host initializes
+  telemetry.
+- Repair: `Assembly.Repair(ctx, RepairRequest{Scope, Lanes})` re-indexes named
+  projection lanes from canonical state and reports what each one published.
+  No deriver runs, so converging a lexical lane costs no model call; see *Lane
+  repair (host-invoked)* below.
 - Retrieval: the context path fuses the recent lane with the configured
   projection lanes (BM25, entity, and vector when an embed model is
   configured), hydrates candidates, and packs them within the request
   budget.
 - Maintenance: `Assembly.Maintain` decays and soft-merges superseded facts on
-  the read path, and `Assembly.RetireGenerations` drops the derived generations
-  a retention policy no longer keeps -- their facts, lane entries, summary
-  bookmarks, and the derivation progress that would otherwise resume in the
-  middle of them. Both are host-invoked through the same assembly SPI; the
-  module ships no runner.
+  the read path under a per-scope overlay stamped with the pass that wrote it,
+  and `Assembly.RetireGenerations` drops the derived generations a retention
+  policy no longer keeps -- their facts, lane entries, summary bookmarks, and
+  the derivation progress that would otherwise resume in the middle of them.
+  Both are host-invoked through the same assembly SPI; the module ships no
+  runner.
 
 ## Deploy
 
@@ -275,13 +285,14 @@ splitter wrote stay where they are, and what it leaves behind depends on the
 lane. The BM25 lane persists its terms, so a CJK document it indexed as one long
 word is out of reach of the characters and bigrams a query produces now;
 rebuilding the lane, or re-deriving the generation, is what restores it, and
-`FullRebuild` is the projection-side entry point for that -- no host call
-reaches it yet. The entity lane re-tokenizes its stored keys on every search, so
-a stored key keeps matching as long as its token stream is a contiguous run of
-the query's; a key several tokens long (whitespace or punctuation inside it)
-still fails to match, as it always did. Such a key also stays a vocabulary entry
-of its own and splits the IDF weight of the same entity written both ways. ASCII
-is unaffected in both lanes: the two splitters agree token for token.
+`Assembly.Repair` is the host call that does it (`FullRebuild` is the
+lane-side entry point it drives). The entity lane re-tokenizes its stored keys
+on every search, so a stored key keeps matching as long as its token stream is a
+contiguous run of the query's; a key several tokens long (whitespace or
+punctuation inside it) still fails to match, as it always did. Such a key also
+stays a vocabulary entry of its own and splits the IDF weight of the same entity
+written both ways. ASCII is unaffected in both lanes: the two splitters agree
+token for token.
 
 One consequence of the splitter is worth knowing before turning it on for an
 existing workspace: a CJK character contributes up to three terms (itself and
@@ -294,19 +305,80 @@ matching off and matches persisted terms exactly.
 
 The algorithm versions of the lines this changed name the splitter they were
 built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v2`,
-`bm25-query-sigmoid-v2`). Only the last has a reader: it rides on every
-candidate's score term as its calibration version
-(`fusion.BM25CalibrationVersion`), so a consumer can see which calibration
-produced a score. The other three are declarations -- nothing compares them, so
-a mismatch does not by itself rebuild a lane or re-derive a generation, and
-carrying a workspace across the change is an operator's call, as described
-above.
+`bm25-query-sigmoid-v2`). The last rides on every candidate's score term as its
+calibration version (`fusion.BM25CalibrationVersion`), so a consumer can see
+which calibration produced a score. The other three are read where the state
+they wrote is read: the bm25 and entity versions are part of the producer
+version their lane's manifest carries (`okapi-bm25-v2+k1=1.2,b=0.75` -- the
+scoring parameters a persisted build carries are part of it too), the
+maintenance version is part of the stamp on the overlay document, and both
+`verify.Plan` and `Assembly.Diagnostics` report a lane whose stored stamp the
+running lane does not write, because a rebuild would change what it answers
+with.
+
+Nothing auto-rebuilds and nothing re-derives on that report: the lane keeps
+serving what it holds, the read path ignores an overlay another pass wrote, and
+carrying a workspace across the change is an operator's call -- which
+`Assembly.Repair` is now the supported way to make.
+
+One lane does not report its staleness that way, and it is the one whose
+storage name is a function of its producer identity: the vector lane writes to
+`<projection>.vector-<digest>`, where the digest covers the algorithm version
+and the embedding model (`generationProjection`). A version bump moves the name
+rather than the stamp, so the lane reads a name nothing was ever written under
+-- it reports no stored state and no staleness, exactly like a scope that was
+never indexed, while the generation the earlier producer filled sits beside it,
+unread. `LaneDiagnostics.OtherGenerations` is what says so: the other names the
+lane's family holds state under for the scope, which for a deployment that
+changed its projection setting or embedding model is the name it left behind.
+`Lanes: ["vector"]` in a `RepairRequest` is what fills the name the lane reads;
+the earlier generation stays where it is, unread and not reclaimed.
+
+## Lane repair (host-invoked)
+
+`Assembly.Repair(ctx, RepairRequest{Scope, Lanes})` re-indexes the named lanes
+of one scope from canonical state: the messages of every conversation, the facts
+of the active generation, and the chunks of the active document builds, through
+the artifact shapes the derivation worker writes. No deriver runs, so converging
+a lexical lane costs no model call. An empty `Lanes` list rebuilds every lane
+whose rebuild needs no inference -- the vector lane is rebuilt only when it is
+named, because re-indexing it embeds every artifact again -- and a name that is
+not configured is a validation error rather than a silent no-op. The result
+reports, per lane, how many artifacts were indexed, whether the state the lane
+served was written by another producer (`LaneRepair.StaleBefore`), and the
+digests of the state that replaced it.
+
+A repair holds the scope against derivation for its whole run, and derivation
+refuses while it runs: a pass that indexed beside the rebuild would leave entries
+in a lane the rebuild is about to replace. Both refusals are retryable and mean
+nothing was rebuilt; a repair that fails halfway reports the lanes it finished,
+and running it again is safe.
+
+It is a re-index, not a re-derive: the derivation watermarks, the published
+generation, the policy digest, and the overlay stay where they are. The cost is
+one full re-index of the scope in memory, because a rebuild replaces a lane's
+state in one publication. The message log is read in pages of the worker's page
+size, the facts of the active generation and the chunks of the active builds are
+read whole (that is the shape their readers offer), and the artifact set is
+handed to every lane as it is rather than cloned per lane -- `ProjectionRequest`
+documents `Artifacts` as read-only for that reason.
 
 ## Integrity and evaluation
 
 - `Assembly.Verify(ctx, scope, conversationID)` runs the repair evidence
   checks read-only: dangling fact links, source digest drift, summary
-  digests, and projection digest drift.
+  digests, and projection digest drift. It also reports a lane whose stored
+  producer version is not the one the running lane writes, as a `rebuild`
+  action. What it cannot see is state under a name the lane no longer reads: a
+  forked generation has no manifest to audit, which is why that case is
+  reported by `LaneDiagnostics.OtherGenerations` instead.
+
+Lane manifests carry the producer version of the state they point at, and that
+stamp is deliberately kept out of the identity a manifest is checked against: a
+build that predates the field recomputes the same identity, so a rollback (or a
+mixed-version deployment over one workspace) keeps reading the manifests a newer
+build wrote instead of reporting every one of them corrupt. The stamp is
+compared on its own, by `verify` and by `Assembly.Diagnostics`.
 
 ## Maintenance (host-invoked)
 
@@ -320,6 +392,17 @@ and decay factors wins. The module ships no runner: hosts schedule the call
 however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
 decay floor).
+
+The overlay is stamped with the pass that wrote it -- the maintenance algorithm
+version together with that tuning (`maintain.Config.ProducerVersion`) -- and the
+read path applies an overlay only when its stamp is the one this deployment's
+tuning serves. An overlay written before the stamp existed, or under another
+tuning, is ignored rather than applied to another policy's scores: canonical
+facts are untouched either way, which is what makes a pass its own repair, since
+the next one rewrites the document under the running policy. A host that wants
+to know before it schedules one reads `Assembly.OverlayStatus` (or
+`Diagnostics`' per-scope overlay), and `Plan.IgnoredOverlay` says whether a pass
+replaced judgments it did not apply.
 
 The reclaim is the document half of the sweep surface, and it is deliberately
 not a generation sweep: see *Derived documents are not generation scoped*
