@@ -374,7 +374,7 @@ func TestGenerateResponseValidationDetailsNameEveryCheck(t *testing.T) {
 			if checkErr.check != tc.check {
 				t.Fatalf("check = %q, want %q", checkErr.check, tc.check)
 			}
-			wantKind := InvalidProviderResponse
+			wantKind := ProviderResponseUnusable
 			if tc.check == generateResponseCheckUndefinedTool {
 				wantKind = UndefinedTool
 			}
@@ -443,8 +443,8 @@ func TestResponseValidationDetailUsesScope(t *testing.T) {
 	if !errors.As(err, &responseErr) {
 		t.Fatalf("Execute error = %T %v, want *Error", err, err)
 	}
-	if responseErr.Kind != InvalidProviderResponse {
-		t.Fatalf("Kind = %q, want %q", responseErr.Kind, InvalidProviderResponse)
+	if responseErr.Kind != ProviderResponseUnusable {
+		t.Fatalf("Kind = %q, want %q", responseErr.Kind, ProviderResponseUnusable)
 	}
 	if responseErr.Operation != OperationGenerate {
 		t.Fatalf("Operation = %q, want %q", responseErr.Operation, OperationGenerate)
@@ -452,7 +452,7 @@ func TestResponseValidationDetailUsesScope(t *testing.T) {
 	if responseErr.Detail != "generate.validation.no_text" {
 		t.Fatalf("Detail = %q, want generate.validation.no_text", responseErr.Detail)
 	}
-	if got := responseErr.Error(); got != "invalid_provider_response during generate: generate.validation.no_text" {
+	if got := responseErr.Error(); got != "provider_response_unusable during generate: generate.validation.no_text" {
 		t.Fatalf("Error() = %q", got)
 	}
 

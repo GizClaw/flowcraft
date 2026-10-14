@@ -244,7 +244,7 @@ Behavior:
   unknown names fail the node.
 - A response whose tool calls name tools absent from the exposed definitions
   is rejected by the engine with a distinguishable `undefined_tool` error
-  (not the generic `invalid_provider_response`). When
+  (not the generic `provider_response_unusable`). When
   `undefined_tool_recovery` is enabled, the node stores a user-role
   feedback text under `recover_feedback_key` (defaulting to the reserved
   per-node `__recover_feedback.<node id>` var) — telling the model the
