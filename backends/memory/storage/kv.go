@@ -44,6 +44,20 @@ type BatchStore interface {
 	PutBatch(ctx context.Context, entries []Entry) error
 }
 
+// KeyLister is the optional key-only scan. List returns what each key holds,
+// which is the wrong read for a caller that only needs to know which names
+// exist: a projection index area holds every base and segment a lane has ever
+// published, so listing it carries the whole stored state to answer a question
+// about its shape. A substrate that can answer without the values implements
+// this.
+type KeyLister interface {
+	// Keys returns the keys inside the prefix area (key == prefix or key
+	// starts with prefix + "/") in lexicographic key order, reading no
+	// values. A missing or empty prefix area returns an empty slice, not an
+	// error.
+	Keys(ctx context.Context, prefix string) ([]string, error)
+}
+
 // PutIfAbsentStore is the optional extension for immutable keys (catalog
 // entries, repair audits, message commits, projection segments). Immutable
 // writes must use PutIfAbsent; the caller decides between idempotent

@@ -82,6 +82,9 @@ type Deriver interface {
 }
 
 // ProjectionRequest replaces one rebuildable projection from typed artifacts.
+//
+// Artifacts is read-only: a rebuild must not mutate the entries or keep the
+// slice past the call, because one repair hands the same set to every lane.
 type ProjectionRequest struct {
 	Scope      corememory.Scope
 	Projection string
@@ -129,6 +132,15 @@ type Producer interface {
 	// state for one scope. found is false when the lane holds no state yet,
 	// which is not a mismatch: there is nothing an earlier producer wrote.
 	StoredProducerIdentity(context.Context, corememory.Scope) (ProducerIdentity, bool, error)
+	// OtherStoredNames reports the storage names this lane's family holds
+	// state under for one scope, excluding the name this lane writes. A lane
+	// that derives its storage name from the producer identity forks one name
+	// per generation, so the state an earlier producer wrote survives under a
+	// name the running lane no longer reads: no manifest of the current name
+	// can report it, and this is what tells a host it is there. The list is
+	// empty when nothing else holds state, which is also the state of a scope
+	// that was never indexed.
+	OtherStoredNames(context.Context, corememory.Scope) ([]string, error)
 }
 
 // DocumentAddress qualifies a document within one hard scope.

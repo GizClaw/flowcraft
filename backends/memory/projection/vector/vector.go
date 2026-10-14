@@ -187,6 +187,15 @@ func (index *Index) StoredProducerIdentity(
 	return index.store.ProducerIdentity(ctx, scope, index.storageProjection)
 }
 
+// OtherStoredNames reports the storage names this lane's family holds state
+// under for one scope, excluding the generation this lane writes. A generation
+// is named after the algorithm and the embedding model that produced it, so a
+// new generation starts empty and leaves the previous one on disk under a name
+// this lane no longer reads; that is what this reports.
+func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope) ([]string, error) {
+	return index.store.OtherNames(ctx, scope, index.storageProjection)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	defer index.warmSnapshots(request.Scope)
 	defer index.invalidateSnapshots()

@@ -566,6 +566,15 @@ func buildLaneStatus(
 				status.StoredProducer = identity.Version
 				status.Stale = identity.Version != status.ExpectedProducer
 			}
+			// State under another name is what this lane's own manifest
+			// cannot report: the name is a function of the producer
+			// identity, so a bumped algorithm reads a name that was never
+			// written and finds nothing rather than a mismatch.
+			names, err := auditor.Producer.OtherStoredNames(ctx, scope)
+			if err != nil {
+				return nil, fmt.Errorf("memory assembly: lane %q other names: %w", auditor.Name, err)
+			}
+			status.OtherGenerations = names
 			statuses = append(statuses, status)
 		}
 		return statuses, nil
@@ -613,7 +622,10 @@ func buildRepair(
 
 // rebuildLane republishes one lane from the canonical artifact set and reports
 // what it published: whether the state it replaced was stale, and the digests
-// of the state that replaced it.
+// of the state that replaced it. The set is handed to the lane as it is rather
+// than cloned per lane: a rebuild reads the artifacts and builds its own
+// records from them, and the clone of a scope-sized set is a second copy of it
+// in memory.
 func rebuildLane(
 	ctx context.Context,
 	lane projectionLane,
@@ -630,7 +642,7 @@ func rebuildLane(
 		entry.StaleBefore = identity.Version != lane.Producer.ProducerVersion()
 	}
 	if err := lane.Rebuilder.FullRebuild(ctx, component.ProjectionRequest{
-		Scope: scope, Projection: projection, Artifacts: component.CloneArtifacts(artifacts),
+		Scope: scope, Projection: projection, Artifacts: artifacts,
 	}); err != nil {
 		return LaneRepair{}, fmt.Errorf("memory assembly: rebuild lane %q: %w", lane.Name, err)
 	}

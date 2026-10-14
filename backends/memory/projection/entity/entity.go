@@ -136,6 +136,14 @@ func (index *Index) StoredProducerIdentity(
 	return index.store.ProducerIdentity(ctx, scope, index.projection)
 }
 
+// OtherStoredNames reports the storage names this lane's family holds state
+// under for one scope, excluding the name this lane writes. The entity lane
+// keeps one name, so the list is what a deployment that changed its projection
+// name left behind.
+func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope) ([]string, error) {
+	return index.store.OtherNames(ctx, scope, index.projection)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	if err := index.validateRequest(request); err != nil {
 		return err

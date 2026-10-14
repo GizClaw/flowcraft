@@ -162,6 +162,16 @@ func testKVValues(t *testing.T, kv storage.Store) {
 		entries[0].Key != "conformance/values/other" || entries[1].Key != key {
 		t.Fatalf("list = %#v, %v", entries, err)
 	}
+	if keyLister, ok := kv.(storage.KeyLister); ok {
+		keys, err := keyLister.Keys(ctx, "conformance/values")
+		if err != nil || len(keys) != 2 ||
+			keys[0] != "conformance/values/other" || keys[1] != key {
+			t.Fatalf("keys = %#v, %v", keys, err)
+		}
+		if keys, err := keyLister.Keys(ctx, "conformance/absent"); err != nil || len(keys) != 0 {
+			t.Fatalf("keys of an empty area = %#v, %v", keys, err)
+		}
+	}
 	if err := kv.Delete(ctx, key); err != nil {
 		t.Fatalf("delete: %v", err)
 	}

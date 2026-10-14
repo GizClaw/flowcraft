@@ -40,11 +40,27 @@ type LaneDiagnostics struct {
 	StoredProducer   string `json:"stored_producer,omitempty"`
 	Stored           bool   `json:"stored"`
 	Stale            bool   `json:"stale"`
+	// OtherGenerations lists the storage names this lane's family holds state
+	// under for the scope, excluding the name the running lane reads. A lane
+	// whose storage name is derived from its producer identity forks one name
+	// per generation, so after an algorithm bump the lane reads a name that
+	// was never written: it reports Stored false and not stale, which is what
+	// a scope that was never indexed reports too. The state an earlier
+	// generation holds is here instead, and Repair is what fills the name this
+	// lane reads.
+	//
+	// A deployment that changed its projection setting or embedding model sees
+	// the name it left behind here as well: that state is orphaned the same
+	// way, and nothing reads it.
+	OtherGenerations []string `json:"other_generations,omitempty"`
 }
 
-// Diagnostics reports the current derivation state. The call performs
-// bounded reads (at most one pending item per cursor, one manifest per lane)
-// and does not mutate state.
+// Diagnostics reports the current derivation state. The call performs bounded
+// reads -- at most one pending item per cursor, one manifest and one name
+// listing per lane, and one overlay document per scope -- and does not mutate
+// state. The overlay is the read whose size follows what is stored rather than
+// what is configured: it carries one entry per judged fact, so its bound is
+// the overlay itself.
 func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) {
 	if assembly == nil {
 		return Diagnostics{}, errors.New("memory assembly: assembly is required")
