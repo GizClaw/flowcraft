@@ -91,6 +91,56 @@ func TestFactExtractorNoneSkipsAndSimpleBatchesOnceWithRuneTail(t *testing.T) {
 	}
 }
 
+// TestFactExtractorQuotaAsksForTheCapAndKeepsTheStandaloneFacts wires the quota
+// through the extractor: the request names the cap in the prompt and declares the
+// priority key in the schema, and a batch over the cap keeps the facts the
+// extractor marked as standing alone. The batch here is written so the two rules
+// disagree -- the extractor's low-priority fact comes first and the high-priority
+// one last -- which is exactly the turn the quota exists for.
+func TestFactExtractorQuotaAsksForTheCapAndKeepsTheStandaloneFacts(t *testing.T) {
+	model := inferencetest.DefaultFakeModel
+	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[
+		{"text":"Nadia joined a community choir in Bristol.","entities":["Nadia"],"event_time":"","priority":"low"},
+		{"text":"Nadia works as a bookkeeper in Bristol.","entities":["Nadia","Bristol"],"event_time":"","priority":"high"},
+		{"text":"Nadia has a sister named Priya.","entities":["Nadia","Priya"],"event_time":"","priority":"low"}
+	]}`)}
+	config := DefaultConfig()
+	config.Runtime = fake.Assembly(t)
+	config.GenerateModel = &model
+	config.MaxFacts = 1
+	config.Quota = true
+	extractor, err := NewFactExtractorWithConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := extractor.Derive(context.Background(), rawMessageArtifact())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("quota survivors = %d, want 1", len(got))
+	}
+	for _, artifact := range got {
+		if !strings.Contains(artifact.Content.Text(), "bookkeeper") {
+			t.Fatalf("the batch kept %#v, want the fact that stands alone", artifact.Content.Text())
+		}
+	}
+	request := fake.LastRequest()
+	if len(request.Context) != 1 {
+		t.Fatalf("system messages = %d", len(request.Context))
+	}
+	if system := request.Context[0].Content.Text(); !strings.Contains(system, "at most 1 fact to") {
+		t.Errorf("the prompt does not name the batch it allows: %d runes", len(system))
+	}
+	response := request.Input.Content.Intent.Text.Response
+	if response == nil || response.Kind != inference.ResponseJSONSchema {
+		t.Fatalf("response format = %#v", response)
+	}
+	if !strings.Contains(string(response.Schema), `"priority":{"type":"string"}`) {
+		t.Errorf("the schema does not declare the priority key: %s", response.Schema)
+	}
+}
+
 func TestFactExtractorRichSchemaMalformedAndCaps(t *testing.T) {
 	model := inferencetest.DefaultFakeModel
 	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"Alice works at Acme","entities":["Alice","Acme"],"event_time":"","predicate":"works_at","temporal_detail":"since 2020"}]}`)}

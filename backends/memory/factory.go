@@ -402,6 +402,7 @@ func buildDeriver(
 		Runtime:                engine,
 		GenerateModel:          &generateRef,
 		Facts:                  facts,
+		Quota:                  settings.Fact.Quota,
 	}
 	if !settings.Embed.isZero() {
 		embedRef := settings.Embed.ref()

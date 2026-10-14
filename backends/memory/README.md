@@ -14,6 +14,10 @@ maintenance; `core/memory` stays implementation-neutral.
   watermark, extracts facts (chat line) into the generation that policy owns,
   publishes that generation once the pass completes, and feeds every
   projection lane exactly once per commit.
+  `fact.quota` makes the extractor's batch cap a decision rather than a cut:
+  the prompt names the cap and every fact carries the extractor's own
+  priority, so a batch over the cap keeps the claims that stand alone; see
+  *Extraction density* below.
 - Documents: canonical revisions are scanned through their scope-wide outbox
   cursor, chunked by the deterministic knowledge line, published as a
   document hierarchy, and reconciled into the projection lanes.
@@ -109,6 +113,17 @@ recent and lexical/entity lanes. `interval: "0"` disables the background
 runner while `RunOnce` stays available. Decay, consolidation, and forgetting
 are host-owned maintenance jobs: the module keeps the canonical log and
 derived views correct, and hosts schedule whatever hygiene they need.
+
+`fact.quota` and `fact.max_facts` bound what one commit may add to a
+conversation, and `fact.max_facts` is the lever that makes the quota bite
+(`quota: true` with the default cap of 64 changes the prompt and nothing else,
+because no measured batch reaches it):
+
+```yaml
+fact:
+  max_facts: 16
+  quota: true
+```
 
 The agent side binds the assembly through the `core/memory/hook` factories
 (`memory.context` under `hook.prepare`, `memory.turn` under `hook.commit`).
@@ -379,6 +394,51 @@ build that predates the field recomputes the same identity, so a rollback (or a
 mixed-version deployment over one workspace) keeps reading the manifests a newer
 build wrote instead of reporting every one of them corrupt. The stamp is
 compared on its own, by `verify` and by `Assembly.Diagnostics`.
+
+## Extraction density
+
+One chat commit derives 12.59 facts on average over the benchmark workspace this
+project measures against (3424 active facts over 272 commits; 99th percentile 27
+facts in one commit, maximum 38), while a retrieval pack holds 30 items in that
+measurement and 20 items by default. Most derived facts are therefore never
+retrieved, and a turn that produces a dozen claims competes for the same slots as
+every other turn.
+
+`fact.quota` turns the batch cap into a decision instead of a cut: the extractor
+prompt names the cap (`fact.max_facts`) and asks every fact for its own priority
+("high" for a claim a question can be answered from on its own, "low" for one
+that only carries its meaning beside another fact of the turn), and a batch over
+the cap is truncated by that priority instead of by position. It changes what the
+extractor writes, so it is part of the derivation policy digest and switching it
+on re-derives the scope. It only bites where the cap is set deliberately: at the
+default 64 no measured batch comes close, so the quota's effect there is the
+prompt's own instruction to spend the turn's slots on claims worth retrieving.
+
+The cheaper-looking lever -- folding the near-duplicate facts of one commit
+together -- is deliberately not in the module, because the measurement says there
+is nothing to fold. `eval/cmd/memory-fact-density` reads a stored workspace and
+reports what a similarity merge and a length floor would actually remove:
+
+```
+$ cd eval && go run ./cmd/memory-fact-density -workspace ./workspace -runtime memories
+stored facts 3424 over 272 commits (12.59 facts/commit)
+facts per commit: p50=12 p90=19 p99=27 max=38
+same-commit pairs 23161 (canonical duplicates excluded)
+jaccard histogram (0.0-0.1 ... 0.9-1.0): [5451 10577 6029 930 142 24 6 2 0 0]
+containment histogram (0.0-0.1 ... 0.9-1.0): [1090 3059 5363 6363 4272 2237 596 141 35 5]
+projection (floor + merge, greedy, longer text survives):
+  jaccard     cutoff 0.50  survivors  3392 (kept 99.1%)  12.47 facts/commit
+  containment cutoff 0.85  survivors  3411 (kept 99.6%)  12.54 facts/commit
+```
+
+Two thirds of the same-commit pairs score below 0.3 by token Jaccard, and the most
+similar pairs that do exist are not duplicates: they are the two sides of one
+event ("Calvin asked Dave to take pictures of his trip" / "Dave agreed to take
+pictures of his trip"), which downstream questions ask about separately. Pushing
+the threshold down to where it folds anything at all starts folding distinct
+claims. The density is made of distinct claims, so the lever that reduces it is
+asking the model for fewer, better ones -- and that is a recall trade to measure,
+not a free win.
 
 ## Maintenance (host-invoked)
 

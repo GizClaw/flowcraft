@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +94,37 @@ func TestAssemblyStampsTheRetrievalSummary(t *testing.T) {
 	want := `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
 	if got := assembly.RetrievalSummary(); got != want {
 		t.Fatalf("RetrievalSummary() = %s, want %s", got, want)
+	}
+}
+
+// TestFactQuotaMovesTheDerivationPolicyDigest pins the quota's identity. It
+// changes what the extractor writes, so switching it on re-derives the scope --
+// which is what the digest does -- while a workspace that leaves it off derives
+// under the policy it always had: the off document carries no key, so the digest
+// of an untouched workspace does not move.
+func TestFactQuotaMovesTheDerivationPolicyDigest(t *testing.T) {
+	withQuota := func(quota bool) Settings {
+		settings := Settings{}
+		settings.applyDefaults()
+		settings.Fact.Quota = quota
+		return settings
+	}
+	offDigest, err := policyDigest(withQuota(false), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDigest, err := policyDigest(withQuota(true), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offDigest == onDigest {
+		t.Fatal("the extraction quota must move the derivation policy digest, or a workspace would keep facts derived without it")
+	}
+	encoded, err := json.Marshal(withQuota(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "quota") {
+		t.Fatalf("a workspace without the quota marshals a key for it: %s", encoded)
 	}
 }

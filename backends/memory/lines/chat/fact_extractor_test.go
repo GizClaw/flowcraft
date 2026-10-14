@@ -241,10 +241,10 @@ func TestRichPromptDocumentsRichSchemaFields(t *testing.T) {
 		!strings.Contains(factSystemRich, `"temporal_detail":"On 12 March 2023"`) {
 		t.Fatal("rich prompt example does not carry the rich keys")
 	}
-	if got := factSystemFor(StrategyRich); got != factSystemRich {
+	if got := factSystemFor(StrategyRich, false, 64); got != factSystemRich {
 		t.Fatal("the rich strategy does not use the rich prompt")
 	}
-	if got := factSystemFor(StrategySimple); got != factSystem {
+	if got := factSystemFor(StrategySimple, false, 64); got != factSystem {
 		t.Fatal("the simple strategy does not use the simple prompt")
 	}
 }
