@@ -293,6 +293,20 @@ Scores guide selection only; they never claim a request is executable.
   curve, an explicit `retryable` class list (`rate_limit`, `timeout`,
   `unavailable`), and `fallback_on_retry_exhausted`. A retry section
   requires its operation to have pools.
+- Failure policy stays conservative. Core never auto-retries an attempt-void
+  failure, whatever `retryable` lists, and such a failure does not reach
+  `fallback_on_retry_exhausted` either (that path carries transient provider
+  failures). The attempt-void outcomes are `provider_truncated` (the stream
+  ended without a terminal finish event) and `provider_response_unusable`
+  (the provider completed the call — a terminal finish event arrived, or a
+  unary call returned — but the assembled artifact violates the request
+  contract: empty completed content, an unassemblable part, a tool-choice
+  violation, and so on). Both classify as not available rather than
+  internal, so a host can re-initiate the call at its own granularity:
+  partial output may already have been committed by the inference node, so
+  the decision belongs to the caller. `undefined_tool` stays a deterministic
+  validation failure and remains the one kind the graph engine can turn into
+  recoverable feedback.
 - `circuit_breaker` opens a per-target circuit after consecutive transient
   failures, probes while half-open, and skips attempts while open.
 - At build time every configured target is validated against the assembly:

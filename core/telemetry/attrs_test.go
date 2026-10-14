@@ -37,6 +37,7 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrDelegationDepth, "delegation.depth"},
 		{AttrDelegationCaller, "delegation.caller"},
 		{AttrErrorMessage, "error.message"},
+		{AttrErrorCause, "error.cause"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -57,7 +58,7 @@ func TestAttrConstants_Unique(t *testing.T) {
 		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
 		AttrLLMRequestID, AttrLLMResponseID,
-		AttrConversationID, AttrErrorMessage,
+		AttrConversationID, AttrErrorMessage, AttrErrorCause,
 		AttrDelegationTarget, AttrDelegationMode,
 		AttrDelegationDepth, AttrDelegationCaller,
 	}

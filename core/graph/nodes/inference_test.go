@@ -759,8 +759,8 @@ func TestInferenceNode_UndefinedToolRecoveryKeepsNamedChoiceStrict(t *testing.T)
 	board := userBoard()
 	err := executeGraph(t, g, agent.NoopHost{}, board)
 	var infErr *inference.Error
-	if !errors.As(err, &infErr) || infErr.Kind != inference.InvalidProviderResponse {
-		t.Fatalf("error = %v, want invalid_provider_response for named-choice violation", err)
+	if !errors.As(err, &infErr) || infErr.Kind != inference.ProviderResponseUnusable {
+		t.Fatalf("error = %v, want provider_response_unusable for named-choice violation", err)
 	}
 	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
 		t.Fatalf("channel length = %d, want 1 (named choice never recovered)", len(msgs))

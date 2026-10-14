@@ -104,8 +104,13 @@ type undefinedToolError struct {
 }
 
 func (e *undefinedToolError) Error() string {
-	return fmt.Sprintf("generate tool call %d names undefined tool %q", e.Index, e.Call.Name)
+	return fmt.Sprintf(
+		"generate tool call %d names undefined tool %s", e.Index, quoteToken(e.Call.Name))
 }
+
+// redactedCause: the message carries the model's tool name, which reaches
+// the log only through quoteToken's bounded, quoted rendering.
+func (*undefinedToolError) redactedCause() {}
 
 // generateResponseCheckError carries the static validation stage alongside
 // the original cause. The stage is safe to expose through Error.Detail; the
@@ -117,6 +122,8 @@ type generateResponseCheckError struct {
 
 func (e *generateResponseCheckError) Error() string { return e.err.Error() }
 func (e *generateResponseCheckError) Unwrap() error { return e.err }
+
+func (*generateResponseCheckError) redactedCause() {}
 
 type generateResponseCheck string
 
@@ -260,9 +267,9 @@ func (r GenerateResponse) validateFor(request GenerateRequest) (generateResponse
 				for _, call := range toolCalls {
 					if call.Call.Name != choice.Name {
 						return generateResponseCheckToolChoice, fmt.Errorf(
-							"named tool choice %q produced tool %q",
-							choice.Name,
-							call.Call.Name,
+							"named tool choice %s produced tool %s",
+							quoteToken(choice.Name),
+							quoteToken(call.Call.Name),
 						)
 					}
 				}
@@ -336,7 +343,8 @@ func responseMessageValidationCheck(parts []message.Part) generateResponseCheck 
 // encoding beyond the media family.
 func validateGenerateVideo(part message.VideoPart) error {
 	if mediaType := part.Source.BaseMediaType(); !strings.HasPrefix(mediaType, "video/") {
-		return fmt.Errorf("video part media type %q is not video", part.Source.MediaType())
+		return fmt.Errorf(
+			"video part media type %s is not video", quoteToken(part.Source.MediaType()))
 	}
 	return nil
 }
@@ -416,8 +424,8 @@ func validateGenerateImage(part message.ImagePart, intent ImageIntent) error {
 	if intent.OutputFormat != "" &&
 		part.Source.BaseMediaType() != intent.OutputFormat.MediaType() {
 		return fmt.Errorf(
-			"media type %q does not match requested format %q",
-			part.Source.MediaType(),
+			"media type %s does not match requested format %q",
+			quoteToken(part.Source.MediaType()),
 			intent.OutputFormat,
 		)
 	}
