@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -47,6 +48,10 @@ type Index struct {
 	projection string
 	k1         float64
 	b          float64
+	// producerVersion is the identity of the state this index writes, composed
+	// once at construction: the algorithm version above together with the
+	// scoring parameters a persisted build carries.
+	producerVersion string
 
 	mu     sync.Mutex
 	cached *cachedKernel
@@ -95,6 +100,21 @@ var _ component.Indexer = (*Index)(nil)
 var _ component.DeltaIndexer = (*Index)(nil)
 var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Searcher = (*Index)(nil)
+var _ component.Producer = (*Index)(nil)
+
+// producerVersion names the identity of the state one index writes: the
+// algorithm version, which covers the tokenizer its persisted terms come from,
+// plus the scoring parameters a build carries in its snapshot. k1 and b do not
+// change which terms are persisted, but they do change what a persisted build
+// scores with, and a delta apply rewrites them from live config without
+// touching the manifest digests -- so recording them is what makes a parameter
+// change visible instead of silent. A rebuild rewrites the snapshot with the
+// parameters the running index was built with, which is why they belong to the
+// identity a rebuild converges to rather than to a separate toggle.
+func producerVersion(k1, b float64) string {
+	return fmt.Sprintf("%s+k1=%s,b=%s", AlgorithmVersion,
+		strconv.FormatFloat(k1, 'g', -1, 64), strconv.FormatFloat(b, 'g', -1, 64))
+}
 
 func New(config Config) (*Index, error) {
 	if strings.TrimSpace(config.Projection) == "" {
@@ -117,7 +137,8 @@ func New(config Config) (*Index, error) {
 	key := bm25EntryKey()
 	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[doc]]{
-			Thresholds: config.Thresholds,
+			ProducerVersion: producerVersion(k1, b),
+			Thresholds:      config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[doc]) projectionstore.EntryDelta[doc] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -132,11 +153,26 @@ func New(config Config) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bm25 projection: %w", err)
 	}
-	return &Index{store: store, projection: config.Projection, k1: k1, b: b}, nil
+	return &Index{
+		store: store, projection: config.Projection, k1: k1, b: b,
+		producerVersion: producerVersion(k1, b),
+	}, nil
 }
 
 func (index *Index) Rebuild(ctx context.Context, request component.ProjectionRequest) error {
 	return index.FullRebuild(ctx, request)
+}
+
+// ProducerVersion names the identity of the state this lane writes.
+func (index *Index) ProducerVersion() string { return index.producerVersion }
+
+// StoredProducerIdentity reports the identity of the lane's persisted state for
+// one scope; found is false while the lane holds no state for it.
+func (index *Index) StoredProducerIdentity(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ProducerIdentity, bool, error) {
+	return index.store.ProducerIdentity(ctx, scope, index.projection)
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {

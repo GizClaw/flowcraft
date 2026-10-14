@@ -51,6 +51,11 @@ type Index struct {
 	model             model.ModelRef
 	projection        string
 	storageProjection string
+	// producerVersion is the identity of the state this index writes. The
+	// scoring algorithm and the model identity already name the storage
+	// projection a generation is written to, so a stored version can only
+	// match its own generation's; the stamp records which producer wrote it.
+	producerVersion string
 	// snapshotCache keeps the materialized vector table per scope. Loading it
 	// per query meant reading every entry through the workspace store's single
 	// mutex, which dominated retrieval latency under concurrency (measured:
@@ -129,6 +134,7 @@ var _ component.DeltaIndexer = (*Index)(nil)
 var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Searcher = (*Index)(nil)
 var _ component.VectorSearcher = (*Index)(nil)
+var _ component.Producer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if config.Runtime == nil {
@@ -143,7 +149,8 @@ func New(config Config) (*Index, error) {
 	key := vectorEntryKey()
 	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
-			Thresholds: config.Thresholds,
+			ProducerVersion: generationIdentity(config.Model),
+			Thresholds:      config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -159,11 +166,25 @@ func New(config Config) (*Index, error) {
 	return &Index{
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
+		producerVersion:   generationIdentity(config.Model),
 	}, nil
 }
 
 func (index *Index) Rebuild(ctx context.Context, request component.ProjectionRequest) error {
 	return index.FullRebuild(ctx, request)
+}
+
+// ProducerVersion names the identity of the state this lane writes.
+func (index *Index) ProducerVersion() string { return index.producerVersion }
+
+// StoredProducerIdentity reports the identity of the lane's persisted state for
+// one scope; found is false while no generation for the configured model holds
+// state for it.
+func (index *Index) StoredProducerIdentity(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ProducerIdentity, bool, error) {
+	return index.store.ProducerIdentity(ctx, scope, index.storageProjection)
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
@@ -545,6 +566,17 @@ func generationProjection(projection string, model model.ModelRef) string {
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return fmt.Sprintf("%s.vector-%x", projection, sum[:12])
+}
+
+// generationIdentity names the producer of one vector generation, readably:
+// the scoring algorithm together with the embedding model identity the
+// generation is bound to.
+func generationIdentity(model model.ModelRef) string {
+	parts := []string{AlgorithmVersion, model.ID.Provider, model.ID.Name}
+	if model.Profile != "" {
+		parts = append(parts, model.Profile)
+	}
+	return strings.Join(parts, "+")
 }
 
 func digestArtifacts(artifacts []component.Artifact) string {
