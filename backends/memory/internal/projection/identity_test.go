@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -115,5 +116,62 @@ func TestUnstampedStateReadsAsUnknownUntilRebuilt(t *testing.T) {
 	}
 	if version := identityOf(t, current, scope, "index").Version; version != "lane-v2" {
 		t.Fatalf("rebuilt version = %q", version)
+	}
+}
+
+// legacyManifest is the manifest a build without the producer stamp writes:
+// the same fields in the same order, minus that one. Such a build drops the
+// field when it unmarshals, so the identity it recomputes is the digest of
+// exactly these bytes.
+type legacyManifest struct {
+	SchemaVersion    int              `json:"schema_version"`
+	StorageVersion   string           `json:"storage_version"`
+	Projection       string           `json:"projection"`
+	Scope            corememory.Scope `json:"scope"`
+	Base             *BaseRef         `json:"base,omitempty"`
+	Segments         []SegmentRef     `json:"segments"`
+	BaseSourceDigest string           `json:"base_source_digest"`
+	SourceDigest     string           `json:"source_digest"`
+	BuildDigest      string           `json:"build_digest"`
+	BaseLastApplied  *ReplayRef       `json:"base_last_applied,omitempty"`
+	LastApplied      *ReplayRef       `json:"last_applied,omitempty"`
+	Identity         string           `json:"identity"`
+}
+
+// The producer stamp records who wrote the state rather than what the state
+// is, so it stays out of the manifest identity: a build that predates the
+// field recomputes the identity of a manifest this build wrote, which is what
+// keeps a rollback -- or a mixed-version deployment over one workspace -- from
+// reading every lane the newer build touched as corrupt.
+func TestManifestIdentitySurvivesAReaderWithoutTheStamp(t *testing.T) {
+	ctx := context.Background()
+	kvStore, err := storage.NewWorkspaceKV(newTestWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newIdentityStore(t, kvStore, "lane-v1", 1)
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := store.FullRebuild(ctx, scope, "index", map[string]bool{"base": true}, "source"); err != nil {
+		t.Fatal(err)
+	}
+	manifest, found, err := store.loadManifestLocked(ctx, scope, "index")
+	if err != nil || !found {
+		t.Fatalf("manifest = %#v, %v, %v", manifest, found, err)
+	}
+	if manifest.ProducerVersion != "lane-v1" {
+		t.Fatalf("rebuilt manifest is not stamped: %#v", manifest)
+	}
+	encoded, err := json.Marshal(legacyManifest{
+		SchemaVersion: manifest.SchemaVersion, StorageVersion: manifest.StorageVersion,
+		Projection: manifest.Projection, Scope: manifest.Scope, Base: manifest.Base,
+		Segments: manifest.Segments, BaseSourceDigest: manifest.BaseSourceDigest,
+		SourceDigest: manifest.SourceDigest, BuildDigest: manifest.BuildDigest,
+		BaseLastApplied: manifest.BaseLastApplied, LastApplied: manifest.LastApplied,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chainDigest("manifest", string(encoded)); got != manifest.Identity {
+		t.Fatalf("identity a reader without the stamp recomputes = %q, stored %q", got, manifest.Identity)
 	}
 }

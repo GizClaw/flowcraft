@@ -84,6 +84,11 @@ type ReplayRef struct {
 // mixed, and the stamp is what reports that a rebuild would converge it. A
 // rebuild (FullRebuild) publishes state the running producer wrote, so it
 // stamps its own version.
+//
+// The stamp is metadata about the writer rather than part of the state, so it
+// is deliberately left out of Identity (see manifestIdentity): a reader that
+// predates the field recomputes the same identity, which is what lets a build
+// without the stamp keep reading manifests one with it wrote.
 type Manifest struct {
 	SchemaVersion    int              `json:"schema_version"`
 	StorageVersion   string           `json:"storage_version"`
@@ -640,8 +645,21 @@ func baseSourceDigest(active Manifest) string {
 	return active.BaseSourceDigest
 }
 
+// manifestIdentity is the digest of what a manifest points at: every field
+// that describes the stored state. Identity and the producer stamp are left
+// out. Identity is the digest itself, and the stamp records who wrote the
+// state rather than what the state is, so a reader that does not know the
+// stamp recomputes the same identity as one that does -- a rollback to such a
+// reader keeps reading the manifests this build wrote instead of reporting
+// them corrupt. Nothing goes unchecked: the stamp is read and compared on its
+// own (ProducerIdentity, verify, Diagnostics).
+//
+// The stamp is zeroed rather than skipped in the encoding, and the field
+// marshals with omitempty, so the encoded bytes match what a reader without
+// the field produces.
 func manifestIdentity(active Manifest) string {
 	active.Identity = ""
+	active.ProducerVersion = ""
 	data, _ := json.Marshal(active)
 	return chainDigest("manifest", string(data))
 }
@@ -779,8 +797,14 @@ func stringSet(values []string) map[string]struct{} {
 }
 
 func (store *Store[B, D]) root(scope corememory.Scope, name string) string {
+	return path.Join(store.indexesPrefix(scope), encode(name))
+}
+
+// indexesPrefix is the area every index name of one family and scope lives
+// under, the parent of one lane's root.
+func (store *Store[B, D]) indexesPrefix(scope corememory.Scope) string {
 	return path.Join("projections", store.Family, "v2", "partitions", encode(scope.RuntimeID),
-		encode(scope.UserID), encode(scope.AgentID), "indexes", encode(name))
+		encode(scope.UserID), encode(scope.AgentID), "indexes")
 }
 
 func (store *Store[B, D]) activePath(scope corememory.Scope, name string) string {
