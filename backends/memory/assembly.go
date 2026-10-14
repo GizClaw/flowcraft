@@ -43,6 +43,9 @@ type Assembly struct {
 	metrics          *assemblyMetrics
 	closers          []io.Closer
 	verify           func(context.Context, corememory.Scope, string) (verify.Plan, error)
+	// lanes reports the projection lanes' producer identity for one scope. It
+	// is nil when the assembly was built without projections.
+	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error)
 
 	wireOnce sync.Once
 	wireErr  error
@@ -79,6 +82,7 @@ func newAssembly(
 	clock func() time.Time,
 	closers []io.Closer,
 	verify func(context.Context, corememory.Scope, string) (verify.Plan, error),
+	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error),
 ) (*Assembly, error) {
 	if messages == nil {
 		return nil, errors.New("message store is required")
@@ -110,6 +114,7 @@ func newAssembly(
 		metrics: newAssemblyMetrics(),
 		closers: append([]io.Closer(nil), closers...),
 		verify:  verify,
+		lanes:   lanes,
 	}, nil
 }
 

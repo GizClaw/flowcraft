@@ -322,6 +322,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		retrievalSummary,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
+		buildLaneStatus(auditors),
 	)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
@@ -399,6 +400,9 @@ func buildDeriver(
 type projectionAuditor struct {
 	Name    string
 	Auditor component.Auditor
+	// Producer is the same lane seen as a producer of persisted state, which
+	// is what reports whether that state was written by an earlier version.
+	Producer component.Producer
 }
 
 // collectVerifyEvidence gathers the fact, source, summary, and projection
@@ -480,11 +484,22 @@ func collectVerifyEvidence(
 		if !found {
 			continue
 		}
-		evidence.Projections = append(evidence.Projections, verify.ProjectionEvidence{
+		entry := verify.ProjectionEvidence{
 			Name:               auditor.Name,
 			StoredSourceDigest: storedSource, ComputedSourceDigest: computedSource,
 			StoredBuildDigest: storedBuild, ComputedBuildDigest: computedBuild,
-		})
+		}
+		if auditor.Producer != nil {
+			entry.ExpectedProducer = auditor.Producer.ProducerVersion()
+			identity, stored, err := auditor.Producer.StoredProducerIdentity(ctx, scope)
+			if err != nil {
+				return verify.Input{}, err
+			}
+			if stored {
+				entry.StoredProducer = identity.Version
+			}
+		}
+		evidence.Projections = append(evidence.Projections, entry)
 	}
 	return evidence, nil
 }
@@ -502,6 +517,35 @@ func buildVerifier(
 			return verify.Plan{}, err
 		}
 		return verify.InspectContext(ctx, scope, evidence)
+	}
+}
+
+// buildLaneStatus reports the producer identity of every configured lane for
+// one scope: the version the running lane writes with and the version the state
+// it reads was stamped with. A lane holding no state reports neither, which is
+// not staleness -- there is nothing an earlier producer wrote.
+func buildLaneStatus(
+	auditors []projectionAuditor,
+) func(context.Context, corememory.Scope) ([]LaneDiagnostics, error) {
+	return func(ctx context.Context, scope corememory.Scope) ([]LaneDiagnostics, error) {
+		statuses := make([]LaneDiagnostics, 0, len(auditors))
+		for _, auditor := range auditors {
+			if auditor.Producer == nil {
+				continue
+			}
+			status := LaneDiagnostics{Name: auditor.Name, ExpectedProducer: auditor.Producer.ProducerVersion()}
+			identity, found, err := auditor.Producer.StoredProducerIdentity(ctx, scope)
+			if err != nil {
+				return nil, fmt.Errorf("memory assembly: lane %q identity: %w", auditor.Name, err)
+			}
+			if found {
+				status.Stored = true
+				status.StoredProducer = identity.Version
+				status.Stale = identity.Version != status.ExpectedProducer
+			}
+			statuses = append(statuses, status)
+		}
+		return statuses, nil
 	}
 }
 
@@ -529,8 +573,8 @@ func buildProjections(
 		{Name: "entity", Searcher: entityIndex, Weight: settings.Lanes.Entity.Weight, Calibrator: fusion.Identity{CalibrationVersion: "identity-v1"}},
 	}
 	auditors := []projectionAuditor{
-		{Name: "bm25", Auditor: bm25Index},
-		{Name: "entity", Auditor: entityIndex},
+		{Name: "bm25", Auditor: bm25Index, Producer: bm25Index},
+		{Name: "entity", Auditor: entityIndex, Producer: entityIndex},
 	}
 	if settings.Embed.isZero() {
 		return indexers, lanes, auditors, nil
@@ -545,7 +589,7 @@ func buildProjections(
 	lanes = append(lanes, fusion.Lane{
 		Name: "vector", Searcher: vectorIndex, Weight: settings.Lanes.Vector.Weight, Calibrator: fusion.Cosine{},
 	})
-	auditors = append(auditors, projectionAuditor{Name: "vector", Auditor: vectorIndex})
+	auditors = append(auditors, projectionAuditor{Name: "vector", Auditor: vectorIndex, Producer: vectorIndex})
 	return indexers, lanes, auditors, nil
 }
 
