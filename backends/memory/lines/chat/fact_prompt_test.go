@@ -13,6 +13,11 @@ import (
 // Prompt text is not part of the derivation policy digest, which is why this
 // hash exists: an intentional prompt edit belongs with an AlgorithmVersion bump,
 // and this test is what makes the edit deliberate.
+//
+// The digest is taken over normalised line endings. The template is embedded, so
+// the prompt a build renders carries whatever newline the checkout used -- CRLF
+// on Windows -- and the pin is about the prompt's words rather than about the
+// platform it was built on.
 func TestBudgetOffPromptIsThePreBudgetPrompt(t *testing.T) {
 	for _, pinned := range []struct {
 		name   string
@@ -22,14 +27,18 @@ func TestBudgetOffPromptIsThePreBudgetPrompt(t *testing.T) {
 		{"simple", factSystem, "9cdab38383108c604347141bd01574351a19cd22758c104898b529ca4113bd8a"},
 		{"rich", factSystemRich, "96208767c77177ee8c9ee2febf03ca18daa7a718ebb35f644be23c12bab5cdba"},
 	} {
-		sum := sha256.Sum256([]byte(pinned.text))
-		if got := hex.EncodeToString(sum[:]); got != pinned.digest {
+		if got := promptDigest(pinned.text); got != pinned.digest {
 			t.Errorf("%s prompt digest = %s, want %s", pinned.name, got, pinned.digest)
 		}
 		if strings.Contains(pinned.text, "BUDGET") || strings.Contains(pinned.text, "priority") {
 			t.Errorf("%s prompt describes the budget with the budget off", pinned.name)
 		}
 	}
+}
+
+func promptDigest(prompt string) string {
+	sum := sha256.Sum256([]byte(strings.ReplaceAll(prompt, "\r\n", "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // TestQuotaPromptNamesTheBudgetAndItsPriority covers the other side: the quota
