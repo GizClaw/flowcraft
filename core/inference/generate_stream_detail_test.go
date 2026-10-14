@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 // streamEventList is a scripted ProviderStream over fully decoded events;
@@ -225,6 +226,111 @@ func TestGenerateStreamValidationDetailNamesFailedCheck(t *testing.T) {
 	}
 	if got := err.Error(); got != "provider_response_unusable during generate: stream.finish.validation.no_text" {
 		t.Fatalf("Error() = %q", got)
+	}
+}
+
+// TestGenerateStreamTerminalAssemblyIsUnusable covers the completion boundary
+// behind ProviderResponseUnusable for failures in assembly rather than
+// validation: the provider emitted its terminal finish event, so a part that
+// cannot be assembled voids the attempt instead of counting as wire
+// corruption.
+func TestGenerateStreamTerminalAssemblyIsUnusable(t *testing.T) {
+	source, err := media.NewImageURL("https://example.com/out.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	cases := map[string]struct {
+		events []GenerateStreamEvent
+		cause  string
+	}{
+		"interim image snapshot": {
+			events: []GenerateStreamEvent{
+				{PartIndex: 0, Delta: ImagePartDelta{
+					Part:    message.ImagePart{Source: source},
+					Interim: true,
+				}},
+				{FinishReason: FinishCompleted},
+			},
+			cause: "streamed image ended on an interim snapshot",
+		},
+		"audio without format": {
+			events: []GenerateStreamEvent{
+				{PartIndex: 0, Delta: AudioPartDelta{Data: []byte{1, 2}}},
+				{FinishReason: FinishCompleted},
+			},
+			cause: "streamed audio has no format",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stream := detailTestStream(tc.events, textStreamRequest(t))
+			err := nextStreamError(t, stream)
+			if err.Kind != ProviderResponseUnusable {
+				t.Fatalf("kind = %q, want %q", err.Kind, ProviderResponseUnusable)
+			}
+			if err.Detail != "stream.finish.part" {
+				t.Fatalf("Detail = %q, want stream.finish.part", err.Detail)
+			}
+			if got := CauseMessage(err); got != tc.cause {
+				t.Fatalf("CauseMessage = %q, want %q", got, tc.cause)
+			}
+		})
+	}
+}
+
+// TestGenerateStreamInflightFailuresStayCorruption pins the other side of the
+// boundary: a stream that is still in flight never claimed to be complete, so
+// malformed events and contradictory fragments stay InvalidProviderResponse.
+func TestGenerateStreamInflightFailuresStayCorruption(t *testing.T) {
+	t.Run("malformed usage event", func(t *testing.T) {
+		stream := detailTestStream([]GenerateStreamEvent{
+			{Usage: &Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 5}},
+		}, textStreamRequest(t))
+		err := nextStreamError(t, stream)
+		if err.Kind != InvalidProviderResponse {
+			t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+		}
+		if err.Detail != "stream.accumulate" {
+			t.Fatalf("Detail = %q, want stream.accumulate", err.Detail)
+		}
+	})
+	t.Run("contradictory tool-call fragments", func(t *testing.T) {
+		stream := detailTestStream([]GenerateStreamEvent{
+			{PartIndex: 0, Delta: ToolCallDelta{ID: "call-1", Name: "known"}},
+			{PartIndex: 0, Delta: ToolCallDelta{ID: "call-2", Name: "known"}},
+		}, toolStreamRequest(t))
+		err := nextStreamError(t, stream)
+		if err.Kind != InvalidProviderResponse {
+			t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+		}
+		if err.Detail != "stream.accumulate.tool_call" {
+			t.Fatalf("Detail = %q, want stream.accumulate.tool_call", err.Detail)
+		}
+	})
+}
+
+// TestGenerateStreamTerminalFailureSurvivesProviderIDWrapper drives the exact
+// production chain behind the #584 log line: the marked cause sits below the
+// provider-id wrapper the stream adds before the Error is built, and the
+// request id is read back off the same chain.
+func TestGenerateStreamTerminalFailureSurvivesProviderIDWrapper(t *testing.T) {
+	stream := detailTestStreamWithMeta([]GenerateStreamEvent{
+		{PartIndex: 0, Delta: ReasoningDelta{Text: "thinking", Signature: "sig"}},
+		{FinishReason: FinishCompleted},
+	}, textStreamRequest(t), "req-openai-1", "resp-1")
+	err := nextStreamError(t, stream)
+	if err.Kind != ProviderResponseUnusable {
+		t.Fatalf("kind = %q, want %q", err.Kind, ProviderResponseUnusable)
+	}
+	if err.RequestID != "req-openai-1" {
+		t.Fatalf("Error.RequestID = %q, want req-openai-1", err.RequestID)
+	}
+	if got, ok := errdefs.RequestID(err); !ok || got != "req-openai-1" {
+		t.Fatalf("errdefs.RequestID(err) = %q/%v, want req-openai-1/true", got, ok)
+	}
+	want := "completed generate response contains no requested text"
+	if got := CauseMessage(err); got != want {
+		t.Fatalf("CauseMessage = %q, want %q", got, want)
 	}
 }
 

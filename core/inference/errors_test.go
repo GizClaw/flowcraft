@@ -3,6 +3,8 @@ package inference
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -69,6 +71,29 @@ func TestCauseMessageExposesRedactedCausesOnly(t *testing.T) {
 			t.Fatalf("CauseMessage = %q, want %q", got, want)
 		}
 	})
+	t.Run("overlong tool name is bounded", func(t *testing.T) {
+		name := strings.Repeat("S3CRET", 20)
+		request := responseValidationRequest(Intent{Text: &TextIntent{
+			Tools: []message.ToolDefinition{message.DefineSchema("known", "a known tool").Build()},
+		}})
+		response := responseValidationResponse(responseValidationToolCall(name))
+		response.FinishReason = FinishToolCalls
+		rejected := newResponseValidationError(
+			OperationGenerate, "generate", response.ValidateFor(request))
+
+		// tokenLimit runes of the name survive, marked as truncated; the rest
+		// of the model-supplied text never reaches the log.
+		bounded := strings.Repeat("S3CRET", 10) + "S3CR"
+		want := "generate tool call 0 names undefined tool " +
+			strconv.Quote(bounded+"...")
+		got := CauseMessage(rejected)
+		if got != want {
+			t.Fatalf("CauseMessage = %q, want %q", got, want)
+		}
+		if strings.Contains(got, name) {
+			t.Fatalf("CauseMessage = %q, want the provider name bounded", got)
+		}
+	})
 	t.Run("tool call conflict", func(t *testing.T) {
 		err := NewError(InvalidProviderResponse, OperationGenerate, "",
 			&toolCallConflictError{err: fmt.Errorf("tool call changed id")})
@@ -90,4 +115,35 @@ func TestCauseMessageExposesRedactedCausesOnly(t *testing.T) {
 			t.Fatalf("CauseMessage(nil) = %q, want empty", got)
 		}
 	})
+}
+
+// TestQuoteTokenBoundsProviderText covers the rendering rule that lets
+// provider-supplied tool names reach error.cause: quoted, valid UTF-8, and
+// capped, however hostile the name is.
+func TestQuoteTokenBoundsProviderText(t *testing.T) {
+	cases := map[string]struct {
+		value string
+		want  string
+	}{
+		"short name unchanged": {value: "ghost", want: `"ghost"`},
+		"control characters escaped": {
+			value: "a\nb",
+			want:  `"a\nb"`,
+		},
+		"overlong name truncated": {
+			value: strings.Repeat("x", tokenLimit+10),
+			want:  `"` + strings.Repeat("x", tokenLimit) + `..."`,
+		},
+		"rune aware truncation keeps valid UTF-8": {
+			value: strings.Repeat("\u00e9", tokenLimit+1),
+			want:  `"` + strings.Repeat("\u00e9", tokenLimit) + `..."`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := quoteToken(tc.value); got != tc.want {
+				t.Fatalf("quoteToken = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

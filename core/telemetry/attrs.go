@@ -197,9 +197,11 @@ const (
 
 	// AttrErrorCause carries the leaf cause message of a failure, attached
 	// only when the value is redacted by construction — flowcraft-generated
-	// text (our format strings and identifier-like tokens), never provider
-	// wire payloads. Error chains are diagnostic data rather than redacted
-	// output, so a producer that cannot prove that property must not use
-	// this key; the inference route failure log is the canonical producer.
+	// text (our format strings and derived scalars) plus, at most, bounded
+	// identifier tokens such as tool names, tool-call ids, and media types,
+	// never provider wire payloads. Error chains are diagnostic data rather
+	// than redacted output, so a producer that cannot prove that property
+	// must not use this key; the inference route failure log is the
+	// canonical producer (see inference.CauseMessage).
 	AttrErrorCause = "error.cause"
 )

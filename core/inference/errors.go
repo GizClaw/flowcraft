@@ -37,14 +37,25 @@ const (
 	ProviderTruncated ErrorKind = "provider_truncated"
 	// ProviderResponseUnusable marks a response that completed — a
 	// terminal finish event was received, or a unary call returned — but
-	// whose assembled payload violates the request contract: empty
-	// completed content, missing or unrequested parts, invalid tool-call
-	// structure, tool-choice violations, or usage and structure rules.
-	// It is distinct from InvalidProviderResponse, which stays for
-	// payloads that could not be decoded or assembled at all (wire-level
-	// corruption), so callers can treat this attempt as void and
-	// re-initiate at their own granularity while corruption remains
-	// non-retryable.
+	// whose artifact cannot be used: empty completed content, an
+	// unassemblable or missing part, an unrequested part or tool call,
+	// invalid tool-call structure, tool-choice violations, or usage and
+	// structure rules.
+	//
+	// The boundary is completion, not the site that detects the failure:
+	// anything raised while the stream is still in flight — decode,
+	// normalize, and accumulation failures, including an event whose own
+	// payload is malformed (a usage snapshot or finish value that fails
+	// validation, contradictory tool-call fragments) — stays
+	// InvalidProviderResponse, because we could not make sense of what the
+	// provider sent and there is no artifact to judge. Anything raised
+	// after the provider signalled completion is this kind even when the
+	// failure is in assembly rather than validation, and the transcription
+	// session follows its unary sibling on the same rule.
+	//
+	// It is distinct from InvalidProviderResponse so callers can treat
+	// this attempt as void and re-initiate at their own granularity while
+	// corruption remains non-retryable.
 	// Contract: core never auto-retries this error. Its NotAvailable/503
 	// classification means "this attempt is void and worth re-initiating
 	// at caller granularity" — partial content may already have been
@@ -53,9 +64,9 @@ const (
 	ProviderResponseUnusable ErrorKind = "provider_response_unusable"
 	// UndefinedTool marks a response whose tool calls name tools absent
 	// from the request's definitions. It is distinct from
-	// InvalidProviderResponse so callers can offer a recoverable path
+	// ProviderResponseUnusable so callers can offer a recoverable path
 	// (e.g. feedback that sends the model back to tool_search) without
-	// weakening the contract for genuinely corrupt responses.
+	// weakening the contract for responses that are merely unusable.
 	UndefinedTool ErrorKind = "undefined_tool"
 )
 
@@ -231,14 +242,91 @@ func newResponseValidationError(operation Operation, scope string, err error) *E
 	return out
 }
 
+// newDetailError builds an *Error that carries a stable Detail label and any
+// provider request identifier the cause chain knows.
+func newDetailError(
+	kind ErrorKind,
+	operation Operation,
+	detail string,
+	cause error,
+) *Error {
+	out := NewError(kind, operation, "", cause)
+	out.Detail = detail
+	if requestID, ok := errdefs.RequestID(out); ok {
+		out.RequestID = requestID
+	}
+	return out
+}
+
+// tokenLimit bounds identifier tokens (tool names today) before they are
+// rendered into a message CauseMessage may surface. A broken or hostile
+// provider is free to answer a tool call with a megabyte-long name, and the
+// attribute is documented as short, redacted-by-construction text.
+const tokenLimit = 64
+
+// quoteToken renders a provider- or caller-supplied identifier token as a
+// quoted, length-bounded string: truncation is rune-aware and marked with a
+// trailing "...", and quoting escapes control characters, so the rendered
+// text stays structurally safe and bounded however hostile the input is.
+func quoteToken(value string) string {
+	if runes := []rune(value); len(runes) > tokenLimit {
+		value = string(runes[:tokenLimit]) + "..."
+	}
+	return fmt.Sprintf("%q", value)
+}
+
 // redactedCause is implemented by inference-owned error types whose message
-// is built from flowcraft-generated text — our format strings plus
-// identifier-like tokens (ids, names, media types, counts, JSON types) —
-// never provider wire payloads, prompts, or raw response fragments. It
-// marks the only causes CauseMessage may surface.
+// is redacted by construction, which is what makes it safe for CauseMessage
+// to surface in routine logs. That property means the message is built only
+// from:
+//
+//   - flowcraft-generated text: our format strings, static labels, and
+//     scalar values we derive (counts, media types, JSON types, enum names);
+//   - identifier-like tokens the provider or caller supplied, one of two
+//     ways: through quoteToken when the message is ours (tool names, media
+//     types — valid UTF-8, quoted, capped at tokenLimit runes), or as
+//     rendered by a sibling validator's own format string when the message
+//     comes from the message and media packages (a tool-call id, a media
+//     type) — quoted there, but not length-bounded;
+//   - library-rendered structural messages for the structured-output checks
+//     (generateResponseCheckText): the JSON-schema and encoding/json
+//     renderers echo schema pointers, property names, and at most a single
+//     offending character, never free-form response text.
+//
+// Free-form provider material — prompt and message bodies, tool arguments,
+// raw response fragments — must never reach these messages, and a cause that
+// cannot promise the property (driver, transport, or context errors) stays
+// unmarked even when its text looks harmless.
 type redactedCause interface {
 	error
 	redactedCause()
+}
+
+// redactedMessage marks a cause whose text is flowcraft-generated by
+// construction, letting CauseMessage surface a message that has no dedicated
+// error type. Only inference-owned text — our format strings plus message and
+// media validation — may be marked this way; a cause that could carry driver,
+// transport, or provider text must stay unmarked even when its text looks
+// harmless.
+type redactedMessage struct {
+	err error
+}
+
+func (e *redactedMessage) Error() string { return e.err.Error() }
+func (e *redactedMessage) Unwrap() error { return e.err }
+func (*redactedMessage) redactedCause()  {}
+
+// markRedacted wraps cause in the redacted-by-construction marker unless it
+// already carries one. A nil cause stays nil.
+func markRedacted(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	var marked redactedCause
+	if errors.As(cause, &marked) {
+		return cause
+	}
+	return &redactedMessage{err: cause}
 }
 
 // CauseMessage returns the message of the first inference-owned cause

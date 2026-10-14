@@ -102,15 +102,16 @@ func TestRouteFailureLogCarriesRedactedCause(t *testing.T) {
 	})
 
 	// A completed response the request contract rejects: the chain bottoms
-	// out in a flowcraft-generated check message, so the warn line carries
-	// it as error.cause next to the stable Detail label.
+	// out in a flowcraft-generated check message below the provider-id
+	// wrapper the stream path adds, so the warn line carries it as
+	// error.cause next to the stable Detail label and request id.
 	rejected := inference.GenerateResponse{
 		Message:      message.Message{Role: message.RoleAssistant},
 		FinishReason: inference.FinishCompleted,
 	}
 	err := inference.NewError(
 		inference.ProviderResponseUnusable, model.OperationGenerate, "",
-		rejected.ValidateFor(routeRequest()))
+		errdefs.WithRequestID(rejected.ValidateFor(routeRequest()), "req-openai-1"))
 	err.Detail = "stream.finish.validation.empty_content"
 	ctx, span := startRouteSpan(context.Background(), model.OperationGenerate)
 	recordRoute(ctx, span, model.OperationGenerate, Trace{}, inference.Metadata{}, err)
@@ -120,6 +121,7 @@ func TestRouteFailureLogCarriesRedactedCause(t *testing.T) {
 		"inference route failed",
 		`error.message="provider_response_unusable during generate: stream.finish.validation.empty_content"`,
 		`error.cause="generate response content is required for finish reason`,
+		"llm.request.id=req-openai-1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("route failure log missing %q:\n%s", want, got)
@@ -142,6 +144,123 @@ func TestRouteFailureLogCarriesRedactedCause(t *testing.T) {
 	}
 	if !strings.Contains(got, `error.message="invalid_provider_response during generate: stream.decode"`) {
 		t.Fatalf("decode failure log missing error.message:\n%s", got)
+	}
+}
+
+// routeStreamProviderDefinition builds one provider whose Generate stream
+// plays back events through the real accumulator and validation pipeline. The
+// route package cannot borrow inferencetest's fake for this: that package
+// imports route, so a route test would cycle.
+func routeStreamProviderDefinition(
+	t *testing.T,
+	id string,
+	events []inference.GenerateStreamEvent,
+) inference.ProviderDefinition {
+	t.Helper()
+	streamTransport := inference.Transport[
+		routeWire, inference.ProviderStream[inference.GenerateStreamEvent]](
+		func(context.Context, routeWire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
+			return &fakeRouteStream{events: events}, nil
+		},
+	)
+	streamDecode := inference.GenerateStreamDecoder[inference.GenerateStreamEvent](
+		func(
+			_ context.Context, event inference.GenerateStreamEvent,
+		) (inference.GenerateStreamEvent, error) {
+			return event, nil
+		},
+	)
+	operations, err := inference.BindGenerateOperations(
+		routeCompiler(), routeTransport(false), routeDecode(),
+		streamTransport, streamDecode,
+	)
+	if err != nil {
+		t.Fatalf("BindGenerateOperations: %v", err)
+	}
+	return inference.ProviderDefinition{
+		ID: id,
+		Models: []inference.ModelImplementation{{
+			Descriptor: model.ModelDescriptor{
+				ID: model.ModelID{Provider: id, Name: "model-1"},
+			},
+			Openers: inference.Openers{
+				Generate: func(
+					context.Context, model.ModelRef,
+				) (inference.GenerateOperations, error) {
+					return operations, nil
+				},
+			},
+		}},
+	}
+}
+
+// TestRouteStreamTerminalFailureLogsCause drives the #584 shape end to end: a
+// routed provider whose stream ends cleanly with a payload the request
+// contract rejects, through the same accumulator, provider-id wrapper, and
+// failure log line production uses.
+func TestRouteStreamTerminalFailureLogsCause(t *testing.T) {
+	var out bytes.Buffer
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewSimpleProcessor(
+			telemetry.NewPlainTextExporter(&out))))
+	previous := logglobal.GetLoggerProvider()
+	logglobal.SetLoggerProvider(provider)
+	t.Cleanup(func() {
+		logglobal.SetLoggerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.stream": routeStreamProviderDefinition(t, "stream", []inference.GenerateStreamEvent{
+			{
+				PartIndex: 0,
+				Delta:     inference.ReasoningDelta{Text: "thinking", Signature: "sig"},
+				RequestID: "req-openai-1",
+			},
+			{FinishReason: inference.FinishCompleted, RequestID: "req-openai-1"},
+		}),
+	})
+	policy := Policy{Generate: []Pool{{
+		Tier: "primary",
+		Targets: []Target{{Model: model.ModelRef{
+			ID: model.ModelID{Provider: "stream", Name: "model-1"},
+		}}},
+	}}}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream, _, err := router.GenerateStream(context.Background(), routeRequest())
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	var streamErr error
+	for {
+		if _, streamErr = stream.Next(context.Background()); streamErr != nil {
+			break
+		}
+	}
+	if errors.Is(streamErr, io.EOF) {
+		t.Fatal("stream ended cleanly, want the terminal contract failure")
+	}
+	if !inference.IsKind(streamErr, inference.ProviderResponseUnusable) {
+		t.Fatalf("stream error = %v, want provider_response_unusable", streamErr)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"inference route failed",
+		`error.message="provider_response_unusable during generate: stream.finish.validation.no_text"`,
+		`error.cause="completed generate response contains no requested text"`,
+		"llm.request.id=req-openai-1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("route stream failure log missing %q:\n%s", want, got)
+		}
 	}
 }
 

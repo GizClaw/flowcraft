@@ -121,15 +121,23 @@ func (s *decodedGenerateStream[RawEvent]) Close() error {
 }
 
 // newStreamError builds the InvalidProviderResponse error used by the
-// generate stream failure points. detail is a stable, redacted stage label
-// (see Error.Detail) identifying where the failure was detected.
+// generate stream failure points that fire while the stream is still in
+// flight. detail is a stable, redacted stage label (see Error.Detail)
+// identifying where the failure was detected.
 func newStreamError(detail string, cause error) *Error {
-	out := NewError(InvalidProviderResponse, OperationGenerate, "", cause)
-	out.Detail = detail
-	if requestID, ok := errdefs.RequestID(out); ok {
-		out.RequestID = requestID
-	}
-	return out
+	return newDetailError(InvalidProviderResponse, OperationGenerate, detail, cause)
+}
+
+// streamUnusableError builds the ProviderResponseUnusable error for failures
+// detected after the stream's terminal finish event: the provider completed
+// the call, but the artifact assembled from what it sent cannot be used (see
+// ProviderResponseUnusable for the completion boundary).
+func (s *decodedGenerateStream[RawEvent]) streamUnusableError(
+	detail string,
+	cause error,
+) *Error {
+	return newDetailError(
+		ProviderResponseUnusable, OperationGenerate, detail, s.withProviderID(cause))
 }
 
 // streamProviderError builds a ProviderFailure error for a generate stream
@@ -187,12 +195,9 @@ func (s *decodedGenerateStream[RawEvent]) streamProviderFailure(
 // ended without a terminal finish event, attaching any provider identifier
 // the stream still knows.
 func (s *decodedGenerateStream[RawEvent]) truncatedStreamError(cause error) *Error {
-	out := NewError(ProviderTruncated, OperationGenerate, "", s.withProviderID(cause))
-	out.Detail = "stream.finish.missing"
-	if requestID, ok := errdefs.RequestID(out); ok {
-		out.RequestID = requestID
-	}
-	return out
+	return newDetailError(
+		ProviderTruncated, OperationGenerate, "stream.finish.missing",
+		s.withProviderID(cause))
 }
 
 // toolCallConflictError marks an accumulation failure where incremental
@@ -353,7 +358,10 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	for _, index := range indices {
 		part, err := s.parts[index].result()
 		if err != nil {
-			s.resultErr = s.streamError("stream.finish.part", err)
+			// The provider already emitted its terminal finish event, so a
+			// part that cannot even be assembled is unusable rather than
+			// corrupt wire data.
+			s.resultErr = s.streamUnusableError("stream.finish.part", err)
 			return
 		}
 		parts = append(parts, part)
@@ -389,7 +397,19 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	s.result = response
 }
 
+// result assembles the accumulated part into the terminal artifact. It runs
+// only after the provider's finish event, and every failure it reports is
+// inference-owned text — accumulator format strings plus message and media
+// validation — so the cause is safe to surface (see redactedCause).
 func (p *generatePartAccumulator) result() (message.Part, error) {
+	part, err := p.assemble()
+	if err != nil {
+		return nil, markRedacted(err)
+	}
+	return part, nil
+}
+
+func (p *generatePartAccumulator) assemble() (message.Part, error) {
 	switch p.kind {
 	case message.PartText:
 		return message.TextPart{Text: p.text.String()}, nil

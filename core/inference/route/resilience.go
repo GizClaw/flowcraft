@@ -139,10 +139,11 @@ func (p *RetryPolicy) validate() error {
 
 // DefaultRetryable is the conservative same-target retry predicate: only
 // ProviderFailure classified as rate limit, timeout, or not available, and
-// never after observable output. ProviderTruncated is deliberately not
-// retried here even though it classifies as not available: core never
-// auto-retries truncated streams (attempt-void semantics live at the
-// caller), and partial output may already have been committed.
+// never after observable output. ProviderTruncated and
+// ProviderResponseUnusable are deliberately not retried here even though
+// both classify as not available: core never auto-retries attempt-void
+// failures (that decision lives at the caller), and partial output may
+// already have been committed.
 var DefaultRetryable = func(_ context.Context, decision RetryDecision) bool {
 	if decision.ObservableOutput || decision.ErrorKind != inference.ProviderFailure {
 		return false

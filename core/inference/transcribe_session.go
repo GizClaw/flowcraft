@@ -300,12 +300,11 @@ func (s *decodedTranscriptionSession[RawEvent]) finishResultLocked() {
 	response.Usage.Model = s.model
 	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := validateSessionResult(response); err != nil {
-		s.resultErr = NewError(
-			InvalidProviderResponse,
-			OperationTranscription,
-			"",
-			err,
-		)
+		// The provider signalled the end of the session, so a transcript the
+		// contract rejects is the same attempt-void class the unary path
+		// classifies through newResponseValidationError, not corruption.
+		s.resultErr = newResponseValidationError(
+			OperationTranscription, string(OperationTranscription), err)
 		return
 	}
 	s.result = response
