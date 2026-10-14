@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/backends/memory/worker"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -23,6 +24,10 @@ type Diagnostics struct {
 type ScopeDiagnostics struct {
 	worker.ScopeDiagnostics
 	Lanes []LaneDiagnostics `json:"lanes,omitempty"`
+	// Overlay is the scope's maintenance overlay, when the assembly was built
+	// with maintenance: the pass that wrote the stored judgments and whether
+	// the policy this deployment runs is applying them.
+	Overlay *maintain.OverlayDiagnostics `json:"overlay,omitempty"`
 }
 
 // LaneDiagnostics reports one projection lane's producer identity for one
@@ -67,6 +72,13 @@ func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) 
 				}
 				entry.Lanes = lanes
 			}
+			if assembly.overlay != nil {
+				overlay, err := assembly.overlay(ctx, scope)
+				if err != nil {
+					return Diagnostics{}, err
+				}
+				entry.Overlay = &overlay
+			}
 			result.Scopes = append(result.Scopes, entry)
 		}
 	}
@@ -87,4 +99,26 @@ func (assembly *Assembly) LaneStatus(ctx context.Context, scope corememory.Scope
 		return nil, err
 	}
 	return assembly.lanes(ctx, scope)
+}
+
+// OverlayStatus reports the maintenance overlay of one scope: which pass wrote
+// the stored judgments and whether the read path applies them. An overlay an
+// earlier version or tuning wrote is ignored rather than applied, and the next
+// Maintain pass rewrites it under this deployment's policy. It is the per-scope
+// half of Diagnostics, for a host that already knows which scope it is asking
+// about.
+func (assembly *Assembly) OverlayStatus(
+	ctx context.Context,
+	scope corememory.Scope,
+) (maintain.OverlayDiagnostics, error) {
+	if assembly == nil || assembly.overlay == nil {
+		return maintain.OverlayDiagnostics{}, errors.New("memory assembly: maintenance is not configured")
+	}
+	if ctx == nil {
+		return maintain.OverlayDiagnostics{}, errors.New("memory assembly: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return maintain.OverlayDiagnostics{}, err
+	}
+	return assembly.overlay(ctx, scope)
 }

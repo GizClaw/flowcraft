@@ -1,6 +1,7 @@
 package maintain
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,40 @@ func planFact(id, text string, entities []string, eventTime time.Time) factview.
 	return factview.Fact{
 		ID: id, Scope: corememory.Scope{RuntimeID: "runtime"}, ConversationID: "conv-1",
 		Text: text, Entities: entities, EventTime: eventTime, CreatedAt: eventTime,
+	}
+}
+
+// TestProducerVersionNamesTheTuning pins what the overlay's stamp has to carry:
+// the policy version alone cannot separate two deployments that tune the same
+// policy differently, and what those two write about the same facts differs.
+func TestProducerVersionNamesTheTuning(t *testing.T) {
+	if (Config{}).ProducerVersion() != (Config{}).withDefaults().ProducerVersion() {
+		t.Fatal("the stamp is not stable across defaulting")
+	}
+	base := (Config{}).ProducerVersion()
+	for name, config := range map[string]Config{
+		"similarity": {SimilarityThreshold: 0.9},
+		"supersede":  {SupersedeFactor: 0.25},
+		"half-life":  {DecayHalfLife: 24 * time.Hour},
+		"floor":      {DecayFloor: 0.2},
+	} {
+		if config.ProducerVersion() == base {
+			t.Fatalf("the %s tuning did not change the stamp %q", name, base)
+		}
+	}
+	// Every pass carries the stamp it wrote under, so the overlay it saves is
+	// read back by the deployment that asked for it and by no other.
+	tuned := Config{SimilarityThreshold: 0.9}
+	plan, err := DetectWithConfig(
+		corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{}, time.Now().UTC(), tuned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ProducerVersion != tuned.ProducerVersion() {
+		t.Fatalf("plan stamp = %q, want %q", plan.ProducerVersion, tuned.ProducerVersion())
+	}
+	if !strings.Contains(plan.ProducerVersion, AlgorithmVersion) {
+		t.Fatalf("plan stamp does not name the policy: %q", plan.ProducerVersion)
 	}
 }
 

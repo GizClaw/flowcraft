@@ -24,10 +24,36 @@ type Overlay struct {
 	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
+// overlayDocument is one scope's persisted overlay: the entries together with
+// the stamp of the pass that wrote them. A document without a stamp is what a
+// deployment before the stamp wrote -- the bare entry map of "maintain-v1" --
+// and it is read as stale by definition: those judgments cannot be attributed
+// to a policy, so they are not applied to another one's scores.
+type overlayDocument struct {
+	ProducerVersion string             `json:"producer_version"`
+	Entries         map[string]Overlay `json:"entries"`
+}
+
+// OverlayDiagnostics reports one scope's overlay against the pass this store
+// serves: whether a document is stored, which pass wrote it, and whether the
+// read path is applying it.
+type OverlayDiagnostics struct {
+	ExpectedProducer string `json:"expected_producer"`
+	StoredProducer   string `json:"stored_producer,omitempty"`
+	Stored           bool   `json:"stored"`
+	Stale            bool   `json:"stale"`
+	// Entries counts what the stored document holds, stale or not, so a host
+	// can see how much an ignored overlay covers.
+	Entries int `json:"entries,omitempty"`
+}
+
 // Store persists one overlay document per scope on the KV substrate.
 type Store struct {
 	kv    storage.Store
 	clock func() time.Time
+	// config is the maintenance tuning this store serves. An overlay is read
+	// only when it was written by the pass this tuning names.
+	config Config
 }
 
 // StoreOption configures the overlay store.
@@ -40,6 +66,13 @@ func WithClock(clock func() time.Time) StoreOption {
 			store.clock = clock
 		}
 	}
+}
+
+// WithConfig sets the maintenance tuning this store serves. The default is the
+// default tuning, so a deployment that tunes a Service has to tune the store
+// the same way: Save refuses a plan whose stamp it could not read back.
+func WithConfig(config Config) StoreOption {
+	return func(store *Store) { store.config = config }
 }
 
 // NewStore builds a KV-backed overlay store.
@@ -59,6 +92,11 @@ func NewStore(kv storage.Store, options ...StoreOption) (*Store, error) {
 // Save replaces one scope's overlay with the plan's effects. Facts that are
 // neither superseded nor decayed are dropped from the overlay, so a later
 // pass without a finding clears the previous effect.
+//
+// The document is written under the stamp of the pass that produced the plan,
+// and a plan whose stamp this store would not read back is refused: writing
+// judgments the deployment's own read path ignores is a wiring mistake, not a
+// runtime condition.
 func (store *Store) Save(ctx context.Context, plan Plan) error {
 	if store == nil || store.kv == nil {
 		return errors.New("maintain: store is incomplete")
@@ -68,6 +106,15 @@ func (store *Store) Save(ctx context.Context, plan Plan) error {
 	}
 	if err := plan.Scope.Validate(); err != nil {
 		return err
+	}
+	producer := strings.TrimSpace(plan.ProducerVersion)
+	if producer == "" {
+		// A plan built by hand names no pass: it is written under this store's
+		// own, which is the only stamp the store reads back.
+		producer = store.expectedProducer()
+	}
+	if expected := store.expectedProducer(); producer != expected {
+		return fmt.Errorf("maintain: overlay written by %q, this store serves %q", producer, expected)
 	}
 	overlay := make(map[string]Overlay, len(plan.Supersedes)+len(plan.Decays))
 	now := store.clock().UTC()
@@ -94,7 +141,7 @@ func (store *Store) Save(ctx context.Context, plan Plan) error {
 		}
 		overlay[key] = current
 	}
-	data, err := json.Marshal(overlay)
+	data, err := json.Marshal(overlayDocument{ProducerVersion: producer, Entries: overlay})
 	if err != nil {
 		return fmt.Errorf("maintain: encode overlay: %w", err)
 	}
@@ -108,33 +155,86 @@ func (store *Store) Save(ctx context.Context, plan Plan) error {
 	return nil
 }
 
-// Load returns one scope's overlay; a missing overlay is an empty map.
+// Load returns one scope's overlay; a missing overlay is an empty map, and so
+// is one another pass wrote. Judgments made under a policy this deployment does
+// not run are ignored rather than applied to its scores, and the pass that
+// rewrites them is the repair: Status reports the condition before it runs.
 func (store *Store) Load(ctx context.Context, scope corememory.Scope) (map[string]Overlay, error) {
+	document, found, err := store.read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if !found || document.ProducerVersion != store.expectedProducer() {
+		return map[string]Overlay{}, nil
+	}
+	if document.Entries == nil {
+		return map[string]Overlay{}, nil
+	}
+	return document.Entries, nil
+}
+
+// Status reports one scope's stored overlay: which pass wrote it and whether
+// the read path applies it. A host checks this to decide whether to schedule a
+// maintenance pass; the pass itself is the repair, since it rewrites the
+// overlay under the policy the deployment runs.
+func (store *Store) Status(ctx context.Context, scope corememory.Scope) (OverlayDiagnostics, error) {
+	status := OverlayDiagnostics{}
 	if store == nil || store.kv == nil {
-		return nil, errors.New("maintain: store is incomplete")
+		return status, errors.New("maintain: store is incomplete")
+	}
+	status.ExpectedProducer = store.expectedProducer()
+	document, found, err := store.read(ctx, scope)
+	if err != nil || !found {
+		return status, err
+	}
+	status.Stored = true
+	status.StoredProducer = document.ProducerVersion
+	status.Entries = len(document.Entries)
+	status.Stale = document.ProducerVersion != status.ExpectedProducer
+	return status, nil
+}
+
+// expectedProducer is the stamp this store reads: the pass a plan has to name
+// for its overlay to be served here.
+func (store *Store) expectedProducer() string {
+	return store.config.withDefaults().ProducerVersion()
+}
+
+// read loads one scope's overlay document as stored, decoding the unstamped
+// shape so a document written before the stamp is still countable.
+func (store *Store) read(ctx context.Context, scope corememory.Scope) (overlayDocument, bool, error) {
+	if store == nil || store.kv == nil {
+		return overlayDocument{}, false, errors.New("maintain: store is incomplete")
 	}
 	if ctx == nil {
-		return nil, errors.New("maintain: context is required")
+		return overlayDocument{}, false, errors.New("maintain: context is required")
 	}
 	if err := scope.Validate(); err != nil {
-		return nil, err
+		return overlayDocument{}, false, err
 	}
 	key, err := overlayKey(scope)
 	if err != nil {
-		return nil, err
+		return overlayDocument{}, false, err
 	}
 	data, err := store.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return map[string]Overlay{}, nil
+			return overlayDocument{}, false, nil
 		}
-		return nil, fmt.Errorf("maintain: load overlay: %w", err)
+		return overlayDocument{}, false, fmt.Errorf("maintain: load overlay: %w", err)
 	}
-	var overlay map[string]Overlay
-	if err := json.Unmarshal(data, &overlay); err != nil {
-		return nil, fmt.Errorf("maintain: decode overlay: %w", err)
+	var document overlayDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		return overlayDocument{}, false, fmt.Errorf("maintain: decode overlay: %w", err)
 	}
-	return overlay, nil
+	if document.ProducerVersion == "" {
+		var unstamped map[string]Overlay
+		if err := json.Unmarshal(data, &unstamped); err != nil {
+			return overlayDocument{}, false, fmt.Errorf("maintain: decode unstamped overlay: %w", err)
+		}
+		document.Entries = unstamped
+	}
+	return document, true, nil
 }
 
 // ScoreOverlay implements the retrieval read path: item identity to score
@@ -188,6 +288,10 @@ type Service struct {
 // while reclaiming still publishes what it detected, and the reclaim is
 // idempotent: a retried pass finds less to remove. A failed reclaim is returned
 // with the plan, since the plan it was going to report was already applied.
+//
+// A pass also reports what it replaced: an overlay an earlier version or tuning
+// wrote is ignored by the read path, and Plan.IgnoredOverlay says so, which is
+// the flag a host logs and the pass clears.
 func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (Plan, error) {
 	empty := Plan{}
 	if service == nil || service.Facts == nil || service.Store == nil {
@@ -202,6 +306,13 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 	now := time.Now().UTC()
 	if service.Clock != nil {
 		now = service.Clock().UTC()
+	}
+	// What the read path serves before this pass: an overlay another policy
+	// wrote is not applied to this one's scores, and this pass is what
+	// replaces it.
+	status, err := service.Store.Status(ctx, scope)
+	if err != nil {
+		return empty, err
 	}
 	facts, err := service.Facts.ListScope(ctx, scope)
 	if err != nil {
@@ -218,6 +329,7 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 	if err != nil {
 		return empty, err
 	}
+	plan.IgnoredOverlay = status.Stale && status.Entries > 0
 	if err := service.Store.Save(ctx, plan); err != nil {
 		return empty, err
 	}

@@ -49,6 +49,10 @@ type Assembly struct {
 	// repair rebuilds the projection lanes of one scope from canonical state.
 	// It is nil when the assembly was built without projections.
 	repair func(context.Context, RepairRequest) (RepairResult, error)
+	// overlay reports the maintenance overlay's alignment with the policy this
+	// assembly serves. It is nil when the assembly was built without
+	// maintenance.
+	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error)
 
 	wireOnce sync.Once
 	wireErr  error
@@ -87,6 +91,7 @@ func newAssembly(
 	verify func(context.Context, corememory.Scope, string) (verify.Plan, error),
 	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error),
 	repair func(context.Context, RepairRequest) (RepairResult, error),
+	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error),
 ) (*Assembly, error) {
 	if messages == nil {
 		return nil, errors.New("message store is required")
@@ -120,6 +125,7 @@ func newAssembly(
 		verify:  verify,
 		lanes:   lanes,
 		repair:  repair,
+		overlay: overlay,
 	}, nil
 }
 

@@ -209,12 +209,18 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: fact view: %w", err))
 	}
-	maintainStore, err := maintain.NewStore(kvStore, maintain.WithClock(clock))
+	// One tuning for both halves of maintenance: the store reads back only what
+	// a pass with its own stamp wrote, so the service that plans and the store
+	// that serves have to name the same pass.
+	maintainConfig := maintain.Config{}
+	maintainStore, err := maintain.NewStore(
+		kvStore, maintain.WithClock(clock), maintain.WithConfig(maintainConfig))
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: maintain store: %w", err))
 	}
 	maintainService := &maintain.Service{
 		Facts: facts, Store: maintainStore, Documents: documentViews, Clock: clock,
+		Config: maintainConfig,
 	}
 	var summaries *summaryview.SummaryStore
 	var compactor *summaryderive.Compactor
@@ -330,6 +336,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		buildVerifier(facts, summaries, auditors),
 		buildLaneStatus(auditors),
 		buildRepair(projections, processor, settings.Projection),
+		buildOverlayStatus(maintainStore),
 	)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
@@ -525,6 +532,15 @@ func buildVerifier(
 		}
 		return verify.InspectContext(ctx, scope, evidence)
 	}
+}
+
+// buildOverlayStatus exposes the maintenance overlay's stamp to diagnostics:
+// the pass that wrote the stored judgments, and whether the policy this
+// deployment runs is applying them.
+func buildOverlayStatus(
+	store *maintain.Store,
+) func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error) {
+	return store.Status
 }
 
 // buildLaneStatus reports the producer identity of every configured lane for
