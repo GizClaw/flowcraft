@@ -482,9 +482,10 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
 
 ## Module dependency
 
-`backends/memory` is not tagged yet, so `go.mod` pins it with a local
-`replace ..`. When the backend is released, bump the require to the released
-version and drop the replace (the `examples/forge` shape).
+`backends/memory` is not tagged yet: it is workspace-only for now, so `go.mod`
+pins it with a local `replace ..`. When the backend is published, bump the
+require to the released version and drop the replace (the `examples/forge`
+shape). Tracked by #638.
 
 ## Measurement noise
 
