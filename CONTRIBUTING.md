@@ -98,6 +98,19 @@ moves a same-batch requirement still sitting on the previous tag to the planned
 version. The `Validate release intent` lane runs the same preflight, so a stale
 pin or an untidy `go.mod` fails the PR that declares the release.
 
+### Modules outside the changeset flow
+
+`core` and `craft` are the only release-managed modules, and a changeset can
+never name another. Drivers and backends sit outside the changeset flow
+entirely: they release under their own `driver/<name>/vX.Y.Z` and
+`backends/<name>/vX.Y.Z` tags.
+
+`backends/memory` and `backends/memory/eval` are workspace-only for now:
+neither is tagged, and neither will enter the changeset flow. `eval` reaches
+the backend through a local `replace`; publishing `backends/memory` would be
+its own `backends/memory/vX.Y.Z` tag, with the eval require bump and a pinned
+lane, tracked by #638.
+
 ## Release automation
 
 After a changeset reaches `main`, the `Release modules` workflow aggregates its
