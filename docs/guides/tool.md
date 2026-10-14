@@ -222,7 +222,7 @@ deletes it later: retention is the host's business.
 
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`
-error rather than the generic `invalid_provider_response`. The inference
+error rather than the generic `provider_response_unusable`. The inference
 node's `undefined_tool_recovery` config turns that rejection into board
 feedback that sends the model back to `tool_search` on the next round,
 without writing an engine-generated turn into the conversation transcript;

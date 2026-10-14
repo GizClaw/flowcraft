@@ -133,6 +133,9 @@ func recordRoute(
 			attribute.String("inference.operation", string(operation)),
 			attribute.String(telemetry.AttrErrorMessage, err.Error()),
 		}
+		if cause := inference.CauseMessage(err); cause != "" {
+			logAttrs = append(logAttrs, attribute.String(telemetry.AttrErrorCause, cause))
+		}
 		if executed := routeTrace.Executed; executed.ID != (model.ModelID{}) {
 			logAttrs = append(logAttrs,
 				attribute.String(telemetry.AttrLLMProvider, executed.ID.Provider),

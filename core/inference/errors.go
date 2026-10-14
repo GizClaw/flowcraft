@@ -35,6 +35,22 @@ const (
 	// committed by the inference node before the error propagated, so an
 	// internal mid-stream retry would duplicate output.
 	ProviderTruncated ErrorKind = "provider_truncated"
+	// ProviderResponseUnusable marks a response that completed — a
+	// terminal finish event was received, or a unary call returned — but
+	// whose assembled payload violates the request contract: empty
+	// completed content, missing or unrequested parts, invalid tool-call
+	// structure, tool-choice violations, or usage and structure rules.
+	// It is distinct from InvalidProviderResponse, which stays for
+	// payloads that could not be decoded or assembled at all (wire-level
+	// corruption), so callers can treat this attempt as void and
+	// re-initiate at their own granularity while corruption remains
+	// non-retryable.
+	// Contract: core never auto-retries this error. Its NotAvailable/503
+	// classification means "this attempt is void and worth re-initiating
+	// at caller granularity" — partial content may already have been
+	// committed by the inference node before the error propagated, so an
+	// internal retry would duplicate output.
+	ProviderResponseUnusable ErrorKind = "provider_response_unusable"
 	// UndefinedTool marks a response whose tool calls name tools absent
 	// from the request's definitions. It is distinct from
 	// InvalidProviderResponse so callers can offer a recoverable path
@@ -166,7 +182,7 @@ func (kind ErrorKind) classify(cause error) error {
 		return errdefs.Aborted(classified)
 	case CompilerContractViolation, InvalidProviderResponse:
 		return errdefs.Internal(cause)
-	case ProviderTruncated:
+	case ProviderTruncated, ProviderResponseUnusable:
 		return errdefs.NotAvailable(cause)
 	case UndefinedTool:
 		// Deterministic response violation: the model referenced a tool
@@ -187,11 +203,13 @@ func (kind ErrorKind) classify(cause error) error {
 
 // newResponseValidationError classifies a GenerateResponse.ValidateFor
 // failure. Undefined tool calls become UndefinedTool (deterministic,
-// potentially recoverable); every other contract violation stays
-// InvalidProviderResponse (provider-side corruption).
+// potentially recoverable); every other contract violation becomes
+// ProviderResponseUnusable — a completed response whose payload the request
+// contract rejects — while InvalidProviderResponse stays reserved for
+// wire-level corruption raised on the decode and assembly paths.
 // scope identifies the call phase independently of the operation.
 func newResponseValidationError(operation Operation, scope string, err error) *Error {
-	out := NewError(InvalidProviderResponse, operation, "", err)
+	out := NewError(ProviderResponseUnusable, operation, "", err)
 	var ute *undefinedToolError
 	if errors.As(err, &ute) {
 		out = NewError(UndefinedTool, operation, "", err)
@@ -211,4 +229,37 @@ func newResponseValidationError(operation Operation, scope string, err error) *E
 		out.Detail = prefix + string(check.check)
 	}
 	return out
+}
+
+// redactedCause is implemented by inference-owned error types whose message
+// is built from flowcraft-generated text — our format strings plus
+// identifier-like tokens (ids, names, media types, counts, JSON types) —
+// never provider wire payloads, prompts, or raw response fragments. It
+// marks the only causes CauseMessage may surface.
+type redactedCause interface {
+	error
+	redactedCause()
+}
+
+// CauseMessage returns the message of the first inference-owned cause
+// beneath the outer *Error in err's chain. It returns "" when the chain
+// carries no *Error, or when none of its causes is marked
+// redacted-by-construction: driver, transport, and context errors stay out,
+// because Error documents the chain as diagnostic data rather than redacted
+// output.
+//
+// It exists so routine logs can carry the actual reason behind a stable
+// Detail label — for example the terminal check that rejected a completed
+// response — without serializing an arbitrary error chain.
+func CauseMessage(err error) string {
+	var inferenceErr *Error
+	if !errors.As(err, &inferenceErr) {
+		return ""
+	}
+	for cause := inferenceErr.cause; cause != nil; cause = errors.Unwrap(cause) {
+		if marked, ok := cause.(redactedCause); ok {
+			return marked.Error()
+		}
+	}
+	return ""
 }

@@ -205,6 +205,8 @@ type toolCallConflictError struct {
 func (e *toolCallConflictError) Error() string { return e.err.Error() }
 func (e *toolCallConflictError) Unwrap() error { return e.err }
 
+func (*toolCallConflictError) redactedCause() {}
+
 // streamAccumulateDetail picks the Detail for an accumulate failure.
 func streamAccumulateDetail(err error) string {
 	var conflict *toolCallConflictError

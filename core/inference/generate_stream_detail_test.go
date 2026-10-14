@@ -160,8 +160,8 @@ func TestGenerateStreamToolCallStructureDetail(t *testing.T) {
 	}
 	stream := detailTestStream(events, toolStreamRequest(t))
 	err := nextStreamError(t, stream)
-	if err.Kind != InvalidProviderResponse {
-		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+	if err.Kind != ProviderResponseUnusable {
+		t.Fatalf("kind = %q, want %q", err.Kind, ProviderResponseUnusable)
 	}
 	if err.Detail != "stream.finish.tool_call" {
 		t.Fatalf("Detail = %q, want stream.finish.tool_call", err.Detail)
@@ -217,13 +217,13 @@ func TestGenerateStreamValidationDetailNamesFailedCheck(t *testing.T) {
 		{FinishReason: FinishCompleted},
 	}, textStreamRequest(t))
 	err := nextStreamError(t, stream)
-	if err.Kind != InvalidProviderResponse {
-		t.Fatalf("kind = %q, want %q", err.Kind, InvalidProviderResponse)
+	if err.Kind != ProviderResponseUnusable {
+		t.Fatalf("kind = %q, want %q", err.Kind, ProviderResponseUnusable)
 	}
 	if err.Detail != "stream.finish.validation.no_text" {
 		t.Fatalf("Detail = %q, want stream.finish.validation.no_text", err.Detail)
 	}
-	if got := err.Error(); got != "invalid_provider_response during generate: stream.finish.validation.no_text" {
+	if got := err.Error(); got != "provider_response_unusable during generate: stream.finish.validation.no_text" {
 		t.Fatalf("Error() = %q", got)
 	}
 }

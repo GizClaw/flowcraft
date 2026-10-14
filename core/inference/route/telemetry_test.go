@@ -1,18 +1,23 @@
 package route
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	logglobal "go.opentelemetry.io/otel/log/global"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -81,6 +86,62 @@ func TestRecordRouteErrorRecordsRequestID(t *testing.T) {
 	}
 	if _, ok := spanAttributeValue(spans[0], telemetry.AttrLLMResponseID); ok {
 		t.Fatal("llm.response.id should be absent on error")
+	}
+}
+
+func TestRouteFailureLogCarriesRedactedCause(t *testing.T) {
+	var out bytes.Buffer
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewSimpleProcessor(
+			telemetry.NewPlainTextExporter(&out))))
+	previous := logglobal.GetLoggerProvider()
+	logglobal.SetLoggerProvider(provider)
+	t.Cleanup(func() {
+		logglobal.SetLoggerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	// A completed response the request contract rejects: the chain bottoms
+	// out in a flowcraft-generated check message, so the warn line carries
+	// it as error.cause next to the stable Detail label.
+	rejected := inference.GenerateResponse{
+		Message:      message.Message{Role: message.RoleAssistant},
+		FinishReason: inference.FinishCompleted,
+	}
+	err := inference.NewError(
+		inference.ProviderResponseUnusable, model.OperationGenerate, "",
+		rejected.ValidateFor(routeRequest()))
+	err.Detail = "stream.finish.validation.empty_content"
+	ctx, span := startRouteSpan(context.Background(), model.OperationGenerate)
+	recordRoute(ctx, span, model.OperationGenerate, Trace{}, inference.Metadata{}, err)
+
+	got := out.String()
+	for _, want := range []string{
+		"inference route failed",
+		`error.message="provider_response_unusable during generate: stream.finish.validation.empty_content"`,
+		`error.cause="generate response content is required for finish reason`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("route failure log missing %q:\n%s", want, got)
+		}
+	}
+
+	// A decode-style failure keeps its cause out of the log: driver and
+	// transport text is diagnostic data, not redacted output.
+	out.Reset()
+	decodeErr := inference.NewError(
+		inference.InvalidProviderResponse, model.OperationGenerate, "",
+		errors.New("decode boom"))
+	decodeErr.Detail = "stream.decode"
+	ctx, span = startRouteSpan(context.Background(), model.OperationGenerate)
+	recordRoute(ctx, span, model.OperationGenerate, Trace{}, inference.Metadata{}, decodeErr)
+
+	got = out.String()
+	if strings.Contains(got, "error.cause=") {
+		t.Fatalf("decode failure must not carry error.cause:\n%s", got)
+	}
+	if !strings.Contains(got, `error.message="invalid_provider_response during generate: stream.decode"`) {
+		t.Fatalf("decode failure log missing error.message:\n%s", got)
 	}
 }
 

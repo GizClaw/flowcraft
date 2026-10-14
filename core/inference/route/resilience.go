@@ -179,6 +179,7 @@ func nonRetryableKind(kind inference.ErrorKind) bool {
 		inference.CompilerContractViolation,
 		inference.InvalidProviderResponse,
 		inference.ProviderTruncated,
+		inference.ProviderResponseUnusable,
 		inference.UndefinedTool:
 		return true
 	default:

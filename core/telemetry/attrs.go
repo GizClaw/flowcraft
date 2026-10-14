@@ -194,4 +194,12 @@ const (
 	// SDK (sometimes the message, sometimes a code) — switching to
 	// a single canonical name makes the intent unambiguous.
 	AttrErrorMessage = "error.message"
+
+	// AttrErrorCause carries the leaf cause message of a failure, attached
+	// only when the value is redacted by construction — flowcraft-generated
+	// text (our format strings and identifier-like tokens), never provider
+	// wire payloads. Error chains are diagnostic data rather than redacted
+	// output, so a producer that cannot prove that property must not use
+	// this key; the inference route failure log is the canonical producer.
+	AttrErrorCause = "error.cause"
 )

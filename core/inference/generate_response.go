@@ -107,6 +107,8 @@ func (e *undefinedToolError) Error() string {
 	return fmt.Sprintf("generate tool call %d names undefined tool %q", e.Index, e.Call.Name)
 }
 
+func (*undefinedToolError) redactedCause() {}
+
 // generateResponseCheckError carries the static validation stage alongside
 // the original cause. The stage is safe to expose through Error.Detail; the
 // cause remains available to callers that need errors.Is/errors.As.
@@ -117,6 +119,8 @@ type generateResponseCheckError struct {
 
 func (e *generateResponseCheckError) Error() string { return e.err.Error() }
 func (e *generateResponseCheckError) Unwrap() error { return e.err }
+
+func (*generateResponseCheckError) redactedCause() {}
 
 type generateResponseCheck string
 
