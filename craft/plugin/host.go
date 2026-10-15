@@ -690,8 +690,9 @@ func (h *Host) Uninstall(
 	return nil
 }
 
-// Install installs a plugin from a directory or a zip and keeps its
-// process in step with what was installed.
+// Install installs a plugin from a directory and keeps its process in
+// step with what was installed. A zip package is unpacked by
+// [Store.InstallZip], which is the store's path and touches no process.
 //
 // The store pipeline is the one [Store.Install] runs — the same checks,
 // the same snapshot, the same restore on failure. What this method adds
@@ -699,6 +700,13 @@ func (h *Host) Uninstall(
 // plugin's process reads, so a running plugin is stopped for the change
 // and started again afterwards, from what the store now holds. See
 // [Host.changeLocked] for what happens when either half fails.
+//
+// An id that was not installed at all is recorded disabled once the
+// install succeeded: a change does not turn a plugin on, and the entry a
+// fresh id would otherwise carry — a store with no record for it reads
+// enabled — would say enabled about a plugin with no process behind it,
+// the one state a running host does not leave behind. [Host.SetEnabled]
+// is what starts it.
 func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
 	// The id names the process and the entry lock this install has to
 	// keep in step, and it is known only once the source is read.
@@ -709,9 +717,22 @@ func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
 	lock := h.entryLock(summary.ID)
 	lock.Lock()
 	defer lock.Unlock()
-	return h.changeLocked(ctx, summary.ID, func() (Summary, error) {
+	_, installed := h.store.Entry(summary.ID)
+	summary, err = h.changeLocked(ctx, summary.ID, func() (Summary, error) {
 		return h.store.Install(ctx, source)
 	})
+	if err != nil {
+		return Summary{}, err
+	}
+	if installed {
+		return summary, nil
+	}
+	if err := h.store.SetEnabled(summary.ID, false); err != nil {
+		return summary, fmt.Errorf(
+			"plugin host: record the fresh install of %s as disabled: %w",
+			summary.ID, err)
+	}
+	return summary, nil
 }
 
 // UpdateFrom updates one installed plugin from its declared update

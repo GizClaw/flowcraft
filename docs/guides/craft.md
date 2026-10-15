@@ -464,6 +464,12 @@ so a running plugin never reads files that changed under it:
 - A change does not turn a plugin on: one that was not running is left that
   way, including one whose process gave up on its own — that loss was
   reported, and the record is the application's to change.
+- An id that was not installed at all is recorded disabled by the install
+  that creates it. A fresh id has no enable record, and a store with no
+  record for an id reads it enabled: without that write the entry would say
+  enabled about a plugin with no process behind it — the state above — from
+  the install until something else changed it. `Host.SetEnabled` is what
+  starts it.
 
 Each call holds the plugin's entry lock, so an enable or another change of the
 same plugin waits for it rather than racing it. `Store.Install`,

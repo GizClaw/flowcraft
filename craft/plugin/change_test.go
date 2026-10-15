@@ -295,6 +295,51 @@ func TestHostNumbersEveryProcessItStarts(t *testing.T) {
 	}
 }
 
+// TestHostInstallOfANewPluginLeavesItRecordedDisabled pins the record a
+// fresh install leaves behind. A store with no record for an id reads it
+// enabled, and an install does not turn a plugin on — so a fresh install
+// that wrote no record would leave an entry saying enabled about a
+// plugin with no process behind it, the one state a running host does
+// not leave behind. Enabling it is what starts it.
+func TestHostInstallOfANewPluginLeavesItRecordedDisabled(t *testing.T) {
+	t.Parallel()
+	factory := newVersionFactory()
+	root := t.TempDir()
+	store := newStoreOver(t, root)
+	host := startHost(t, store, factory.new)
+
+	summary, err := installVersion(t, host, "0.1.0")
+	if err != nil || summary.Version != "0.1.0" {
+		t.Fatalf("Install = %+v, %v", summary, err)
+	}
+	if got := factory.versions(); len(got) != 0 {
+		t.Fatalf("started versions = %v, want nothing started for a fresh install", got)
+	}
+	entry, ok := store.Entry("hello")
+	if !ok || entry.Enabled {
+		t.Fatalf("entry after the install = %+v, %v, want it recorded disabled",
+			entry, ok)
+	}
+	if running(host, "hello") {
+		t.Fatal("the host has a process for a plugin it was not asked to start")
+	}
+	if names := toolNames(host); len(names) != 0 {
+		t.Fatalf("tools after the install = %v, want none", names)
+	}
+
+	// The enable is the answer that starts it, from the install that is
+	// already on disk.
+	if err := host.SetEnabled(context.Background(), "hello", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want the installed one after the enable", got)
+	}
+	if !running(host, "hello") {
+		t.Fatal("the enable left no process")
+	}
+}
+
 // TestHostUpdateFromRefusesBeforeStopping pins the resolve half of the
 // protocol for the update path: what an update would be refused for
 // without reading anything — an id that is not installed — is answered
