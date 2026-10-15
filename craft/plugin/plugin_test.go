@@ -231,3 +231,66 @@ func TestToolSetFanOutAndRemove(t *testing.T) {
 		t.Fatalf("Attached = %d, want 1", set.Attached())
 	}
 }
+
+// registrarSource keeps the registrar it was attached with, so a test
+// can drive what a live plugin does after it is up: publish a tool
+// without the plugin going away, and later withdraw it.
+type registrarSource struct {
+	registrar tool.Registrar
+}
+
+func (s *registrarSource) Tools() []tool.Tool         { return nil }
+func (s *registrarSource) LazyTools() []tool.LazyTool { return nil }
+func (s *registrarSource) Close() error               { return nil }
+
+func (s *registrarSource) Attach(registrar tool.Registrar) {
+	s.registrar = registrar
+}
+
+// TestToolSetWithdrawsOnePluginsTool pins the direction of the fan-out
+// RemovePlugin does not: a plugin that is still running withdraws a
+// single tool, and the withdrawal reaches every registry downstream
+// while the plugin's other tools stay. A tool left behind is a call the
+// catalog still offers and the plugin no longer answers.
+func TestToolSetWithdrawsOnePluginsTool(t *testing.T) {
+	t.Parallel()
+	set := NewToolSet()
+	source := &registrarSource{}
+	if err := set.AddPlugin("hello", source); err != nil {
+		t.Fatalf("AddPlugin: %v", err)
+	}
+	registry, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	set.Attach(registry)
+	for _, name := range []string{"hello__echo", "hello__keep"} {
+		if err := source.registrar.Add(fakeTool{name: name}); err != nil {
+			t.Fatalf("Add(%s): %v", name, err)
+		}
+	}
+	source.registrar.Remove("hello__echo")
+	if _, ok := registry.Get("hello__echo"); ok {
+		t.Fatal("the withdrawn tool is still in the registry")
+	}
+	if _, ok := registry.Get("hello__keep"); !ok {
+		t.Fatal("the withdrawal took the plugin's other tool with it")
+	}
+	if set.Attached() != 1 {
+		t.Fatalf("Attached = %d, want the plugin still tracked", set.Attached())
+	}
+
+	// A generation that attaches afterwards is not handed a tool the
+	// plugin withdrew before it existed.
+	late, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	set.Attach(late)
+	if _, ok := late.Get("hello__echo"); ok {
+		t.Fatal("a registry attached later saw the withdrawn tool")
+	}
+	if _, ok := late.Get("hello__keep"); !ok {
+		t.Fatal("a registry attached later is missing the live tool")
+	}
+}
