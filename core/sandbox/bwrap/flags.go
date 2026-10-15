@@ -84,6 +84,10 @@ func filesystemFlags(rootDir string, writable []string, readOnlyRoot bool) []str
 // allow-list therefore *is* the child's whole environment, and a
 // variable no policy selects never enters the sandbox.
 //
+// The one variable the sandboxed command still sees outside this list
+// is PWD: bwrap sets it itself, to the command's working directory,
+// whatever the policy says.
+//
 // It deliberately does not use --setenv: those arguments are part of
 // the host-side argv, so every variable of the allow-list (API keys
 // included) would be readable in /proc/<pid>/cmdline by any local
