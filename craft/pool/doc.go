@@ -30,13 +30,15 @@
 //     the caller owes a Release.
 //
 // What a reference buys is not the member's life but its stay: a member
-// is retired when its key is invalidated — at once for an idle one,
-// once the work it kept alive ends for a busy one, and at the last
-// reference for one that is still checked out. A member nothing
-// invalidated is the pool's to keep, so the release that takes the last
-// reference leaves it pooled and the next caller is served by the same
-// generation. The pool owns that decision; Ensure, which takes no
-// reference, only ever borrows against it.
+// is retired when its key is invalidated — at once for one that is idle
+// and held by nobody, once the work it kept alive ends for a busy one,
+// and at the last reference for one a caller still holds. An idle
+// member a caller checked out is not closed under that caller; the
+// release that takes the last reference retires it. A member nothing
+// invalidated is the pool's to keep, so the last reference going leaves
+// it pooled and the next caller is served by the same generation. The
+// pool owns that decision; Ensure, which takes no reference, only ever
+// borrows against it.
 //
 // A key never has two members at once. While one drains, Acquire
 // waits; while one is being assembled, concurrent callers share the

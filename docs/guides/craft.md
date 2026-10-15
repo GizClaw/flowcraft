@@ -831,18 +831,24 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   single assembly (error included), and the caller owes exactly one
   `Release`. What a reference buys is the member's stay rather than its
   life: the last `Release` retires a member its key was invalidated for,
-  while a member nothing invalidated stays pooled and serves the next
-  caller.
+  and until that release comes the member is not closed under the caller
+  that holds it — an idle one either — while a member nothing
+  invalidated stays pooled and serves the next caller.
 - **A key names two things.** `Kind` is the application's namespace
   (`workspace`, `app`, …), so the same id in two kinds is two keys and
   neither kind can answer for the other. A blank part is not a key:
   `Ensure` and `Acquire` refuse it with `ErrNoKey`, the reads answer
   with nothing, and the retirements ignore it.
-- **Invalidation defers to idle work.** `Invalidate` marks the key's
-  member stale. An idle member closes immediately; a member with work in
-  flight stays pooled and keeps serving it on the old generation until
-  the member's own idle (`Settle`) retires it — a second generation is
-  never assembled under a live unit. `InvalidateKind` drops one kind and
+- **Invalidation defers to live work and to a caller.** `Invalidate`
+  marks the key's member stale. An idle member that nobody holds closes
+  immediately; a member with work in flight, or one a caller checked
+  out, stays pooled and keeps serving on the old generation until the
+  last unit ends (`Settle`, once no reference is left) or the last
+  `Release` takes it — a second generation is never assembled under a
+  live unit or under a caller that is using one. A `Release` is the
+  application's word that its caller is done, so it retires a stale
+  member whatever `Busy` reports, and the application owes it after its
+  work rather than before it. `InvalidateKind` drops one kind and
   nothing else; `InvalidateAll` and `Close` drop every key, and a pool
   closed this way keeps working (the next `Ensure` assembles again).
 - **One deferred replacement per key.** A reload that lands on a stale
@@ -851,7 +857,10 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   (a key the user left is not rebuilt), ensures, and announces the
   member through `Replaced`. A second arm inside the same drain is
   refused, and a drain that already finished between the arm and the
-  watcher still gets its replacement.
+  watcher still gets its replacement. A drain includes a member a caller
+  holds: it finishes at that caller's `Release`, so a caller arming a
+  replacement must not wait for `Replaced` before letting go of the
+  member it is holding.
 - **`Do` absorbs the lifecycle guards.** `Do(ctx, key, stop, fn)`
   resolves the member and runs `fn` on it, retrying the errors
   `Spec.Retryable` classifies (plus the pool's own `ErrNotReady`) inside

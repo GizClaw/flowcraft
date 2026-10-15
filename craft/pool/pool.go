@@ -87,8 +87,8 @@ type Spec[T any] struct {
 
 	// Busy reports whether the member still has work in flight. A
 	// member invalidated while busy stays pooled and keeps serving that
-	// work on the old generation; an idle one closes right away. Nil
-	// means never busy.
+	// work on the old generation; an idle one closes right away, unless
+	// a caller is still holding it (see Acquire). Nil means never busy.
 	Busy func(v *T) bool
 
 	// WaitClosed blocks until the member's teardown finished, or ctx is
@@ -307,9 +307,11 @@ func (p *Pool[T]) Acquire(ctx context.Context, k Key) (*T, error) {
 //
 // checkout says whether the caller takes a reference to the member:
 // Acquire does, and owes a Release, while Ensure borrows without one.
-// The distinction is the whole of the reference protocol — a reference
-// is the only thing that holds a member against its invalidation — so
-// it is decided here, at the one place a member changes hands.
+// The distinction is the whole of the reference protocol: a member is
+// held against its invalidation by the application's report of work in
+// flight and by the pool's own count of the callers still using it, and
+// which half a hand-out owes is decided here, at the one place a member
+// changes hands.
 func (p *Pool[T]) serve(ctx context.Context, k Key, checkout bool) (*T, error) {
 	if !k.Valid() {
 		return nil, ErrNoKey
@@ -415,6 +417,14 @@ func (p *Pool[T]) Stale(k Key) bool {
 // it is not: a member nothing invalidated is the pool's to keep, and
 // the next call is served by the same generation.
 //
+// The last release is not gated on Busy: an application that checks a
+// member out is saying with its release that the caller is done with
+// it, and an application still working through the member owes that
+// release afterwards rather than before it — the pool cannot tell a
+// Busy that is right from one that never clears. An idle member that a
+// caller holds is the mirror image, and it is retired here rather than
+// at its invalidation (see Invalidate).
+//
 // Releasing a member this pool does not hold, and releasing one it only
 // lent out — a member whose references are not out with anyone — are
 // both no-ops, so a double Release cannot retire a generation twice.
@@ -450,8 +460,9 @@ func (p *Pool[T]) Release(k Key, v *T) {
 // ended. It is what retires a member invalidated while busy — the
 // generation stops serving when the work it kept alive ends, not at
 // invalidation time, so a second member is never assembled under a live
-// unit. A member that was not invalidated stays pooled; a key whose
-// member is not v is a no-op.
+// unit. A member that was not invalidated stays pooled, a key whose
+// member is not v is a no-op, and so is a member a caller still holds:
+// retirement waits for the release that is owed for it.
 func (p *Pool[T]) Settle(k Key, v *T) {
 	if v == nil || !k.Valid() {
 		return
@@ -466,6 +477,13 @@ func (p *Pool[T]) Settle(k Key, v *T) {
 		p.mu.Unlock()
 		return
 	}
+	if e.refs > 0 {
+		// The work ended, but a caller is still using the member: it
+		// stays pooled, and the release that takes the last reference
+		// retires it (see Release).
+		p.mu.Unlock()
+		return
+	}
 	delete(p.pooled, k)
 	p.retireLocked(k, e)
 	p.mu.Unlock()
@@ -473,11 +491,13 @@ func (p *Pool[T]) Settle(k Key, v *T) {
 }
 
 // Invalidate marks one key's member stale: the rebuild path. An idle
-// member closes immediately; a member with work in flight stays pooled
-// and keeps serving it on the old generation until the last unit ends,
-// then retires itself through Settle. Deferring the swap to idle is what
-// keeps a second member — and a second generation of whatever the
-// member holds — from being assembled under a live unit.
+// member that no caller holds closes immediately. A member that has work
+// in flight, and one a caller checked out, stay pooled and keep serving
+// on the old generation — the work ending retires a member nobody holds
+// (see Settle), and the last release retires one a caller does (see
+// Release). Deferring the swap is what keeps a second member — and a
+// second generation of whatever the member holds — from being assembled
+// under a live unit or under the caller that is using one.
 //
 // A key with no pooled member is ignored: there is nothing to retire,
 // and the calls that must refuse their input (Ensure, Acquire) are the
@@ -506,20 +526,31 @@ func (p *Pool[T]) Invalidate(ctx context.Context, k Key) {
 
 	p.mu.Lock()
 	removed := false
-	if cur := p.pooled[k]; cur == e && !busy {
-		delete(p.pooled, k)
-		removed = true
-		p.retireLocked(k, e)
+	// The gate is the one Settle and Release apply: nothing is working
+	// on the member (busy, the application's report) and nobody holds it
+	// (refs, the pool's own record). A member a caller is still using is
+	// not closed under that caller.
+	refs := 0
+	if cur := p.pooled[k]; cur == e {
+		refs = e.refs
+		if refs == 0 && !busy {
+			delete(p.pooled, k)
+			removed = true
+			p.retireLocked(k, e)
+		}
 	}
 	p.mu.Unlock()
 	// The reason names what asked for the rebuild, not what is being
 	// torn down: a storm of invalidations all pointing at one caller is
-	// the signal this line exists for.
+	// the signal this line exists for. The other half of the question —
+	// why a deferred swap waited — is what the flags answer: work in
+	// flight (in_turn) or a caller still holding the member (refs).
 	telemetry.Info(ctx, "pool: member invalidated",
 		attribute.String("reason", reasonFrom(ctx)),
 		attribute.String("key", k.String()),
 		attribute.Bool("in_turn", busy),
 		attribute.Bool("deferred", !removed),
+		attribute.Int("refs", refs),
 		attribute.String("member_ptr", fmt.Sprintf("%p", v)))
 	if removed {
 		p.closeMember(k, e)
