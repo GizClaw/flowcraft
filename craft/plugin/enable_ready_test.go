@@ -126,7 +126,7 @@ func toolNames(host *Host) []string {
 func running(host *Host, id string) bool {
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	_, ok := host.sources[id]
+	_, ok := host.live[id]
 	return ok
 }
 

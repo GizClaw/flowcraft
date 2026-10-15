@@ -2,6 +2,7 @@ package hostmcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ func TestStandardRegistryAndHostAbout(t *testing.T) {
 
 func TestTokens(t *testing.T) {
 	tokens := NewTokens()
-	token, err := tokens.Mint(Identity{
+	secret, token, err := tokens.Mint(Identity{
 		PluginID: "hello",
 		Grants:   GrantSet{"secrets:auth": true},
 	})
@@ -78,17 +79,39 @@ func TestTokens(t *testing.T) {
 		t.Fatalf("token store holds %d entries, want 1", len(tokens.byHash))
 	}
 	for key := range tokens.byHash {
-		if key == token {
-			t.Fatal("the token store keeps the raw token as its key")
+		if key == tokenOf(secret) {
+			// The key is the digest of the secret, which is the point:
+			// the secret itself is not a key.
+			continue
 		}
+		t.Fatalf("the token store keys %v, want the digest of the minted secret", key)
 	}
-	identity, ok := tokens.Lookup(token)
+	if token.String() == "" || strings.Contains(token.String(), secret) {
+		t.Fatalf("Token.String() = %q, want a digest prefix", token.String())
+	}
+	if token.IsZero() {
+		t.Fatal("a minted Token reports IsZero")
+	}
+	if !(Token{}).IsZero() {
+		t.Fatal("the zero Token does not report IsZero")
+	}
+	identity, minted, ok := tokens.Lookup(secret)
 	if !ok || identity.PluginID != "hello" || !identity.Grants.Has("secrets:auth") {
 		t.Fatalf("Lookup = %+v/%v", identity, ok)
 	}
+	if minted != token {
+		t.Fatalf("Lookup token = %v, want the minted %v", minted, token)
+	}
 	tokens.Revoke(token)
-	if _, ok := tokens.Lookup(token); ok {
+	if _, _, ok := tokens.Lookup(secret); ok {
 		t.Fatal("token still valid after Revoke")
+	}
+	// A token store that was never handed a token cannot be talked into
+	// revoking one by a zero value, and revoking twice is a no-op.
+	tokens.Revoke(Token{})
+	tokens.Revoke(token)
+	if len(tokens.byHash) != 0 {
+		t.Fatalf("token store holds %d entries after Revoke, want 0", len(tokens.byHash))
 	}
 }
 

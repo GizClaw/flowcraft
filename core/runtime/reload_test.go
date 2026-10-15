@@ -829,8 +829,8 @@ func TestRuntimeReloadFailureKeepsOldGeneration(t *testing.T) {
 		t.Fatal("Reload with unresolvable resource succeeded, want error")
 	}
 	runTurn(t, app.Sessions(), "bot", "ctx")
-	if app.current.id != 1 {
-		t.Fatalf("generation id after failed reload = %d, want 1", app.current.id)
+	if app.current.Load().id != 1 {
+		t.Fatalf("generation id after failed reload = %d, want 1", app.current.Load().id)
 	}
 }
 
@@ -1298,9 +1298,9 @@ func TestReloadOptionValidation(t *testing.T) {
 			if _, err := app.Reload(ctx, doc, tc.option); !tc.check(err) {
 				t.Fatalf("Reload = %v, want the rejected option set", err)
 			}
-			if app.current.id != 1 {
+			if app.current.Load().id != 1 {
 				t.Fatalf("generation id after the rejected option = %d, want 1",
-					app.current.id)
+					app.current.Load().id)
 			}
 		})
 	}

@@ -427,11 +427,49 @@ snapshot, its enable state and — by default — its KV file
 `UninstallOptions{KeepKV: true}` / `{KeepData: true}` keep them, for
 content a reinstall should still find. A builtin cannot be uninstalled
 (disable it instead); removing the user copy that shadows a builtin
-uncovers the builtin again. `Host.Uninstall` stops the plugin first
-(in-flight calls drain, the source closes) and then uninstalls;
-`Store.Uninstall` on its own stops nothing. State the application keys
-by plugin id — secrets, inference profiles, telemetry — is not craft's
-to delete and stays.
+uncovers the builtin again. `Host.Uninstall` asks the store first
+(`Store.CheckUninstall`: a builtin, or an id that is not installed, is
+refused before any process is killed), stops the plugin (in-flight calls
+drain, the source closes), and then uninstalls; a store that refuses after
+the stop starts a plugin that was running again, so the refusal costs it a
+restart instead of leaving a plugin uninstalled while its process runs on.
+`Store.Uninstall` on its own stops nothing. State the application keys by
+plugin id — secrets, inference profiles, telemetry — is not craft's to
+delete and stays.
+
+**Host-side changes.** `Host.Install(ctx, source)`,
+`Host.UpdateFrom(ctx, id, installer)` and `Host.Rollback(ctx, id)` run one of
+those store pipelines and add the process half of it — stop, change, start —
+so a running plugin never reads files that changed under it:
+
+- The process is stopped before the change (the change replaces or removes
+  the directory it reads) and started again from what the store now holds.
+- A change the store refuses — a version rule, a checksum, a download the
+  installer declined — leaves the installed version in place, and it is
+  started again before the call returns: what the refusal costs a running
+  plugin is a restart, not a stopped plugin.
+- A change that landed but whose version cannot come up is undone where the
+  store can undo it (the snapshot `Store.Rollback` restores) and the version
+  that ran before is started again; the caller sees why the new one failed.
+  `Host.Rollback` is the one change that cannot undo itself — its swap
+  consumes the version it replaced — so a rollback whose version does not
+  come up leaves the plugin stopped with its record disabled, and installing
+  a package is what repairs it.
+- A version no attempt can bring up leaves the plugin stopped with its record
+  disabled, including the case where the stop itself could not finish: the
+  drain gives up at `HostOptions.DrainTimeout` and the source closes anyway,
+  so the record that says enabled goes with the process that is gone.
+  "Enabled" about a plugin with no process is the one state the host does not
+  leave behind.
+- A change does not turn a plugin on: one that was not running is left that
+  way, including one whose process gave up on its own — that loss was
+  reported, and the record is the application's to change.
+
+Each call holds the plugin's entry lock, so an enable or another change of the
+same plugin waits for it rather than racing it. `Store.Install`,
+`Store.UpdateFrom`, `Store.Rollback` and `Store.Uninstall` are the same
+pipelines without the process half: calling them straight is the application's
+own to keep in step, and nothing in craft starts or stops a process for them.
 
 **Remote updates.** A manifest may declare where to look for a newer
 version:
@@ -589,7 +627,12 @@ is a loss that races the host's own close, or one the enable in flight
 rolled back on, where the rollback is the report. A loss that arrives
 while an enable is waiting is held for that call: if the enable stands,
 the loss is reported once the call ends, so a plugin is never recorded
-enabled with a server that gave up and nothing said about it.
+enabled with a server that gave up and nothing said about it. A loss that
+arrives while the host is stopping that same process is one event with
+that stop, reported once, as whichever side recorded it first — the stop
+the application asked for, or the loss that got there first — while the
+host's own half runs either way: the process leaves the live set, and
+the token minted for it is revoked.
 
 Enabling is an answer rather than a spawn: `plugin.Host.SetEnabled`
 waits for the plugin's MCP servers, bounded by
@@ -604,8 +647,18 @@ is not a failure of enable: the wait gives up at the timeout, the entry
 is recorded enabled, and the source keeps reconnecting. A plugin whose
 enable is in flight is what narrates its own failure, so the failure the
 rollback answers is not reported a second time through `OnStopped`.
+The wait covers every server the manifest declares: `mcp.required` marks
+a server the plugin cannot run without for the MCP layer's own
+reporting, and says nothing about the enable — a plugin whose declared
+server cannot start is refused whichever way that flag is set.
 `Host.Start` does not wait: it replays what a previous session recorded,
 and an application's startup must not depend on a plugin's process.
+
+Disabling is a stop plus the record: the process drains and closes, and the
+entry is written disabled. A stop that runs past `HostOptions.DrainTimeout`
+closes the source anyway and reports it, and the entry goes disabled with the
+process that is gone — the record never says enabled about a plugin the host
+is not running.
 
 ## Plugin graph nodes
 
@@ -776,17 +829,26 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   member out: it waits out a retiring member's teardown instead of
   handing out one on its way out, concurrent callers for one key share a
   single assembly (error included), and the caller owes exactly one
-  `Release` — the last reference is what retires a member.
+  `Release`. What a reference buys is the member's stay rather than its
+  life: the last `Release` retires a member its key was invalidated for,
+  and until that release comes the member is not closed under the caller
+  that holds it — an idle one either — while a member nothing
+  invalidated stays pooled and serves the next caller.
 - **A key names two things.** `Kind` is the application's namespace
   (`workspace`, `app`, …), so the same id in two kinds is two keys and
   neither kind can answer for the other. A blank part is not a key:
   `Ensure` and `Acquire` refuse it with `ErrNoKey`, the reads answer
   with nothing, and the retirements ignore it.
-- **Invalidation defers to idle work.** `Invalidate` marks the key's
-  member stale. An idle member closes immediately; a member with work in
-  flight stays pooled and keeps serving it on the old generation until
-  the member's own idle (`Settle`) retires it — a second generation is
-  never assembled under a live unit. `InvalidateKind` drops one kind and
+- **Invalidation defers to live work and to a caller.** `Invalidate`
+  marks the key's member stale. An idle member that nobody holds closes
+  immediately; a member with work in flight, or one a caller checked
+  out, stays pooled and keeps serving on the old generation until the
+  last unit ends (`Settle`, once no reference is left) or the last
+  `Release` takes it — a second generation is never assembled under a
+  live unit or under a caller that is using one. A `Release` is the
+  application's word that its caller is done, so it retires a stale
+  member whatever `Busy` reports, and the application owes it after its
+  work rather than before it. `InvalidateKind` drops one kind and
   nothing else; `InvalidateAll` and `Close` drop every key, and a pool
   closed this way keeps working (the next `Ensure` assembles again).
 - **One deferred replacement per key.** A reload that lands on a stale
@@ -795,7 +857,10 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   (a key the user left is not rebuilt), ensures, and announces the
   member through `Replaced`. A second arm inside the same drain is
   refused, and a drain that already finished between the arm and the
-  watcher still gets its replacement.
+  watcher still gets its replacement. A drain includes a member a caller
+  holds: it finishes at that caller's `Release`, so a caller arming a
+  replacement must not wait for `Replaced` before letting go of the
+  member it is holding.
 - **`Do` absorbs the lifecycle guards.** `Do(ctx, key, stop, fn)`
   resolves the member and runs `fn` on it, retrying the errors
   `Spec.Retryable` classifies (plus the pool's own `ErrNotReady`) inside

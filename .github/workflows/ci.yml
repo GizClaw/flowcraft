@@ -182,6 +182,22 @@ jobs:
             exit 1
           fi
 
+  check-consumers:
+    name: Consumers build outside the workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # Every example (and `craft` itself) is read the way a reader reads
+      # it: its own go.mod and go.sum, no workspace. The target also
+      # checks that an exemption in CONSUMER_EXEMPT is still needed — a
+      # module that starts building here turns this lane red instead of
+      # leaving a stale exemption behind. See the Makefile.
+      - name: Check consumers
+        run: make check-consumers
+
   lint:
     name: Lint (${{ matrix.module }})
     needs: [compute-matrix]
@@ -448,7 +464,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-sandbox-windows, test-sandbox-macos]
+    needs: [release-intent, gofmt, check-consumers, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-craft-windows, test-sandbox-windows, test-sandbox-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -456,6 +472,7 @@ jobs:
           results=( \
             "${{ needs.release-intent.result }}" \
             "${{ needs.gofmt.result }}" \
+            "${{ needs.check-consumers.result }}" \
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \
             "${{ needs.test.result }}" \
@@ -463,6 +480,7 @@ jobs:
             "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
+            "${{ needs.test-craft-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \
             "${{ needs.test-sandbox-macos.result }}" \
           )

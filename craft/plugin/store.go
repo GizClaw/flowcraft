@@ -50,6 +50,15 @@ type Entry struct {
 	BuiltinVersion string
 	// Error holds the scan/validation error for an invalid plugin.
 	Error string
+	// Conflict names why a valid plugin cannot be published: another
+	// plugin claims one of the tool namespaces it would publish under.
+	// It is separate from Error because the plugin is not invalid — its
+	// manifest parses, its files are there — and the two states need
+	// different recoveries: a plugin with a conflict can be disabled
+	// (which is how a user resolves the collision), while an invalid one
+	// can be neither enabled nor disabled through the store's valid
+	// view.
+	Conflict string
 }
 
 // Summary is the UI-facing view of one plugin.
@@ -64,6 +73,10 @@ type Summary struct {
 	ShadowsBuiltin bool     `json:"shadows_builtin,omitempty"`
 	BuiltinVersion string   `json:"builtin_version,omitempty"`
 	Error          string   `json:"error,omitempty"`
+	// Conflict names the tool namespace another plugin already
+	// publishes; the entry is listed, and cannot be enabled until one of
+	// the two is disabled or renamed.
+	Conflict string `json:"conflict,omitempty"`
 }
 
 // Store scans plugin roots, keeps the enable state and plugin KV data,
@@ -153,6 +166,7 @@ func (s *Store) List() ([]Summary, error) {
 			ShadowsBuiltin: entry.ShadowsBuiltin,
 			BuiltinVersion: entry.BuiltinVersion,
 			Error:          entry.Error,
+			Conflict:       entry.Conflict,
 		}
 		if entry.Error == "" {
 			summary.Name = entry.Manifest.Name
@@ -183,7 +197,11 @@ func (s *Store) Entries() ([]Entry, error) {
 	return out, nil
 }
 
-// Enabled returns every valid, enabled plugin.
+// Enabled returns every valid, enabled plugin that can be published: a
+// plugin whose tool namespace another plugin already claims is not in
+// the list, because starting it would publish tools under a name that
+// does not resolve. The entry stays readable (and disable-able) through
+// [Store.List] and [Store.Entry].
 func (s *Store) Enabled() ([]Entry, error) {
 	entries, err := s.Entries()
 	if err != nil {
@@ -191,14 +209,18 @@ func (s *Store) Enabled() ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Enabled {
+		if entry.Enabled && entry.Conflict == "" {
 			out = append(out, entry)
 		}
 	}
 	return out, nil
 }
 
-// Entry returns one valid plugin by id.
+// Entry returns one valid plugin by id. A plugin whose tool namespace
+// collides with another's is returned too: it is valid, it is readable,
+// and the conflict travels with it (see [Entry.Conflict]) — a caller
+// that would start it has to refuse it, and a caller that would disable
+// it must be able to find it.
 func (s *Store) Entry(id string) (Entry, bool) {
 	entries, _ := s.scan()
 	for _, entry := range entries {
@@ -211,8 +233,17 @@ func (s *Store) Entry(id string) (Entry, bool) {
 
 // SetEnabled toggles one plugin and bumps the revision.
 func (s *Store) SetEnabled(id string, enabled bool) error {
-	if _, ok := s.Entry(id); !ok {
+	entry, ok := s.Entry(id)
+	if !ok {
 		return errdefs.NotFoundf("plugin store: plugin %q not found", id)
+	}
+	// Enabling a plugin whose tool namespace is taken would publish tools
+	// that cannot resolve, so it is refused while the collision lasts.
+	// Disabling it is the way out: the collision is gone as soon as one
+	// of the two plugins stops claiming the namespace.
+	if enabled && entry.Conflict != "" {
+		return errdefs.Conflictf(
+			"plugin store: plugin %q cannot be enabled: %s", id, entry.Conflict)
 	}
 	// The fail-closed rebuild of an unreadable state file needs the set
 	// it must disable, and scan reads the same state file under mu, so
@@ -345,13 +376,16 @@ func (s *Store) scan() ([]Entry, error) {
 	return out, stateErr
 }
 
-// markToolNamespaceCollisions marks every valid plugin whose MCP tool
-// namespace another plugin already claimed. Two ids can collapse into
-// one namespace — ToolPrefix rewrites anything outside [a-z0-9_-], and
-// an id may contain "." — and a second plugin publishing the same tool
-// name loses the registry's duplicate race silently: the tool simply
-// does not exist. Making it a scan error means the user sees which two
-// plugins collide and can disable or rename one.
+// markToolNamespaceCollisions names the collision of every valid plugin
+// whose MCP tool namespace another plugin already claimed. Two ids can
+// collapse into one namespace — ToolPrefix rewrites anything outside
+// [a-z0-9_-], and an id may contain "." — and a second plugin publishing
+// the same tool name loses the registry's duplicate race silently: the
+// tool simply does not exist. The collision is reported as
+// [Entry.Conflict] rather than as an invalid manifest, so the user sees
+// which two plugins collide and can disable one of them: the colliding
+// plugin cannot be enabled while the collision lasts, but it can be
+// turned off.
 func markToolNamespaceCollisions(entries []Entry) {
 	owner := make(map[string]string, len(entries))
 	for i, entry := range entries {
@@ -360,9 +394,9 @@ func markToolNamespaceCollisions(entries []Entry) {
 		}
 		for _, namespace := range ToolNamespaces(entry.ID, entry.Manifest.Servers()) {
 			if first, taken := owner[namespace]; taken {
-				entries[i].Error = fmt.Sprintf(
-					"plugin %s: the tool namespace %q collides with plugin %q",
-					entry.ID, namespace, first)
+				entries[i].Conflict = fmt.Sprintf(
+					"the tool namespace %q collides with plugin %q",
+					namespace, first)
 				break
 			}
 			owner[namespace] = entry.ID
@@ -438,15 +472,29 @@ type KV struct {
 	values map[string]string
 }
 
+// openKV reads one plugin's key/value file. A file that does not exist is
+// a plugin that never wrote anything and reads as empty; anything else —
+// unreadable, truncated, not JSON, not an object — is returned as an
+// error. Reading a broken file as empty is not a lenient default: the
+// next Set would write that empty table over the user's data.
 func openKV(path string) (*KV, error) {
 	store := &KV{path: path, values: map[string]string{}}
 	data, err := os.ReadFile(path)
-	if err == nil {
-		_ = json.Unmarshal(data, &store.values)
+	if errors.Is(err, fs.ErrNotExist) {
+		return store, nil
 	}
-	if store.values == nil {
-		store.values = map[string]string{}
+	if err != nil {
+		return nil, errdefs.Validationf("plugin store: read %s: %v", path, err)
 	}
+	values := map[string]string{}
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, errdefs.Validationf(
+			"plugin store: %s is not a valid KV file: %v", path, err)
+	}
+	if values == nil {
+		values = map[string]string{}
+	}
+	store.values = values
 	return store, nil
 }
 

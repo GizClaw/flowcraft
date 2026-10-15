@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -163,53 +164,79 @@ func (r *Registry) Tools() []Tool {
 	return out
 }
 
+// Token is one minted bearer token as the store knows it: the SHA-256
+// digest of the secret, never the secret. It is a comparable value, so
+// a host that has to remember what it minted keeps Tokens — memory
+// that reveals nothing — while the secret itself is handed to the
+// plugin once and kept nowhere. Revocation and rate limiting work on
+// Tokens for the same reason.
+type Token struct{ digest [32]byte }
+
+// IsZero reports whether the Token names no token at all: the value a
+// caller that never minted one holds.
+func (t Token) IsZero() bool { return t == Token{} }
+
+// String renders a Token for logs: a digest prefix, never the secret.
+func (t Token) String() string {
+	if t.IsZero() {
+		return "token=<none>"
+	}
+	return "sha256:" + hex.EncodeToString(t.digest[:6])
+}
+
 // Tokens mints and revokes per-plugin bearer tokens. The store keeps
 // the tokens' SHA-256 digests, never the tokens themselves, so a lookup
 // compares digests and nothing in the process holds a string that could
 // be replayed.
 type Tokens struct {
 	mu     sync.RWMutex
-	byHash map[string]Identity
+	byHash map[Token]Identity
 }
 
 // NewTokens returns an empty token store.
 func NewTokens() *Tokens {
-	return &Tokens{byHash: make(map[string]Identity)}
+	return &Tokens{byHash: make(map[Token]Identity)}
 }
 
-// Mint issues one token for identity.
-func (t *Tokens) Mint(identity Identity) (string, error) {
+// Mint issues one token for identity and returns both halves of it: the
+// secret, which is the caller's to hand to the plugin, and the Token,
+// which is what the caller keeps to revoke it later.
+func (t *Tokens) Mint(identity Identity) (string, Token, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return "", errdefs.Internal(err)
+		return "", Token{}, errdefs.Internal(err)
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	secret := base64.RawURLEncoding.EncodeToString(raw[:])
+	token := tokenOf(secret)
 	t.mu.Lock()
-	t.byHash[hashToken(token)] = identity
+	t.byHash[token] = identity
 	t.mu.Unlock()
-	return token, nil
+	return secret, token, nil
 }
 
-// Lookup resolves one token.
-func (t *Tokens) Lookup(token string) (Identity, bool) {
+// Lookup resolves one secret to its identity and its Token.
+func (t *Tokens) Lookup(secret string) (Identity, Token, bool) {
+	token := tokenOf(secret)
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	identity, ok := t.byHash[hashToken(token)]
-	return identity, ok
+	identity, ok := t.byHash[token]
+	return identity, token, ok
 }
 
-// Revoke removes one token.
-func (t *Tokens) Revoke(token string) {
+// Revoke removes one token, named by its Token rather than by the
+// secret: revoking what the host recorded never requires the secret to
+// exist in this process again.
+func (t *Tokens) Revoke(token Token) {
 	t.mu.Lock()
-	delete(t.byHash, hashToken(token))
+	delete(t.byHash, token)
 	t.mu.Unlock()
 }
 
-// hashToken is the map key of one token: the digest stands in for the
+// tokenOf digests one secret. The digest is what stands in for the
 // secret everywhere the store is concerned.
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return string(sum[:])
+func tokenOf(secret string) Token {
+	sum := sha256.Sum256([]byte(secret))
+	return Token{digest: sum}
 }
 
 // About is the host_about response.

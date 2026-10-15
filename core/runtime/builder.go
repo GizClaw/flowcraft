@@ -342,7 +342,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, fmt.Errorf("runtime bind delegation target sources: %w", err)
 	}
-	return &Runtime{
+	rt := &Runtime{
 		manager:             manager,
 		router:              router,
 		result:              result,
@@ -354,10 +354,11 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		bus:                 bus,
 		hostDecorator:       b.hostDecorator,
 		resultHostDecorator: b.resultHostDecorator,
-		current:             initial,
 		externalResources:   injected,
 		nextGenID:           1,
-	}, nil
+	}
+	rt.current.Store(initial)
+	return rt, nil
 }
 
 // bindSessionManagers hands the Runtime's single session manager to every

@@ -78,7 +78,7 @@ func (p *Pool[T]) replaceAfterDrain(ctx context.Context, k Key) {
 	p.mu.Lock()
 	e := p.pooled[k]
 	_, stale := p.stale[k]
-	var v *T
+	var member *entry[T]
 	switch {
 	case e != nil && !stale:
 		// A live member serves the key: nothing was draining, so there
@@ -86,20 +86,22 @@ func (p *Pool[T]) replaceAfterDrain(ctx context.Context, k Key) {
 		p.mu.Unlock()
 		return
 	case e != nil:
-		v = e.value
+		member = e
 	default:
 		// Either a member is retiring — wait it out — or teardown
 		// finished between the arm and this watcher, and that second
 		// case is exactly what the replacement is for: a key left
 		// unserved stays unserved until the next call otherwise.
-		v = p.retiring[k]
+		member = p.retiring[k]
 	}
 	p.mu.Unlock()
-	if v != nil {
-		// WaitClosed only fails on a canceled context, and this wait has
-		// no deadline of its own: the drain ends with the key's last
-		// unit of work.
-		if err := p.waitClosed(ctx, v); err != nil {
+	if member != nil {
+		// The wait ends with the member's teardown, whether that is a
+		// teardown already in flight or one the member still owes its
+		// key. It only fails on a canceled context, and this wait has no
+		// deadline of its own: the drain ends with the key's last unit of
+		// work.
+		if err := p.waitMember(ctx, member); err != nil {
 			return
 		}
 	}
