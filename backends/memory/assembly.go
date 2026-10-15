@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
+	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
 	"github.com/GizClaw/flowcraft/backends/memory/sources"
 	docsource "github.com/GizClaw/flowcraft/backends/memory/sources/document"
@@ -53,6 +54,10 @@ type Assembly struct {
 	// assembly serves. It is nil when the assembly was built without
 	// maintenance.
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error)
+	// vectorStats reads the vector lane's phase counters and resident tables.
+	// It is nil when the assembly was built without an embedding model, and
+	// like lanes and overlay it is a reading, not a control.
+	vectorStats func() vector.Stats
 
 	wireOnce sync.Once
 	wireErr  error
@@ -92,6 +97,7 @@ func newAssembly(
 	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error),
 	repair func(context.Context, RepairRequest) (RepairResult, error),
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error),
+	vectorStats func() vector.Stats,
 ) (*Assembly, error) {
 	if messages == nil {
 		return nil, errors.New("message store is required")
@@ -120,12 +126,13 @@ func newAssembly(
 		provider: provider, processor: processor,
 		maintain: maintainService,
 		interval: interval, clock: clock,
-		metrics: newAssemblyMetrics(),
-		closers: append([]io.Closer(nil), closers...),
-		verify:  verify,
-		lanes:   lanes,
-		repair:  repair,
-		overlay: overlay,
+		metrics:     newAssemblyMetrics(),
+		closers:     append([]io.Closer(nil), closers...),
+		verify:      verify,
+		lanes:       lanes,
+		repair:      repair,
+		overlay:     overlay,
+		vectorStats: vectorStats,
 	}, nil
 }
 
