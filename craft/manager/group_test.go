@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/craft"
 )
 
@@ -74,6 +76,71 @@ func (r *countingRunner) Run(context.Context, *craft.Craft) error {
 	return nil
 }
 
+// TestGroupRunReclaimsWhatItStarted pins what Run leaves behind when one
+// instance cannot start. Run returning means the group is not running,
+// so the instances that did start have to be stopped: nothing else
+// reaches them, and each one holds its Craft, its goroutines and its
+// single-instance lock. The caller's context cannot be what stops them,
+// because it may be the very thing that made the failing instance fail.
+func TestGroupRunReclaimsWhatItStarted(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dataDir := t.TempDir()
+	group, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Paths:          Paths{DataDir: dataDir},
+			Lock:           true,
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+		// The definition is not there, so this instance cannot start —
+		// after alpha is already up, which is the half that matters.
+		Spec{ID: "broken", Options: Options{
+			DefinitionPath: filepath.Join(root, "broken", "craft.yaml"),
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup: %v", err)
+	}
+	runner := &countingRunner{}
+	if err := group.Run(context.Background(), runner); err == nil {
+		t.Fatal("Run reported success for a group whose instance cannot start")
+	}
+	// Run never got as far as the runner: the start failed first.
+	if runner.count != 0 {
+		t.Fatalf("runner ran %d times after a failed start, want 0", runner.count)
+	}
+	for _, info := range group.Instances() {
+		if info.State == StateRunning || info.State == StateStarting {
+			t.Fatalf("instance %s was left in state %s by Run", info.ID, info.State)
+		}
+	}
+	// The reclaim is complete, not just visible in the states: the
+	// single-instance lock alpha took is free again, which a second
+	// manager over the same root and data directory proves by taking it.
+	rebuild, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Paths:          Paths{DataDir: dataDir},
+			Lock:           true,
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup after the reclaim: %v", err)
+	}
+	if err := rebuild.StartAll(context.Background()); err != nil {
+		t.Fatalf("start after the reclaim: %v", err)
+	}
+	if err := rebuild.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	if err := rebuild.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 func TestGroupRunAndMaxInstances(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -97,5 +164,82 @@ func TestGroupRunAndMaxInstances(t *testing.T) {
 	if _, err := NewGroup(GroupOptions{Root: root, MaxInstances: 1},
 		spec("alpha"), spec("beta")); err == nil {
 		t.Fatal("MaxInstances was not enforced")
+	}
+}
+
+// TestGroupRemoveKeepsWhatItCouldNotStop pins what a group does with an
+// instance whose close did not happen: it keeps it. Dropping the
+// instance first would take the only handle to a Craft that is still
+// running — and still holds its single-instance lock — leaving it, its
+// goroutines and its plugin processes unreachable, which is the state
+// the group exists to prevent. The refused instance stays where the
+// caller can reach it, and the next Remove — with the transition in
+// flight over — stops it and drops it.
+func TestGroupRemoveKeepsWhatItCouldNotStop(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	gate := newBuildGate()
+	group, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Lock:           true,
+			Build:          gate.build,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup: %v", err)
+	}
+	startErr := make(chan error, 1)
+	go func() { startErr <- group.StartAll(context.Background()) }()
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never reached the build")
+	}
+	instance, ok := group.Get("alpha")
+	if !ok {
+		t.Fatal("the instance is not in the group")
+	}
+	instance.transitionWait = 30 * time.Millisecond
+
+	// The close the remove runs cannot take the turn while the start
+	// holds it, so the remove is refused — and the instance the refusal
+	// was about is still the group's.
+	if err := group.Remove(context.Background(), "alpha"); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Remove during a start that will not finish = %v, want NotAvailable", err)
+	}
+	if _, ok := group.Get("alpha"); !ok {
+		t.Fatal("the group dropped an instance it could not stop")
+	}
+
+	gate.releaseAll()
+	if err := <-startErr; err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	// The instance the refusal left behind is the live one, and the next
+	// remove does both halves.
+	if err := group.Remove(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Remove after the refusal: %v", err)
+	}
+	if _, ok := group.Get("alpha"); ok {
+		t.Fatal("the removed instance is still in the group")
+	}
+	// The stop went with the drop: the single-instance lock is free
+	// again, which a second group over the same root proves by taking it.
+	rebuilt, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: filepath.Join(root, "alpha", "craft.yaml"),
+			Lock:           true,
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup after the remove: %v", err)
+	}
+	if err := rebuilt.StartAll(context.Background()); err != nil {
+		t.Fatalf("a second group could not start over the removed instance: %v", err)
+	}
+	if err := rebuilt.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
 	}
 }

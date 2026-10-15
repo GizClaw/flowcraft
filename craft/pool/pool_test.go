@@ -231,6 +231,11 @@ func TestReloadDefersUntilTheWorkEnds(t *testing.T) {
 	}
 
 	h.finish(first)
+	// The caller that checked the member out lets go: with the work
+	// ended and no reference left, the pool retires the generation. The
+	// Acquire in step 3 has to be released for that — an idle member a
+	// caller still holds is kept serving, exactly as a busy one is.
+	h.pool.Release(k, first)
 	h.waitClosed(first)
 	h.eventually("the retired member to leave the pool", func() bool {
 		return h.pool.Current(k) == nil
@@ -406,33 +411,89 @@ func TestLateSettleDoesNotRetireTheSuccessor(t *testing.T) {
 	h.settleRetirement(k, fresh)
 }
 
-// TestReleaseRetiresAtTheLastReference pins the reference contract:
-// Acquire checks a member out and Release is what retires it, once the
-// last caller is done.
-// TestEnsureTakesNoReference pins the other half of the reference
-// contract: Ensure borrows the generation that serves the key — it is
-// the read path, called once per unit of work — so the reference a
-// publication carries stays the only one, and one Release retires the
-// member.
-func TestEnsureTakesNoReference(t *testing.T) {
+// TestEnsureBorrowsWithoutHoldingTheMember pins the borrow half of the
+// reference contract: Ensure takes nothing out — it is the read path,
+// called once per unit of work — so the member it returns is retired by
+// the key's invalidation alone, while a caller is still holding it. A
+// borrow is not a hold; Acquire is what holds a member against its
+// retirement.
+func TestEnsureBorrowsWithoutHoldingTheMember(t *testing.T) {
 	h := newHarness(t)
 	k := Key{"workspace", "/ws/ensure-borrow"}
 	m := h.pooled(k, 0)
-	h.mustEnsure(k)
-	if got := h.pooledEntry(k); got != m {
+	if got := h.mustEnsure(k); got != m {
 		t.Fatalf("Ensure = %p, want the pooled %p", got, m)
 	}
-	h.pool.Release(k, m)
+	if refs := h.pooledRefs(k); refs != 0 {
+		t.Fatalf("pooled refs = %d, want 0: a borrow takes no reference", refs)
+	}
+
+	h.pool.Invalidate(context.Background(), k)
 	h.settleRetirement(k, m)
+	if !m.isClosed() {
+		t.Fatal("the borrowed member was not retired by its invalidation")
+	}
 }
 
-func TestReleaseRetiresAtTheLastReference(t *testing.T) {
+// TestEnsureAssembledMemberRetiresWithItsInvalidation pins the reference
+// a hand-out path must not leave behind. Ensure assembling a member is
+// the case that shows it: the member enters the pool for the key, not
+// for the caller, so a later Acquire and Release are one reference —
+// and the last one — and the invalidation that made the member stale is
+// what retires it. A publication that carried a reference nobody owes a
+// Release for would leave the member checked out forever: no release
+// could reach zero, and the member would outlive every generation that
+// invalidated it.
+func TestEnsureAssembledMemberRetiresWithItsInvalidation(t *testing.T) {
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/ensure-assembles"}
+	// Nothing is pooled, so this Ensure is the assembly's leader and
+	// borrows what it assembled.
+	m := h.mustEnsure(k)
+	if refs := h.pooledRefs(k); refs != 0 {
+		t.Fatalf("refs after the assembling Ensure = %d, want 0", refs)
+	}
+	m.work()
+
+	if got := h.mustAcquire(k); got != m {
+		t.Fatalf("Acquire = %p, want the assembled %p", got, m)
+	}
+	if refs := h.pooledRefs(k); refs != 1 {
+		t.Fatalf("refs after one Acquire = %d, want 1", refs)
+	}
+
+	h.pool.Invalidate(context.Background(), k)
+	h.assertNothingClosed()
+
+	// The one release that is owed is the last reference to a stale
+	// member: the member retires, without waiting for its idle — a
+	// release is the application's word about its caller, so it is not
+	// gated on Busy (see Release).
+	h.pool.Release(k, m)
+	h.settleRetirement(k, m)
+	if !m.isClosed() {
+		t.Fatal("the last release did not retire the stale member")
+	}
+	if got := h.pool.Current(k); got != nil {
+		t.Fatalf("Current = %p, want the retired member to be gone", got)
+	}
+}
+
+// TestReleaseRetiresTheLastReferenceOfAStaleMember pins the reference
+// contract on the retirement side: references are what holds a member
+// against the retirement its invalidation asked for, so the release
+// that takes the last one retires it.
+func TestReleaseRetiresTheLastReferenceOfAStaleMember(t *testing.T) {
 	h := newHarness(t)
 	k := Key{"workspace", "/ws/refs"}
-	// The pool's own reference is the one a publication carries.
 	m := h.pooled(k, 0)
-
 	h.mustAcquire(k)
+	h.mustAcquire(k)
+	m.work()
+
+	h.pool.Invalidate(context.Background(), k)
+	h.assertNothingClosed()
+
 	h.pool.Release(k, m)
 	if got := h.pool.Current(k); got != m {
 		t.Fatalf("Current = %p, want the still-referenced %p", got, m)
@@ -444,14 +505,216 @@ func TestReleaseRetiresAtTheLastReference(t *testing.T) {
 	if h.pool.Current(k) != nil {
 		t.Fatal("the released member is still reachable")
 	}
-	if h.pool.Stale(k) {
-		t.Fatal("a released member is not stale: nobody is waiting for it")
+}
+
+// TestInvalidateDefersAMemberACallerHolds pins the half of the deferral
+// that is the pool's own: an idle member a caller checked out is not
+// closed under that caller — the reference holds it exactly as work in
+// flight holds a busy one — and the release that takes the last
+// reference is what retires it. The invalidation line says which of the
+// two held it, so a reload that did not take effect is answerable from
+// the log.
+func TestInvalidateDefersAMemberACallerHolds(t *testing.T) {
+	sink := installLogSink(t)
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/held"}
+	m := h.pooled(k, 0)
+	h.mustAcquire(k)
+	if refs := h.pooledRefs(k); refs != 1 {
+		t.Fatalf("refs after one Acquire = %d, want 1", refs)
 	}
 
-	fresh := h.mustEnsure(k)
-	if fresh == m {
-		t.Fatal("the released member was handed out again")
+	h.pool.Invalidate(WithReason(context.Background(), "settings_save"), k)
+
+	records := sink.find("pool: member invalidated")
+	if len(records) != 1 {
+		t.Fatalf("invalidation lines = %d, want 1", len(records))
 	}
+	got := records[0].attrs
+	if got["deferred"] != "true" {
+		t.Fatalf("deferred = %q, want true: a held member stays", got["deferred"])
+	}
+	if got["in_turn"] != "false" {
+		t.Fatalf("in_turn = %q, want false: no work is in flight", got["in_turn"])
+	}
+	if got["refs"] != "1" {
+		t.Fatalf("refs = %q, want 1: the caller holding it is why", got["refs"])
+	}
+
+	h.assertNothingClosed()
+	if m.isClosed() {
+		t.Fatal("an idle member was closed under the caller that holds it")
+	}
+	if got := h.pool.Current(k); got != m {
+		t.Fatalf("Current = %p, want the held member %p", got, m)
+	}
+	if !h.pool.Stale(k) {
+		t.Fatal("the invalidated key is not reported stale")
+	}
+	// The stale-but-serving member goes on serving, and nothing is
+	// assembled under the caller that is using it.
+	if got := h.mustEnsure(k); got != m {
+		t.Fatalf("Ensure = %p, want the held %p", got, m)
+	}
+	if h.buildCount() != 0 {
+		t.Fatalf("assemblies = %d, want 0: nothing may be built under "+
+			"a member a caller holds", h.buildCount())
+	}
+
+	// A second caller checks it out: the release in the middle is not
+	// the last one, so the member stays until the other one goes too.
+	h.mustAcquire(k)
+	h.pool.Release(k, m)
+	h.assertNothingClosed()
+	if got := h.pool.Current(k); got != m {
+		t.Fatalf("Current = %p, want the still-referenced %p", got, m)
+	}
+
+	h.pool.Release(k, m)
+	h.settleRetirement(k, m)
+	if h.pool.Current(k) != nil {
+		t.Fatal("the released member is still reachable")
+	}
+}
+
+// TestSettleLeavesAHeldMemberToTheLastRelease pins the same rule on the
+// idle signal: Settle is the application saying the member's work ended,
+// and a caller that still holds it keeps it pooled — the pool owes that
+// caller the member until its release. A member nobody holds still
+// retires at its own idle (TestInvalidateDefersBusyMember).
+func TestSettleLeavesAHeldMemberToTheLastRelease(t *testing.T) {
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/held-at-idle"}
+	m := h.pooled(k, 1)
+	h.mustAcquire(k)
+
+	h.pool.Invalidate(context.Background(), k)
+	h.assertNothingClosed()
+
+	// The work ends while the caller still holds the member: the idle
+	// alone is not the retirement.
+	h.finish(m)
+
+	h.assertNothingClosed()
+	if m.isClosed() {
+		t.Fatal("an idle member a caller holds was closed under that caller")
+	}
+	if got := h.pool.Current(k); got != m {
+		t.Fatalf("Current = %p, want the held %p", got, m)
+	}
+
+	h.pool.Release(k, m)
+	h.settleRetirement(k, m)
+	if h.pool.Current(k) != nil {
+		t.Fatal("the released member is still reachable")
+	}
+}
+
+// TestReleaseKeepsAMemberNothingInvalidated pins the other half of the
+// same rule: a member no invalidation asked for is the pool's to keep.
+// The last reference going does not retire it — the next caller is
+// served by the same generation — and only an invalidation takes it
+// down.
+func TestReleaseKeepsAMemberNothingInvalidated(t *testing.T) {
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/refs-no-rebuild"}
+	m := h.pooled(k, 0)
+	h.mustAcquire(k)
+
+	h.pool.Release(k, m)
+	h.assertNothingClosed()
+	if got := h.pool.Current(k); got != m {
+		t.Fatalf("Current = %p, want the pooled %p", got, m)
+	}
+	if got := h.mustEnsure(k); got != m {
+		t.Fatalf("Ensure = %p, want the same generation %p", got, m)
+	}
+
+	h.pool.Invalidate(context.Background(), k)
+	h.settleRetirement(k, m)
+}
+
+// TestEnsureWaitsOutACloseThatHasNotReturned pins what a caller waits
+// for when the application has no WaitClosed hook at all. The pool's own
+// record of a member's teardown is what is waited on, so a Close that
+// has not returned yet is not a finished teardown: the replacement is
+// not assembled while the previous generation's Close is still running,
+// and a member of the previous generation is never handed out.
+func TestEnsureWaitsOutACloseThatHasNotReturned(t *testing.T) {
+	h := newHarness(t, func(s *Spec[fakeMember]) { s.WaitClosed = nil })
+	k := Key{"workspace", "/ws/close-in-flight"}
+	old := h.pooled(k, 0)
+	gate := make(chan struct{})
+	h.mu.Lock()
+	h.closeCallGate = gate
+	h.mu.Unlock()
+
+	// The invalidation retires the idle member and enters its Close,
+	// which the gate holds: the teardown is in flight and has not
+	// finished.
+	go h.pool.Invalidate(context.Background(), k)
+	h.waitClosed(old)
+
+	type result struct {
+		m   *fakeMember
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		m, err := h.pool.Ensure(context.Background(), k)
+		got <- result{m, err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if n := h.buildCount(); n != 0 {
+		t.Fatalf("assemblies = %d, want 0: the member was replaced while "+
+			"its predecessor's Close was still running", n)
+	}
+	select {
+	case r := <-got:
+		t.Fatalf("Ensure returned %p, %v while the Close was in flight",
+			r.m, r.err)
+	default:
+	}
+
+	close(gate)
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Fatalf("Ensure after the Close returned: %v", r.err)
+		}
+		if r.m == old {
+			t.Fatal("Ensure handed out the member whose Close just returned")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure never returned after the Close did")
+	}
+}
+
+// TestWaitForATeardownHonorsTheCallersContext pins that waiting for a
+// member on its way out is bounded by the caller's own context, not by
+// the teardown.
+func TestWaitForATeardownHonorsTheCallersContext(t *testing.T) {
+	h := newHarness(t)
+	k := Key{"workspace", "/ws/drain-canceled"}
+	old := h.pooled(k, 0)
+	gate := make(chan struct{})
+	h.mu.Lock()
+	h.closeGate = gate
+	h.mu.Unlock()
+	h.pool.Invalidate(context.Background(), k)
+	h.waitClosed(old)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := h.pool.Acquire(ctx, k); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Acquire while the key drained = %v, want the deadline", err)
+	}
+	if n := h.buildCount(); n != 0 {
+		t.Fatalf("assemblies = %d, want 0: nothing may be assembled for a "+
+			"key that is still draining", n)
+	}
+	close(gate)
 }
 
 // TestWaitClosedHonorsContextCancel pins that a caller waiting for a
@@ -615,9 +878,10 @@ func TestCloseRetiresEveryMember(t *testing.T) {
 // from every direction at once — acquisitions, releases and
 // invalidations racing on one key — under the race detector. What it
 // pins is the invariant the pool exists to keep: whatever the
-// interleaving, the key ends up with no member at all once every
-// reference went away, and none of the callers was left holding a
-// promise the pool never kept.
+// interleaving, no caller is left holding a promise the pool never
+// kept, and once the key is invalidated with nothing in flight it ends
+// up with no member at all — the last generation retires, and nothing
+// is left behind for the key.
 func TestConcurrentAcquireInvalidateAndRelease(t *testing.T) {
 	h := newHarness(t)
 	k := Key{"workspace", "/ws/racing"}
@@ -653,8 +917,12 @@ func TestConcurrentAcquireInvalidateAndRelease(t *testing.T) {
 			t.Fatalf("acquire: %v", err)
 		}
 	}
-	// Nothing is stuck: every generation retired, and no member is left
-	// behind for the key.
+	// An invalidation that lands after the last caller is what retires
+	// what the race left behind: a member assembled after the racing
+	// invalidations was never invalidated, and the pool keeps it until
+	// something asks for a rebuild. Nothing is stuck either way — the
+	// key settles, and no member is left.
+	h.pool.Invalidate(context.Background(), k)
 	h.eventually("the key to settle", func() bool { return h.retired(k) })
 	if got := h.pool.Current(k); got != nil {
 		t.Fatalf("Current = %p, want no member once every reference went away", got)

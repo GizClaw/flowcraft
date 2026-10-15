@@ -66,6 +66,11 @@ type Entry struct {
 	Permissions []string `json:"permissions,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Revision    uint64   `json:"revision"`
+	// Conflict names the tool namespace another plugin already
+	// publishes. The entry is listed so a shell can show it and offer to
+	// disable it; it cannot be enabled while the collision lasts, and it
+	// is never started.
+	Conflict string `json:"conflict,omitempty"`
 }
 
 // Registry is the UI delivery surface of one Craft: the entries a shell
@@ -122,6 +127,7 @@ func (r *Registry) Entries() ([]Entry, error) {
 			Permissions: append([]string(nil), entry.Manifest.Permissions...),
 			Enabled:     entry.Enabled,
 			Revision:    revision,
+			Conflict:    entry.Conflict,
 		})
 	}
 	return out, nil

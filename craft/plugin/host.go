@@ -35,6 +35,14 @@ type NewSourceFunc func(
 // reconnecting in the background.
 const DefaultEnableTimeout = 10 * time.Second
 
+// DefaultDrainTimeout bounds how long a stop waits for one plugin's
+// in-flight calls before its source is closed anyway. It is
+// [HostOptions.DrainTimeout]'s zero value, and the bound every wait in
+// this package takes when nothing else is configured: an unbounded one
+// would let a single hung call keep a plugin — or the whole host —
+// from ever stopping.
+const DefaultDrainTimeout = 30 * time.Second
+
 // HostOptions configures a plugin Host.
 type HostOptions struct {
 	Store        *Store
@@ -66,18 +74,39 @@ type Host struct {
 	mu      sync.Mutex
 	started bool
 	closed  bool
-	sources map[string]Source
+	// live is what the host knows about each running plugin: the entry
+	// its process was started from, the generation that process belongs
+	// to, and the source itself. A plugin the record says is enabled but
+	// whose process gave up is not live — the loss was reported, and the
+	// record is the application's to change.
+	live map[string]livePlugin
+	// nextGeneration numbers the processes this host starts. Everything
+	// derived from a process — the host token minted for it, the SDK
+	// server cached for its MCP grants — is keyed by its generation, so
+	// nothing derived from a dead process outlives it.
+	nextGeneration uint64
 	// entryLocks serializes start and stop for one plugin id, so an
 	// enable racing a disable (or a start racing Close) cannot leave the
 	// store saying one thing and the process table another.
 	entryLocks map[string]*sync.Mutex
-	envHook    func(Entry, map[string]string) error
+	envHook    func(Entry, uint64, map[string]string) error
 	stopped    func(string)
 	// deferredLoss lists the plugins whose terminal loss arrived while an
 	// enable was in flight. The enable in flight narrates its plugin's
 	// failure, so the loss waits for it: reported if the enable stands
 	// and its own report if the enable rolls back.
 	deferredLoss map[string]bool
+	// reporting holds, per plugin, the generation whose stop is being
+	// narrated to the subscribers right now. A process that gave up on
+	// its own and the host stopping that same process are one event —
+	// the process is gone either way — so exactly one of the two
+	// narrates it: whoever records it first takes the generation, and
+	// the other side stays silent about that stop while its own half of
+	// the work still runs (see [Host.notifyLost] and
+	// [Host.stopEntryLocked]). A stop of a later process is a different
+	// event and narrates on its own, which is why the claim is keyed by
+	// generation rather than by plugin.
+	reporting map[string]uint64
 	// lost lists the plugins whose process gave up on its own. The entry
 	// keeps its state and its tools — the loss was reported, and whether
 	// the plugin stays enabled is the application's decision — but the
@@ -90,6 +119,13 @@ type Host struct {
 	// revocation must not depend on what an application subscribes to.
 	stopHooks   []stopHook
 	stopHookSeq uint64
+
+	// watchCancel, watchUnsubscribe and watchDone belong to the revision
+	// watcher that keeps the running plugins in step with the store (see
+	// [Host.watchRevisions]).
+	watchCancel      context.CancelFunc
+	watchUnsubscribe func()
+	watchDone        chan struct{}
 }
 
 // stopHook is one OnStopped subscription. Subscriptions are identified
@@ -99,6 +135,21 @@ type stopHook struct {
 	fn func(string, StopReason)
 }
 
+// livePlugin is one running plugin's process: the entry it was started
+// from, the generation that process belongs to, and the source the host
+// opened for it.
+//
+// The entry is kept rather than re-read, because a restart has to be
+// planned against what the process was: [Host.startEntryLocked] hands
+// the generation to the environment hook, which is where the token for
+// this process is minted, so a process and the grants it was started
+// with belong to each other by construction.
+type livePlugin struct {
+	entry      Entry
+	generation uint64
+	source     Source
+}
+
 // NewHost opens a plugin host over a store.
 func NewHost(opts HostOptions) (*Host, error) {
 	if opts.Store == nil {
@@ -106,7 +157,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 	}
 	drain := opts.DrainTimeout
 	if drain <= 0 {
-		drain = 30 * time.Second
+		drain = DefaultDrainTimeout
 	}
 	enable := opts.EnableTimeout
 	if enable == 0 {
@@ -122,11 +173,12 @@ func NewHost(opts HostOptions) (*Host, error) {
 		env:           env,
 		drainTimeout:  drain,
 		enableTimeout: enable,
-		tools:         NewToolSet(),
-		sources:       make(map[string]Source),
+		tools:         newToolSet(drain),
+		live:          make(map[string]livePlugin),
 		entryLocks:    make(map[string]*sync.Mutex),
 		awaitingReady: make(map[string]bool),
 		deferredLoss:  make(map[string]bool),
+		reporting:     make(map[string]uint64),
 		lost:          make(map[string]bool),
 	}
 	if host.newSource == nil {
@@ -143,8 +195,14 @@ func (h *Host) Store() *Store { return h.store }
 // application that wants a stop notification of its own subscribes
 // with [Host.OnStopped] instead: that seam is additive, so using it
 // cannot displace this wiring.
+//
+// The injector is handed the generation of the process it is preparing:
+// it is where an application mints what that process is allowed to do
+// (craft mints the plugin's host token there), and a generation that
+// changes is what tells it the grants of the process being replaced have
+// to go with it.
 func (h *Host) SetPluginHooks(
-	env func(Entry, map[string]string) error,
+	env func(Entry, uint64, map[string]string) error,
 	stopped func(string),
 ) {
 	h.mu.Lock()
@@ -270,13 +328,20 @@ func (h *Host) runStoppedHook(id string) {
 // plugin's failure, so the loss waits for [Host.finishEnable] to decide
 // whether that call reported it (a rollback) or whether the application
 // still has to hear it.
+//
+// A loss that arrives while the host is already stopping this process is
+// not reported: that stop is the report for it. The claim is taken under
+// the host lock by whichever side gets there first, so one process's
+// stop reaches the subscribers once (see
+// [Host.claimStopReportLocked]).
 func (h *Host) notifyLost(id string) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
 		return
 	}
-	if _, tracked := h.sources[id]; !tracked {
+	live, tracked := h.live[id]
+	if !tracked {
 		h.mu.Unlock()
 		return
 	}
@@ -285,10 +350,42 @@ func (h *Host) notifyLost(id string) {
 		h.mu.Unlock()
 		return
 	}
+	if !h.claimStopReportLocked(id, live.generation) {
+		// The host is stopping this very process right now, and that
+		// stop is what the application is being told about; narrating
+		// the loss as well would report one stop twice.
+		h.mu.Unlock()
+		return
+	}
 	h.lost[id] = true
 	h.mu.Unlock()
 	for _, fn := range h.stopSubscribers() {
 		fn(id, StopFailed)
+	}
+	h.mu.Lock()
+	h.releaseStopReportLocked(id, live.generation)
+	h.mu.Unlock()
+}
+
+// claimStopReportLocked takes the narration of one process's stop and
+// reports whether this call got it. The claim is per plugin and
+// generation: a loss and the host's own stop of the same process are one
+// event, while a later process stops as its own event and narrates on
+// its own. Callers hold the host lock.
+func (h *Host) claimStopReportLocked(id string, generation uint64) bool {
+	if h.reporting[id] == generation {
+		return false
+	}
+	h.reporting[id] = generation
+	return true
+}
+
+// releaseStopReportLocked gives back a claim, but only the one this
+// generation took: a claim that has since been replaced belongs to
+// another process's stop. Callers hold the host lock.
+func (h *Host) releaseStopReportLocked(id string, generation uint64) {
+	if h.reporting[id] == generation {
+		delete(h.reporting, id)
 	}
 }
 
@@ -338,13 +435,13 @@ func (h *Host) CallTool(
 	args any,
 ) (json.RawMessage, error) {
 	h.mu.Lock()
-	source := h.sources[pluginID]
+	live, running := h.live[pluginID]
 	h.mu.Unlock()
-	if source == nil {
+	if !running {
 		return nil, errdefs.NotAvailablef(
 			"plugin host: plugin %q is not running", pluginID)
 	}
-	caller, ok := source.(Caller)
+	caller, ok := live.source.(Caller)
 	if !ok {
 		return nil, errdefs.NotAvailablef(
 			"plugin host: plugin %q does not support direct calls", pluginID)
@@ -380,8 +477,16 @@ func (h *Host) Start(ctx context.Context) error {
 		h.mu.Unlock()
 		return errdefs.NotAvailablef("plugin host: closed")
 	}
+	first := !h.started
 	h.started = true
 	h.mu.Unlock()
+	if first {
+		// From here on the host follows the store: whatever changes it —
+		// this host's own operations, an application talking to the
+		// store directly — the running plugins are brought back in step
+		// with the record (see [Host.watchRevisions]).
+		h.watchRevisions()
+	}
 	entries, err := h.store.Enabled()
 	if err != nil {
 		return err
@@ -429,6 +534,13 @@ func (h *Host) SetEnabled(
 	entry, ok := h.store.Entry(id)
 	if !ok {
 		return errdefs.NotFoundf("plugin host: plugin %q not found", id)
+	}
+	// The store refuses the same thing, but it refuses it after this
+	// call started a process: a plugin whose tool namespace another
+	// plugin claims must not be brought up at all.
+	if enabled && entry.Conflict != "" {
+		return errdefs.Conflictf(
+			"plugin host: plugin %q cannot be enabled: %s", id, entry.Conflict)
 	}
 	// The whole toggle — the process and the record that describes it —
 	// is serialized with every other toggle of this plugin. Holding the
@@ -486,10 +598,25 @@ func (h *Host) SetEnabled(
 		stands = true
 		return nil
 	}
+	// Disabling is a change like the ones [Host.changeLocked] runs: the
+	// record has to end up describing what the host holds. A stop that
+	// could not take the process out of the way closed its source
+	// anyway, so the record saying enabled goes with it — and nothing
+	// else repairs that disagreement: the write that failed bumps no
+	// revision, so no reconcile pass visits a plugin that is no longer
+	// live, and the application would see a plugin whose tools are gone
+	// while its record says it is running.
 	if err := h.stopEntryLocked(ctx, id, StopRequested); err != nil {
-		return err
+		return h.abandonLocked(ctx, id, err)
 	}
-	return h.store.SetEnabled(id, false)
+	if err := h.store.SetEnabled(id, false); err != nil {
+		// The process is gone and the record is still the old one. The
+		// same compensation applies: the write is attempted again, and a
+		// record that cannot be written either way is reported alongside
+		// the reason the disable failed.
+		return h.abandonLocked(ctx, id, err)
+	}
+	return nil
 }
 
 // setAwaitingReady records that one plugin's enable is in flight. The
@@ -527,22 +654,275 @@ func (h *Host) awaitReady(ctx context.Context, source Source) error {
 // directory out from under a running plugin would take the files its
 // process still reads and leaves the drain waiting for work that will
 // never finish.
+//
+// It is one of the plugin's migrations, so it holds the entry lock and
+// runs in the order the others do (see [Host.changeLocked]): what the
+// uninstall would be refused for is asked before the stop — killing the
+// process of a builtin plugin (or of an id that does not exist) and only
+// then discovering the uninstall cannot happen leaves the record saying
+// enabled about a plugin whose process is gone — and a store that
+// refuses after the stop leaves a plugin that was running running
+// again. The lock is what keeps an enable from starting a process while
+// the store removes the directory that process is served from.
 func (h *Host) Uninstall(
 	ctx context.Context,
 	id string,
 	opts UninstallOptions,
 ) error {
-	if err := h.stopEntry(ctx, id); err != nil {
+	lock := h.entryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := h.store.CheckUninstall(id); err != nil {
 		return err
 	}
-	return h.store.Uninstall(ctx, id, opts)
+	wasRunning := h.isLive(id)
+	if err := h.stopEntryLocked(ctx, id, StopRequested); err != nil {
+		// The process could not be taken out of the way in time; it was
+		// closed anyway, so the record that says enabled goes with it.
+		return h.abandonLocked(ctx, id, err)
+	}
+	if err := h.store.Uninstall(ctx, id, opts); err != nil {
+		// The plugin is still installed — the store refused — so what
+		// was running goes back up: the caller sees why the uninstall
+		// failed, and a plugin that was running is running again.
+		return h.resumeLocked(ctx, id, wasRunning, err)
+	}
+	return nil
+}
+
+// Install installs a plugin from a directory or a zip and keeps its
+// process in step with what was installed.
+//
+// The store pipeline is the one [Store.Install] runs — the same checks,
+// the same snapshot, the same restore on failure. What this method adds
+// is the process side of it: an install replaces the directory a running
+// plugin's process reads, so a running plugin is stopped for the change
+// and started again afterwards, from what the store now holds. See
+// [Host.changeLocked] for what happens when either half fails.
+func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
+	// The id names the process and the entry lock this install has to
+	// keep in step, and it is known only once the source is read.
+	summary, err := h.store.Inspect(ctx, source)
+	if err != nil {
+		return Summary{}, err
+	}
+	lock := h.entryLock(summary.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return h.changeLocked(ctx, summary.ID, func() (Summary, error) {
+		return h.store.Install(ctx, source)
+	})
+}
+
+// UpdateFrom updates one installed plugin from its declared update
+// source and keeps its process in step with what was installed. The
+// update is refused and nothing is installed when the version rules or
+// the installer's approval say no (see [Store.UpdateFrom]).
+//
+// A running plugin is stopped for the update rather than after it: the
+// install replaces the directory the process reads. An update that the
+// source refuses — the network, the checksum, a version that is not
+// newer — starts the installed version again before this call returns,
+// so what the refusal costs a running plugin is a restart, not a
+// stopped plugin.
+func (h *Host) UpdateFrom(
+	ctx context.Context,
+	id string,
+	installer Installer,
+) (Summary, error) {
+	if _, ok := h.store.Entry(id); !ok {
+		return Summary{}, errdefs.NotFoundf(
+			"plugin host: plugin %q not found", id)
+	}
+	lock := h.entryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return h.changeLocked(ctx, id, func() (Summary, error) {
+		return h.store.UpdateFrom(ctx, id, installer)
+	})
+}
+
+// Rollback restores the last snapshot of one plugin and keeps its
+// process in step with it.
+//
+// A rollback whose version cannot come up is the one change this file
+// cannot undo: the swap consumes the version it replaced, so the plugin
+// is left stopped with its record disabled rather than saying enabled
+// about a process that is not there. The error says what failed;
+// installing a package is what repairs the plugin.
+func (h *Host) Rollback(ctx context.Context, id string) (Summary, error) {
+	if _, ok := h.store.Entry(id); !ok {
+		return Summary{}, errdefs.NotFoundf(
+			"plugin host: plugin %q not found", id)
+	}
+	lock := h.entryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return h.changeLocked(ctx, id, func() (Summary, error) {
+		return h.store.Rollback(ctx, id)
+	})
+}
+
+// changeLocked runs one store-side change of an installed plugin with
+// the plugin's process kept in step with it. Callers hold the plugin's
+// entry lock.
+//
+// The protocol is stop → change → start, and each half makes up for the
+// other's failure:
+//
+//   - The process is stopped before the change, because the change
+//     replaces or removes the directory the process reads.
+//   - A change the store refused leaves the version that was installed
+//     in place, so the plugin is started again from it: the caller sees
+//     the store's error and a plugin that was running is running again.
+//   - A change that landed but whose version cannot come up is undone
+//     where the store can undo it (the snapshot a rollback restores),
+//     and the version that ran before is started again. The caller sees
+//     why the new version failed.
+//   - A plugin no version can run is left stopped with its record
+//     disabled: "enabled" about a plugin with no process is the one
+//     state nothing else here allows an application to see.
+//
+// A plugin that was not running is not started by a change: an update
+// does not turn a plugin on. That includes a plugin whose process gave
+// up on its own — the loss was reported and the record is the
+// application's to change, so a change does not silently undo the
+// application's decision to leave it as it is.
+func (h *Host) changeLocked(
+	ctx context.Context,
+	id string,
+	change func() (Summary, error),
+) (Summary, error) {
+	wasRunning := h.isLive(id)
+	if err := h.stopEntryLocked(ctx, id, StopRequested); err != nil {
+		// The process could not be taken out of the way: a call did not
+		// finish in time, and the stop closed the source anyway. Nothing
+		// has changed — changing files under a live process is what the
+		// stop exists to prevent — but the process is gone, so the
+		// record saying enabled goes with it.
+		return Summary{}, h.abandonLocked(ctx, id, err)
+	}
+	summary, err := change()
+	if err != nil {
+		return Summary{}, h.resumeLocked(ctx, id, wasRunning, err)
+	}
+	if err := h.startAgain(ctx, id, wasRunning); err != nil {
+		return Summary{}, h.undoLocked(ctx, id, wasRunning, err)
+	}
+	return summary, nil
+}
+
+// resumeLocked starts the plugin again from what the store still holds,
+// for a change that was refused. The cause is what the caller is told
+// when the plugin is running again; a plugin that cannot be started at
+// all is a plugin that cannot be enabled, and the cause says so.
+func (h *Host) resumeLocked(
+	ctx context.Context,
+	id string,
+	wasRunning bool,
+	cause error,
+) error {
+	if err := h.startAgain(ctx, id, wasRunning); err != nil {
+		return h.abandonLocked(ctx, id, errors.Join(cause, err))
+	}
+	return cause
+}
+
+// undoLocked puts the version that ran before the change back and starts
+// it, for a change that landed but whose version cannot come up. A
+// change the store cannot undo — a rollback consumed the version it
+// replaced — leaves the plugin abandoned instead.
+func (h *Host) undoLocked(
+	ctx context.Context,
+	id string,
+	wasRunning bool,
+	cause error,
+) error {
+	if _, err := h.store.Rollback(ctx, id); err != nil {
+		return h.abandonLocked(ctx, id, errors.Join(cause, err))
+	}
+	if err := h.startAgain(ctx, id, wasRunning); err != nil {
+		return h.abandonLocked(ctx, id, errors.Join(cause, err))
+	}
+	return cause
+}
+
+// abandonLocked is the last resort of a change that left a plugin
+// unable to run: its process is gone (the caller stopped it), so the
+// record that says enabled goes with it. The cause is returned either
+// way; a record that could not be written is reported alongside it.
+func (h *Host) abandonLocked(ctx context.Context, id string, cause error) error {
+	if err := h.store.SetEnabled(id, false); err != nil {
+		return errors.Join(cause, fmt.Errorf(
+			"plugin host: %s is stopped; recording it disabled: %w", id, err))
+	}
+	return cause
+}
+
+// startAgain starts the plugin's process from what the store now holds.
+// wasRunning is what the caller saw before it stopped the process: a
+// plugin that was not running is left that way (see [Host.changeLocked]).
+//
+// A terminal readiness failure stops the process again and is returned
+// as the reason the version cannot run; a version that is merely not up
+// yet is left to the source's own reconnection, exactly as an enable
+// leaves it.
+func (h *Host) startAgain(
+	ctx context.Context,
+	id string,
+	wasRunning bool,
+) error {
+	if !wasRunning {
+		return nil
+	}
+	entry, ok := h.store.Entry(id)
+	if !ok {
+		return errdefs.NotFoundf(
+			"plugin host: plugin %q is no longer installed", id)
+	}
+	source, err := h.startEntryLocked(ctx, entry)
+	if err != nil {
+		return err
+	}
+	err = h.awaitReady(ctx, source)
+	switch {
+	case err == nil:
+		return nil
+	case errdefs.IsValidation(err):
+		// Terminal: nothing this version does will bring it up.
+		_ = h.stopEntryLocked(ctx, id, StopRolledBack)
+		return err
+	default:
+		telemetry.WarnErr(ctx, "plugin host: plugin is not ready yet", err,
+			attribute.String("plugin", id))
+		return nil
+	}
+}
+
+// isLive reports whether the host has a process for one plugin.
+func (h *Host) isLive(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, running := h.live[id]
+	return running
 }
 
 // SkillRoots returns the absolute skill directories of every enabled
 // plugin that declares skills:provide.
+//
+// The empty list of an unreadable enable state is reported rather than
+// passed off as "this host provides no skills": the state file is
+// fail-closed everywhere (see [Store.scan]), so an empty answer is what
+// the application was shown, and the reason has to be visible in the
+// log. The signature carries no error because this method is also the
+// `skills` half of the seam core's hooks runner reads (see
+// [Host.HookSources]), and a demo whose plugin tree is unreadable is
+// not a reason to refuse a runner its sources.
 func (h *Host) SkillRoots() []string {
 	entries, err := h.store.Enabled()
 	if err != nil {
+		telemetry.WarnErr(context.Background(),
+			"plugin host: cannot list the skills of the enabled plugins", err)
 		return nil
 	}
 	var out []string
@@ -553,6 +933,10 @@ func (h *Host) SkillRoots() []string {
 		for _, rel := range entry.Manifest.Skills {
 			if path, err := ResolvePath(entry.Dir, rel); err == nil {
 				out = append(out, path)
+			} else {
+				telemetry.WarnErr(context.Background(),
+					"plugin host: skill directory is not usable", err,
+					attribute.String("plugin", entry.ID))
 			}
 		}
 	}
@@ -567,9 +951,20 @@ func (h *Host) SkillRoots() []string {
 // content, so the runner strips the content-bearing payload fields
 // before those commands see them. Sources are ordered by path, so hook
 // execution order is stable across calls.
+//
+// Like [Host.SkillRoots], the empty list of an unreadable enable state
+// is reported rather than passed off as "no plugin contributes hooks".
+//
+// The signature is the one core's [hooks.SourceProvider] declares, and
+// this method is what makes a craft host that provider, so the error
+// cannot be returned from here; the runner reads its sources at every
+// build, and a warning per build is what an application sees of a
+// plugin tree it cannot read.
 func (h *Host) HookSources() []hooks.ExtraSource {
 	entries, err := h.store.Enabled()
 	if err != nil {
+		telemetry.WarnErr(context.Background(),
+			"plugin host: cannot list the hooks of the enabled plugins", err)
 		return nil
 	}
 	var out []hooks.ExtraSource
@@ -583,6 +978,10 @@ func (h *Host) HookSources() []hooks.ExtraSource {
 					Path: path,
 					Dir:  entry.Dir,
 				})
+			} else {
+				telemetry.WarnErr(context.Background(),
+					"plugin host: hook file is not usable", err,
+					attribute.String("plugin", entry.ID))
 			}
 		}
 	}
@@ -598,11 +997,14 @@ func (h *Host) Close() error {
 		return nil
 	}
 	h.closed = true
-	ids := make([]string, 0, len(h.sources))
-	for id := range h.sources {
+	ids := make([]string, 0, len(h.live))
+	for id := range h.live {
 		ids = append(ids, id)
 	}
 	h.mu.Unlock()
+	// The watch ends before the plugins do: a pass in flight would
+	// otherwise be able to start a process behind the close.
+	h.stopRevisionWatch()
 	sort.Strings(ids)
 	var errs []error
 	for _, id := range ids {
@@ -635,6 +1037,15 @@ func (h *Host) startEntry(ctx context.Context, entry Entry) error {
 // plugin was already running: an enable waits on the source it started,
 // not on one another call is responsible for.
 func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error) {
+	// A plugin whose tool namespace another plugin claims cannot be
+	// published, so it is not started: whoever asked (an enable, a
+	// change that would restart it, Start replaying the record) is told
+	// what the collision is instead of getting a process whose tools do
+	// not exist.
+	if entry.Conflict != "" {
+		return nil, errdefs.Conflictf(
+			"plugin host: plugin %q cannot be started: %s", entry.ID, entry.Conflict)
+	}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -649,16 +1060,22 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	gaveUp := h.lost[entry.ID]
 	delete(h.lost, entry.ID)
 	if gaveUp {
-		delete(h.sources, entry.ID)
-	} else if _, running := h.sources[entry.ID]; running {
+		delete(h.live, entry.ID)
+	} else if _, running := h.live[entry.ID]; running {
 		h.mu.Unlock()
 		return nil, nil
 	}
+	// Every process this call starts is a new generation, minted before
+	// the environment hook runs: that hook is where the token of this
+	// process is issued, and it has to know which process it is issuing
+	// for (see [Host.SetPluginHooks]).
+	h.nextGeneration++
+	generation := h.nextGeneration
 	h.mu.Unlock()
 	if gaveUp {
 		h.releaseGaveUp(ctx, entry.ID)
 	}
-	source, err := h.openSource(ctx, entry)
+	source, err := h.openSource(ctx, entry, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -673,7 +1090,11 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 		_ = source.Close()
 		return nil, errdefs.NotAvailablef("plugin host: closed")
 	}
-	h.sources[entry.ID] = source
+	h.live[entry.ID] = livePlugin{
+		entry:      entry,
+		generation: generation,
+		source:     source,
+	}
 	h.mu.Unlock()
 	if err := h.tools.AddPlugin(entry.ID, source); err != nil {
 		h.forgetSource(entry.ID, source)
@@ -718,8 +1139,8 @@ func (h *Host) entryLock(id string) *sync.Mutex {
 // left behind.
 func (h *Host) forgetSource(id string, source Source) {
 	h.mu.Lock()
-	if h.sources[id] == source {
-		delete(h.sources, id)
+	if live, ok := h.live[id]; ok && live.source == source {
+		delete(h.live, id)
 		delete(h.lost, id)
 	}
 	h.mu.Unlock()
@@ -731,7 +1152,11 @@ func (h *Host) forgetSource(id string, source Source) {
 // and no host token is minted for it. Direct callers — plugin graph
 // nodes — get the refusal as their error instead of a missing-server
 // error that would hide the cause.
-func (h *Host) openSource(ctx context.Context, entry Entry) (Source, error) {
+func (h *Host) openSource(
+	ctx context.Context,
+	entry Entry,
+	generation uint64,
+) (Source, error) {
 	dataDir, err := h.store.DataDir(entry.ID)
 	if err != nil {
 		return nil, err
@@ -748,7 +1173,7 @@ func (h *Host) openSource(ctx context.Context, entry Entry) (Source, error) {
 	envHook := h.envHook
 	h.mu.Unlock()
 	if envHook != nil {
-		if err := envHook(entry, env); err != nil {
+		if err := envHook(entry, generation, env); err != nil {
 			return nil, err
 		}
 	}
@@ -795,9 +1220,13 @@ func (h *Host) stopEntryLocked(
 	reason StopReason,
 ) error {
 	h.mu.Lock()
-	_, running := h.sources[id]
-	delete(h.sources, id)
+	live, running := h.live[id]
+	delete(h.live, id)
 	delete(h.lost, id)
+	// The stop is narrated unless this process is already narrating its
+	// own loss: the loss and the stop of one process are one event, and
+	// the application hears it once (see [Host.notifyLost]).
+	narrate := running && h.claimStopReportLocked(id, live.generation)
 	h.mu.Unlock()
 	if !running {
 		return nil
@@ -805,7 +1234,18 @@ func (h *Host) stopEntryLocked(
 	drainCtx, cancel := context.WithTimeout(ctx, h.drainTimeout)
 	defer cancel()
 	err := h.tools.RemovePlugin(drainCtx, id)
-	h.notifyStopped(id, reason)
+	if narrate {
+		h.notifyStopped(id, reason)
+		h.mu.Lock()
+		h.releaseStopReportLocked(id, live.generation)
+		h.mu.Unlock()
+		return err
+	}
+	// The half of the stop that is not an application-facing event runs
+	// either way: the host is letting this process go, so the token
+	// minted for it is revoked whether or not this stop is the report
+	// the application hears.
+	h.runStoppedHook(id)
 	return err
 }
 
@@ -838,6 +1278,16 @@ func (h *Host) mcpSource(
 			// the MCP telemetry; the host only needs to know that the
 			// entry lost a process it cannot get back.
 			mcp.WithServerLost(func(string, error) { h.notifyLost(entry.ID) }),
+		}
+		if server.Required {
+			// The manifest declaring a server required is the plugin
+			// telling the host what it cannot run without, and core
+			// documents the flag as "a host that cannot start without
+			// this server marks it required and then awaits readiness" —
+			// which is what an enable does. Dropping the declaration here
+			// would make the manifest say one thing and the mcp layer
+			// report another.
+			options = append(options, mcp.WithRequired())
 		}
 		if err := source.AddServer(ctx, name, transport, options...); err != nil {
 			_ = source.Close()

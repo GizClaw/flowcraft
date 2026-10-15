@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -127,6 +128,54 @@ func TestStoreScanEnableKV(t *testing.T) {
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		t.Fatalf("data dir: %v", err)
+	}
+}
+
+// TestStoreKVFailsClosedOnABrokenFile pins the read half of plugin KV. A
+// file that exists and cannot be read is reported; it is not read as
+// "this plugin has no values", because the next Set would then write
+// that empty table over whatever the user had stored.
+func TestStoreKVFailsClosedOnABrokenFile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writePlugin(t, root, "hello", `{
+		"id": "hello", "version": "0.1.0",
+		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+	}`)
+	writePlugin(t, root, "quiet", `{
+		"id": "quiet", "version": "0.1.0"
+	}`)
+	stateDir := t.TempDir()
+	store, err := NewStore(Options{
+		Roots:       []Root{{Path: root}},
+		StateDir:    stateDir,
+		DataDirRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	path := filepath.Join(stateDir, "kv", "hello.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir kv: %v", err)
+	}
+	corrupt := []byte(`{"counter": "42"`)
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatalf("write kv: %v", err)
+	}
+	if _, err := store.KV("hello"); err == nil {
+		t.Fatal("a truncated KV file read as valid")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read kv: %v", err)
+	}
+	if !bytes.Equal(data, corrupt) {
+		t.Fatalf("KV file = %q, want the damaged bytes left alone", data)
+	}
+	// A file that is not there is the fresh-install case and still reads
+	// as empty, so a plugin that never stored anything is not an error.
+	if _, err := store.KV("quiet"); err != nil {
+		t.Fatalf("KV of a plugin with no file: %v", err)
 	}
 }
 

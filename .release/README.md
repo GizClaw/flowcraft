@@ -31,14 +31,20 @@ the intent.
 - A changeset is consumed for a module when that file exists in the module's
   latest `module/vX.Y.Z` tag.
 
-`craft`'s first release has to ship in the same batch as the `core` release it
-depends on: the module imports `core/hooks` and `core/utils/lock`, and no
-published `core` tag contains them, so `GOWORK=off go build ./...` — what the
-release gate runs per module — cannot resolve them. Declare both modules in one
-changeset, run `make release-preflight` (or `-write`) so `craft`'s `core` pin
-moves to the version this batch tags, and let the workflow tag `core` first. A
-standalone `craft` changeset fails the gate with `no required module provides
-package ...`, which does not point at the cause.
+`craft` requires `core` for `core/hooks` and `core/utils/lock`, and both are in
+`core` v0.7.0 — the version `craft`'s `go.mod` pins — so a standalone `craft`
+release builds against a published `core` tag, exactly as a reader's own build
+does (`make check-consumers` keeps that true).
+
+`craft` and `core` ship in one batch when the `craft` release needs a `core`
+change no published tag contains: the release gate builds each module on its
+own, so a `craft` that references an untagged `core` package or symbol fails
+with an unresolved import (`no required module provides package ...`) or an
+undefined symbol, neither of which points at the cause. Declare both modules in
+one changeset, run `make release-preflight` (or `-write`) so `craft`'s `core`
+pin moves to the version this batch tags, and let the workflow tag `core`
+first — a same-batch `craft` whose pin still names the previous `core` version
+fails the preflight with `dependency pins not on the planned versions`.
 
 The CLI is a standalone Go module. Run these commands from the repository root:
 

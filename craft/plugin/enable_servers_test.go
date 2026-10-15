@@ -45,7 +45,7 @@ func unreachableServer() string {
 func mcpChildOf(t *testing.T, host *Host, id string) *mcpChild {
 	t.Helper()
 	host.mu.Lock()
-	source := host.sources[id]
+	source := host.live[id].source
 	host.mu.Unlock()
 	child, ok := source.(*mcpChild)
 	if !ok {
