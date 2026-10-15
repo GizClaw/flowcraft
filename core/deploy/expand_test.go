@@ -636,3 +636,50 @@ func TestBuilderSecretCacheTTL(t *testing.T) {
 		}
 	})
 }
+
+// TestBuilderSecretCacheCapacity proves the capacity knob reaches the
+// cache: with room for one entry, resolving x, y and x again must miss
+// on the third lookup, while the default capacity keeps it a hit.
+//
+// Resource build order is the graph's topological order (sorted among
+// independent nodes), so a, b, c are expanded in that order and the
+// call counts are deterministic.
+func TestBuilderSecretCacheCapacity(t *testing.T) {
+	build := func(t *testing.T, opts ...deploy.BuilderOption) *countingSecretStore {
+		t.Helper()
+		store := &countingSecretStore{}
+		reg := resource.NewRegistry()
+		reg.MustRegister(countingSecretFactory{store: store})
+		reg.MustRegister(expandRecorderFactory{
+			kind: "expand.test", impl: "record", records: &[]string{},
+		})
+		refs := []string{"count.x", "count.y", "count.x"}
+		resources := resource.Resources{
+			"count": {Kind: secret.ResourceKind, Impl: "count"},
+		}
+		for i, ref := range refs {
+			resources[string(rune('a'+i))] = resource.Resource{
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(`{"root": "${secret:` + ref + `}"}`),
+			}
+		}
+		doc := deploy.Document{Version: "v1", Resources: resources}
+		if _, err := deploy.NewBuilder(reg, opts...).Build(context.Background(), doc); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return store
+	}
+
+	t.Run("default capacity keeps the repeat a hit", func(t *testing.T) {
+		store := build(t)
+		if store.calls != 2 {
+			t.Fatalf("store calls = %d, want 2 with the default cache", store.calls)
+		}
+	})
+	t.Run("capacity one evicts the earlier name", func(t *testing.T) {
+		store := build(t, deploy.WithSecretCacheCapacity(1))
+		if store.calls != 3 {
+			t.Fatalf("store calls = %d, want 3 with a one-entry cache", store.calls)
+		}
+	})
+}

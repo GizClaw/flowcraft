@@ -3,6 +3,8 @@ package resource
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,5 +305,159 @@ func TestCachingSecretStoreNilInnerErrors(t *testing.T) {
 	cached = NewCachingSecretStore(nil, time.Minute)
 	if _, found, err := cached.Lookup(context.Background(), "x"); err == nil || found {
 		t.Fatalf("nil inner Lookup = (%v, %v), want error", found, err)
+	}
+}
+
+// TestCachingSecretStoreCapacityBounded is the leak regression test:
+// resolving more distinct names than the cache holds must not grow it.
+// Names are deployment data, so an unbounded map here retains one entry
+// (and one secret value) per name ever resolved.
+func TestCachingSecretStoreCapacityBounded(t *testing.T) {
+	inner := SecretStoreFunc{
+		LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			return "value-" + name, true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, time.Hour, WithCacheCapacity(2))
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		if _, found, err := cached.Lookup(context.Background(), name); err != nil || !found {
+			t.Fatalf("Lookup(%s) = (%v, %v)", name, found, err)
+		}
+	}
+	cached.mu.Lock()
+	size := len(cached.cache)
+	cached.mu.Unlock()
+	if size != 2 {
+		t.Fatalf("cache holds %d entries, want the configured 2", size)
+	}
+}
+
+// TestCachingSecretStoreEvictsSoonestExpiry pins which entry yields when
+// the bound is reached: the one closest to expiry, so a long-lived name
+// is not evicted in favour of one about to lapse.
+func TestCachingSecretStoreEvictsSoonestExpiry(t *testing.T) {
+	inner := SecretStoreFunc{
+		LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			return "value-" + name, true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, time.Hour, WithCacheCapacity(2))
+	if _, _, err := cached.Lookup(context.Background(), "short"); err != nil {
+		t.Fatalf("Lookup(short): %v", err)
+	}
+	// Age the entry so "short" is unambiguously closest to expiry.
+	cached.mu.Lock()
+	entry := cached.cache["short"]
+	entry.expires = entry.expires.Add(-30 * time.Minute)
+	cached.cache["short"] = entry
+	cached.mu.Unlock()
+
+	for _, name := range []string{"long-a", "long-b"} {
+		if _, _, err := cached.Lookup(context.Background(), name); err != nil {
+			t.Fatalf("Lookup(%s): %v", name, err)
+		}
+	}
+
+	cached.mu.Lock()
+	defer cached.mu.Unlock()
+	if _, ok := cached.cache["short"]; ok {
+		t.Fatalf("cache kept the about-to-expire entry: %v", cached.cache)
+	}
+	if len(cached.cache) != 2 {
+		t.Fatalf("cache holds %d entries, want 2", len(cached.cache))
+	}
+}
+
+// TestCachingSecretStoreReclaimsExpiredEntries is the retention test:
+// the TTL bounds how long a value is held, so an expired entry must be
+// gone even when nothing looks that name up again — the previous form
+// only overwrote an entry on the next lookup of the same name.
+func TestCachingSecretStoreReclaimsExpiredEntries(t *testing.T) {
+	inner := SecretStoreFunc{
+		LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			return "value-" + name, true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, 5*time.Millisecond)
+	if _, _, err := cached.Lookup(context.Background(), "old"); err != nil {
+		t.Fatalf("Lookup(old): %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, _, err := cached.Lookup(context.Background(), "new"); err != nil {
+		t.Fatalf("Lookup(new): %v", err)
+	}
+
+	cached.mu.Lock()
+	defer cached.mu.Unlock()
+	if _, ok := cached.cache["old"]; ok {
+		t.Fatalf("expired entry outlived its TTL: %v", cached.cache)
+	}
+	if len(cached.cache) != 1 {
+		t.Fatalf("cache holds %d entries, want 1", len(cached.cache))
+	}
+}
+
+// TestCachingSecretStoreNeverRendersCachedValues proves the cache does
+// not leak resolved values through the formatting verbs: an entry keeps
+// the plaintext, so the store and the entry must answer with the
+// redaction marker instead of letting fmt walk their fields.
+func TestCachingSecretStoreNeverRendersCachedValues(t *testing.T) {
+	const value = "sk-live-do-not-print"
+	inner := SecretStoreFunc{
+		LookupFn: func(context.Context, string) (string, bool, error) {
+			return value, true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, time.Hour)
+	if got, found, err := cached.Lookup(context.Background(), "api-key"); err != nil || !found || got != value {
+		t.Fatalf("Lookup = (%q, %v, %v)", got, found, err)
+	}
+
+	cached.mu.Lock()
+	entry := cached.cache["api-key"]
+	cached.mu.Unlock()
+
+	for _, verb := range []string{"%v", "%+v", "%s", "%#v"} {
+		for name, subject := range map[string]any{
+			"store": cached,
+			"entry": entry,
+		} {
+			rendered := fmt.Sprintf(verb, subject)
+			if strings.Contains(rendered, value) {
+				t.Errorf("%s of the %s leaked the cached value: %s", verb, name, rendered)
+			}
+		}
+	}
+}
+
+// TestSecretNeverRendersItsValue proves every formatting verb that can
+// reach a log, an error or a crash report prints the marker — including
+// %#v, which bypasses String() because it prints the struct itself.
+func TestSecretNeverRendersItsValue(t *testing.T) {
+	const value = "sk-live-do-not-print"
+	secret := LiteralSecret(value)
+
+	for _, verb := range []string{"%v", "%+v", "%s", "%q", "%#v"} {
+		rendered := fmt.Sprintf(verb, secret)
+		if rendered != "<secret>" && rendered != `"<secret>"` {
+			t.Errorf("%s secret = %s, want the redaction marker", verb, rendered)
+		}
+		if strings.Contains(rendered, value) {
+			t.Errorf("%s leaked the secret value: %s", verb, rendered)
+		}
+	}
+
+	// The same must hold when a Secret is a field of a larger struct
+	// that a caller prints wholesale.
+	type holder struct {
+		Name   string
+		Secret Secret
+	}
+	rendered := fmt.Sprintf("%+v", holder{Name: "api", Secret: secret})
+	if strings.Contains(rendered, value) {
+		t.Fatalf("%%+v leaked the nested secret: %s", rendered)
+	}
+	if rendered != "{Name:api Secret:<secret>}" {
+		t.Fatalf("nested render = %s, want the redaction marker", rendered)
 	}
 }

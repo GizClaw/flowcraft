@@ -81,6 +81,11 @@ func (s Secret) Resolve(ctx context.Context, resolver *SecretResolver) (string, 
 
 func (s Secret) String() string { return "<secret>" }
 
+// GoString redacts the value for %#v too: without it, fmt would print
+// the struct field by field, literal included, so a value hidden by
+// every other verb would leak through the debug one.
+func (s Secret) GoString() string { return "<secret>" }
+
 // MarshalJSON redacts the value.
 func (s Secret) MarshalJSON() ([]byte, error) {
 	return []byte(`"<secret>"`), nil
@@ -199,20 +204,70 @@ type secretCacheEntry struct {
 	expires time.Time
 }
 
+// String redacts the entry for logs: value holds a resolved secret.
+func (e secretCacheEntry) String() string { return "<secret cache entry>" }
+
+// GoString redacts the Go-syntax form (%#v) too.
+func (e secretCacheEntry) GoString() string { return "<secret cache entry>" }
+
+// defaultSecretCacheCapacity bounds a caching store's entries. Secret
+// names are data (a deployment can resolve one per tenant, request, or
+// file key), so the cache has to be bounded like every other core cache
+// — see event.WithRouteCacheSize for the same reasoning.
+const defaultSecretCacheCapacity = 256
+
 // CachingSecretStore wraps a SecretStore with an in-memory TTL cache so
 // per-request lazy resolution does not hit the backend every time.
+//
+// The TTL bounds freshness, not retention: an expired entry is dropped
+// when its own name is looked up again, and the first store after each
+// TTL window sweeps the rest. A name that is never looked up again is
+// therefore reclaimed by that next sweep — or, when the cache is only
+// ever read and no store drives a sweep, by the capacity bound — which
+// caps how many names are held at once, whatever the TTL (see
+// [WithCacheCapacity]).
 type CachingSecretStore struct {
 	inner SecretStore
 	ttl   time.Duration
+
+	capacity int
+	// reapAt is when the next expired-entry sweep is due. Zero means
+	// "sweep on the next store".
+	reapAt time.Time
 
 	mu    sync.Mutex
 	cache map[string]secretCacheEntry
 }
 
+// CachingSecretStoreOption configures a [CachingSecretStore] at
+// construction time.
+type CachingSecretStoreOption func(*CachingSecretStore)
+
+// WithCacheCapacity bounds how many lookups the cache holds at once,
+// counting values and negative results alike. n <= 0 keeps the default
+// ([defaultSecretCacheCapacity]). When the bound is reached the entry
+// closest to expiry is evicted first, so long-lived names keep their
+// place ahead of ones about to lapse.
+func WithCacheCapacity(n int) CachingSecretStoreOption {
+	return func(c *CachingSecretStore) {
+		if n > 0 {
+			c.capacity = n
+		}
+	}
+}
+
 // NewCachingSecretStore returns a caching wrapper. ttl <= 0 disables
 // caching and delegates every lookup to inner.
-func NewCachingSecretStore(inner SecretStore, ttl time.Duration) *CachingSecretStore {
-	return &CachingSecretStore{inner: inner, ttl: ttl}
+func NewCachingSecretStore(
+	inner SecretStore,
+	ttl time.Duration,
+	opts ...CachingSecretStoreOption,
+) *CachingSecretStore {
+	c := &CachingSecretStore{inner: inner, ttl: ttl}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Lookup implements SecretStore.
@@ -225,24 +280,94 @@ func (c *CachingSecretStore) Lookup(ctx context.Context, name string) (string, b
 		return c.inner.Lookup(ctx, name)
 	}
 	now := time.Now()
-	c.mu.Lock()
-	if entry, ok := c.cache[name]; ok && entry.expires.After(now) {
-		c.mu.Unlock()
+	if entry, ok := c.cached(name, now); ok {
 		return entry.value, entry.found, nil
 	}
-	c.mu.Unlock()
 
 	value, found, err := c.inner.Lookup(ctx, name)
 	if err != nil {
 		return "", false, err
 	}
-	c.mu.Lock()
-	if c.cache == nil {
-		c.cache = make(map[string]secretCacheEntry)
-	}
-	c.cache[name] = secretCacheEntry{value: value, found: found, expires: now.Add(c.ttl)}
-	c.mu.Unlock()
+	c.store(name, secretCacheEntry{
+		value:   value,
+		found:   found,
+		expires: now.Add(c.ttl),
+	}, now)
 	return value, found, nil
+}
+
+// cached returns the live entry for name, dropping it first when it has
+// expired.
+func (c *CachingSecretStore) cached(name string, now time.Time) (secretCacheEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.cache[name]
+	if !ok {
+		return secretCacheEntry{}, false
+	}
+	if entry.expires.After(now) {
+		return entry, true
+	}
+	delete(c.cache, name)
+	return secretCacheEntry{}, false
+}
+
+// store records one lookup, sweeping expired entries when the TTL window
+// has elapsed and evicting the entry closest to expiry once the capacity
+// bound is reached.
+func (c *CachingSecretStore) store(name string, entry secretCacheEntry, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = make(map[string]secretCacheEntry, c.limit())
+	}
+	// Sweep on a timer rather than on every store: one pass per TTL
+	// window keeps expired entries from accumulating without putting a
+	// full scan on the per-lookup path. A lookup of the same name
+	// reclaims its own stale entry immediately (see cached).
+	if c.reapAt.IsZero() || !now.Before(c.reapAt) {
+		c.reapExpired(now)
+		c.reapAt = now.Add(c.ttl)
+	}
+	if _, exists := c.cache[name]; !exists && len(c.cache) >= c.limit() {
+		c.evictSoonest()
+	}
+	c.cache[name] = entry
+}
+
+func (c *CachingSecretStore) limit() int {
+	if c.capacity > 0 {
+		return c.capacity
+	}
+	return defaultSecretCacheCapacity
+}
+
+// reapExpired drops every entry whose TTL has passed. Caller holds mu.
+func (c *CachingSecretStore) reapExpired(now time.Time) {
+	for name, entry := range c.cache {
+		if !entry.expires.After(now) {
+			delete(c.cache, name)
+		}
+	}
+}
+
+// evictSoonest drops the entry with the earliest expiry — which is an
+// already-expired one whenever the cache holds any, so a stale entry is
+// always the first to go. Caller holds mu and the cache is non-empty.
+func (c *CachingSecretStore) evictSoonest() {
+	var (
+		victim  string
+		soonest time.Time
+		found   bool
+	)
+	for name, entry := range c.cache {
+		if !found || entry.expires.Before(soonest) {
+			victim, soonest, found = name, entry.expires, true
+		}
+	}
+	if found {
+		delete(c.cache, victim)
+	}
 }
 
 // DefaultSecretStore implements SecretStore.
@@ -252,3 +377,10 @@ func (c *CachingSecretStore) DefaultSecretStore() bool {
 	}
 	return c.inner.DefaultSecretStore()
 }
+
+// String redacts the cache for logs: the entries hold resolved secret
+// values, so fmt must print the marker instead of walking the map.
+func (c *CachingSecretStore) String() string { return "<secret cache>" }
+
+// GoString redacts the Go-syntax form (%#v) too.
+func (c *CachingSecretStore) GoString() string { return "<secret cache>" }

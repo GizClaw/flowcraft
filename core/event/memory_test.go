@@ -139,6 +139,41 @@ func TestMemoryBus_BackpressureDropOldest(t *testing.T) {
 	}
 }
 
+// TestMemoryBus_DropOldestReportsEvictions is the reporting regression
+// test: every envelope the policy evicts to make room must reach the
+// observer as a drop. The eviction used to bump the tally alone, so
+// nothing that reads drops — the observer, the metrics, the log — saw
+// the envelopes the bus threw away.
+func TestMemoryBus_DropOldestReportsEvictions(t *testing.T) {
+	observer := &countingObserver{}
+	bus := NewMemoryBus(WithObserver(observer))
+	defer func() { _ = bus.Close() }()
+	ctx := context.Background()
+
+	sub, err := bus.Subscribe(ctx, ">", WithBufferSize(1), WithBackpressure(DropOldest))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i, subj := range []Subject{"x.1", "x.2", "x.3"} {
+		if err := bus.Publish(ctx, mustEnv(t, subj, nil)); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if got := drain(t, sub.C(), 1, 200*time.Millisecond); len(got) != 1 || got[0].Subject != "x.3" {
+		t.Fatalf("DropOldest should keep newest (x.3), got %+v", got)
+	}
+
+	// x.2's publish evicts x.1 and x.3's evicts x.2: two buffer-full
+	// losses, each of them reported.
+	if got := observer.dropFull.Load(); got != 2 {
+		t.Fatalf("buffer-full drops reported = %d, want 2", got)
+	}
+	if got := bus.Dropped(); got != 2 {
+		t.Fatalf("Dropped() = %d, want 2", got)
+	}
+}
+
 func TestMemoryBus_BackpressureBlock(t *testing.T) {
 	bus := NewMemoryBus()
 	defer func() { _ = bus.Close() }()

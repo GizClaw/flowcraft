@@ -557,8 +557,9 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 // verdict, the decisive rule description ("" = mode default), the
 // deny rule's model-facing reason ("" = none), and the concrete dial
 // target. When IP/CIDR rules exist the hostname is resolved locally
-// and the dial target is pinned to a validated IP so neither the
-// upstream nor a rebinding DNS response can bypass the rule set.
+// and the dial target is pinned to an address the rule set covered, so
+// neither the upstream nor a rebinding DNS response can bypass the
+// rule set: see [Proxy.decideAddrs].
 func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (NetAction, string, string, string, error) {
 	host, port := splitHostPort(hostport, defaultPort)
 	dialHost := hostport
@@ -584,32 +585,8 @@ func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (N
 	if action == NetDeny {
 		return action, rule, reason, dialHost, nil
 	}
-	if m.HasIPRules() {
-		addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-		if err != nil {
-			// With IP rules present we cannot prove the destination is
-			// not denied, so we fail closed.
-			return NetDeny, "", "", dialHost, fmt.Errorf(
-				"netproxy: resolve %s for IP rules: %w", host, err)
-		}
-		chosen := netip.Addr{}
-		ipAllow := false
-		for _, addr := range addrs {
-			addr = addr.Unmap()
-			if ipAction, ipRule, ipReason, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetDeny {
-				return NetDeny, ipRule, ipReason, dialHost, nil
-			}
-			if !chosen.IsValid() {
-				chosen = addr
-			}
-			if ipAction, _, _, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetAllow {
-				ipAllow = true
-			}
-		}
-		if chosen.IsValid() {
-			dialHost = net.JoinHostPort(chosen.String(), strconv.Itoa(port))
-		}
-		if matched || ipAllow {
+	if !m.HasIPRules() {
+		if matched {
 			return NetAllow, rule, reason, dialHost, nil
 		}
 		if p.cfg.Mode == NetAllowList {
@@ -617,13 +594,92 @@ func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (N
 		}
 		return NetAllow, "", "", dialHost, nil
 	}
-	if matched {
-		return NetAllow, rule, reason, dialHost, nil
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		// With IP rules present we cannot prove the destination is
+		// not denied, so we fail closed.
+		return NetDeny, "", "", dialHost, fmt.Errorf(
+			"netproxy: resolve %s for IP rules: %w", host, err)
 	}
-	if p.cfg.Mode == NetAllowList {
-		return NetDeny, "", "", dialHost, nil
+	action, rule, reason, dialHost = p.decideAddrs(port, dialHost, addrs, hostVerdict{
+		matched: matched,
+		rule:    rule,
+		reason:  reason,
+	})
+	return action, rule, reason, dialHost, nil
+}
+
+// hostVerdict is the hostname-rule half of a decision, carried into the
+// address pass so the final verdict can combine both. matched is false
+// when no hostname rule decided the destination, in which case the mode
+// default applies.
+type hostVerdict struct {
+	matched bool
+	rule    string
+	reason  string
+}
+
+// decideAddrs applies the IP/CIDR rules to every address a hostname
+// resolved to and returns the verdict plus the dial target.
+//
+// Two rules shape the result:
+//
+//   - A deny match on any address denies the destination outright. With
+//     several answers we cannot know which one a dial would have
+//     reached, so none of them may pass.
+//   - The dial target is pinned to the first address an allow rule
+//     actually covers, never to an address the rule set leaves
+//     uncovered while another one is allowed: the previous form took
+//     the first address of the answer whatever the rules said, so a
+//     rebinding answer (or a server that reorders one) steered the
+//     connection to an address the checks never validated.
+//
+// When no allow rule covers any address — the operator declared only
+// deny rules, or none of the answers falls in an allowed range — the
+// hostname rule (or the mode default) is the only authority, so the
+// first address is pinned instead. Pinning either way matters: it is
+// what keeps the dial from resolving a second time into an address
+// these checks never saw.
+func (p *Proxy) decideAddrs(
+	port int,
+	dialHost string,
+	addrs []netip.Addr,
+	host hostVerdict,
+) (NetAction, string, string, string) {
+	m := p.matcher()
+	var pinned netip.Addr
+	pinRule := ""
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		action, rule, reason, matched := m.MatchIP(addr, port)
+		if !matched {
+			continue
+		}
+		if action == NetDeny {
+			return NetDeny, rule, reason, dialHost
+		}
+		if !pinned.IsValid() {
+			pinned, pinRule = addr, rule
+		}
 	}
-	return NetAllow, "", "", dialHost, nil
+	ipAllow := pinned.IsValid()
+	if !ipAllow && len(addrs) > 0 {
+		pinned = addrs[0].Unmap()
+	}
+	if pinned.IsValid() {
+		dialHost = net.JoinHostPort(pinned.String(), strconv.Itoa(port))
+	}
+	switch {
+	case host.matched:
+		return NetAllow, host.rule, host.reason, dialHost
+	case ipAllow:
+		// The address itself is what the rule set allowed.
+		return NetAllow, pinRule, "", dialHost
+	case p.cfg.Mode == NetAllowList:
+		return NetDeny, "", "", dialHost
+	default:
+		return NetAllow, "", "", dialHost
+	}
 }
 
 // audit emits one decision record when OnDecision is configured.

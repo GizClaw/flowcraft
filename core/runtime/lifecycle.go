@@ -69,10 +69,11 @@ func (r *Runtime) AgentRemoveTimeout() (time.Duration, bool) {
 	}
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
-	if r.current == nil {
+	current := r.current.Load()
+	if current == nil {
 		return 0, false
 	}
-	timeout := r.current.agentRemoveTimeout
+	timeout := current.agentRemoveTimeout
 	return timeout, timeout > 0
 }
 
@@ -253,8 +254,10 @@ func (r *Runtime) UnregisterAgent(
 	// WithRemoveTimeout still drains under the runtime's configured bound
 	// instead of waiting out the caller's context.
 	timeout := options.timeout
-	if timeout <= 0 && r.current != nil {
-		timeout = r.current.agentRemoveTimeout
+	if timeout <= 0 {
+		if current := r.current.Load(); current != nil {
+			timeout = current.agentRemoveTimeout
+		}
 	}
 	removeCtx := ctx
 	if timeout > 0 {
