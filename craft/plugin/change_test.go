@@ -421,6 +421,43 @@ func TestHostChangeLeavesNoEnabledPluginWithoutAProcess(t *testing.T) {
 	}
 }
 
+// TestHostChangeDoesNotRestartAPluginThatGaveUp pins the boundary the
+// change protocol draws around a loss: a plugin whose process gave up on
+// its own is not a running plugin, so a change — here one the store
+// refuses, which is the path that puts a running plugin back — must not
+// restart it. The record stays the application's to change, and nothing
+// the change does silently undoes what the loss left behind.
+func TestHostChangeDoesNotRestartAPluginThatGaveUp(t *testing.T) {
+	t.Parallel()
+	factory := newVersionFactory()
+	host, _ := startVersionHost(t, factory)
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want the one the host started", got)
+	}
+	// The loss the source reports when its reconnect gives up. The entry
+	// stays enabled with its tools projected — that state is the
+	// application's to change — and the process is gone.
+	host.notifyLost("hello")
+	if !host.lost["hello"] {
+		t.Fatal("the loss was not recorded")
+	}
+
+	// A change with nothing to roll back to: the store refuses it, and
+	// the resume half must leave the plugin as it found it.
+	if _, err := host.Rollback(context.Background(), "hello"); !errdefs.IsNotFound(err) {
+		t.Fatalf("Rollback without a snapshot = %v, want NotFound", err)
+	}
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want nothing started for a plugin that gave up", got)
+	}
+	if running(host, "hello") {
+		t.Fatal("the change left a process behind for a plugin that gave up")
+	}
+	if names := toolNames(host); len(names) != 0 {
+		t.Fatalf("tools after the change = %v, want none", names)
+	}
+}
+
 // TestHostChangeTakesTheProcessOutOfTheWayFirst pins the order of the
 // protocol with a stop that cannot finish: a call in flight longer than
 // the host's drain bound. The change must not go ahead — the store's

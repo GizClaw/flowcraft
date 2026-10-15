@@ -920,12 +920,20 @@ func (h *Host) startAgain(
 	}
 }
 
-// isLive reports whether the host has a process for one plugin.
+// isLive reports whether the host holds a process for one plugin. A
+// plugin whose source gave up is not one: its entry stays tracked — the
+// loss was reported and what the record says is the application's to
+// change — but there is no process behind it, and a caller asking what
+// has to come back after a stop (see [Host.changeLocked]) has to be told
+// so, or a change restarts a plugin the application was already told is
+// gone.
 func (h *Host) isLive(id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, running := h.live[id]
-	return running
+	if _, running := h.live[id]; !running {
+		return false
+	}
+	return !h.lost[id]
 }
 
 // SkillRoots returns the absolute skill directories of every enabled
