@@ -495,10 +495,31 @@ func (m *Manager) Drain(ctx context.Context) error {
 // "stopped", and a stop reported over an instance that is about to
 // appear leaves a Craft running behind a manager that says otherwise
 // (with the single-instance lock released, so a second launch would take
-// it). The wait is bounded by [Manager.transitionWait], the bound Close
-// uses as well.
+// it). The wait is bounded by [Manager.transitionWait], the bound
+// [Manager.Close] carries too: a stop that cannot take the turn within
+// it stops nothing and is refused.
 func (m *Manager) Stop(ctx context.Context) error {
-	end, err := m.beginTransition("stop")
+	return m.stop(ctx, false)
+}
+
+// stop is Stop's body; finalize marks the manager closed once it has
+// stopped, which is what makes [Manager.Close] final.
+//
+// The flag is set after the stop, not before it: stop short-circuits on
+// the flag, so marking the manager closed first would turn Close into a
+// no-op that leaves the Craft running and the single-instance lock held.
+// It is also set inside this turn on the transition gate, not after it:
+// a start that is already waiting for the turn would otherwise begin
+// once the stop released it, commit, and leave a live instance — with
+// its lock — behind a manager that refuses every later stop. A turn the
+// gate refuses stops nothing and sets no flag, so the manager stays open
+// and the error the caller sees can be answered by trying again.
+func (m *Manager) stop(ctx context.Context, finalize bool) error {
+	action := "stop"
+	if finalize {
+		action = "close"
+	}
+	end, err := m.beginTransition(action)
 	if err != nil {
 		return err
 	}
@@ -512,6 +533,9 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.current = nil
 	if current == nil {
 		m.state = StateStopped
+		if finalize {
+			m.closed = true
+		}
 		m.mu.Unlock()
 		m.notifyState(StateStopped)
 		return nil
@@ -532,24 +556,27 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.releaseLock()
 	m.mu.Lock()
 	m.state = StateStopped
+	if finalize {
+		m.closed = true
+	}
 	m.mu.Unlock()
 	m.notifyState(StateStopped)
 	return errors.Join(errs...)
 }
 
 // Close is Stop with a background timeout, and it is final: a closed
-// manager has released its lock and refuses to start again. The flag is
-// set after the stop, not before it: Stop short-circuits on the flag, so
-// marking the manager closed first would turn Close into a no-op that
-// leaves the Craft running and the single-instance lock held.
+// manager has released its lock and refuses to start again.
+//
+// The stop and the flag that makes it final are one turn on the
+// transition gate (see [Manager.stop]), so a Close that cannot take the
+// turn is refused — and refused is the whole answer: nothing was
+// stopped, so the manager stays open for another attempt, rather than
+// being marked closed around a Craft that is still running and a lock
+// still held, with every later stop short-circuiting on the flag.
 func (m *Manager) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := m.Stop(ctx)
-	m.mu.Lock()
-	m.closed = true
-	m.mu.Unlock()
-	return err
+	return m.stop(ctx, true)
 }
 
 func (m *Manager) releaseLock() {

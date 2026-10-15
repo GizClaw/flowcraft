@@ -316,3 +316,76 @@ func TestManagerReplaceIsNotOvertakenByAnotherReplace(t *testing.T) {
 		t.Fatalf("third Stop: %v", err)
 	}
 }
+
+// TestManagerCloseIsRefusedRatherThanRushed pins what a close arriving
+// while a transition will not finish does: it is refused, and the
+// manager stays open. The flag that makes a manager final is set by the
+// stop, in the same turn on the transition gate, so a refusal sets
+// nothing — a manager marked closed behind it would report a successful
+// close with a Craft still running and its single-instance lock still
+// held, short-circuit every later stop on the flag, and leave that
+// instance with no reachable handle. The refused close also has to leave
+// the transition it could not wait for alone: the start still commits,
+// and the close after it does what the first one could not.
+func TestManagerCloseIsRefusedRatherThanRushed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gate := newBuildGate()
+	manager := newTestManager(t, writeDefinition(t, dir), dir, func(opts *Options) {
+		opts.Build = gate.build
+	})
+	manager.transitionWait = 30 * time.Millisecond
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- manager.Start(context.Background()) }()
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never reached the build")
+	}
+
+	// Close takes its turn, gives up on the transition in flight, and
+	// must report that rather than a stop that did not happen.
+	if err := manager.Close(); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Close during a start that will not finish = %v, want NotAvailable", err)
+	}
+	if state := manager.State(); state != StateStarting {
+		t.Fatalf("state after the refused close = %s, want starting", state)
+	}
+
+	gate.releaseAll()
+	if err := <-startErr; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The refusal marked nothing and stopped nothing: the instance the
+	// start committed is live, and the manager does not say otherwise.
+	if state := manager.State(); state != StateRunning {
+		t.Fatalf("state after the start = %s, want running", state)
+	}
+	if current := manager.Craft(); current == nil {
+		t.Fatal("the manager has no instance after the start")
+	}
+
+	// A second Close takes the turn and does both halves the first one
+	// refused: it stops the instance and marks the manager final.
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close after the refusal: %v", err)
+	}
+	if state := manager.State(); state != StateStopped {
+		t.Fatalf("state after the close = %s, want stopped", state)
+	}
+	if err := manager.Start(context.Background()); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("restart of the closed manager = %v, want not available", err)
+	}
+	if current := manager.Craft(); current != nil {
+		t.Fatal("the closed manager still points at an instance")
+	}
+	// The lock went with the close: a second launch takes it.
+	second := newTestManager(t, writeDefinition(t, dir), dir, nil)
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatalf("a second manager could not start after the close: %v", err)
+	}
+	if err := second.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+}
