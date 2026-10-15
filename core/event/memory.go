@@ -22,6 +22,10 @@ import (
 type MemoryBusOption func(*MemoryBus)
 
 // WithObserver attaches an Observer for lifecycle instrumentation.
+// Drops do not depend on it: the bus counts every dropped envelope and
+// logs a rate-limited summary on its own (see recordDrops), so an
+// observer adds per-subscription detail rather than being the only
+// signal that something was lost.
 //
 // Replaces the legacy WithDropCallback option. See Observer for the
 // concurrency contract.
@@ -74,6 +78,8 @@ func WithRouteCacheSize(n int) MemoryBusOption {
 // Hot-path lock-freedom:
 //   - Observer callbacks are deferred to a local slice and executed after
 //     the RLock has been released.
+//   - Drops are counted and reported the same way, outside every lock:
+//     see recordDrops.
 //
 // Route cache:
 //   - routeCache memoises subject → []*memSub so a hot subject avoids the
@@ -89,6 +95,9 @@ type MemoryBus struct {
 	subscribers map[SubscriptionID]*memSub
 	closed      bool
 	dropped     atomic.Int64
+	// dropLogAt is the unix-nano time of the last drop summary this bus
+	// logged (0 = never); it rate-limits that log, see recordDrops.
+	dropLogAt atomic.Int64
 
 	// inflight counts Publish calls currently between their wg.Add(1) and
 	// matching wg.Done(). Close uses Wait() to block until every Publish
@@ -184,7 +193,9 @@ func (b *MemoryBus) clearRouteCache() {
 }
 
 // Dropped returns the cumulative count of envelopes dropped due to
-// DropNewest / DropOldest policies. Diagnostic only.
+// DropNewest / DropOldest policies. It is the same tally the bus
+// reports through its drops.total metric (see recordDrops); this
+// accessor stays for callers that want the raw number.
 func (b *MemoryBus) Dropped() int64 { return b.dropped.Load() }
 
 // memSub is the in-memory subscription record.
@@ -460,16 +471,8 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 
 // fireObserver invokes the configured observer outside any bus lock.
 func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []deliverCb, drops []dropCb) {
+	b.recordDrops(ctx, env, drops)
 	if b.observer == nil {
-		// Without an observer the drop is otherwise invisible: log a
-		// Debug record so buffer-full / closed drops stay diagnosable
-		// without paying the cost on the hot path.
-		if len(drops) > 0 {
-			telemetry.Debug(ctx, "event memory: envelope dropped, no observer attached",
-				attribute.String("event.subject", string(env.Subject)),
-				attribute.Int("event.drops", len(drops)),
-				attribute.String("event.drop_reasons", summarizeDropReasons(drops)))
-		}
 		return
 	}
 	b.observer.OnPublish(env)
