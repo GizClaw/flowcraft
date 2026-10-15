@@ -153,7 +153,7 @@ func TestFootprintFollowsCacheInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.Footprint.Entries == 1 })
-	index.invalidateSnapshots()
+	index.invalidateScope(scope)
 	if footprint := index.Stats().Footprint; footprint != (Footprint{}) {
 		t.Fatalf("footprint after invalidation = %+v", footprint)
 	}
@@ -175,7 +175,7 @@ func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
-	index.invalidateSnapshots()
+	index.invalidateScope(scope)
 	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
 		t.Fatal(err)
 	}

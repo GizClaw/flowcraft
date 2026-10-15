@@ -95,8 +95,8 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 }
 
 // warmSnapshots loads the scope's table in the background so the first query
-// does not pay for it. Deferred before invalidateSnapshots, so the cache is
-// cleared first and then repopulated. The read is counted apart from the
+// does not pay for it. Deferred before invalidateScope, so the written scope's
+// table is dropped first and then repopulated. The read is counted apart from the
 // serving path -- a query's load has to stay the query's own -- but it pays
 // the same materialization, so a reading that adds the two sees the whole
 // scope's first read.
@@ -111,10 +111,18 @@ func (index *Index) warmSnapshots(scope corememory.Scope) {
 	}()
 }
 
-// invalidateSnapshots drops every cached table; called on any write.
-func (index *Index) invalidateSnapshots() {
+// invalidateScope drops one scope's cached table; called on a write to that
+// scope, and by the tests that model one. A write changes exactly the
+// partition it wrote -- state lives under the scope's own runtime, tenant, and
+// agent -- so a table another scope holds is not what the write could stale.
+//
+// Dropping every scope's table on any write is what the lane did before, and
+// it made a derivation of one conversation evict the tables of the others,
+// which the next query of each paid to materialize (measured: 9.6s locally and
+// 14.0s on the eval host for the 9324-entry table, per scope, per process).
+func (index *Index) invalidateScope(scope corememory.Scope) {
 	index.snapshotMu.Lock()
-	index.snapshotCache = nil
+	delete(index.snapshotCache, scope.HardPartitionKey())
 	index.snapshotMu.Unlock()
 }
 
@@ -222,7 +230,7 @@ func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	defer index.warmSnapshots(request.Scope)
-	defer index.invalidateSnapshots()
+	defer index.invalidateScope(request.Scope)
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
@@ -268,7 +276,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	// first query to pay the materialization (measured: the cold query cost up
 	// to 22s while warm queries sat at ~0.6s).
 	defer index.warmSnapshots(delta.Scope)
-	defer index.invalidateSnapshots()
+	defer index.invalidateScope(delta.Scope)
 	if err := delta.ValidateDocumentAddresses(); err != nil {
 		return fmt.Errorf("vector projection: %w", err)
 	}
