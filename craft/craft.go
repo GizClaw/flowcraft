@@ -338,8 +338,16 @@ func (c *Craft) OpenRuntime(
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		_ = rt.Close()
 		c.mu.Lock()
-		delete(c.runtimes, key)
-		delete(c.runtimeRecords, key)
+		// The entry leaves the table only while it is still this call's
+		// runtime: the open published it before the bind ran, so a
+		// CloseRuntime (or a Close) can take the key away in between —
+		// and an id opened again since is a different runtime, whose
+		// record this failure has no claim on. Deleting either would
+		// leave a runtime serving with nothing pointing at it.
+		if c.runtimes[key] == rt {
+			delete(c.runtimes, key)
+			delete(c.runtimeRecords, key)
+		}
 		c.mu.Unlock()
 		return nil, err
 	}
