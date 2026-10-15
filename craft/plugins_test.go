@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -44,9 +45,17 @@ type fakePluginHost struct {
 	set      *plugin.ToolSet
 	src      *mountSource
 	startErr error
+	// entered and release, when set, park Start until the test releases
+	// it, so a Close can be interleaved with a start still in flight.
+	entered chan struct{}
+	release chan struct{}
 }
 
 func (h *fakePluginHost) Start(context.Context) error {
+	if h.entered != nil {
+		close(h.entered)
+		<-h.release
+	}
 	if h.startErr != nil {
 		return h.startErr
 	}
@@ -143,6 +152,83 @@ deploy:
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestCraftStartBehindACloseKeepsNothingAlive covers the interleaving a
+// close that arrives while Start is bringing the services up creates.
+// The plugin host's own close is what stops the processes it knows
+// about, and the host refuses to publish one behind that close, so no
+// process survives. What the close cannot take back on its own is the
+// other half of the start: the plugin watch and the started flag. Both
+// are installed under the table lock, so a start that lost to the close
+// installs neither — installing them anyway leaves a watcher goroutine
+// and a store subscription that outlive the closed Craft and announce a
+// start a closed Craft never had.
+func TestCraftStartBehindACloseKeepsNothingAlive(t *testing.T) {
+	t.Parallel()
+	def, err := ParseDefinition([]byte(`
+craft:
+  id: test
+  version: 0.1.0
+plugins:
+  tool_registry: tools
+deploy:
+  version: v1
+  resources:
+    bus: {kind: event.Bus, impl: memory}
+    tools: {kind: tool.Assembly, impl: memory}
+  runtime:
+    event_bus: bus
+`))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	host := &fakePluginHost{
+		set:     plugin.NewToolSet(),
+		src:     &mountSource{tools: []tool.Tool{mountTool{name: "hello__echo"}}},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c, err := New(def, Options{
+		DataDir:      t.TempDir(),
+		Capabilities: []Capability{coreToolsCapability{}},
+		Plugins:      host,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- c.Start(context.Background()) }()
+	select {
+	case <-host.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never reached the plugin host")
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close during the start: %v", err)
+	}
+	close(host.release)
+	if err := <-startErr; !errors.Is(err, ErrCraftClosed) {
+		t.Fatalf("Start behind a close = %v, want ErrCraftClosed", err)
+	}
+
+	c.mu.Lock()
+	started, watch, unsubscribe := c.started, c.watchCancel, c.unsubscribe
+	c.mu.Unlock()
+	if started {
+		t.Fatal("a start that lost to a close marked the Craft started")
+	}
+	if watch != nil || unsubscribe != nil {
+		t.Fatal("a start that lost to a close installed a plugin watch")
+	}
+	if err := c.Start(context.Background()); !errors.Is(err, ErrCraftClosed) {
+		t.Fatalf("Start after the close = %v, want ErrCraftClosed", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close (idempotent): %v", err)
 	}
 }
 

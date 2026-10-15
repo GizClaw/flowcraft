@@ -253,19 +253,47 @@ func (c *Craft) Start(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	if err := c.startHostMCP(); err != nil {
+		if c.isClosed() {
+			return ErrCraftClosed
+		}
 		return err
 	}
 	if c.plugins != nil {
 		if err := c.plugins.Start(ctx); err != nil {
+			if c.isClosed() {
+				return ErrCraftClosed
+			}
 			return err
 		}
-		c.startPluginWatch()
 	}
 	c.mu.Lock()
+	// Close may have run while the services were coming up. What it
+	// stopped first is what it saw, and a plugin process this start
+	// published in the meantime is one its close still sees — the host
+	// refuses to publish behind its own close — so nothing is left
+	// running here. The two halves it cannot take back are installed
+	// under this lock instead: the plugin watch and the started flag.
+	// A start that lost to a close installs neither, rather than leaving
+	// a watcher goroutine and a store subscription that outlive the
+	// Craft and announce a start a closed Craft never had.
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCraftClosed
+	}
+	if c.plugins != nil {
+		c.startPluginWatchLocked()
+	}
 	c.started = true
 	c.mu.Unlock()
 	c.publish(ctx, SubjectCraftStarted, RuntimeEvent{})
 	return nil
+}
+
+// isClosed reports whether Close has run.
+func (c *Craft) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // OpenRuntime composes the layers for key, builds a runtime and binds
