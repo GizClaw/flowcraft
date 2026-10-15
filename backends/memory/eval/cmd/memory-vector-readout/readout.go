@@ -31,6 +31,12 @@ type reading struct {
 	Cold             []coldReading     `json:"cold,omitempty"`
 	Hot              *hotReading       `json:"hot,omitempty"`
 	Footprint        vector.Footprint  `json:"footprint"`
+	// Evictions and UncachedLoads explain a footprint below what the scopes
+	// read would hold: the lane dropped tables to stay within its bounds, or
+	// read tables too large to keep. They are absolute -- what the pass left --
+	// because the reading of a bound is the state it ends in.
+	Evictions     int64 `json:"evictions"`
+	UncachedLoads int64 `json:"uncached_loads"`
 	HeapBeforeBytes  uint64            `json:"heap_before_bytes"`
 	HeapAfterBytes   uint64            `json:"heap_after_bytes"`
 	RSSBeforeBytes   uint64            `json:"rss_before_bytes"`

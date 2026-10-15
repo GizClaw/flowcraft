@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
@@ -44,6 +45,16 @@ type Config struct {
 	Model      model.ModelRef
 	Projection string
 	Thresholds projectionstore.Thresholds
+	// Limits bounds the tables the lane keeps resident. The zero value keeps
+	// every scope's table the lane reads, which is what the lane always did.
+	Limits CacheLimits
+}
+
+// CacheLimits bounds the resident tables: how many scopes may hold one, and
+// how large one may be. A zero field is no bound.
+type CacheLimits struct {
+	Scopes  int
+	Entries int
 }
 
 type Index struct {
@@ -57,17 +68,113 @@ type Index struct {
 	// projection a generation is written to, so a stored version can only
 	// match its own generation's; the stamp records which producer wrote it.
 	producerVersion string
-	// snapshotCache keeps the materialized vector table per scope. Loading it
+	// snapshotMu guards the tables the lane keeps resident. Loading a table
 	// per query meant reading every entry through the workspace store's single
 	// mutex, which dominated retrieval latency under concurrency (measured:
-	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). Writes clear the
-	// cache, so a query can only see an up-to-date table.
-	snapshotMu    sync.RWMutex
-	snapshotCache map[string]snapshot
+	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). A write drops
+	// the written scope's table, so a query can only see an up-to-date one.
+	snapshotMu sync.RWMutex
+	cache      tableCache
 	// stats accumulates the phase counters Stats() publishes. It is written on
 	// the serving path with atomics only, so no reader can perturb what the
 	// lane serves.
 	stats *statsState
+}
+
+// tableCache holds the materialized tables the lane keeps resident, bounded by
+// CacheLimits. The bounds are about memory, not about what a query sees: a
+// table this cache does not hold is read again, and the scope's page it is
+// read from is the scope's own, so nothing here can change a result.
+//
+// The scope bound evicts by recency -- the table read least recently goes
+// first, which is the one a host is least likely to read again. The per-scope
+// entry bound refuses a table outright: a scope whose table is too large to
+// keep is read and scanned per query instead, trading the memory for the read
+// (measured on the eval store: one 9324-entry, 2048-dimension table is 72.8MB
+// of vector payload, and materializing it costs 9.6s locally).
+type tableCache struct {
+	limits CacheLimits
+	// tables is keyed by the scope's partition, which is what its projection
+	// state is stored under: a scope's runtime, tenant, and agent.
+	tables map[string]*residentTable
+	// clock orders the tables by recency. Every read takes the next reading,
+	// so no two tables share one and an eviction cannot depend on map order.
+	clock     atomic.Int64
+	evictions int64
+	uncached  int64
+}
+
+// residentTable is one table the cache holds and when it was last read.
+type residentTable struct {
+	build snapshot
+	// used is the cache clock reading at the table's last read. It is read and
+	// written under the cache lock, and atomic because a hit records its
+	// recency while holding only the read side of it.
+	used atomic.Int64
+}
+
+// lookup returns the resident table for a partition, and records the read.
+func (cache *tableCache) lookup(key string) (snapshot, bool) {
+	entry, ok := cache.tables[key]
+	if !ok {
+		return snapshot{}, false
+	}
+	entry.used.Store(cache.clock.Add(1))
+	return entry.build, true
+}
+
+// store keeps a table if the bounds allow it. A table larger than the
+// per-scope bound is not kept at all: it is counted, and the next query reads
+// it again.
+func (cache *tableCache) store(key string, build snapshot) {
+	if cache.limits.Entries > 0 && len(build.Entries) > cache.limits.Entries {
+		cache.uncached++
+		return
+	}
+	if cache.tables == nil {
+		cache.tables = make(map[string]*residentTable)
+	}
+	for cache.limits.Scopes > 0 && len(cache.tables) >= cache.limits.Scopes {
+		oldest := cache.oldest()
+		if oldest == "" {
+			break
+		}
+		delete(cache.tables, oldest)
+		cache.evictions++
+	}
+	entry := &residentTable{build: build}
+	entry.used.Store(cache.clock.Add(1))
+	cache.tables[key] = entry
+}
+
+// drop forgets one partition's table.
+func (cache *tableCache) drop(key string) { delete(cache.tables, key) }
+
+// oldest names the table read least recently.
+func (cache *tableCache) oldest() string {
+	oldest, when := "", int64(0)
+	for key, entry := range cache.tables {
+		used := entry.used.Load()
+		if oldest == "" || used < when {
+			oldest, when = key, used
+		}
+	}
+	return oldest
+}
+
+// footprint sizes the tables the cache holds. Dimensions reports the largest
+// table's width, which is the width of every table a lane serves: one index is
+// bound to one embedding model.
+func (cache *tableCache) footprint() Footprint {
+	out := Footprint{Scopes: len(cache.tables)}
+	for _, entry := range cache.tables {
+		out.Entries += len(entry.build.Entries)
+		if entry.build.Dimensions > out.Dimensions {
+			out.Dimensions = entry.build.Dimensions
+		}
+		out.VectorBytes += int64(len(entry.build.Entries)) * int64(entry.build.Dimensions) * 4
+	}
+	return out
 }
 
 // cachedSnapshot returns the scope's vector table, loading it once per write
@@ -76,7 +183,7 @@ type Index struct {
 func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, bool, error) {
 	key := scope.HardPartitionKey()
 	index.snapshotMu.RLock()
-	cached, ok := index.snapshotCache[key]
+	cached, ok := index.cache.lookup(key)
 	index.snapshotMu.RUnlock()
 	if ok {
 		return cached, false, nil
@@ -86,10 +193,7 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 		return snapshot{}, false, err
 	}
 	index.snapshotMu.Lock()
-	if index.snapshotCache == nil {
-		index.snapshotCache = make(map[string]snapshot)
-	}
-	index.snapshotCache[key] = build
+	index.cache.store(key, build)
 	index.snapshotMu.Unlock()
 	return build, true, nil
 }
@@ -122,7 +226,7 @@ func (index *Index) warmSnapshots(scope corememory.Scope) {
 // 14.0s on the eval host for the 9324-entry table, per scope, per process).
 func (index *Index) invalidateScope(scope corememory.Scope) {
 	index.snapshotMu.Lock()
-	delete(index.snapshotCache, scope.HardPartitionKey())
+	index.cache.drop(scope.HardPartitionKey())
 	index.snapshotMu.Unlock()
 }
 
@@ -198,6 +302,7 @@ func New(config Config) (*Index, error) {
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
 		producerVersion:   generationIdentity(config.Model),
+		cache:             tableCache{limits: config.Limits},
 		stats:             &statsState{},
 	}, nil
 }

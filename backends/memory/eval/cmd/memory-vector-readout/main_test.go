@@ -168,6 +168,31 @@ func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 	}
 }
 
+// TestFootprintLinesNameWhatTheBoundsHeldOut pins the reading a bounded run
+// needs: a footprint below what the scopes read would hold has to say why, and
+// a run with no bounds in play has to stay silent about them.
+func TestFootprintLinesNameWhatTheBoundsHeldOut(t *testing.T) {
+	var out strings.Builder
+	renderFootprint(&out, reading{
+		Footprint: vector.Footprint{Scopes: 1, Entries: 12, Dimensions: 3, VectorBytes: 144},
+	})
+	if strings.Contains(out.String(), "bounds:") {
+		t.Fatalf("a run with no eviction and no oversized table rendered a bounds line:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "scopes 1  entries 12  dimensions 3") {
+		t.Fatalf("the footprint line changed:\n%s", out.String())
+	}
+	out.Reset()
+	renderFootprint(&out, reading{
+		Footprint:     vector.Footprint{Scopes: 2, Entries: 20, Dimensions: 3, VectorBytes: 240},
+		Evictions:     3,
+		UncachedLoads: 1,
+	})
+	if !strings.Contains(out.String(), "3 tables evicted, 1 reads of a table too large to keep") {
+		t.Fatalf("the bounds line does not name what the cache did:\n%s", out.String())
+	}
+}
+
 func TestDurationAndMegabytesRenderUnits(t *testing.T) {
 	if got := duration(1500 * time.Microsecond); got != "1.5ms" {
 		t.Fatalf("duration = %q", got)

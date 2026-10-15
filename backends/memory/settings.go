@@ -195,6 +195,29 @@ type LanesSettings struct {
 	// Fusion selects the lane fusion algorithm: "rrf" (default) or
 	// "weighted". RRF is robust to score-scale differences between lanes.
 	Fusion string `json:"fusion,omitempty"`
+	// VectorCache bounds the vector lane's resident tables. Absent, the lane
+	// keeps every scope's table it has read, which is what it always did; a
+	// host that serves many scopes bounds it, because one scope's table is
+	// its embedding model's width times four bytes per entry (measured: a
+	// 9324-entry, 2048-dimension table holds 72.8MB of vector payload).
+	//
+	// It is part of the retrieval summary because it is what a footprint
+	// reading has to be read against, and because two runs of the same
+	// deployment that differ in it are not the same configuration.
+	VectorCache *VectorCacheSettings `json:"vector_cache,omitempty"`
+}
+
+// VectorCacheSettings bounds what the vector lane keeps resident. Both fields
+// are a count of what may be held: zero is no bound, and a bound never changes
+// what a query sees, only what the lane keeps after reading it.
+type VectorCacheSettings struct {
+	// MaxCachedScopes is how many scopes' tables may be resident at once. The
+	// lane drops the one it read least recently to make room.
+	MaxCachedScopes int `json:"max_cached_scopes,omitempty"`
+	// MaxEntriesPerScope is the largest table the lane keeps. A scope whose
+	// table is larger is read and scanned per query instead of held, trading
+	// the memory for the read.
+	MaxEntriesPerScope int `json:"max_entries_per_scope,omitempty"`
 }
 
 // applyDefaults fills zero values with the documented defaults in place.
@@ -334,6 +357,16 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Retrieval.SourceQuotes < 0 || settings.Retrieval.SourceQuotes > 4 {
 		return errors.New("retrieval.source_quotes must be between 0 and 4")
+	}
+	if cache := settings.Lanes.VectorCache; cache != nil {
+		for name, value := range map[string]int{
+			"max_cached_scopes":     cache.MaxCachedScopes,
+			"max_entries_per_scope": cache.MaxEntriesPerScope,
+		} {
+			if value < 0 {
+				return fmt.Errorf("lanes.vector_cache.%s must not be negative", name)
+			}
+		}
 	}
 	if settings.Derive.Concurrency < 0 {
 		return errors.New("derive.concurrency must not be negative")

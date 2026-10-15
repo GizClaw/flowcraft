@@ -118,6 +118,12 @@ func renderFootprint(w io.Writer, reading reading) {
 	line(w, "footprint (resident materialized tables, after the passes)")
 	printf(w, "  scopes %d  entries %d  dimensions %d  vector payload %s\n",
 		footprint.Scopes, footprint.Entries, footprint.Dimensions, megabytes(footprint.VectorBytes))
+	if reading.Evictions > 0 || reading.UncachedLoads > 0 {
+		// A footprint below what the scopes read would hold is explained here,
+		// and the configured bounds are in the retrieval summary above.
+		printf(w, "  bounds: %d tables evicted, %d reads of a table too large to keep\n",
+			reading.Evictions, reading.UncachedLoads)
+	}
 	printf(w, "  live heap %s → %s (delta %s)\n",
 		megabytes(int64(reading.HeapBeforeBytes)), megabytes(int64(reading.HeapAfterBytes)),
 		megabytes(deltaBytes(reading.HeapAfterBytes, reading.HeapBeforeBytes)))

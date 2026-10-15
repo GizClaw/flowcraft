@@ -54,6 +54,19 @@ type factoryOptions struct {
 	deriverVersion string
 }
 
+// vectorCacheLimits maps the configured bounds onto the lane's own. An absent
+// block is no bound: the lane keeps every scope's table it reads, which is what
+// it did before the bounds existed.
+func vectorCacheLimits(settings *VectorCacheSettings) vector.CacheLimits {
+	if settings == nil {
+		return vector.CacheLimits{}
+	}
+	return vector.CacheLimits{
+		Scopes:  settings.MaxCachedScopes,
+		Entries: settings.MaxEntriesPerScope,
+	}
+}
+
 // deriverPolicy is the policy contribution of a caller-supplied deriver. The
 // built-in settings-driven extractor contributes nothing (its algorithm
 // versions are already part of the digest); any override contributes at least
@@ -742,6 +755,7 @@ func buildProjections(
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
+		Limits: vectorCacheLimits(settings.Lanes.VectorCache),
 	})
 	if err != nil {
 		return nil, nil, nil, err

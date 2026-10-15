@@ -156,6 +156,7 @@ func run() error {
 	}
 	final, _ := memory.VectorLaneStats()
 	reading.Footprint = final.Footprint
+	reading.Evictions, reading.UncachedLoads = final.Evictions, final.UncachedLoads
 	reading.HeapAfterBytes, reading.RSSAfterBytes = liveMemory()
 	renderFootprint(os.Stdout, reading)
 
