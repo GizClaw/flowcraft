@@ -92,13 +92,16 @@ func TestProtocolSelection(t *testing.T) {
 // unbounded Retry-After: the header is a server's suggestion, so it must
 // not outlast the transport's own delay ceiling. Without the clamp the
 // caller sleeps for whatever the response asked for — up to a year for a
-// hostile or misconfigured upstream.
+// hostile or misconfigured upstream. The hint still gets a wider ceiling
+// than the exponential path: a real 429's "wait a minute" must be
+// honored, not answered with a two-second sleep.
 func TestRetryBackoffClampsServerHint(t *testing.T) {
-	transport := func(maxDelay time.Duration) *retryTransport {
+	transport := func(maxDelay, maxHintDelay time.Duration) *retryTransport {
 		return &retryTransport{config: RetryConfig{
-			MaxAttempts: 3,
-			BaseDelay:   200 * time.Millisecond,
-			MaxDelay:    maxDelay,
+			MaxAttempts:  3,
+			BaseDelay:    200 * time.Millisecond,
+			MaxDelay:     maxDelay,
+			MaxHintDelay: maxHintDelay,
 		}}
 	}
 	responseWith := func(hint string) *http.Response {
@@ -110,25 +113,29 @@ func TestRetryBackoffClampsServerHint(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		maxDelay time.Duration
-		hint     string
-		want     time.Duration
+		name         string
+		maxDelay     time.Duration
+		maxHintDelay time.Duration
+		hint         string
+		want         time.Duration
 	}{
-		{"hint beyond the ceiling is clamped", 2 * time.Second, "31536000", 2 * time.Second},
-		{"hint within the ceiling is honored", 2 * time.Second, "1", time.Second},
-		{"no ceiling and a hint means no sleep", 0, "60", 0},
-		{"garbage hint falls back to the exponential path", 2 * time.Second, "soon", 0},
+		{"hint beyond the hint ceiling is clamped", 2 * time.Second, 30 * time.Second, "31536000", 30 * time.Second},
+		{"hint above the exponential ceiling is honored", 2 * time.Second, 30 * time.Second, "20", 20 * time.Second},
+		{"hint within both ceilings is honored", 2 * time.Second, 30 * time.Second, "1", time.Second},
+		{"no hint ceiling falls back to the exponential one", 2 * time.Second, 0, "31536000", 2 * time.Second},
+		{"no ceilings at all means no sleep", 0, 0, "60", 0},
+		{"hint ceiling alone still sleeps", 0, 30 * time.Second, "10", 10 * time.Second},
+		{"garbage hint falls back to the exponential path", 2 * time.Second, 30 * time.Second, "soon", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := transport(tc.maxDelay).backoff(1, responseWith(tc.hint))
+			got := transport(tc.maxDelay, tc.maxHintDelay).backoff(1, responseWith(tc.hint))
 			if tc.hint == "soon" {
-				// The exponential path is jittered: any value within the
-				// ceiling is valid, the point is that it is not a parse of
-				// the header.
-				if got < 0 || got > tc.maxDelay {
-					t.Fatalf("backoff = %v, want within [0, %v]", got, tc.maxDelay)
+				// The exponential path is jittered: the first step draws
+				// from [0, BaseDelay], so a value bounded by BaseDelay —
+				// not MaxDelay — is what proves the header was not parsed.
+				if got < 0 || got > 200*time.Millisecond {
+					t.Fatalf("backoff = %v, want within [0, 200ms]", got)
 				}
 				return
 			}
@@ -140,7 +147,7 @@ func TestRetryBackoffClampsServerHint(t *testing.T) {
 
 	// Without a Retry-After the exponential path is used and stays
 	// bounded by the ceiling it grows against.
-	if got := transport(time.Second).backoff(9, responseWith("")); got < 0 || got > time.Second {
+	if got := transport(time.Second, 30*time.Second).backoff(9, responseWith("")); got < 0 || got > time.Second {
 		t.Fatalf("backoff without hint = %v, want within [0, 1s]", got)
 	}
 }

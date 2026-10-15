@@ -275,20 +275,26 @@ type RetryConfig struct {
 	MaxAttempts int
 	// BaseDelay seeds the exponential backoff.
 	BaseDelay time.Duration
-	// MaxDelay caps one backoff sleep, including a Retry-After hint:
-	// the server's suggestion is honored only up to this bound, so a
-	// hostile or misconfigured Retry-After cannot park the caller for
-	// longer than the transport's own ceiling. Zero or negative means
-	// no sleep at all, hints included.
+	// MaxDelay caps one exponential backoff sleep. Zero or negative
+	// means the exponential path never sleeps.
 	MaxDelay time.Duration
+	// MaxHintDelay caps one sleep taken from a Retry-After hint. The
+	// hint gets a wider ceiling than the exponential path — the server
+	// is naming the rate it will enforce, and answering a 429's "wait a
+	// minute" with a two-second sleep just burns attempts — but stays
+	// bounded, so a hostile or misconfigured hint cannot park the caller
+	// for hours. Zero or negative falls back to MaxDelay.
+	MaxHintDelay time.Duration
 }
 
 // DefaultRetry retries transient failures twice after the first attempt
-// with a 200ms-seeded exponential backoff.
+// with a 200ms-seeded exponential backoff; a Retry-After hint is honored
+// up to 30s.
 var DefaultRetry = RetryConfig{
-	MaxAttempts: 3,
-	BaseDelay:   200 * time.Millisecond,
-	MaxDelay:    2 * time.Second,
+	MaxAttempts:  3,
+	BaseDelay:    200 * time.Millisecond,
+	MaxDelay:     2 * time.Second,
+	MaxHintDelay: 30 * time.Second,
 }
 
 // newRetryTransport decorates base with bounded retries for transient
@@ -401,19 +407,24 @@ func retryable(response *http.Response, err error) bool {
 
 // backoff computes the sleep before the next attempt: exponential growth
 // from BaseDelay with full jitter, superseded by a Retry-After hint when
-// the server sends one — capped by MaxDelay like every other sleep, so a
-// misconfigured or hostile hint cannot outlast the configured ceiling.
+// the server sends one — a hint is honored up to its own ceiling
+// (MaxHintDelay), so a misconfigured or hostile one cannot outlast it.
 func (t *retryTransport) backoff(attempt int, response *http.Response) time.Duration {
 	if response != nil {
 		if hint := retryAfter(response.Header.Get("Retry-After")); hint > 0 {
-			// A hint is an input, not an override: it is honored only up
-			// to the same ceiling as the exponential path, so a hostile
-			// or misconfigured Retry-After (say one year) cannot park the
-			// caller past MaxDelay.
-			if t.config.MaxDelay <= 0 {
+			// A hint is an input, not an override: it gets the wider
+			// MaxHintDelay ceiling — the server knows the rate it will
+			// enforce — but a hostile or misconfigured Retry-After (say
+			// one year) still cannot park the caller past it. Without a
+			// hint ceiling of its own, MaxDelay bounds the hint.
+			ceiling := t.config.MaxHintDelay
+			if ceiling <= 0 {
+				ceiling = t.config.MaxDelay
+			}
+			if ceiling <= 0 {
 				return 0
 			}
-			return min(hint, t.config.MaxDelay)
+			return min(hint, ceiling)
 		}
 	}
 	delay := min(t.config.BaseDelay<<(attempt-1), t.config.MaxDelay)
