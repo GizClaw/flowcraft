@@ -166,6 +166,17 @@ func (s *Server) Drop(pluginID string) {
 	s.mu.Unlock()
 }
 
+// Forget drops the rate-limit window of one token. The window is keyed
+// by the token's digest, and the caller that retires a token — the host
+// that minted it, when a process is replaced or stopped — is the one
+// that knows it will not call again: without this the table keeps a
+// window for every process the host ever ran.
+func (s *Server) Forget(token Token) {
+	s.rateMu.Lock()
+	delete(s.rates, token)
+	s.rateMu.Unlock()
+}
+
 // Close stops the listener.
 func (s *Server) Close() error {
 	s.mu.Lock()
@@ -179,6 +190,11 @@ func (s *Server) Close() error {
 	s.http = nil
 	s.listen = nil
 	s.mu.Unlock()
+	// The windows belong to tokens this endpoint was serving: a closed
+	// server serves none of them again.
+	s.rateMu.Lock()
+	s.rates = make(map[Token]*rateWindow)
+	s.rateMu.Unlock()
 	if httpServer == nil {
 		return nil
 	}

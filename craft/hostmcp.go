@@ -205,6 +205,7 @@ func (s *hostMCPState) mint(entry plugin.Entry, generation uint64) (string, erro
 	s.mu.Unlock()
 	for _, stale := range previous.tokens {
 		s.tokens.Revoke(stale)
+		s.server.Forget(stale)
 	}
 	if replaced {
 		s.server.Drop(entry.ID)
@@ -221,6 +222,7 @@ func (s *hostMCPState) revokePlugin(id string) {
 	s.mu.Unlock()
 	for _, token := range tokens {
 		s.tokens.Revoke(token)
+		s.server.Forget(token)
 	}
 	s.server.Drop(id)
 }

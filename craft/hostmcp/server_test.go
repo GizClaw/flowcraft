@@ -317,3 +317,67 @@ func TestServerRateLimitIsPerToken(t *testing.T) {
 		t.Fatal("a second token was charged for the first one's requests")
 	}
 }
+
+// rateWindowCount is the table's size, read the way the limiter guards
+// it.
+func rateWindowCount(s *Server) int {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	return len(s.rates)
+}
+
+// TestServerForgetsRateWindowsWithTheirTokens covers what the limiter
+// table holds: one window per token that has called, and a token that is
+// retired has to take its window with it. Tokens are minted per process
+// generation, so a table that only ever grows keeps a window for every
+// process the host ever ran; the host forgets one when it revokes its
+// token, and a closed server holds none at all.
+func TestServerForgetsRateWindowsWithTheirTokens(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	if err := Standard(registry, Services{}, "0.1.0"); err != nil {
+		t.Fatalf("Standard: %v", err)
+	}
+	tokens := NewTokens()
+	server, err := NewServer(ServerOptions{
+		Registry: registry, Tokens: tokens, HostVersion: "0.1.0",
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	_, first, err := tokens.Mint(Identity{PluginID: "hello"})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	_, second, err := tokens.Mint(Identity{PluginID: "other"})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	if !server.allow(first) || !server.allow(second) {
+		t.Fatal("the first request of a token was rate limited")
+	}
+	if got := rateWindowCount(server); got != 2 {
+		t.Fatalf("rate windows = %d, want one per token that called", got)
+	}
+
+	server.Forget(first)
+	if got := rateWindowCount(server); got != 1 {
+		t.Fatalf("rate windows after Forget = %d, want 1", got)
+	}
+	// A forgotten token starts a fresh window: forgetting is releasing
+	// the bookkeeping, not refusing the token.
+	if !server.allow(first) {
+		t.Fatal("a token whose window was forgotten was refused")
+	}
+	if got := rateWindowCount(server); got != 2 {
+		t.Fatalf("rate windows after the new call = %d, want 2", got)
+	}
+
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := rateWindowCount(server); got != 0 {
+		t.Fatalf("rate windows after Close = %d, want none", got)
+	}
+}
