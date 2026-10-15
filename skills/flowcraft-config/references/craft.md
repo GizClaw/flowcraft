@@ -84,11 +84,13 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
 }
 ```
 
-- `id`: `^[a-z0-9][a-z0-9._-]{0,63}$`. `version` required; `version`
-  and `minHostVersion` are dotted numeric with optional prerelease. Leave
-  `minHostVersion` out against a development build of craft
-  (`Version == "0.0.0"`), where any floor above `0.0.0` makes the plugin
-  invalid; set it once you pin a released craft.
+- `id`: `^[a-z0-9][a-z0-9._-]{0,63}$`. `version` required; `version` and
+  `minHostVersion` are dotted numeric with an optional prerelease suffix
+  of dot-separated letters, digits and dashes — the same validator a
+  `craft.yaml` `min_host_version` floor asks. Against a development build
+  of craft, whose `Version` resolves to `"0.0.0"`, any `minHostVersion`
+  above `0.0.0` makes the plugin invalid: leave it out until the host
+  resolves a real version, which is what pinning a released craft does.
 - Legacy aliases: `entry` (⇒ `ui.entry`), `mcpServers` (⇒ `mcp`; the two
   are mutually exclusive). `kraft` and `tools` are rejected with an
   upgrade hint.

@@ -9,11 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/craft/internal/version"
 )
 
-// Version is the craft module version. Release builds override it with
-// -ldflags; "0.0.0" marks a development build, where min_host_version
-// checks are skipped.
-var Version = "0.0.0"
-
 // Definition is a decoded craft.yaml.
 type Definition struct {
 	Craft      Meta             `json:"craft"`
@@ -107,14 +102,27 @@ func (d Definition) Validate() error {
 		}
 	}
 	if min := strings.TrimSpace(d.Craft.MinHostVersion); min != "" {
-		if !version.Valid(min) {
-			return errdefs.Validationf(
-				"craft: min_host_version %q is not a valid version", min)
+		if err := hostFloor(Version, min); err != nil {
+			return err
 		}
-		if Version != "0.0.0" && version.Compare(Version, min) < 0 {
-			return errdefs.Validationf(
-				"craft: requires host version >= %s, running %s", min, Version)
-		}
+	}
+	return nil
+}
+
+// hostFloor enforces one min_host_version floor against the version a
+// host resolved ([Version]). A development build — [devVersion], the
+// version nothing resolved — checks the floor's spelling and skips the
+// comparison: "requires host version >= 0.3.0" about a build whose own
+// version is unknown would refuse every workspace build of a definition
+// that names a floor.
+func hostFloor(hostVersion, min string) error {
+	if !version.Valid(min) {
+		return errdefs.Validationf(
+			"craft: min_host_version %q is not a valid version", min)
+	}
+	if hostVersion != devVersion && version.Compare(hostVersion, min) < 0 {
+		return errdefs.Validationf(
+			"craft: requires host version >= %s, running %s", min, hostVersion)
 	}
 	return nil
 }

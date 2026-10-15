@@ -50,10 +50,18 @@ func TestValid(t *testing.T) {
 		{version: "0.1.0", want: true},
 		{version: "1.0", want: true},
 		{version: "1.0.0-rc.1", want: true},
+		{version: "1.0.0-alpha-beta.2", want: true},
 		{version: "", want: false},
 		{version: "v1.0.0", want: false},
 		{version: "1.0.x", want: false},
 		{version: "1..0", want: false},
+		{version: "1.0.0-", want: false},
+		{version: "1.0.0-rc 1", want: false},
+		{version: "1.0.0-rc_1", want: false},
+		{version: "1.0.0-.rc", want: false},
+		{version: "1.0.0-rc..1", want: false},
+		{version: "1.0.0+meta", want: false},
+		{version: "+1.0.0", want: false},
 	}
 	for _, testCase := range cases {
 		if got := Valid(testCase.version); got != testCase.want {

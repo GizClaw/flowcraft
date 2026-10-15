@@ -104,10 +104,17 @@ invariants (`Definition.Validate`):
 - Each `base_layers` entry needs exactly one of `file` or `embed`
   (`craft: base_layers[0] requires file or embed` or `... declares both`).
 - `min_host_version`, when set, is a dotted numeric version with an
-  optional prerelease suffix. When the module is a release build
-  (`craft.Version` != `"0.0.0"`) and the host is older than the floor,
-  validation fails (`craft: requires host version >= X, running Y`). A
-  development build still checks the spelling but skips the comparison.
+  optional prerelease suffix — the same validator a plugin manifest's
+  `version` and `minHostVersion` are held to. The version it is checked
+  against is `craft.Version`: the version of the craft module the binary
+  linked, resolved from the build's own module info, so it is whatever the
+  consumer pinned; `"0.0.0"` when nothing resolved — a workspace build, a
+  module replaced by a local path, an untagged main module — or a version
+  release tooling stamped with
+  `-ldflags "-X github.com/GizClaw/flowcraft/craft.Version=x.y.z"`. A
+  resolved host older than the floor fails validation (`craft: requires
+  host version >= X, running Y`); a development build still checks the
+  spelling but skips the comparison.
 
 `plugins.builtin` and `plugins.roots` are declarative: the `craft` package
 reads only `tool_registry` and `node_targets` during composition; the host
@@ -140,7 +147,7 @@ always-injected `craft.runtime` external
 
 1. the per-runtime `Values` merged over the craft-level `Options.Values`;
 2. the built-in roots `APP_HOME`, `CONFIG_DIR`, `DATA_DIR` and `VERSION`
-   (`craft.Version`).
+   (`craft.Version`; `"0.0.0"` in a build that resolved none).
 
 `NAME` is required (`craft: ${craft:} requires a name`) and an unknown
 name fails the build (`craft: reference ${craft:NAME} is not defined`).
@@ -931,7 +938,11 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
 ## Status
 
 Craft lives in the workspace and is **not yet released**: no `craft/vX.Y.Z`
-tag exists, and `craft.Version` stays `"0.0.0"` for development builds. The
+tag exists, so nothing resolves a version and `craft.Version` stays
+`"0.0.0"` — the development value, against which `min_host_version` floors
+are checked for spelling and skipped. A consumer that pins a released craft
+gets the pinned version from the build's module info, which is what makes
+those floors bite; release tooling may also stamp `Version` directly. The
 host primitive set is **v1** and its tool names are a wire contract. The
 plugin install / update / rollback / uninstall *mechanics* are craft's
 (`Store.Install`, `InstallZip`, `Rollback`, `Uninstall`, and the
