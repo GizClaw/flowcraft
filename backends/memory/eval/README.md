@@ -6,10 +6,12 @@ Evaluation module for `backends/memory`. It owns the whole eval surface:
   `RunAll`, baseline comparison), and
 - the runners under `cmd/`: `memory-eval` (dataset run, optionally against a
   live inference provider through a deploy document), `memory-eval-diag`
-  (per-question retrieval diagnostics), and the two store readings that never
-  call a provider — `memory-fact-density` (how densely a derivation wrote:
-  facts per commit, and what a similarity floor or merge would leave of it)
-  and `memory-fact-diff` (what a second derivation of one corpus holds
+  (per-question retrieval diagnostics), `memory-vector-readout` (what one
+  retrieval costs inside the vector lane, against a live deployment — see
+  "Reading the vector lane"), and the two store readings that never call a
+  provider — `memory-fact-density` (how densely a derivation wrote: facts per
+  commit, and what a similarity floor or merge would leave of it) and
+  `memory-fact-diff` (what a second derivation of one corpus holds
   differently, see "Comparing two derivations").
 
 It is its own Go module so that host wiring (`core/deploy`, provider drivers)
@@ -526,6 +528,61 @@ wording:
 - `-runtime` / `-user` / `-agent` select the scope.
 
 Reads only: no model call, no derivation, no write.
+
+## Reading the vector lane
+
+The vector lane serves by an exact scan: it materializes the scope's table,
+embeds the query, walks every entry a filter admits, and sorts what it scored.
+Which of those terms dominates decides whether an approximate index could be
+worth its loss of determinism, and `memory-vector-readout` answers it by running
+the retrieval arm against a live deployment and reading the lane's own counters
+(`Assembly.VectorLaneStats` — atomics on the serving path, so the reading
+changes nothing the lane serves).
+
+```bash
+go build -o zz-memory-vector-readout ./cmd/memory-vector-readout
+./zz-memory-vector-readout -deploy ./deploy.yaml -env-file .env \
+  -workers 4 -max-items 30 -max-tokens 6144 -out reading.json
+```
+
+It never ingests, never derives, and never answers: it reads the workspace the
+deploy document names, so the reading describes that derivation. What it
+reports:
+
+- a **cold pass**: the first question of each scope, sequentially — the question
+  itself (`latency`, and the table it had to materialize: `load`, `misses`,
+  `entries`) beside the warm the deployment's own writes paid (`warm`,
+  `warms`);
+- a **hot pass**: every question the library holds, with `-workers`, attributed
+  by the delta of two lane readings taken around it;
+- the **phases** inside the lane — table load, query embed, scan (the walk over
+  the entries the filter checks plus the cosine over the entries it admits),
+  sort — as time and as shares of the lane, of the provider's search stage and
+  of the summed request time;
+- a **projection**: the measured per-entry scan cost at table sizes the run did
+  not have (the scan is linear in entries, the sort n log n), read against this
+  run's mean query embed — the term an approximate index would remove against
+  the one it would not;
+- the **footprint**: the resident materialized tables (scopes, entries,
+  dimensions, vector payload) with the process's heap and RSS before and after.
+
+The control store's reading (9,324 entries per scope, 2,048 dimensions, the
+documented budget, 1,540 questions, 4 workers on a 4-vCPU host) says the
+**embed is the lane**: 159.5 ms/query, 92.3% of the lane's time. The **scan** is
+9.7 ms/query — 5.6% of the lane, 0.58% of the search stage, 0.51% of the summed
+request time — at 1,035 ns/entry, and the **sort** 3.7 ms/query. Projected at
+this run's per-entry cost the scan reaches a quarter of the embed at 40k entries
+per scope and two thirds at 100k, so at this corpus's scale the exact scan is
+not the term worth trading determinism for. The table costs 76,382,208 bytes of
+vectors resident (72.8MB) and ~352MB of heap around its first read, which a cold
+pass pays once per process: 14.0s on that host, 9.6s on a laptop reading the
+same store.
+
+What makes the numbers worth trusting is that the reading carries its own
+serving proof: `scans` and `embeds` should equal `queries`, and
+`entries_scanned` the table size times the questions asked. A lane whose read
+fails is a diagnostic, not an error — the request is served by the other lanes —
+so a run whose numbers look wrong can be told apart from a lane that served.
 
 ## Module dependency
 
