@@ -12,19 +12,23 @@ func renderCold(w io.Writer, readings []coldReading) {
 		return
 	}
 	fmt.Fprintf(w, "cold pass (%d scopes, the first question of each, sequential)\n", len(readings))
-	fmt.Fprintf(w, "  %-14s %10s %10s %7s %8s %10s %10s\n",
-		"conversation", "latency", "load", "misses", "entries", "vector", "heap+d")
+	fmt.Fprintf(w, "  %-14s %10s %10s %7s %10s %7s %8s %10s %10s\n",
+		"conversation", "latency", "load", "misses", "warm", "warms", "entries", "vector", "heap+d")
 	loads := make([]time.Duration, 0, len(readings))
+	warms := make([]time.Duration, 0, len(readings))
 	for _, reading := range readings {
 		loads = append(loads, reading.SnapshotLoad)
-		fmt.Fprintf(w, "  %-14s %10s %10s %7d %8d %10s %10s\n",
+		warms = append(warms, reading.WarmLoad)
+		fmt.Fprintf(w, "  %-14s %10s %10s %7d %10s %7d %8d %10s %10s\n",
 			reading.ConversationID, duration(reading.Latency), duration(reading.SnapshotLoad),
-			reading.SnapshotMisses, reading.EntriesAdded, megabytes(reading.VectorBytesAdded),
+			reading.SnapshotMisses, duration(reading.WarmLoad), reading.WarmMisses,
+			reading.EntriesAdded, megabytes(reading.VectorBytesAdded),
 			megabytes(reading.HeapDeltaBytes))
 	}
-	fmt.Fprintf(w, "  median load %s\n", duration(median(loads)))
-	fmt.Fprintf(w, "  note: a query that pays for a table is the cold path; writes warm tables, so a deployed\n")
-	fmt.Fprintf(w, "        process pays this once per scope after the write, a fresh process pays it per scope\n\n")
+	fmt.Fprintf(w, "  median load %s, median warm %s\n", duration(median(loads)), duration(median(warms)))
+	fmt.Fprintf(w, "  note: load is the question's own materialization (misses counts the questions that paid\n")
+	fmt.Fprintf(w, "        it); warm is what the deployment's writes -- including the replay of a store it\n")
+	fmt.Fprintf(w, "        already holds -- paid beside it, so a first question can find the table resident\n\n")
 }
 
 func renderHot(w io.Writer, hot *hotReading) {
@@ -43,8 +47,9 @@ func renderHot(w io.Writer, hot *hotReading) {
 	}
 	phase := hot.Vector
 	fmt.Fprintln(w, "  vector lane phases")
-	fmt.Fprintf(w, "    load   %10s  hits=%d loads=%d\n",
-		duration(phase.SnapshotLoad), phase.SnapshotHits, phase.SnapshotMisses)
+	fmt.Fprintf(w, "    load   %10s  hits=%d loads=%d  (warm %s, %d misses)\n",
+		duration(phase.SnapshotLoad), phase.SnapshotHits, phase.SnapshotMisses,
+		duration(phase.WarmLoad), phase.WarmMisses)
 	fmt.Fprintf(w, "    embed  %10s  n=%d  mean %s\n",
 		duration(phase.EmbedTotal), phase.Embeds, duration(hot.MeanEmbed))
 	fmt.Fprintf(w, "    scan   %10s  = walk %s + cosine %s\n",

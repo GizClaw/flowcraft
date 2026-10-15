@@ -96,13 +96,16 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 
 // warmSnapshots loads the scope's table in the background so the first query
 // does not pay for it. Deferred before invalidateSnapshots, so the cache is
-// cleared first and then repopulated.
+// cleared first and then repopulated. The read is counted apart from the
+// serving path -- a query's load has to stay the query's own -- but it pays
+// the same materialization, so a reading that adds the two sees the whole
+// scope's first read.
 func (index *Index) warmSnapshots(scope corememory.Scope) {
 	go func() {
 		started := time.Now()
 		_, loaded, err := index.cachedSnapshot(context.Background(), scope)
-		if err == nil && index.stats != nil {
-			index.stats.recordSnapshotLoad(time.Since(started), loaded)
+		if err == nil {
+			index.recordWarmLoad(time.Since(started), loaded)
 		}
 	}()
 }

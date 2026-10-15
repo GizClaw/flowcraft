@@ -37,12 +37,16 @@ type reading struct {
 }
 
 // coldReading is one conversation's first query: the query that pays for the
-// scope's table when nothing has warmed it.
+// scope's table when nothing has warmed it. The load columns are the query's
+// own; the warm columns are what the deployment's writes paid beside it, and
+// the two together are the scope's first read.
 type coldReading struct {
 	ConversationID   string        `json:"conversation_id"`
 	Latency          time.Duration `json:"latency_ns"`
 	SnapshotLoad     time.Duration `json:"snapshot_load_ns"`
 	SnapshotMisses   int64         `json:"snapshot_misses"`
+	WarmLoad         time.Duration `json:"warm_load_ns"`
+	WarmMisses       int64         `json:"warm_misses"`
 	EntriesAdded     int           `json:"entries_added"`
 	VectorBytesAdded int64         `json:"vector_bytes_added"`
 	HeapDeltaBytes   int64         `json:"heap_delta_bytes"`
@@ -85,6 +89,9 @@ type vectorPhase struct {
 	SnapshotHits   int64         `json:"snapshot_hits"`
 	SnapshotMisses int64         `json:"snapshot_misses"`
 	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
+	WarmHits       int64         `json:"warm_hits"`
+	WarmMisses     int64         `json:"warm_misses"`
+	WarmLoad       time.Duration `json:"warm_load_ns"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
 	Scans          int64         `json:"scans"`
@@ -133,6 +140,9 @@ func phaseDelta(before, after vector.Stats) vectorPhase {
 		SnapshotHits:   after.SnapshotHits - before.SnapshotHits,
 		SnapshotMisses: after.SnapshotMisses - before.SnapshotMisses,
 		SnapshotLoad:   after.SnapshotLoad - before.SnapshotLoad,
+		WarmHits:       after.WarmHits - before.WarmHits,
+		WarmMisses:     after.WarmMisses - before.WarmMisses,
+		WarmLoad:       after.WarmLoad - before.WarmLoad,
 		Embeds:         after.Embeds - before.Embeds,
 		EmbedTotal:     after.EmbedTotal - before.EmbedTotal,
 		Scans:          after.Scans - before.Scans,

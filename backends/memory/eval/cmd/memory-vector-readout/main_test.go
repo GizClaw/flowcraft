@@ -31,12 +31,14 @@ func TestPhaseDeltaAndShares(t *testing.T) {
 		Queries: 3, SnapshotHits: 3, ScanTotal: 30 * time.Millisecond,
 		Embeds: 3, EmbedTotal: 300 * time.Millisecond, SortTotal: 3 * time.Millisecond,
 		EntriesScanned: 300, EntriesScored: 300, Scans: 3,
+		WarmHits: 1, WarmMisses: 1, WarmLoad: 4 * time.Second,
 	}
 	after := vector.Stats{
 		Queries: 5, SnapshotHits: 4, SnapshotMisses: 1, SnapshotLoad: 8 * time.Millisecond,
 		Scans: 5, ScanTotal: 50 * time.Millisecond, SortTotal: 5 * time.Millisecond,
 		Embeds: 5, EmbedTotal: 500 * time.Millisecond,
 		EntriesScanned: 500, EntriesScored: 500,
+		WarmHits: 3, WarmMisses: 1, WarmLoad: 9 * time.Second,
 	}
 	phase := phaseDelta(before, after)
 	if phase.Queries != 2 || phase.Scans != 2 || phase.EntriesScanned != 200 {
@@ -44,6 +46,11 @@ func TestPhaseDeltaAndShares(t *testing.T) {
 	}
 	if phase.ScanTotal != 20*time.Millisecond || phase.SnapshotLoad != 8*time.Millisecond {
 		t.Fatalf("phase = %+v", phase)
+	}
+	// The warm a deployment pays beside the queries is reported apart, so a
+	// reader never adds it to the load the queries paid.
+	if phase.WarmLoad != 5*time.Second || phase.WarmHits != 2 || phase.WarmMisses != 0 {
+		t.Fatalf("warm phase = %+v, want the warm's own delta", phase)
 	}
 	stages := map[string]stageReading{
 		"lane:vector": {Total: 500 * time.Millisecond, Count: 2},

@@ -37,9 +37,9 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 	if err := index.Rebuild(ctx, component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
 		t.Fatal(err)
 	}
-	// The warm a write starts materializes the table and accounts for the one
-	// load; the two reads below are then cache hits.
-	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.SnapshotMisses == 1 })
+	// The warm a write starts materializes the table; it is counted apart, so
+	// the two reads below are the serving path's hits.
+	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
 	if _, err := index.Search(ctx, component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +52,12 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 	if stats.Queries != 2 {
 		t.Fatalf("queries = %d", stats.Queries)
 	}
-	if stats.SnapshotHits != 2 || stats.SnapshotMisses != 1 {
-		t.Fatalf("snapshot hits/misses = %d/%d", stats.SnapshotHits, stats.SnapshotMisses)
+	if stats.SnapshotHits != 2 || stats.SnapshotMisses != 0 {
+		t.Fatalf("serving-path snapshot hits/misses = %d/%d: a write's warm is not a query's load",
+			stats.SnapshotHits, stats.SnapshotMisses)
+	}
+	if stats.WarmHits != 0 || stats.WarmMisses != 1 || stats.WarmLoad <= 0 {
+		t.Fatalf("warm hits/misses/load = %d/%d/%v", stats.WarmHits, stats.WarmMisses, stats.WarmLoad)
 	}
 	if stats.Embeds != 1 {
 		t.Fatalf("embeds = %d: only the text search may embed a query", stats.Embeds)
@@ -117,5 +121,40 @@ func TestFootprintFollowsCacheInvalidation(t *testing.T) {
 	index.invalidateSnapshots()
 	if footprint := index.Stats().Footprint; footprint != (Footprint{}) {
 		t.Fatalf("footprint after invalidation = %+v", footprint)
+	}
+}
+
+// TestStatsKeepsAQueryThatMaterializesOnTheServingPath pins the split from the
+// other side: dropping the cache without warming it leaves the next query to
+// materialize the table, and that read is the query's own.
+func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
+	runtime, model := fakeRuntime(t)
+	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
+	index.invalidateSnapshots()
+	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	stats := index.Stats()
+	if stats.SnapshotMisses != 1 || stats.SnapshotLoad <= 0 {
+		t.Fatalf("the query that materialized the table was not counted on the serving path: %+v", stats)
+	}
+	if stats.WarmMisses != 1 {
+		t.Fatalf("warm misses = %d: the query's miss must not land in the warm counters", stats.WarmMisses)
+	}
+	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if after := index.Stats(); after.SnapshotHits != 1 || after.SnapshotMisses != 1 {
+		t.Fatalf("second read = hits %d misses %d, want one hit", after.SnapshotHits, after.SnapshotMisses)
 	}
 }

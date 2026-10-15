@@ -256,7 +256,9 @@ func distinctScopes(scenarios []eval.Scenario) int {
 // scope pays for materializing its table, and that is the cost a warm
 // deployment avoids and a fresh process pays. A scope holds every conversation
 // of its tenant, so probing each conversation would report warm queries after
-// the first as if they were cold.
+// the first as if they were cold. A deployment that replays state its store
+// already holds starts a warm of its own while the question runs, so the row
+// reports the query's load and the warm's apart.
 func coldPass(
 	ctx context.Context,
 	memory *flowmemory.Assembly,
@@ -295,6 +297,8 @@ func coldPass(
 			Latency:          latency,
 			SnapshotLoad:     after.SnapshotLoad - before.SnapshotLoad,
 			SnapshotMisses:   after.SnapshotMisses - before.SnapshotMisses,
+			WarmLoad:         after.WarmLoad - before.WarmLoad,
+			WarmMisses:       after.WarmMisses - before.WarmMisses,
 			EntriesAdded:     after.Footprint.Entries - before.Footprint.Entries,
 			VectorBytesAdded: after.Footprint.VectorBytes - before.Footprint.VectorBytes,
 			HeapDeltaBytes:   deltaBytes(heapAfter, heapBefore),

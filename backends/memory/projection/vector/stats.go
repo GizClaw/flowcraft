@@ -9,11 +9,20 @@ import (
 // which vector tables it currently holds resident. It exists for diagnostics --
 // a harness reads it to attribute latency inside the lane and to size the
 // cache -- and reading it never changes what the lane serves.
+//
+// Serving-path counters and warm counters are apart on purpose. A background
+// warm pays the same read a query would, but a reader attributing a query's
+// latency must not see the warm's time as the query's: a write (and a replay
+// of state a store already holds) starts one warm per scope, and the lane
+// serves the queries between them.
 type Stats struct {
 	Queries        int64         `json:"queries"`
 	SnapshotHits   int64         `json:"snapshot_hits"`
 	SnapshotMisses int64         `json:"snapshot_misses"`
 	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
+	WarmHits       int64         `json:"warm_hits"`
+	WarmMisses     int64         `json:"warm_misses"`
+	WarmLoad       time.Duration `json:"warm_load_ns"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
 	Scans          int64         `json:"scans"`
@@ -44,6 +53,9 @@ type statsState struct {
 	snapshotHits atomic.Int64
 	snapshotMiss atomic.Int64
 	loadNanos    atomic.Int64
+	warmHits     atomic.Int64
+	warmMiss     atomic.Int64
+	warmNanos    atomic.Int64
 	embeds       atomic.Int64
 	embedNanos   atomic.Int64
 	scans        atomic.Int64
@@ -56,9 +68,8 @@ type statsState struct {
 
 func (state *statsState) recordQuery() { state.queries.Add(1) }
 
-// recordSnapshotLoad adds one table lookup. loaded is true when the table was
-// materialized off the store instead of served from the cache; the background
-// warm a write performs counts as a load too, because it pays the same read.
+// recordSnapshotLoad adds one table lookup a query paid. loaded is true when
+// the table was materialized off the store instead of served from the cache.
 func (state *statsState) recordSnapshotLoad(elapsed time.Duration, loaded bool) {
 	state.loadNanos.Add(int64(elapsed))
 	if loaded {
@@ -66,6 +77,17 @@ func (state *statsState) recordSnapshotLoad(elapsed time.Duration, loaded bool) 
 		return
 	}
 	state.snapshotHits.Add(1)
+}
+
+// recordWarmLoad adds one background warm. It stays out of the serving-path
+// counters above so that a query's own load is what those report.
+func (state *statsState) recordWarmLoad(elapsed time.Duration, loaded bool) {
+	state.warmNanos.Add(int64(elapsed))
+	if loaded {
+		state.warmMiss.Add(1)
+		return
+	}
+	state.warmHits.Add(1)
 }
 
 func (state *statsState) recordEmbed(elapsed time.Duration) {
@@ -91,6 +113,12 @@ func (index *Index) recordQuery() {
 func (index *Index) recordSnapshotLoad(elapsed time.Duration, loaded bool) {
 	if index != nil && index.stats != nil {
 		index.stats.recordSnapshotLoad(elapsed, loaded)
+	}
+}
+
+func (index *Index) recordWarmLoad(elapsed time.Duration, loaded bool) {
+	if index != nil && index.stats != nil {
+		index.stats.recordWarmLoad(elapsed, loaded)
 	}
 }
 
@@ -122,6 +150,9 @@ func (index *Index) Stats() Stats {
 	out.SnapshotHits = state.snapshotHits.Load()
 	out.SnapshotMisses = state.snapshotMiss.Load()
 	out.SnapshotLoad = time.Duration(state.loadNanos.Load())
+	out.WarmHits = state.warmHits.Load()
+	out.WarmMisses = state.warmMiss.Load()
+	out.WarmLoad = time.Duration(state.warmNanos.Load())
 	out.Embeds = state.embeds.Load()
 	out.EmbedTotal = time.Duration(state.embedNanos.Load())
 	out.Scans = state.scans.Load()
