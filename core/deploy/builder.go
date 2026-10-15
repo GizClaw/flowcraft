@@ -23,11 +23,12 @@ import (
 // an explicit [resource.Registry]. The registry is owned by the caller;
 // Builder never touches global state.
 type Builder struct {
-	registry          *resource.Registry
-	loader            *resource.Loader
-	resolver          *resource.ReferenceResolver
-	secretCacheTTL    time.Duration
-	externalResources []ExternalResource
+	registry            *resource.Registry
+	loader              *resource.Loader
+	resolver            *resource.ReferenceResolver
+	secretCacheTTL      time.Duration
+	secretCacheCapacity int
+	externalResources   []ExternalResource
 }
 
 // BuilderOption configures a Builder.
@@ -55,6 +56,15 @@ func WithResolver(resolver *resource.ReferenceResolver) BuilderOption {
 // minute); a negative value disables caching.
 func WithSecretCacheTTL(ttl time.Duration) BuilderOption {
 	return func(b *Builder) { b.secretCacheTTL = ttl }
+}
+
+// WithSecretCacheCapacity bounds how many secret names the lazy-lookup
+// cache holds at once. Zero keeps the default (see
+// [resource.WithCacheCapacity]); raise it for a deployment that
+// resolves more distinct names than that within one TTL window, so
+// they are not re-fetched from the backend.
+func WithSecretCacheCapacity(n int) BuilderOption {
+	return func(b *Builder) { b.secretCacheCapacity = n }
 }
 
 // NewBuilder returns a Builder over registry. A nil registry yields an
@@ -266,7 +276,8 @@ func (b *Builder) effectiveResolver(
 		ttl = defaultSecretCacheTTL
 	}
 	for id, store := range stores {
-		cached[id] = resource.NewCachingSecretStore(store, ttl)
+		cached[id] = resource.NewCachingSecretStore(store, ttl,
+			resource.WithCacheCapacity(b.secretCacheCapacity))
 	}
 	secrets := resource.NewSecretResolver(cached, defaultStore)
 	return base.WithScheme(secrets.Scheme()), secrets, nil
