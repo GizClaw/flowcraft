@@ -148,13 +148,13 @@ func (s *Store) Rollback(ctx context.Context, id string) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	backup := filepath.Join(root, backupsDir, id)
+	backup := backupPath(root, id)
 	if info, err := os.Stat(backup); err != nil || !info.IsDir() {
 		return Summary{}, errdefs.NotFoundf(
 			"plugin install: no rollback snapshot for %q", id)
 	}
 	target := filepath.Join(root, id)
-	trash := target + ".rollback-trash"
+	trash := trashPath(root, id)
 	_ = os.RemoveAll(trash)
 	if _, err := os.Stat(target); err == nil {
 		if err := os.Rename(target, trash); err != nil {
@@ -173,7 +173,7 @@ func (s *Store) Rollback(ctx context.Context, id string) (Summary, error) {
 }
 
 func (s *Store) snapshot(root, id, target string) error {
-	backup := filepath.Join(root, backupsDir, id)
+	backup := backupPath(root, id)
 	_ = os.RemoveAll(backup)
 	if err := os.MkdirAll(filepath.Dir(backup), 0o700); err != nil {
 		return errdefs.Validationf("plugin install: backup dir: %v", err)
@@ -185,12 +185,41 @@ func (s *Store) snapshot(root, id, target string) error {
 }
 
 func (s *Store) restore(root, id, target string) error {
-	backup := filepath.Join(root, backupsDir, id)
+	backup := backupPath(root, id)
 	if _, err := os.Stat(backup); err != nil {
 		return nil
 	}
 	_ = os.RemoveAll(target)
 	return copyDir(backup, target)
+}
+
+// backupPath is the rollback snapshot of one plugin, and trashPath is
+// where the copy a rollback replaces is parked while the two swap. Both
+// live under .backups, which the scan never enters: a swap directory
+// sitting in the plugin root would be scanned as a plugin of its own,
+// and a crash between the two renames would leave that copy looking
+// like the installed plugin.
+func backupPath(root, id string) string {
+	return filepath.Join(root, backupsDir, id)
+}
+
+func trashPath(root, id string) string {
+	return filepath.Join(root, backupsDir, id+".trash")
+}
+
+// CheckUninstall reports whether id can be uninstalled at all, with the
+// same verdict [Store.Uninstall] acts on: an invalid id, an unknown
+// plugin, or a builtin, which is refused here as well. It exists for the
+// caller that has to stop the plugin's process before the files go away:
+// a refusal must arrive while the process is still running, because
+// stopping it first and failing afterwards leaves a plugin the record
+// calls enabled without the process that was serving it.
+func (s *Store) CheckUninstall(id string) error {
+	if err := ValidateID(id); err != nil {
+		return err
+	}
+	_, err := s.uninstallTarget(id)
+	return err
 }
 
 // UninstallOptions selects what survives an uninstall. Both flags are
@@ -229,8 +258,11 @@ func (s *Store) Uninstall(
 	if err := os.RemoveAll(dir); err != nil {
 		return errdefs.Validationf("plugin uninstall: remove %s: %v", id, err)
 	}
-	// Snapshots live beside the copy they belong to.
-	_ = os.RemoveAll(filepath.Join(filepath.Dir(dir), backupsDir, id))
+	// Snapshots live beside the copy they belong to — the snapshot and,
+	// if a rollback died halfway, whatever it parked while swapping.
+	root := filepath.Dir(dir)
+	_ = os.RemoveAll(backupPath(root, id))
+	_ = os.RemoveAll(trashPath(root, id))
 	// Gathered before the lock: the fail-closed rebuild of an unreadable
 	// state file needs the surviving set, and scanning takes the lock
 	// this write holds.

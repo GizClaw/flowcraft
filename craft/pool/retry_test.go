@@ -273,3 +273,35 @@ func TestDoPausesBetweenAttempts(t *testing.T) {
 		t.Fatalf("attempts ran %v apart, want at least %v", gap, retryBackoff)
 	}
 }
+
+// TestDoAlwaysRunsTheFirstAttempt pins the boundary of the window: it
+// bounds the retries that follow a guard, and it is spent as the call
+// runs, but it never decides that the first — the caller's own —
+// resolution is not worth making. A window that is already spent when
+// the loop starts (a retry budget of nanoseconds, a window closed by
+// the clock between two statements) used to answer ErrNotReady without
+// asking for a member at all, which is the one answer the caller cannot
+// act on: the key it named was not consulted.
+func TestDoAlwaysRunsTheFirstAttempt(t *testing.T) {
+	h := newHarness(t, func(spec *Spec[fakeMember]) {
+		// A window that is spent by the time the loop starts.
+		spec.RetryWindow = time.Nanosecond
+	})
+	k := Key{"workspace", "/ws/spent-window"}
+	pooled := h.pooled(k, 0)
+
+	var calls int
+	err := h.pool.Do(context.Background(), k, nil, func(m *fakeMember) error {
+		calls++
+		if m != pooled {
+			t.Fatalf("fn got member %p, want the pooled %p", m, pooled)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Do = %v, want nil: the first attempt is always made", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fn calls = %d, want 1", calls)
+	}
+}

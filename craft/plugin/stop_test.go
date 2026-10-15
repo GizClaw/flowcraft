@@ -321,7 +321,7 @@ func TestHostOnStoppedReportsTerminalProcessLoss(t *testing.T) {
 	// The host leaves the plugin alone: no stop was performed, so the
 	// entry is still running and its tools are still projected.
 	plugin.host.mu.Lock()
-	_, running := plugin.host.sources["hello"]
+	_, running := plugin.host.live["hello"]
 	plugin.host.mu.Unlock()
 	if !running {
 		t.Fatal("the loss dropped the host's record of the plugin")
@@ -362,5 +362,138 @@ func TestHostOnStoppedSilentForTransientProcessLoss(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if got := events.snapshot(); len(got) != 0 {
 		t.Fatalf("a transient process loss was reported as %v, want silence", got)
+	}
+}
+
+// holdFirstStop subscribes a reporting hook that stops in its first
+// delivery of reason until the returned release channel is closed, so a
+// test can pin what the host does while one report is being delivered.
+// Every delivery is recorded, the held one included.
+func holdFirstStop(
+	reason StopReason,
+	events *stopEvents,
+) (hook func(string, StopReason), entered <-chan struct{}, release chan struct{}) {
+	enteredCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var hold sync.Once
+	hook = func(id string, got StopReason) {
+		if got == reason {
+			hold.Do(func() {
+				close(enteredCh)
+				<-releaseCh
+			})
+		}
+		events.record(id, got)
+	}
+	return hook, enteredCh, releaseCh
+}
+
+// TestHostOnStoppedReportsOneStopPerProcess covers the seam between a
+// process that gave up on its own and the host stopping that same
+// process. They are one event — the process is gone either way — so the
+// application hears it once: whichever side records it first narrates
+// it, and the other stays silent about that stop. The stop's own half
+// still runs: the plugin leaves the live set, the record goes disabled,
+// and the token of the process being let go of is revoked.
+func TestHostOnStoppedReportsOneStopPerProcess(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writeContributionTree(t, root, "hello")
+	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
+	ctx := context.Background()
+
+	// The loss is held in the middle of its delivery while the disable
+	// runs, which is the interleaving the two share.
+	events := &stopEvents{}
+	hook, entered, release := holdFirstStop(StopFailed, events)
+	host.OnStopped(hook)
+	var mu sync.Mutex
+	var internal []string
+	host.SetPluginHooks(nil, func(id string) {
+		mu.Lock()
+		internal = append(internal, id)
+		mu.Unlock()
+	})
+	if err := host.SetEnabled(ctx, "hello", true); err != nil {
+		t.Fatalf("enable hello: %v", err)
+	}
+
+	go host.notifyLost("hello")
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loss never reached its delivery")
+	}
+	if err := host.SetEnabled(ctx, "hello", false); err != nil {
+		t.Fatalf("disable hello: %v", err)
+	}
+	close(release)
+
+	want := []string{"hello:" + string(StopFailed)}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := events.snapshot(); len(got) > 0 {
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("stop events = %v, want %v", got, want)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no stop report for a plugin whose process gave up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	entry, ok := host.Store().Entry("hello")
+	if !ok || entry.Enabled {
+		t.Fatalf("entry after the stop = %+v, %v, want it recorded disabled",
+			entry, ok)
+	}
+	if host.isLive("hello") {
+		t.Fatal("the host still holds a process for a plugin it stopped")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(internal) != 1 || internal[0] != "hello" {
+		t.Fatalf("internal stopped hook ran for %v, want one stop of hello", internal)
+	}
+}
+
+// TestHostOnStoppedIgnoresALossDuringTheStopsDelivery covers the other
+// order of the same seam: a loss that arrives while the host's own stop
+// is being reported is not a second event. The stop already took the
+// plugin out of the live set, so there is no process left for the loss
+// to be about.
+func TestHostOnStoppedIgnoresALossDuringTheStopsDelivery(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writeContributionTree(t, root, "hello")
+	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
+	ctx := context.Background()
+
+	events := &stopEvents{}
+	hook, entered, release := holdFirstStop(StopRequested, events)
+	host.OnStopped(hook)
+	if err := host.SetEnabled(ctx, "hello", true); err != nil {
+		t.Fatalf("enable hello: %v", err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- host.SetEnabled(ctx, "hello", false) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop never reached its delivery")
+	}
+	host.notifyLost("hello")
+	close(release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("disable hello: %v", err)
+	}
+
+	want := []string{"hello:" + string(StopRequested)}
+	if got := events.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stop events = %v, want %v", got, want)
 	}
 }

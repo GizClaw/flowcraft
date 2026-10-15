@@ -92,11 +92,10 @@ type Spec[T any] struct {
 	Busy func(v *T) bool
 
 	// WaitClosed blocks until the member's teardown finished, or ctx is
-	// done (returning ctx.Err()). It must also block for a member whose
-	// teardown has not begun yet: the pool waits on a member it
-	// invalidated but has not closed, and on one whose retirement is
-	// still pending. Nil means Close tears the member down
-	// synchronously and there is nothing to wait for.
+	// done (returning ctx.Err()). The pool calls it right after Close,
+	// so it never has to answer for a member whose teardown has not
+	// begun. Nil means Close tears the member down synchronously: its
+	// return is the application's word that the member is down.
 	//
 	// Teardown is expected to finish on its own: the pool waits for a
 	// retired member without a deadline of its own, as do the callers
@@ -164,7 +163,7 @@ type Pool[T any] struct {
 	// last work. Acquire waits them out instead of assembling a second
 	// member for the key: two generations serving one key at once is
 	// the failure mode this map exists for.
-	retiring map[Key]*T
+	retiring map[Key]*entry[T]
 	// assembling holds the in-flight assembly per key so a burst of
 	// callers shares one build instead of racing — and so one broken
 	// assembly is reported once rather than retried per waiter (see
@@ -190,6 +189,21 @@ type entry[T any] struct {
 	// goes away together with the member, so a retired member is never
 	// wired late and stays collectable.
 	installed bool
+	// closed fires once the member's teardown finished: Close returned,
+	// and WaitClosed — where the application has one — completed after
+	// it. Every wait in the pool is on this signal rather than on the
+	// application's hook, which is what makes waiting for a member
+	// independent of where its Close happens to run: a member whose
+	// teardown is in flight, one whose teardown has not begun yet and
+	// one already down are all waited for the same way.
+	closed chan struct{}
+}
+
+// newEntry starts the bookkeeping for a member the pool is about to
+// publish. The teardown signal comes with it: a member is handed out,
+// and waited for, with the same entry.
+func newEntry[T any](v *T) *entry[T] {
+	return &entry[T]{value: v, closed: make(chan struct{})}
 }
 
 // assemblyCall is one in-flight assembly shared by every Acquire caller
@@ -235,9 +249,11 @@ func New[T any](spec Spec[T]) (*Pool[T], error) {
 // hand one out are the ones that wait for it instead.
 //
 // It takes no reference: Ensure is the read path, called once per unit
-// of work, and the member it returns is the pool's to keep or retire.
-// A caller that must hold the member against retirement uses Acquire
-// and Release instead.
+// of work, and the member it returns is the pool's to keep or retire —
+// a borrow never holds a retirement back, so a member this call
+// assembled can be retired by the key's next invalidation while the
+// caller is still using it. A caller that must hold the member against
+// retirement uses Acquire and Release instead.
 //
 // A member it returns has Installed applied, whether it came out of the
 // pool or from an assembly this call started. A nil ctx is treated as
@@ -258,7 +274,12 @@ func (p *Pool[T]) Ensure(ctx context.Context, k Key) (*T, error) {
 		p.install(k, e.value)
 		return e.value, nil
 	}
-	return p.Acquire(ctx, k)
+	v, err := p.serve(ctx, k, false)
+	if err != nil {
+		return nil, err
+	}
+	p.install(k, v)
+	return v, nil
 }
 
 // Acquire returns the member that serves k, assembling one if needed,
@@ -270,7 +291,7 @@ func (p *Pool[T]) Ensure(ctx context.Context, k Key) (*T, error) {
 //
 // A nil ctx is treated as context.Background().
 func (p *Pool[T]) Acquire(ctx context.Context, k Key) (*T, error) {
-	v, err := p.acquire(ctx, k)
+	v, err := p.serve(ctx, k, true)
 	if err != nil {
 		return nil, err
 	}
@@ -278,11 +299,18 @@ func (p *Pool[T]) Acquire(ctx context.Context, k Key) (*T, error) {
 	return v, nil
 }
 
-// acquire is Acquire's pool half: it resolves or assembles the member
-// and leaves the configure-once wiring to the caller. It is also the
-// one place a call that named no key is refused, so an empty kind or id
-// cannot assemble a member for whatever it cleans to.
-func (p *Pool[T]) acquire(ctx context.Context, k Key) (*T, error) {
+// serve is the pool half both entrance points share: it resolves or
+// assembles the member for one key and leaves the configure-once wiring
+// to the caller. It is also the one place a call that named no key is
+// refused, so an empty kind or id cannot assemble a member for whatever
+// it cleans to.
+//
+// checkout says whether the caller takes a reference to the member:
+// Acquire does, and owes a Release, while Ensure borrows without one.
+// The distinction is the whole of the reference protocol — a reference
+// is the only thing that holds a member against its invalidation — so
+// it is decided here, at the one place a member changes hands.
+func (p *Pool[T]) serve(ctx context.Context, k Key, checkout bool) (*T, error) {
 	if !k.Valid() {
 		return nil, ErrNoKey
 	}
@@ -292,20 +320,21 @@ func (p *Pool[T]) acquire(ctx context.Context, k Key) (*T, error) {
 	for {
 		p.mu.Lock()
 		if e := p.pooled[k]; e != nil {
-			e.refs++
+			if checkout {
+				e.refs++
+			}
 			v := e.value
 			p.mu.Unlock()
 			return v, nil
 		}
-		if v := p.retiring[k]; v != nil {
+		if e := p.retiring[k]; e != nil {
 			p.mu.Unlock()
-			if err := p.waitClosed(ctx, v); err != nil {
+			// The member on its way out is waited for, never handed
+			// out: it belongs to the previous generation, and the
+			// signal this waits on is set once its teardown finished.
+			if err := p.waitMember(ctx, e); err != nil {
 				return nil, err
 			}
-			// Teardown finished. Clearing the entry here (whoever sees
-			// it first does) is what keeps the next pass assembling a
-			// replacement instead of waiting on a member that is gone.
-			p.forgetRetiring(k, v)
 			continue
 		}
 		call := p.assembling[k]
@@ -316,7 +345,7 @@ func (p *Pool[T]) acquire(ctx context.Context, k Key) (*T, error) {
 			}
 			p.assembling[k] = call
 			p.mu.Unlock()
-			return p.assembleShared(ctx, k, call)
+			return p.assembleShared(ctx, k, call, checkout)
 		}
 		p.mu.Unlock()
 		select {
@@ -356,7 +385,10 @@ func (p *Pool[T]) Current(k Key) *T {
 	if e := p.pooled[k]; e != nil {
 		return e.value
 	}
-	return p.retiring[k]
+	if e := p.retiring[k]; e != nil {
+		return e.value
+	}
+	return nil
 }
 
 // Stale reports whether the generation serving k — or the one that
@@ -376,23 +408,23 @@ func (p *Pool[T]) Stale(k Key) bool {
 	return ok
 }
 
-// Release drops one Acquire reference. The member is retired when its
-// last reference goes: it leaves the pool and its teardown begins —
-// immediately, or after the work it still has in flight ends, exactly
-// like an invalidated member. Releasing a member this pool does not
-// hold is a no-op, so a double Release cannot retire a generation
-// twice.
+// Release drops one Acquire reference. A reference is what holds a
+// member against the retirement its invalidation asked for — it is not
+// what keeps the member alive — so the release that takes the last one
+// retires the member when the key is stale, and leaves it pooled when
+// it is not: a member nothing invalidated is the pool's to keep, and
+// the next call is served by the same generation.
 //
-// A released member is not stale: nobody is waiting for its
-// replacement, and the next Ensure assembles one if the key is wanted
-// again.
+// Releasing a member this pool does not hold, and releasing one it only
+// lent out — a member whose references are not out with anyone — are
+// both no-ops, so a double Release cannot retire a generation twice.
 func (p *Pool[T]) Release(k Key, v *T) {
 	if v == nil || !k.Valid() {
 		return
 	}
 	p.mu.Lock()
 	e := p.pooled[k]
-	if e == nil || e.value != v {
+	if e == nil || e.value != v || e.refs == 0 {
 		p.mu.Unlock()
 		return
 	}
@@ -401,12 +433,17 @@ func (p *Pool[T]) Release(k Key, v *T) {
 		p.mu.Unlock()
 		return
 	}
-	delete(p.pooled, k)
-	closeNow := p.trackRetiringLocked(k, v)
-	p.mu.Unlock()
-	if closeNow {
-		p.closeMember(k, v)
+	if _, stale := p.stale[k]; !stale {
+		// Nothing asked for a rebuild: the member stays pooled and its
+		// teardown waits for an invalidation, exactly as it would have
+		// if this call had never checked it out.
+		p.mu.Unlock()
+		return
 	}
+	delete(p.pooled, k)
+	p.retireLocked(k, e)
+	p.mu.Unlock()
+	p.closeMember(k, e)
 }
 
 // Settle reports that a member became idle: its last unit of work
@@ -430,11 +467,9 @@ func (p *Pool[T]) Settle(k Key, v *T) {
 		return
 	}
 	delete(p.pooled, k)
-	closeNow := p.trackRetiringLocked(k, v)
+	p.retireLocked(k, e)
 	p.mu.Unlock()
-	if closeNow {
-		p.closeMember(k, v)
-	}
+	p.closeMember(k, e)
 }
 
 // Invalidate marks one key's member stale: the rebuild path. An idle
@@ -470,10 +505,11 @@ func (p *Pool[T]) Invalidate(ctx context.Context, k Key) {
 	busy := p.busy(v)
 
 	p.mu.Lock()
-	var closeNow bool
+	removed := false
 	if cur := p.pooled[k]; cur == e && !busy {
 		delete(p.pooled, k)
-		closeNow = p.trackRetiringLocked(k, v)
+		removed = true
+		p.retireLocked(k, e)
 	}
 	p.mu.Unlock()
 	// The reason names what asked for the rebuild, not what is being
@@ -483,10 +519,10 @@ func (p *Pool[T]) Invalidate(ctx context.Context, k Key) {
 		attribute.String("reason", reasonFrom(ctx)),
 		attribute.String("key", k.String()),
 		attribute.Bool("in_turn", busy),
-		attribute.Bool("deferred", !closeNow),
+		attribute.Bool("deferred", !removed),
 		attribute.String("member_ptr", fmt.Sprintf("%p", v)))
-	if closeNow {
-		p.closeMember(k, v)
+	if removed {
+		p.closeMember(k, e)
 	}
 }
 
@@ -551,67 +587,82 @@ func (p *Pool[T]) install(k Key, v *T) {
 }
 
 // closeMember begins a member's teardown and, when there is anything to
-// wait for, watches for its completion so the pool forgets the retiring
-// entry without anyone asking. It is the only path that calls the
-// application's Close, and it never runs under the pool lock — a Close
-// that blocks (a drain that waits for a lock, a store that closes
-// slowly) must not hold the pool up.
-func (p *Pool[T]) closeMember(k Key, v *T) {
-	p.spec.Close(v)
+// wait for, watches for its completion, so the pool learns that the
+// member is down — and wakes everyone waiting for it — without anyone
+// asking. It is the only path that calls the application's Close, and
+// it never runs under the pool lock: a Close that blocks (a drain that
+// waits for a lock, a store that closes slowly) must not hold the pool
+// up, and its return must not be mistaken for a teardown that has
+// already finished.
+func (p *Pool[T]) closeMember(k Key, e *entry[T]) {
+	p.spec.Close(e.value)
 	if p.spec.WaitClosed == nil {
-		p.forgetRetiring(k, v)
+		// No hook to ask: Close returning is the application's word
+		// that the member is down.
+		p.finishRetiring(k, e)
 		return
 	}
 	go func() {
 		// This wait has no deadline of its own: the drain ends with the
 		// key's last unit of work, and there is no caller to cancel it.
-		p.forgetRetiringAfterWait(k, v)
+		ctx := context.WithoutCancel(context.Background())
+		_ = p.spec.WaitClosed(ctx, e.value)
+		p.finishRetiring(k, e)
 	}()
 }
 
-// forgetRetiringAfterWait waits for a retiring member's teardown and
-// then drops its entry.
-func (p *Pool[T]) forgetRetiringAfterWait(k Key, v *T) {
-	ctx := context.WithoutCancel(context.Background())
-	_ = p.spec.WaitClosed(ctx, v)
-	p.forgetRetiring(k, v)
-}
-
-// forgetRetiring drops the retiring entry for a member whose teardown
-// finished, so the next Acquire assembles its replacement instead of
-// waiting on a member that is already gone. Entries are dropped by
-// whoever observes the completion first; the guard makes that idempotent.
-func (p *Pool[T]) forgetRetiring(k Key, v *T) {
+// finishRetiring records that a retiring member's teardown finished: the
+// entry is dropped — so the next caller assembles its replacement
+// instead of waiting on a member that is already gone — and the entry's
+// signal is set, waking everyone waiting on that member. The guards make
+// both idempotent, so the paths that can observe the same completion do
+// not have to coordinate.
+//
+// The drop comes before the wake-up on purpose: a woken waiter looks at
+// the key again, and it should not find the member it just finished
+// waiting for still recorded — that reads as "wait on this one", and it
+// would spin until the drop landed instead.
+func (p *Pool[T]) finishRetiring(k Key, e *entry[T]) {
 	p.mu.Lock()
-	if p.retiring[k] == v {
+	if p.retiring[k] == e {
 		delete(p.retiring, k)
 	}
 	p.mu.Unlock()
+	close(e.closed)
 }
 
-// trackRetiringLocked records a member that is leaving the pool. The
-// caller must hold the lock, and must have removed the member from the
-// pool first. It returns true when the member's teardown should begin
-// after unlocking; false means a retirement for the key is already
-// recorded — one member is being accounted for twice — and starting
-// teardown is the other path's business.
-func (p *Pool[T]) trackRetiringLocked(k Key, v *T) bool {
+// retireLocked records a member that is leaving the pool. The caller
+// must hold the lock, must have removed the member from the pool first,
+// and starts its teardown after unlocking.
+func (p *Pool[T]) retireLocked(k Key, e *entry[T]) {
 	if p.retiring == nil {
-		p.retiring = make(map[Key]*T)
+		p.retiring = make(map[Key]*entry[T])
 	}
 	if p.retiring[k] != nil {
-		return false
+		// One member serves a key at a time, so a key is never seen
+		// retiring two of them; should that ever happen, the second
+		// member's teardown still starts — a member whose Close never
+		// runs is a leak, which is worse than a bookkeeping accident —
+		// while the recorded retirement, the one the key's waiters are
+		// waiting on, stays as it is.
+		return
 	}
-	p.retiring[k] = v
-	return true
+	p.retiring[k] = e
 }
 
-// waitClosed waits for a retiring member's teardown, within ctx.
-func (p *Pool[T]) waitClosed(ctx context.Context, v *T) error {
-	if p.spec.WaitClosed == nil {
+// waitMember blocks until a member's teardown finished, within ctx.
+// Every wait in the pool goes through the entry's own signal, so the
+// answer does not depend on where the application's Close happens to
+// run: a teardown in flight, one that has not begun yet and one that is
+// over are waited for the same way, and a Close that has not returned
+// yet cannot read as a finished teardown.
+func (p *Pool[T]) waitMember(ctx context.Context, e *entry[T]) error {
+	select {
+	case <-e.closed:
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return p.spec.WaitClosed(ctx, v)
 }
 
 // busy asks whether the member still has work in flight. It runs
@@ -660,8 +711,13 @@ func (p *Pool[T]) open(ctx context.Context, k Key) (*T, error) {
 // caller installed one meanwhile), and every waiting Acquire is woken.
 // The pool is updated before the wake-up, so a follower either finds
 // the pooled member on its next pass or replays the shared error.
+//
+// checkout is the leader's own: a member published by an Acquire carries
+// that caller's reference, while one published by Ensure carries none —
+// publication itself is not a hand-out, and a reference nobody owes a
+// Release for would keep the member from ever retiring.
 func (p *Pool[T]) assembleShared(
-	ctx context.Context, k Key, call *assemblyCall,
+	ctx context.Context, k Key, call *assemblyCall, checkout bool,
 ) (v *T, err error) {
 	// One exit point publishes the result: the in-flight entry goes away,
 	// the error is recorded, and the waiters are released, whatever the
@@ -679,7 +735,9 @@ func (p *Pool[T]) assembleShared(
 	}
 	p.mu.Lock()
 	if e := p.pooled[k]; e != nil {
-		e.refs++
+		if checkout {
+			e.refs++
+		}
 		existing := e.value
 		p.mu.Unlock()
 		// The freshly assembled member never reached the pool and has no
@@ -692,7 +750,11 @@ func (p *Pool[T]) assembleShared(
 	// A freshly assembled member is current: whatever invalidation the
 	// key had seen is answered by this generation.
 	delete(p.stale, k)
-	p.pooled[k] = &entry[T]{value: v, refs: 1}
+	e := newEntry(v)
+	if checkout {
+		e.refs = 1
+	}
+	p.pooled[k] = e
 	p.mu.Unlock()
 	return v, nil
 }

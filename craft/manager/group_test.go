@@ -74,6 +74,71 @@ func (r *countingRunner) Run(context.Context, *craft.Craft) error {
 	return nil
 }
 
+// TestGroupRunReclaimsWhatItStarted pins what Run leaves behind when one
+// instance cannot start. Run returning means the group is not running,
+// so the instances that did start have to be stopped: nothing else
+// reaches them, and each one holds its Craft, its goroutines and its
+// single-instance lock. The caller's context cannot be what stops them,
+// because it may be the very thing that made the failing instance fail.
+func TestGroupRunReclaimsWhatItStarted(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dataDir := t.TempDir()
+	group, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Paths:          Paths{DataDir: dataDir},
+			Lock:           true,
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+		// The definition is not there, so this instance cannot start —
+		// after alpha is already up, which is the half that matters.
+		Spec{ID: "broken", Options: Options{
+			DefinitionPath: filepath.Join(root, "broken", "craft.yaml"),
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup: %v", err)
+	}
+	runner := &countingRunner{}
+	if err := group.Run(context.Background(), runner); err == nil {
+		t.Fatal("Run reported success for a group whose instance cannot start")
+	}
+	// Run never got as far as the runner: the start failed first.
+	if runner.count != 0 {
+		t.Fatalf("runner ran %d times after a failed start, want 0", runner.count)
+	}
+	for _, info := range group.Instances() {
+		if info.State == StateRunning || info.State == StateStarting {
+			t.Fatalf("instance %s was left in state %s by Run", info.ID, info.State)
+		}
+	}
+	// The reclaim is complete, not just visible in the states: the
+	// single-instance lock alpha took is free again, which a second
+	// manager over the same root and data directory proves by taking it.
+	rebuild, err := NewGroup(GroupOptions{Root: root},
+		Spec{ID: "alpha", Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Paths:          Paths{DataDir: dataDir},
+			Lock:           true,
+			Capabilities:   []craft.Capability{testCapability{}},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewGroup after the reclaim: %v", err)
+	}
+	if err := rebuild.StartAll(context.Background()); err != nil {
+		t.Fatalf("start after the reclaim: %v", err)
+	}
+	if err := rebuild.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	if err := rebuild.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 func TestGroupRunAndMaxInstances(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

@@ -263,7 +263,13 @@ func (g *Group) Run(ctx context.Context, runner Runner) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if err := g.StartAll(runCtx); err != nil {
-		return err
+		// Run returning means the group is not running: the instances
+		// that did start must not be left behind holding their Craft,
+		// their goroutines and their single-instance locks with no
+		// runner that reaches them. The stop runs on a context of its
+		// own, because the caller's may be the very thing that failed.
+		stopErr := g.StopAll(context.WithoutCancel(ctx))
+		return errors.Join(err, stopErr)
 	}
 	var wait sync.WaitGroup
 	var mu sync.Mutex

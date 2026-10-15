@@ -589,7 +589,12 @@ is a loss that races the host's own close, or one the enable in flight
 rolled back on, where the rollback is the report. A loss that arrives
 while an enable is waiting is held for that call: if the enable stands,
 the loss is reported once the call ends, so a plugin is never recorded
-enabled with a server that gave up and nothing said about it.
+enabled with a server that gave up and nothing said about it. A loss that
+arrives while the host is stopping that same process is one event with
+that stop, reported once, as whichever side recorded it first — the stop
+the application asked for, or the loss that got there first — while the
+host's own half runs either way: the process leaves the live set, and
+the token minted for it is revoked.
 
 Enabling is an answer rather than a spawn: `plugin.Host.SetEnabled`
 waits for the plugin's MCP servers, bounded by
@@ -604,6 +609,10 @@ is not a failure of enable: the wait gives up at the timeout, the entry
 is recorded enabled, and the source keeps reconnecting. A plugin whose
 enable is in flight is what narrates its own failure, so the failure the
 rollback answers is not reported a second time through `OnStopped`.
+The wait covers every server the manifest declares: `mcp.required` marks
+a server the plugin cannot run without for the MCP layer's own
+reporting, and says nothing about the enable — a plugin whose declared
+server cannot start is refused whichever way that flag is set.
 `Host.Start` does not wait: it replays what a previous session recorded,
 and an application's startup must not depend on a plugin's process.
 

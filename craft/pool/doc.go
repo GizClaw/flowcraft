@@ -29,7 +29,20 @@
 //     teardown instead of handing out one that is on its way out, and
 //     the caller owes a Release.
 //
+// What a reference buys is not the member's life but its stay: a member
+// is retired when its key is invalidated — at once for an idle one,
+// once the work it kept alive ends for a busy one, and at the last
+// reference for one that is still checked out. A member nothing
+// invalidated is the pool's to keep, so the release that takes the last
+// reference leaves it pooled and the next caller is served by the same
+// generation. The pool owns that decision; Ensure, which takes no
+// reference, only ever borrows against it.
+//
 // A key never has two members at once. While one drains, Acquire
 // waits; while one is being assembled, concurrent callers share the
-// single assembly and its error.
+// single assembly and its error. A member's teardown is waited for
+// through the pool's own record of it, so "Close returned" and
+// "teardown finished" stay distinct for the application too: the
+// signal is set once the application's WaitClosed, where it has one,
+// has finished.
 package pool

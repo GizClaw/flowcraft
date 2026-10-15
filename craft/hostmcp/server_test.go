@@ -55,7 +55,7 @@ func TestServerAuthAndOrigin(t *testing.T) {
 	if response := postMCP(t, server.URL(), "bogus", ""); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("bad token status = %d, want 401", response.StatusCode)
 	}
-	token, err := tokens.Mint(Identity{PluginID: "hello"})
+	token, _, err := tokens.Mint(Identity{PluginID: "hello"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
