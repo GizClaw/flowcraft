@@ -5,8 +5,12 @@ Evaluation module for `backends/memory`. It owns the whole eval surface:
 - the `eval` package (scenario model, LoCoMo/LongMemEval loaders, `Run` /
   `RunAll`, baseline comparison), and
 - the runners under `cmd/`: `memory-eval` (dataset run, optionally against a
-  live inference provider through a deploy document) and `memory-eval-diag`
-  (per-question retrieval diagnostics).
+  live inference provider through a deploy document), `memory-eval-diag`
+  (per-question retrieval diagnostics), and the two store readings that never
+  call a provider — `memory-fact-density` (how densely a derivation wrote:
+  facts per commit, and what a similarity floor or merge would leave of it)
+  and `memory-fact-diff` (what a second derivation of one corpus holds
+  differently, see "Comparing two derivations").
 
 It is its own Go module so that host wiring (`core/deploy`, provider drivers)
 never becomes a dependency of the `backends/memory` library module.
@@ -479,6 +483,49 @@ go run ./cmd/memory-eval-diag -deploy ./deploy.yaml -env-file .env \
   reports how much of the packed evidence arrived as raw text rather than as a
   derived item's provenance, and reports how much of the packed set committed
   text alone would have found (`by-text`, see "Two grading modes").
+
+## Comparing two derivations
+
+A re-derivation writes one corpus a second time: a different extractor prompt, a
+batch budget, a repair after an `AlgorithmVersion` bump. The question it raises
+is which claims the new write actually changed, and `memory-fact-diff` answers it
+by reading both stores and comparing them batch by batch. The facts of one
+source commit are one extractor call, so the two derivations' batches join
+through the provenance the facts carry; inside a batch the facts are paired by
+the shared token measure (`internal/textsim`: Jaccard, or containment when one
+text already says the other — an equal `CanonicalHash` is the same claim
+outright).
+
+```bash
+go run ./cmd/memory-fact-diff -baseline ./workspace-a -candidate ./workspace-b -json
+```
+
+Two derivations never agree word for word — the extractor samples — so the
+reading is shaped to tell a claim that went away from one that only changed
+wording:
+
+- pairing is one-to-one and greedy over the most similar pairs first: a batch's
+  facts are distinct claims, and one candidate fact must not stand in for two.
+- `-match` (default `0.7`) is the similarity at or above which two facts count
+  as the same claim. Every difference prints beside the closest fact the other
+  side wrote and that similarity, and the summary's bucket line splits the
+  removed facts by how near their closest counterpart was: past the threshold is
+  a claim the other side already carries beside a better-matching fact, the
+  bucket just below is wording, and the far buckets are claims that went away.
+  Read the buckets before the raw removed count — two honest derivations of one
+  batch already differ.
+- `-cap` reports what a batch-size cap would have cut on the baseline's own
+  batches: how many of them are over it and how many facts that leaves out.
+  That is the size of the lever, not a prediction — the extractor writes a
+  different batch once the prompt names the cap.
+- both sides' headers print facts, batches and the batch sizes' percentiles; the
+  batches that differ are listed largest first, and `-limit` / `-snippet` shape
+  the print. `-json` keeps the whole reading, including
+  `batches_only_in_baseline` / `batches_only_in_candidate` — the source commits
+  one side never derived, which is how a derivation still behind is located.
+- `-runtime` / `-user` / `-agent` select the scope.
+
+Reads only: no model call, no derivation, no write.
 
 ## Module dependency
 
