@@ -184,6 +184,17 @@ func (s *Server) Forget(token Token) {
 	s.rateMu.Unlock()
 }
 
+// RateWindows reports how many rate-limit windows the endpoint is
+// tracking, one per token that has called it since it was minted. A
+// token that is gone takes its window with it ([Server.Forget]), so the
+// count tracks live tokens — what a table that only ever grew would look
+// like from outside.
+func (s *Server) RateWindows() int {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	return len(s.rates)
+}
+
 // Close stops the listener.
 func (s *Server) Close() error {
 	s.mu.Lock()

@@ -383,14 +383,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// rateWindowCount is the table's size, read the way the limiter guards
-// it.
-func rateWindowCount(s *Server) int {
-	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-	return len(s.rates)
-}
-
 // TestServerForgetsRateWindowsWithTheirTokens covers what the limiter
 // table holds: one window per token that has called, and a token that is
 // retired has to take its window with it. Tokens are minted per process
@@ -422,12 +414,12 @@ func TestServerForgetsRateWindowsWithTheirTokens(t *testing.T) {
 	if !server.allow(first) || !server.allow(second) {
 		t.Fatal("the first request of a token was rate limited")
 	}
-	if got := rateWindowCount(server); got != 2 {
+	if got := server.RateWindows(); got != 2 {
 		t.Fatalf("rate windows = %d, want one per token that called", got)
 	}
 
 	server.Forget(first)
-	if got := rateWindowCount(server); got != 1 {
+	if got := server.RateWindows(); got != 1 {
 		t.Fatalf("rate windows after Forget = %d, want 1", got)
 	}
 	// A forgotten token starts a fresh window: forgetting is releasing
@@ -435,14 +427,14 @@ func TestServerForgetsRateWindowsWithTheirTokens(t *testing.T) {
 	if !server.allow(first) {
 		t.Fatal("a token whose window was forgotten was refused")
 	}
-	if got := rateWindowCount(server); got != 2 {
+	if got := server.RateWindows(); got != 2 {
 		t.Fatalf("rate windows after the new call = %d, want 2", got)
 	}
 
 	if err := server.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if got := rateWindowCount(server); got != 0 {
+	if got := server.RateWindows(); got != 0 {
 		t.Fatalf("rate windows after Close = %d, want none", got)
 	}
 }

@@ -148,6 +148,82 @@ func TestCraftUpdateRevokesTheReplacedProcessToken(t *testing.T) {
 	}
 }
 
+// TestCraftUpdateReleasesTheRateWindowOfTheReplacedToken pins the other
+// half of what a replacement does to the process it replaced. A rate
+// window is opened by the first call a token makes, and the token is
+// retired when its process is. A table that only ever grows keeps a
+// window for every process the host ever ran, and the host that revokes
+// a token is the one that knows it will not call again: this is the
+// wiring between the two, which no other test covers — the endpoint's
+// own tests drive Forget directly.
+func TestCraftUpdateReleasesTheRateWindowOfTheReplacedToken(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeHostMCPPlugin(t, root, "hello", "0.1.0", "mcp:provide")
+	store, err := plugin.NewStore(plugin.Options{
+		Roots:       []plugin.Root{{Path: root}},
+		StateDir:    t.TempDir(),
+		DataDirRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	factory := &secretEnvFactory{}
+	host, err := plugin.NewHost(plugin.HostOptions{
+		Store:     store,
+		NewSource: factory.new,
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	def := mustDefinition(t, pluginTestDefinition)
+	c, err := New(def, Options{
+		DataDir:      t.TempDir(),
+		Capabilities: []Capability{coreToolsCapability{}},
+		Plugins:      host,
+		HostServices: hostmcp.Services{Secrets: wiringSecrets{}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	tokens := factory.tokens()
+	if len(tokens) != 1 || tokens[0] == "" {
+		t.Fatalf("tokens of the started processes = %v, want one", tokens)
+	}
+	endpoint := c.hostMCP.server.URL()
+	if status := pingHostMCP(t, endpoint, tokens[0]); status != http.StatusOK {
+		t.Fatalf("the running process's token answered %d, want 200", status)
+	}
+	if got := c.hostMCP.server.RateWindows(); got != 1 {
+		t.Fatalf("rate windows after one call = %d, want the calling token's", got)
+	}
+
+	source := t.TempDir()
+	writeHostMCPPlugin(t, source, "hello", "0.2.0", "mcp:provide")
+	if _, err := host.Install(
+		context.Background(), filepath.Join(source, "hello")); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if got := c.hostMCP.server.RateWindows(); got != 0 {
+		t.Fatalf("rate windows after the update = %d, want the replaced "+
+			"token's released", got)
+	}
+	updated := factory.tokens()
+	if len(updated) != 2 {
+		t.Fatalf("tokens after the update = %v, want a second one", updated)
+	}
+	if status := pingHostMCP(t, endpoint, updated[1]); status != http.StatusOK {
+		t.Fatalf("the updated process's token answered %d, want 200", status)
+	}
+	if got := c.hostMCP.server.RateWindows(); got != 1 {
+		t.Fatalf("rate windows after the new process called = %d, want 1", got)
+	}
+}
+
 // TestCraftRollbackRegrantsTheRestoredVersion covers what a rollback to
 // a version that declares more permissions grants the plugin again.
 // Grants belong to a process: the restored version is the manifest the
