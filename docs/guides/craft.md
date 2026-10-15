@@ -729,7 +729,9 @@ by `Craft.Close`.
 | `emit_event` | `events:emit` | `EventService` |
 
 `host_tools.disable` names primitives that are never exposed (reported
-`disabled` in `host_about`). `host_tools.services.<family>.impl` selects a
+`disabled` in `host_about`); naming `host_about` itself fails `craft.New`,
+because it is how a plugin learns the primitive set and carrying the
+disabled ones is its answer. `host_tools.services.<family>.impl` selects a
 named implementation registered by a capability through
 `ServiceRegistrar`. The families are `secrets`, `workspace`, `browser`,
 `inference`, `sessions`, `telemetry` and `events`, each bound to its

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 type fakeSecrets struct{}
@@ -133,6 +135,21 @@ func TestStandardFilteredDisablesPrimitive(t *testing.T) {
 	}
 	if !hasDenied(value.(About).Denied, "secret_get", "disabled") {
 		t.Fatalf("denied = %v, want secret_get/disabled", value.(About).Denied)
+	}
+}
+
+// TestStandardFilteredRefusesToDisableHostAbout pins the one name the
+// disabled list cannot carry: host_about is how a plugin learns which
+// primitives exist, and reporting the disabled ones is its answer.
+// Ignoring the entry would leave the application believing a primitive
+// it named is hidden while every plugin still reaches it.
+func TestStandardFilteredRefusesToDisableHostAbout(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	err := StandardFiltered(registry, Services{}, "0.1.0", []string{"host_about"})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("StandardFiltered with host_about disabled = %v, want a validation error",
+			err)
 	}
 }
 

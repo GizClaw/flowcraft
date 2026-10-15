@@ -276,6 +276,17 @@ func StandardFiltered(
 	for _, name := range disabled {
 		disabledSet[strings.TrimSpace(name)] = true
 	}
+	// host_about is the one primitive that is never optional: it is how
+	// a plugin learns which primitives exist and which it is denied, and
+	// the list a disabled primitive is reported in is its answer. A
+	// configuration that asks to hide it cannot be honored, and quietly
+	// ignoring the entry would leave an application believing a
+	// primitive it named is not exposed while every plugin still sees
+	// it.
+	if disabledSet["host_about"] {
+		return errdefs.Validationf(
+			"hostmcp: host_about cannot be disabled: it reports the primitive set")
+	}
 	available := make([]string, 0, 13)
 	denied := make([]DeniedEntry, 0)
 	register := func(tool Tool) error {
