@@ -74,6 +74,68 @@ func TestProviderReinforcesOnlyActuallyReturnedLongTermItems(t *testing.T) {
 	}
 }
 
+// A lane that cannot read its stored state did not "find nothing", and the
+// answer has to say so: the remaining lanes cannot make up for recall that is
+// missing, and a result that silently dropped a lane reads like an ordinary
+// one. A lane with no state at all is the other case -- a scope that was never
+// indexed -- and leaves the request answerable.
+func TestProviderFailsWhenALaneCannotReadItsState(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	facts := newFactStore(t, newTestWorkspace(t))
+	source := corememory.SourceRef{Kind: corememory.SourceMessage, ID: "message"}
+	if _, err := facts.Add(ctx, factview.AddRequest{
+		ID: "a", Generation: testGeneration, Scope: scope, ConversationID: "conversation",
+		Content: providerText("a"), Provenance: []corememory.SourceRef{source},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	serving := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
+		return []component.Candidate{providerCandidate("a", 1)}, nil
+	})
+	providerWith := func(lane component.Searcher) *Provider {
+		t.Helper()
+		fusor, err := fusion.New([]fusion.Lane{
+			{Name: "fact", Searcher: serving, Weight: 1, Calibrator: fusion.Identity{}},
+			{Name: "vector", Searcher: lane, Weight: 1, Calibrator: fusion.Identity{}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider, err := NewProviderWithConfig(ProviderConfig{
+			Fusion: fusor, Hydrator: &hydrate.Composite{Facts: facts}, Packer: pack.New(nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider
+	}
+	request := corememory.ContextRequest{
+		Scope: scope, ConversationID: "conversation", Query: "query",
+		Budget: corememory.Budget{MaxItems: 4, MaxTokens: 100},
+	}
+	unreadable := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
+		return nil, fmt.Errorf("vector projection: %w", &component.StateError{
+			Projection: "facts.vector-v1", Err: errors.New("projection: segment 0 delta digest mismatch"),
+		})
+	})
+	_, err := providerWith(unreadable).Context(ctx, request)
+	if err == nil || !corememory.IsKind(err, corememory.KindProviderFailure) {
+		t.Fatalf("a lane that cannot read its state answered: err = %v", err)
+	}
+	var state *component.StateError
+	if !errors.As(err, &state) {
+		t.Fatalf("the failure does not carry the unreadable state: %v", err)
+	}
+	empty := providerSearcher(func(context.Context, component.SearchRequest) ([]component.Candidate, error) {
+		return nil, fmt.Errorf("vector projection: %w", storage.ErrNotFound)
+	})
+	result, err := providerWith(empty).Context(ctx, request)
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("a lane with nothing to read failed the request: items=%d err=%v", len(result.Items), err)
+	}
+}
+
 func TestProviderKeepsEqualLocalFactIDsAcrossConversations(t *testing.T) {
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}

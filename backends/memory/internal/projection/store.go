@@ -318,13 +318,25 @@ func (store *Store[B, D]) Materialize(ctx context.Context, scope corememory.Scop
 	defer store.mu.Unlock()
 	active, found, err := store.loadManifestLocked(ctx, scope, name)
 	if err != nil {
-		return zero, Manifest{}, err
+		// The manifest area itself did not read back. That answers the same
+		// question as state that cannot be materialized -- something is
+		// stored here and it cannot be served -- so it is reported the same
+		// way (see StateError).
+		return zero, Manifest{}, &component.StateError{Projection: name, Err: err}
 	}
 	if !found {
 		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", storage.ErrNotFound)
 	}
 	base, err := store.materializeLocked(ctx, scope, name, active)
-	return base, active, err
+	if err != nil {
+		// The manifest is there and the state it points at is not readable.
+		// A reader has to be able to tell this from a lane that holds
+		// nothing -- that one reports storage.ErrNotFound above -- because
+		// the two answer different questions: "nothing was ever written
+		// here" against "what was written cannot be served".
+		return base, active, &component.StateError{Projection: name, Err: err}
+	}
+	return base, active, nil
 }
 
 func (store *Store[B, D]) Audit(ctx context.Context, scope corememory.Scope, name string) (Manifest, bool, error) {
@@ -479,8 +491,18 @@ func (store *Store[B, D]) materializeAuditLocked(
 			return value, "", "", "", fmt.Errorf("projection: corrupt segment %d address or chain", index)
 		}
 		canonical, err := json.Marshal(item.Delta)
-		if err != nil || digestBytes(canonical) != item.DeltaDigest {
-			return value, "", "", "", fmt.Errorf("projection: segment %d delta digest mismatch", index)
+		if err != nil {
+			return value, "", "", "", fmt.Errorf("projection: segment %d delta does not encode: %w", index, err)
+		}
+		if digestBytes(canonical) != item.DeltaDigest {
+			// Both digests are named: a mismatch here is a condition whose
+			// cause is otherwise invisible -- the stored bytes pass the
+			// segment's own digest check and decode cleanly, so what differs
+			// is what the decoded delta encodes back to, and the digests are
+			// what a host can compare against a rebuilt lane.
+			return value, "", "", "", fmt.Errorf(
+				"projection: segment %d delta digest mismatch: stored %s, recomputed %s over %d bytes",
+				index, item.DeltaDigest, digestBytes(canonical), len(canonical))
 		}
 		sourceDigest = chainDigest("source", sourceDigest, item.SourceInput)
 		buildDigest = chainDigest("build", buildDigest, item.ID)

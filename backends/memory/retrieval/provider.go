@@ -485,6 +485,15 @@ func (provider *Provider) readCandidates(ctx context.Context, request corememory
 		searchStarted := time.Now()
 		hybrid, primaryErr := provider.searchQueries(ctx, request, metadata, limit, queries, &diagnostics)
 		provider.recordStage("search", searchStarted)
+		if stateErr := laneStateFailure(diagnostics); stateErr != nil {
+			// A lane that cannot read the state it is bound to read did not
+			// "find nothing": its recall is missing from this answer, and
+			// nothing in the result would say so. Serving the remaining lanes
+			// would answer like an ordinary memory, so the request fails
+			// instead -- the same choice the derivation generation makes below
+			// -- and Verify names the condition while Repair is the way out.
+			return nil, diagnostics, 0, corememory.NewError(corememory.KindProviderFailure, "context", stateErr)
+		}
 		if primaryErr != nil {
 			if ctx.Err() != nil {
 				return nil, diagnostics, len(recent), corememory.NewError(
@@ -499,6 +508,21 @@ func (provider *Provider) readCandidates(ctx context.Context, request corememory
 		candidates = append(candidates, hybrid...)
 	}
 	return candidates, diagnostics, len(recent), nil
+}
+
+// laneStateFailure returns the first lane that held state it could not read,
+// if any. A lane with no state at all is not one: it reports NotFound, which
+// is what a scope that was never indexed answers with, and those lanes simply
+// contribute nothing. What is refused is the answer that silently lost a lane
+// whose state exists.
+func laneStateFailure(diagnostics []Diagnostic) error {
+	for _, diagnostic := range diagnostics {
+		var state *component.StateError
+		if errors.As(diagnostic.Err, &state) {
+			return fmt.Errorf("retrieval: lane %q cannot read its state: %w", diagnostic.Lane, diagnostic.Err)
+		}
+	}
+	return nil
 }
 
 // searchQueries runs the request's queries and merges their candidates. It
