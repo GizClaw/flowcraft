@@ -218,3 +218,116 @@ func TestHostFailedOpenRevokesWhatItMinted(t *testing.T) {
 		t.Fatal("the failed open left a process recorded")
 	}
 }
+
+// TestHostSourceFactoryWithoutASourceRevokesWhatItMinted covers a start
+// whose open ends without a source at all: the factory reported success
+// and handed back nothing. That is a bug in the application's seam, and
+// the host reports it rather than calling Close on a nil it was handed —
+// with the token the environment hook already minted revoked, because
+// this is still a start that ended without publishing.
+func TestHostSourceFactoryWithoutASourceRevokesWhatItMinted(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writePlugin(t, root, "hello", `{
+		"id": "hello", "version": "0.1.0",
+		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+	}`)
+	store := newStoreOver(t, root)
+	if err := store.SetEnabled("hello", false); err != nil {
+		t.Fatalf("disable before start: %v", err)
+	}
+	host, err := NewHost(HostOptions{
+		Store: store,
+		NewSource: func(
+			context.Context, Entry, map[string]string, string,
+		) (Source, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	hook := &hookRecorder{}
+	minted := false
+	host.SetPluginHooks(func(Entry, uint64, map[string]string) error {
+		minted = true
+		return nil
+	}, hook.record)
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	err = host.SetEnabled(context.Background(), "hello", true)
+	if err == nil {
+		t.Fatal("an enable whose factory returned no source reported success")
+	}
+	if !minted {
+		t.Fatal("the environment hook never ran before the open")
+	}
+	if got := hook.count(); got != 1 {
+		t.Fatalf("stopped hook calls = %d, want 1: the token minted for a "+
+			"start that published nothing has to be revoked", got)
+	}
+	if running(host, "hello") {
+		t.Fatal("the host records a process for a source that does not exist")
+	}
+}
+
+// TestHostFailedPublishRevokesWhatItMinted covers the third start that
+// ends without publishing: the process opened, and the tool set refused
+// its id — the aggregator is public, so a caller can already be holding
+// it — which leaves the process with nothing to publish. The process is
+// closed either way, but the token minted for it is still the host's to
+// take back: the stopped hook is what does that, closing the source is
+// not.
+func TestHostFailedPublishRevokesWhatItMinted(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writePlugin(t, root, "hello", `{
+		"id": "hello", "version": "0.1.0",
+		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+	}`)
+	store := newStoreOver(t, root)
+	if err := store.SetEnabled("hello", false); err != nil {
+		t.Fatalf("disable before start: %v", err)
+	}
+	host, err := NewHost(HostOptions{
+		Store: store,
+		NewSource: func(
+			context.Context, Entry, map[string]string, string,
+		) (Source, error) {
+			return &fakeSource{
+				tools: []tool.Tool{fakeTool{name: "hello__echo"}},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	hook := &hookRecorder{}
+	host.SetPluginHooks(func(Entry, uint64, map[string]string) error {
+		return nil
+	}, hook.record)
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := host.ToolSet().AddPlugin("hello", &fakeSource{
+		tools: []tool.Tool{fakeTool{name: "foreign__echo"}},
+	}); err != nil {
+		t.Fatalf("claiming the id: %v", err)
+	}
+
+	err = host.SetEnabled(context.Background(), "hello", true)
+	if err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("enable of a plugin whose id the tool set holds = %v, want a conflict", err)
+	}
+	if got := hook.count(); got != 1 {
+		t.Fatalf("stopped hook calls = %d, want 1: the token minted for a "+
+			"process that could not be published has to be revoked", got)
+	}
+	if running(host, "hello") {
+		t.Fatal("the host records a process it could not publish")
+	}
+}

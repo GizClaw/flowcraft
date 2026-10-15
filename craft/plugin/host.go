@@ -714,6 +714,11 @@ func (h *Host) Uninstall(
 // enabled — would say enabled about a plugin with no process behind it,
 // the one state a running host does not leave behind. [Host.SetEnabled]
 // is what starts it.
+//
+// The summary describes what was installed. One kind of failure returns
+// it alongside the error: a fresh install that landed but whose
+// "disabled" record could not be written — the summary is what is on
+// disk, and the error says what could not be recorded about it.
 func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
 	// The id names the process and the entry lock this install has to
 	// keep in step, and it is known only once the source is read.
@@ -1145,6 +1150,11 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if err := h.tools.AddPlugin(entry.ID, source); err != nil {
 		h.forgetSource(entry.ID, source)
 		_ = source.Close()
+		// The process this start opened is one the host is letting go
+		// of, and closing the source is not what revokes the token
+		// minted for it: the stopped hook is (see
+		// [Host.runStoppedHook]).
+		h.runStoppedHook(entry.ID)
 		return nil, err
 	}
 	return source, nil
@@ -1223,7 +1233,20 @@ func (h *Host) openSource(
 			return nil, err
 		}
 	}
-	return h.newSource(ctx, entry, env, dataDir)
+	source, err := h.newSource(ctx, entry, env, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		// A factory that reports success and hands back nothing is a
+		// bug in the application's seam rather than a plugin that
+		// publishes nothing ([refusedSource] is that), and every caller
+		// below takes the source's Close for granted.
+		return nil, errdefs.Internal(fmt.Errorf(
+			"plugin host: plugin %s: the source factory returned no source",
+			entry.ID))
+	}
+	return source, nil
 }
 
 // refusedSource stands in for a plugin whose mcp section was ignored
