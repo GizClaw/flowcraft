@@ -397,6 +397,39 @@ func TestCachingSecretStoreReclaimsExpiredEntries(t *testing.T) {
 	}
 }
 
+// TestCachingSecretStoreNeverRendersCachedValues proves the cache does
+// not leak resolved values through the formatting verbs: an entry keeps
+// the plaintext, so the store and the entry must answer with the
+// redaction marker instead of letting fmt walk their fields.
+func TestCachingSecretStoreNeverRendersCachedValues(t *testing.T) {
+	const value = "sk-live-do-not-print"
+	inner := SecretStoreFunc{
+		LookupFn: func(context.Context, string) (string, bool, error) {
+			return value, true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, time.Hour)
+	if got, found, err := cached.Lookup(context.Background(), "api-key"); err != nil || !found || got != value {
+		t.Fatalf("Lookup = (%q, %v, %v)", got, found, err)
+	}
+
+	cached.mu.Lock()
+	entry := cached.cache["api-key"]
+	cached.mu.Unlock()
+
+	for _, verb := range []string{"%v", "%+v", "%s", "%#v"} {
+		for name, subject := range map[string]any{
+			"store": cached,
+			"entry": entry,
+		} {
+			rendered := fmt.Sprintf(verb, subject)
+			if strings.Contains(rendered, value) {
+				t.Errorf("%s of the %s leaked the cached value: %s", verb, name, rendered)
+			}
+		}
+	}
+}
+
 // TestSecretNeverRendersItsValue proves every formatting verb that can
 // reach a log, an error or a crash report prints the marker — including
 // %#v, which bypasses String() because it prints the struct itself.

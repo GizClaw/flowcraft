@@ -204,6 +204,12 @@ type secretCacheEntry struct {
 	expires time.Time
 }
 
+// String redacts the entry for logs: value holds a resolved secret.
+func (e secretCacheEntry) String() string { return "<secret cache entry>" }
+
+// GoString redacts the Go-syntax form (%#v) too.
+func (e secretCacheEntry) GoString() string { return "<secret cache entry>" }
+
 // defaultSecretCacheCapacity bounds a caching store's entries. Secret
 // names are data (a deployment can resolve one per tenant, request, or
 // file key), so the cache has to be bounded like every other core cache
@@ -214,11 +220,12 @@ const defaultSecretCacheCapacity = 256
 // per-request lazy resolution does not hit the backend every time.
 //
 // The TTL bounds freshness, not retention: an expired entry is dropped
-// when its own name is looked up again, and every TTL window sweeps the
-// rest, so a name that is never looked up again cannot keep its value
-// (or a stale negative result) alive for more than one extra window.
-// The capacity bound — see [WithCacheCapacity] — caps how many names are
-// held at once, whatever the TTL.
+// when its own name is looked up again, and the first store after each
+// TTL window sweeps the rest. A name that is never looked up again is
+// therefore reclaimed by that next sweep — or, when the cache is only
+// ever read and no store drives a sweep, by the capacity bound — which
+// caps how many names are held at once, whatever the TTL (see
+// [WithCacheCapacity]).
 type CachingSecretStore struct {
 	inner SecretStore
 	ttl   time.Duration
@@ -370,3 +377,10 @@ func (c *CachingSecretStore) DefaultSecretStore() bool {
 	}
 	return c.inner.DefaultSecretStore()
 }
+
+// String redacts the cache for logs: the entries hold resolved secret
+// values, so fmt must print the marker instead of walking the map.
+func (c *CachingSecretStore) String() string { return "<secret cache>" }
+
+// GoString redacts the Go-syntax form (%#v) too.
+func (c *CachingSecretStore) GoString() string { return "<secret cache>" }
