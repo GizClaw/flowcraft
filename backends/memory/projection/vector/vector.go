@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
@@ -63,21 +64,26 @@ type Index struct {
 	// cache, so a query can only see an up-to-date table.
 	snapshotMu    sync.RWMutex
 	snapshotCache map[string]snapshot
+	// stats accumulates the phase counters Stats() publishes. It is written on
+	// the serving path with atomics only, so no reader can perturb what the
+	// lane serves.
+	stats *statsState
 }
 
 // cachedSnapshot returns the scope's vector table, loading it once per write
-// epoch instead of once per query.
-func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, error) {
+// epoch instead of once per query. loaded reports whether the table was
+// materialized off the store rather than served from the cache.
+func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, bool, error) {
 	key := scope.HardPartitionKey()
 	index.snapshotMu.RLock()
 	cached, ok := index.snapshotCache[key]
 	index.snapshotMu.RUnlock()
 	if ok {
-		return cached, nil
+		return cached, false, nil
 	}
 	build, err := index.readSnapshot(ctx, scope)
 	if err != nil {
-		return snapshot{}, err
+		return snapshot{}, false, err
 	}
 	index.snapshotMu.Lock()
 	if index.snapshotCache == nil {
@@ -85,15 +91,22 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 	}
 	index.snapshotCache[key] = build
 	index.snapshotMu.Unlock()
-	return build, nil
+	return build, true, nil
 }
 
 // warmSnapshots loads the scope's table in the background so the first query
 // does not pay for it. Deferred before invalidateSnapshots, so the cache is
-// cleared first and then repopulated.
+// cleared first and then repopulated. The read is counted apart from the
+// serving path -- a query's load has to stay the query's own -- but it pays
+// the same materialization, so a reading that adds the two sees the whole
+// scope's first read.
 func (index *Index) warmSnapshots(scope corememory.Scope) {
 	go func() {
-		_, _ = index.cachedSnapshot(context.Background(), scope)
+		started := time.Now()
+		_, loaded, err := index.cachedSnapshot(context.Background(), scope)
+		if err == nil {
+			index.recordWarmLoad(time.Since(started), loaded)
+		}
 	}()
 }
 
@@ -167,6 +180,7 @@ func New(config Config) (*Index, error) {
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
 		producerVersion:   generationIdentity(config.Model),
+		stats:             &statsState{},
 	}, nil
 }
 
@@ -316,7 +330,10 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if err := validateSearch(request); err != nil {
 		return nil, err
 	}
-	build, err := index.cachedSnapshot(ctx, request.Scope)
+	index.recordQuery()
+	loadStarted := time.Now()
+	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
+	index.recordSnapshotLoad(time.Since(loadStarted), loaded)
 	if err != nil {
 		return nil, err
 	}
@@ -324,13 +341,19 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 		return []component.Candidate{}, nil
 	}
 	content := requestContent(request.Query)
+	embedStarted := time.Now()
 	response, err := index.runtime.Embed(ctx, index.model, inference.EmbedRequest{Items: []inference.EmbedItem{{Content: content}}})
+	index.recordEmbed(time.Since(embedStarted))
 	if err != nil {
 		return nil, fmt.Errorf("vector projection: embed query: %w", err)
 	}
-	return searchSnapshot(build, response.Embeddings[0].Vector, component.VectorSearchFilter{
+	results, report, err := searchSnapshot(build, response.Embeddings[0].Vector, component.VectorSearchFilter{
 		Metadata: request.Metadata,
 	}, request.Limit)
+	if err == nil {
+		index.recordScan(report)
+	}
+	return results, err
 }
 
 // SearchVector searches persisted projection vectors with a precomputed query
@@ -339,11 +362,18 @@ func (index *Index) SearchVector(ctx context.Context, request component.VectorSe
 	if err := validateVectorSearch(request); err != nil {
 		return nil, err
 	}
-	build, err := index.cachedSnapshot(ctx, request.Scope)
+	index.recordQuery()
+	loadStarted := time.Now()
+	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
+	index.recordSnapshotLoad(time.Since(loadStarted), loaded)
 	if err != nil {
 		return nil, err
 	}
-	return searchSnapshot(build, request.Vector, request.Filter, request.Limit)
+	results, report, err := searchSnapshot(build, request.Vector, request.Filter, request.Limit)
+	if err == nil {
+		index.recordScan(report)
+	}
+	return results, err
 }
 
 func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, error) {
@@ -357,17 +387,53 @@ func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (s
 	return build, nil
 }
 
-func searchSnapshot(build snapshot, query []float32, filter component.VectorSearchFilter, limit int) ([]component.Candidate, error) {
+// scanReport is what one scan pass did: the entries it considered, the entries
+// it scored, and the wall time scoring and sorting took. The phases are timed
+// because an exact scan is the lane's own cost -- the alternative an
+// approximate index would remove -- while loading a table and embedding the
+// query are not.
+type scanReport struct {
+	scanned   int
+	scored    int
+	scanNanos time.Duration
+	// scoreNanos is the part of the scan the cosine itself took: the norm and
+	// dot of the entries the filter admitted. The rest of the scan is the walk
+	// -- the filter match per entry -- which is what an approximate index would
+	// also have to look at, differently.
+	scoreNanos time.Duration
+	sortNanos  time.Duration
+}
+
+func searchSnapshot(build snapshot, query []float32, filter component.VectorSearchFilter, limit int) ([]component.Candidate, scanReport, error) {
+	var report scanReport
 	if len(build.Entries) == 0 {
-		return []component.Candidate{}, nil
+		return []component.Candidate{}, report, nil
 	}
 	if len(query) != build.Dimensions {
-		return nil, fmt.Errorf("vector projection: query dimension %d does not match index dimension %d", len(query), build.Dimensions)
+		return nil, report, fmt.Errorf("vector projection: query dimension %d does not match index dimension %d", len(query), build.Dimensions)
 	}
 	queryNorm, err := norm(query)
 	if err != nil {
-		return nil, fmt.Errorf("vector projection: query: %w", err)
+		return nil, report, fmt.Errorf("vector projection: query: %w", err)
 	}
+	results, report, err := scoreSnapshot(build, query, queryNorm, filter)
+	if err != nil {
+		return nil, report, err
+	}
+	sortStarted := time.Now()
+	sortCandidates(results)
+	report.sortNanos = time.Since(sortStarted)
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, report, nil
+}
+
+// scoreSnapshot computes the cosine of every entry the filter admits and
+// reports what the pass cost.
+func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter component.VectorSearchFilter) ([]component.Candidate, scanReport, error) {
+	report := scanReport{scanned: len(build.Entries)}
+	started := time.Now()
 	results := make([]component.Candidate, 0, len(build.Entries))
 	for _, item := range build.Entries {
 		if filter.Name != "" && item.Name != filter.Name {
@@ -375,14 +441,15 @@ func searchSnapshot(build snapshot, query []float32, filter component.VectorSear
 		}
 		matches, err := projectionstore.MatchesRequest(filter.Metadata, item.Address)
 		if err != nil {
-			return nil, fmt.Errorf("vector projection: selector: %w", err)
+			return nil, report, fmt.Errorf("vector projection: selector: %w", err)
 		}
 		if !matches {
 			continue
 		}
+		scoreStarted := time.Now()
 		itemNorm, err := norm(item.Vector)
 		if err != nil {
-			return nil, fmt.Errorf("vector projection: entry %q: %w", item.ID, err)
+			return nil, report, fmt.Errorf("vector projection: entry %q: %w", item.ID, err)
 		}
 		var dot float64
 		for i := range query {
@@ -390,19 +457,18 @@ func searchSnapshot(build snapshot, query []float32, filter component.VectorSear
 		}
 		cosine := dot / (queryNorm * itemNorm)
 		if math.IsNaN(cosine) || math.IsInf(cosine, 0) {
-			return nil, fmt.Errorf("vector projection: entry %q produced non-finite cosine", item.ID)
+			return nil, report, fmt.Errorf("vector projection: entry %q produced non-finite cosine", item.ID)
 		}
 		cosine = max(-1, min(1, cosine))
+		report.scoreNanos += time.Since(scoreStarted)
+		report.scored++
 		results = append(results, component.Candidate{
 			ID: item.ID, Lane: laneName, Name: item.Name, Score: cosine,
 			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
 		})
 	}
-	sortCandidates(results)
-	if limit > 0 && len(results) > limit {
-		results = results[:limit]
-	}
-	return results, nil
+	report.scanNanos = time.Since(started)
+	return results, report, nil
 }
 
 func (index *Index) validateRequest(request component.ProjectionRequest) error {

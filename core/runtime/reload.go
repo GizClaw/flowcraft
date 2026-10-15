@@ -185,8 +185,8 @@ func (r *Runtime) Reload(
 	newGenID := r.nextGenID + 1
 	r.nextGenID = newGenID
 	previousID := uint64(0)
-	if r.current != nil {
-		previousID = r.current.id
+	if current := r.current.Load(); current != nil {
+		previousID = current.id
 	}
 	r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildStarted(),
 		RuntimeRebuildEvent{GenerationID: newGenID})
@@ -460,7 +460,7 @@ func (r *Runtime) Reload(
 	}
 
 	// Freeze the retiring generation, swap the live view, and commit.
-	oldGen := r.current
+	oldGen := r.current.Load()
 	if oldGen != nil {
 		adopted := dynamicInstances(entries)
 		oldGen.freeze(adopted)
@@ -545,7 +545,7 @@ func (r *Runtime) Reload(
 			"runtime reload swap: %v", err))
 	}
 
-	r.current = newGen
+	r.current.Store(newGen)
 	r.result = newResult
 	r.liveCatalog = newCatalog
 	r.bus = newBus

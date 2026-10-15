@@ -77,6 +77,10 @@ const (
 	// differentiate "we voluntarily threw it away" from "the consumer
 	// could not keep up".
 	DropReasonSampled
+
+	// dropReasonCount bounds the reason range; it is not a reason
+	// itself and must stay last.
+	dropReasonCount
 )
 
 // String returns a stable label for diagnostics.
@@ -96,6 +100,10 @@ func (r DropReason) String() string {
 // Observer is the bus-level instrumentation hook. It carries the
 // OnPublish / OnDeliver / OnDrop lifecycle for every envelope, giving
 // callers a single place to wire metrics / tracing / drop accounting.
+// It is additional detail, not the only drop signal: a bus reports the
+// envelopes it drops on its own too (a drops.total metric plus a
+// rate-limited log), so an unattached observer costs per-subscription
+// granularity rather than visibility.
 //
 // Concurrency contract — every Bus implementation must guarantee:
 //

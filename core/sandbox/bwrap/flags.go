@@ -4,6 +4,7 @@ package bwrap
 
 import (
 	"maps"
+	"sort"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -15,13 +16,13 @@ import (
 // that precedes the "--" separator. The command and its arguments are
 // appended by the caller, not by this function.
 //
-// hostEnv mirrors os.Environ() output ("KEY=VALUE" pairs) and is
-// injected by the caller so the translation stays pure for testing.
-// Resource policy is not translated here: bwrap has no cgroup / rlimit
-// controls, so MemoryBytes / CPUMillicores are enforced by the shared
-// process-group watcher in the Runner and their validation lives in
-// Exec (mirroring the seatbelt backend).
-func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
+// The child environment is not part of this list: see [childEnv], which
+// the caller installs on the exec.Cmd. Resource policy is not
+// translated here either: bwrap has no cgroup / rlimit controls, so
+// MemoryBytes / CPUMillicores are enforced by the shared process-group
+// watcher in the Runner and their validation lives in Exec (mirroring
+// the seatbelt backend).
+func buildFlags(opts sandbox.ExecOptions) ([]string, error) {
 	flags := []string{
 		// --die-with-parent: when the Go-side ctx deadline or a cap
 		// overflow kills this bwrap process, the sandboxed tree dies
@@ -37,8 +38,6 @@ func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
 	if opts.WorkDir != "" {
 		flags = append(flags, "--chdir", opts.WorkDir)
 	}
-
-	flags = append(flags, envFlags(opts.Env, hostEnv)...)
 
 	netF, err := netFlags(opts.Net)
 	if err != nil {
@@ -80,14 +79,27 @@ func filesystemFlags(rootDir string, writable []string, readOnlyRoot bool) []str
 	return flags
 }
 
-// envFlags renders sandbox.EnvPolicy as a --clearenv plus one
-// --setenv NAME VALUE pair per variable. We always clear first: bwrap
-// otherwise passes its own (host) environment to the child, which
-// would leak variables not on the allow-list. Snapshotting the host
-// env on this side keeps the policy interpretation identical to
-// sandbox/local's env translation: Allow filters host vars, Inject layers on top
-// with override semantics.
-func envFlags(p sandbox.EnvPolicy, hostEnv []string) []string {
+// childEnv renders sandbox.EnvPolicy as the environment of the bwrap
+// process itself, which bwrap passes on to the sandboxed command. An
+// allow-list therefore *is* the child's whole environment, and a
+// variable no policy selects never enters the sandbox.
+//
+// The one variable the sandboxed command still sees outside this list
+// is PWD: bwrap sets it itself, to the command's working directory,
+// whatever the policy says.
+//
+// It deliberately does not use --setenv: those arguments are part of
+// the host-side argv, so every variable of the allow-list (API keys
+// included) would be readable in /proc/<pid>/cmdline by any local
+// process for as long as the exec runs. Setting the env on the command
+// keeps the same guarantee as sandbox/seatbelt's buildEnv.
+//
+// hostEnv mirrors os.Environ() output ("KEY=VALUE" pairs) and is
+// injected by the caller so the translation stays pure for testing.
+// Snapshotting it on this side keeps the policy interpretation
+// identical to sandbox/local's env translation: Allow filters host
+// vars, Inject layers on top with override semantics.
+func childEnv(p sandbox.EnvPolicy, hostEnv []string) []string {
 	keep := map[string]string{}
 
 	switch {
@@ -111,11 +123,13 @@ func envFlags(p sandbox.EnvPolicy, hostEnv []string) []string {
 
 	maps.Copy(keep, p.Inject)
 
-	out := make([]string, 0, 1+2*len(keep))
-	out = append(out, "--clearenv")
+	out := make([]string, 0, len(keep))
 	for k, v := range keep {
-		out = append(out, "--setenv", k, v)
+		out = append(out, k+"="+v)
 	}
+	// Sorted so the same policy always yields the same environment:
+	// map iteration order would otherwise shuffle it per exec.
+	sort.Strings(out)
 	return out
 }
 

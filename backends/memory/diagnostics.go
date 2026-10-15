@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
+	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
 	"github.com/GizClaw/flowcraft/backends/memory/worker"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -137,4 +138,18 @@ func (assembly *Assembly) OverlayStatus(
 		return maintain.OverlayDiagnostics{}, err
 	}
 	return assembly.overlay(ctx, scope)
+}
+
+// VectorLaneStats reports the vector lane's cumulative phase counters and the
+// vector tables it currently holds resident, when the assembly was built with
+// an embedding model. A harness takes two readings around a run and subtracts
+// them to attribute latency inside the lane -- loading a table, embedding the
+// query, scanning and sorting -- against the lane's own total. The reading
+// changes nothing the lane serves, and the footprint it reports is the
+// materialized cache, not what the store holds on disk.
+func (assembly *Assembly) VectorLaneStats() (vector.Stats, bool) {
+	if assembly == nil || assembly.vectorStats == nil {
+		return vector.Stats{}, false
+	}
+	return assembly.vectorStats(), true
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -144,5 +145,73 @@ func TestFilesystemFlagsForPerCallReadOnly(t *testing.T) {
 	if len(runner.writablePaths) != 1 ||
 		!containsSeq(readOnly, "--bind", runner.writablePaths[0], runner.writablePaths[0]) {
 		t.Fatalf("explicit writable paths must stay writable: %v", readOnly)
+	}
+}
+
+// TestChildEnvIsAllowListOnly is the env-policy assertion: with an
+// allow-list, the child environment carries exactly the allow-listed
+// host vars plus the injected ones, and a host var outside the list
+// never reaches the sandbox.
+func TestChildEnvIsAllowListOnly(t *testing.T) {
+	hostEnv := []string{
+		"PATH=/usr/bin:/bin",
+		"OPENAI_API_KEY=sk-host-secret",
+		"LANG=en_US.UTF-8",
+	}
+	got := childEnv(sandbox.EnvPolicy{
+		Allow:  []string{"PATH", "LANG"},
+		Inject: map[string]string{"LANG": "C", "APP_MODE": "sandbox"},
+	}, hostEnv)
+
+	want := []string{"APP_MODE=sandbox", "LANG=C", "PATH=/usr/bin:/bin"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("child env = %v, want %v", got, want)
+	}
+}
+
+// TestChildEnvNilAllowPassesHostThrough pins the zero-value policy: a
+// nil Allow list means "inherit the host environment", so the child
+// sees every host var plus injected overrides.
+func TestChildEnvNilAllowPassesHostThrough(t *testing.T) {
+	hostEnv := []string{"PATH=/usr/bin:/bin", "HOME=/root", "LANG=en_US.UTF-8"}
+	got := childEnv(sandbox.EnvPolicy{
+		Inject: map[string]string{"LANG": "C"},
+	}, hostEnv)
+
+	want := []string{"HOME=/root", "LANG=C", "PATH=/usr/bin:/bin"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("child env = %v, want %v", got, want)
+	}
+}
+
+// TestChildEnvEmptyAllowListDropsEverything covers the closed list: an
+// empty (non-nil) Allow selects no host var, so only Inject survives.
+func TestChildEnvEmptyAllowListDropsEverything(t *testing.T) {
+	hostEnv := []string{"PATH=/usr/bin:/bin", "OPENAI_API_KEY=sk-host-secret"}
+	if got := childEnv(sandbox.EnvPolicy{Allow: []string{}}, hostEnv); len(got) != 0 {
+		t.Fatalf("child env = %v, want empty", got)
+	}
+}
+
+// TestBuildFlagsCarriesNoEnvVars is the argv-exposure assertion: no
+// env var may travel as a bwrap argument, where /proc/<pid>/cmdline
+// would expose it to every local process for the lifetime of the exec.
+func TestBuildFlagsCarriesNoEnvVars(t *testing.T) {
+	flags, err := buildFlags(sandbox.ExecOptions{
+		Env: sandbox.EnvPolicy{
+			Allow:  []string{"PATH"},
+			Inject: map[string]string{"OPENAI_API_KEY": "sk-host-secret"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildFlags: %v", err)
+	}
+	for _, flag := range flags {
+		if flag == "--setenv" || flag == "--clearenv" || flag == "--unsetenv" {
+			t.Fatalf("env must not travel as bwrap flags: %v", flags)
+		}
+		if strings.Contains(flag, "sk-host-secret") {
+			t.Fatalf("secret leaked into bwrap argv: %v", flags)
+		}
 	}
 }

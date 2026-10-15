@@ -30,8 +30,8 @@
 //	WorkDir                     --chdir <dir>
 //	Stdin                       piped via os/exec
 //	Timeout                     Go-side ctx deadline + --die-with-parent (whole tree killed)
-//	Env.Allow                   per-var --setenv after --clearenv (snapshot of host env at call time)
-//	Env.Inject                  per-var --setenv NAME=VALUE
+//	Env.Allow                   allow-listed vars become the child environment (snapshot of host env at call time)
+//	Env.Inject                  NAME=VALUE layered onto the child environment (override semantics)
 //	Net.Mode == NetDefault      --share-net (inherit host net)
 //	Net.Mode == NetDenyAll      --unshare-net (fresh net namespace, lo only)
 //	Net.Mode == NetAllowList    --unshare-net + in-netns bridge + host enforcement proxy

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -48,9 +49,12 @@ type Runtime struct {
 	// re-applies the deployment-aware decoration to the new generation's
 	// host factory; WithReloadResultHostFactory replaces it.
 	resultHostDecorator ResultHostFactoryDecorator
-	// current is the active deployment generation. Reload replaces it
-	// atomically; Close retires and closes it.
-	current *Generation
+	// current is the active deployment generation. Reload stores the
+	// new one while holding lifecycleMu and Close retires the last one,
+	// but the field itself is atomic: readers such as Resource resolve
+	// through it without taking the lifecycle lock, so it must not be
+	// read with a plain load while a reload can be swapping it.
+	current atomic.Pointer[Generation]
 	// externalResources are caller-owned dependency values injected by
 	// the Builder, or replaced by a reload (WithReloadExternals). They
 	// outlive every generation and are never closed by the Runtime.
@@ -136,10 +140,14 @@ func (r *Runtime) AgentNames() []string {
 // lifecycle of (or keep across reloads), construct them outside the
 // runtime and inject them through the resource registry instead.
 func (r *Runtime) Resource(name string) (any, bool) {
-	if r == nil || r.current == nil || r.current.result == nil {
+	if r == nil {
 		return nil, false
 	}
-	return r.current.result.Value(name)
+	current := r.current.Load()
+	if current == nil || current.result == nil {
+		return nil, false
+	}
+	return current.result.Value(name)
 }
 
 // Drain quiesces the runtime for offline replacement. It is serialized
@@ -176,10 +184,11 @@ func (r *Runtime) Close() error {
 	r.closed = true
 	r.lifecycleMu.Unlock()
 	r.closeOnce.Do(func() {
-		if r.current != nil {
-			r.current.freeze(dynamicInstances(r.registry.Entries()))
+		current := r.current.Load()
+		if current != nil {
+			current.freeze(dynamicInstances(r.registry.Entries()))
 		}
-		r.closeErr = closeOwned(r.manager, r.router, r.current)
+		r.closeErr = closeOwned(r.manager, r.router, current)
 	})
 	if r.closeErr != nil {
 		telemetry.Error(context.Background(), "runtime close failed",

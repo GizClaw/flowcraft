@@ -22,6 +22,10 @@ import (
 type MemoryBusOption func(*MemoryBus)
 
 // WithObserver attaches an Observer for lifecycle instrumentation.
+// Drops do not depend on it: the bus counts every dropped envelope and
+// logs a rate-limited summary on its own (see recordDrops), so an
+// observer adds per-subscription detail rather than being the only
+// signal that something was lost.
 //
 // Replaces the legacy WithDropCallback option. See Observer for the
 // concurrency contract.
@@ -74,6 +78,8 @@ func WithRouteCacheSize(n int) MemoryBusOption {
 // Hot-path lock-freedom:
 //   - Observer callbacks are deferred to a local slice and executed after
 //     the RLock has been released.
+//   - Drops are counted and reported the same way, outside every lock:
+//     see recordDrops.
 //
 // Route cache:
 //   - routeCache memoises subject → []*memSub so a hot subject avoids the
@@ -89,6 +95,11 @@ type MemoryBus struct {
 	subscribers map[SubscriptionID]*memSub
 	closed      bool
 	dropped     atomic.Int64
+	// dropLogAt is the time of the last drop summary this bus logged
+	// (nil = never); it rate-limits that log, see recordDrops. The full
+	// time.Time is kept so the throttle compares monotonic readings and
+	// a wall-clock step cannot silence the log.
+	dropLogAt atomic.Pointer[time.Time]
 
 	// inflight counts Publish calls currently between their wg.Add(1) and
 	// matching wg.Done(). Close uses Wait() to block until every Publish
@@ -184,7 +195,9 @@ func (b *MemoryBus) clearRouteCache() {
 }
 
 // Dropped returns the cumulative count of envelopes dropped due to
-// DropNewest / DropOldest policies. Diagnostic only.
+// DropNewest / DropOldest policies. It is the same tally the bus
+// reports through its drops.total metric (see recordDrops); this
+// accessor stays for callers that want the raw number.
 func (b *MemoryBus) Dropped() int64 { return b.dropped.Load() }
 
 // memSub is the in-memory subscription record.
@@ -408,7 +421,12 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 			default:
 				select {
 				case <-sub.ch:
+					// The evicted envelope is a buffer-full loss of its
+					// own: report it like every other one, or the drop
+					// tally, the metrics and the observer would all miss
+					// it.
 					b.dropped.Add(1)
+					drops = append(drops, dropCb{sub.id, DropReasonBufferFull})
 				default:
 				}
 				select {
@@ -459,19 +477,11 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 }
 
 // fireObserver invokes the configured observer outside any bus lock.
+//
+// No nil check: the constructor installs noopObserver and neither
+// WithObserver nor AttachObserver stores nil.
 func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []deliverCb, drops []dropCb) {
-	if b.observer == nil {
-		// Without an observer the drop is otherwise invisible: log a
-		// Debug record so buffer-full / closed drops stay diagnosable
-		// without paying the cost on the hot path.
-		if len(drops) > 0 {
-			telemetry.Debug(ctx, "event memory: envelope dropped, no observer attached",
-				attribute.String("event.subject", string(env.Subject)),
-				attribute.Int("event.drops", len(drops)),
-				attribute.String("event.drop_reasons", summarizeDropReasons(drops)))
-		}
-		return
-	}
+	b.recordDrops(ctx, env, drops)
 	b.observer.OnPublish(env)
 	for _, d := range delivers {
 		b.observer.OnDeliver(d.subID, env)
@@ -482,7 +492,7 @@ func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []d
 }
 
 func summarizeDropReasons(drops []dropCb) string {
-	var counts [3]int
+	var counts [dropReasonCount]int
 	for _, d := range drops {
 		idx := int(d.reason)
 		if idx >= 0 && idx < len(counts) {
@@ -491,21 +501,18 @@ func summarizeDropReasons(drops []dropCb) string {
 	}
 	var b strings.Builder
 	first := true
-	write := func(label string, n int) {
+	for reason, n := range counts {
 		if n == 0 {
-			return
+			continue
 		}
 		if !first {
 			b.WriteByte(',')
 		}
 		first = false
-		b.WriteString(label)
+		b.WriteString(DropReason(reason).String())
 		b.WriteByte('=')
 		b.WriteString(strconv.Itoa(n))
 	}
-	write(DropReasonBufferFull.String(), counts[DropReasonBufferFull])
-	write(DropReasonClosed.String(), counts[DropReasonClosed])
-	write(DropReasonSampled.String(), counts[DropReasonSampled])
 	return b.String()
 }
 
