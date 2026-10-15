@@ -429,17 +429,18 @@ func (m *Manager) Replace(
 		return err
 	}
 	m.mu.Lock()
-	// The commit is checked against what this call read: the transition
-	// gate is held, so nothing that takes a turn can have moved the
-	// manager, and a manager that closed while the new instance was
-	// being built must not adopt it. The instance this call built is
-	// the one this call closes. The phase is the one thing that can
-	// move under the gate — Drain marks the manager draining for the
-	// length of its wait and takes no turn (see [Manager.Drain]) — so a
-	// drain in flight is not a manager that moved on: the instance this
-	// call read is still the current one, the one it built is a running
-	// one, and the drain's own restore sees the swap and leaves the
-	// phase to this commit.
+	// The commit is checked against what this call read, and the check
+	// is a gate rather than a guess: the transition gate is held for the
+	// whole call, and every writer of closed and current takes a turn on
+	// it, so neither can have moved. The condition stays as the identity
+	// gate the reload path's write-back keeps — a writer added later
+	// must not be adoptable silently — and the phase is the one thing
+	// that can move under the gate: Drain marks the manager draining
+	// for the length of its wait and takes no turn (see [Manager.Drain]),
+	// which is why a drain in flight is not a manager that moved on. The
+	// instance this call read is still the current one, the one it built
+	// is a running one, and the drain's own restore sees the swap and
+	// leaves the phase to this commit.
 	if m.closed || m.current != previous {
 		m.mu.Unlock()
 		_ = built.Close()

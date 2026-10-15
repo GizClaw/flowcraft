@@ -19,6 +19,13 @@ import (
 // a workspace build, a module replaced by a local path, an untagged main
 // module, a binary whose build info is missing or unreadable.
 //
+// A consumer that pinned a commit resolves to the pseudo-version go
+// recorded for it, which is the version of that commit and is compared
+// like any other: a floor above the last release is refused rather than
+// skipped, because no release has said that build is the version the
+// floor asks for yet, and the refusal names both sides. Only a build
+// that resolved no version at all skips the comparison.
+//
 // A build that stamps the version itself — release tooling linking with
 // -ldflags "-X github.com/GizClaw/flowcraft/craft.Version=x.y.z", in the
 // dotted numeric spelling the validator accepts — overrides the build
@@ -54,6 +61,11 @@ func init() {
 // dependency version go does not spell as a version ("(devel)"), or a
 // dependency that was replaced, because the code a replacement supplies
 // is not the code the version it replaced names.
+//
+// A commit pin is not one of those: go spells it as a pseudo-version
+// ([normalizeVersion] accepts it), and a pseudo-version is a version —
+// the one thing known about that build is which commit it is, which is
+// what a floor is compared against (see [Version]).
 func moduleVersion(info *debug.BuildInfo) string {
 	if info == nil {
 		return ""

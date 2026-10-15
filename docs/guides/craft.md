@@ -938,11 +938,17 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
 ## Status
 
 Craft lives in the workspace and is **not yet released**: no `craft/vX.Y.Z`
-tag exists, so nothing resolves a version and `craft.Version` stays
-`"0.0.0"` — the development value, against which `min_host_version` floors
-are checked for spelling and skipped. A consumer that pins a released craft
-gets the pinned version from the build's module info, which is what makes
-those floors bite; release tooling may also stamp `Version` directly. The
+tag exists, so a build inside the workspace — a local replacement, a binary
+that is the main module, a build with no module information — resolves no
+version and `craft.Version` stays `"0.0.0"`, the development value, against
+which `min_host_version` floors are checked for spelling and skipped. A
+consumer that pins a released craft gets the pinned version from the build's
+module info, which is what makes those floors bite; release tooling may also
+stamp `Version` directly. A consumer that pins a commit gets the
+pseudo-version go records for it (`v0.0.0-20260101120000-abcdef123456`
+before the first tag), which is compared like any other version: no release
+has said that build is `0.2.0` yet, so a floor above the last release is
+refused — with both versions in the error — rather than skipped. The
 host primitive set is **v1** and its tool names are a wire contract. The
 plugin install / update / rollback / uninstall *mechanics* are craft's
 (`Store.Install`, `InstallZip`, `Rollback`, `Uninstall`, and the

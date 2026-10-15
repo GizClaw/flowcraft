@@ -216,7 +216,12 @@ func TestManagerReplaceCommitsWhileADrainIsInFlight(t *testing.T) {
 
 	// The drain in flight, as it writes itself: publishing the phase is
 	// the whole of what a drain does before it waits, and it does it
-	// without a turn on the gate.
+	// without a turn on the gate. The phase is written here rather than
+	// driven through [Manager.Drain] — that wait ends when the Craft's
+	// in-flight work does, and this test has no work to hold — so what
+	// it pins is the commit: the swap is adopted and the state ends
+	// running, which is what a drain's own restore reads before it
+	// decides to leave the phase alone.
 	manager.mu.Lock()
 	manager.state = StateDraining
 	manager.mu.Unlock()

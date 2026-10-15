@@ -43,8 +43,11 @@ Invariants that fail validation (`errdefs.Validation`):
 - `craft.id` required; `craft.version` required.
 - `deploy` and `base_layers` are mutually exclusive and one is required.
 - A `base_layers` entry needs exactly one of `file` or `embed`.
-- `min_host_version` must be a valid version; a release host older than
-  the floor is rejected (`Version != "0.0.0"` guard).
+- `min_host_version` must be a valid version; a host older than the floor
+  is rejected. Only a build that resolved no version at all — the
+  `"0.0.0"` of a workspace build, a local replacement or an untagged main
+  module — skips the comparison. A commit pin resolves the pseudo-version
+  go records for it, which is compared like any other.
 
 Notes:
 
@@ -90,7 +93,10 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   `craft.yaml` `min_host_version` floor asks. Against a development build
   of craft, whose `Version` resolves to `"0.0.0"`, any `minHostVersion`
   above `0.0.0` makes the plugin invalid: leave it out until the host
-  resolves a real version, which is what pinning a released craft does.
+  resolves a real version, which is what pinning a released craft does. A
+  host pinned to a commit resolves that commit's pseudo-version, so a
+  floor above the last release is refused there too, whether it is
+  declared by the plugin or by the definition.
 - Legacy aliases: `entry` (⇒ `ui.entry`), `mcpServers` (⇒ `mcp`; the two
   are mutually exclusive). `kraft` and `tools` are rejected with an
   upgrade hint.

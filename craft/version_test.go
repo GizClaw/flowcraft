@@ -33,6 +33,16 @@ func TestModuleVersionResolvesWhatTheBuildRecorded(t *testing.T) {
 		}},
 		want: "0.3.2-0.20260101120000-abcdef123456",
 	}, {
+		// Before the first tag every commit pin is this shape. It
+		// resolves — the commit is what the build is — and the floors
+		// are compared against it (see the commit-pin cases in
+		// TestHostFloor).
+		name: "dependency pinned to a commit before the first tag",
+		info: &debug.BuildInfo{Deps: []*debug.Module{
+			buildModule(modulePath, "v0.0.0-20260101120000-abcdef123456"),
+		}},
+		want: "0.0.0-20260101120000-abcdef123456",
+	}, {
 		name: "dependency replaced by a local path",
 		info: &debug.BuildInfo{Deps: []*debug.Module{{
 			Path:    modulePath,
@@ -139,6 +149,18 @@ func TestHostFloor(t *testing.T) {
 		hostVersion: "0.3.0",
 		min:         "0.2.0-",
 		wantErr:     true,
+	}, {
+		// A commit pin is a version rather than a development build:
+		// the floor is not skipped for it, because nothing has said
+		// that commit is the release the floor names.
+		name:        "a commit pin below the floor is refused",
+		hostVersion: "0.0.0-20260101120000-abcdef123456",
+		min:         "0.2.0",
+		wantErr:     true,
+	}, {
+		name:        "a commit pin above the floor passes",
+		hostVersion: "0.3.2-0.20260101120000-abcdef123456",
+		min:         "0.2.0",
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
