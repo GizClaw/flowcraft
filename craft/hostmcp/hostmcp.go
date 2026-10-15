@@ -1,7 +1,7 @@
 // Package hostmcp exposes the host primitives to plugins as a local MCP
 // server. It owns the tool registry, the per-plugin bearer tokens and
-// the built-in primitive set; the HTTP transport arrives in a later
-// milestone through the official go-sdk StreamableHTTPHandler.
+// the built-in primitive set; [Server] serves them over a loopback
+// listener through the official go-sdk StreamableHTTPHandler.
 package hostmcp
 
 import (

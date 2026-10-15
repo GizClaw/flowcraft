@@ -734,8 +734,13 @@ func (c *Craft) Emit(
 	return c.bus.Publish(ctx, envelope)
 }
 
-// Close closes every runtime (newest key first), then the router and
-// the craft bus. It is idempotent.
+// Close closes the craft: the plugin revision watch and its store
+// subscription end, the UI registry's watch ends with them, then every
+// runtime (newest key first), the router, the craft bus, the plugin host
+// and the host server. The watches go first because they are what would
+// otherwise hand new work to a craft being taken apart — they end before
+// the things that answer them close. It is idempotent, and every error
+// it saw is joined into its result.
 func (c *Craft) Close() error {
 	if c == nil {
 		return nil

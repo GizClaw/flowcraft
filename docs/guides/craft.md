@@ -176,7 +176,7 @@ document's `runtime.external_deps`.
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
 | `SyncAgents(ctx, key, decls, opts...)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. `craft.WithAgentRemoveTimeout` replaces the runtime's configured bound on one drain. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
-| `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
+| `Close()` | stops the plugin revision watch and its store subscription and closes the UI registry, then closes every runtime in reverse key order, then the router, bus, plugin host and host server. Idempotent; the errors are joined. |
 | `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
 
 The runtime key (`craft.RuntimeKey`) is application-defined; `craft.DefaultKey`
