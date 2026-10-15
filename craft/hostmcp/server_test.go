@@ -241,6 +241,59 @@ func TestServerCloseKeepsTheShutdownOutcome(t *testing.T) {
 	}
 }
 
+// TestServerCloseCalledTwiceWaitsForTheOutcome covers the concurrent
+// half of the same promise: a second Close that arrives while the first
+// shutdown is still running. The flag that makes the second call
+// idempotent is set before the shutdown, so at that point the outcome
+// it would report is not decided yet — answering a fresh nil would call
+// a shutdown that has not finished done, while the endpoint it
+// describes is still serving.
+func TestServerCloseCalledTwiceWaitsForTheOutcome(t *testing.T) {
+	t.Parallel()
+	server, _, held, token := newHeldServer(t, ServerOptions{
+		// Short enough that the request the test holds open outlives it.
+		ShutdownTimeout: 200 * time.Millisecond,
+	})
+	done := awaitHeld(t, server, held, token)
+
+	first := make(chan error, 1)
+	go func() { first <- server.Close() }()
+	// The first close takes the endpoint — the flag is set before the
+	// shutdown it waits on — and only then does the second one arrive.
+	waitFor(t, "the first Close to take the endpoint", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return server.closed
+	})
+	second := make(chan error, 1)
+	go func() { second <- server.Close() }()
+	select {
+	case err := <-second:
+		t.Fatalf("the second Close returned %v while the first shutdown was still running",
+			err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The bound passes with the request still in flight, so the shutdown
+	// fails — and the second caller has to be told the same thing.
+	firstErr := <-first
+	secondErr := <-second
+	if firstErr == nil {
+		t.Fatal("the first Close reported success over a request that never finished")
+	}
+	if secondErr == nil {
+		t.Fatal("the second Close reported a shutdown that failed as done")
+	}
+	if secondErr.Error() != firstErr.Error() {
+		t.Fatalf("second Close = %v, want the first one's %v", secondErr, firstErr)
+	}
+
+	close(held.release)
+	if err := <-done; err != nil {
+		t.Fatalf("the held request: %v", err)
+	}
+}
+
 // TestServerCloseWaitsForInFlightRequests pins the other half of the
 // same bound: a shutdown that can finish waits for the request in
 // flight, and an endpoint left to the default — ShutdownTimeout is unset
@@ -315,5 +368,73 @@ func TestServerRateLimitIsPerToken(t *testing.T) {
 	if response := postMCP(t, server.URL(), second, ""); response.StatusCode ==
 		http.StatusTooManyRequests {
 		t.Fatal("a second token was charged for the first one's requests")
+	}
+}
+
+// waitFor polls until cond holds, failing the test if it never does.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestServerForgetsRateWindowsWithTheirTokens covers what the limiter
+// table holds: one window per token that has called, and a token that is
+// retired has to take its window with it. Tokens are minted per process
+// generation, so a table that only ever grows keeps a window for every
+// process the host ever ran; the host forgets one when it revokes its
+// token, and a closed server holds none at all.
+func TestServerForgetsRateWindowsWithTheirTokens(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	if err := Standard(registry, Services{}, "0.1.0"); err != nil {
+		t.Fatalf("Standard: %v", err)
+	}
+	tokens := NewTokens()
+	server, err := NewServer(ServerOptions{
+		Registry: registry, Tokens: tokens, HostVersion: "0.1.0",
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	_, first, err := tokens.Mint(Identity{PluginID: "hello"})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	_, second, err := tokens.Mint(Identity{PluginID: "other"})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	if !server.allow(first) || !server.allow(second) {
+		t.Fatal("the first request of a token was rate limited")
+	}
+	if got := server.RateWindows(); got != 2 {
+		t.Fatalf("rate windows = %d, want one per token that called", got)
+	}
+
+	server.Forget(first)
+	if got := server.RateWindows(); got != 1 {
+		t.Fatalf("rate windows after Forget = %d, want 1", got)
+	}
+	// A forgotten token starts a fresh window: forgetting is releasing
+	// the bookkeeping, not refusing the token.
+	if !server.allow(first) {
+		t.Fatal("a token whose window was forgotten was refused")
+	}
+	if got := server.RateWindows(); got != 2 {
+		t.Fatalf("rate windows after the new call = %d, want 2", got)
+	}
+
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := server.RateWindows(); got != 0 {
+		t.Fatalf("rate windows after Close = %d, want none", got)
 	}
 }

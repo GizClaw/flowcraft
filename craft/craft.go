@@ -253,19 +253,47 @@ func (c *Craft) Start(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	if err := c.startHostMCP(); err != nil {
+		if c.isClosed() {
+			return ErrCraftClosed
+		}
 		return err
 	}
 	if c.plugins != nil {
 		if err := c.plugins.Start(ctx); err != nil {
+			if c.isClosed() {
+				return ErrCraftClosed
+			}
 			return err
 		}
-		c.startPluginWatch()
 	}
 	c.mu.Lock()
+	// Close may have run while the services were coming up. What it
+	// stopped first is what it saw, and a plugin process this start
+	// published in the meantime is one its close still sees — the host
+	// refuses to publish behind its own close — so nothing is left
+	// running here. The two halves it cannot take back are installed
+	// under this lock instead: the plugin watch and the started flag.
+	// A start that lost to a close installs neither, rather than leaving
+	// a watcher goroutine and a store subscription that outlive the
+	// Craft and announce a start a closed Craft never had.
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCraftClosed
+	}
+	if c.plugins != nil {
+		c.startPluginWatchLocked()
+	}
 	c.started = true
 	c.mu.Unlock()
 	c.publish(ctx, SubjectCraftStarted, RuntimeEvent{})
 	return nil
+}
+
+// isClosed reports whether Close has run.
+func (c *Craft) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // OpenRuntime composes the layers for key, builds a runtime and binds
@@ -338,8 +366,16 @@ func (c *Craft) OpenRuntime(
 	if err := c.bindRuntime(ctx, key, rt); err != nil {
 		_ = rt.Close()
 		c.mu.Lock()
-		delete(c.runtimes, key)
-		delete(c.runtimeRecords, key)
+		// The entry leaves the table only while it is still this call's
+		// runtime: the open published it before the bind ran, so a
+		// CloseRuntime (or a Close) can take the key away in between —
+		// and an id opened again since is a different runtime, whose
+		// record this failure has no claim on. Deleting either would
+		// leave a runtime serving with nothing pointing at it.
+		if c.runtimes[key] == rt {
+			delete(c.runtimes, key)
+			delete(c.runtimeRecords, key)
+		}
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -698,8 +734,13 @@ func (c *Craft) Emit(
 	return c.bus.Publish(ctx, envelope)
 }
 
-// Close closes every runtime (newest key first), then the router and
-// the craft bus. It is idempotent.
+// Close closes the craft: the plugin revision watch and its store
+// subscription end, the UI registry's watch ends with them, then every
+// runtime (newest key first), the router, the craft bus, the plugin host
+// and the host server. The watches go first because they are what would
+// otherwise hand new work to a craft being taken apart — they end before
+// the things that answer them close. It is idempotent, and every error
+// it saw is joined into its result.
 func (c *Craft) Close() error {
 	if c == nil {
 		return nil

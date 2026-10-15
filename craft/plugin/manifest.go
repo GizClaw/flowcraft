@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/craft/internal/version"
 )
 
 // Manifest limits (shared with the design doc).
@@ -26,8 +26,6 @@ const (
 	maxEnvKey  = 128
 	maxEnvVal  = 4096
 )
-
-var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$`)
 
 // Permissions accepted in a manifest.
 var validPermissions = map[string]struct{}{
@@ -147,11 +145,11 @@ func (m Manifest) Validate(root string) error {
 		return err
 	}
 	if strings.TrimSpace(m.Version) == "" ||
-		!versionPattern.MatchString(m.Version) {
+		!version.Valid(m.Version) {
 		return errdefs.Validationf(
 			"plugin %s: invalid version %q", m.ID, m.Version)
 	}
-	if m.MinHostVersion != "" && !versionPattern.MatchString(m.MinHostVersion) {
+	if m.MinHostVersion != "" && !version.Valid(m.MinHostVersion) {
 		return errdefs.Validationf(
 			"plugin %s: invalid minHostVersion %q", m.ID, m.MinHostVersion)
 	}

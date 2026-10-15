@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 type fakeSecrets struct{}
@@ -136,6 +138,21 @@ func TestStandardFilteredDisablesPrimitive(t *testing.T) {
 	}
 }
 
+// TestStandardFilteredRefusesToDisableHostAbout pins the one name the
+// disabled list cannot carry: host_about is how a plugin learns which
+// primitives exist, and reporting the disabled ones is its answer.
+// Ignoring the entry would leave the application believing a primitive
+// it named is hidden while every plugin still reaches it.
+func TestStandardFilteredRefusesToDisableHostAbout(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	err := StandardFiltered(registry, Services{}, "0.1.0", []string{"host_about"})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("StandardFiltered with host_about disabled = %v, want a validation error",
+			err)
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -152,4 +169,30 @@ func hasDenied(entries []DeniedEntry, tool, reason string) bool {
 		}
 	}
 	return false
+}
+
+// TestCallStringRequiresAParameter pins the reader every primitive
+// handler takes its arguments through: a parameter that is missing, not
+// a string or blank is refused by name, so a handler never acts on an
+// empty value it read as required.
+func TestCallStringRequiresAParameter(t *testing.T) {
+	t.Parallel()
+	call := Call{Params: map[string]any{"name": "vault"}}
+	if value, err := call.String("name"); err != nil || value != "vault" {
+		t.Fatalf("String(name) = %q, %v, want vault", value, err)
+	}
+	cases := map[string]map[string]any{
+		"absent":       nil,
+		"blank":        {"name": "   "},
+		"not a string": {"name": 42},
+	}
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			call := Call{Params: params}
+			if _, err := call.String("name"); !errdefs.IsValidation(err) {
+				t.Fatalf("String(name) = %v, want a validation error", err)
+			}
+		})
+	}
 }

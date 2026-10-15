@@ -3,27 +3,27 @@
 package version
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 )
 
+// prereleasePattern is the spelling a prerelease suffix may carry:
+// dot-separated identifiers of letters, digits and dashes, none of them
+// empty. "1.0.0-" is not a version with an empty suffix, it is a version
+// that was cut short; a plugin manifest's own pattern refused it while
+// this validator accepted it, so the two disagreed about which versions
+// exist.
+var prereleasePattern = regexp.MustCompile(`^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$`)
+
 // Valid reports whether s is a dotted numeric version with an optional
-// prerelease suffix.
+// prerelease suffix: one or more numeric parts, and a suffix that is
+// non-empty and spelled in the characters a prerelease may carry. It is
+// the one grammar a version field is held to — definition floors, plugin
+// manifests and the update rules all ask it.
 func Valid(s string) bool {
-	text := strings.TrimSpace(s)
-	if text == "" {
-		return false
-	}
-	main, _, _ := strings.Cut(text, "-")
-	for _, part := range strings.Split(main, ".") {
-		if part == "" {
-			return false
-		}
-		if _, err := strconv.Atoi(part); err != nil {
-			return false
-		}
-	}
-	return true
+	_, ok := parse(s)
+	return ok
 }
 
 // Compare orders two dotted numeric versions with an optional
@@ -136,15 +136,37 @@ func parse(s string) (parsed, bool) {
 	if text == "" {
 		return parsed{}, false
 	}
-	main, pre, _ := strings.Cut(text, "-")
+	main, pre, hasPre := strings.Cut(text, "-")
+	if hasPre && !prereleasePattern.MatchString(pre) {
+		return parsed{}, false
+	}
 	parts := strings.Split(main, ".")
 	out := parsed{core: make([]int, 0, len(parts)), pre: pre}
 	for _, part := range parts {
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
+		n, ok := numericPart(part)
+		if !ok {
 			return parsed{}, false
 		}
 		out.core = append(out.core, n)
 	}
 	return out, true
+}
+
+// numericPart reads one dot-separated core part: digits and nothing else,
+// so a sign ("+1.0.0"), a letter ("1.0.x") or an empty part ("1..0") is
+// not a version.
+func numericPart(part string) (int, bool) {
+	if part == "" {
+		return 0, false
+	}
+	for _, r := range part {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(part)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

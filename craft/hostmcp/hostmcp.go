@@ -1,7 +1,7 @@
 // Package hostmcp exposes the host primitives to plugins as a local MCP
 // server. It owns the tool registry, the per-plugin bearer tokens and
-// the built-in primitive set; the HTTP transport arrives in a later
-// milestone through the official go-sdk StreamableHTTPHandler.
+// the built-in primitive set; [Server] serves them over a loopback
+// listener through the official go-sdk StreamableHTTPHandler.
 package hostmcp
 
 import (
@@ -275,6 +275,17 @@ func StandardFiltered(
 	disabledSet := make(map[string]bool, len(disabled))
 	for _, name := range disabled {
 		disabledSet[strings.TrimSpace(name)] = true
+	}
+	// host_about is the one primitive that is never optional: it is how
+	// a plugin learns which primitives exist and which it is denied, and
+	// the list a disabled primitive is reported in is its answer. A
+	// configuration that asks to hide it cannot be honored, and quietly
+	// ignoring the entry would leave an application believing a
+	// primitive it named is not exposed while every plugin still sees
+	// it.
+	if disabledSet["host_about"] {
+		return errdefs.Validationf(
+			"hostmcp: host_about cannot be disabled: it reports the primitive set")
 	}
 	available := make([]string, 0, 13)
 	denied := make([]DeniedEntry, 0)

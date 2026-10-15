@@ -205,9 +205,11 @@ func declaresManyDep(spec resource.Spec, name string) bool {
 	return false
 }
 
-// startPluginWatch starts the revision watcher that reloads every open
-// runtime after a plugin change.
-func (c *Craft) startPluginWatch() {
+// startPluginWatchLocked starts the revision watcher that reloads every
+// open runtime after a plugin change. Callers hold mu, which is what
+// makes the watch it installs visible to a Close that follows it and
+// uninstalled for one that already ran (see [Craft.Start]).
+func (c *Craft) startPluginWatchLocked() {
 	ctx, cancel := context.WithCancel(context.Background())
 	signal := make(chan struct{}, 1)
 	unsubscribe := c.plugins.Subscribe(func() {
@@ -216,10 +218,8 @@ func (c *Craft) startPluginWatch() {
 		default:
 		}
 	})
-	c.mu.Lock()
 	c.watchCancel = cancel
 	c.unsubscribe = unsubscribe
-	c.mu.Unlock()
 	go func() {
 		for {
 			select {

@@ -67,11 +67,17 @@ type Server struct {
 	// recorded here instead: a second Close reports the failure the
 	// first one saw rather than a fresh nil.
 	closeErr error
-	audit    func(AuditEvent)
-	limit    int
-	shutdown time.Duration
-	rates    map[Token]*rateWindow
-	rateMu   sync.Mutex
+	// closeDone is closed once that outcome is recorded: with the flag
+	// set before the shutdown, the outcome above is not there yet for a
+	// second Close that arrives while the first one is still waiting,
+	// and reporting a fresh nil would call a shutdown that has not
+	// finished done.
+	closeDone chan struct{}
+	audit     func(AuditEvent)
+	limit     int
+	shutdown  time.Duration
+	rates     map[Token]*rateWindow
+	rateMu    sync.Mutex
 }
 
 // NewServer builds the HTTP handler (the listener starts in Start).
@@ -90,6 +96,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		audit:       opts.Audit,
 		limit:       opts.RateLimit,
 		rates:       make(map[Token]*rateWindow),
+		closeDone:   make(chan struct{}),
 	}
 	if server.limit <= 0 {
 		server.limit = 20
@@ -166,10 +173,42 @@ func (s *Server) Drop(pluginID string) {
 	s.mu.Unlock()
 }
 
+// Forget drops the rate-limit window of one token. The window is keyed
+// by the token's digest, and the caller that retires a token — the host
+// that minted it, when a process is replaced or stopped — is the one
+// that knows it will not call again: without this the table keeps a
+// window for every process the host ever ran.
+func (s *Server) Forget(token Token) {
+	s.rateMu.Lock()
+	delete(s.rates, token)
+	s.rateMu.Unlock()
+}
+
+// RateWindows reports how many rate-limit windows the endpoint is
+// tracking, one per token that has called it since it was minted. A
+// token that is gone takes its window with it ([Server.Forget]), so the
+// count tracks live tokens — what a table that only ever grew would look
+// like from outside.
+func (s *Server) RateWindows() int {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	return len(s.rates)
+}
+
 // Close stops the listener.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	if s.closed {
+		// The close in flight is what stops the listener. Reporting
+		// before it has run is the one answer this must not give: the
+		// endpoint may still be serving, and the outcome is not decided
+		// yet. This call waits for it and reports the same one.
+		done := s.closeDone
+		s.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		s.mu.Lock()
 		err := s.closeErr
 		s.mu.Unlock()
 		return err
@@ -179,16 +218,32 @@ func (s *Server) Close() error {
 	s.http = nil
 	s.listen = nil
 	s.mu.Unlock()
+	// The windows belong to tokens this endpoint was serving: a closed
+	// server serves none of them again.
+	s.rateMu.Lock()
+	s.rates = make(map[Token]*rateWindow)
+	s.rateMu.Unlock()
 	if httpServer == nil {
+		s.finishClose(nil)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdown)
 	defer cancel()
 	err := httpServer.Shutdown(ctx)
+	s.finishClose(err)
+	return err
+}
+
+// finishClose records the shutdown outcome and releases the callers
+// waiting on it (see [Server.Close]).
+func (s *Server) finishClose(err error) {
 	s.mu.Lock()
 	s.closeErr = err
+	done := s.closeDone
 	s.mu.Unlock()
-	return err
+	if done != nil {
+		close(done)
+	}
 }
 
 // ServeHTTP authenticates the bearer token, enforces loopback-only

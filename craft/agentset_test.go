@@ -879,6 +879,48 @@ func TestSyncAgentsRepairsFailureWithSameRev(t *testing.T) {
 	}
 }
 
+// TestUnregisterAgentRemovesOnlyTheNamedAgent covers the direct entry
+// point beside SyncAgents: the named agent leaves the runtime, its
+// neighbours stay, and the two ways the call has nothing to do are told
+// apart — a key that is not open, and a name that is not registered.
+func TestUnregisterAgentRemovesOnlyTheNamedAgent(t *testing.T) {
+	t.Parallel()
+	c, _ := newAgentsetCraft(t, agentsetBaseDeploy)
+	ctx := context.Background()
+	rt := agentsetRuntime(t, c)
+	if _, err := c.SyncAgents(ctx, DefaultKey, []AgentDecl{
+		agentsetDecl("alpha", "r1"),
+		agentsetDecl("beta", "r1"),
+	}); err != nil {
+		t.Fatalf("SyncAgents: %v", err)
+	}
+
+	if err := c.UnregisterAgent(ctx, DefaultKey, "alpha"); err != nil {
+		t.Fatalf("UnregisterAgent: %v", err)
+	}
+	if _, ok := rt.Agent("alpha"); ok {
+		t.Fatal("alpha is still live after UnregisterAgent")
+	}
+	if _, ok := rt.Agent("beta"); !ok {
+		t.Fatal("beta went with alpha")
+	}
+
+	if err := c.UnregisterAgent(ctx, "missing", "alpha"); !errors.Is(err, ErrRuntimeNotFound) {
+		t.Fatalf("UnregisterAgent on a key that is not open = %v, want ErrRuntimeNotFound", err)
+	}
+	if err := c.UnregisterAgent(ctx, DefaultKey, "ghost"); err != nil {
+		t.Fatalf("UnregisterAgent of an unknown name = %v, want nil", err)
+	}
+	// The runtime is asked to drain the agent it removes; a name that
+	// was never registered did not disturb the two that are.
+	if err := c.UnregisterAgent(ctx, DefaultKey, "beta"); err != nil {
+		t.Fatalf("UnregisterAgent(beta): %v", err)
+	}
+	if _, ok := rt.Agent("beta"); ok {
+		t.Fatal("beta is still live after UnregisterAgent")
+	}
+}
+
 func TestSyncAgentsRejectsMalformedSetsBeforeMutating(t *testing.T) {
 	t.Parallel()
 	c, probe := newAgentsetCraft(t, agentsetBaseDeploy)

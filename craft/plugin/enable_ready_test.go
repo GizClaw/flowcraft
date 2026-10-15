@@ -562,3 +562,65 @@ func TestHostEnableKeepsTryingUnreachableServer(t *testing.T) {
 		t.Fatalf("an unreachable server was reported as stopped: %v", got)
 	}
 }
+
+// TestHostEnableRollbackReportsARecordItCouldNotWrite covers the half of
+// a rollback that is not the process. The stop is what the caller asked
+// for; the record that says enabled about a plugin with no process goes
+// with it, and a write that fails is reported alongside the plugin's own
+// failure rather than dropped. Nothing else repairs that disagreement —
+// the failed write bumps no revision, so no reconcile pass visits a
+// plugin that is no longer live — and the caller is the one that can
+// still act on it.
+func TestHostEnableRollbackReportsARecordItCouldNotWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writeContributionTree(t, root, "hello")
+	store, err := NewStore(Options{
+		Roots:       []Root{{Path: root}},
+		StateDir:    stateDir,
+		DataDirRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	factory := newReadyFactory(func(context.Context, time.Duration) error {
+		return errdefs.Validationf(
+			"plugin hello: mcp: server hello: cannot start command: " +
+				"fork/exec ./server: no such file or directory")
+	})
+	host, err := NewHost(HostOptions{Store: store, NewSource: factory.new})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	// The plugin is enabled by default — no record was ever written — and
+	// the rollback's write is the one that cannot land.
+	if !enabled(t, store, "hello") {
+		t.Fatal("the fixture is not the default-enabled one this test needs")
+	}
+	if err := os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatalf("chmod state dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+
+	err = host.SetEnabled(context.Background(), "hello", true)
+	if err == nil {
+		t.Fatal("enable of a plugin that cannot come up reported success")
+	}
+	if !strings.Contains(err.Error(), "cannot start command") {
+		t.Fatalf("enable error = %v, want the source's terminal failure", err)
+	}
+	if !strings.Contains(err.Error(), "recording it disabled") {
+		t.Fatalf("enable error = %v, want the record write it could not make", err)
+	}
+	if running(host, "hello") {
+		t.Fatal("the rolled-back enable left a process")
+	}
+	// The record is the thing that could not be written: it still says
+	// enabled, which is exactly what the caller was told about.
+	if !enabled(t, store, "hello") {
+		t.Fatal("the record changed although its write failed")
+	}
+}

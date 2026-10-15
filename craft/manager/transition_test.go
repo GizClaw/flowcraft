@@ -176,6 +176,78 @@ func TestManagerReplaceIsNotOvertakenByStop(t *testing.T) {
 	}
 }
 
+// TestManagerReplaceCommitsWhileADrainIsInFlight covers the phase a
+// Replace has to tolerate. Drain is a wait, not a transition: it takes
+// no turn on the gate, on purpose, so a Close never queues behind a
+// drain that may run as long as its caller allows — and for the length
+// of that wait it publishes the manager as draining. A Replace that read
+// the manager as running and finds it draining at commit has therefore
+// not been overtaken: the instance it read is still the current one and
+// the instance it built is a running one. Refusing the commit would close
+// the instance this call built and report a move that never happened.
+func TestManagerReplaceCommitsWhileADrainIsInFlight(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gate := newBuildGate()
+	manager := newTestManager(t, writeDefinition(t, dir), dir, func(opts *Options) {
+		opts.Build = gate.build
+	})
+	// The first build is the Start's; let it through at once.
+	go func() {
+		<-gate.entered
+		gate.release <- struct{}{}
+	}()
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	original := manager.Craft()
+
+	def, err := craft.ParseDefinition([]byte(definition))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	replaceErr := make(chan error, 1)
+	go func() { replaceErr <- manager.Replace(context.Background(), def) }()
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replace never reached the build")
+	}
+
+	// The drain in flight, as it writes itself: publishing the phase is
+	// the whole of what a drain does before it waits, and it does it
+	// without a turn on the gate. The phase is written here rather than
+	// driven through [Manager.Drain] — that wait ends when the Craft's
+	// in-flight work does, and this test has no work to hold — so what
+	// it pins is the commit: the swap is adopted and the state ends
+	// running, which is what a drain's own restore reads before it
+	// decides to leave the phase alone.
+	manager.mu.Lock()
+	manager.state = StateDraining
+	manager.mu.Unlock()
+
+	gate.releaseAll()
+	if err := <-replaceErr; err != nil {
+		t.Fatalf("Replace under a drain in flight: %v", err)
+	}
+	if state := manager.State(); state != StateRunning {
+		t.Fatalf("state after the replace = %s, want running", state)
+	}
+	replacement := manager.Craft()
+	if replacement == nil || replacement == original {
+		t.Fatal("the replace did not commit the instance it built")
+	}
+	// The retired instance is closed, not merely dropped: a Craft left
+	// behind keeps its goroutines and endpoints alive with nothing left
+	// to reach it.
+	if err := original.Start(context.Background()); !errors.Is(err, craft.ErrCraftClosed) {
+		t.Fatalf("the retired Craft answers Start with %v, want ErrCraftClosed", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestManagerTransitionWaitIsBounded pins what a transition does when
 // the one before it will not finish: it is refused with a reason, and
 // the manager is not wedged — the transition that was holding the turn

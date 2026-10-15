@@ -295,6 +295,51 @@ func TestHostNumbersEveryProcessItStarts(t *testing.T) {
 	}
 }
 
+// TestHostInstallOfANewPluginLeavesItRecordedDisabled pins the record a
+// fresh install leaves behind. A store with no record for an id reads it
+// enabled, and an install does not turn a plugin on — so a fresh install
+// that wrote no record would leave an entry saying enabled about a
+// plugin with no process behind it, the one state a running host does
+// not leave behind. Enabling it is what starts it.
+func TestHostInstallOfANewPluginLeavesItRecordedDisabled(t *testing.T) {
+	t.Parallel()
+	factory := newVersionFactory()
+	root := t.TempDir()
+	store := newStoreOver(t, root)
+	host := startHost(t, store, factory.new)
+
+	summary, err := installVersion(t, host, "0.1.0")
+	if err != nil || summary.Version != "0.1.0" {
+		t.Fatalf("Install = %+v, %v", summary, err)
+	}
+	if got := factory.versions(); len(got) != 0 {
+		t.Fatalf("started versions = %v, want nothing started for a fresh install", got)
+	}
+	entry, ok := store.Entry("hello")
+	if !ok || entry.Enabled {
+		t.Fatalf("entry after the install = %+v, %v, want it recorded disabled",
+			entry, ok)
+	}
+	if running(host, "hello") {
+		t.Fatal("the host has a process for a plugin it was not asked to start")
+	}
+	if names := toolNames(host); len(names) != 0 {
+		t.Fatalf("tools after the install = %v, want none", names)
+	}
+
+	// The enable is the answer that starts it, from the install that is
+	// already on disk.
+	if err := host.SetEnabled(context.Background(), "hello", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want the installed one after the enable", got)
+	}
+	if !running(host, "hello") {
+		t.Fatal("the enable left no process")
+	}
+}
+
 // TestHostUpdateFromRefusesBeforeStopping pins the resolve half of the
 // protocol for the update path: what an update would be refused for
 // without reading anything — an id that is not installed — is answered
@@ -373,6 +418,43 @@ func TestHostChangeLeavesNoEnabledPluginWithoutAProcess(t *testing.T) {
 	}
 	if names := toolNames(host); len(names) != 0 {
 		t.Fatalf("tools after the failure = %v, want none", names)
+	}
+}
+
+// TestHostChangeDoesNotRestartAPluginThatGaveUp pins the boundary the
+// change protocol draws around a loss: a plugin whose process gave up on
+// its own is not a running plugin, so a change — here one the store
+// refuses, which is the path that puts a running plugin back — must not
+// restart it. The record stays the application's to change, and nothing
+// the change does silently undoes what the loss left behind.
+func TestHostChangeDoesNotRestartAPluginThatGaveUp(t *testing.T) {
+	t.Parallel()
+	factory := newVersionFactory()
+	host, _ := startVersionHost(t, factory)
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want the one the host started", got)
+	}
+	// The loss the source reports when its reconnect gives up. The entry
+	// stays enabled with its tools projected — that state is the
+	// application's to change — and the process is gone.
+	host.notifyLost("hello")
+	if !host.lost["hello"] {
+		t.Fatal("the loss was not recorded")
+	}
+
+	// A change with nothing to roll back to: the store refuses it, and
+	// the resume half must leave the plugin as it found it.
+	if _, err := host.Rollback(context.Background(), "hello"); !errdefs.IsNotFound(err) {
+		t.Fatalf("Rollback without a snapshot = %v, want NotFound", err)
+	}
+	if got := factory.versions(); !slices.Equal(got, []string{"0.1.0"}) {
+		t.Fatalf("started versions = %v, want nothing started for a plugin that gave up", got)
+	}
+	if running(host, "hello") {
+		t.Fatal("the change left a process behind for a plugin that gave up")
+	}
+	if names := toolNames(host); len(names) != 0 {
+		t.Fatalf("tools after the change = %v, want none", names)
 	}
 }
 

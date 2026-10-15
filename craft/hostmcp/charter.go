@@ -1,5 +1,7 @@
 package hostmcp
 
+import "sort"
+
 // CharterRow documents one host primitive and the grant it needs.
 type CharterRow struct {
 	Tool  string
@@ -24,11 +26,14 @@ var Charter = []CharterRow{
 	{Tool: "emit_event", Grant: "events:emit"},
 }
 
-// CharterTools returns the sorted tool names of the table.
+// CharterTools returns the tool names of the table, sorted. The table
+// itself is grouped by the service a row belongs to, which is what a
+// reader wants and what a caller listing the primitives does not.
 func CharterTools() []string {
 	out := make([]string, 0, len(Charter))
 	for _, row := range Charter {
 		out = append(out, row.Tool)
 	}
+	sort.Strings(out)
 	return out
 }

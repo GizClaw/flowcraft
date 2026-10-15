@@ -104,10 +104,17 @@ invariants (`Definition.Validate`):
 - Each `base_layers` entry needs exactly one of `file` or `embed`
   (`craft: base_layers[0] requires file or embed` or `... declares both`).
 - `min_host_version`, when set, is a dotted numeric version with an
-  optional prerelease suffix. When the module is a release build
-  (`craft.Version` != `"0.0.0"`) and the host is older than the floor,
-  validation fails (`craft: requires host version >= X, running Y`). A
-  development build still checks the spelling but skips the comparison.
+  optional prerelease suffix — the same validator a plugin manifest's
+  `version` and `minHostVersion` are held to. The version it is checked
+  against is `craft.Version`: the version of the craft module the binary
+  linked, resolved from the build's own module info, so it is whatever the
+  consumer pinned; `"0.0.0"` when nothing resolved — a workspace build, a
+  module replaced by a local path, an untagged main module — or a version
+  release tooling stamped with
+  `-ldflags "-X github.com/GizClaw/flowcraft/craft.Version=x.y.z"`. A
+  resolved host older than the floor fails validation (`craft: requires
+  host version >= X, running Y`); a development build still checks the
+  spelling but skips the comparison.
 
 `plugins.builtin` and `plugins.roots` are declarative: the `craft` package
 reads only `tool_registry` and `node_targets` during composition; the host
@@ -140,7 +147,7 @@ always-injected `craft.runtime` external
 
 1. the per-runtime `Values` merged over the craft-level `Options.Values`;
 2. the built-in roots `APP_HOME`, `CONFIG_DIR`, `DATA_DIR` and `VERSION`
-   (`craft.Version`).
+   (`craft.Version`; `"0.0.0"` in a build that resolved none).
 
 `NAME` is required (`craft: ${craft:} requires a name`) and an unknown
 name fails the build (`craft: reference ${craft:NAME} is not defined`).
@@ -169,7 +176,7 @@ document's `runtime.external_deps`.
 | `RegisterAgent` / `UnregisterAgent` | delegate dynamic agent registration to a runtime. |
 | `SyncAgents(ctx, key, decls, opts...)` | reconcile a runtime's dynamic agents with a declaration set (register / replace / unregister); never reloads. `craft.WithAgentRemoveTimeout` replaces the runtime's configured bound on one drain. |
 | `Attach` / `Emit` | subscribe to the craft-plane router / publish on the craft bus. |
-| `Close()` | closes every runtime in reverse key order, then the UI registry, router, bus, plugin host and host server. Idempotent. |
+| `Close()` | stops the plugin revision watch and its store subscription and closes the UI registry, then closes every runtime in reverse key order, then the router, bus, plugin host and host server. Idempotent; the errors are joined. |
 | `UI()` | the plugin UI registry (`*ui.Registry`), nil without a plugin host. |
 
 The runtime key (`craft.RuntimeKey`) is application-defined; `craft.DefaultKey`
@@ -464,6 +471,12 @@ so a running plugin never reads files that changed under it:
 - A change does not turn a plugin on: one that was not running is left that
   way, including one whose process gave up on its own — that loss was
   reported, and the record is the application's to change.
+- An id that was not installed at all is recorded disabled by the install
+  that creates it. A fresh id has no enable record, and a store with no
+  record for an id reads it enabled: without that write the entry would say
+  enabled about a plugin with no process behind it — the state above — from
+  the install until something else changed it. `Host.SetEnabled` is what
+  starts it.
 
 Each call holds the plugin's entry lock, so an enable or another change of the
 same plugin waits for it rather than racing it. `Store.Install`,
@@ -723,7 +736,9 @@ by `Craft.Close`.
 | `emit_event` | `events:emit` | `EventService` |
 
 `host_tools.disable` names primitives that are never exposed (reported
-`disabled` in `host_about`). `host_tools.services.<family>.impl` selects a
+`disabled` in `host_about`); naming `host_about` itself fails `craft.New`,
+because it is how a plugin learns the primitive set and carrying the
+disabled ones is its answer. `host_tools.services.<family>.impl` selects a
 named implementation registered by a capability through
 `ServiceRegistrar`. The families are `secrets`, `workspace`, `browser`,
 `inference`, `sessions`, `telemetry` and `events`, each bound to its
@@ -923,7 +938,17 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
 ## Status
 
 Craft lives in the workspace and is **not yet released**: no `craft/vX.Y.Z`
-tag exists, and `craft.Version` stays `"0.0.0"` for development builds. The
+tag exists, so a build inside the workspace — a local replacement, a binary
+that is the main module, a build with no module information — resolves no
+version and `craft.Version` stays `"0.0.0"`, the development value, against
+which `min_host_version` floors are checked for spelling and skipped. A
+consumer that pins a released craft gets the pinned version from the build's
+module info, which is what makes those floors bite; release tooling may also
+stamp `Version` directly. A consumer that pins a commit gets the
+pseudo-version go records for it (`v0.0.0-20260101120000-abcdef123456`
+before the first tag), which is compared like any other version: no release
+has said that build is `0.2.0` yet, so a floor above the last release is
+refused — with both versions in the error — rather than skipped. The
 host primitive set is **v1** and its tool names are a wire contract. The
 plugin install / update / rollback / uninstall *mechanics* are craft's
 (`Store.Install`, `InstallZip`, `Rollback`, `Uninstall`, and the

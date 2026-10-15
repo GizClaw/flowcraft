@@ -66,6 +66,12 @@ type Group struct {
 	subs      map[uint64]func(GroupEvent)
 	nextSub   uint64
 	closed    bool
+	// closing is non-nil while a close is stopping the instances, so a
+	// close arriving behind it can wait for the outcome rather than read
+	// a flag that is not decided yet; closeErr is that outcome, kept for
+	// as long as the group stays closed.
+	closing  chan struct{}
+	closeErr error
 }
 
 // NewGroup creates the instances without starting them.
@@ -165,12 +171,40 @@ func (g *Group) add(spec Spec) (*Manager, error) {
 }
 
 // Add creates and starts one instance.
+//
+// The start runs outside the group lock — it spawns processes — so a
+// close can land between the instance joining the set and the start
+// committing: the close's snapshot then stops an instance that was not
+// running, leaves the group closed, and the instance comes up behind it.
+// What this call started is what this call takes back. An instance
+// running in a group that says closed is one nothing in the group will
+// stop, and reporting the Add as done would leave the caller with no
+// reason to look.
 func (g *Group) Add(ctx context.Context, spec Spec) error {
 	instance, err := g.add(spec)
 	if err != nil {
 		return err
 	}
-	return instance.Start(ctx)
+	if err := instance.Start(ctx); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	if !g.closed {
+		g.mu.Unlock()
+		return nil
+	}
+	// The instance is dropped only while it is still the one this call
+	// added: a concurrent Remove has taken it, and an id added again
+	// since is a different instance.
+	if g.instances[spec.ID] == instance {
+		delete(g.instances, spec.ID)
+	}
+	g.mu.Unlock()
+	closed := errdefs.NotAvailablef("craft manager group: closed")
+	if err := instance.Close(); err != nil {
+		return errors.Join(closed, err)
+	}
+	return closed
 }
 
 // Remove stops and drops one instance. Data on disk is preserved.
@@ -260,13 +294,25 @@ func (g *Group) StartAll(ctx context.Context) error {
 
 // StopAll stops every instance, aggregating failures.
 func (g *Group) StopAll(ctx context.Context) error {
+	return g.stopInstances(ctx, false)
+}
+
+// stopInstances stops every instance, or closes it when finalize is set,
+// aggregating failures.
+func (g *Group) stopInstances(ctx context.Context, finalize bool) error {
 	var errs []error
 	for _, info := range g.Instances() {
 		instance, ok := g.Get(info.ID)
 		if !ok {
 			continue
 		}
-		if err := instance.Stop(ctx); err != nil {
+		var err error
+		if finalize {
+			err = instance.Close()
+		} else {
+			err = instance.Stop(ctx)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("instance %s: %w", info.ID, err))
 		}
 	}
@@ -316,18 +362,65 @@ func (g *Group) Run(ctx context.Context, runner Runner) error {
 	return errors.Join(append(errs, stopErr)...)
 }
 
-// Close stops every instance and marks the group closed.
+// Close closes every instance and marks the group closed.
+//
+// The flag is raised before the stop so no instance can be added behind
+// it, and lowered again when an instance refused the stop: a refusal is
+// nothing stopped, and a group marked closed around an instance that
+// still holds its Craft, its goroutines and its single-instance lock
+// refuses every later Add while its own second Close reports a success
+// that never happened. A group whose instances all ended stopped stays
+// closed whatever the stops reported — their Crafts are gone, and what
+// the errors say is what the caller is told.
+//
+// A close that arrives while another one is stopping the instances waits
+// for it and reports its outcome: the flag says closed only once the
+// stops have run, and a caller answered from the flag alone is told one
+// of the two outcomes without having waited to see which. The instances
+// are closed rather than stopped, so a handle taken before the close
+// cannot bring one back up in a group that says it is done, and the
+// outcome stays with the group for the same reason.
 func (g *Group) Close() error {
 	g.mu.Lock()
-	if g.closed {
+	for g.closing != nil {
+		done := g.closing
 		g.mu.Unlock()
-		return nil
+		<-done
+		g.mu.Lock()
+	}
+	if g.closed {
+		err := g.closeErr
+		g.mu.Unlock()
+		return err
 	}
 	g.closed = true
+	done := make(chan struct{})
+	g.closing = done
+	instances := make([]*Manager, 0, len(g.instances))
+	for _, instance := range g.instances {
+		instances = append(instances, instance)
+	}
 	g.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	return g.StopAll(ctx)
+	err := g.stopInstances(ctx, true)
+	stopped := true
+	for _, instance := range instances {
+		if instance.State() != StateStopped {
+			stopped = false
+			break
+		}
+	}
+	g.mu.Lock()
+	g.closing = nil
+	if stopped {
+		g.closeErr = err
+	} else {
+		g.closed = false
+	}
+	close(done)
+	g.mu.Unlock()
+	return err
 }
 
 // derivePaths fills missing roots from the group root.

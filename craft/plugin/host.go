@@ -579,7 +579,14 @@ func (h *Host) SetEnabled(
 				// process, the disagreement this wait exists to prevent.
 				_ = h.stopEntryLocked(ctx, id, StopRolledBack)
 				if entry.Enabled {
-					_ = h.store.SetEnabled(id, false)
+					// The record goes with the process, and a write that
+					// fails is reported alongside the reason the enable
+					// was undone: nothing else repairs that
+					// disagreement — the failed write bumps no revision
+					// for a reconcile pass to visit — so swallowing it
+					// would leave the application with an entry that
+					// says enabled about a plugin nothing can start.
+					return h.abandonLocked(ctx, id, err)
 				}
 				return err
 			}
@@ -690,8 +697,9 @@ func (h *Host) Uninstall(
 	return nil
 }
 
-// Install installs a plugin from a directory or a zip and keeps its
-// process in step with what was installed.
+// Install installs a plugin from a directory and keeps its process in
+// step with what was installed. A zip package is unpacked by
+// [Store.InstallZip], which is the store's path and touches no process.
 //
 // The store pipeline is the one [Store.Install] runs — the same checks,
 // the same snapshot, the same restore on failure. What this method adds
@@ -699,6 +707,18 @@ func (h *Host) Uninstall(
 // plugin's process reads, so a running plugin is stopped for the change
 // and started again afterwards, from what the store now holds. See
 // [Host.changeLocked] for what happens when either half fails.
+//
+// An id that was not installed at all is recorded disabled once the
+// install succeeded: a change does not turn a plugin on, and the entry a
+// fresh id would otherwise carry — a store with no record for it reads
+// enabled — would say enabled about a plugin with no process behind it,
+// the one state a running host does not leave behind. [Host.SetEnabled]
+// is what starts it.
+//
+// The summary describes what was installed. One kind of failure returns
+// it alongside the error: a fresh install that landed but whose
+// "disabled" record could not be written — the summary is what is on
+// disk, and the error says what could not be recorded about it.
 func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
 	// The id names the process and the entry lock this install has to
 	// keep in step, and it is known only once the source is read.
@@ -709,9 +729,22 @@ func (h *Host) Install(ctx context.Context, source string) (Summary, error) {
 	lock := h.entryLock(summary.ID)
 	lock.Lock()
 	defer lock.Unlock()
-	return h.changeLocked(ctx, summary.ID, func() (Summary, error) {
+	_, installed := h.store.Entry(summary.ID)
+	summary, err = h.changeLocked(ctx, summary.ID, func() (Summary, error) {
 		return h.store.Install(ctx, source)
 	})
+	if err != nil {
+		return Summary{}, err
+	}
+	if installed {
+		return summary, nil
+	}
+	if err := h.store.SetEnabled(summary.ID, false); err != nil {
+		return summary, fmt.Errorf(
+			"plugin host: record the fresh install of %s as disabled: %w",
+			summary.ID, err)
+	}
+	return summary, nil
 }
 
 // UpdateFrom updates one installed plugin from its declared update
@@ -899,12 +932,20 @@ func (h *Host) startAgain(
 	}
 }
 
-// isLive reports whether the host has a process for one plugin.
+// isLive reports whether the host holds a process for one plugin. A
+// plugin whose source gave up is not one: its entry stays tracked — the
+// loss was reported and what the record says is the application's to
+// change — but there is no process behind it, and a caller asking what
+// has to come back after a stop (see [Host.changeLocked]) has to be told
+// so, or a change restarts a plugin the application was already told is
+// gone.
 func (h *Host) isLive(id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, running := h.live[id]
-	return running
+	if _, running := h.live[id]; !running {
+		return false
+	}
+	return !h.lost[id]
 }
 
 // SkillRoots returns the absolute skill directories of every enabled
@@ -1077,6 +1118,12 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	}
 	source, err := h.openSource(ctx, entry, generation)
 	if err != nil {
+		// The environment hook runs before the source is opened — it is
+		// where a process is minted for — so an open that failed can
+		// leave a token for a process that does not exist. The stopped
+		// hook is what revokes one, and it takes it back here exactly as
+		// it does for a process the host let go of.
+		h.runStoppedHook(entry.ID)
 		return nil, err
 	}
 	// The open ran outside the host lock (it spawns a process), so the
@@ -1088,6 +1135,10 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if h.closed {
 		h.mu.Unlock()
 		_ = source.Close()
+		// Closing the source is not what revokes the token minted for
+		// it: the stopped hook is, and this process is one the host is
+		// letting go of (see [Host.runStoppedHook]).
+		h.runStoppedHook(entry.ID)
 		return nil, errdefs.NotAvailablef("plugin host: closed")
 	}
 	h.live[entry.ID] = livePlugin{
@@ -1099,6 +1150,11 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if err := h.tools.AddPlugin(entry.ID, source); err != nil {
 		h.forgetSource(entry.ID, source)
 		_ = source.Close()
+		// The process this start opened is one the host is letting go
+		// of, and closing the source is not what revokes the token
+		// minted for it: the stopped hook is (see
+		// [Host.runStoppedHook]).
+		h.runStoppedHook(entry.ID)
 		return nil, err
 	}
 	return source, nil
@@ -1177,7 +1233,20 @@ func (h *Host) openSource(
 			return nil, err
 		}
 	}
-	return h.newSource(ctx, entry, env, dataDir)
+	source, err := h.newSource(ctx, entry, env, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		// A factory that reports success and hands back nothing is a
+		// bug in the application's seam rather than a plugin that
+		// publishes nothing ([refusedSource] is that), and every caller
+		// below takes the source's Close for granted.
+		return nil, errdefs.Internal(fmt.Errorf(
+			"plugin host: plugin %s: the source factory returned no source",
+			entry.ID))
+	}
+	return source, nil
 }
 
 // refusedSource stands in for a plugin whose mcp section was ignored

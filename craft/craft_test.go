@@ -289,6 +289,9 @@ type parkingBinder struct {
 	parkAt  int
 	entered chan struct{}
 	release chan struct{}
+	// failErr is what the parked call reports once the test releases it:
+	// the bind that was in flight while something else took the key.
+	failErr error
 
 	mu    sync.Mutex
 	calls int
@@ -307,11 +310,12 @@ func (b *parkingBinder) BindRuntime(
 	b.calls++
 	park := b.calls == b.parkAt
 	b.mu.Unlock()
-	if park {
-		close(b.entered)
-		<-b.release
+	if !park {
+		return nil
 	}
-	return nil
+	close(b.entered)
+	<-b.release
+	return b.failErr
 }
 
 type externalCapability struct{}
@@ -1161,6 +1165,71 @@ func TestReloadFailsWhenItsRuntimeIsClosedUnderIt(t *testing.T) {
 					"generation nothing is bound to")
 			}
 		})
+	}
+}
+
+// TestOpenRuntimeBindFailureLeavesTheReopenedKeyAlone covers who owns the
+// entry a failed open is about to remove. OpenRuntime publishes the
+// runtime before its bind runs, so the key is reachable while the bind is
+// in flight: a CloseRuntime and a second open can take it and replace it.
+// The cleanup of the failed open has to leave that second runtime alone —
+// carrying the entry away would leave a runtime serving with nothing
+// pointing at it, and a key that answers NotFound about it and refuses
+// the close that would have released it.
+func TestOpenRuntimeBindFailureLeavesTheReopenedKeyAlone(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	binder := &parkingBinder{
+		parkAt: 1, entered: make(chan struct{}), release: make(chan struct{}),
+		failErr: errors.New("bind refused"),
+	}
+	c, ctx := reloadTestCraft(t, dir, testCapability{}, binder)
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{})
+		firstErr <- err
+	}()
+	select {
+	case <-binder.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the open never reached its bind")
+	}
+	// The runtime is published before the bind, so the key is the
+	// caller's to close while the bind runs.
+	parked, ok := c.Runtime(DefaultKey)
+	if !ok {
+		t.Fatal("the open did not publish its runtime before the bind")
+	}
+	if err := c.CloseRuntime(ctx, DefaultKey); err != nil {
+		t.Fatalf("CloseRuntime under the parked bind: %v", err)
+	}
+	// The key opens again, and this open binds without being parked.
+	if _, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{}); err != nil {
+		t.Fatalf("OpenRuntime after the close: %v", err)
+	}
+	reopened, ok := c.Runtime(DefaultKey)
+	if !ok {
+		t.Fatal("the reopened key is not reachable")
+	}
+	if reopened == parked {
+		t.Fatal("the reopened key still points at the parked runtime")
+	}
+
+	close(binder.release)
+	if err := <-firstErr; err == nil {
+		t.Fatal("the open whose bind failed reported success")
+	}
+	current, ok := c.Runtime(DefaultKey)
+	if !ok || current != reopened {
+		t.Fatalf("after the failed open the key = %v, %v, want the reopened runtime",
+			current, ok)
+	}
+	if err := c.CloseRuntime(ctx, DefaultKey); err != nil {
+		t.Fatalf("CloseRuntime after the failed open: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

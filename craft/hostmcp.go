@@ -23,6 +23,18 @@ type ServiceRegistrar interface {
 	RegisterServices(*hostmcp.ServiceRegistry) error
 }
 
+// serviceFamilies is the set of families host_tools.services may name,
+// each bound to the interface the switch below asserts.
+var serviceFamilies = map[string]struct{}{
+	"secrets":   {},
+	"workspace": {},
+	"browser":   {},
+	"inference": {},
+	"sessions":  {},
+	"telemetry": {},
+	"events":    {},
+}
+
 // hostMCPState wires the host MCP server to the plugin host.
 type hostMCPState struct {
 	server *hostmcp.Server
@@ -91,6 +103,15 @@ func applyServiceBindings(
 	services *hostmcp.Services,
 ) error {
 	for family, binding := range bindings {
+		// The family is checked before the name, so a typo in the
+		// family is reported as one: no capability registers
+		// implementations under a family craft does not know, and
+		// "impl is not registered" about the family that is missing
+		// sends the reader to the wrong file.
+		if _, known := serviceFamilies[family]; !known {
+			return errdefs.Validationf(
+				"craft: host_tools.services has unknown family %q", family)
+		}
 		impl, ok := named.Lookup(family, binding.Impl)
 		if !ok {
 			return errdefs.Validationf(
@@ -155,6 +176,9 @@ func applyServiceBindings(
 			}
 			services.Events = service
 		default:
+			// Unreachable while serviceFamilies and this switch agree.
+			// Kept so a family added to one and not to the other is
+			// refused instead of silently binding nothing.
 			return errdefs.Validationf(
 				"craft: host_tools.services has unknown family %q", family)
 		}
@@ -205,6 +229,7 @@ func (s *hostMCPState) mint(entry plugin.Entry, generation uint64) (string, erro
 	s.mu.Unlock()
 	for _, stale := range previous.tokens {
 		s.tokens.Revoke(stale)
+		s.server.Forget(stale)
 	}
 	if replaced {
 		s.server.Drop(entry.ID)
@@ -221,6 +246,7 @@ func (s *hostMCPState) revokePlugin(id string) {
 	s.mu.Unlock()
 	for _, token := range tokens {
 		s.tokens.Revoke(token)
+		s.server.Forget(token)
 	}
 	s.server.Drop(id)
 }
