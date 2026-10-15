@@ -109,7 +109,7 @@ func renderHot(w io.Writer, hot *hotReading) {
 		printf(w, "    %10d %10s %10s %11.1f%%\n",
 			point.EntriesPerScope, duration(point.Scan), duration(point.Sort), ratio*100)
 	}
-	printf(w, "    (scan is linear in entries, sort scales as n log n; embed is this run's mean %.1fms)\n\n",
+	printf(w, "    (scan is linear in entries, the ordering is the limit's work; embed is this run's mean %.1fms)\n\n",
 		float64(hot.MeanEmbed)/float64(time.Millisecond))
 }
 

@@ -270,7 +270,9 @@ func computeShares(phase vectorPhase, stages map[string]stageReading, contextSum
 }
 
 // projections scale the measured per-entry scan cost to table sizes the run
-// did not have: the sort scales as n log n, the scan linearly.
+// did not have: the scan is linear in the table, and the ordering is the work
+// of the limit the scan asked for -- the offer of one score per admitted entry
+// is part of the per-entry slope -- so it does not grow with the table.
 func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectionPoint {
 	points := make([]projectionPoint, 0, 4)
 	if phase.EntriesScanned <= 0 || entriesPerScope <= 0 {
@@ -282,7 +284,6 @@ func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectio
 		scans = 1
 	}
 	perScanSort := float64(phase.SortTotal) / float64(scans)
-	baseWeight := float64(entriesPerScope) * math.Log2(float64(entriesPerScope))
 	for _, size := range []int{entriesPerScope, 10000, 40000, 100000} {
 		if size <= 0 {
 			continue
@@ -290,7 +291,7 @@ func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectio
 		point := projectionPoint{
 			EntriesPerScope: size,
 			Scan:            perEntry * time.Duration(size),
-			Sort:            time.Duration(perScanSort * float64(size) * math.Log2(float64(size)) / baseWeight),
+			Sort:            time.Duration(perScanSort),
 		}
 		if len(points) > 0 && points[len(points)-1].EntriesPerScope == size {
 			continue

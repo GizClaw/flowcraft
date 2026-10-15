@@ -144,7 +144,11 @@ func TestStageDeltasKeepPerStageCounts(t *testing.T) {
 	}
 }
 
-func TestProjectionsScaleScanLinearlyAndSortAsNLogN(t *testing.T) {
+// TestProjectionsScaleTheScanAndKeepTheOrdering pins the model the table is
+// read with: the scan is linear in the table -- the score and the selection
+// offer happen once per admitted entry -- while the ordering is the work of
+// the limit the scan asked for, so a bigger table does not order more.
+func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 	phase := vectorPhase{Scans: 2, ScanTotal: 20 * time.Millisecond, SortTotal: time.Millisecond, EntriesScanned: 2000}
 	points := projections(phase, 1000, 2048)
 	if len(points) != 4 {
@@ -153,14 +157,14 @@ func TestProjectionsScaleScanLinearlyAndSortAsNLogN(t *testing.T) {
 	if points[0].EntriesPerScope != 1000 || points[0].Scan != 10*time.Millisecond {
 		t.Fatalf("current point = %+v", points[0])
 	}
-	// Ten times the entries cost ten times the scan, and the sort grows a
-	// little faster than ten times.
+	// Ten times the entries cost ten times the scan, and the ordering stays at
+	// what one scan of this run cost.
 	tenX := points[1]
 	if tenX.EntriesPerScope != 10000 || tenX.Scan != 100*time.Millisecond {
 		t.Fatalf("10k point = %+v", tenX)
 	}
-	if tenX.Sort <= 10*points[0].Sort {
-		t.Fatalf("sort did not grow with n log n: %v vs %v", tenX.Sort, points[0].Sort)
+	if tenX.Sort != points[0].Sort || points[0].Sort != 500*time.Microsecond {
+		t.Fatalf("ordering = %v at 10k and %v at 1k", tenX.Sort, points[0].Sort)
 	}
 }
 

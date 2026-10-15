@@ -429,7 +429,7 @@ func fillNorms(build *snapshot) error {
 }
 
 // scanReport is what one scan pass did: the entries it considered, the entries
-// it scored, and the wall time scoring and sorting took. The phases are timed
+// it scored, and the wall time scoring and ordering took. The phases are timed
 // because an exact scan is the lane's own cost -- the alternative an
 // approximate index would remove -- while loading a table and embedding the
 // query are not.
@@ -438,12 +438,17 @@ type scanReport struct {
 	scored    int
 	scanNanos time.Duration
 	// scoreNanos is the part of the scan the cosine itself took over the
-	// entries the filter admitted: their dot with the query, and their norm
-	// when the table does not carry one (a table the lane read does). The rest
-	// of the scan is the walk -- the filter match per entry -- which is what an
-	// approximate index would also have to look at, differently.
+	// entries the filter admitted: their dot with the query, their norm when
+	// the table does not carry one (a table the lane read does), and placing
+	// the score where the order keeps or drops it. The rest of the scan is the
+	// walk -- the filter match per entry -- which is what an approximate index
+	// would also have to look at, differently.
 	scoreNanos time.Duration
-	sortNanos  time.Duration
+	// sortNanos is what it cost to turn the scores into the returned result:
+	// ordering what the scan kept, and materializing those candidates. A scan
+	// with a limit keeps at most the limit, so this is the work of k entries,
+	// not of every match.
+	sortNanos time.Duration
 }
 
 func searchSnapshot(build snapshot, query []float32, filter component.VectorSearchFilter, limit int) ([]component.Candidate, scanReport, error) {
@@ -458,26 +463,23 @@ func searchSnapshot(build snapshot, query []float32, filter component.VectorSear
 	if err != nil {
 		return nil, report, fmt.Errorf("vector projection: query: %w", err)
 	}
-	results, report, err := scoreSnapshot(build, query, queryNorm, filter)
-	if err != nil {
-		return nil, report, err
-	}
-	sortStarted := time.Now()
-	sortCandidates(results)
-	report.sortNanos = time.Since(sortStarted)
-	if limit > 0 && len(results) > limit {
-		results = results[:limit]
-	}
-	return results, report, nil
+	return scoreSnapshot(build, query, queryNorm, filter, limit)
 }
 
 // scoreSnapshot computes the cosine of every entry the filter admits and
-// reports what the pass cost. The table's stored norms are used when it
-// carries them, and computed per entry when it does not.
-func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter component.VectorSearchFilter) ([]component.Candidate, scanReport, error) {
+// reports what the pass cost, keeping the candidates the limit asks for. The
+// table's stored norms are used when it carries them, and computed per entry
+// when it does not.
+func scoreSnapshot(
+	build snapshot,
+	query []float32,
+	queryNorm float64,
+	filter component.VectorSearchFilter,
+	limit int,
+) ([]component.Candidate, scanReport, error) {
 	report := scanReport{scanned: len(build.Entries)}
 	started := time.Now()
-	results := make([]component.Candidate, 0, len(build.Entries))
+	selection := newSelection(limit, len(build.Entries))
 	norms := build.norms
 	if len(norms) != len(build.Entries) {
 		norms = nil
@@ -507,15 +509,127 @@ func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter co
 			return nil, report, fmt.Errorf("vector projection: entry %q produced non-finite cosine", item.ID)
 		}
 		cosine = max(-1, min(1, cosine))
-		report.scoreNanos += time.Since(scoreStarted)
 		report.scored++
-		results = append(results, component.Candidate{
-			ID: item.ID, Lane: laneName, Name: item.Name, Score: cosine,
-			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
-		})
+		selection.offer(ranked{index: index, id: item.ID, score: cosine})
+		report.scoreNanos += time.Since(scoreStarted)
 	}
 	report.scanNanos = time.Since(started)
+	orderStarted := time.Now()
+	kept := selection.result()
+	results := make([]component.Candidate, len(kept))
+	for position, candidate := range kept {
+		item := build.Entries[candidate.index]
+		results[position] = component.Candidate{
+			ID: item.ID, Lane: laneName, Name: item.Name, Score: candidate.score,
+			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
+		}
+	}
+	report.sortNanos = time.Since(orderStarted)
 	return results, report, nil
+}
+
+// ranked is one entry the scan scored: where it sits in the table, the id that
+// breaks a tie, and its cosine.
+type ranked struct {
+	index int
+	id    string
+	score float64
+}
+
+// ranksAfter reports whether left comes after right in the order the scan
+// publishes: a lower score, and on an equal score a higher id. Entry ids are
+// unique in a table, so this is a total order: two candidates never rank
+// neither before nor after each other.
+func (left ranked) ranksAfter(right ranked) bool {
+	if left.score != right.score {
+		return left.score < right.score
+	}
+	return left.id > right.id
+}
+
+// selection keeps the best candidates a scan has seen, without holding a
+// candidate for every entry the filter admitted. It is a min-heap under
+// "ranks after" -- the root is the entry the selection would drop first -- so
+// an entry that beats the root replaces it in time logarithmic in the limit
+// instead of the scan sorting every match at the end.
+//
+// A selection with no bound keeps everything and orders it at the end, which
+// is what a scan that asks for the whole table does. The set a bounded
+// selection holds is exactly the limit best entries: the root is always the
+// worst one kept, so dropping and replacing it can never drop an entry that
+// ranks before one it keeps.
+type selection struct {
+	limit int
+	items []ranked
+}
+
+// newSelection sizes a selection for a limit and a table. A limit that cannot
+// prune -- not set, or at least as large as the table -- keeps everything.
+func newSelection(limit, entries int) selection {
+	if limit <= 0 || limit >= entries {
+		return selection{items: make([]ranked, 0, entries)}
+	}
+	return selection{limit: limit, items: make([]ranked, 0, limit)}
+}
+
+// offer adds one scored entry to the selection.
+func (selection *selection) offer(candidate ranked) {
+	if selection.limit <= 0 {
+		selection.items = append(selection.items, candidate)
+		return
+	}
+	if len(selection.items) < selection.limit {
+		selection.items = append(selection.items, candidate)
+		selection.siftUp(len(selection.items) - 1)
+		return
+	}
+	if !selection.items[0].ranksAfter(candidate) {
+		// The entry the selection would drop first ranks before this one:
+		// there is nothing here to keep.
+		return
+	}
+	selection.items[0] = candidate
+	selection.siftDown(0)
+}
+
+// result returns what the selection kept, in the order the scan publishes.
+func (selection *selection) result() []ranked {
+	kept := selection.items
+	sort.Slice(kept, func(i, j int) bool { return kept[j].ranksAfter(kept[i]) })
+	return kept
+}
+
+// siftUp restores the heap after an entry was appended: the worst entries sit
+// at the root, so an entry that ranks after its parent moves up.
+func (selection *selection) siftUp(index int) {
+	for index > 0 {
+		parent := (index - 1) / 2
+		if !selection.items[index].ranksAfter(selection.items[parent]) {
+			return
+		}
+		selection.items[index], selection.items[parent] = selection.items[parent], selection.items[index]
+		index = parent
+	}
+}
+
+// siftDown restores the heap after the root was replaced: the worst child
+// takes the vacated place, and the entry sinks until no child ranks after it.
+func (selection *selection) siftDown(index int) {
+	for {
+		left := 2*index + 1
+		if left >= len(selection.items) {
+			return
+		}
+		worst := left
+		if right := left + 1; right < len(selection.items) && selection.items[right].ranksAfter(selection.items[left]) {
+			worst = right
+		}
+		if !selection.items[worst].ranksAfter(selection.items[index]) {
+			return
+		}
+		selection.items[index], selection.items[worst] = selection.items[worst], selection.items[index]
+		index = worst
+	}
 }
 
 // entryNorm returns the entry's L2 norm: the one the table already holds when
@@ -741,15 +855,6 @@ func norm(vector []float32) (float64, error) {
 		return 0, errors.New("zero vector is not allowed")
 	}
 	return math.Sqrt(squared), nil
-}
-
-func sortCandidates(values []component.Candidate) {
-	sort.SliceStable(values, func(i, j int) bool {
-		if values[i].Score == values[j].Score {
-			return values[i].ID < values[j].ID
-		}
-		return values[i].Score > values[j].Score
-	})
 }
 
 func requestContent(query string) coremessage.Content {

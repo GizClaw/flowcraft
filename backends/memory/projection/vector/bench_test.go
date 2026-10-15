@@ -11,9 +11,13 @@ import (
 )
 
 // BenchmarkSearchSnapshotScaling measures what an exact scan costs as one
-// scope's table grows, and how much of that cost is the sort. It is the
+// scope's table grows, and how much of that cost is the ordering. It is the
 // reading an approximate index would replace: the per-entry slope is the
-// portable number, the absolute times belong to the machine that ran it.
+// portable number, the absolute times belong to the machine that ran it. The
+// limit dimension is the difference between the two shapes a scan is asked
+// for: no limit prices the whole table (the worst case an exact scan has), and
+// a limit prices what a serving path asks for -- the table is still walked in
+// full, and only the limit best entries are ordered and materialized.
 //
 // The vectors are synthetic, but the width is the eval model's, so the payload
 // these sizes describe is real: an entry costs dimensions times four bytes.
@@ -23,25 +27,31 @@ func BenchmarkSearchSnapshotScaling(b *testing.B) {
 	query := randomVector(rand.New(rand.NewSource(7)), dimensions)
 	for _, size := range sizes {
 		build := randomSnapshot(b, rand.New(rand.NewSource(int64(size))), size, dimensions)
-		b.Run(fmt.Sprintf("entries=%d", size), func(b *testing.B) {
-			b.ReportAllocs()
-			var scan, score, sort time.Duration
-			for i := 0; i < b.N; i++ {
-				results, report, err := searchSnapshot(build, query, component.VectorSearchFilter{}, 0)
-				if err != nil {
-					b.Fatal(err)
-				}
-				if len(results) != size {
-					b.Fatalf("scored %d of %d entries", len(results), size)
-				}
-				scan += report.scanNanos
-				score += report.scoreNanos
-				sort += report.sortNanos
+		for _, limit := range []int{0, 30} {
+			want := size
+			if limit > 0 && limit < size {
+				want = limit
 			}
-			b.ReportMetric(float64(scan.Nanoseconds())/float64(b.N)/1e6, "scan-ms")
-			b.ReportMetric(float64(score.Nanoseconds())/float64(b.N)/1e6, "score-ms")
-			b.ReportMetric(float64(sort.Nanoseconds())/float64(b.N)/1e6, "sort-ms")
-		})
+			b.Run(fmt.Sprintf("entries=%d/limit=%d", size, limit), func(b *testing.B) {
+				b.ReportAllocs()
+				var scan, score, sort time.Duration
+				for i := 0; i < b.N; i++ {
+					results, report, err := searchSnapshot(build, query, component.VectorSearchFilter{}, limit)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if len(results) != want {
+						b.Fatalf("returned %d of %d entries", len(results), want)
+					}
+					scan += report.scanNanos
+					score += report.scoreNanos
+					sort += report.sortNanos
+				}
+				b.ReportMetric(float64(scan.Nanoseconds())/float64(b.N)/1e6, "scan-ms")
+				b.ReportMetric(float64(score.Nanoseconds())/float64(b.N)/1e6, "score-ms")
+				b.ReportMetric(float64(sort.Nanoseconds())/float64(b.N)/1e6, "sort-ms")
+			})
+		}
 	}
 }
 
