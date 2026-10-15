@@ -22,7 +22,7 @@ func BenchmarkSearchSnapshotScaling(b *testing.B) {
 	sizes := []int{1000, 4000, 10000, 40000, 100000}
 	query := randomVector(rand.New(rand.NewSource(7)), dimensions)
 	for _, size := range sizes {
-		build := randomSnapshot(rand.New(rand.NewSource(int64(size))), size, dimensions)
+		build := randomSnapshot(b, rand.New(rand.NewSource(int64(size))), size, dimensions)
 		b.Run(fmt.Sprintf("entries=%d", size), func(b *testing.B) {
 			b.ReportAllocs()
 			var scan, score, sort time.Duration
@@ -47,8 +47,11 @@ func BenchmarkSearchSnapshotScaling(b *testing.B) {
 
 // randomSnapshot builds a table of size entries with deterministic pseudo
 // random vectors: the scan cost does not depend on the values, so the reading
-// stays comparable between runs.
-func randomSnapshot(source *rand.Rand, size, dimensions int) snapshot {
+// stays comparable between runs. The norms are filled in, because a table the
+// lane serves carries them -- a benchmark of the fallback would price a shape
+// no deployment reads.
+func randomSnapshot(tb testing.TB, source *rand.Rand, size, dimensions int) snapshot {
+	tb.Helper()
 	build := snapshot{Dimensions: dimensions, Entries: make([]entry, size)}
 	for i := range build.Entries {
 		build.Entries[i] = entry{
@@ -58,6 +61,9 @@ func randomSnapshot(source *rand.Rand, size, dimensions int) snapshot {
 			Source:        corememory.SourceRef{Kind: corememory.SourceMessage, ID: fmt.Sprintf("source-%d", i)},
 			ContentDigest: fmt.Sprintf("digest-%d", i),
 		}
+	}
+	if err := fillNorms(&build); err != nil {
+		tb.Fatal(err)
 	}
 	return build
 }
