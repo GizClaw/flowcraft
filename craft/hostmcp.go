@@ -165,8 +165,11 @@ func applyServiceBindings(
 // mint issues one token for a plugin and records it for revocation. The
 // secret comes back to hand to the process; the digest is what stays
 // here. A mint failure keeps its cause: the caller reports it, and
-// "mint plugin token" alone would hide whether the entropy source or
-// the store was the problem.
+// "mint plugin token" alone would hide what failed. The only failure
+// Tokens.Mint has is the entropy source, and nothing here can inject
+// one, so this branch is read rather than covered by a test — it exists
+// so a failure that does happen is reported with its class instead of
+// swallowed.
 //
 // generation is the process this token is for. A process of a new
 // generation replaces what the previous one held: its tokens are
