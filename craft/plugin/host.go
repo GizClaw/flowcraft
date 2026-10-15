@@ -598,10 +598,25 @@ func (h *Host) SetEnabled(
 		stands = true
 		return nil
 	}
+	// Disabling is a change like the ones [Host.changeLocked] runs: the
+	// record has to end up describing what the host holds. A stop that
+	// could not take the process out of the way closed its source
+	// anyway, so the record saying enabled goes with it — and nothing
+	// else repairs that disagreement: the write that failed bumps no
+	// revision, so no reconcile pass visits a plugin that is no longer
+	// live, and the application would see a plugin whose tools are gone
+	// while its record says it is running.
 	if err := h.stopEntryLocked(ctx, id, StopRequested); err != nil {
-		return err
+		return h.abandonLocked(ctx, id, err)
 	}
-	return h.store.SetEnabled(id, false)
+	if err := h.store.SetEnabled(id, false); err != nil {
+		// The process is gone and the record is still the old one. The
+		// same compensation applies: the write is attempted again, and a
+		// record that cannot be written either way is reported alongside
+		// the reason the disable failed.
+		return h.abandonLocked(ctx, id, err)
+	}
+	return nil
 }
 
 // setAwaitingReady records that one plugin's enable is in flight. The

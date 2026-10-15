@@ -243,3 +243,59 @@ func TestCloseBoundsTheDrainItWaitsFor(t *testing.T) {
 	close(factory.block)
 	<-callDone
 }
+
+// TestFailedDisableRecordsWhatItStopped pins the compensation of a
+// disable whose stop could not take the process out of the way. The
+// stop closes the source anyway — the drain is bounded — so the plugin
+// is gone while its record still says enabled, and the disable has to
+// leave the two agreeing, exactly as the change and uninstall paths do.
+// Nothing else repairs that disagreement: the failed write bumps no
+// revision, so no reconcile pass visits the plugin, and until the
+// application tries again it holds a record saying enabled about a
+// plugin whose tools have been withdrawn.
+func TestFailedDisableRecordsWhatItStopped(t *testing.T) {
+	t.Parallel()
+	factory := newVersionFactory()
+	factory.block = make(chan struct{})
+	started := make(chan struct{})
+	factory.startedCall = started
+	root := t.TempDir()
+	writePlugin(t, root, "hello", manifestFor("hello", "0.1.0"))
+	store := newStoreOver(t, root)
+	host := startHost(t, store, factory.new)
+	host.drainTimeout = 20 * time.Millisecond
+	if err := host.SetEnabled(context.Background(), "hello", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	held := publishedTool(t, host, "hello__echo")
+	callDone := make(chan struct{})
+	go func() {
+		defer close(callDone)
+		_, _ = held.Execute(context.Background(), "{}")
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call never started")
+	}
+
+	// The drain cannot finish while the call is held, so the disable
+	// gives up on its bound, closes the source anyway, and reports it.
+	if err := host.SetEnabled(context.Background(), "hello", false); err == nil {
+		t.Fatal("the disable reported success over a stop that timed out")
+	}
+	if host.isLive("hello") {
+		t.Fatal("the plugin is still live after the stop that timed out")
+	}
+	entry, ok := store.Entry("hello")
+	if !ok {
+		t.Fatal("the plugin is no longer installed")
+	}
+	if entry.Enabled {
+		t.Fatal("the record still says enabled about a plugin with no process")
+	}
+
+	close(factory.block)
+	<-callDone
+}
