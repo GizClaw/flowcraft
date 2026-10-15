@@ -2,12 +2,47 @@ package vector
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
+
+// unreadableStore fails every read, which is what the lane meets when the
+// state it is bound to read cannot be served. It stays a workspace store in
+// every other respect, so the lane sees the substrate it would serve from.
+type unreadableStore struct{ *storage.WorkspaceKV }
+
+func (store unreadableStore) Get(context.Context, string) ([]byte, error) {
+	return nil, errors.New("storage: state cannot be read")
+}
+
+// TestStatsCountsAFailedLookupApartFromHitsAndLoads pins the counter split: a
+// lookup that returned an error used to be recorded as a hit, so a reading of
+// a lane that served nothing showed a resident table it never read. A hit, a
+// load, and a failed lookup are three outcomes and are counted apart.
+func TestStatsCountsAFailedLookupApartFromHitsAndLoads(t *testing.T) {
+	runtime, model := fakeRuntime(t)
+	kvStore, ok := kvFor(t).(*storage.WorkspaceKV)
+	if !ok {
+		t.Fatalf("kvFor returned %T", kvFor(t))
+	}
+	index, err := New(Config{KV: unreadableStore{kvStore}, Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err == nil {
+		t.Fatal("a lookup that cannot read its state returned a result")
+	}
+	stats := index.Stats()
+	if stats.SnapshotErrors != 1 || stats.SnapshotHits != 0 || stats.SnapshotMisses != 0 {
+		t.Fatalf("failed lookup counted as %+v", stats)
+	}
+}
 
 // waitForStats polls until the reading satisfies want, so a test never races
 // the background warm a write starts.
