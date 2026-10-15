@@ -16,12 +16,23 @@ import (
 // of state a store already holds) starts one warm per scope, and the lane
 // serves the queries between them.
 type Stats struct {
-	Queries        int64         `json:"queries"`
-	SnapshotHits   int64         `json:"snapshot_hits"`
-	SnapshotMisses int64         `json:"snapshot_misses"`
+	Queries        int64 `json:"queries"`
+	SnapshotHits   int64 `json:"snapshot_hits"`
+	SnapshotMisses int64 `json:"snapshot_misses"`
+	// SnapshotErrors counts the lookups that returned an error instead of a
+	// table. A lookup that failed is neither a hit nor a load: the lane went
+	// looking for a table and came back without one, which a reader must not
+	// read as "the scope holds nothing" -- a scope that was never indexed
+	// reports storage.ErrNotFound here, and a state that cannot be read
+	// reports why.
+	SnapshotErrors int64         `json:"snapshot_errors"`
 	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
 	WarmHits       int64         `json:"warm_hits"`
 	WarmMisses     int64         `json:"warm_misses"`
+	// WarmErrors counts the background warms that returned an error. A warm
+	// that failed is why a later query pays a load of its own, so it is
+	// counted rather than dropped.
+	WarmErrors     int64         `json:"warm_errors"`
 	WarmLoad       time.Duration `json:"warm_load_ns"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
@@ -52,9 +63,11 @@ type statsState struct {
 	queries      atomic.Int64
 	snapshotHits atomic.Int64
 	snapshotMiss atomic.Int64
+	snapshotErr  atomic.Int64
 	loadNanos    atomic.Int64
 	warmHits     atomic.Int64
 	warmMiss     atomic.Int64
+	warmErr      atomic.Int64
 	warmNanos    atomic.Int64
 	embeds       atomic.Int64
 	embedNanos   atomic.Int64
@@ -69,25 +82,33 @@ type statsState struct {
 func (state *statsState) recordQuery() { state.queries.Add(1) }
 
 // recordSnapshotLoad adds one table lookup a query paid. loaded is true when
-// the table was materialized off the store instead of served from the cache.
-func (state *statsState) recordSnapshotLoad(elapsed time.Duration, loaded bool) {
+// the table was materialized off the store instead of served from the cache;
+// failed is true when the lookup returned an error, which is counted apart
+// from both.
+func (state *statsState) recordSnapshotLoad(elapsed time.Duration, loaded, failed bool) {
 	state.loadNanos.Add(int64(elapsed))
-	if loaded {
+	switch {
+	case failed:
+		state.snapshotErr.Add(1)
+	case loaded:
 		state.snapshotMiss.Add(1)
-		return
+	default:
+		state.snapshotHits.Add(1)
 	}
-	state.snapshotHits.Add(1)
 }
 
 // recordWarmLoad adds one background warm. It stays out of the serving-path
 // counters above so that a query's own load is what those report.
-func (state *statsState) recordWarmLoad(elapsed time.Duration, loaded bool) {
+func (state *statsState) recordWarmLoad(elapsed time.Duration, loaded, failed bool) {
 	state.warmNanos.Add(int64(elapsed))
-	if loaded {
+	switch {
+	case failed:
+		state.warmErr.Add(1)
+	case loaded:
 		state.warmMiss.Add(1)
-		return
+	default:
+		state.warmHits.Add(1)
 	}
-	state.warmHits.Add(1)
 }
 
 func (state *statsState) recordEmbed(elapsed time.Duration) {
@@ -110,15 +131,15 @@ func (index *Index) recordQuery() {
 	}
 }
 
-func (index *Index) recordSnapshotLoad(elapsed time.Duration, loaded bool) {
+func (index *Index) recordSnapshotLoad(elapsed time.Duration, loaded, failed bool) {
 	if index != nil && index.stats != nil {
-		index.stats.recordSnapshotLoad(elapsed, loaded)
+		index.stats.recordSnapshotLoad(elapsed, loaded, failed)
 	}
 }
 
-func (index *Index) recordWarmLoad(elapsed time.Duration, loaded bool) {
+func (index *Index) recordWarmLoad(elapsed time.Duration, loaded, failed bool) {
 	if index != nil && index.stats != nil {
-		index.stats.recordWarmLoad(elapsed, loaded)
+		index.stats.recordWarmLoad(elapsed, loaded, failed)
 	}
 }
 
@@ -149,9 +170,11 @@ func (index *Index) Stats() Stats {
 	out.Queries = state.queries.Load()
 	out.SnapshotHits = state.snapshotHits.Load()
 	out.SnapshotMisses = state.snapshotMiss.Load()
+	out.SnapshotErrors = state.snapshotErr.Load()
 	out.SnapshotLoad = time.Duration(state.loadNanos.Load())
 	out.WarmHits = state.warmHits.Load()
 	out.WarmMisses = state.warmMiss.Load()
+	out.WarmErrors = state.warmErr.Load()
 	out.WarmLoad = time.Duration(state.warmNanos.Load())
 	out.Embeds = state.embeds.Load()
 	out.EmbedTotal = time.Duration(state.embedNanos.Load())

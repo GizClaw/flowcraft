@@ -104,9 +104,10 @@ func (index *Index) warmSnapshots(scope corememory.Scope) {
 	go func() {
 		started := time.Now()
 		_, loaded, err := index.cachedSnapshot(context.Background(), scope)
-		if err == nil {
-			index.recordWarmLoad(time.Since(started), loaded)
-		}
+		// A warm that failed is recorded too: it is the reason a later query
+		// pays a load of its own, and a warm nobody can see is how a state
+		// that cannot be read stayed invisible.
+		index.recordWarmLoad(time.Since(started), loaded, err != nil)
 	}()
 }
 
@@ -333,7 +334,7 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	index.recordQuery()
 	loadStarted := time.Now()
 	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
-	index.recordSnapshotLoad(time.Since(loadStarted), loaded)
+	index.recordSnapshotLoad(time.Since(loadStarted), loaded, err != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +366,7 @@ func (index *Index) SearchVector(ctx context.Context, request component.VectorSe
 	index.recordQuery()
 	loadStarted := time.Now()
 	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
-	index.recordSnapshotLoad(time.Since(loadStarted), loaded)
+	index.recordSnapshotLoad(time.Since(loadStarted), loaded, err != nil)
 	if err != nil {
 		return nil, err
 	}

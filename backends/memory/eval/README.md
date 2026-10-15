@@ -579,10 +579,17 @@ pass pays once per process: 14.0s on that host, 9.6s on a laptop reading the
 same store.
 
 What makes the numbers worth trusting is that the reading carries its own
-serving proof: `scans` and `embeds` should equal `queries`, and
-`entries_scanned` the table size times the questions asked. A lane whose read
-fails is a diagnostic, not an error — the request is served by the other lanes —
-so a run whose numbers look wrong can be told apart from a lane that served.
+serving proof, and states it: the hot pass prints `self-certified` when
+`queries = scans = questions`, `embeds = queries` and no lookup failed, and the
+JSON keeps the verdict under `certification`, with the disagreements named when
+it does not certify (`entries_scanned` against the table size times the
+questions asked remains the manual form of the same check). A lane whose stored
+state exists but cannot be read is not a lane that found nothing: the request
+fails instead of being answered from the remaining lanes (issue #651), so a
+pass that lost a lane stops the run, naming the lane and the read that failed:
+the error is rendered down its chain, because a memory error states only its
+kind and capability. `snapshot_errors` and `warm_errors` count the lookups that
+returned an error, apart from the hits and the loads.
 
 ## Module dependency
 

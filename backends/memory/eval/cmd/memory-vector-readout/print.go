@@ -1,34 +1,60 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 )
+
+// errorChain renders an error and the causes it does not itself spell out. A
+// wrapper that formats its cause with %w already carries it, so only the levels
+// that add something are appended: a memory error renders as its kind and
+// capability alone, and what a stopped run needs to say -- which lane could not
+// read what -- is what the levels beneath it hold.
+func errorChain(err error) string {
+	var text strings.Builder
+	printed := ""
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		message := current.Error()
+		if strings.Contains(printed, message) {
+			continue
+		}
+		if printed != "" {
+			text.WriteString(": ")
+		}
+		text.WriteString(message)
+		printed = text.String()
+	}
+	return text.String()
+}
 
 func renderCold(w io.Writer, readings []coldReading) {
 	if len(readings) == 0 {
 		return
 	}
 	printf(w, "cold pass (%d scopes, the first question of each, sequential)\n", len(readings))
-	printf(w, "  %-14s %10s %10s %7s %10s %7s %8s %10s %10s\n",
-		"conversation", "latency", "load", "misses", "warm", "warms", "entries", "vector", "heap+d")
+	printf(w, "  %-14s %10s %10s %7s %10s %7s %8s %10s %10s %6s %6s\n",
+		"conversation", "latency", "load", "misses", "warm", "warms", "entries", "vector", "heap+d", "scans", "embeds")
 	loads := make([]time.Duration, 0, len(readings))
 	warms := make([]time.Duration, 0, len(readings))
 	for _, reading := range readings {
 		loads = append(loads, reading.SnapshotLoad)
 		warms = append(warms, reading.WarmLoad)
-		printf(w, "  %-14s %10s %10s %7d %10s %7d %8d %10s %10s\n",
+		printf(w, "  %-14s %10s %10s %7d %10s %7d %8d %10s %10s %6d %6d\n",
 			reading.ConversationID, duration(reading.Latency), duration(reading.SnapshotLoad),
 			reading.SnapshotMisses, duration(reading.WarmLoad), reading.WarmMisses,
 			reading.EntriesAdded, megabytes(reading.VectorBytesAdded),
-			megabytes(reading.HeapDeltaBytes))
+			megabytes(reading.HeapDeltaBytes), reading.Scans, reading.Embeds)
 	}
 	printf(w, "  median load %s, median warm %s\n", duration(median(loads)), duration(median(warms)))
 	printf(w, "  note: load is the question's own materialization (misses counts the questions that paid\n")
 	printf(w, "        it); warm is what the deployment's writes -- including the replay of a store it\n")
-	printf(w, "        already holds -- paid beside it, so a first question can find the table resident\n\n")
+	printf(w, "        already holds -- paid beside it, so a first question can find the table resident\n")
+	printf(w, "        scans/embeds say whether the question was then served by the lane: a row with 0\n")
+	printf(w, "        scans or 0 embeds read a table the lane did not answer with\n\n")
 }
 
 func renderHot(w io.Writer, hot *hotReading) {
@@ -47,9 +73,9 @@ func renderHot(w io.Writer, hot *hotReading) {
 	}
 	phase := hot.Vector
 	line(w, "  vector lane phases")
-	printf(w, "    load   %10s  hits=%d loads=%d  (warm %s, %d misses)\n",
-		duration(phase.SnapshotLoad), phase.SnapshotHits, phase.SnapshotMisses,
-		duration(phase.WarmLoad), phase.WarmMisses)
+	printf(w, "    load   %10s  hits=%d loads=%d errors=%d  (warm %s, %d misses, %d errors)\n",
+		duration(phase.SnapshotLoad), phase.SnapshotHits, phase.SnapshotMisses, phase.SnapshotErrors,
+		duration(phase.WarmLoad), phase.WarmMisses, phase.WarmErrors)
 	printf(w, "    embed  %10s  n=%d  mean %s\n",
 		duration(phase.EmbedTotal), phase.Embeds, duration(hot.MeanEmbed))
 	printf(w, "    scan   %10s  = walk %s + cosine %s\n",
@@ -60,6 +86,14 @@ func renderHot(w io.Writer, hot *hotReading) {
 	printf(w, "    sort   %10s\n", duration(phase.SortTotal))
 	printf(w, "    scanned %d entries, scored %d (a filter may admit fewer than the table holds)\n",
 		phase.EntriesScanned, phase.EntriesScored)
+	if hot.Certification.Certified {
+		line(w, "  self-certified: every question reached the lane (queries = scans = questions,")
+		line(w, "    embeds = queries, no failed lookups)")
+	} else {
+		printf(w, "  NOT self-certified: %s\n", strings.Join(hot.Certification.Reasons, "; "))
+		line(w, "    the numbers above describe a pass whose lane did not serve every question;")
+		line(w, "    quotes belong to a run that certifies")
+	}
 	line(w, "  shares")
 	printf(w, "    of the lane:   scan %.1f%%  sort %.1f%%  embed %.1f%%  load %.1f%%\n",
 		hot.Shares.ScanOfLane*100, hot.Shares.SortOfLane*100, hot.Shares.EmbedOfLane*100, hot.Shares.LoadOfLane*100)

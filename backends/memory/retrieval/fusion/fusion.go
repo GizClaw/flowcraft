@@ -245,6 +245,10 @@ type Lane struct {
 	Calibrator Calibrator
 }
 
+// Diagnostic reports why one lane contributed nothing. An error says the lane
+// could not serve, which is a different answer from a lane that had nothing to
+// serve; retrieval is what reads that difference, and it refuses a request
+// whose lane held state it could not read (see component.StateError).
 type Diagnostic struct {
 	Lane string
 	Err  error

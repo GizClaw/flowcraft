@@ -1,12 +1,42 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	flowmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
+	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
+
+// TestErrorChainNamesEveryCause pins what a stopped run says: the memory error
+// renders as its kind and capability alone, so the renderer walks the chain to
+// reach the report that names the lane and what it could not read.
+func TestErrorChainNamesEveryCause(t *testing.T) {
+	err := corememory.NewError(corememory.KindProviderFailure, "context",
+		fmt.Errorf("retrieval: lane %q cannot read its state: %w", "vector",
+			fmt.Errorf("memory component: %s: state cannot be read: %w", "facts.vector-v1",
+				errors.New("projection: segment 0 digest mismatch"))))
+	text := errorChain(err)
+	for _, want := range []string{
+		"memory: provider_failure capability=context",
+		`lane "vector" cannot read its state`,
+		"facts.vector-v1: state cannot be read",
+		"projection: segment 0 digest mismatch",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("chain %q does not name %q", text, want)
+		}
+	}
+	// A wrapper already carries its cause, and the chain walks the same report
+	// twice, so the renderer states each level once.
+	if count := strings.Count(text, "cannot read its state"); count != 1 {
+		t.Fatalf("chain %q states the lane %d times, want once", text, count)
+	}
+}
 
 func TestDistributionNearestRankAndOver5s(t *testing.T) {
 	values := make([]time.Duration, 0, 100)
@@ -26,6 +56,30 @@ func TestDistributionNearestRankAndOver5s(t *testing.T) {
 	}
 }
 
+// TestCertificationStatesWhetherTheLaneServedThePass pins what a reading may
+// be quoted for: the counts the lane recorded have to agree with the questions
+// the pass asked. A pass where any question did not reach the lane is reported
+// as not certified, with the disagreement named -- the numbers of such a pass
+// describe the other lanes, not the vector lane.
+func TestCertificationStatesWhetherTheLaneServedThePass(t *testing.T) {
+	complete := vectorPhase{Queries: 4, Scans: 4, Embeds: 4}
+	if got := certify(complete, 4); !got.Certified || len(got.Reasons) != 0 {
+		t.Fatalf("complete pass = %+v", got)
+	}
+	for name, phase := range map[string]vectorPhase{
+		"a question the lane never saw":    {Queries: 3, Scans: 4, Embeds: 3},
+		"a question that was not embedded": {Queries: 4, Scans: 4, Embeds: 3},
+		"a lookup that failed":             {Queries: 4, Scans: 4, Embeds: 4, SnapshotErrors: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := certify(phase, 4)
+			if got.Certified || len(got.Reasons) == 0 {
+				t.Fatalf("pass = %+v, want a stated reason", got)
+			}
+		})
+	}
+}
+
 func TestPhaseDeltaAndShares(t *testing.T) {
 	before := vector.Stats{
 		Queries: 3, SnapshotHits: 3, ScanTotal: 30 * time.Millisecond,
@@ -35,10 +89,11 @@ func TestPhaseDeltaAndShares(t *testing.T) {
 	}
 	after := vector.Stats{
 		Queries: 5, SnapshotHits: 4, SnapshotMisses: 1, SnapshotLoad: 8 * time.Millisecond,
-		Scans: 5, ScanTotal: 50 * time.Millisecond, SortTotal: 5 * time.Millisecond,
+		SnapshotErrors: 2,
+		Scans:          5, ScanTotal: 50 * time.Millisecond, SortTotal: 5 * time.Millisecond,
 		Embeds: 5, EmbedTotal: 500 * time.Millisecond,
 		EntriesScanned: 500, EntriesScored: 500,
-		WarmHits: 3, WarmMisses: 1, WarmLoad: 9 * time.Second,
+		WarmHits: 3, WarmMisses: 1, WarmErrors: 1, WarmLoad: 9 * time.Second,
 	}
 	phase := phaseDelta(before, after)
 	if phase.Queries != 2 || phase.Scans != 2 || phase.EntriesScanned != 200 {
@@ -51,6 +106,12 @@ func TestPhaseDeltaAndShares(t *testing.T) {
 	// reader never adds it to the load the queries paid.
 	if phase.WarmLoad != 5*time.Second || phase.WarmHits != 2 || phase.WarmMisses != 0 {
 		t.Fatalf("warm phase = %+v, want the warm's own delta", phase)
+	}
+	// Lookups that failed are their own bucket, and the phase carries them:
+	// they are what tells a pass that lost the lane apart from one that
+	// served it.
+	if phase.SnapshotErrors != 2 || phase.WarmErrors != 1 {
+		t.Fatalf("error phase = %+v", phase)
 	}
 	stages := map[string]stageReading{
 		"lane:vector": {Total: 500 * time.Millisecond, Count: 2},
