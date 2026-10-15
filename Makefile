@@ -13,6 +13,23 @@ MODULES_WORK := core craft $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge e
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
 MODULES_LINT := core craft $(BACKEND_MODULES) $(DRIVER_MODULES)
 
+# Modules a reader builds from their own go.mod and go.sum, without this
+# workspace: every example, plus `craft` itself — a reader requires it
+# directly, so its own pins have to stand on their own, and the workspace
+# was hiding exactly that. They are checked with GOWORK=off (see
+# `check-consumers`); the drivers get the same treatment per module in
+# CI's test matrix.
+#
+# An exemption is a claim about today, and it is checked as one: a module
+# listed here that starts building outside the workspace fails the
+# target, so an exemption cannot outlive the release that made it
+# obsolete. Empty since core v0.7.0 shipped the two symbols that kept
+# craft and examples/anvil pinned below it (core/hooks and
+# core/tool/mcp.WithServerLost); name a module here only with the reason
+# it cannot build yet.
+CONSUMER_EXEMPT :=
+CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)) craft)
+
 # `make fmt` mirrors the CI gofmt -s gate.
 ALL_MODULES := $(MODULES_WORK)
 
@@ -32,6 +49,8 @@ help:
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
+	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
+	@echo "                      plus craft itself; exemptions must still be exempt."
 	@echo "  make ci          vet + test"
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
@@ -59,6 +78,29 @@ lint:
 .PHONY: tidy
 tidy:
 	@$(call GO_FOREACH,$(MODULES_WORK),tidy,go mod tidy)
+
+# Modules are installed with GOBIN pointed at a temp directory: `go
+# install` writes whatever binary a module produces outside the tree
+# (nothing is ever left behind next to the source), and it is a no-op for
+# a library module like `craft` — where `go build -o dir/` refuses to run
+# at all ("no main packages to build").
+.PHONY: check-consumers
+check-consumers:
+	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
+	for m in $(CONSUMER_MODULES); do \
+		echo "==> consumer build $$m"; \
+		( cd $$m && GOWORK=off go mod tidy -diff && GOBIN="$$out" GOWORK=off go install ./... ); \
+	done
+	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
+	for m in $(CONSUMER_EXEMPT); do \
+		echo "==> consumer exemption $$m"; \
+		if log=$$(cd $$m && GOBIN="$$out" GOWORK=off go install ./... 2>&1); then \
+			echo "error: $$m builds outside the workspace now;" \
+				"add it to CONSUMER_MODULES and drop the exemption" >&2; \
+			exit 1; \
+		fi; \
+		echo "$$log" | head -1 | sed 's/^/    /'; \
+	done
 
 .PHONY: ci
 ci: vet test
