@@ -305,8 +305,9 @@ func (c *CachingSecretStore) cached(name string, now time.Time) (secretCacheEntr
 	return secretCacheEntry{}, false
 }
 
-// store records one lookup, reclaiming expired entries and evicting the
-// entry closest to expiry once the capacity bound is reached.
+// store records one lookup, sweeping expired entries when the TTL window
+// has elapsed and evicting the entry closest to expiry once the capacity
+// bound is reached.
 func (c *CachingSecretStore) store(name string, entry secretCacheEntry, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
