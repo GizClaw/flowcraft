@@ -174,15 +174,34 @@ func (g *Group) Add(ctx context.Context, spec Spec) error {
 }
 
 // Remove stops and drops one instance. Data on disk is preserved.
+//
+// The instance leaves the set only once it is stopped. A close that
+// reports a stop that did not happen — the transition gate refused it —
+// leaves the instance in the group, where the caller still has a handle
+// to it: dropping it first would leave a Craft running with its
+// goroutines, its plugin processes and its single-instance lock, and no
+// way back to any of them. A close that stopped the instance but
+// reported a drain problem leaves it too, so a second Remove can finish
+// the drop.
 func (g *Group) Remove(ctx context.Context, id InstanceID) error {
 	g.mu.Lock()
 	instance := g.instances[id]
-	delete(g.instances, id)
 	g.mu.Unlock()
 	if instance == nil {
 		return nil
 	}
-	return instance.Close()
+	if err := instance.Close(); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	// The instance is dropped only while it is still the one this call
+	// closed: a concurrent Remove has taken it, and an id added again
+	// since is a different instance.
+	if g.instances[id] == instance {
+		delete(g.instances, id)
+	}
+	g.mu.Unlock()
+	return nil
 }
 
 // Get returns one instance.
@@ -263,7 +282,13 @@ func (g *Group) Run(ctx context.Context, runner Runner) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if err := g.StartAll(runCtx); err != nil {
-		return err
+		// Run returning means the group is not running: the instances
+		// that did start must not be left behind holding their Craft,
+		// their goroutines and their single-instance locks with no
+		// runner that reaches them. The stop runs on a context of its
+		// own, because the caller's may be the very thing that failed.
+		stopErr := g.StopAll(context.WithoutCancel(ctx))
+		return errors.Join(err, stopErr)
 	}
 	var wait sync.WaitGroup
 	var mu sync.Mutex

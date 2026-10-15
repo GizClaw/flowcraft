@@ -13,6 +13,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 type identityKey struct{}
@@ -31,6 +32,9 @@ type ServerOptions struct {
 	Audit func(AuditEvent)
 	// RateLimit bounds requests per second per token; <=0 uses 20.
 	RateLimit int
+	// ShutdownTimeout bounds how long Close waits for in-flight requests
+	// to finish; <=0 uses 5s.
+	ShutdownTimeout time.Duration
 }
 
 // AuditEvent describes one primitive call outcome.
@@ -57,10 +61,17 @@ type Server struct {
 	listen  net.Listener
 	url     string
 	closed  bool
-	audit   func(AuditEvent)
-	limit   int
-	rates   map[string]*rateWindow
-	rateMu  sync.Mutex
+	// closeErr is what the shutdown returned. The flag above is set
+	// before the listener goes away on purpose — Start must not be able
+	// to listen again while a shutdown is in flight — so the outcome is
+	// recorded here instead: a second Close reports the failure the
+	// first one saw rather than a fresh nil.
+	closeErr error
+	audit    func(AuditEvent)
+	limit    int
+	shutdown time.Duration
+	rates    map[Token]*rateWindow
+	rateMu   sync.Mutex
 }
 
 // NewServer builds the HTTP handler (the listener starts in Start).
@@ -78,10 +89,14 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		servers:     make(map[string]*mcpsdk.Server),
 		audit:       opts.Audit,
 		limit:       opts.RateLimit,
-		rates:       make(map[string]*rateWindow),
+		rates:       make(map[Token]*rateWindow),
 	}
 	if server.limit <= 0 {
 		server.limit = 20
+	}
+	server.shutdown = opts.ShutdownTimeout
+	if server.shutdown <= 0 {
+		server.shutdown = 5 * time.Second
 	}
 	server.handler = mcpsdk.NewStreamableHTTPHandler(
 		func(request *http.Request) *mcpsdk.Server {
@@ -124,7 +139,14 @@ func (s *Server) Start() error {
 	// field, and a field read here would race with it — a scheduling
 	// that lost the race then served from a nil server.
 	go func() {
-		_ = httpServer.Serve(listener)
+		// A clean shutdown is ErrServerClosed and is not worth a line;
+		// anything else means the endpoint stopped serving on its own,
+		// which the host has to be able to see.
+		if err := httpServer.Serve(listener); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			telemetry.WarnErr(context.Background(),
+				"hostmcp: server stopped serving", err)
+		}
 	}()
 	return nil
 }
@@ -148,8 +170,9 @@ func (s *Server) Drop(pluginID string) {
 func (s *Server) Close() error {
 	s.mu.Lock()
 	if s.closed {
+		err := s.closeErr
 		s.mu.Unlock()
-		return nil
+		return err
 	}
 	s.closed = true
 	httpServer := s.http
@@ -159,9 +182,13 @@ func (s *Server) Close() error {
 	if httpServer == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdown)
 	defer cancel()
-	return httpServer.Shutdown(ctx)
+	err := httpServer.Shutdown(ctx)
+	s.mu.Lock()
+	s.closeErr = err
+	s.mu.Unlock()
+	return err
 }
 
 // ServeHTTP authenticates the bearer token, enforces loopback-only
@@ -176,12 +203,12 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
-	identity, ok := s.tokens.Lookup(token)
+	identity, minted, ok := s.tokens.Lookup(token)
 	if !ok {
 		http.Error(writer, "invalid bearer token", http.StatusUnauthorized)
 		return
 	}
-	if !s.allow(token) {
+	if !s.allow(minted) {
 		http.Error(writer, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -194,8 +221,10 @@ type rateWindow struct {
 	count int
 }
 
-// allow implements a fixed one-second window per token.
-func (s *Server) allow(token string) bool {
+// allow implements a fixed one-second window per token. The window is
+// keyed by the token's digest ([Token]): the rate table is not a place
+// a replayable secret is allowed to accumulate.
+func (s *Server) allow(token Token) bool {
 	now := time.Now()
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
@@ -243,6 +272,18 @@ func (s *Server) serverFor(identity Identity) *mcpsdk.Server {
 	server := s.buildServer(identity)
 	s.servers[identity.PluginID] = server
 	return server
+}
+
+// Cached reports whether this server is holding the SDK server it built
+// for one plugin. The tools that server exposes are chosen when it is
+// built, from the grants of the process that first connected — so the
+// host drops it whenever that process is replaced, and a reader that
+// reports or verifies a plugin's state can see that happen. A plugin
+// that never called the endpoint is not cached.
+func (s *Server) Cached(pluginID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.servers[pluginID] != nil
 }
 
 func (s *Server) buildServer(identity Identity) *mcpsdk.Server {

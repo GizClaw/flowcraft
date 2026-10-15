@@ -116,6 +116,59 @@ func TestContributionsRequirePermission(t *testing.T) {
 	}
 }
 
+// TestContributionListsReportAnUnreadableState pins what the two
+// contribution readers do with a state file they cannot read. The list
+// they answer with is the fail-closed one — the same view every other
+// reader of that file returns — and they say so, because "this host
+// contributes no skills and no hooks" is a claim an application acts
+// on, and it is not the same claim as "this host could not tell".
+func TestContributionListsReportAnUnreadableState(t *testing.T) {
+	sink := installLogSink(t)
+	root := t.TempDir()
+	const id = "hello"
+	writePlugin(t, root, id, contributionManifest(
+		id, "skills:provide", "hooks:provide"))
+	writeContributionTree(t, root, id)
+	stateDir := t.TempDir()
+	store, err := NewStore(Options{
+		Roots:       []Root{{Path: root}},
+		StateDir:    stateDir,
+		DataDirRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	host, err := NewHost(HostOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	if err := host.SetEnabled(context.Background(), id, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+	if skills := host.SkillRoots(); len(skills) != 1 {
+		t.Fatalf("SkillRoots of a healthy store = %v, want one entry", skills)
+	}
+	// The damage a crash mid-write leaves behind.
+	if err := os.WriteFile(filepath.Join(stateDir, "enabled.json"),
+		[]byte(`{"hello": `), 0o600); err != nil {
+		t.Fatalf("damage state: %v", err)
+	}
+	if skills := host.SkillRoots(); len(skills) != 0 {
+		t.Fatalf("SkillRoots of an unreadable state = %v, want none", skills)
+	}
+	if sources := host.HookSources(); len(sources) != 0 {
+		t.Fatalf("HookSources of an unreadable state = %v, want none", sources)
+	}
+	for _, body := range []string{
+		"cannot list the skills of the enabled plugins",
+		"cannot list the hooks of the enabled plugins",
+	} {
+		if found := sink.find(body); len(found) == 0 {
+			t.Fatalf("no line reported %q", body)
+		}
+	}
+}
+
 // TestDisabledPluginContributesNothing covers the other fail-closed
 // half: disabling a plugin withdraws its skills and hooks even though
 // its permissions still authorize them.

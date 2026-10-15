@@ -44,7 +44,9 @@ const (
 // used — the expiry check only turns an attempt that came back with
 // nothing in hand into "not ready". Attempts after a retryable failure
 // are spaced by retryBackoff, so a guard that fails instantly cannot
-// spin the loop.
+// spin the loop. The window never cancels the first attempt: that
+// attempt belongs to the caller and runs even when the window is
+// already spent (see [Spec.RetryAttempts]).
 //
 // stop is consulted before every retry, never before the first attempt:
 // a caller whose premise expired — the window moved away from the key
@@ -67,11 +69,18 @@ func (p *Pool[T]) Do(
 	deadline := time.Now().Add(p.retryWindow())
 	lastErr := error(ErrNotReady)
 	for attempt := 0; attempt < p.retryAttempts(); attempt++ {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
+		// The first attempt always runs: it is the caller's own
+		// resolution of the key it named, and a window that is already
+		// spent must not turn the call into "not ready" without a member
+		// ever being asked for. What is left of the window still bounds
+		// it, because the window bounds the whole call; the caller's own
+		// context is what bounds it when nothing is left.
+		attemptCtx, cancel := ctx, context.CancelFunc(func() {})
+		if remaining := time.Until(deadline); remaining > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, remaining)
+		} else if attempt > 0 {
 			return lastErr
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
 		v, err := p.Ensure(attemptCtx, k)
 		// Only the window's own expiry is absorbed below. A caller whose
 		// context died (a canceled call, a deadline of its own) keeps its

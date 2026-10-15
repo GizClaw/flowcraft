@@ -107,7 +107,11 @@ type harness struct {
 	wanted    func(Key) bool
 	openGate  chan struct{}
 	closeGate chan struct{}
-	openErr   error
+	// closeCallGate blocks the Close call itself, so a test can hold a
+	// teardown at the moment it began: the pool must not treat a member
+	// whose Close has not returned yet as one that is already down.
+	closeCallGate chan struct{}
+	openErr       error
 	// openIgnoresCtx models an assembly that finishes after the caller's
 	// attempt deadline: it waits for the gate and never looks at ctx.
 	openIgnoresCtx bool
@@ -149,9 +153,12 @@ func newHarness(t *testing.T, tune ...func(*Spec[fakeMember])) *harness {
 		},
 		Close: func(m *fakeMember) {
 			h.mu.Lock()
-			gate := h.closeGate
+			gate, callGate := h.closeGate, h.closeCallGate
 			h.mu.Unlock()
 			h.closedCh <- m
+			if callGate != nil {
+				<-callGate
+			}
 			m.beginClose(gate)
 		},
 		Busy: func(m *fakeMember) bool { return m.busy() },
@@ -190,13 +197,28 @@ func newHarness(t *testing.T, tune ...func(*Spec[fakeMember])) *harness {
 // pooled installs a member for k the way a finished assembly would, so
 // a test can start from a populated pool without running Open. units is
 // how much work the member has in flight.
+//
+// The member is published without a reference, exactly as an Ensure
+// that assembled it would have published it: a test that wants one out
+// stands in for a caller by taking it with Acquire.
 func (h *harness) pooled(k Key, units int) *fakeMember {
 	m := newFakeMember(k)
 	m.units = units
 	h.pool.mu.Lock()
-	h.pool.pooled[k] = &entry[fakeMember]{value: m, refs: 1}
+	h.pool.pooled[k] = newEntry(m)
 	h.pool.mu.Unlock()
 	return m
+}
+
+// pooledRefs reports how many references are checked out to the pool's
+// member for k.
+func (h *harness) pooledRefs(k Key) int {
+	h.pool.mu.Lock()
+	defer h.pool.mu.Unlock()
+	if e := h.pool.pooled[k]; e != nil {
+		return e.refs
+	}
+	return 0
 }
 
 // finish ends one unit of work on the member and settles it when that

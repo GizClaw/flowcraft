@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestRepeatedInvalidationsArmOneReplacement pins the once-per-key
@@ -65,6 +66,64 @@ func TestRepeatedInvalidationsArmOneReplacement(t *testing.T) {
 	}
 	if h.pool.Stale(k) {
 		t.Fatal("the replaced key is still reported stale")
+	}
+}
+
+// TestReplacementWaitsForTheDrainWithNoWaitClosedHook pins what a
+// deferred rebuild waits for when the application has no WaitClosed hook
+// to ask. The member that is still serving — invalidated, but holding a
+// unit of work — is what the replacement waits for, through the pool's
+// own record of its teardown: a pool that read a missing hook as
+// "teardown is over" would land the replacement under the live
+// generation, which is the one state the whole bookkeeping exists to
+// prevent (and the replacement it landed would be the old member, so
+// the key would go on serving what it asked to have replaced).
+func TestReplacementWaitsForTheDrainWithNoWaitClosedHook(t *testing.T) {
+	h := newHarness(t, func(s *Spec[fakeMember]) { s.WaitClosed = nil })
+	k := Key{"workspace", "/ws/no-wait-closed"}
+	old := h.pooled(k, 0)
+	old.work()
+
+	ctx := WithReason(context.Background(), "settings_save")
+	h.pool.Invalidate(ctx, k)
+	if !h.pool.ScheduleReplacement(ctx, k) {
+		t.Fatal("the arm was refused")
+	}
+	if got := h.pool.Current(k); got != old {
+		t.Fatalf("Current = %p, want the still-serving %p", got, old)
+	}
+
+	// The watcher gets its turn while the old generation still serves,
+	// and must spend it waiting: a replacement that landed now would be
+	// the member that asked to be replaced, and the key would go on
+	// serving the generation the arm exists to retire.
+	time.Sleep(100 * time.Millisecond)
+	if !h.pool.ReplacementArmed(k) {
+		t.Fatal("the replacement landed while the old generation still served")
+	}
+	if got := h.buildCount(); got != 0 {
+		t.Fatalf("assemblies = %d, want 0 while the old generation serves", got)
+	}
+	h.mu.Lock()
+	replaced := append([]Key(nil), h.replaced...)
+	h.mu.Unlock()
+	if len(replaced) != 0 {
+		t.Fatalf("Replaced ran for %v before the drain ended", replaced)
+	}
+
+	// The last unit ends: the member is retired and torn down, and only
+	// then does the replacement land — a fresh member, not the one that
+	// asked to be replaced.
+	h.finish(old)
+	h.waitClosed(old)
+	h.eventually("the replacement to land", func() bool {
+		return !h.pool.ReplacementArmed(k)
+	})
+	if got := h.buildCount(); got != 1 {
+		t.Fatalf("assemblies = %d, want exactly 1 replacement", got)
+	}
+	if fresh := h.pool.Current(k); fresh == nil || fresh == old {
+		t.Fatalf("Current = %p, want a fresh member", fresh)
 	}
 }
 

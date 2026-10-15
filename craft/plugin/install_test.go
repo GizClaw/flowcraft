@@ -85,6 +85,78 @@ func TestInstallUpdateRollback(t *testing.T) {
 	}
 }
 
+// TestRollbackParksTheSwapOutsideTheScannedRoot pins where a rollback
+// puts the copy it replaces. The swap directory is what the two renames
+// need, and it must not be somewhere the scan looks: parked as
+// "<id>.rollback-trash" in the plugin root, a crash between the two
+// renames left a directory that scanned as a plugin of its own — under
+// the same id as the plugin it was a copy of.
+func TestRollbackParksTheSwapOutsideTheScannedRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newRootStore(t, root)
+	source := t.TempDir()
+	writePlugin(t, source, "hello", manifestFor("hello", "0.1.0"))
+	if _, err := store.Install(context.Background(),
+		filepath.Join(source, "hello")); err != nil {
+		t.Fatalf("install 0.1.0: %v", err)
+	}
+	writePlugin(t, source, "hello", manifestFor("hello", "0.2.0"))
+	if _, err := store.Install(context.Background(),
+		filepath.Join(source, "hello")); err != nil {
+		t.Fatalf("install 0.2.0: %v", err)
+	}
+	if _, err := store.Rollback(context.Background(), "hello"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	// The swap is over: everything the scan can see in the root is the
+	// plugin itself, and no second copy of it is left behind.
+	dirs, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	var scanned []string
+	for _, dir := range dirs {
+		if !strings.HasPrefix(dir.Name(), ".") {
+			scanned = append(scanned, dir.Name())
+		}
+	}
+	if len(scanned) != 1 || scanned[0] != "hello" {
+		t.Fatalf("plugin root holds %v to scan, want just the plugin", scanned)
+	}
+	// A swap directory left behind by a crash is invisible to the scan,
+	// so it can never be served as the installed plugin.
+	trash := trashPath(root, "hello")
+	if err := os.MkdirAll(trash, 0o700); err != nil {
+		t.Fatalf("mkdir trash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, "plugin.json"),
+		[]byte(manifestFor("hello", "9.9.9")), 0o600); err != nil {
+		t.Fatalf("write trash manifest: %v", err)
+	}
+	entry, ok := store.Entry("hello")
+	if !ok || entry.Manifest.Version != "0.1.0" {
+		t.Fatalf("entry with a parked swap present = %+v, %v", entry, ok)
+	}
+	// Uninstalling takes both the snapshot and the parked swap with it,
+	// so a plugin that is gone leaves nothing of itself behind — and the
+	// snapshots directory itself, which the scan skips and which may
+	// hold the snapshots of plugins that are still installed, does not
+	// become an entry.
+	if err := store.Uninstall(context.Background(), "hello",
+		UninstallOptions{}); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	for _, path := range []string{trash, backupPath(root, "hello")} {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s after the uninstall: %v", path, err)
+		}
+	}
+	if _, ok := store.Entry("hello"); ok {
+		t.Fatal("the uninstalled plugin is still an entry")
+	}
+}
+
 // builtinStore opens a store with one read-only root and one writable
 // root, the shape an application ships plugins in.
 func builtinStore(t *testing.T, builtin, user string) *Store {
@@ -396,6 +468,63 @@ func TestUninstallRemovesBrokenPlugin(t *testing.T) {
 	if err := store.Uninstall(context.Background(), "Bad!",
 		UninstallOptions{}); !errdefs.IsValidation(err) {
 		t.Fatalf("Uninstall with an invalid id = %v, want Validation", err)
+	}
+}
+
+// TestHostUninstallRefusesBeforeStopping pins the order of the two
+// halves of an uninstall. What an uninstall would be refused for — a
+// builtin, an id that does not exist, an id that is not an id — has to
+// be answered while the plugin's process is still running: stopping
+// first and failing afterwards leaves the record saying enabled about a
+// plugin whose process is gone, and no reading of the entry can tell
+// the user which of the two they have.
+func TestHostUninstallRefusesBeforeStopping(t *testing.T) {
+	t.Parallel()
+	builtin := t.TempDir()
+	user := t.TempDir()
+	writePlugin(t, builtin, "hello", contributionManifest("hello", "mcp:provide"))
+	writeContributionTree(t, builtin, "hello")
+	store := builtinStore(t, builtin, user)
+	factory := newSourceFactory()
+	// A builtin plugin scans as enabled, so starting the host starts it:
+	// the process the refusals must not touch is already up.
+	host := startHost(t, store, factory.new)
+	created := factory.created["hello"]
+	if created == 0 {
+		t.Fatal("the builtin plugin has no process to be refused a stop")
+	}
+	revision := store.Revision()
+
+	for _, refuse := range []struct {
+		id   string
+		want func(error) bool
+		what string
+	}{
+		{id: "hello", want: errdefs.IsForbidden, what: "a builtin"},
+		{id: "missing", want: errdefs.IsNotFound, what: "an unknown id"},
+		{id: "Bad!", want: errdefs.IsValidation, what: "an id that is not an id"},
+	} {
+		err := host.Uninstall(context.Background(), refuse.id, UninstallOptions{})
+		if !refuse.want(err) {
+			t.Fatalf("Uninstall of %s = %v", refuse.what, err)
+		}
+	}
+	// Nothing moved: the process is the one that was there, its tools
+	// are still published, the record still calls it enabled, and the
+	// revision watchers saw no change.
+	if factory.created["hello"] != created || factory.closed["hello"] != 0 {
+		t.Fatalf("a refused uninstall touched the process: %+v", factory)
+	}
+	if tools := host.ToolSet().Tools(); len(tools) != 1 {
+		t.Fatalf("tools after the refusals = %v, want the plugin's one", tools)
+	}
+	entry, ok := store.Entry("hello")
+	if !ok || !entry.Enabled || !entry.Builtin {
+		t.Fatalf("entry after the refusals = %+v, %v", entry, ok)
+	}
+	if store.Revision() != revision {
+		t.Fatalf("revision moved from %d to %d on a refused uninstall",
+			revision, store.Revision())
 	}
 }
 

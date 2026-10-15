@@ -54,6 +54,10 @@ type ToolSet struct {
 	children   map[string]*childEntry
 	downstream map[tool.Registrar]struct{}
 	tools      map[string]ownerTool
+	// drainTimeout bounds how long Close waits for one plugin's
+	// in-flight calls; the host sets it from its own drain timeout (see
+	// [HostOptions.DrainTimeout]). Zero means [DefaultDrainTimeout].
+	drainTimeout time.Duration
 }
 
 type childEntry struct {
@@ -69,10 +73,19 @@ type ownerTool struct {
 
 // NewToolSet returns an empty aggregator.
 func NewToolSet() *ToolSet {
+	return newToolSet(0)
+}
+
+// newToolSet returns an empty aggregator whose Close is bounded by
+// drainTimeout, the host's own bound: the aggregator drains the same
+// processes the host stops, so the two waits have to be the same one.
+// Zero means [DefaultDrainTimeout].
+func newToolSet(drainTimeout time.Duration) *ToolSet {
 	return &ToolSet{
-		children:   make(map[string]*childEntry),
-		downstream: make(map[tool.Registrar]struct{}),
-		tools:      make(map[string]ownerTool),
+		children:     make(map[string]*childEntry),
+		downstream:   make(map[tool.Registrar]struct{}),
+		tools:        make(map[string]ownerTool),
+		drainTimeout: drainTimeout,
 	}
 }
 
@@ -161,8 +174,9 @@ func (t *ToolSet) AddPlugin(id string, source Source) error {
 	return nil
 }
 
-// RemovePlugin removes the plugin's tools from every registry, waits
-// for in-flight calls bounded by ctx, then closes the source.
+// RemovePlugin closes the plugin to new calls, removes its tools from
+// every registry, waits for the calls in flight bounded by ctx, then
+// closes the source.
 func (t *ToolSet) RemovePlugin(ctx context.Context, id string) error {
 	if t == nil {
 		return nil
@@ -185,6 +199,12 @@ func (t *ToolSet) RemovePlugin(ctx context.Context, id string) error {
 	}
 	t.mu.Unlock()
 
+	// The drain's cutoff is here, not somewhere inside the fan-out
+	// below: a tool a caller resolved a moment ago is refused from now
+	// on, instead of being admitted into a wait that is about to stop
+	// accounting for it. The wait then covers exactly the calls this
+	// drain was decided with.
+	entry.flight.stop()
 	for _, registrar := range downstream {
 		for _, name := range names {
 			registrar.Remove(name)
@@ -198,6 +218,11 @@ func (t *ToolSet) RemovePlugin(ctx context.Context, id string) error {
 }
 
 // Close removes every plugin and releases the sources.
+//
+// Each plugin's drain is bounded by the host's drain timeout: a call
+// that does not finish in time is reported, and the source is closed
+// anyway — an unbounded close would let one hung call keep the whole
+// process from shutting down.
 func (t *ToolSet) Close() error {
 	if t == nil {
 		return nil
@@ -211,7 +236,7 @@ func (t *ToolSet) Close() error {
 	sort.Strings(ids)
 	var errs []error
 	for _, id := range ids {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), t.drainBound())
 		if err := t.RemovePlugin(ctx, id); err != nil {
 			errs = append(errs, err)
 		}
@@ -224,6 +249,15 @@ func (t *ToolSet) Close() error {
 		return nil
 	}
 	return errdefs.Internal(errs[0])
+}
+
+// drainBound is how long one plugin's drain may take: the host's drain
+// timeout, or the package default for a ToolSet nobody wired.
+func (t *ToolSet) drainBound() time.Duration {
+	if t.drainTimeout > 0 {
+		return t.drainTimeout
+	}
+	return DefaultDrainTimeout
 }
 
 // pluginRegistrar scopes child-source publications to one plugin.
@@ -305,22 +339,76 @@ func (t *ToolSet) prune(registrar tool.Registrar) {
 	t.mu.Unlock()
 }
 
-// flight counts in-flight tool executions for one plugin.
+// flight counts one plugin's in-flight tool executions and closes itself
+// to new ones when the plugin's drain begins.
+//
+// The closing half is what makes the count mean anything: a call that
+// begins after the drain started would extend a wait that has already
+// finished, and the process would be closed under it. Counting with a
+// wait group alone cannot express that — its Add races its Wait — so the
+// count and the closing flag live under one lock, and a call arriving
+// once the drain began is refused instead of counted.
 type flight struct {
-	wg sync.WaitGroup
+	mu      sync.Mutex
+	closing bool
+	active  int
+	// drained is closed when the last in-flight call ends; a drain that
+	// begins with nothing in flight gets a closed one instead.
+	drained chan struct{}
 }
 
-func (f *flight) begin() { f.wg.Add(1) }
-func (f *flight) end()   { f.wg.Done() }
+// begin counts one call, or refuses it because the plugin is draining.
+// A refused call never reaches the process: it is answered by the error,
+// not by a dead server.
+func (f *flight) begin() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closing {
+		return errdefs.Conflictf(
+			"plugin tools: the plugin is stopping; retry its next generation")
+	}
+	f.active++
+	return nil
+}
 
+// end drops one counted call, waking a drain when it was the last.
+func (f *flight) end() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.active--
+	if f.active == 0 && f.drained != nil {
+		close(f.drained)
+		f.drained = nil
+	}
+}
+
+// stop closes the flight to new calls without waiting for the ones in
+// flight. It is the drain's cutoff: the calls that are counted by the
+// time it ran are the ones a drain is a wait on.
+func (f *flight) stop() {
+	f.mu.Lock()
+	f.closing = true
+	f.mu.Unlock()
+}
+
+// wait closes the flight to new calls and waits for the ones in flight,
+// bounded by ctx. A caller that gives up waiting keeps the refusal:
+// whatever it is about to do to the process, no new call may join the
+// set it stopped accounting for.
 func (f *flight) wait(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		f.wg.Wait()
-		close(done)
-	}()
+	f.stop()
+	f.mu.Lock()
+	if f.active == 0 {
+		f.mu.Unlock()
+		return nil
+	}
+	if f.drained == nil {
+		f.drained = make(chan struct{})
+	}
+	drained := f.drained
+	f.mu.Unlock()
 	select {
-	case <-done:
+	case <-drained:
 		return nil
 	case <-ctx.Done():
 		return errdefs.FromContext(ctx.Err())
@@ -338,7 +426,9 @@ func (t trackedTool) Execute(
 	ctx context.Context,
 	arguments string,
 ) (message.Content, error) {
-	t.flight.begin()
+	if err := t.flight.begin(); err != nil {
+		return message.Content{}, err
+	}
 	defer t.flight.end()
 	return t.Tool.Execute(ctx, arguments)
 }

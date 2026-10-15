@@ -141,6 +141,13 @@ func (c *Craft) mountPluginNodes(doc *deploy.Document) error {
 		// opened, so a node backed by a plugin that lacks it is still
 		// synthesized and fails at call time with the missing grant
 		// instead of silently disappearing here.
+		//
+		// A plugin another plugin's tool namespace collides with is
+		// skipped: it cannot be started, so a node over it would be a
+		// resource that can never answer.
+		if entry.Conflict != "" {
+			continue
+		}
 		if !entry.Manifest.HasPermission("nodes:provide") {
 			continue
 		}

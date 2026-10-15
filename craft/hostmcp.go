@@ -28,7 +28,22 @@ type hostMCPState struct {
 	server *hostmcp.Server
 	tokens *hostmcp.Tokens
 	mu     sync.Mutex
-	byID   map[string][]string
+	// byID records what was minted for one plugin's process as digests
+	// ([hostmcp.Token]), never as the secrets themselves: revocation is
+	// the only thing this map is for, and it must not be a second place
+	// a replayable token lives. The record names the generation of the
+	// process the tokens were minted for, because the grants a token
+	// carries are the ones the manifest asked for when that process was
+	// started: a process of a later generation replaces them (see
+	// [hostMCPState.mint]).
+	byID map[string]mintedTokens
+}
+
+// mintedTokens is one plugin's live host tokens, with the generation of
+// the process they were minted for.
+type mintedTokens struct {
+	generation uint64
+	tokens     []hostmcp.Token
 }
 
 // newHostMCP builds the server when the craft declares host services.
@@ -53,7 +68,11 @@ func newHostMCP(
 	if err != nil {
 		return nil, err
 	}
-	return &hostMCPState{server: server, tokens: tokens, byID: map[string][]string{}}, nil
+	return &hostMCPState{
+		server: server,
+		tokens: tokens,
+		byID:   map[string]mintedTokens{},
+	}, nil
 }
 
 // hostAudit records one primitive call outcome without payloads or
@@ -143,30 +162,61 @@ func applyServiceBindings(
 	return nil
 }
 
-// mint issues one token for a plugin and records it for revocation.
-func (s *hostMCPState) mint(entry plugin.Entry) string {
+// mint issues one token for a plugin and records it for revocation. The
+// secret comes back to hand to the process; the digest is what stays
+// here. A mint failure keeps its cause: the caller reports it, and
+// "mint plugin token" alone would hide what failed. The only failure
+// Tokens.Mint has is the entropy source, and nothing here can inject
+// one, so this branch is read rather than covered by a test — it exists
+// so a failure that does happen is reported with its class instead of
+// swallowed.
+//
+// generation is the process this token is for. A process of a new
+// generation replaces what the previous one held: its tokens are
+// revoked and the cached SDK server — which carries the grants of the
+// plugin the first time it connected — is dropped, so an update that
+// takes a permission away cannot leave the process of the old manifest
+// holding it. That is the whole reason the tokens are accounted per
+// generation rather than per plugin: "the record says this plugin may
+// do X" and "the process running it may do X" are then the same
+// statement.
+func (s *hostMCPState) mint(entry plugin.Entry, generation uint64) (string, error) {
 	grants := hostmcp.GrantSet{}
 	for _, permission := range entry.Manifest.Permissions {
 		grants[permission] = true
 	}
-	token, err := s.tokens.Mint(hostmcp.Identity{
+	secret, token, err := s.tokens.Mint(hostmcp.Identity{
 		PluginID: entry.ID,
 		Grants:   grants,
 	})
 	if err != nil {
-		return ""
+		return "", errdefs.Internal(
+			fmt.Errorf("craft: mint plugin token for %s: %w", entry.ID, err))
 	}
 	s.mu.Lock()
-	s.byID[entry.ID] = append(s.byID[entry.ID], token)
+	previous := s.byID[entry.ID]
+	replaced := previous.generation != generation
+	if replaced {
+		s.byID[entry.ID] = mintedTokens{generation: generation}
+	}
+	record := s.byID[entry.ID]
+	record.tokens = append(record.tokens, token)
+	s.byID[entry.ID] = record
 	s.mu.Unlock()
-	return token
+	for _, stale := range previous.tokens {
+		s.tokens.Revoke(stale)
+	}
+	if replaced {
+		s.server.Drop(entry.ID)
+	}
+	return secret, nil
 }
 
 // revokePlugin drops every token of one plugin (disable/update/close)
 // and invalidates the cached SDK server so new grants are re-read.
 func (s *hostMCPState) revokePlugin(id string) {
 	s.mu.Lock()
-	tokens := s.byID[id]
+	tokens := s.byID[id].tokens
 	delete(s.byID, id)
 	s.mu.Unlock()
 	for _, token := range tokens {
@@ -185,16 +235,19 @@ func (c *Craft) installPluginHooks() {
 	if !ok {
 		return
 	}
-	host.SetPluginHooks(func(entry plugin.Entry, env map[string]string) error {
+	host.SetPluginHooks(func(
+		entry plugin.Entry,
+		generation uint64,
+		env map[string]string,
+	) error {
 		endpoint := c.hostMCP.server.URL()
 		if endpoint == "" {
 			return errdefs.NotAvailablef(
 				"craft: host MCP endpoint is not started")
 		}
-		token := c.hostMCP.mint(entry)
-		if token == "" {
-			return errdefs.Internal(
-				errdefs.Validationf("craft: mint plugin token"))
+		token, err := c.hostMCP.mint(entry, generation)
+		if err != nil {
+			return err
 		}
 		env["CRAFT_HOST_MCP_URL"] = endpoint
 		env["CRAFT_PLUGIN_TOKEN"] = token
