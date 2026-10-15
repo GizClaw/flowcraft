@@ -77,6 +77,10 @@ const (
 	// differentiate "we voluntarily threw it away" from "the consumer
 	// could not keep up".
 	DropReasonSampled
+
+	// dropReasonCount bounds the reason range; it is not a reason
+	// itself and must stay last.
+	dropReasonCount
 )
 
 // String returns a stable label for diagnostics.

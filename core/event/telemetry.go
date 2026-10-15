@@ -29,7 +29,7 @@ var (
 
 	eventDrops, _ = eventMeter.Int64Counter(
 		"drops.total",
-		metric.WithDescription("Envelopes dropped per subscription, by reason"))
+		metric.WithDescription("Envelopes dropped by reason"))
 )
 
 // recordDrops counts one publish's drops and logs a rate-limited
@@ -78,11 +78,12 @@ func (b *MemoryBus) recordDrops(ctx context.Context, env Envelope, drops []dropC
 
 // claimDropLog reports whether this drop may be logged: at most one
 // summary per bus per interval, claimed with a compare-and-swap so
-// concurrent publishers do not all decide to log.
+// concurrent publishers do not all decide to log. The stamp keeps its
+// monotonic reading, so a wall-clock step cannot silence the log.
 func (b *MemoryBus) claimDropLog(now time.Time) bool {
 	last := b.dropLogAt.Load()
-	if last != 0 && now.Sub(time.Unix(0, last)) < dropLogInterval {
+	if last != nil && now.Sub(*last) < dropLogInterval {
 		return false
 	}
-	return b.dropLogAt.CompareAndSwap(last, now.UnixNano())
+	return b.dropLogAt.CompareAndSwap(last, &now)
 }

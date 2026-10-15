@@ -95,9 +95,11 @@ type MemoryBus struct {
 	subscribers map[SubscriptionID]*memSub
 	closed      bool
 	dropped     atomic.Int64
-	// dropLogAt is the unix-nano time of the last drop summary this bus
-	// logged (0 = never); it rate-limits that log, see recordDrops.
-	dropLogAt atomic.Int64
+	// dropLogAt is the time of the last drop summary this bus logged
+	// (nil = never); it rate-limits that log, see recordDrops. The full
+	// time.Time is kept so the throttle compares monotonic readings and
+	// a wall-clock step cannot silence the log.
+	dropLogAt atomic.Pointer[time.Time]
 
 	// inflight counts Publish calls currently between their wg.Add(1) and
 	// matching wg.Done(). Close uses Wait() to block until every Publish
@@ -419,7 +421,12 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 			default:
 				select {
 				case <-sub.ch:
+					// The evicted envelope is a buffer-full loss of its
+					// own: report it like every other one, or the drop
+					// tally, the metrics and the observer would all miss
+					// it.
 					b.dropped.Add(1)
+					drops = append(drops, dropCb{sub.id, DropReasonBufferFull})
 				default:
 				}
 				select {
@@ -470,11 +477,11 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 }
 
 // fireObserver invokes the configured observer outside any bus lock.
+//
+// No nil check: the constructor installs noopObserver and neither
+// WithObserver nor AttachObserver stores nil.
 func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []deliverCb, drops []dropCb) {
 	b.recordDrops(ctx, env, drops)
-	if b.observer == nil {
-		return
-	}
 	b.observer.OnPublish(env)
 	for _, d := range delivers {
 		b.observer.OnDeliver(d.subID, env)
@@ -485,7 +492,7 @@ func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []d
 }
 
 func summarizeDropReasons(drops []dropCb) string {
-	var counts [3]int
+	var counts [dropReasonCount]int
 	for _, d := range drops {
 		idx := int(d.reason)
 		if idx >= 0 && idx < len(counts) {
@@ -494,21 +501,18 @@ func summarizeDropReasons(drops []dropCb) string {
 	}
 	var b strings.Builder
 	first := true
-	write := func(label string, n int) {
+	for reason, n := range counts {
 		if n == 0 {
-			return
+			continue
 		}
 		if !first {
 			b.WriteByte(',')
 		}
 		first = false
-		b.WriteString(label)
+		b.WriteString(DropReason(reason).String())
 		b.WriteByte('=')
 		b.WriteString(strconv.Itoa(n))
 	}
-	write(DropReasonBufferFull.String(), counts[DropReasonBufferFull])
-	write(DropReasonClosed.String(), counts[DropReasonClosed])
-	write(DropReasonSampled.String(), counts[DropReasonSampled])
 	return b.String()
 }
 
