@@ -3,8 +3,8 @@ package vector
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"maps"
+	"math"
 	"strings"
 	"testing"
 
