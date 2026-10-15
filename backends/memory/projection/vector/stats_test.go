@@ -49,6 +49,11 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := index.Stats()
+	// The assertions below are counts and invariants, not nonzero durations:
+	// the fakes work in nanoseconds, and a platform whose clock cannot resolve
+	// that would read a recorded phase as zero. The counts pin that every phase
+	// was recorded; the clock is pinned by
+	// TestStatsMeasuresWhatTheEmbedTook, whose embed is slow enough to read.
 	if stats.Queries != 2 {
 		t.Fatalf("queries = %d", stats.Queries)
 	}
@@ -56,23 +61,18 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 		t.Fatalf("serving-path snapshot hits/misses = %d/%d: a write's warm is not a query's load",
 			stats.SnapshotHits, stats.SnapshotMisses)
 	}
-	if stats.WarmHits != 0 || stats.WarmMisses != 1 || stats.WarmLoad <= 0 {
-		t.Fatalf("warm hits/misses/load = %d/%d/%v", stats.WarmHits, stats.WarmMisses, stats.WarmLoad)
+	if stats.WarmHits != 0 || stats.WarmMisses != 1 {
+		t.Fatalf("warm hits/misses = %d/%d", stats.WarmHits, stats.WarmMisses)
 	}
 	if stats.Embeds != 1 {
 		t.Fatalf("embeds = %d: only the text search may embed a query", stats.Embeds)
 	}
-	if stats.EmbedTotal <= 0 {
-		t.Fatalf("embed total = %v", stats.EmbedTotal)
-	}
 	if stats.Scans != 2 || stats.EntriesScanned != 6 || stats.EntriesScored != 6 {
 		t.Fatalf("scans/scanned/scored = %d/%d/%d", stats.Scans, stats.EntriesScanned, stats.EntriesScored)
 	}
-	if stats.ScanTotal <= 0 || stats.SortTotal < 0 {
-		t.Fatalf("scan/sort totals = %v/%v", stats.ScanTotal, stats.SortTotal)
-	}
-	if stats.ScoreTotal <= 0 || stats.ScoreTotal > stats.ScanTotal {
-		t.Fatalf("score total = %v, outside (0, scan total %v]", stats.ScoreTotal, stats.ScanTotal)
+	if stats.ScoreTotal > stats.ScanTotal {
+		t.Fatalf("score total = %v exceeds the scan total %v: the walk cannot be negative",
+			stats.ScoreTotal, stats.ScanTotal)
 	}
 	if stats.Footprint.Scopes != 1 || stats.Footprint.Entries != 3 ||
 		stats.Footprint.Dimensions != 2 || stats.Footprint.VectorBytes != 3*2*4 {
@@ -145,7 +145,7 @@ func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := index.Stats()
-	if stats.SnapshotMisses != 1 || stats.SnapshotLoad <= 0 {
+	if stats.SnapshotMisses != 1 || stats.SnapshotHits != 0 {
 		t.Fatalf("the query that materialized the table was not counted on the serving path: %+v", stats)
 	}
 	if stats.WarmMisses != 1 {
@@ -156,5 +156,37 @@ func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
 	}
 	if after := index.Stats(); after.SnapshotHits != 1 || after.SnapshotMisses != 1 {
 		t.Fatalf("second read = hits %d misses %d, want one hit", after.SnapshotHits, after.SnapshotMisses)
+	}
+}
+
+// TestStatsMeasuresWhatTheEmbedTook pins the attribution itself, on every
+// clock: the fake embed sleeps, so the phase total has to be at least that.
+func TestStatsMeasuresWhatTheEmbedTook(t *testing.T) {
+	const embedTime = 2 * time.Millisecond
+	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
+		time.Sleep(embedTime)
+		vectors := make([][]float32, len(texts))
+		for index := range vectors {
+			vectors[index] = []float32{1, 0}
+		}
+		return vectors
+	})
+	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	stats := index.Stats()
+	if stats.Embeds != 1 || stats.EmbedTotal < embedTime {
+		t.Fatalf("embeds/total = %d/%v: the lane has to measure the embed it served",
+			stats.Embeds, stats.EmbedTotal)
 	}
 }
