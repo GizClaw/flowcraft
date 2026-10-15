@@ -122,7 +122,7 @@ func run(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // childEnv builds the command's environment: the bridge process env
-// (already shaped by bwrap's --clearenv / --setenv) with every proxy
+// (already filtered down to the sandbox's allow-list) with every proxy
 // variable pointed at the bridge's loopback port and NO_PROXY removed
 // so clients cannot opt out into a connection the enforcement proxy
 // would deny anyway. Building the env explicitly (instead of mutating

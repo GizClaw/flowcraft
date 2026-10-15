@@ -275,7 +275,7 @@ func (r *Runner) spawnProcess(
 		}
 	}
 
-	flags, err := buildFlags(spec.Opts, os.Environ())
+	flags, err := buildFlags(spec.Opts)
 	if err != nil {
 		closeProxy(ctx, proxy)
 		abortBundle()
@@ -323,7 +323,12 @@ func (r *Runner) spawnProcess(
 	argv = append(argv, command...)
 
 	c := exec.Command(r.binary, argv...)
-	c.Env = os.Environ()
+	// The allow-list is the child's whole environment: bwrap passes its
+	// own env on, and nothing else is set here. Setting it on the command
+	// (instead of --setenv flags) keeps the values out of the host-side
+	// argv, where /proc/<pid>/cmdline would expose them for the lifetime
+	// of the exec.
+	c.Env = childEnv(spec.Opts.Env, os.Environ())
 
 	maxOut := spec.Opts.Resources.MaxOutputBytes
 	if maxOut <= 0 {
