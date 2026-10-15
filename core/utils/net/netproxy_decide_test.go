@@ -1,6 +1,7 @@
 package net
 
 import (
+	"net"
 	"net/netip"
 	"testing"
 )
@@ -209,5 +210,74 @@ func TestDecideIPLiteralUnchanged(t *testing.T) {
 	}
 	if action != NetDeny {
 		t.Fatalf("uncovered literal = %v, want deny", action)
+	}
+}
+
+// TestDecideCarriesTheHostnameVerdictPastResolution pins the decide()
+// assembly the decideAddrs unit tests cannot see: when IP rules force a
+// local resolution, a matched hostname rule must survive the address
+// pass as the decisive rule, and the dial target must be an address the
+// resolution actually returned.
+func TestDecideCarriesTheHostnameVerdictPastResolution(t *testing.T) {
+	if _, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost"); err != nil {
+		t.Skipf("localhost does not resolve here: %v", err)
+	}
+	proxy := decideProxy(t, ProxyConfig{
+		Mode: NetAllowList,
+		Rules: []NetRule{
+			{Action: NetAllow, Host: "localhost"},
+			{Action: NetDeny, Host: "10.0.0.0/8"},
+		},
+	})
+
+	action, rule, reason, dialHost, err := proxy.decide(t.Context(), "localhost:443", 443)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if action != NetAllow || rule != "allow localhost" || reason != "" {
+		t.Fatalf("verdict = (%v, %q, %q), want (allow, allow localhost, \"\")", action, rule, reason)
+	}
+	host, _, err := net.SplitHostPort(dialHost)
+	if err != nil {
+		t.Fatalf("dial target %q carries no port: %v", dialHost, err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		t.Fatalf("dial target = %q, want a resolved loopback address", dialHost)
+	}
+}
+
+// TestDecideAppliesIPRulesToResolvedAddrs runs the whole hostname path
+// end to end: with no hostname rule deciding, the local resolution has
+// to feed the IP/CIDR rules, and the dial target must be pinned to the
+// address an allow rule covers — never to an uncovered sibling.
+func TestDecideAppliesIPRulesToResolvedAddrs(t *testing.T) {
+	addrs, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost")
+	if err != nil {
+		t.Skipf("localhost does not resolve here: %v", err)
+	}
+	hasV4Loopback := false
+	for _, addr := range addrs {
+		if addr.Unmap() == netip.MustParseAddr("127.0.0.1") {
+			hasV4Loopback = true
+		}
+	}
+	if !hasV4Loopback {
+		t.Skip("localhost does not resolve to 127.0.0.1 here")
+	}
+
+	proxy := decideProxy(t, ProxyConfig{
+		Mode:  NetAllowList,
+		Rules: []NetRule{{Action: NetAllow, Host: "127.0.0.1/32"}},
+	})
+	action, rule, reason, dialHost, err := proxy.decide(t.Context(), "localhost:443", 443)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if action != NetAllow || dialHost != "127.0.0.1:443" {
+		t.Fatalf("decide = (%v, %q), want (allow, 127.0.0.1:443)", action, dialHost)
+	}
+	if rule != "allow 127.0.0.1/32" || reason != "" {
+		t.Fatalf("decisive rule = (%q, %q), want the covering allow rule", rule, reason)
 	}
 }
