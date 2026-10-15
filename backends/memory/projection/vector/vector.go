@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
@@ -44,6 +45,16 @@ type Config struct {
 	Model      model.ModelRef
 	Projection string
 	Thresholds projectionstore.Thresholds
+	// Limits bounds the tables the lane keeps resident. The zero value keeps
+	// every scope's table the lane reads, which is what the lane always did.
+	Limits CacheLimits
+}
+
+// CacheLimits bounds the resident tables: how many scopes may hold one, and
+// how large one may be. A zero field is no bound.
+type CacheLimits struct {
+	Scopes  int
+	Entries int
 }
 
 type Index struct {
@@ -57,17 +68,113 @@ type Index struct {
 	// projection a generation is written to, so a stored version can only
 	// match its own generation's; the stamp records which producer wrote it.
 	producerVersion string
-	// snapshotCache keeps the materialized vector table per scope. Loading it
+	// snapshotMu guards the tables the lane keeps resident. Loading a table
 	// per query meant reading every entry through the workspace store's single
 	// mutex, which dominated retrieval latency under concurrency (measured:
-	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). Writes clear the
-	// cache, so a query can only see an up-to-date table.
-	snapshotMu    sync.RWMutex
-	snapshotCache map[string]snapshot
+	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). A write drops
+	// the written scope's table, so a query can only see an up-to-date one.
+	snapshotMu sync.RWMutex
+	cache      tableCache
 	// stats accumulates the phase counters Stats() publishes. It is written on
 	// the serving path with atomics only, so no reader can perturb what the
 	// lane serves.
 	stats *statsState
+}
+
+// tableCache holds the materialized tables the lane keeps resident, bounded by
+// CacheLimits. The bounds are about memory, not about what a query sees: a
+// table this cache does not hold is read again, and the scope's page it is
+// read from is the scope's own, so nothing here can change a result.
+//
+// The scope bound evicts by recency -- the table read least recently goes
+// first, which is the one a host is least likely to read again. The per-scope
+// entry bound refuses a table outright: a scope whose table is too large to
+// keep is read and scanned per query instead, trading the memory for the read
+// (measured on the eval store: one 9324-entry, 2048-dimension table is 72.8MB
+// of vector payload, and materializing it costs 9.6s locally).
+type tableCache struct {
+	limits CacheLimits
+	// tables is keyed by the scope's partition, which is what its projection
+	// state is stored under: a scope's runtime, tenant, and agent.
+	tables map[string]*residentTable
+	// clock orders the tables by recency. Every read takes the next reading,
+	// so no two tables share one and an eviction cannot depend on map order.
+	clock     atomic.Int64
+	evictions int64
+	uncached  int64
+}
+
+// residentTable is one table the cache holds and when it was last read.
+type residentTable struct {
+	build snapshot
+	// used is the cache clock reading at the table's last read. It is read and
+	// written under the cache lock, and atomic because a hit records its
+	// recency while holding only the read side of it.
+	used atomic.Int64
+}
+
+// lookup returns the resident table for a partition, and records the read.
+func (cache *tableCache) lookup(key string) (snapshot, bool) {
+	entry, ok := cache.tables[key]
+	if !ok {
+		return snapshot{}, false
+	}
+	entry.used.Store(cache.clock.Add(1))
+	return entry.build, true
+}
+
+// store keeps a table if the bounds allow it. A table larger than the
+// per-scope bound is not kept at all: it is counted, and the next query reads
+// it again.
+func (cache *tableCache) store(key string, build snapshot) {
+	if cache.limits.Entries > 0 && len(build.Entries) > cache.limits.Entries {
+		cache.uncached++
+		return
+	}
+	if cache.tables == nil {
+		cache.tables = make(map[string]*residentTable)
+	}
+	for cache.limits.Scopes > 0 && len(cache.tables) >= cache.limits.Scopes {
+		oldest := cache.oldest()
+		if oldest == "" {
+			break
+		}
+		delete(cache.tables, oldest)
+		cache.evictions++
+	}
+	entry := &residentTable{build: build}
+	entry.used.Store(cache.clock.Add(1))
+	cache.tables[key] = entry
+}
+
+// drop forgets one partition's table.
+func (cache *tableCache) drop(key string) { delete(cache.tables, key) }
+
+// oldest names the table read least recently.
+func (cache *tableCache) oldest() string {
+	oldest, when := "", int64(0)
+	for key, entry := range cache.tables {
+		used := entry.used.Load()
+		if oldest == "" || used < when {
+			oldest, when = key, used
+		}
+	}
+	return oldest
+}
+
+// footprint sizes the tables the cache holds. Dimensions reports the largest
+// table's width, which is the width of every table a lane serves: one index is
+// bound to one embedding model.
+func (cache *tableCache) footprint() Footprint {
+	out := Footprint{Scopes: len(cache.tables)}
+	for _, entry := range cache.tables {
+		out.Entries += len(entry.build.Entries)
+		if entry.build.Dimensions > out.Dimensions {
+			out.Dimensions = entry.build.Dimensions
+		}
+		out.VectorBytes += int64(len(entry.build.Entries)) * int64(entry.build.Dimensions) * 4
+	}
+	return out
 }
 
 // cachedSnapshot returns the scope's vector table, loading it once per write
@@ -76,7 +183,7 @@ type Index struct {
 func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, bool, error) {
 	key := scope.HardPartitionKey()
 	index.snapshotMu.RLock()
-	cached, ok := index.snapshotCache[key]
+	cached, ok := index.cache.lookup(key)
 	index.snapshotMu.RUnlock()
 	if ok {
 		return cached, false, nil
@@ -86,17 +193,14 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 		return snapshot{}, false, err
 	}
 	index.snapshotMu.Lock()
-	if index.snapshotCache == nil {
-		index.snapshotCache = make(map[string]snapshot)
-	}
-	index.snapshotCache[key] = build
+	index.cache.store(key, build)
 	index.snapshotMu.Unlock()
 	return build, true, nil
 }
 
 // warmSnapshots loads the scope's table in the background so the first query
-// does not pay for it. Deferred before invalidateSnapshots, so the cache is
-// cleared first and then repopulated. The read is counted apart from the
+// does not pay for it. Deferred before invalidateScope, so the written scope's
+// table is dropped first and then repopulated. The read is counted apart from the
 // serving path -- a query's load has to stay the query's own -- but it pays
 // the same materialization, so a reading that adds the two sees the whole
 // scope's first read.
@@ -111,10 +215,18 @@ func (index *Index) warmSnapshots(scope corememory.Scope) {
 	}()
 }
 
-// invalidateSnapshots drops every cached table; called on any write.
-func (index *Index) invalidateSnapshots() {
+// invalidateScope drops one scope's cached table; called on a write to that
+// scope, and by the tests that model one. A write changes exactly the
+// partition it wrote -- state lives under the scope's own runtime, tenant, and
+// agent -- so a table another scope holds is not what the write could stale.
+//
+// Dropping every scope's table on any write is what the lane did before, and
+// it made a derivation of one conversation evict the tables of the others,
+// which the next query of each paid to materialize (measured: 9.6s locally and
+// 14.0s on the eval host for the 9324-entry table, per scope, per process).
+func (index *Index) invalidateScope(scope corememory.Scope) {
 	index.snapshotMu.Lock()
-	index.snapshotCache = nil
+	index.cache.drop(scope.HardPartitionKey())
 	index.snapshotMu.Unlock()
 }
 
@@ -131,6 +243,15 @@ func (index *Index) AuditDigests(
 type snapshot struct {
 	Dimensions int     `json:"dimensions"`
 	Entries    []entry `json:"entries"`
+	// norms holds one L2 norm per entry, in the same order as Entries: the
+	// vector's own length, which the cosine needs and which the entries
+	// already determine. It is derived, so it is never persisted -- the
+	// stored state is the entries themselves, and a norm written next to them
+	// would change every digest that names this state without saying anything
+	// the vectors do not. A table read off the store therefore carries none
+	// until the lane fills them in, and a table without them is scored the
+	// old way: they are an optimization, not a requirement.
+	norms []float64
 }
 
 type entry struct {
@@ -181,6 +302,7 @@ func New(config Config) (*Index, error) {
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
 		producerVersion:   generationIdentity(config.Model),
+		cache:             tableCache{limits: config.Limits},
 		stats:             &statsState{},
 	}, nil
 }
@@ -213,7 +335,7 @@ func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	defer index.warmSnapshots(request.Scope)
-	defer index.invalidateSnapshots()
+	defer index.invalidateScope(request.Scope)
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
@@ -259,7 +381,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	// first query to pay the materialization (measured: the cold query cost up
 	// to 22s while warm queries sat at ~0.6s).
 	defer index.warmSnapshots(delta.Scope)
-	defer index.invalidateSnapshots()
+	defer index.invalidateScope(delta.Scope)
 	if err := delta.ValidateDocumentAddresses(); err != nil {
 		return fmt.Errorf("vector projection: %w", err)
 	}
@@ -385,11 +507,42 @@ func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (s
 	if err != nil {
 		return snapshot{}, fmt.Errorf("vector projection: %w", err)
 	}
+	if err := fillNorms(&build); err != nil {
+		return snapshot{}, err
+	}
 	return build, nil
 }
 
+// fillNorms computes every entry's L2 norm once per materialized table, so a
+// query scores with a stored norm instead of recomputing one per entry per
+// query. The norm is half of one cosine's floating-point work, and it is the
+// half that depends on the entry alone: measured on a 9324-entry table, the
+// cosine phase of a query was 7.2µs per scored entry, of which the norm was
+// the vector-shaped part. The cost moves to the table's own load, where it is
+// paid once per scope per write epoch instead of once per query.
+//
+// A vector that has no norm is rejected here, with the entry named: the
+// materialized state passed the lane's base validation, so this is the same
+// condition the scan used to report, found once instead of once per query.
+func fillNorms(build *snapshot) error {
+	if len(build.Entries) == 0 {
+		build.norms = nil
+		return nil
+	}
+	norms := make([]float64, len(build.Entries))
+	for index := range build.Entries {
+		value, err := norm(build.Entries[index].Vector)
+		if err != nil {
+			return fmt.Errorf("vector projection: entry %q: %w", build.Entries[index].ID, err)
+		}
+		norms[index] = value
+	}
+	build.norms = norms
+	return nil
+}
+
 // scanReport is what one scan pass did: the entries it considered, the entries
-// it scored, and the wall time scoring and sorting took. The phases are timed
+// it scored, and the wall time scoring and ordering took. The phases are timed
 // because an exact scan is the lane's own cost -- the alternative an
 // approximate index would remove -- while loading a table and embedding the
 // query are not.
@@ -397,12 +550,18 @@ type scanReport struct {
 	scanned   int
 	scored    int
 	scanNanos time.Duration
-	// scoreNanos is the part of the scan the cosine itself took: the norm and
-	// dot of the entries the filter admitted. The rest of the scan is the walk
-	// -- the filter match per entry -- which is what an approximate index would
-	// also have to look at, differently.
+	// scoreNanos is the part of the scan the cosine itself took over the
+	// entries the filter admitted: their dot with the query, their norm when
+	// the table does not carry one (a table the lane read does), and placing
+	// the score where the order keeps or drops it. The rest of the scan is the
+	// walk -- the filter match per entry -- which is what an approximate index
+	// would also have to look at, differently.
 	scoreNanos time.Duration
-	sortNanos  time.Duration
+	// sortNanos is what it cost to turn the scores into the returned result:
+	// ordering what the scan kept, and materializing those candidates. A scan
+	// with a limit keeps at most the limit, so this is the work of k entries,
+	// not of every match.
+	sortNanos time.Duration
 }
 
 func searchSnapshot(build snapshot, query []float32, filter component.VectorSearchFilter, limit int) ([]component.Candidate, scanReport, error) {
@@ -417,26 +576,28 @@ func searchSnapshot(build snapshot, query []float32, filter component.VectorSear
 	if err != nil {
 		return nil, report, fmt.Errorf("vector projection: query: %w", err)
 	}
-	results, report, err := scoreSnapshot(build, query, queryNorm, filter)
-	if err != nil {
-		return nil, report, err
-	}
-	sortStarted := time.Now()
-	sortCandidates(results)
-	report.sortNanos = time.Since(sortStarted)
-	if limit > 0 && len(results) > limit {
-		results = results[:limit]
-	}
-	return results, report, nil
+	return scoreSnapshot(build, query, queryNorm, filter, limit)
 }
 
 // scoreSnapshot computes the cosine of every entry the filter admits and
-// reports what the pass cost.
-func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter component.VectorSearchFilter) ([]component.Candidate, scanReport, error) {
+// reports what the pass cost, keeping the candidates the limit asks for. The
+// table's stored norms are used when it carries them, and computed per entry
+// when it does not.
+func scoreSnapshot(
+	build snapshot,
+	query []float32,
+	queryNorm float64,
+	filter component.VectorSearchFilter,
+	limit int,
+) ([]component.Candidate, scanReport, error) {
 	report := scanReport{scanned: len(build.Entries)}
 	started := time.Now()
-	results := make([]component.Candidate, 0, len(build.Entries))
-	for _, item := range build.Entries {
+	selection := newSelection(limit, len(build.Entries))
+	norms := build.norms
+	if len(norms) != len(build.Entries) {
+		norms = nil
+	}
+	for index, item := range build.Entries {
 		if filter.Name != "" && item.Name != filter.Name {
 			continue
 		}
@@ -448,7 +609,7 @@ func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter co
 			continue
 		}
 		scoreStarted := time.Now()
-		itemNorm, err := norm(item.Vector)
+		itemNorm, err := entryNorm(norms, index, item.Vector)
 		if err != nil {
 			return nil, report, fmt.Errorf("vector projection: entry %q: %w", item.ID, err)
 		}
@@ -461,15 +622,136 @@ func scoreSnapshot(build snapshot, query []float32, queryNorm float64, filter co
 			return nil, report, fmt.Errorf("vector projection: entry %q produced non-finite cosine", item.ID)
 		}
 		cosine = max(-1, min(1, cosine))
-		report.scoreNanos += time.Since(scoreStarted)
 		report.scored++
-		results = append(results, component.Candidate{
-			ID: item.ID, Lane: laneName, Name: item.Name, Score: cosine,
-			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
-		})
+		selection.offer(ranked{index: index, id: item.ID, score: cosine})
+		report.scoreNanos += time.Since(scoreStarted)
 	}
 	report.scanNanos = time.Since(started)
+	orderStarted := time.Now()
+	kept := selection.result()
+	results := make([]component.Candidate, len(kept))
+	for position, candidate := range kept {
+		item := build.Entries[candidate.index]
+		results[position] = component.Candidate{
+			ID: item.ID, Lane: laneName, Name: item.Name, Score: candidate.score,
+			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
+		}
+	}
+	report.sortNanos = time.Since(orderStarted)
 	return results, report, nil
+}
+
+// ranked is one entry the scan scored: where it sits in the table, the id that
+// breaks a tie, and its cosine.
+type ranked struct {
+	index int
+	id    string
+	score float64
+}
+
+// ranksAfter reports whether left comes after right in the order the scan
+// publishes: a lower score, and on an equal score a higher id. Entry ids are
+// unique in a table, so this is a total order: two candidates never rank
+// neither before nor after each other.
+func (left ranked) ranksAfter(right ranked) bool {
+	if left.score != right.score {
+		return left.score < right.score
+	}
+	return left.id > right.id
+}
+
+// selection keeps the best candidates a scan has seen, without holding a
+// candidate for every entry the filter admitted. It is a min-heap under
+// "ranks after" -- the root is the entry the selection would drop first -- so
+// an entry that beats the root replaces it in time logarithmic in the limit
+// instead of the scan sorting every match at the end.
+//
+// A selection with no bound keeps everything and orders it at the end, which
+// is what a scan that asks for the whole table does. The set a bounded
+// selection holds is exactly the limit best entries: the root is always the
+// worst one kept, so dropping and replacing it can never drop an entry that
+// ranks before one it keeps.
+type selection struct {
+	limit int
+	items []ranked
+}
+
+// newSelection sizes a selection for a limit and a table. A limit that cannot
+// prune -- not set, or at least as large as the table -- keeps everything.
+func newSelection(limit, entries int) selection {
+	if limit <= 0 || limit >= entries {
+		return selection{items: make([]ranked, 0, entries)}
+	}
+	return selection{limit: limit, items: make([]ranked, 0, limit)}
+}
+
+// offer adds one scored entry to the selection.
+func (selection *selection) offer(candidate ranked) {
+	if selection.limit <= 0 {
+		selection.items = append(selection.items, candidate)
+		return
+	}
+	if len(selection.items) < selection.limit {
+		selection.items = append(selection.items, candidate)
+		selection.siftUp(len(selection.items) - 1)
+		return
+	}
+	if !selection.items[0].ranksAfter(candidate) {
+		// The entry the selection would drop first ranks before this one:
+		// there is nothing here to keep.
+		return
+	}
+	selection.items[0] = candidate
+	selection.siftDown(0)
+}
+
+// result returns what the selection kept, in the order the scan publishes.
+func (selection *selection) result() []ranked {
+	kept := selection.items
+	sort.Slice(kept, func(i, j int) bool { return kept[j].ranksAfter(kept[i]) })
+	return kept
+}
+
+// siftUp restores the heap after an entry was appended: the worst entries sit
+// at the root, so an entry that ranks after its parent moves up.
+func (selection *selection) siftUp(index int) {
+	for index > 0 {
+		parent := (index - 1) / 2
+		if !selection.items[index].ranksAfter(selection.items[parent]) {
+			return
+		}
+		selection.items[index], selection.items[parent] = selection.items[parent], selection.items[index]
+		index = parent
+	}
+}
+
+// siftDown restores the heap after the root was replaced: the worst child
+// takes the vacated place, and the entry sinks until no child ranks after it.
+func (selection *selection) siftDown(index int) {
+	for {
+		left := 2*index + 1
+		if left >= len(selection.items) {
+			return
+		}
+		worst := left
+		if right := left + 1; right < len(selection.items) && selection.items[right].ranksAfter(selection.items[left]) {
+			worst = right
+		}
+		if !selection.items[worst].ranksAfter(selection.items[index]) {
+			return
+		}
+		selection.items[index], selection.items[worst] = selection.items[worst], selection.items[index]
+		index = worst
+	}
+}
+
+// entryNorm returns the entry's L2 norm: the one the table already holds when
+// it was filled, and a fresh computation when it was not.
+func entryNorm(stored []float64, index int, vector []float32) (float64, error) {
+	if stored != nil {
+		return stored[index], nil
+	}
+	return norm(vector)
 }
 
 func (index *Index) validateRequest(request component.ProjectionRequest) error {
@@ -686,15 +968,6 @@ func norm(vector []float32) (float64, error) {
 		return 0, errors.New("zero vector is not allowed")
 	}
 	return math.Sqrt(squared), nil
-}
-
-func sortCandidates(values []component.Candidate) {
-	sort.SliceStable(values, func(i, j int) bool {
-		if values[i].Score == values[j].Score {
-			return values[i].ID < values[j].ID
-		}
-		return values[i].Score > values[j].Score
-	})
 }
 
 func requestContent(query string) coremessage.Content {

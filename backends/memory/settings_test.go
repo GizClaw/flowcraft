@@ -27,13 +27,39 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	settings.Lanes.Vector.Weight = 2
 	settings.BM25.K1, settings.BM25.B = 1.4, 0.4
 	settings.Retrieval.SourceQuotes, settings.Retrieval.Rerank = 3, true
+	settings.Lanes.VectorCache = &VectorCacheSettings{MaxCachedScopes: 4, MaxEntriesPerScope: 20000}
 	summary, err = settings.retrievalSummary()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","vector_cache":{"max_cached_scopes":4,"max_entries_per_scope":20000}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
 	if summary != want {
 		t.Fatalf("tuned summary = %s, want %s", summary, want)
+	}
+}
+
+// TestVectorCacheBoundsAreValidatedAndNamed pins the knob's shape: it is absent
+// from the summary unless a host names it (so no existing run's fingerprint
+// moves), and a count of what may be resident cannot be negative.
+func TestVectorCacheBoundsAreValidatedAndNamed(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if settings.Lanes.VectorCache != nil {
+		t.Fatal("an untouched workspace names a vector cache bound")
+	}
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("an untouched workspace does not validate: %v", err)
+	}
+	for _, bound := range []VectorCacheSettings{
+		{MaxCachedScopes: -1},
+		{MaxEntriesPerScope: -1},
+	} {
+		invalid := Settings{}
+		invalid.applyDefaults()
+		invalid.Lanes.VectorCache = &bound
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("%+v was accepted", bound)
+		}
 	}
 }
 

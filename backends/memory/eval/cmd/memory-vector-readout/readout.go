@@ -31,10 +31,16 @@ type reading struct {
 	Cold             []coldReading     `json:"cold,omitempty"`
 	Hot              *hotReading       `json:"hot,omitempty"`
 	Footprint        vector.Footprint  `json:"footprint"`
-	HeapBeforeBytes  uint64            `json:"heap_before_bytes"`
-	HeapAfterBytes   uint64            `json:"heap_after_bytes"`
-	RSSBeforeBytes   uint64            `json:"rss_before_bytes"`
-	RSSAfterBytes    uint64            `json:"rss_after_bytes"`
+	// Evictions and UncachedLoads explain a footprint below what the scopes
+	// read would hold: the lane dropped tables to stay within its bounds, or
+	// read tables too large to keep. They are absolute -- what the pass left --
+	// because the reading of a bound is the state it ends in.
+	Evictions       int64  `json:"evictions"`
+	UncachedLoads   int64  `json:"uncached_loads"`
+	HeapBeforeBytes uint64 `json:"heap_before_bytes"`
+	HeapAfterBytes  uint64 `json:"heap_after_bytes"`
+	RSSBeforeBytes  uint64 `json:"rss_before_bytes"`
+	RSSAfterBytes   uint64 `json:"rss_after_bytes"`
 }
 
 // coldReading is one conversation's first query: the query that pays for the
@@ -270,7 +276,9 @@ func computeShares(phase vectorPhase, stages map[string]stageReading, contextSum
 }
 
 // projections scale the measured per-entry scan cost to table sizes the run
-// did not have: the sort scales as n log n, the scan linearly.
+// did not have: the scan is linear in the table, and the ordering is the work
+// of the limit the scan asked for -- the offer of one score per admitted entry
+// is part of the per-entry slope -- so it does not grow with the table.
 func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectionPoint {
 	points := make([]projectionPoint, 0, 4)
 	if phase.EntriesScanned <= 0 || entriesPerScope <= 0 {
@@ -282,7 +290,6 @@ func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectio
 		scans = 1
 	}
 	perScanSort := float64(phase.SortTotal) / float64(scans)
-	baseWeight := float64(entriesPerScope) * math.Log2(float64(entriesPerScope))
 	for _, size := range []int{entriesPerScope, 10000, 40000, 100000} {
 		if size <= 0 {
 			continue
@@ -290,7 +297,7 @@ func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectio
 		point := projectionPoint{
 			EntriesPerScope: size,
 			Scan:            perEntry * time.Duration(size),
-			Sort:            time.Duration(perScanSort * float64(size) * math.Log2(float64(size)) / baseWeight),
+			Sort:            time.Duration(perScanSort),
 		}
 		if len(points) > 0 && points[len(points)-1].EntriesPerScope == size {
 			continue

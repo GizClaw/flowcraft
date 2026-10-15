@@ -42,13 +42,23 @@ type Stats struct {
 	SortTotal      time.Duration `json:"sort_ns"`
 	EntriesScanned int64         `json:"entries_scanned"`
 	EntriesScored  int64         `json:"entries_scored"`
-	Footprint      Footprint     `json:"footprint"`
+	// Evictions counts the resident tables dropped to keep their number within
+	// max_cached_scopes: the scope read least recently goes first. A lane with
+	// no bound never evicts.
+	Evictions int64 `json:"evictions"`
+	// UncachedLoads counts the reads served from a table larger than
+	// max_entries_per_scope. Such a table is materialized, scanned, and
+	// dropped: the lane trades its residency for the read. A lane with no bound
+	// never refuses one.
+	UncachedLoads int64     `json:"uncached_loads"`
+	Footprint     Footprint `json:"footprint"`
 }
 
 // Footprint is the resident state of the lane: one materialized vector table
-// per scope read or written since the last invalidation. VectorBytes counts
-// the vector payload alone (dimensions times four bytes per entry); entry
-// addresses, metadata, and text sit on top of it and are not counted here.
+// per scope read or written since the last invalidation, less the ones the
+// bounds dropped. VectorBytes counts the vector payload alone (dimensions
+// times four bytes per entry); entry addresses, metadata, and text sit on top
+// of it and are not counted here.
 type Footprint struct {
 	Scopes      int   `json:"scopes"`
 	Entries     int   `json:"entries"`
@@ -162,7 +172,13 @@ func (index *Index) Stats() Stats {
 	if index == nil {
 		return Stats{}
 	}
-	out := Stats{Footprint: index.footprint()}
+	index.snapshotMu.RLock()
+	out := Stats{
+		Evictions:     index.cache.evictions,
+		UncachedLoads: index.cache.uncached,
+		Footprint:     index.cache.footprint(),
+	}
+	index.snapshotMu.RUnlock()
 	state := index.stats
 	if state == nil {
 		return out
@@ -184,22 +200,5 @@ func (index *Index) Stats() Stats {
 	out.SortTotal = time.Duration(state.sortNanos.Load())
 	out.EntriesScanned = state.scanned.Load()
 	out.EntriesScored = state.scored.Load()
-	return out
-}
-
-// footprint sizes the materialized tables the cache holds. Dimensions reports
-// the largest table's width, which is the width of every table a lane serves:
-// one index is bound to one embedding model.
-func (index *Index) footprint() Footprint {
-	index.snapshotMu.RLock()
-	defer index.snapshotMu.RUnlock()
-	out := Footprint{Scopes: len(index.snapshotCache)}
-	for _, build := range index.snapshotCache {
-		out.Entries += len(build.Entries)
-		if build.Dimensions > out.Dimensions {
-			out.Dimensions = build.Dimensions
-		}
-		out.VectorBytes += int64(len(build.Entries)) * int64(build.Dimensions) * 4
-	}
 	return out
 }
