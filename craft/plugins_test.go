@@ -121,6 +121,12 @@ deploy:
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// The host is readable back off the Craft: an application that
+	// drives the plugin side after composition has no other handle on
+	// what it configured.
+	if c.Plugins() != host {
+		t.Fatalf("Plugins() = %v, want the configured host", c.Plugins())
+	}
 	ctx := context.Background()
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)

@@ -244,6 +244,60 @@ func TestGroupRemoveKeepsWhatItCouldNotStop(t *testing.T) {
 	}
 }
 
+// TestGroupSubscribeSeesTransitions pins the event stream: one
+// subscriber is told about each instance's state transitions, and the
+// function it returns stops them — a group that kept notifying a
+// retired callback keeps whatever that callback holds alive with it.
+func TestGroupSubscribeSeesTransitions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	group, err := NewGroup(GroupOptions{Root: root}, Spec{
+		ID: "alpha",
+		Options: Options{
+			DefinitionPath: writeInstanceDefinition(t, root, "alpha"),
+			Capabilities:   []craft.Capability{testCapability{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewGroup: %v", err)
+	}
+	var mu sync.Mutex
+	var seen []GroupEvent
+	unsubscribe := group.Subscribe(func(event GroupEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, event)
+	})
+	if err := group.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	mu.Lock()
+	started := append([]GroupEvent(nil), seen...)
+	mu.Unlock()
+	if len(started) == 0 {
+		t.Fatal("no transition was reported for the started instance")
+	}
+	last := started[len(started)-1]
+	if last.InstanceID != "alpha" || last.State != StateRunning || last.Err != "" {
+		t.Fatalf("last transition = %+v, want alpha running without an error", last)
+	}
+
+	unsubscribe()
+	unsubscribe()
+	mu.Lock()
+	before := len(seen)
+	mu.Unlock()
+	if err := group.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	mu.Lock()
+	after := len(seen)
+	mu.Unlock()
+	if after != before {
+		t.Fatalf("transitions after unsubscribe = %d, want %d", after, before)
+	}
+}
+
 // TestGroupCloseKeepsWhatItCouldNotStop is the close half of the same
 // contract Remove keeps: a group that could not stop an instance must
 // not be marked closed. The flag refuses every later Add, so a group
