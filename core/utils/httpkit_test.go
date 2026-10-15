@@ -87,3 +87,60 @@ func TestProtocolSelection(t *testing.T) {
 		})
 	}
 }
+
+// TestRetryBackoffClampsServerHint is the regression test for an
+// unbounded Retry-After: the header is a server's suggestion, so it must
+// not outlast the transport's own delay ceiling. Without the clamp the
+// caller sleeps for whatever the response asked for — up to a year for a
+// hostile or misconfigured upstream.
+func TestRetryBackoffClampsServerHint(t *testing.T) {
+	transport := func(maxDelay time.Duration) *retryTransport {
+		return &retryTransport{config: RetryConfig{
+			MaxAttempts: 3,
+			BaseDelay:   200 * time.Millisecond,
+			MaxDelay:    maxDelay,
+		}}
+	}
+	responseWith := func(hint string) *http.Response {
+		header := http.Header{}
+		if hint != "" {
+			header.Set("Retry-After", hint)
+		}
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: header}
+	}
+
+	cases := []struct {
+		name     string
+		maxDelay time.Duration
+		hint     string
+		want     time.Duration
+	}{
+		{"hint beyond the ceiling is clamped", 2 * time.Second, "31536000", 2 * time.Second},
+		{"hint within the ceiling is honored", 2 * time.Second, "1", time.Second},
+		{"no ceiling and a hint means no sleep", 0, "60", 0},
+		{"garbage hint falls back to the exponential path", 2 * time.Second, "soon", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := transport(tc.maxDelay).backoff(1, responseWith(tc.hint))
+			if tc.hint == "soon" {
+				// The exponential path is jittered: any value within the
+				// ceiling is valid, the point is that it is not a parse of
+				// the header.
+				if got < 0 || got > tc.maxDelay {
+					t.Fatalf("backoff = %v, want within [0, %v]", got, tc.maxDelay)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("backoff = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// Without a Retry-After the exponential path is used and stays
+	// bounded by the ceiling it grows against.
+	if got := transport(time.Second).backoff(9, responseWith("")); got < 0 || got > time.Second {
+		t.Fatalf("backoff without hint = %v, want within [0, 1s]", got)
+	}
+}
