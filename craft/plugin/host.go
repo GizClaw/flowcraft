@@ -579,7 +579,14 @@ func (h *Host) SetEnabled(
 				// process, the disagreement this wait exists to prevent.
 				_ = h.stopEntryLocked(ctx, id, StopRolledBack)
 				if entry.Enabled {
-					_ = h.store.SetEnabled(id, false)
+					// The record goes with the process, and a write that
+					// fails is reported alongside the reason the enable
+					// was undone: nothing else repairs that
+					// disagreement — the failed write bumps no revision
+					// for a reconcile pass to visit — so swallowing it
+					// would leave the application with an entry that
+					// says enabled about a plugin nothing can start.
+					return h.abandonLocked(ctx, id, err)
 				}
 				return err
 			}
