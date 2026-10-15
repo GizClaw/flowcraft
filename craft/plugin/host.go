@@ -1106,6 +1106,12 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	}
 	source, err := h.openSource(ctx, entry, generation)
 	if err != nil {
+		// The environment hook runs before the source is opened — it is
+		// where a process is minted for — so an open that failed can
+		// leave a token for a process that does not exist. The stopped
+		// hook is what revokes one, and it takes it back here exactly as
+		// it does for a process the host let go of.
+		h.runStoppedHook(entry.ID)
 		return nil, err
 	}
 	// The open ran outside the host lock (it spawns a process), so the
@@ -1117,6 +1123,10 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if h.closed {
 		h.mu.Unlock()
 		_ = source.Close()
+		// Closing the source is not what revokes the token minted for
+		// it: the stopped hook is, and this process is one the host is
+		// letting go of (see [Host.runStoppedHook]).
+		h.runStoppedHook(entry.ID)
 		return nil, errdefs.NotAvailablef("plugin host: closed")
 	}
 	h.live[entry.ID] = livePlugin{
