@@ -60,7 +60,7 @@ type question struct {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "error:", errorChain(err))
 		os.Exit(1)
 	}
 }
@@ -302,6 +302,8 @@ func coldPass(
 			EntriesAdded:     after.Footprint.Entries - before.Footprint.Entries,
 			VectorBytesAdded: after.Footprint.VectorBytes - before.Footprint.VectorBytes,
 			HeapDeltaBytes:   deltaBytes(heapAfter, heapBefore),
+			Scans:            after.Scans - before.Scans,
+			Embeds:           after.Embeds - before.Embeds,
 		})
 	}
 	return readings, nil
@@ -376,6 +378,9 @@ func hotPass(
 		Vector:     phase,
 		Shares:     computeShares(phase, stages, contextSum),
 		Projection: projections(phase, entriesPerScope, statsAfter.Footprint.Dimensions),
+		// The pass states whether its own numbers describe the lane; the
+		// renderer prints it and the archive keeps it.
+		Certification: certify(phase, len(items)),
 	}
 	if phase.Embeds > 0 {
 		reading.MeanEmbed = phase.EmbedTotal / time.Duration(phase.Embeds)

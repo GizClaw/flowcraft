@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -39,7 +40,9 @@ type reading struct {
 // coldReading is one conversation's first query: the query that pays for the
 // scope's table when nothing has warmed it. The load columns are the query's
 // own; the warm columns are what the deployment's writes paid beside it, and
-// the two together are the scope's first read.
+// the two together are the scope's first read. Scans and Embeds say whether
+// the question was then served by the lane or only read its table, which is
+// what a row whose counts are below one has to be read as.
 type coldReading struct {
 	ConversationID   string        `json:"conversation_id"`
 	Latency          time.Duration `json:"latency_ns"`
@@ -50,6 +53,8 @@ type coldReading struct {
 	EntriesAdded     int           `json:"entries_added"`
 	VectorBytesAdded int64         `json:"vector_bytes_added"`
 	HeapDeltaBytes   int64         `json:"heap_delta_bytes"`
+	Scans            int64         `json:"scans"`
+	Embeds           int64         `json:"embeds"`
 }
 
 // hotReading is the concurrent pass over every question, measured as the delta
@@ -67,6 +72,7 @@ type hotReading struct {
 	ScannedPerQuery float64                 `json:"scanned_per_query"`
 	ScoredPerQuery  float64                 `json:"scored_per_query"`
 	Projection      []projectionPoint       `json:"projection"`
+	Certification   certification           `json:"certification"`
 }
 
 type latencyReading struct {
@@ -88,9 +94,11 @@ type vectorPhase struct {
 	Queries        int64         `json:"queries"`
 	SnapshotHits   int64         `json:"snapshot_hits"`
 	SnapshotMisses int64         `json:"snapshot_misses"`
+	SnapshotErrors int64         `json:"snapshot_errors"`
 	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
 	WarmHits       int64         `json:"warm_hits"`
 	WarmMisses     int64         `json:"warm_misses"`
+	WarmErrors     int64         `json:"warm_errors"`
 	WarmLoad       time.Duration `json:"warm_load_ns"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
@@ -139,9 +147,11 @@ func phaseDelta(before, after vector.Stats) vectorPhase {
 		Queries:        after.Queries - before.Queries,
 		SnapshotHits:   after.SnapshotHits - before.SnapshotHits,
 		SnapshotMisses: after.SnapshotMisses - before.SnapshotMisses,
+		SnapshotErrors: after.SnapshotErrors - before.SnapshotErrors,
 		SnapshotLoad:   after.SnapshotLoad - before.SnapshotLoad,
 		WarmHits:       after.WarmHits - before.WarmHits,
 		WarmMisses:     after.WarmMisses - before.WarmMisses,
+		WarmErrors:     after.WarmErrors - before.WarmErrors,
 		WarmLoad:       after.WarmLoad - before.WarmLoad,
 		Embeds:         after.Embeds - before.Embeds,
 		EmbedTotal:     after.EmbedTotal - before.EmbedTotal,
@@ -152,6 +162,37 @@ func phaseDelta(before, after vector.Stats) vectorPhase {
 		EntriesScanned: after.EntriesScanned - before.EntriesScanned,
 		EntriesScored:  after.EntriesScored - before.EntriesScored,
 	}
+}
+
+// certification is what a pass states about its own numbers: a reading a
+// report may quote is one where every question reached the lane. A pass where
+// the lane served nothing -- it could not read its table, or the scope holds
+// none -- measures the other lanes and the materialization it paid for, not
+// what one retrieval of this lane costs, and the numbers below it say so
+// instead of reading like a fast lane.
+type certification struct {
+	Certified bool     `json:"certified"`
+	Reasons   []string `json:"reasons,omitempty"`
+}
+
+// certify compares what the pass asked for against what the lane reported.
+// The counters are the lane's own, recorded where the lane serves, so a pass
+// whose numbers disagree with the questions did not measure what it claims.
+func certify(phase vectorPhase, questions int) certification {
+	reasons := make([]string, 0, 4)
+	if phase.Queries != int64(questions) {
+		reasons = append(reasons, fmt.Sprintf("queries %d != questions %d", phase.Queries, questions))
+	}
+	if phase.Scans != int64(questions) {
+		reasons = append(reasons, fmt.Sprintf("scans %d != questions %d", phase.Scans, questions))
+	}
+	if phase.Embeds != phase.Queries {
+		reasons = append(reasons, fmt.Sprintf("embeds %d != queries %d", phase.Embeds, phase.Queries))
+	}
+	if phase.SnapshotErrors != 0 {
+		reasons = append(reasons, fmt.Sprintf("snapshot errors %d", phase.SnapshotErrors))
+	}
+	return certification{Certified: len(reasons) == 0, Reasons: reasons}
 }
 
 // stageDeltas subtracts two provider stage readings.
