@@ -427,11 +427,49 @@ snapshot, its enable state and — by default — its KV file
 `UninstallOptions{KeepKV: true}` / `{KeepData: true}` keep them, for
 content a reinstall should still find. A builtin cannot be uninstalled
 (disable it instead); removing the user copy that shadows a builtin
-uncovers the builtin again. `Host.Uninstall` stops the plugin first
-(in-flight calls drain, the source closes) and then uninstalls;
-`Store.Uninstall` on its own stops nothing. State the application keys
-by plugin id — secrets, inference profiles, telemetry — is not craft's
-to delete and stays.
+uncovers the builtin again. `Host.Uninstall` asks the store first
+(`Store.CheckUninstall`: a builtin, or an id that is not installed, is
+refused before any process is killed), stops the plugin (in-flight calls
+drain, the source closes), and then uninstalls; a store that refuses after
+the stop starts a plugin that was running again, so the refusal costs it a
+restart instead of leaving a plugin uninstalled while its process runs on.
+`Store.Uninstall` on its own stops nothing. State the application keys by
+plugin id — secrets, inference profiles, telemetry — is not craft's to
+delete and stays.
+
+**Host-side changes.** `Host.Install(ctx, source)`,
+`Host.UpdateFrom(ctx, id, installer)` and `Host.Rollback(ctx, id)` run one of
+those store pipelines and add the process half of it — stop, change, start —
+so a running plugin never reads files that changed under it:
+
+- The process is stopped before the change (the change replaces or removes
+  the directory it reads) and started again from what the store now holds.
+- A change the store refuses — a version rule, a checksum, a download the
+  installer declined — leaves the installed version in place, and it is
+  started again before the call returns: what the refusal costs a running
+  plugin is a restart, not a stopped plugin.
+- A change that landed but whose version cannot come up is undone where the
+  store can undo it (the snapshot `Store.Rollback` restores) and the version
+  that ran before is started again; the caller sees why the new one failed.
+  `Host.Rollback` is the one change that cannot undo itself — its swap
+  consumes the version it replaced — so a rollback whose version does not
+  come up leaves the plugin stopped with its record disabled, and installing
+  a package is what repairs it.
+- A version no attempt can bring up leaves the plugin stopped with its record
+  disabled, including the case where the stop itself could not finish: the
+  drain gives up at `HostOptions.DrainTimeout` and the source closes anyway,
+  so the record that says enabled goes with the process that is gone.
+  "Enabled" about a plugin with no process is the one state the host does not
+  leave behind.
+- A change does not turn a plugin on: one that was not running is left that
+  way, including one whose process gave up on its own — that loss was
+  reported, and the record is the application's to change.
+
+Each call holds the plugin's entry lock, so an enable or another change of the
+same plugin waits for it rather than racing it. `Store.Install`,
+`Store.UpdateFrom`, `Store.Rollback` and `Store.Uninstall` are the same
+pipelines without the process half: calling them straight is the application's
+own to keep in step, and nothing in craft starts or stops a process for them.
 
 **Remote updates.** A manifest may declare where to look for a newer
 version:
@@ -616,6 +654,12 @@ server cannot start is refused whichever way that flag is set.
 `Host.Start` does not wait: it replays what a previous session recorded,
 and an application's startup must not depend on a plugin's process.
 
+Disabling is a stop plus the record: the process drains and closes, and the
+entry is written disabled. A stop that runs past `HostOptions.DrainTimeout`
+closes the source anyway and reports it, and the entry goes disabled with the
+process that is gone — the record never says enabled about a plugin the host
+is not running.
+
 ## Plugin graph nodes
 
 Each manifest `nodes` entry becomes an executable graph node: craft
@@ -785,7 +829,10 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   member out: it waits out a retiring member's teardown instead of
   handing out one on its way out, concurrent callers for one key share a
   single assembly (error included), and the caller owes exactly one
-  `Release` — the last reference is what retires a member.
+  `Release`. What a reference buys is the member's stay rather than its
+  life: the last `Release` retires a member its key was invalidated for,
+  while a member nothing invalidated stays pooled and serves the next
+  caller.
 - **A key names two things.** `Kind` is the application's namespace
   (`workspace`, `app`, …), so the same id in two kinds is two keys and
   neither kind can answer for the other. A blank part is not a key:

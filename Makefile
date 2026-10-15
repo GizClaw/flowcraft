@@ -81,9 +81,10 @@ tidy:
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree
-# (nothing is ever left behind next to the source), and it is a no-op for
-# a library module like `craft` — where `go build -o dir/` refuses to run
-# at all ("no main packages to build").
+# (nothing is ever left behind next to the source). For a library module
+# like `craft` it writes no binary but still compiles every package — the
+# pin check a reader's own build makes — where `go build -o dir/` refuses
+# to run at all ("no main packages to build").
 .PHONY: check-consumers
 check-consumers:
 	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
