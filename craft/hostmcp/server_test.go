@@ -241,6 +241,59 @@ func TestServerCloseKeepsTheShutdownOutcome(t *testing.T) {
 	}
 }
 
+// TestServerCloseCalledTwiceWaitsForTheOutcome covers the concurrent
+// half of the same promise: a second Close that arrives while the first
+// shutdown is still running. The flag that makes the second call
+// idempotent is set before the shutdown, so at that point the outcome
+// it would report is not decided yet — answering a fresh nil would call
+// a shutdown that has not finished done, while the endpoint it
+// describes is still serving.
+func TestServerCloseCalledTwiceWaitsForTheOutcome(t *testing.T) {
+	t.Parallel()
+	server, _, held, token := newHeldServer(t, ServerOptions{
+		// Short enough that the request the test holds open outlives it.
+		ShutdownTimeout: 200 * time.Millisecond,
+	})
+	done := awaitHeld(t, server, held, token)
+
+	first := make(chan error, 1)
+	go func() { first <- server.Close() }()
+	// The first close takes the endpoint — the flag is set before the
+	// shutdown it waits on — and only then does the second one arrive.
+	waitFor(t, "the first Close to take the endpoint", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return server.closed
+	})
+	second := make(chan error, 1)
+	go func() { second <- server.Close() }()
+	select {
+	case err := <-second:
+		t.Fatalf("the second Close returned %v while the first shutdown was still running",
+			err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The bound passes with the request still in flight, so the shutdown
+	// fails — and the second caller has to be told the same thing.
+	firstErr := <-first
+	secondErr := <-second
+	if firstErr == nil {
+		t.Fatal("the first Close reported success over a request that never finished")
+	}
+	if secondErr == nil {
+		t.Fatal("the second Close reported a shutdown that failed as done")
+	}
+	if secondErr.Error() != firstErr.Error() {
+		t.Fatalf("second Close = %v, want the first one's %v", secondErr, firstErr)
+	}
+
+	close(held.release)
+	if err := <-done; err != nil {
+		t.Fatalf("the held request: %v", err)
+	}
+}
+
 // TestServerCloseWaitsForInFlightRequests pins the other half of the
 // same bound: a shutdown that can finish waits for the request in
 // flight, and an endpoint left to the default — ShutdownTimeout is unset
@@ -315,6 +368,18 @@ func TestServerRateLimitIsPerToken(t *testing.T) {
 	if response := postMCP(t, server.URL(), second, ""); response.StatusCode ==
 		http.StatusTooManyRequests {
 		t.Fatal("a second token was charged for the first one's requests")
+	}
+}
+
+// waitFor polls until cond holds, failing the test if it never does.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
