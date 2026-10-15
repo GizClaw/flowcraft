@@ -249,7 +249,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 			return nil, errdefs.Validation(fmt.Errorf("memory config: summary compactor: %w", err))
 		}
 	}
-	projections, lanes, err := buildProjections(settings, kvStore, engine)
+	projections, lanes, vectorIndex, err := buildProjections(settings, kvStore, engine)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: projections: %w", err))
 	}
@@ -337,6 +337,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		buildLaneStatus(auditors),
 		buildRepair(projections, processor, settings.Projection),
 		buildOverlayStatus(maintainStore),
+		vectorStatsReader(vectorIndex),
 	)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
@@ -717,16 +718,16 @@ func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
 	engine *inference.Assembly,
-) ([]projectionLane, []fusion.Lane, error) {
+) ([]projectionLane, []fusion.Lane, *vector.Index, error) {
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	entityIndex, err := entity.New(entity.Config{KV: kvStore, Projection: settings.Projection})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	projections := []projectionLane{
 		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index},
@@ -737,13 +738,13 @@ func buildProjections(
 		{Name: "entity", Searcher: entityIndex, Weight: settings.Lanes.Entity.Weight, Calibrator: fusion.Identity{CalibrationVersion: "identity-v1"}},
 	}
 	if settings.Embed.isZero() {
-		return projections, lanes, nil
+		return projections, lanes, nil, nil
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	projections = append(projections, projectionLane{
 		Name: "vector", Indexer: vectorIndex, Auditor: vectorIndex, Producer: vectorIndex,
@@ -752,7 +753,17 @@ func buildProjections(
 	lanes = append(lanes, fusion.Lane{
 		Name: "vector", Searcher: vectorIndex, Weight: settings.Lanes.Vector.Weight, Calibrator: fusion.Cosine{},
 	})
-	return projections, lanes, nil
+	return projections, lanes, vectorIndex, nil
+}
+
+// vectorStatsReader adapts the vector lane to the diagnostics reading the
+// assembly hands out. A deployment without an embedding model builds no vector
+// lane and reports none.
+func vectorStatsReader(index *vector.Index) func() vector.Stats {
+	if index == nil {
+		return nil
+	}
+	return index.Stats
 }
 
 // policyInput is the derivation policy identity: only settings that change the
