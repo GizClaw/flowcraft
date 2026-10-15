@@ -429,18 +429,25 @@ func (m *Manager) Replace(
 		return err
 	}
 	m.mu.Lock()
-	// The commit is checked against the state this call read: nothing
-	// else can have moved it (the transition gate is held), and a
-	// manager that closed while the new instance was being built must
-	// not adopt it. The instance this call built is the one this call
-	// closes.
-	if m.closed || m.current != previous || m.state != StateRunning {
+	// The commit is checked against what this call read: the transition
+	// gate is held, so nothing that takes a turn can have moved the
+	// manager, and a manager that closed while the new instance was
+	// being built must not adopt it. The instance this call built is
+	// the one this call closes. The phase is the one thing that can
+	// move under the gate — Drain marks the manager draining for the
+	// length of its wait and takes no turn (see [Manager.Drain]) — so a
+	// drain in flight is not a manager that moved on: the instance this
+	// call read is still the current one, the one it built is a running
+	// one, and the drain's own restore sees the swap and leaves the
+	// phase to this commit.
+	if m.closed || m.current != previous {
 		m.mu.Unlock()
 		_ = built.Close()
 		return errdefs.NotAvailablef(
 			"craft manager: replace did not take effect: the manager moved on")
 	}
 	m.current = built
+	m.state = StateRunning
 	m.mu.Unlock()
 	m.notifyState(StateRunning)
 	// The retired instance is closed whatever the drain does: the manager
@@ -458,6 +465,14 @@ func (m *Manager) Replace(
 
 // Drain waits for in-flight work to finish. The instance stays live and
 // the manager goes back to running once it has.
+//
+// The wait takes no turn on the transition gate: a drain may run for as
+// long as its caller allows, and a Close queued behind it would be a
+// shutdown waiting on work. The phase it publishes is therefore the one
+// thing a transition can find changed when it commits, and a swap that
+// landed while this call waited is left to stand: the restore below
+// returns the phase to running only while this call's instance is still
+// the current one (see [Manager.Replace]).
 func (m *Manager) Drain(ctx context.Context) error {
 	m.mu.Lock()
 	current := m.current
