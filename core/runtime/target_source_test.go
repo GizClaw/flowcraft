@@ -128,7 +128,7 @@ func TestFreezeTargetViewsPinsDynamicSet(t *testing.T) {
 	}
 
 	// Pin the dynamic set exactly as generation retirement would.
-	freezeTargetViews(app.current.result, map[string]*agent.Agent{"dyn": instance})
+	freezeTargetViews(app.current.Load().result, map[string]*agent.Agent{"dyn": instance})
 
 	// A registration made after the freeze must not appear in the
 	// retired generation's directory.
@@ -165,8 +165,8 @@ func TestFreezeUnfreezeTargetViewsRoundTrip(t *testing.T) {
 	}
 
 	// Simulate a freeze at the swap point, then the rollback path.
-	freezeTargetViews(app.current.result, map[string]*agent.Agent{"dyn": instance})
-	unfreezeTargetViews(app.current.result)
+	freezeTargetViews(app.current.Load().result, map[string]*agent.Agent{"dyn": instance})
+	unfreezeTargetViews(app.current.Load().result)
 
 	if _, err := app.RegisterAgent(ctx, "zeta", dynamicDefinition("Zeta")); err != nil {
 		t.Fatalf("RegisterAgent(zeta) after unfreeze: %v", err)
@@ -201,7 +201,7 @@ func TestRuntimeReloadRetiredDirectoryFrozen(t *testing.T) {
 	if _, err := app.RegisterAgent(ctx, "dyn", dynamicDefinition("Dyn")); err != nil {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
-	oldValue, _ := app.current.result.Value("directory")
+	oldValue, _ := app.current.Load().result.Value("directory")
 	oldDirectory, ok := oldValue.(*delegation.LocalDirectory)
 	if !ok {
 		t.Fatalf("old directory resource = %T", oldValue)
@@ -300,8 +300,8 @@ func TestRuntimeReloadRollbackUnfreezesDirectory(t *testing.T) {
 	if _, reloadErr := app.Reload(ctx, directoryDoc(t, "")); reloadErr == nil {
 		t.Fatal("Reload with failing bus succeeded, want error")
 	}
-	if app.current.id != 1 {
-		t.Fatalf("generation id after failed reload = %d, want 1", app.current.id)
+	if app.current.Load().id != 1 {
+		t.Fatalf("generation id after failed reload = %d, want 1", app.current.Load().id)
 	}
 
 	if _, err := app.RegisterAgent(ctx, "zeta", dynamicDefinition("Zeta")); err != nil {
