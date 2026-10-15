@@ -317,6 +317,15 @@ func (g *Group) Run(ctx context.Context, runner Runner) error {
 }
 
 // Close stops every instance and marks the group closed.
+//
+// The flag is raised before the stop so no instance can be added behind
+// it, and lowered again when an instance refused the stop: a refusal is
+// nothing stopped, and a group marked closed around an instance that
+// still holds its Craft, its goroutines and its single-instance lock
+// refuses every later Add while its own second Close reports a success
+// that never happened. A group whose instances all ended stopped stays
+// closed whatever the stops reported — their Crafts are gone, and what
+// the errors say is what the caller is told.
 func (g *Group) Close() error {
 	g.mu.Lock()
 	if g.closed {
@@ -324,10 +333,28 @@ func (g *Group) Close() error {
 		return nil
 	}
 	g.closed = true
+	instances := make([]*Manager, 0, len(g.instances))
+	for _, instance := range g.instances {
+		instances = append(instances, instance)
+	}
 	g.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	return g.StopAll(ctx)
+	err := g.StopAll(ctx)
+	stopped := true
+	for _, instance := range instances {
+		if instance.State() != StateStopped {
+			stopped = false
+			break
+		}
+	}
+	if stopped {
+		return err
+	}
+	g.mu.Lock()
+	g.closed = false
+	g.mu.Unlock()
+	return err
 }
 
 // derivePaths fills missing roots from the group root.
