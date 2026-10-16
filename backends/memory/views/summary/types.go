@@ -72,11 +72,20 @@ type Record struct {
 
 // Manifest atomically names the immutable records that form the active
 // summary hierarchy for one conversation.
+//
+// RecordIDs names the tree in the order it was built: the leaves in the
+// compactor's input order, then every level above them in the order its groups
+// were formed. LevelCounts says how many ids each level holds, so a writer that
+// knows the tail of the tree can extend it without reading the records it
+// reuses. A manifest published before the tree was recorded carries no counts:
+// its records are still the active ones, and the next compaction that would
+// extend it compacts afresh instead.
 type Manifest struct {
 	Scope          corememory.Scope `json:"scope"`
 	ConversationID string           `json:"conversation_id"`
 	GenerationID   string           `json:"generation_id"`
 	RecordIDs      []string         `json:"record_ids"`
+	LevelCounts    []int            `json:"level_counts,omitempty"`
 	CoverageRange  CoverageRange    `json:"coverage_range"`
 	FrontierDigest string           `json:"frontier_digest"`
 	PublishedAt    time.Time        `json:"published_at"`
@@ -113,7 +122,37 @@ func (record Record) Clone() Record {
 
 func (manifest Manifest) Clone() Manifest {
 	manifest.RecordIDs = append([]string(nil), manifest.RecordIDs...)
+	manifest.LevelCounts = append([]int(nil), manifest.LevelCounts...)
 	return manifest
+}
+
+// Tree returns the manifest's records by level, leaves first and each level in
+// grouping order, along with whether the manifest carries a tree at all.
+//
+// A manifest without counts -- one published before the tree was recorded, or
+// one a caller assembled by hand -- reports false: its records are the active
+// ones, but nothing says where its groups start and end, so a writer that would
+// extend it has to compact the window afresh.
+func (manifest Manifest) Tree() ([][]string, bool) {
+	if len(manifest.LevelCounts) != treeLevels {
+		return nil, false
+	}
+	levels := make([][]string, 0, treeLevels)
+	at := 0
+	for _, count := range manifest.LevelCounts {
+		if count < 0 || at+count > len(manifest.RecordIDs) {
+			return nil, false
+		}
+		if count == 0 {
+			break
+		}
+		levels = append(levels, append([]string(nil), manifest.RecordIDs[at:at+count]...))
+		at += count
+	}
+	if at != len(manifest.RecordIDs) || len(levels) == 0 {
+		return nil, false
+	}
+	return levels, true
 }
 
 func (record Record) Validate() error {
@@ -178,6 +217,33 @@ func (manifest Manifest) Validate() error {
 	}
 	if !orderedUniqueStrings(manifest.RecordIDs) {
 		return errors.New("summary view: manifest record_ids must be ordered and unique")
+	}
+	if len(manifest.LevelCounts) > 0 {
+		if len(manifest.LevelCounts) != treeLevels {
+			return fmt.Errorf("summary view: manifest level_counts must name all %d levels", treeLevels)
+		}
+		total := 0
+		empty := false
+		for level, count := range manifest.LevelCounts {
+			if count < 0 {
+				return errors.New("summary view: manifest level_counts must not be negative")
+			}
+			if count == 0 {
+				empty = true
+				continue
+			}
+			if empty {
+				return fmt.Errorf("summary view: manifest level %d holds records below an empty level", level)
+			}
+			total += count
+		}
+		if total != len(manifest.RecordIDs) {
+			return fmt.Errorf("summary view: manifest level_counts name %d records, %d are stored",
+				total, len(manifest.RecordIDs))
+		}
+		if len(manifest.RecordIDs) > 0 && manifest.LevelCounts[0] == 0 {
+			return errors.New("summary view: manifest level_counts must name at least one leaf")
+		}
 	}
 	if len(manifest.RecordIDs) > 0 {
 		if err := manifest.CoverageRange.Validate(); err != nil {

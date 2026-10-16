@@ -31,8 +31,15 @@ type activeCatalogHead struct {
 	ActiveDigest      string        `json:"active_digest"`
 	GenerationID      string        `json:"generation_id"`
 	CoverageRange     CoverageRange `json:"coverage_range"`
-	FrontierDigest    string        `json:"frontier_digest"`
-	PublishedAtText   string        `json:"published_at"`
+	// LevelCounts is the active manifest's tree: how its record ids divide by
+	// level. The record ids themselves descend from a base plus segments, and
+	// the counts ride on the head because they are the head's business -- they
+	// say how to read the list, not which records are in it. A head written
+	// before the tree was recorded carries none, and ActiveDigest covers the
+	// difference either way.
+	LevelCounts     []int  `json:"level_counts,omitempty"`
+	FrontierDigest  string `json:"frontier_digest"`
+	PublishedAtText string `json:"published_at"`
 }
 
 type activeCatalogBase struct {
@@ -66,6 +73,7 @@ type activeCatalogSegment struct {
 	RemoveIDs             []string           `json:"remove_ids,omitempty"`
 	GenerationID          string             `json:"generation_id"`
 	CoverageRange         CoverageRange      `json:"coverage_range"`
+	LevelCounts           []int              `json:"level_counts,omitempty"`
 	FrontierDigest        string             `json:"frontier_digest"`
 	PublishedAtText       string             `json:"published_at"`
 	Digest                string             `json:"digest"`
@@ -117,7 +125,8 @@ func (store *SummaryStore) publishActiveLocked(ctx context.Context, desired Mani
 		ConversationID: desired.ConversationID, BaseID: head.BaseID, BaseDigest: head.BaseDigest,
 		PreviousSegmentID: head.HeadSegmentID, PreviousSegmentDigest: head.HeadSegmentDigest,
 		Adds: adds, RemoveIDs: removes, GenerationID: desired.GenerationID,
-		CoverageRange: desired.CoverageRange, FrontierDigest: desired.FrontierDigest,
+		CoverageRange: desired.CoverageRange, LevelCounts: append([]int(nil), desired.LevelCounts...),
+		FrontierDigest:  desired.FrontierDigest,
 		PublishedAtText: desired.PublishedAt.UTC().Format(timeLayout),
 	}
 	segment.Digest = digestCatalog(segment)
@@ -141,7 +150,8 @@ func (store *SummaryStore) publishActiveLocked(ctx context.Context, desired Mani
 		ConversationID: desired.ConversationID, BaseID: head.BaseID, BaseDigest: head.BaseDigest,
 		HeadSegmentID: segment.SegmentID, HeadSegmentDigest: segment.Digest, SegmentCount: head.SegmentCount + 1,
 		ActiveDigest: digestManifest(desired), GenerationID: desired.GenerationID,
-		CoverageRange: desired.CoverageRange, FrontierDigest: desired.FrontierDigest,
+		CoverageRange: desired.CoverageRange, LevelCounts: append([]int(nil), desired.LevelCounts...),
+		FrontierDigest:  desired.FrontierDigest,
 		PublishedAtText: desired.PublishedAt.UTC().Format(timeLayout),
 	}
 	return store.writeActiveHead(ctx, nextHead, desired)
@@ -175,7 +185,8 @@ func (store *SummaryStore) writeActiveBase(ctx context.Context, manifest Manifes
 		RuntimeID:     manifest.Scope.RuntimeID, UserID: manifest.Scope.UserID, AgentID: manifest.Scope.AgentID,
 		ConversationID: manifest.ConversationID, BaseID: base.BaseID, BaseDigest: base.Digest,
 		ActiveDigest: digestManifest(manifest), GenerationID: manifest.GenerationID,
-		CoverageRange: manifest.CoverageRange, FrontierDigest: manifest.FrontierDigest,
+		CoverageRange: manifest.CoverageRange, LevelCounts: append([]int(nil), manifest.LevelCounts...),
+		FrontierDigest:  manifest.FrontierDigest,
 		PublishedAtText: manifest.PublishedAt.UTC().Format(timeLayout),
 	}
 	return store.writeActiveHead(ctx, head, manifest)
@@ -331,7 +342,8 @@ func (store *SummaryStore) materializeHeadLocked(
 	}
 	manifest := Manifest{
 		Scope: scope, ConversationID: conversationID, GenerationID: head.GenerationID,
-		RecordIDs: ids, CoverageRange: head.CoverageRange, FrontierDigest: head.FrontierDigest,
+		RecordIDs: ids, CoverageRange: head.CoverageRange,
+		LevelCounts: append([]int(nil), head.LevelCounts...), FrontierDigest: head.FrontierDigest,
 		PublishedAt: publishedAt,
 	}
 	if err := manifest.Validate(); err != nil || digestManifest(manifest) != head.ActiveDigest {
@@ -399,6 +411,7 @@ func validateActiveHead(head activeCatalogHead, scope corememory.Scope, conversa
 		head.UserID != scope.UserID || head.AgentID != scope.AgentID || head.ConversationID != conversationID ||
 		head.BaseID == "" || head.BaseDigest == "" || head.ActiveDigest == "" || head.GenerationID == "" ||
 		head.FrontierDigest == "" || head.PublishedAtText == "" || head.SegmentCount < 0 ||
+		(len(head.LevelCounts) != 0 && len(head.LevelCounts) != treeLevels) ||
 		(head.SegmentCount == 0) != (head.HeadSegmentID == "") ||
 		(head.HeadSegmentID == "") != (head.HeadSegmentDigest == "") {
 		return errors.New("summary view: corrupt active manifest")
@@ -441,6 +454,7 @@ func validateActiveSegment(
 func sameActivePublication(left, right Manifest) bool {
 	return left.Scope == right.Scope && left.ConversationID == right.ConversationID &&
 		left.GenerationID == right.GenerationID && reflect.DeepEqual(left.RecordIDs, right.RecordIDs) &&
+		reflect.DeepEqual(left.LevelCounts, right.LevelCounts) &&
 		left.CoverageRange == right.CoverageRange && left.FrontierDigest == right.FrontierDigest
 }
 
