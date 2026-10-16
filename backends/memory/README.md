@@ -63,6 +63,16 @@ maintenance; `core/memory` stays implementation-neutral.
   summary bookmarks, and the derivation progress that would otherwise resume
   in the middle of them. Both are host-invoked through the same assembly SPI;
   the module ships no runner.
+- Forgetting: `Assembly.SoftForget(ctx, scope, addresses, reason)` records the
+  named items -- a fact, a summary record, a document record -- in a per-scope
+  ledger (`forget/v1/...`), and the read path stops serving them: the context
+  request drops them in every lane, and a parent chain ends where one of them
+  sits. `Assembly.RestoreForgotten` deletes the records and the items are
+  servable again; `Assembly.Forgotten` reads the ledger, and `Diagnostics`
+  reports how much it holds. Hiding is unreachability, not erasure: nothing is
+  removed, and a record that quotes a forgotten item is a different address
+  that stays servable until the host forgets it too -- see *Soft forgetting*
+  below.
 
 ## Deploy
 
@@ -192,6 +202,9 @@ With the workspace driver all state lives under the bound workspace:
   and the next pass replaces it.
 - `recall/v1/...` — the read path's receipts: one record per recalled item
   (count and last recall), read back by the maintenance pass.
+- `forget/v1/...` — the soft-forget ledger: one record per forgotten item, on
+  the identity the read path looks up, with the reason and the time the host
+  gave. The read path scans its keys -- the identities -- once per request.
 - `worker/v1/triggers/<partition>/journal` — the scope-level work journal: one
   append-only record per derivation a write path owes, keyed by the durable
   item it names (a commit, a document version) so a retry lands one record.
@@ -674,6 +687,82 @@ the caller's retention policy, named per conversation. See *Derivation
 generations* above for what a sweep keeps, why the views are swept together, why
 the progress and the lanes go first, and what makes it refuse a conversation
 whose derivation has not settled.
+
+## Soft forgetting (host-invoked)
+
+`Assembly.SoftForget(ctx, scope, addresses, reason)` records items a host has
+decided must not be served, and the read path stops serving them.
+`Assembly.RestoreForgotten(ctx, scope, addresses)` deletes those records and the
+items are servable again; `Assembly.Forgotten(ctx, scope, conversationID)` reads
+the ledger (what, why, since when), and `Diagnostics` reports per scope how much
+it holds. There is no setting: an empty ledger changes nothing, and one with a
+record in it must not depend on a switch being set, so a deployment cannot serve
+a forgotten item by configuration.
+
+An address is the coordinates a context result carries -- `{kind, conversation,
+item}` for a fact or a summary record, `{kind, dataset, document, item}` for a
+document record -- and the ledger stores the identity the read path computes for
+it (`corememory.ContextAddress.Identity`, qualified by the hard scope). The
+ledger is therefore per address, and the address is what makes the read path's
+behavior follow:
+
+- Every lane the provider serves is covered by the same check: a forgotten fact,
+  summary record, or document record is dropped wherever it was found, before
+  packing and before a fact's source quotes are pulled in.
+- A parent chain ends where a forgotten record sits. Hydration walks a
+  document's hierarchy upward; walking past a forgotten section would serve the
+  section's own text one level up, so the chain stops there. A record *below* a
+  forgotten one is a separate item and is served on its own: forgetting a
+  document's resource stops the walk when it reaches it, and leaves the chunks
+  the query matched.
+- The recent lane is never filtered: it serves the conversation's own last
+  turns, and a forget covers what the views derived from them. The canonical
+  transcript stays readable, which is a statement about this primitive, not a
+  limitation of it (see below).
+- A forget outlasts a re-derivation. The ledger is keyed by the identity, not by
+  the generation that produced the item, and a derived id is content-derived
+  rather than policy-derived (a fact from its text, a summary record from its
+  inputs and transform, a document record from its provenance and content) -- so
+  a policy change that re-derives a conversation derives the identities that are
+  already forgotten, and the read path keeps dropping them. A forgotten item
+  never comes back by being derived again; it comes back when its record is
+  deleted.
+
+**Unreachable is not unrecoverable.** A forget is a read-path overlay, and it
+leaves everything where it is: the canonical messages and the Log entries they
+live in, the derived facts and summary records in their views, the projection
+lanes' entries, and every cache in front of them. `Assembly.Facts`,
+`Assembly.Summaries`, `Assembly.Verify`, and `Assembly.Repair` still read all of
+it -- an audit has to be able to see what is stored, and a repair must not be
+blinded by an overlay -- so anyone with the workspace can read a forgotten item.
+Erasing the stored copies is a different operation with a different cost, and
+the module does not pretend the overlay is one: what a forget removes from an
+answer is the item, and only while the host keeps the record.
+
+What that means for records that quote a forgotten item: they are different
+addresses and stay servable on their own. A summary that compressed a forgotten
+fact, a document section holding a forgotten chunk, a higher-level summary over
+the summary -- each is its own item, and forgetting the fact does not forget
+them. A host that needs a quotation gone forgets the record that quotes it as
+well; the ledger is what makes that auditable, since it names every address the
+read path was told to drop, and `SoftForget` returns the records it wrote.
+
+An overlay that cannot be read is not an empty one. A record this module cannot
+decode, or a ledger read that fails, leaves the item *unserved* and reports the
+failure as a request diagnostic; a request whose every candidate could not be
+decided fails rather than answering like an ordinary memory with the overlay's
+items gone quiet. That is the direction a forget has to fail in -- an entry
+nobody can read was a statement that the item was meant to be unreachable --
+and it is why the interface's `Visible` read has an error to return.
+
+The cost on the read path follows the ledger, not the scope: a context request
+reads the scope's ledger keys once (a key-only scan where the substrate offers
+one, the records' values otherwise), and a substrate without a bulk read -- or
+one whose bulk read failed -- falls back to one point lookup per candidate. The
+ledger holds one small record per item a host decided to forget, so its bound is
+itself, the same way maintenance's overlay is bounded by its own judgments. The
+check itself runs on the hydrated item, which is the shape the provider's
+overlay interface has: an item the ledger hides is hydrated and then dropped.
 
 ## Derived documents are not generation scoped
 

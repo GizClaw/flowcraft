@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/GizClaw/flowcraft/backends/memory/forget"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
 	"github.com/GizClaw/flowcraft/backends/memory/worker"
@@ -36,6 +37,11 @@ type ScopeDiagnostics struct {
 	// Trigger is the scope's consumer position in each source and the lease
 	// stored for it, when the assembly was built with a trigger.
 	Trigger *worker.TriggerDiagnostics `json:"trigger,omitempty"`
+	// Hidden is the scope's soft-forget ledger shape, when the assembly was
+	// built with one: how many items the read path is told to drop. A host
+	// reads it to see that a scope has forgotten items at all -- the ledger
+	// itself, with the reasons and the times, is Assembly.Forgotten.
+	Hidden *forget.Diagnostics `json:"hidden,omitempty"`
 }
 
 // LaneDiagnostics reports one projection lane's producer identity for one
@@ -65,10 +71,11 @@ type LaneDiagnostics struct {
 
 // Diagnostics reports the current derivation state. The call performs bounded
 // reads -- at most one pending item per cursor, one manifest and one name
-// listing per lane, and one overlay document per scope -- and does not mutate
-// state. The overlay is the read whose size follows what is stored rather than
-// what is configured: it carries one entry per judged fact, so its bound is
-// the overlay itself.
+// listing per lane, one overlay document per scope, and one key-only scan per
+// ledger -- and does not mutate state. The overlay and the ledger are the reads
+// whose size follows what is stored rather than what is configured: the overlay
+// carries one entry per judged fact and the ledger one per forgotten item, so
+// each one's bound is itself.
 func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) {
 	if assembly == nil {
 		return Diagnostics{}, errors.New("memory assembly: assembly is required")
@@ -109,6 +116,13 @@ func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) 
 					return Diagnostics{}, err
 				}
 				entry.Trigger = &trigger
+			}
+			if assembly.forgotten != nil {
+				hidden, err := assembly.forgotten.Diagnostics(ctx, scope)
+				if err != nil {
+					return Diagnostics{}, err
+				}
+				entry.Hidden = &hidden
 			}
 			result.Scopes = append(result.Scopes, entry)
 		}
