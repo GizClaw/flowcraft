@@ -61,6 +61,23 @@ python3 "$conf/tools/selftest.py"
 echo "==> oracle (Go)"
 (cd "$root/tools/conformance-oracle" && GOWORK=off go build -o "$out/oracle" .)
 
+echo "==> error contract"
+# The committed dump is the error half of the contract: errdefs' tables and
+# classifier samples, dumped from core, replayed by the port
+# (crates/flowcraft-contract/tests/error_contract.rs). Regenerating it is a
+# deliberate act -- the file moves only when core's classification moves, and
+# when it does the port has to move with it.
+"$out/oracle" -error-contract > "$out/error-contract.json"
+if ! cmp -s "$out/error-contract.json" "$conf/error-contract.json"; then
+  echo "rust/conformance/error-contract.json no longer matches core:" >&2
+  # `|| true`: diff exits non-zero when it finds the difference we already
+  # know about, and this file runs under `set -e -o pipefail` -- without it
+  # the hint below would never print.
+  diff "$conf/error-contract.json" "$out/error-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -error-contract) > rust/conformance/error-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

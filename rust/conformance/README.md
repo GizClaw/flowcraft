@@ -2,6 +2,8 @@
 
 The Go implementation is the oracle. `run.sh` builds both sides, runs them
 over the corpus, and diffs the two dumps; any mismatch fails the run.
+The corpus covers the decode surface; `error-contract.json` covers the error
+surface, and is described further down.
 
 ```sh
 rust/conformance/run.sh              # the gate (defaults to the adopted backend)
@@ -27,6 +29,7 @@ through this binary rather than through a copy of it.
 | `tools/allowlist.py` | shared reader for `known-divergences.txt` |
 | `tools/selftest.py` | negative self-tests: each checker's failure modes, exercised against a broken input |
 | `known-divergences.txt` | every accepted disagreement -- a value, a side refusing where the other converts, or wording -- with a reason |
+| `error-contract.json` | the committed error contract: dumped from `core/errdefs`, replayed by the port (see below) |
 | `out/` | generated dumps and the oracle binary (git-ignored) |
 
 Corpus: `fixtures/`, `examples/`, `skills/`, `docs/guides/`, `docs/migrations/`,
@@ -34,6 +37,42 @@ Corpus: `fixtures/`, `examples/`, `skills/`, `docs/guides/`, `docs/migrations/`,
 (25 oracle runs dominate). Every listed directory is committed, and that is
 the rule: a directory that only exists in a local checkout would make CI and
 local runs disagree about which files even exist.
+
+## The error contract
+
+`error-contract.json` is the error half of the contract, and it works the
+other way round from the corpus: the corpus is input documents whose results
+are compared, this is a table of *questions* put to `core/errdefs` and the
+answers it gave. `tools/conformance-oracle -error-contract` writes it —
+the kind table with each kind's HTTP status, the order `HTTPStatus` scans a
+chain in, the code → category table, and sample answers from every classifier
+(`ClassifyStatus`, `ClassifyHTTPStatus`, `ClassifyProviderError`,
+`ClassifyProvider`), each with the input it was asked about.
+
+Each side is checked against the committed file, so a drift on either one is
+red:
+
+| Side | Checked by | Fails when |
+| --- | --- | --- |
+| core | `run.sh` regenerates the dump and `cmp`s it against the file | core's classification moved and the file was not regenerated |
+| the port | `crates/flowcraft-contract/tests/error_contract.rs`, under `cargo nextest` | the port's answers differ from core's, row by row |
+
+Regenerating is a deliberate act — it is how the contract moves — and it is
+one command:
+
+```sh
+(cd tools/conformance-oracle && GOWORK=off go run . -error-contract) > rust/conformance/error-contract.json
+```
+
+What is deliberately not in the file, and why: core's `HTTPStatusCoder`
+interface (Rust cannot discover a foreign subtrait through `&dyn Error`, and
+it does not have to — every transport here drives its own HTTP and calls
+`classify_status` with the status in hand), `FromContext` (a mapping onto the
+port's own cancellation types, which belong to the runtime slice), and the
+retry hints `WithRetryAfter`/`WithRetryCount`/`WithRequestID` (they land with
+the drivers that read the headers). The names in the file (`rate_limit`,
+`context_overflow`) identify rows; core spells neither these kinds nor these
+categories on the wire today.
 
 ## The backends it measured and rejected
 

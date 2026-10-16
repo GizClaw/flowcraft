@@ -13,7 +13,11 @@
 //	                 collapse onto (see jsonKey); deterministic evidence of a
 //	                 document whose conversion result cannot be defined
 //
-// Usage: oracle <dir> [dir...]
+// With -error-contract it prints no per-file records and instead dumps the
+// errdefs error contract -- the classification tables and the classifier
+// samples the port is held to (see errorcontract.go).
+//
+// Usage: oracle [-error-contract] <dir> [dir...]
 package main
 
 import (
@@ -42,8 +46,15 @@ type record struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "-error-contract" {
+		if err := writeErrorContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "error contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

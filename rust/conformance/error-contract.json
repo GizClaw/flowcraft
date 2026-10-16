@@ -1,0 +1,755 @@
+{
+  "note": "The error contract core/errdefs answers, dumped for the port. Names identify rows: core spells neither these kinds nor these categories on the wire today. Regenerate with: (cd tools/conformance-oracle && GOWORK=off go run . -error-contract) > rust/conformance/error-contract.json",
+  "kinds": [
+    {
+      "name": "not_found",
+      "http_status": 404
+    },
+    {
+      "name": "validation",
+      "http_status": 400
+    },
+    {
+      "name": "unauthorized",
+      "http_status": 401
+    },
+    {
+      "name": "forbidden",
+      "http_status": 403
+    },
+    {
+      "name": "conflict",
+      "http_status": 409
+    },
+    {
+      "name": "rate_limit",
+      "http_status": 429
+    },
+    {
+      "name": "budget_exceeded",
+      "http_status": 429
+    },
+    {
+      "name": "policy_denied",
+      "http_status": 403
+    },
+    {
+      "name": "timeout",
+      "http_status": 504
+    },
+    {
+      "name": "not_available",
+      "http_status": 503
+    },
+    {
+      "name": "internal",
+      "http_status": 500
+    },
+    {
+      "name": "interrupted",
+      "http_status": 409
+    },
+    {
+      "name": "aborted",
+      "http_status": 409
+    }
+  ],
+  "http_status_priority": [
+    {
+      "label": "plain error",
+      "chain": [],
+      "status": 500
+    },
+    {
+      "label": "validation wraps not_found",
+      "chain": [
+        "validation",
+        "not_found"
+      ],
+      "status": 404
+    },
+    {
+      "label": "not_found wraps validation",
+      "chain": [
+        "not_found",
+        "validation"
+      ],
+      "status": 404
+    },
+    {
+      "label": "rate_limit wraps validation",
+      "chain": [
+        "rate_limit",
+        "validation"
+      ],
+      "status": 400
+    },
+    {
+      "label": "aborted wraps rate_limit",
+      "chain": [
+        "aborted",
+        "rate_limit"
+      ],
+      "status": 429
+    },
+    {
+      "label": "internal wraps budget_exceeded",
+      "chain": [
+        "internal",
+        "budget_exceeded"
+      ],
+      "status": 429
+    },
+    {
+      "label": "policy_denied wraps conflict",
+      "chain": [
+        "policy_denied",
+        "conflict"
+      ],
+      "status": 409
+    },
+    {
+      "label": "forbidden wraps policy_denied",
+      "chain": [
+        "forbidden",
+        "policy_denied"
+      ],
+      "status": 403
+    },
+    {
+      "label": "timeout wraps not_available",
+      "chain": [
+        "timeout",
+        "not_available"
+      ],
+      "status": 504
+    },
+    {
+      "label": "interrupted wraps aborted",
+      "chain": [
+        "interrupted",
+        "aborted"
+      ],
+      "status": 409
+    },
+    {
+      "label": "aborted wraps internal wraps not_found",
+      "chain": [
+        "aborted",
+        "internal",
+        "not_found"
+      ],
+      "status": 404
+    }
+  ],
+  "provider_category_from_http_code": [
+    {
+      "code": 200,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 301,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 400,
+      "category": "permanent",
+      "mapped": true
+    },
+    {
+      "code": 401,
+      "category": "auth",
+      "mapped": true
+    },
+    {
+      "code": 402,
+      "category": "billing",
+      "mapped": true
+    },
+    {
+      "code": 403,
+      "category": "auth",
+      "mapped": true
+    },
+    {
+      "code": 404,
+      "category": "permanent",
+      "mapped": true
+    },
+    {
+      "code": 405,
+      "category": "permanent",
+      "mapped": true
+    },
+    {
+      "code": 408,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 409,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 418,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 422,
+      "category": "permanent",
+      "mapped": true
+    },
+    {
+      "code": 429,
+      "category": "rate_limit",
+      "mapped": true
+    },
+    {
+      "code": 499,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 500,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 503,
+      "category": "transient",
+      "mapped": false
+    },
+    {
+      "code": 504,
+      "category": "transient",
+      "mapped": false
+    }
+  ],
+  "classify_status": [
+    {
+      "label": "status 200",
+      "code": 200,
+      "kind": "not_available",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 301",
+      "code": 301,
+      "kind": "not_available",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 400",
+      "code": 400,
+      "kind": "validation",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 401",
+      "code": 401,
+      "kind": "unauthorized",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 402",
+      "code": 402,
+      "kind": "forbidden",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 403",
+      "code": 403,
+      "kind": "forbidden",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 404",
+      "code": 404,
+      "kind": "validation",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 405",
+      "code": 405,
+      "kind": "validation",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 408",
+      "code": 408,
+      "kind": "timeout",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 409",
+      "code": 409,
+      "kind": "conflict",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 418",
+      "code": 418,
+      "kind": "not_available",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 422",
+      "code": 422,
+      "kind": "validation",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 429",
+      "code": 429,
+      "kind": "rate_limit",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 500",
+      "code": 500,
+      "kind": "not_available",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 503",
+      "code": 503,
+      "kind": "not_available",
+      "message": "provider said no"
+    },
+    {
+      "label": "status 504",
+      "code": 504,
+      "kind": "timeout",
+      "message": "provider said no"
+    }
+  ],
+  "classify_http_status": [
+    {
+      "label": "429 bare",
+      "provider": "openai",
+      "code": 429,
+      "body": "",
+      "kind": "rate_limit",
+      "message": "openai: http 429"
+    },
+    {
+      "label": "429 with body",
+      "provider": "openai",
+      "code": 429,
+      "body": "slow down",
+      "kind": "rate_limit",
+      "message": "openai: http 429: slow down"
+    },
+    {
+      "label": "401",
+      "provider": "ollama",
+      "code": 401,
+      "body": "body",
+      "kind": "unauthorized",
+      "message": "ollama: http 401: body"
+    },
+    {
+      "label": "403",
+      "provider": "ollama",
+      "code": 403,
+      "body": "body",
+      "kind": "forbidden",
+      "message": "ollama: http 403: body"
+    },
+    {
+      "label": "402",
+      "provider": "ollama",
+      "code": 402,
+      "body": "body",
+      "kind": "forbidden",
+      "message": "ollama: http 402: body"
+    },
+    {
+      "label": "400",
+      "provider": "ollama",
+      "code": 400,
+      "body": "body",
+      "kind": "validation",
+      "message": "ollama: http 400: body"
+    },
+    {
+      "label": "404",
+      "provider": "ollama",
+      "code": 404,
+      "body": "body",
+      "kind": "validation",
+      "message": "ollama: http 404: body"
+    },
+    {
+      "label": "422",
+      "provider": "ollama",
+      "code": 422,
+      "body": "body",
+      "kind": "validation",
+      "message": "ollama: http 422: body"
+    },
+    {
+      "label": "500",
+      "provider": "ollama",
+      "code": 500,
+      "body": "body",
+      "kind": "not_available",
+      "message": "ollama: http 500: body"
+    },
+    {
+      "label": "503",
+      "provider": "ollama",
+      "code": 503,
+      "body": "",
+      "kind": "not_available",
+      "message": "ollama: http 503"
+    },
+    {
+      "label": "301 is below 400",
+      "provider": "ollama",
+      "code": 301,
+      "body": "",
+      "kind": "internal",
+      "message": "ollama: http 301"
+    },
+    {
+      "label": "200 is below 400",
+      "provider": "ollama",
+      "code": 200,
+      "body": "",
+      "kind": "internal",
+      "message": "ollama: http 200"
+    },
+    {
+      "label": "418 is unknown",
+      "provider": "ollama",
+      "code": 418,
+      "body": "body",
+      "kind": "internal",
+      "message": "ollama: http 418: body"
+    },
+    {
+      "label": "409 has no category",
+      "provider": "ollama",
+      "code": 409,
+      "body": "body",
+      "kind": "internal",
+      "message": "ollama: http 409: body"
+    },
+    {
+      "label": "499 is unknown",
+      "provider": "ollama",
+      "code": 499,
+      "body": "",
+      "kind": "internal",
+      "message": "ollama: http 499"
+    },
+    {
+      "label": "504 has no category",
+      "provider": "ollama",
+      "code": 504,
+      "body": "",
+      "kind": "not_available",
+      "message": "ollama: http 504"
+    },
+    {
+      "label": "408 has no category",
+      "provider": "openai",
+      "code": 408,
+      "body": "",
+      "kind": "internal",
+      "message": "openai: http 408"
+    }
+  ],
+  "classify_provider_error": [
+    {
+      "label": "plain text",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "connection refused"
+      },
+      "kind": "not_available",
+      "message": "openai: connection refused"
+    },
+    {
+      "label": "auth keyword",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "invalid api key provided"
+      },
+      "kind": "unauthorized",
+      "message": "openai: invalid api key provided"
+    },
+    {
+      "label": "billing keyword",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "insufficient credits"
+      },
+      "kind": "forbidden",
+      "message": "openai: insufficient credits"
+    },
+    {
+      "label": "context overflow keyword",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "maximum context length exceeded"
+      },
+      "kind": "validation",
+      "message": "openai: maximum context length exceeded"
+    },
+    {
+      "label": "embedded code",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "got http 429"
+      },
+      "kind": "rate_limit",
+      "message": "openai: got http 429"
+    },
+    {
+      "label": "code with no category",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "status 503"
+      },
+      "kind": "not_available",
+      "message": "openai: status 503"
+    },
+    {
+      "label": "already classified",
+      "provider": "openai",
+      "inner": {
+        "kind": "timeout",
+        "prefix": null,
+        "text": "openai.generate: 30s"
+      },
+      "kind": "timeout",
+      "message": "openai.generate: 30s"
+    },
+    {
+      "label": "classified under a wrapper",
+      "provider": "openai",
+      "inner": {
+        "kind": "rate_limit",
+        "prefix": "wrapped",
+        "text": "rate limit hit"
+      },
+      "kind": "rate_limit",
+      "message": "wrapped: rate limit hit"
+    },
+    {
+      "label": "keyword beats code",
+      "provider": "openai",
+      "inner": {
+        "kind": null,
+        "prefix": null,
+        "text": "http 400: maximum context length exceeded"
+      },
+      "kind": "validation",
+      "message": "openai: http 400: maximum context length exceeded"
+    }
+  ],
+  "classify_provider": [
+    {
+      "label": "auth keyword",
+      "chain": [
+        "invalid api key provided"
+      ],
+      "category": "auth"
+    },
+    {
+      "label": "auth keyword with underscore",
+      "chain": [
+        "invalid_api_key"
+      ],
+      "category": "auth"
+    },
+    {
+      "label": "auth keyword in caps",
+      "chain": [
+        "Invalid API Key"
+      ],
+      "category": "auth"
+    },
+    {
+      "label": "billing keyword",
+      "chain": [
+        "insufficient_quota"
+      ],
+      "category": "billing"
+    },
+    {
+      "label": "rate limit keyword",
+      "chain": [
+        "provider said: rate limit exceeded"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "resource_exhausted",
+      "chain": [
+        "resource_exhausted"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "overloaded",
+      "chain": [
+        "server is currently overloaded"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "context overflow keyword",
+      "chain": [
+        "maximum context length exceeded"
+      ],
+      "category": "context_overflow"
+    },
+    {
+      "label": "max_tokens keyword",
+      "chain": [
+        "max_tokens must be at most 4096"
+      ],
+      "category": "context_overflow"
+    },
+    {
+      "label": "overflow beats http 400",
+      "chain": [
+        "http 400: maximum context length exceeded"
+      ],
+      "category": "context_overflow"
+    },
+    {
+      "label": "auth beats http 400",
+      "chain": [
+        "http 400: unauthorized access"
+      ],
+      "category": "auth"
+    },
+    {
+      "label": "embedded http code",
+      "chain": [
+        "got http 429"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "embedded status code",
+      "chain": [
+        "status 401 from upstream"
+      ],
+      "category": "auth"
+    },
+    {
+      "label": "uppercase is folded",
+      "chain": [
+        "GOT HTTP 429"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "http 400 alone is permanent",
+      "chain": [
+        "api error: http 400"
+      ],
+      "category": "permanent"
+    },
+    {
+      "label": "httpx is not http",
+      "chain": [
+        "httpx 429"
+      ],
+      "category": "transient"
+    },
+    {
+      "label": "four digits are not a code",
+      "chain": [
+        "http 4291"
+      ],
+      "category": "transient"
+    },
+    {
+      "label": "estatus is not status",
+      "chain": [
+        "estatus 429"
+      ],
+      "category": "transient"
+    },
+    {
+      "label": "tab counts as space",
+      "chain": [
+        "http\t429"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "newline counts as space",
+      "chain": [
+        "http\n429"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "vertical tab is not space",
+      "chain": [
+        "http\u000b429"
+      ],
+      "category": "transient"
+    },
+    {
+      "label": "no space needed",
+      "chain": [
+        "http429"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "the join is a space",
+      "chain": [
+        "context length",
+        "exceeded"
+      ],
+      "category": "context_overflow"
+    },
+    {
+      "label": "chain texts are joined",
+      "chain": [
+        "outer",
+        "rate limit exceeded"
+      ],
+      "category": "rate_limit"
+    },
+    {
+      "label": "connection refused",
+      "chain": [
+        "connection refused"
+      ],
+      "category": "transient"
+    },
+    {
+      "label": "empty text",
+      "chain": [
+        ""
+      ],
+      "category": "transient"
+    }
+  ]
+}
