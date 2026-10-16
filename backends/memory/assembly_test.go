@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	msgsource "github.com/GizClaw/flowcraft/backends/memory/sources/message"
+	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	"github.com/GizClaw/flowcraft/backends/memory/verify"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
@@ -86,6 +87,42 @@ func newTestAssemblyOn(t *testing.T, ws workspace.Workspace, settings string, op
 
 func testScope() corememory.Scope {
 	return corememory.Scope{RuntimeID: "memories", UserID: "u1"}
+}
+
+// TestAssemblyAttachesTheFactPublicationOutbox pins the wiring that makes the
+// outbox a deployment fact rather than an interface with no caller: a fact
+// written through the assembly's view is appended to the scope-wide stream,
+// and the record names the conversation a consumer has to derive.
+func TestAssemblyAttachesTheFactPublicationOutbox(t *testing.T) {
+	ctx := context.Background()
+	assembly, ws := newTestAssembly(t, "")
+	scope := testScope()
+	if _, err := assembly.facts.Add(ctx, factview.AddRequest{
+		ID: "fact-1", Generation: "generation-1", Scope: scope, ConversationID: "conversation",
+		Content:    coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "the outbox sees this"}}},
+		Provenance: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := factview.NewOutbox(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, cursor, err := outbox.Read(ctx, scope, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || cursor != 1 {
+		t.Fatalf("outbox records = %#v (cursor %d), want the one publication", records, cursor)
+	}
+	if records[0].FactID != "fact-1" || records[0].ConversationID != "conversation" ||
+		records[0].Event != "published" || records[0].Scope() != scope {
+		t.Fatalf("record = %#v", records[0])
+	}
 }
 
 // TestAssemblyCloseBeforeWireIsFinal pins the lifecycle gap: closing an
