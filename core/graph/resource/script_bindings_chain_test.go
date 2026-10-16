@@ -1,0 +1,426 @@
+package resource_test
+
+import (
+	"context"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	graphresource "github.com/GizClaw/flowcraft/core/graph/resource"
+	"github.com/GizClaw/flowcraft/core/resource"
+)
+
+// chainStub is a script surface stub with both phases: it records the
+// calls it receives into a shared log, notes the globals visible to its
+// late phase, and returns the bindings it was built with.
+type chainStub struct {
+	name    string
+	log     *[]string
+	ord     []bindings.Binding
+	late    []bindings.Binding
+	lateAt  *[]string
+	ordErr  error
+	lateErr error
+}
+
+func (s *chainStub) Bind(bindings.Invocation) ([]bindings.Binding, error) {
+	s.record(".bind")
+	if s.ordErr != nil {
+		return nil, s.ordErr
+	}
+	return append([]bindings.Binding(nil), s.ord...), nil
+}
+
+func (s *chainStub) BindLate(_ bindings.Invocation, env *agent.ScriptEnv) ([]bindings.Binding, error) {
+	s.record(".late")
+	if s.lateAt != nil {
+		names := make([]string, 0, len(env.Bindings))
+		for name := range env.Bindings {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		*s.lateAt = append(*s.lateAt, strings.Join(names, ","))
+	}
+	if s.lateErr != nil {
+		return nil, s.lateErr
+	}
+	return append([]bindings.Binding(nil), s.late...), nil
+}
+
+func (s *chainStub) record(suffix string) {
+	if s.log != nil {
+		*s.log = append(*s.log, s.name+suffix)
+	}
+}
+
+// plainStub is a script surface stub without a late phase.
+type plainStub struct {
+	name string
+	log  *[]string
+	ord  []bindings.Binding
+}
+
+func (s plainStub) Bind(bindings.Invocation) ([]bindings.Binding, error) {
+	if s.log != nil {
+		*s.log = append(*s.log, s.name+".bind")
+	}
+	return append([]bindings.Binding(nil), s.ord...), nil
+}
+
+func buildChain(t *testing.T, deps map[string]any) bindings.Provider {
+	t.Helper()
+	value, err := (graphresource.ScriptBindingsChainFactory{}).New(
+		context.Background(), resource.Input{Deps: deps})
+	if err != nil {
+		t.Fatalf("chain New: %v", err)
+	}
+	provider, ok := value.(bindings.Provider)
+	if !ok {
+		t.Fatalf("chain New returned %T, want bindings.Provider", value)
+	}
+	return provider
+}
+
+func chainInvocation() bindings.Invocation {
+	return bindings.Invocation{
+		Context: context.Background(),
+		Board:   agent.NewBoard(),
+		Host:    agent.NoopHost{},
+		RunInfo: agent.RunInfo{Identity: agent.Identity{AgentID: "a", RunID: "run-1"}},
+		Runtime: scriptRuntimeStub{},
+	}
+}
+
+func assembleChain(t *testing.T, provider bindings.Provider) *agent.ScriptEnv {
+	t.Helper()
+	env, err := bindings.Assemble(chainInvocation(), nil, provider)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	return env
+}
+
+func envNames(env *agent.ScriptEnv) []string {
+	names := make([]string, 0, len(env.Bindings))
+	for name := range env.Bindings {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func bindingNames(list []bindings.Binding) []string {
+	names := make([]string, 0, len(list))
+	for _, b := range list {
+		names = append(names, b.Name)
+	}
+	return names
+}
+
+func TestScriptBindingsChainOrder(t *testing.T) {
+	var log []string
+	base := &chainStub{name: "base", log: &log, ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+	unitA := &chainStub{name: "a", log: &log, ord: []bindings.Binding{
+		{Name: "a_one", Value: "1"},
+		{Name: "a_two", Value: "2"},
+	}}
+	unitB := plainStub{name: "b", log: &log, ord: []bindings.Binding{{Name: "b", Value: "3"}}}
+
+	// The map literal lists "unit.b" before "unit.a": binding order is
+	// the sorted dep key order, not the document's.
+	provider := buildChain(t, map[string]any{"unit.b": unitB, "unit.a": unitA, "base": base})
+
+	list, err := provider.Bind(chainInvocation())
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	want := []string{"board", "a_one", "a_two", "b"}
+	if got := bindingNames(list); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bind order = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(log, []string{"base.bind", "a.bind", "b.bind"}) {
+		t.Fatalf("call order = %v", log)
+	}
+}
+
+func TestScriptBindingsChainLatePhase(t *testing.T) {
+	var log []string
+	var lateAt []string
+	base := &chainStub{name: "base", log: &log, ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+	unitA := &chainStub{name: "a", log: &log,
+		ord:    []bindings.Binding{{Name: "a", Value: "1"}},
+		late:   []bindings.Binding{{Name: "a_late", Value: "1l"}},
+		lateAt: &lateAt,
+	}
+	unitB := plainStub{name: "b", log: &log, ord: []bindings.Binding{{Name: "b", Value: "2"}}}
+	unitC := &chainStub{name: "c", log: &log, lateAt: &lateAt,
+		late: []bindings.Binding{{Name: "c_late", Value: "3l"}},
+	}
+
+	provider := buildChain(t,
+		map[string]any{"base": base, "unit.a": unitA, "unit.b": unitB, "unit.c": unitC})
+	env := assembleChain(t, provider)
+
+	wantNames := []string{"a", "a_late", "b", "board", "c_late"}
+	if got := envNames(env); !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("globals = %v, want %v", got, wantNames)
+	}
+	wantLog := []string{"base.bind", "a.bind", "b.bind", "c.bind", "base.late", "a.late", "c.late"}
+	if !reflect.DeepEqual(log, wantLog) {
+		t.Fatalf("call order = %v, want %v", log, wantLog)
+	}
+	// Each late phase sees the ordinary bindings — base, a and b — and
+	// not a sibling's late binding: Assemble installs the late list only
+	// after the whole phase returned. The stub without a late phase
+	// (plainStub b) was skipped.
+	wantLateAt := []string{"a,b,board", "a,b,board"}
+	if !reflect.DeepEqual(lateAt, wantLateAt) {
+		t.Fatalf("late phase saw %v, want %v", lateAt, wantLateAt)
+	}
+}
+
+func TestScriptBindingsChainMatchesBindingsChain(t *testing.T) {
+	units := []bindings.Provider{
+		&chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}},
+			late: []bindings.Binding{{Name: "base_late", Value: "bl"}}},
+		&chainStub{name: "a", ord: []bindings.Binding{{Name: "a", Value: "1"}},
+			late: []bindings.Binding{{Name: "a_late", Value: "1l"}}},
+		plainStub{name: "b", ord: []bindings.Binding{{Name: "b", Value: "2"}}},
+	}
+	composed := buildChain(t, map[string]any{"base": units[0], "unit.a": units[1], "unit.b": units[2]})
+	reference := bindings.Chain(units...)
+
+	gotOrd, err := composed.Bind(chainInvocation())
+	if err != nil {
+		t.Fatalf("chain Bind: %v", err)
+	}
+	wantOrd, err := reference.Bind(chainInvocation())
+	if err != nil {
+		t.Fatalf("bindings.Chain Bind: %v", err)
+	}
+	if !reflect.DeepEqual(gotOrd, wantOrd) {
+		t.Fatalf("ordinary phase = %v, want %v", gotOrd, wantOrd)
+	}
+
+	gotEnv := &agent.ScriptEnv{Bindings: map[string]any{}}
+	for _, b := range gotOrd {
+		gotEnv.Bindings[b.Name] = b.Value
+	}
+	gotLate, err := composed.(bindings.LateProvider).BindLate(chainInvocation(), gotEnv)
+	if err != nil {
+		t.Fatalf("chain BindLate: %v", err)
+	}
+	wantEnv := &agent.ScriptEnv{Bindings: map[string]any{}}
+	for _, b := range wantOrd {
+		wantEnv.Bindings[b.Name] = b.Value
+	}
+	wantLate, err := reference.(bindings.LateProvider).BindLate(chainInvocation(), wantEnv)
+	if err != nil {
+		t.Fatalf("bindings.Chain BindLate: %v", err)
+	}
+	if !reflect.DeepEqual(gotLate, wantLate) {
+		t.Fatalf("late phase = %v, want %v", gotLate, wantLate)
+	}
+
+	if got, want := assembleChain(t, composed).Bindings, assembleChain(t, reference).Bindings; !reflect.DeepEqual(got, want) {
+		t.Fatalf("assembled surface = %v, want %v", got, want)
+	}
+}
+
+func TestScriptBindingsChainNests(t *testing.T) {
+	inner := buildChain(t, map[string]any{
+		"base":     &chainStub{name: "std", ord: []bindings.Binding{{Name: "board", Value: "b"}}},
+		"unit.tok": &chainStub{name: "tok", ord: []bindings.Binding{{Name: "tokens", Value: "t"}}},
+	})
+	audit := &chainStub{name: "audit", late: []bindings.Binding{{Name: "audit", Value: "a"}}}
+	outer := buildChain(t, map[string]any{"base": inner, "unit.audit": audit})
+
+	want := []string{"audit", "board", "tokens"}
+	if got := envNames(assembleChain(t, outer)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("nested globals = %v, want %v", got, want)
+	}
+}
+
+func TestScriptBindingsChainEmpty(t *testing.T) {
+	for name, deps := range map[string]map[string]any{"nil deps": nil, "empty deps": {}} {
+		t.Run(name, func(t *testing.T) {
+			if env := assembleChain(t, buildChain(t, deps)); len(env.Bindings) != 0 {
+				t.Fatalf("bindings = %v, want none", env.Bindings)
+			}
+		})
+	}
+}
+
+func TestScriptBindingsChainRejectsBadDeps(t *testing.T) {
+	cases := map[string]map[string]any{
+		"plain nil":      {"base": nil},
+		"non provider":   {"unit.a": "nope"},
+		"typed nil":      {"unit.a": (*chainStub)(nil)},
+		"typed nil base": {"base": (*chainStub)(nil)},
+	}
+	for name, deps := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
+				context.Background(), resource.Input{Deps: deps})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("New = %v, want Validation", err)
+			}
+		})
+	}
+}
+
+func TestScriptBindingsChainRejectsSameProviderUnderTwoKeys(t *testing.T) {
+	stub := &chainStub{name: "shared", ord: []bindings.Binding{{Name: "x", Value: "1"}}}
+	_, err := (graphresource.ScriptBindingsChainFactory{}).New(context.Background(), resource.Input{
+		Deps: map[string]any{"unit.a": stub, "unit.b": stub},
+	})
+	if !errdefs.IsConflict(err) {
+		t.Fatalf("New = %v, want Conflict", err)
+	}
+	for _, want := range []string{`"unit.a"`, `"unit.b"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must name %s", err, want)
+		}
+	}
+}
+
+func TestScriptBindingsChainKeepsIndependentFunctionProviders(t *testing.T) {
+	// Two "impl: none" resources and two wrappers of the same function
+	// share a code pointer under reflection: treating functions as
+	// identity-bearing would reject these legal documents.
+	none := func() bindings.Provider {
+		value, err := (graphresource.ScriptBindingsNoneFactory{}).New(context.Background(), resource.Input{})
+		if err != nil {
+			t.Fatalf("none New: %v", err)
+		}
+		return value.(bindings.Provider)
+	}
+	same := func(bindings.Invocation) ([]bindings.Binding, error) { return nil, nil }
+	provider := buildChain(t, map[string]any{
+		"unit.a": none(),
+		"unit.b": none(),
+		"unit.c": bindings.ProviderFunc(same),
+		"unit.d": bindings.ProviderFunc(same),
+	})
+	if env := assembleChain(t, provider); len(env.Bindings) != 0 {
+		t.Fatalf("bindings = %v, want none", env.Bindings)
+	}
+}
+
+func TestScriptBindingsChainDuplicateGlobals(t *testing.T) {
+	t.Run("within one unit", func(t *testing.T) {
+		unit := &chainStub{name: "a", ord: []bindings.Binding{
+			{Name: "dup", Value: "1"},
+			{Name: "dup", Value: "2"},
+		}}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.a": unit}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		if !strings.Contains(err.Error(), `global "dup" is bound twice by dep "unit.a"`) {
+			t.Fatalf("error %v must name the unit that bound twice", err)
+		}
+	})
+
+	t.Run("across units", func(t *testing.T) {
+		provider := buildChain(t, map[string]any{
+			"unit.a": &chainStub{name: "a", ord: []bindings.Binding{{Name: "dup", Value: "1"}}},
+			"unit.b": &chainStub{name: "b", ord: []bindings.Binding{{Name: "dup", Value: "2"}}},
+		})
+		_, err := bindings.Assemble(chainInvocation(), nil, provider)
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		if !strings.Contains(err.Error(), `global "dup" bound by both "unit.a" and "unit.b"`) {
+			t.Fatalf("error %v must name both deps", err)
+		}
+	})
+}
+
+func TestScriptBindingsChainAttributesUnitErrors(t *testing.T) {
+	t.Run("ordinary phase", func(t *testing.T) {
+		unit := &chainStub{name: "a", ordErr: errdefs.NotFoundf("widget missing")}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.a": unit}))
+		if !errdefs.IsNotFound(err) {
+			t.Fatalf("Assemble = %v, want the unit's NotFound to survive", err)
+		}
+		if errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want the unit's classification inherited, not overridden", err)
+		}
+		if !strings.Contains(err.Error(), `dep "unit.a"`) || !strings.Contains(err.Error(), "widget missing") {
+			t.Fatalf("error %v must name the dep and the unit's cause", err)
+		}
+	})
+
+	t.Run("late phase", func(t *testing.T) {
+		unit := &chainStub{name: "l", lateErr: errdefs.NotFoundf("late missing")}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.l": unit}))
+		if !errdefs.IsNotFound(err) {
+			t.Fatalf("Assemble = %v, want the unit's NotFound to survive", err)
+		}
+		if !strings.Contains(err.Error(), `dep "unit.l"`) || !strings.Contains(err.Error(), "late missing") {
+			t.Fatalf("error %v must name the dep and the unit's cause", err)
+		}
+	})
+}
+
+func TestScriptBindingsChainLateCollision(t *testing.T) {
+	base := &chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+	late := &chainStub{name: "l", late: []bindings.Binding{{Name: "board", Value: "l"}}}
+	_, err := bindings.Assemble(chainInvocation(), nil,
+		buildChain(t, map[string]any{"base": base, "unit.l": late}))
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Assemble = %v, want Validation", err)
+	}
+	want := `global "board" bound by dep "unit.l" was already bound in the ordinary phase`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %v must name the late dep", err)
+	}
+}
+
+func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
+	for name, settings := range map[string]string{
+		"unknown key": `{"order": ["unit.a"]}`,
+		"units key":   `{"units": []}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
+				context.Background(), resource.Input{Settings: []byte(settings)})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("New = %v, want Validation for a settings key the chain does not define", err)
+			}
+		})
+	}
+
+	if _, err := (graphresource.ScriptBindingsChainFactory{}).New(
+		context.Background(), resource.Input{}); err != nil {
+		t.Fatalf("empty settings: %v", err)
+	}
+}
+
+func TestScriptBindingsChainSpec(t *testing.T) {
+	if graphresource.ChainImpl != "chain" {
+		t.Fatalf("ChainImpl = %q, want the documented impl name", graphresource.ChainImpl)
+	}
+	spec := (graphresource.ScriptBindingsChainFactory{}).Spec()
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	if spec.Kind != bindings.ResourceKind || spec.Impl != graphresource.ChainImpl {
+		t.Fatalf("spec = %s/%s, want %s/%s", spec.Kind, spec.Impl, bindings.ResourceKind, graphresource.ChainImpl)
+	}
+	want := []resource.DepSpec{
+		{Name: "base", Type: bindings.ResourceKind},
+		{Name: "unit", Type: bindings.ResourceKind, Many: true},
+	}
+	if !reflect.DeepEqual(spec.Deps, want) {
+		t.Fatalf("deps = %+v, want %+v", spec.Deps, want)
+	}
+}

@@ -223,7 +223,10 @@ func Register(r *res.Registry) error {
 	if err := r.Register(ScriptBindingsFactory{}); err != nil {
 		return err
 	}
-	return r.Register(ScriptBindingsNoneFactory{})
+	if err := r.Register(ScriptBindingsNoneFactory{}); err != nil {
+		return err
+	}
+	return r.Register(ScriptBindingsChainFactory{})
 }
 
 func loadDefinition(

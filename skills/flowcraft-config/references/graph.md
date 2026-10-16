@@ -220,9 +220,27 @@ engine:
   bindings became a resource. Omitting the dep never breaks an existing
   graph.
 - **`impl: none`** — binds nothing: scripts run with an empty scope.
+- **`impl: chain`** — composes several bindings resources into one provider:
+  the optional `base` first, then every `unit.*` in sorted key order (the
+  order is the dep key order, not the document's).
 - Hosts add their own globals with another impl of the kind; a name bound
   twice fails the execution instead of shadowing, and every global must be a
   JS/Lua identifier that is not a keyword (`tokens`, not `tokens.estimate`).
+  An impl should bind its own globals only and leave composition to the
+  deployment — the pre-chain pattern of a Go-side `base` dep still works.
+
+```yaml
+std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
+tok: {kind: agent.ScriptBindings, impl: tokens}
+panel:
+  kind: agent.ScriptBindings
+  impl: chain
+  deps: {base: std, unit.tokens: tok}   # base first, then unit.* by key
+```
+
+A duplicate global fails the execution; through a chain the error names the
+deps that bound it (`global "tokens" bound by both "base" and "unit.tokens"`).
+`chain` takes no settings.
 
 The node span records `script.bindings.count` and `script.bindings.source`
 (`engine` or `standard`); a debug log lists the global names, so a missing
