@@ -64,8 +64,8 @@ func hasJSONPrefix(buf []byte) bool {
 // strictly (duplicate mapping keys are rejected) through the same
 // library Kubernetes uses, sigs.k8s.io/yaml.
 //
-// A YAML document whose conversion is not a function of its own bytes is
-// refused instead of converted: see keyCollisions.
+// A YAML document in which two distinct keys of one mapping would become the
+// same JSON key is refused instead of converted: see keyCollisions.
 func ToJSON(data []byte) ([]byte, error) {
 	if FormatOf(data) == FormatJSON {
 		if !json.Valid(data) {
@@ -126,6 +126,12 @@ func ensureSingleYAMLDocument(data []byte) (any, error) {
 // Measured on `1` against `"1"` over 400 runs: one value 353 times and the
 // other 47, which is the start-offset distribution of a small Go map.
 //
+// The refusal is by key, not by value: a pair that collapses onto two equal
+// values converts to the same JSON whichever of them survives, and is still
+// refused, because the document it converts to holds one JSON key twice and
+// that is then for whichever JSON library reads it next to decide rather than
+// for the document to state.
+//
 // The spelling is lossy in more than one way, so the set is wider than
 // int-versus-string: a YAML 1.1 octal key is spelled in decimal (`010` and
 // `"8"`), the infinities and NaN are spelled `.inf`, `-.inf` and `.nan`,
@@ -148,9 +154,11 @@ func keyCollisions(value any) []string {
 	})
 	out := make([]string, 0, len(collisions))
 	for _, collision := range collisions {
-		// A mapping reached along two paths — the same anchor aliased twice is
-		// the same Go map — is walked twice, and so is the collision inside
-		// it. One sentence per distinct collision, not per path to it.
+		// An aliased anchor is decoded once per alias, so the same mapping is
+		// walked once per path to it and reports the same sentence every
+		// time. One sentence per distinct collision rather than per place it
+		// was found -- which also merges two mappings that collide the same
+		// way, since a sentence names keys and not locations.
 		if report := collision.String(); len(out) == 0 || out[len(out)-1] != report {
 			out = append(out, report)
 		}
@@ -202,9 +210,12 @@ func collectKeyCollisions(value any, collisions *[]keyCollision) {
 // jsonKeySpelling reproduces v1.4.0 of sigs.k8s.io/yaml: a mapping key is
 // a JSON key when it is a string, decimal when it is an int or an int64,
 // and for a float64 the `g` form at float32 precision with Go's "+Inf",
-// "-Inf" and "NaN" spelled the YAML way. TestJSONKeySpelling_MatchesLibrary
-// pins this copy against the library, one key form at a time, so the two
-// cannot drift apart unnoticed.
+// "-Inf" and "NaN" spelled the YAML way.
+//
+// TestJSONKeySpelling_MatchesLibrary asks this function for a key and reads
+// the library's own answer back out of the library's conversion of the same
+// document, form by form, so a drift between the two fails a test instead of
+// quietly leaving the refusal above unable to find a collapse.
 func jsonKeySpelling(key any) (string, bool) {
 	switch typed := key.(type) {
 	case string:
