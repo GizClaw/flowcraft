@@ -330,12 +330,14 @@ func TestToJSON_AcceptsKeysThatStayDistinct(t *testing.T) {
 }
 
 func TestToJSON_KeepsRefusingKeysTheLibraryRefuses(t *testing.T) {
-	// The refusal added here runs after the strict decode, so a document the
-	// library itself rejects keeps reporting the library's error even when
-	// one of its keys would also have collided.
-	tests := []struct{ name, data string }{
-		{name: "uint64 key beyond int64", data: "18446744073709551615: a\n\"18446744073709551615\": b\n"},
-		{name: "null key", data: "null: a\n"},
+	// A document yaml.v2 itself cannot decode, or that fails the strict
+	// decode, keeps that error: the key findings only name a document that
+	// reached the conversion and could not be converted. A colliding pair
+	// sitting next to the failure does not preempt it either.
+	tests := []struct{ name, data, want string }{
+		{name: "sequence key", data: "? [a]\n: b\n", want: "invalid map key"},
+		{name: "mapping key", data: "? {a: b}\n: c\n", want: "invalid map key"},
+		{name: "duplicate key and a collision", data: "1: a\n1: b\n\"2\": c\n2: d\n", want: "already set in map"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -343,11 +345,13 @@ func TestToJSON_KeepsRefusingKeysTheLibraryRefuses(t *testing.T) {
 			if err == nil {
 				t.Fatalf("ToJSON(%q) accepted a document the library refuses", tt.data)
 			}
-			if !strings.Contains(err.Error(), "unsupported map key") {
-				t.Fatalf("ToJSON(%q) error = %v, want the library's unsupported-key error", tt.data, err)
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ToJSON(%q) error = %v, want the library's %q", tt.data, err, tt.want)
 			}
-			if strings.Contains(err.Error(), "convert to the same JSON key") {
-				t.Fatalf("ToJSON(%q) error = %v, want the library's error to win", tt.data, err)
+			for _, ours := range []string{"convert to the same JSON key", "cannot be spelled"} {
+				if strings.Contains(err.Error(), ours) {
+					t.Fatalf("ToJSON(%q) error = %v, want the library's error to win", tt.data, err)
+				}
 			}
 		})
 	}
@@ -363,5 +367,163 @@ func TestDecode_RejectsCollapsingKeys(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "convert to the same JSON key") {
 		t.Fatalf("Decode error = %v, want the collision refusal", err)
+	}
+}
+
+func TestToJSON_UnusableKeyRefusalIsStable(t *testing.T) {
+	// A document holding two keys the conversion cannot spell also makes the
+	// library's own answer unstable: it reports the first one its map walk
+	// meets, 362 runs naming `~` and 38 the integer over 400. Both are named
+	// instead, in the sorted order of their spelling, and the sentence is the
+	// same one every run.
+	const data = "~: A\n18446744073709551615: B\n"
+	const want = "config utils: convert YAML to JSON: " +
+		"YAML keys !!int 18446744073709551615, !!null null cannot be spelled as JSON keys"
+	for i := 0; i < 128; i++ {
+		_, err := ToJSON([]byte(data))
+		if err == nil {
+			t.Fatalf("ToJSON(%q) accepted a document with two unspellable keys", data)
+		}
+		if err.Error() != want {
+			t.Fatalf("ToJSON(%q) error = %v, want %v", data, err, want)
+		}
+	}
+}
+
+func TestToJSON_NamesEveryUnusableKey(t *testing.T) {
+	// Unspellable keys are found wherever they sit — under a sequence, in a
+	// nested mapping — and the report names every distinct one, sorted, so it
+	// does not depend on where the walk looked first. A collision next to one
+	// does not win the report: the unspellable key is the condition no
+	// conversion of this document could ever meet.
+	const nested = "outer:\n  - 18446744073709551615: A\nnull: B\n"
+	const want = "config utils: convert YAML to JSON: " +
+		"YAML keys !!int 18446744073709551615, !!null null cannot be spelled as JSON keys"
+	_, err := ToJSON([]byte(nested))
+	if err == nil {
+		t.Fatalf("ToJSON(%q) accepted a document with nested unspellable keys", nested)
+	}
+	if err.Error() != want {
+		t.Fatalf("ToJSON(%q) error = %v, want %v", nested, err, want)
+	}
+	const mixed = "18446744073709551615: a\n\"18446744073709551615\": b\n"
+	const wantOne = "config utils: convert YAML to JSON: " +
+		"YAML key !!int 18446744073709551615 cannot be spelled as a JSON key"
+	_, err = ToJSON([]byte(mixed))
+	if err == nil {
+		t.Fatalf("ToJSON(%q) accepted a document with an unspellable key", mixed)
+	}
+	if err.Error() != wantOne {
+		t.Fatalf("ToJSON(%q) error = %v, want %v", mixed, err, wantOne)
+	}
+	// A bare null key, on its own: the singular sentence, naming it.
+	const bare = "~: A\n"
+	const wantBare = "config utils: convert YAML to JSON: " +
+		"YAML key !!null null cannot be spelled as a JSON key"
+	_, err = ToJSON([]byte(bare))
+	if err == nil {
+		t.Fatalf("ToJSON(%q) accepted a document with a null key", bare)
+	}
+	if err.Error() != wantBare {
+		t.Fatalf("ToJSON(%q) error = %v, want %v", bare, err, wantBare)
+	}
+	// `~` and `null` are one key to yaml.v2 and one spelling here, so the two
+	// ways of writing the same unspellable key read as one key, not two.
+	const spelledTwice = "~: A\nnull: B\n"
+	_, err = ToJSON([]byte(spelledTwice))
+	if err == nil {
+		t.Fatalf("ToJSON(%q) accepted a document with a null key", spelledTwice)
+	}
+	if err.Error() != wantBare {
+		t.Fatalf("ToJSON(%q) error = %v, want %v", spelledTwice, err, wantBare)
+	}
+	// An unspellable key arriving through a merge is in the decoded mapping
+	// like any other, because that is the shape the conversion reads.
+	const merged = "base: &base\n  ~: A\nderived:\n  <<: *base\n"
+	_, err = ToJSON([]byte(merged))
+	if err == nil {
+		t.Fatalf("ToJSON(%q) accepted a merge carrying a null key", merged)
+	}
+	if err.Error() != wantBare {
+		t.Fatalf("ToJSON(%q) error = %v, want %v", merged, err, wantBare)
+	}
+}
+
+func TestToJSON_LibraryDisagreesWithItselfOnUnusableKeys(t *testing.T) {
+	// Measures the noise being replaced, the way the collision sibling does
+	// for the coin flip it refuses: the library's message for this document
+	// is decided by map iteration order, so no caller can act on its wording.
+	const data = "~: A\n18446744073709551615: B\n"
+	seen := map[string]bool{}
+	for i := 0; i < 400 && len(seen) < 2; i++ {
+		var value any
+		err := yaml.UnmarshalStrict([]byte(data), &value)
+		if err == nil {
+			t.Fatalf("yaml.UnmarshalStrict(%q) converted a document it cannot spell", data)
+		}
+		seen[err.Error()] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("the library refused %q in one wording across 400 runs (%v); "+
+			"if it no longer walks a map here, the refusal is dead code", data, seen)
+	}
+}
+
+func TestUnusableKeys_MatchesTheLibrary(t *testing.T) {
+	// The set of keys the refusal names is the set the conversion refuses: a
+	// document the library converts is never refused, a key it refuses for
+	// being unspellable is named by us, and a key yaml.v2 cannot hash keeps
+	// its own `invalid map key` error because the decode fails there first.
+	tests := []struct {
+		name string
+		data string
+		want string // "converts", "unspellable" or "unhashable"
+	}{
+		{name: "int key", data: "1: a\n", want: "converts"},
+		{name: "string key", data: "\"1\": a\n", want: "converts"},
+		{name: "bool key", data: "true: a\n", want: "converts"},
+		{name: "float key", data: "1.5: a\n", want: "converts"},
+		{name: "yaml 1.1 octal key", data: "010: a\n", want: "converts"},
+		{name: "infinity key", data: ".inf: a\n", want: "converts"},
+		{name: "int64 max key", data: "9223372036854775807: a\n", want: "converts"},
+		// Past uint64 the value is no longer an integer to yaml.v2: it
+		// resolves to a float, and a float is a key the conversion spells.
+		// The unspellable class ends at uint64, so this row is the boundary.
+		{name: "integer past uint64", data: "18446744073709551616: a\n", want: "converts"},
+		{name: "null key", data: "~: a\n", want: "unspellable"},
+		{name: "null spelled out", data: "null: a\n", want: "unspellable"},
+		{name: "integer past int64", data: "18446744073709551615: a\n", want: "unspellable"},
+		{name: "sequence key", data: "? [a]\n: b\n", want: "unhashable"},
+		{name: "mapping key", data: "? {a: b}\n: c\n", want: "unhashable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var value any
+			libraryErr := yaml.UnmarshalStrict([]byte(tt.data), &value)
+			_, err := ToJSON([]byte(tt.data))
+			switch tt.want {
+			case "converts":
+				if libraryErr != nil {
+					t.Fatalf("the library refused %q: %v; the row is stale", tt.data, libraryErr)
+				}
+				if err != nil {
+					t.Fatalf("ToJSON(%q) error: %v, want it converted", tt.data, err)
+				}
+			case "unspellable":
+				if libraryErr == nil || !strings.Contains(libraryErr.Error(), "unsupported map key") {
+					t.Fatalf("the library on %q = %v, want an unsupported-key refusal", tt.data, libraryErr)
+				}
+				if err == nil || !strings.Contains(err.Error(), "cannot be spelled as") {
+					t.Fatalf("ToJSON(%q) error = %v, want the key named by us", tt.data, err)
+				}
+			case "unhashable":
+				if libraryErr == nil || !strings.Contains(libraryErr.Error(), "invalid map key") {
+					t.Fatalf("the library on %q = %v, want an invalid-map-key refusal", tt.data, libraryErr)
+				}
+				if err == nil || !strings.Contains(err.Error(), "invalid map key") {
+					t.Fatalf("ToJSON(%q) error = %v, want the library's refusal", tt.data, err)
+				}
+			}
+		})
 	}
 }
