@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/internal/textsim"
+	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -19,8 +20,12 @@ import (
 // AlgorithmVersion names the maintenance policy. v2 measures fact similarity
 // over the shared kernel's tokens, so facts without whitespace word boundaries
 // (CJK text) compare by character and bigram overlap instead of reading as
-// entirely dissimilar.
-const AlgorithmVersion = "maintain-v2"
+// entirely dissimilar. v3 reads the read path's receipts: a fact the caller
+// keeps being served decays from its most recent recall rather than from its
+// event time, and each recall forgives a saturating share of the decay that
+// remains. Reinforcement only ever compensates decay -- a factor never rises
+// above the un-decayed 1 -- so an overlay stays a penalty, never a boost.
+const AlgorithmVersion = "maintain-v3"
 
 // Config tunes one maintenance pass.
 type Config struct {
@@ -36,6 +41,12 @@ type Config struct {
 	// DecayFloor is the score below which an aged fact starts being decayed;
 	// a fresh fact scores 1 (default 0.5).
 	DecayFloor float64
+	// RecallSaturation is the receipt count at which half of the decay a
+	// recalled fact still carries is forgiven (default 8). Each receipt
+	// forgives count/(count+RecallSaturation) of the gap between the decayed
+	// score and 1, so the compensated factor stays in [decay, 1]: more
+	// recalls are worth more, and never more than the un-decayed score.
+	RecallSaturation float64
 }
 
 func (config Config) withDefaults() Config {
@@ -50,6 +61,9 @@ func (config Config) withDefaults() Config {
 	}
 	if config.DecayFloor == 0 {
 		config.DecayFloor = 0.5
+	}
+	if config.RecallSaturation == 0 {
+		config.RecallSaturation = 8
 	}
 	return config
 }
@@ -67,6 +81,9 @@ func (config Config) validate() error {
 	if !finite(config.DecayFloor) || config.DecayFloor <= 0 || config.DecayFloor > 1 {
 		return errors.New("maintain: decay floor must be in (0,1]")
 	}
+	if !finite(config.RecallSaturation) || config.RecallSaturation <= 0 {
+		return errors.New("maintain: recall saturation must be positive")
+	}
 	return nil
 }
 
@@ -77,9 +94,9 @@ func (config Config) validate() error {
 // same pass runs.
 func (config Config) ProducerVersion() string {
 	config = config.withDefaults()
-	return fmt.Sprintf("%s+similarity=%g,supersede=%g,half_life=%s,floor=%g",
+	return fmt.Sprintf("%s+similarity=%g,supersede=%g,half_life=%s,floor=%g,recall_saturation=%g",
 		AlgorithmVersion, config.SimilarityThreshold, config.SupersedeFactor,
-		config.DecayHalfLife, config.DecayFloor)
+		config.DecayHalfLife, config.DecayFloor, config.RecallSaturation)
 }
 
 // Supersede marks one older fact as superseded by a newer one.
@@ -96,6 +113,13 @@ type Decay struct {
 	Conversation string    `json:"conversation_id"`
 	Score        float64   `json:"score"`
 	EventTime    time.Time `json:"event_time"`
+	// Recalls and LastRecall name the receipt this factor was measured with:
+	// how many context results had returned the fact when the pass ran, and
+	// when the most recent one did. They carry the count even when the
+	// compensation did not change an entry, so a plan explains its own
+	// factors without the receipt store.
+	Recalls    int       `json:"recalls,omitempty"`
+	LastRecall time.Time `json:"last_recall,omitempty"`
 }
 
 // Plan is the output of one maintenance pass, and it is pure data: applying what
@@ -114,6 +138,11 @@ type Plan struct {
 	// document.DocumentViewStore.RetireScopeBuilds for what is kept.
 	ReclaimedChunks  int    `json:"reclaimed_chunks,omitempty"`
 	AlgorithmVersion string `json:"algorithm_version"`
+	// RecalledFacts counts the scope's facts that carried a receipt: how many
+	// of them the read path has actually returned. It is the wiring signal --
+	// a deployment whose receipts never arrive reports zero here however long
+	// it runs -- and it stays out of the overlay.
+	RecalledFacts int `json:"recalled_facts,omitempty"`
 	// ProducerVersion is the stamp the pass writes with its overlay: the
 	// policy version plus the tuning (see Config.ProducerVersion). A host
 	// reads an overlay only when the stamp is its own, so a policy or tuning
@@ -144,6 +173,22 @@ func DetectWithConfig(
 	now time.Time,
 	config Config,
 ) (Plan, error) {
+	return DetectWithRecalls(scope, conversations, now, config, nil)
+}
+
+// DetectWithRecalls is DetectWithConfig with the read path's receipts:
+// hard-scope-qualified item identity to how often and how recently a context
+// result actually returned it. Nil is the honest input for a scope the read
+// path has never served -- and for a caller without a receipt source: the
+// pass then plans from event times alone, which is exactly the v2 judgment
+// under the v3 stamp.
+func DetectWithRecalls(
+	scope corememory.Scope,
+	conversations map[string][]factview.Fact,
+	now time.Time,
+	config Config,
+	receipts map[string]recall.Receipt,
+) (Plan, error) {
 	if err := scope.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -173,9 +218,18 @@ func DetectWithConfig(
 			return left.Before(right)
 		})
 		for index, older := range facts {
-			if decay := decayScore(older, now, config); decay < config.DecayFloor {
+			identity, keyErr := itemKey(scope, conversation, older.ID)
+			if keyErr != nil {
+				return Plan{}, keyErr
+			}
+			receipt, recalled := receipts[identity]
+			if recalled {
+				plan.RecalledFacts++
+			}
+			if decay := decayScore(older, now, config, receipt); decay < config.DecayFloor {
 				plan.Decays = append(plan.Decays, Decay{
 					FactID: older.ID, Conversation: conversation, Score: decay, EventTime: recencyKey(older),
+					Recalls: receipt.Count, LastRecall: receipt.Last,
 				})
 			}
 			if len(older.Entities) == 0 {
@@ -212,14 +266,34 @@ func recencyKey(fact factview.Fact) time.Time {
 	return fact.CreatedAt.UTC()
 }
 
-func decayScore(fact factview.Fact, now time.Time, config Config) float64 {
-	age := now.Sub(recencyKey(fact))
-	if age <= 0 {
-		return 1
+// decayBasis returns the time a fact's decay clock reads from: its event
+// time, or a later recall when the read path has returned it since. A fact
+// the caller keeps being served is not an unread archive entry, and its score
+// must not fall as if it were one.
+func decayBasis(fact factview.Fact, receipt recall.Receipt) time.Time {
+	basis := recencyKey(fact)
+	if last := receipt.Last.UTC(); last.After(basis) {
+		return last
 	}
-	score := math.Pow(2, -float64(age)/float64(config.DecayHalfLife))
-	if score < 0.01 {
-		score = 0.01
+	return basis
+}
+
+// decayScore returns the retention score of one fact. Recalls compensate
+// decay and never add to it: each receipt forgives count/(count+RecallSaturation)
+// of the gap between the decayed score and 1, so the factor stays in
+// [decay, 1] and a fact recalled more often is worth more, never more than a
+// fresh one.
+func decayScore(fact factview.Fact, now time.Time, config Config, receipt recall.Receipt) float64 {
+	score := 1.0
+	if age := now.Sub(decayBasis(fact, receipt)); age > 0 {
+		score = math.Pow(2, -float64(age)/float64(config.DecayHalfLife))
+		if score < 0.01 {
+			score = 0.01
+		}
+	}
+	if count := receipt.Count; count > 0 {
+		share := float64(count) / (float64(count) + config.RecallSaturation)
+		score += (1 - score) * share
 	}
 	return score
 }

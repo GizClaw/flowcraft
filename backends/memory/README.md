@@ -41,12 +41,14 @@ maintenance; `core/memory` stays implementation-neutral.
   configured), hydrates candidates, and packs them within the request
   budget.
 - Maintenance: `Assembly.Maintain` decays and soft-merges superseded facts on
-  the read path under a per-scope overlay stamped with the pass that wrote it,
-  and `Assembly.RetireGenerations` drops the derived generations a retention
-  policy no longer keeps -- their facts, lane entries, summary bookmarks, and
-  the derivation progress that would otherwise resume in the middle of them.
-  Both are host-invoked through the same assembly SPI; the module ships no
-  runner.
+  the read path under a per-scope overlay stamped with the pass that wrote it;
+  the decay clock reads from a fact's last recall as well as its event time,
+  because the read path records a receipt for every long-term item a context
+  result actually returns. `Assembly.RetireGenerations` drops the derived
+  generations a retention policy no longer keeps -- their facts, lane entries,
+  summary bookmarks, and the derivation progress that would otherwise resume
+  in the middle of them. Both are host-invoked through the same assembly SPI;
+  the module ships no runner.
 
 ## Deploy
 
@@ -155,6 +157,11 @@ With the workspace driver all state lives under the bound workspace:
   published-generation pointer.
 - `views/summary/v1/...` — immutable summary records, the active record
   catalog, and the manifest bookmark of every generation that published one.
+- `maintain/v1/overlay/...` — one document per scope: the read-path decay
+  factors and supersede marks the last maintenance pass wrote, stamped with the
+  pass that judged them.
+- `recall/v1/...` — the read path's receipts: one record per recalled item
+  (count and last recall), read back by the maintenance pass.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
@@ -319,7 +326,7 @@ direction. The BM25 lane is unaffected by that part: it scores with prefix
 matching off and matches persisted terms exactly.
 
 The algorithm versions of the lines this changed name the splitter they were
-built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v2`,
+built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v3`,
 `bm25-query-sigmoid-v2`). The last rides on every candidate's score term as its
 calibration version (`fusion.BM25CalibrationVersion`), so a consumer can see
 which calibration produced a score. The other three are read where the state
@@ -444,14 +451,38 @@ not a free win.
 
 `Assembly.Maintain(ctx, scope)` runs one soft-merge and decay pass: it detects
 superseded facts (same entity plus similar text; the newer fact wins) and aged
-facts (exponential decay by event time), writes a per-scope read-path
-overlay, reclaims the derived document builds the scope no longer serves, and
-returns the plan. Canonical fact text is never edited — the
-overlay only multiplies retrieval scores, and the strongest of the supersede
-and decay factors wins. The module ships no runner: hosts schedule the call
-however they want (cron, queue, or an admin endpoint). Tuning lives in
+facts (exponential decay by event time or last recall, whichever is later),
+writes a per-scope read-path overlay, reclaims the derived document builds the
+scope no longer serves, and returns the plan. Canonical fact text is never
+edited — the overlay only multiplies retrieval scores, and the strongest of the
+supersede and decay factors wins. The module ships no runner: hosts schedule
+the call however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
-decay floor).
+decay floor, recall saturation).
+
+### Recall receipts
+
+Every context request that carries a `RecallEventID` and returns long-term or
+summary items leaves a receipt: a per-item record of how often and how recently
+the read path returned it (`recall.Store`). Only the retrieval provider writes
+these, and only from a packed result, so an import — commit, derive, backfill —
+produces none: importing history is not reading it, and a fact that was never
+served decays like one that never was. The maintenance pass reads the receipts
+back and both uses them and reports them: `Plan.Decays[].Recalls` /
+`.LastRecall` name the receipt a compensated factor was measured with, and
+`Plan.RecalledFacts` counts the scope's facts that had one, which stays zero
+for a deployment whose receipts never arrive.
+
+A recall compensates decay and never adds to it. The factor written to the
+overlay stays in `[decay, 1]`: each receipt forgives
+`count/(count+recall_saturation)` of the decay that remains, so a fact the
+caller keeps being served is judged from its last recall and can climb back out
+of the overlay entirely, but nothing outranks an un-decayed fact. The count is
+a saturating heuristic, not a ledger: it is capped per item, a re-delivered
+event is recognized by its id and not counted again, and two recalls of the
+same item racing each other are allowed to lose one increment. Receipts are not
+pruned: one small record per recalled item, re-read by each pass, and a record
+whose item no longer exists is inert rather than removed.
 
 The overlay is stamped with the pass that wrote it -- the maintenance algorithm
 version together with that tuning (`maintain.Config.ProducerVersion`) -- and the
@@ -462,7 +493,10 @@ facts are untouched either way, which is what makes a pass its own repair, since
 the next one rewrites the document under the running policy. A host that wants
 to know before it schedules one reads `Assembly.OverlayStatus` (or
 `Diagnostics`' per-scope overlay), and `Plan.IgnoredOverlay` says whether a pass
-replaced judgments it did not apply.
+replaced judgments it did not apply. That status also reports `UpdatedAt` and
+`Expired`: an overlay the running pass wrote but has not refreshed within one
+decay half-life carries factors measured against a clock at least that old, and
+`Expired` is the host's signal to schedule the pass.
 
 The reclaim is the document half of the sweep surface, and it is deliberately
 not a generation sweep: see *Derived documents are not generation scoped*

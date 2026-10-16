@@ -1,10 +1,12 @@
 package maintain
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -29,6 +31,7 @@ func TestProducerVersionNamesTheTuning(t *testing.T) {
 		"supersede":  {SupersedeFactor: 0.25},
 		"half-life":  {DecayHalfLife: 24 * time.Hour},
 		"floor":      {DecayFloor: 0.2},
+		"saturation": {RecallSaturation: 1},
 	} {
 		if config.ProducerVersion() == base {
 			t.Fatalf("the %s tuning did not change the stamp %q", name, base)
@@ -156,5 +159,95 @@ func TestDetectValidatesConfigAndScope(t *testing.T) {
 		Config{SimilarityThreshold: 2})
 	if err == nil {
 		t.Fatal("invalid similarity threshold accepted")
+	}
+	_, err = DetectWithConfig(corememory.Scope{RuntimeID: "runtime"}, nil, time.Now(),
+		Config{RecallSaturation: -1})
+	if err == nil {
+		t.Fatal("negative recall saturation accepted")
+	}
+}
+
+// TestDetectCompensatesRecalledFacts pins the v3 reinforcement factor. The
+// decay clock reads from max(event time, last recall), and each receipt
+// forgives count/(count+RecallSaturation) of the decay that remains -- so a
+// fact's compensated score stays in [decay, 1] and a recall can rescue an
+// aged fact from the overlay without ever outranking a fresh one. A fact the
+// read path never returned keeps exactly the v2 score, which is what makes
+// an import decay like an import.
+func TestDetectCompensatesRecalledFacts(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	eventTime := now.Add(-1250 * time.Hour)
+	identity := func(factID string) string {
+		t.Helper()
+		key, err := itemKey(scope, "conv-1", factID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	facts := map[string][]factview.Fact{
+		"conv-1": {
+			planFact("aged", "Alice works at Acme.", []string{"Alice"}, eventTime),
+			planFact("rehearsed", "Bob works at Beta.", []string{"Bob"}, eventTime),
+			planFact("recent", "Carol works at Gamma.", []string{"Carol"}, eventTime),
+			planFact("stale-recall", "Dan works at Delta.", []string{"Dan"}, eventTime),
+		},
+	}
+	rehearsedAt := eventTime
+	receipts := map[string]recall.Receipt{
+		identity("rehearsed"):    {Identity: identity("rehearsed"), Count: 1, Last: rehearsedAt, LastEvent: "run-1"},
+		identity("recent"):       {Identity: identity("recent"), Count: 8, Last: now.Add(-time.Hour), LastEvent: "run-2"},
+		identity("stale-recall"): {Identity: identity("stale-recall"), Count: 8, Last: now.Add(-2500 * time.Hour), LastEvent: "run-3"},
+	}
+
+	plan, err := DetectWithRecalls(scope, facts, now, Config{}, receipts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RecalledFacts != 3 {
+		t.Fatalf("plan recalls %d facts, want the 3 with receipts: %#v", plan.RecalledFacts, plan)
+	}
+	scores := make(map[string]Decay, len(plan.Decays))
+	for _, decay := range plan.Decays {
+		scores[decay.FactID] = decay
+	}
+	raw := scores["aged"]
+	// 1250h of a 720h half-life: 2^-(1250/720) = 0.3001.
+	if math.Abs(raw.Score-0.3001) > 5e-4 || raw.Recalls != 0 || !raw.LastRecall.IsZero() {
+		t.Fatalf("unrecalled decay = %#v", raw)
+	}
+	// One receipt forgives 1/9 of the gap: 0.3001 + 0.6999/9 = 0.3779. The
+	// recall is older than the event, so the basis -- and with it the raw
+	// decay -- does not move; only the compensation does.
+	compensated := scores["rehearsed"]
+	if math.Abs(compensated.Score-0.3779) > 5e-4 || compensated.Recalls != 1 ||
+		!compensated.LastRecall.Equal(rehearsedAt) || !compensated.EventTime.Equal(eventTime) {
+		t.Fatalf("compensated decay = %#v", compensated)
+	}
+	// A recall inside the half-life moves the basis to the recall itself, so
+	// the fact stops being due for decay at all; and a fact recalled enough
+	// times to climb back above the floor is not written either -- the floor
+	// is where decay starts to matter, and reinforcement decides whether it
+	// does.
+	for _, id := range []string{"recent", "stale-recall"} {
+		if entry, ok := scores[id]; ok {
+			t.Fatalf("recalled fact %q still decayed: %#v", id, entry)
+		}
+	}
+
+	// Without receipts the same input is the v2 judgment under the v3 stamp:
+	// every aged fact decays from its event time.
+	plain, err := DetectWithRecalls(scope, facts, now, Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.RecalledFacts != 0 || len(plain.Decays) != 4 {
+		t.Fatalf("plan without receipts = %#v", plain)
+	}
+	for _, decay := range plain.Decays {
+		if decay.Recalls != 0 || !decay.LastRecall.IsZero() {
+			t.Fatalf("plan without receipts names one: %#v", decay)
+		}
 	}
 }
