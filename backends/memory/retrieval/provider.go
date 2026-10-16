@@ -347,18 +347,20 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 			diagnostics = append(diagnostics, Diagnostic{Stage: "hydrate", Lane: candidate.Lane, Err: hydrateErr})
 			continue
 		}
-		if !isNilInterface(provider.Visibility) && !isRecent {
-			var visible bool
-			if hidden != nil {
-				_, forgotten := hidden[item.Identity(request.Scope)]
-				visible = !forgotten
-			} else {
-				var visibilityErr error
-				visible, visibilityErr = provider.Visibility.Visible(ctx, request.Scope, item.Identity(request.Scope))
-				if visibilityErr != nil {
-					diagnostics = append(diagnostics, Diagnostic{Stage: "visibility", Lane: candidate.Lane, Err: visibilityErr})
-					continue
-				}
+		// The recent lane is never filtered: its items are the conversation's
+		// own last turns, and the visibility overlay covers what the views
+		// derived from them, not the turns themselves.
+		if !isRecent && !isNilInterface(provider.Visibility) {
+			visible, visibilityErr := provider.visible(ctx, request.Scope, item.Identity(request.Scope), hidden)
+			if visibilityErr != nil {
+				// An item whose visibility cannot be decided is not a
+				// hidden one: the request reports the read and keeps the
+				// item out, and the candidate stays counted -- a request
+				// that could decide nothing fails below rather than
+				// answering like an ordinary memory with the overlay's
+				// items gone quiet.
+				diagnostics = append(diagnostics, Diagnostic{Stage: "visibility", Lane: candidate.Lane, Err: visibilityErr})
+				continue
 			}
 			if !visible {
 				eligible--
@@ -406,6 +408,25 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 						})
 						break
 					}
+					// A parent the overlay hides is where the chain ends.
+					// Walking past it would serve what the chain above a
+					// forgotten record holds -- the section a forgotten
+					// chunk belongs to, the document a forgotten section
+					// belongs to -- which is the content the hide was asked
+					// to keep out, one level up.
+					if !isNilInterface(provider.Visibility) {
+						visible, visibilityErr := provider.visible(ctx, request.Scope, identity, hidden)
+						if visibilityErr != nil {
+							// Same failure, same direction: a parent whose
+							// visibility cannot be decided is not served,
+							// and the chain above it is not walked either.
+							diagnostics = append(diagnostics, Diagnostic{Stage: "visibility", Lane: candidate.Lane, Err: visibilityErr})
+							break
+						}
+						if !visible {
+							break
+						}
+					}
 					visited[identity] = struct{}{}
 					parent.SourceClass = item.SourceClass
 					hydrated = append(hydrated, parent)
@@ -417,7 +438,8 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 	if eligible > 0 && len(hydrated) == 0 {
 		provider.setDiagnostics(diagnostics)
 		return corememory.ContextResult{}, corememory.NewError(
-			corememory.KindProviderFailure, "context", errors.New("retrieval: all eligible candidates failed hydration"),
+			corememory.KindProviderFailure, "context",
+			errors.New("retrieval: every eligible candidate failed hydration or could not be decided"),
 		)
 	}
 	if provider.ItemReranker != nil && len(hydrated) > 0 && strings.TrimSpace(request.Query) != "" {
@@ -778,6 +800,32 @@ func (provider *Provider) recentCandidates(ctx context.Context, request corememo
 		}
 	}
 	return result, nil
+}
+
+// visible reports whether one identity may be served, against the overlay the
+// request already read. The bulk overlay is the read a request pays for; a
+// substrate without one, or one whose bulk read failed, falls back to the
+// per-identity read, which is why both are asked the same question here.
+//
+// The three answers are three, not two. A hidden item is a decision, and the
+// caller drops it. An unreadable overlay is not a decision and not "nothing
+// hidden": the error is reported, the item is not served, and the caller keeps
+// it counted, so a request that decided nothing fails instead of answering as
+// if the overlay were empty. That is the direction a visibility overlay has to
+// fail in -- an entry nobody can read was a statement that the item was meant
+// to be unreachable -- and it is why this returns an error rather than folding
+// it into "not visible".
+func (provider *Provider) visible(
+	ctx context.Context,
+	scope corememory.Scope,
+	identity string,
+	hidden map[string]struct{},
+) (bool, error) {
+	if hidden != nil {
+		_, forgotten := hidden[identity]
+		return !forgotten, nil
+	}
+	return provider.Visibility.Visible(ctx, scope, identity)
 }
 
 // recentTokenLimit bounds one recent item to both the recent lane budget and
