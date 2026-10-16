@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/forget"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
@@ -55,6 +56,11 @@ type Assembly struct {
 	// assembly serves. It is nil when the assembly was built without
 	// maintenance.
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error)
+	// forgotten is the soft-forget ledger the read path serves through: the
+	// provider drops the items it names, and the host reads and writes the
+	// ledger here. It is nil when the assembly was built without one, in which
+	// case the read path serves everything the views hold.
+	forgotten *forget.Store
 	// journal is the scope-level work journal the write paths record into, and
 	// trigger is the consumer that turns those records into passes. Both are
 	// nil when the assembly was built without a trigger, in which case only
@@ -109,6 +115,7 @@ func newAssembly(
 	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error),
 	repair func(context.Context, RepairRequest) (RepairResult, error),
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error),
+	forgotten *forget.Store,
 	journal *worker.TriggerJournal,
 	trigger *worker.Trigger,
 	triggerInterval time.Duration,
@@ -147,6 +154,7 @@ func newAssembly(
 		lanes:           lanes,
 		repair:          repair,
 		overlay:         overlay,
+		forgotten:       forgotten,
 		journal:         journal,
 		trigger:         trigger,
 		triggerInterval: triggerInterval,
@@ -547,6 +555,10 @@ type RetireResult struct {
 // the document it came from, not by a policy, so the view keeps no generation
 // and a superseded build is reclaimed at scope granularity by
 // Assembly.Maintain (see DocumentViewStore.RetireScopeBuilds).
+//
+// A sweep is not a forget: it removes the derived state of a whole generation,
+// named by a policy, where Assembly.SoftForget hides named items from the read
+// path and removes nothing.
 func (assembly *Assembly) RetireGenerations(
 	ctx context.Context,
 	scope corememory.Scope,
@@ -625,6 +637,92 @@ func (assembly *Assembly) RetireGenerations(
 	removed, err := assembly.facts.RetireGenerations(ctx, scope, conversationID, retained...)
 	result.Facts = removed
 	return result, err
+}
+
+// SoftForget records the named items as forgotten for one scope: the read path
+// stops serving them, and nothing is removed. The addresses are the items a
+// result carries -- a fact, a summary record, a document chunk -- and the
+// ledger that records them is what a later RestoreForgotten deletes, which is
+// what makes a forget something a host can take back.
+//
+// What a forget does not cover is worth stating where it is written. The
+// canonical messages stay readable: the recent lane is never filtered, because
+// it serves the conversation's own last turns. The derived records stay in the
+// views, and the assembly's own reads -- Facts, Summaries, Verify, Repair --
+// still see them, since hiding is a read-path overlay and an audit has to be
+// able to see what is stored. A record that quotes a forgotten item is a
+// different address and stays servable on its own; a host that needs a
+// quotation gone forgets the record that quotes it, and the ledger names what
+// it forgot. Unreachable is not unrecoverable: a forget is a read-path
+// overlay, and erasing the stored copies is a different operation with a
+// different cost (see the retention note in the module README).
+//
+// The returned records are the ledger entries that now cover the addresses, in
+// the order given and deduplicated by identity. An address that was already
+// forgotten keeps the record it has: a retry writes nothing, and the ledger
+// keeps saying since when the item has been unreachable.
+func (assembly *Assembly) SoftForget(
+	ctx context.Context,
+	scope corememory.Scope,
+	addresses []corememory.ContextAddress,
+	reason string,
+) ([]forget.Record, error) {
+	if assembly == nil || assembly.forgotten == nil {
+		return nil, errors.New("memory assembly: forget ledger is not configured")
+	}
+	if ctx == nil {
+		return nil, errors.New("memory assembly: context is required")
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("memory assembly: soft forget needs at least one address")
+	}
+	return assembly.forgotten.Forget(ctx, scope, addresses, reason)
+}
+
+// RestoreForgotten removes the named addresses from the scope's ledger and
+// returns the records it removed, in the order given. The items are servable
+// again as soon as their records are gone: the record was the only thing that
+// made the read path drop them, which is why restoring needs no re-derivation.
+// An address that is not forgotten is not an error -- the caller asked for a
+// state, and it holds.
+func (assembly *Assembly) RestoreForgotten(
+	ctx context.Context,
+	scope corememory.Scope,
+	addresses []corememory.ContextAddress,
+) ([]forget.Record, error) {
+	if assembly == nil || assembly.forgotten == nil {
+		return nil, errors.New("memory assembly: forget ledger is not configured")
+	}
+	if ctx == nil {
+		return nil, errors.New("memory assembly: context is required")
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("memory assembly: restore needs at least one address")
+	}
+	return assembly.forgotten.Restore(ctx, scope, addresses)
+}
+
+// Forgotten returns the scope's ledger, oldest first, narrowed to one
+// conversation when one is named. It is the read a host answers with when it
+// has to say what is unreachable -- what was forgotten, why, and since when --
+// and the read that makes a forget auditable rather than invisible.
+//
+// A record that cannot be read fails the call rather than being skipped: a
+// ledger read as proof must not quietly omit an entry. The narrowing follows
+// the address a record was written with, so the records of document addresses
+// -- which name no conversation -- are in the whole-scope read alone.
+func (assembly *Assembly) Forgotten(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversationID string,
+) ([]forget.Record, error) {
+	if assembly == nil || assembly.forgotten == nil {
+		return nil, errors.New("memory assembly: forget ledger is not configured")
+	}
+	if ctx == nil {
+		return nil, errors.New("memory assembly: context is required")
+	}
+	return assembly.forgotten.Forgotten(ctx, scope, conversationID)
 }
 
 // Catalog returns the scope catalog.

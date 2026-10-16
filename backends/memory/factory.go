@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	summaryderive "github.com/GizClaw/flowcraft/backends/memory/derive/summary"
+	"github.com/GizClaw/flowcraft/backends/memory/forget"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/knowledge"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
@@ -261,6 +262,16 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Facts: facts, Store: maintainStore, Documents: documentViews, Clock: clock,
 		Recalls: recallStore, Config: maintainConfig,
 	}
+	// The ledger is the read path's other overlay: the items a host asked to be
+	// unreachable. Unlike maintenance's judgments it carries no policy -- a
+	// forget is the host's decision, and it outlives the derivation that
+	// produced the item -- so it is built with nothing to configure and served
+	// unconditionally: an empty ledger changes nothing, and one with a record
+	// in it must not depend on a switch being set.
+	forgotten, err := forget.NewStore(kvStore, forget.WithClock(clock))
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: forget ledger: %w", err))
+	}
 	var summaries *summaryview.SummaryStore
 	var compactor *summaryderive.Compactor
 	if !settings.Summary.Disabled {
@@ -338,6 +349,9 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		ExpandParents:    true,
 		ScoreAdjuster:    maintainStore,
 		RecallEvents:     recallStore,
+		// Visibility is the soft-forget ledger: the provider drops the items
+		// it names, on the same read path that serves them.
+		Visibility: forgotten,
 		// Receipts are stamped with the assembly's clock: the maintenance
 		// pass compares them against the same clock, so a host that runs
 		// both on its own clock gets one timeline, not two.
@@ -407,6 +421,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		buildLaneStatus(auditors),
 		buildRepair(projections, processor, settings.Projection),
 		buildOverlayStatus(maintainStore),
+		forgotten,
 		journal,
 		trigger,
 		triggerInterval,
