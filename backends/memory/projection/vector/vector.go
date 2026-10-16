@@ -257,7 +257,7 @@ type snapshot struct {
 type entry struct {
 	ID            string                     `json:"id"`
 	Name          string                     `json:"name"`
-	Vector        []float32                  `json:"vector"`
+	Vector        Vector                     `json:"vector"`
 	Source        corememory.SourceRef       `json:"source"`
 	Address       component.CandidateAddress `json:"address"`
 	Metadata      corememory.Metadata        `json:"metadata,omitempty"`
