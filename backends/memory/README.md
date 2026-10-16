@@ -760,7 +760,9 @@ reads the scope's ledger keys once (a key-only scan where the substrate offers
 one, the records' values otherwise), and a substrate without a bulk read -- or
 one whose bulk read failed -- falls back to one point lookup per candidate. The
 ledger holds one small record per item a host decided to forget, so its bound is
-itself, the same way maintenance's overlay is bounded by its own judgments.
+itself, the same way maintenance's overlay is bounded by its own judgments. The
+check itself runs on the hydrated item, which is the shape the provider's
+overlay interface has: an item the ledger hides is hydrated and then dropped.
 
 ## Derived documents are not generation scoped
 

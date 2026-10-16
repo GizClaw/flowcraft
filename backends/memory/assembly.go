@@ -655,7 +655,7 @@ func (assembly *Assembly) RetireGenerations(
 // quotation gone forgets the record that quotes it, and the ledger names what
 // it forgot. Unreachable is not unrecoverable: a forget is a read-path
 // overlay, and erasing the stored copies is a different operation with a
-// different cost (see the retention note in the module README).
+// different cost, which the module README states next to the primitive.
 //
 // The returned records are the ledger entries that now cover the addresses, in
 // the order given and deduplicated by identity. An address that was already
