@@ -254,6 +254,11 @@ covers what retrieval *reads it with*, as a value the report itself names
 instead of one hidden inside the deploy document's byte digest. A knob added to
 the retrieval settings types appears here without a second edit.
 
+The profile block joins that object only while it is served: a deployment that
+leaves `profile.enabled` off serves exactly what it served before the block
+existed, so its footprint is the one it had. `maintain` names whether a pass
+ran; the block's settings alone do not say whether anything filled it.
+
 `recent_items` and `recent_tokens` are the *effective* recent window for the same
 reason: they are read back off the built assembly (`Assembly.RecentSettings`,
 defaults applied) instead of the `-recent-items` flag. A deploy document sets
@@ -417,6 +422,15 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   and projections are whatever the last derivation left behind, and the
   fingerprint records `derive=reused` so a report from this mode cannot be
   mistaken for a full run (or resumed into one).
+- `-maintain`: run one maintenance pass per scope between deriving and
+  answering. It is what a run that measures a pass owes the store: the pass
+  saves the read-path overlay (superseded and decayed facts) and fills the
+  resident profile block, and without it an enabled profile block is served
+  empty -- the run says so on stderr rather than reporting a blockless read path
+  as the block. The pass runs after the derivation, so it needs `-prepare-all`
+  (or `-skip-derive`, to pass over a stored derivation); the fingerprint records
+  `maintain=on|off`, and the block's own settings are in the `retrieval` value
+  when the deploy document enables them.
 
 ### Reproducibility
 
