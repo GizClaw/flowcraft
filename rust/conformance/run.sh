@@ -13,9 +13,10 @@
 #
 # Only the adopted backend gates: CONFORMANCE_BACKEND (default saphyr-go).
 # The rejected candidates still run into the same dump, so `--backend norway`
-# reproduces the table in rust/conformance/README.md. Those two backends live
-# behind the probe's non-default `candidates` feature, which this script turns
-# on for them (the manifest says why it is not default).
+# reproduces the table in rust/conformance/README.md, and they are compared
+# raw -- see the allowlist below. Those two backends live behind the probe's
+# non-default `candidates` feature, which this script turns on for them (the
+# manifest says why it is not default).
 #
 # Before the gate trusts its checkers, their own failure modes are exercised
 # by tools/selftest.py: a gate that cannot fail is not a gate.
@@ -92,13 +93,23 @@ python3 "$conf/tools/stability.py" \
   --runs "$runs" --verify-runs "$verify_runs" --dump-dir "$out" "${corpus[@]}"
 
 echo "==> diff"
+# `known-divergences.txt` records where the *adopted* port is allowed to
+# disagree; a candidate is not that port, and its divergences are what running
+# it is for. So only the adopted backend is diffed against the list: a
+# candidate run reports every disagreement and exits 1 -- the answer being
+# asked for, not a failure. (`${allow[@]+...}` because macOS ships bash 3.2,
+# where expanding an empty array is an unbound variable under `set -u`.)
 go_args=()
 for run in $(seq "$runs"); do
   go_args+=(--go "$out/go.$run.jsonl")
 done
+allow=()
+if [ "$backend" = "saphyr-go" ]; then
+  allow=(--allowlist "$conf/known-divergences.txt")
+fi
 python3 "$conf/tools/diff.py" "${go_args[@]}" "$out/rust.jsonl" \
-  --backend "$backend" --allowlist "$conf/known-divergences.txt" "$@"
+  --backend "$backend" ${allow[@]+"${allow[@]}"} "$@"
 
 echo "===> error text"
 python3 "$conf/tools/errortext.py" --go "$out/go.1.jsonl" "$out/rust.jsonl" \
-  --backend "$backend" --allowlist "$conf/known-divergences.txt" "$@"
+  --backend "$backend" ${allow[@]+"${allow[@]}"} "$@"
