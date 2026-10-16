@@ -98,3 +98,7 @@ for run in $(seq "$runs"); do
 done
 python3 "$conf/tools/diff.py" "${go_args[@]}" "$out/rust.jsonl" \
   --backend "$backend" --allowlist "$conf/known-divergences.txt" "$@"
+
+echo "===> error text"
+python3 "$conf/tools/errortext.py" --go "$out/go.1.jsonl" "$out/rust.jsonl" \
+  --backend "$backend" --allowlist "$conf/known-divergences.txt" "$@"

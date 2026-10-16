@@ -21,6 +21,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 STABILITY = os.path.join(HERE, "stability.py")
 DIFF = os.path.join(HERE, "diff.py")
+ERRORTEXT = os.path.join(HERE, "errortext.py")
 # The shape core uses for a collapse refusal; stability.py keys on the tail.
 COLLAPSE = (
     "config utils: convert YAML to JSON: "
@@ -93,6 +94,16 @@ def diff(go, rust, allowlist=None, backend=None):
 def jsonl(path, records):
     lines = "".join(json.dumps(record) + "\n" for record in records)
     return write(path, lines)
+
+
+def errortext(go, rust, allowlist=None, backend=None):
+    argv = [sys.executable, ERRORTEXT, "--go", go, rust]
+    if allowlist:
+        argv += ["--allowlist", allowlist]
+    if backend:
+        argv += ["--backend", backend]
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 def main():
@@ -197,6 +208,46 @@ def main():
             allowlist=stale_entry, backend="saphyr-go",
         )
         check("diff rejects a stale allowlist entry", code, output, want=1)
+
+        # --- errortext.py -------------------------------------------------
+        go_refusal = jsonl(
+            os.path.join(directory, "go.refusal.jsonl"),
+            [{"file": corpus, "format": "yaml", "error": "config utils: boom"}],
+        )
+        same_refusal = jsonl(
+            os.path.join(directory, "rust.same.jsonl"),
+            [{"file": corpus, "backend": "saphyr-go", "format": "yaml",
+              "error": "config utils: boom"}],
+        )
+        other_refusal = jsonl(
+            os.path.join(directory, "rust.other.jsonl"),
+            [{"file": corpus, "backend": "saphyr-go", "format": "yaml",
+              "error": "config utils: different words"}],
+        )
+        code, output = errortext(go_refusal, same_refusal, allowlist=empty, backend="saphyr-go")
+        check("errortext accepts the same words", code, output, want=0)
+
+        code, output = errortext(go_refusal, other_refusal, allowlist=empty, backend="saphyr-go")
+        check("errortext rejects different words", code, output, want=1)
+
+        text_entry = write(
+            os.path.join(directory, "text.txt"),
+            f"error-text {corpus} -- listed by the self-test\n",
+        )
+        code, output = errortext(go_refusal, other_refusal, allowlist=text_entry, backend="saphyr-go")
+        check("errortext accepts a listed difference", code, output, want=0)
+
+        code, output = errortext(go_refusal, same_refusal, allowlist=text_entry, backend="saphyr-go")
+        check("errortext rejects a stale error-text entry", code, output, want=1)
+
+        # One side refusing where the other converted is diff.py's finding,
+        # not this checker's: it must not be reported twice.
+        converted_rust = jsonl(
+            os.path.join(directory, "rust.converted.jsonl"),
+            [{"file": corpus, "backend": "saphyr-go", "format": "yaml", "json": "{}"}],
+        )
+        code, output = errortext(go_refusal, converted_rust, allowlist=empty, backend="saphyr-go")
+        check("errortext ignores error-vs-value", code, output, want=0)
 
     print()
     if failures:
