@@ -15,9 +15,11 @@
 //
 // With -error-contract it prints no per-file records and instead dumps the
 // errdefs error contract -- the classification tables and the classifier
-// samples the port is held to (see errorcontract.go).
+// samples the port is held to (see errorcontract.go). With -message-contract
+// it dumps the other half of the contract the port is held to: the media DTOs
+// of core/message, with an outcome per sample (see messagecontract.go).
 //
-// Usage: oracle [-error-contract] <dir> [dir...]
+// Usage: oracle [-error-contract | -message-contract] <dir> [dir...]
 package main
 
 import (
@@ -53,8 +55,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-message-contract" {
+		if err := writeMessageContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "message contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

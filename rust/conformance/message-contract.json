@@ -1,0 +1,524 @@
+{
+  "note": "The media DTOs of core/message, dumped for the port. Rows carry their input and the outcome core produced; the port replays them.",
+  "media_sources": [
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "audio",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "audio/pcm",
+      "outcome": "ok",
+      "media_type_out": "audio/pcm",
+      "base_media_type": "audio/pcm",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/pcm\"}"
+    },
+    {
+      "target": "video",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "video/mp4",
+      "outcome": "ok",
+      "media_type_out": "video/mp4",
+      "base_media_type": "video/mp4",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"video/mp4\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "IMAGE/PNG",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "IMAGE/PNG; name=result.png",
+      "outcome": "ok",
+      "media_type_out": "image/png; name=result.png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png; name=result.png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/png; c=d; a=b",
+      "outcome": "ok",
+      "media_type_out": "image/png; a=b; c=d",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png; a=b; c=d\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/png;charset=utf-8",
+      "outcome": "ok",
+      "media_type_out": "image/png; charset=utf-8",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png; charset=utf-8\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/svg+xml",
+      "outcome": "ok",
+      "media_type_out": "image/svg+xml",
+      "base_media_type": "image/svg+xml",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/svg+xml\"}"
+    },
+    {
+      "target": "audio",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "audio/webm; codecs=opus",
+      "outcome": "ok",
+      "media_type_out": "audio/webm; codecs=opus",
+      "base_media_type": "audio/webm",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/webm; codecs=opus\"}"
+    },
+    {
+      "target": "audio",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "audio/pcm; channels=1",
+      "outcome": "ok",
+      "media_type_out": "audio/pcm; channels=1",
+      "base_media_type": "audio/pcm",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/pcm; channels=1\"}"
+    },
+    {
+      "target": "video",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "video/webm; codecs=\"vp9, opus\"",
+      "outcome": "ok",
+      "media_type_out": "video/webm; codecs=\"vp9, opus\"",
+      "base_media_type": "video/webm",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"video/webm; codecs=\\\"vp9, opus\\\"\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "audio/mpeg",
+      "outcome": "error",
+      "error": "media type \"audio/mpeg\" must use image/"
+    },
+    {
+      "target": "audio",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "video/mp4",
+      "outcome": "error",
+      "error": "media type \"video/mp4\" must use audio/"
+    },
+    {
+      "target": "video",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/jpeg",
+      "outcome": "error",
+      "error": "media type \"image/jpeg\" must use video/"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image",
+      "outcome": "error",
+      "error": "media type \"image\" must use image/"
+    },
+    {
+      "target": "video",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "video",
+      "outcome": "error",
+      "error": "media type \"video\" must use video/"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "outcome": "error",
+      "error": "media source media type is required"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "inline media source has invalid payload"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "image/png; =",
+      "outcome": "error",
+      "error": "media type \"image/png; =\" must use image/"
+    },
+    {
+      "target": "image",
+      "op": "new_inline",
+      "bytes": "aGk=",
+      "media_type": "IMAGE/PNG;",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/i.png",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/i.png\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "audio",
+      "op": "new_url",
+      "url": "https://example.com/a.mp3",
+      "media_type": "audio/mpeg",
+      "outcome": "ok",
+      "media_type_out": "audio/mpeg",
+      "base_media_type": "audio/mpeg",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/a.mp3\",\"media_type\":\"audio/mpeg\"}"
+    },
+    {
+      "target": "video",
+      "op": "new_url",
+      "url": "https://example.com/v.mp4",
+      "media_type": "video/mp4",
+      "outcome": "ok",
+      "media_type_out": "video/mp4",
+      "base_media_type": "video/mp4",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/v.mp4\",\"media_type\":\"video/mp4\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/i.png",
+      "outcome": "ok",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/i.png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "http://example.com/i.png",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"http://example.com/i.png\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/i",
+      "media_type": "image/png; name=x",
+      "outcome": "ok",
+      "media_type_out": "image/png; name=x",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/i\",\"media_type\":\"image/png; name=x\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "/i.png",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "media URL must be absolute"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "example.com/i.png",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "media URL must be absolute"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/i.png#f",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/i.png#f\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "mailto:x@example.com",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "media URL must be absolute"
+    },
+    {
+      "target": "audio",
+      "op": "new_url",
+      "url": "https://example.com/a",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "media type \"image/png\" must use audio/"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"IMAGE/PNG\"}",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"media_type\":\"image/png\"}",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\"}",
+      "outcome": "ok",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://x/y\"}"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"/relative\"}",
+      "outcome": "ok",
+      "wire": "{\"kind\":\"url\",\"url\":\"/relative\"}"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"media_type\":\"\"}",
+      "outcome": "ok",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://x/y\"}"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\",\"url\":\"\"}",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "audio",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}",
+      "outcome": "error",
+      "error": "media type \"image/png\" must use audio/"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\"}",
+      "outcome": "error",
+      "error": "URL media source has invalid payload"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"data\":\"aGk=\"}",
+      "outcome": "error",
+      "error": "URL media source has invalid payload"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"data\":\"aGk=\"}",
+      "outcome": "error",
+      "error": "inline media source media type is required"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"media_type\":\"image/png\"}",
+      "outcome": "error",
+      "error": "inline media source has invalid payload"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"stream\",\"media_type\":\"image/png\"}",
+      "outcome": "error",
+      "error": "stream media source has invalid payload"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"socket\"}",
+      "outcome": "error",
+      "error": "unknown media source kind \"socket\""
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{}",
+      "outcome": "error",
+      "error": "unknown media source kind \"\""
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"extra\":1}",
+      "outcome": "error",
+      "error": "json: unknown field \"extra\"",
+      "text_from": "encoding/json"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"inline\",\"data\":\"!!!\",\"media_type\":\"image/png\"}",
+      "outcome": "error",
+      "error": "json: cannot unmarshal string into Go struct field .data of type []uint8: illegal base64 data at input byte 0",
+      "text_from": "encoding/json"
+    },
+    {
+      "target": "image",
+      "op": "from_wire",
+      "document": "{\"kind\":\"url\",\"url\":\"https://x/y\"} {\"kind\":\"url\",\"url\":\"https://x/y\"}",
+      "outcome": "error",
+      "error": "invalid character '{' after top-level value",
+      "text_from": "encoding/json"
+    }
+  ],
+  "audio_formats": [
+    {
+      "encoding": "pcm16",
+      "sample_rate_hz": 16000,
+      "channels": 1,
+      "outcome": "ok",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "pcm16",
+      "outcome": "error",
+      "error": "raw audio format requires sample rate and channels",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "pcm16",
+      "sample_rate_hz": 0,
+      "channels": 1,
+      "outcome": "error",
+      "error": "raw audio format requires sample rate and channels",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "pcm16",
+      "sample_rate_hz": 16000,
+      "channels": 0,
+      "outcome": "error",
+      "error": "raw audio format requires sample rate and channels",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "pcm16",
+      "sample_rate_hz": 16000,
+      "channels": -1,
+      "outcome": "error",
+      "error": "raw audio format requires sample rate and channels",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "pcm24",
+      "sample_rate_hz": 48000,
+      "channels": 2,
+      "outcome": "ok",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "float32",
+      "sample_rate_hz": 48000,
+      "channels": 2,
+      "outcome": "ok",
+      "media_type": "audio/pcm"
+    },
+    {
+      "encoding": "mp3",
+      "outcome": "ok",
+      "media_type": "audio/mpeg"
+    },
+    {
+      "encoding": "mp3",
+      "sample_rate_hz": 44100,
+      "channels": 2,
+      "outcome": "ok",
+      "media_type": "audio/mpeg"
+    },
+    {
+      "encoding": "mp3",
+      "sample_rate_hz": 0,
+      "outcome": "ok",
+      "media_type": "audio/mpeg"
+    },
+    {
+      "encoding": "mp3",
+      "sample_rate_hz": -1,
+      "outcome": "error",
+      "error": "audio sample rate and channels must not be negative",
+      "media_type": "audio/mpeg"
+    },
+    {
+      "encoding": "opus",
+      "channels": 2,
+      "outcome": "ok",
+      "media_type": "audio/opus"
+    },
+    {
+      "encoding": "opus",
+      "channels": 0,
+      "outcome": "ok",
+      "media_type": "audio/opus"
+    },
+    {
+      "encoding": "opus",
+      "channels": -1,
+      "outcome": "error",
+      "error": "audio sample rate and channels must not be negative",
+      "media_type": "audio/opus"
+    },
+    {
+      "encoding": "aac",
+      "outcome": "ok",
+      "media_type": "audio/aac"
+    },
+    {
+      "encoding": "flac",
+      "sample_rate_hz": -1,
+      "channels": 2,
+      "outcome": "error",
+      "error": "audio sample rate and channels must not be negative",
+      "media_type": "audio/flac"
+    }
+  ]
+}

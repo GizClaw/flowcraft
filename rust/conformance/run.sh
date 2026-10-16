@@ -78,6 +78,19 @@ if ! cmp -s "$out/error-contract.json" "$conf/error-contract.json"; then
   exit 1
 fi
 
+echo "==> message contract"
+# The other half of the contract: the media DTOs of core/message, dumped the
+# same way and replayed by the port
+# (crates/flowcraft-contract/tests/message_contract.rs). Same rule as the
+# error half -- the file moves only when core's media rules move.
+"$out/oracle" -message-contract > "$out/message-contract.json"
+if ! cmp -s "$out/message-contract.json" "$conf/message-contract.json"; then
+  echo "rust/conformance/message-contract.json no longer matches core:" >&2
+  diff "$conf/message-contract.json" "$out/message-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -message-contract) > rust/conformance/message-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)
