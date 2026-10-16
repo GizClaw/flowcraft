@@ -44,6 +44,11 @@
 !.release/
 !.release/**
 
+# ── Rust workspace ──
+!rust-toolchain.toml
+!rust/
+!rust/**
+
 # ── CI/CD ──
 !Makefile
 !.github/

@@ -1,0 +1,21 @@
+[package]
+name = "yamlprobe"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.22"
+serde_json.workspace = true
+saphyr.workspace = true
+saphyr-parser = "0.2.2"
+# Optional, and off by default: these are the two archived forks the spike
+# measured and rejected. `serde_yaml_ng` pulls `unsafe-libyaml`, which is
+# archived and carries RUSTSEC-2024-0449, so no default build — and nothing
+# that ships — may depend on them. The gate turns the feature on only when
+# asked for one of those backends.
+serde_norway = { workspace = true, optional = true }
+serde_yaml_ng = { workspace = true, optional = true }
+
+[features]
+candidates = ["dep:serde_norway", "dep:serde_yaml_ng"]

@@ -1,0 +1,9 @@
+top:
+  mid:
+    leaf: 1
+    list:
+      - a
+      - b
+      - k: v
+  empty_map: {}
+  empty_list: []

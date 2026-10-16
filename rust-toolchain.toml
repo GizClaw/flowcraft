@@ -1,0 +1,6 @@
+# Pinned so CI and local builds share one toolchain. Bump deliberately, in its
+# own commit, and re-run the conformance gate afterwards.
+[toolchain]
+channel = "1.93.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

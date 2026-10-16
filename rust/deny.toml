@@ -1,0 +1,54 @@
+# cargo-deny configuration. The `conformance` job in .github/workflows/ci.yml
+# runs `cargo deny check` on every PR, so this file is a gate, not a wish list:
+# the license allow list is what the tree uses today, and a new dependency
+# under a license nobody signed off on has to show up here as a diff.
+#
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Default features only. The workspace has exactly one non-default feature —
+# the probe's `candidates` — and it exists to keep the two archived serde forks
+# out of every build that matters: `serde_yaml_ng` pulls `unsafe-libyaml`,
+# archived and carrying RUSTSEC-2024-0449. Turning every feature on here would
+# make this check report on measurement code the repository does not ship, and
+# the report would then have to be excused rather than fixed.
+all-features = false
+
+[advisories]
+# An entry here needs a reason and an expiry story, the same rule
+# rust/conformance/known-divergences.txt follows: an excuse that stops being
+# true should fail rather than linger. Nothing is ignored today.
+ignore = []
+
+[licenses]
+# Every license in this list is present in Cargo.lock right now. The tree is
+# small enough that this stays readable; keep it that way instead of widening
+# the list to whatever a new dependency arrives with.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# Workspace members are unpublished (version 0.0.0) and carry the workspace's
+# own license; only the crates we pull in need checking here.
+ignore = true
+
+[bans]
+# Duplicate versions are visible but not fatal yet: the tree has a few
+# (cfg-if, equivalent) that only their own crates can resolve. A new duplicate
+# is worth a look, not a blocked PR.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# No git dependencies today; allowing any would move the pin out of Cargo.lock's
+# checksummed registry tarballs.
+allow-git = []

@@ -1,0 +1,16 @@
+# Cases where the Go side and the Rust port are allowed to disagree.
+#
+# Every entry needs a reason, and an entry that stops matching anything fails
+# the gate: the list has to stay true, or it turns into a blanket excuse.
+#
+# Categories: oracle-unstable, VALUE-DIFF, error-vs-value, unparseable,
+# missing-record. See rust/conformance/tools/allowlist.py.
+#
+# There are no entries today. The collapsing-key class (fixtures/44-50) used
+# to live here as `oracle-unstable`, back when the Go side had no defined
+# answer for such a document and the port was allowed to land on one of the
+# results it produced. core now refuses the class outright and the port
+# refuses it the same way, so the two sides agree (both refuse) and the
+# evidence check in tools/stability.py asserts the refusal rather than
+# excusing a coin flip. See the "Collapsing mapping keys" section of
+# rust/conformance/README.md.
