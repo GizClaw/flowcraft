@@ -5,10 +5,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-base64 = "0.22"
+flowcraft-contract = { path = "../flowcraft-contract" }
+flowcraft-utils = { path = "../flowcraft-utils" }
 serde_json.workspace = true
 saphyr.workspace = true
-saphyr-parser = "0.2.2"
 # Optional, and off by default: these are the two archived forks the spike
 # measured and rejected. `serde_yaml_ng` pulls `unsafe-libyaml`, which is
 # archived and carries RUSTSEC-2024-0449, so no default build — and nothing

@@ -14,6 +14,10 @@ CONFORMANCE_BACKEND=norway rust/conformance/run.sh   # a rejected candidate
 `ng`; the last two build the probe's non-default `candidates` feature, which
 the manifest explains.
 
+`saphyr-go` is not a reading the probe implements: it is `flowcraft-utils`,
+the crate the port ships, so the gate compares the port against the oracle
+through this binary rather than through a copy of it.
+
 | Path | Role |
 | --- | --- |
 | `fixtures/` | hand-written corner cases: scalars, int/float forms, keys, anchors, merge keys, duplicate keys, alias bombs, tag handling, BOM/CRLF/UTF-8, JSON-vs-YAML sniffing |
@@ -42,7 +46,7 @@ remembered.
 | `norway` | `serde_norway` 0.9.42 straight into a JSON value | 22 records diverge today; the classes below |
 | `ng` | `serde_yaml_ng` 0.10.0, same shape | item for item identical to `norway` |
 | `saphyr` | `saphyr` 0.2.2 as delivered | 21 records; the same classes, plus fixture 24 — the BOM survives into the first key |
-| `saphyr-go` | that parser plus the semantic layer in `crates/yamlprobe/src/saphyr_backends.rs` | **adopted** — byte-identical to core over the whole corpus |
+| `saphyr-go` | that parser plus the semantic layer in `crates/flowcraft-utils/src/decode.rs` | **adopted** — byte-identical to core over the whole corpus |
 
 What the two serde forks get wrong, by the fixture that shows it:
 
