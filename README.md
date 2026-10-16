@@ -443,6 +443,7 @@ cd flowcraft
 
 make help          # list every target
 make ci            # vet + test for all in-tree modules
+make conformance   # Go oracle vs Rust port: the corpus must match byte for byte
 make release-check # validate changesets and the pending release plan
 ```
 
@@ -450,14 +451,22 @@ This repository is a Go workspace. Active members are `core`, `craft`,
 `driver/*`, `backends/*`, `examples/forge`, and `examples/anvil`; release
 tooling in `tools/releasegate` builds standalone with `GOWORK=off`.
 
+`rust/` is a second workspace, for the port. It is not part of `make ci`: it
+pins its own toolchain (`rust-toolchain.toml`) and has its own CI lane. What
+keeps it honest is the conformance gate — `tools/conformance-oracle` dumps what
+`core`'s YAML/JSON layer does to a corpus of configuration documents, and the
+port has to reproduce every byte. See
+[`rust/conformance/README.md`](rust/conformance/README.md).
+
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR:
 
 1. `make ci` should be green.
 2. `gofmt -l .` should print nothing.
-3. Tests for new features. New behaviour without a test won't merge.
-4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`,
+3. `make conformance` should be green (anything touching `rust/`).
+4. Tests for new features. New behaviour without a test won't merge.
+5. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`,
    `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`

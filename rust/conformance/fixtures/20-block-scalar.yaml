@@ -1,0 +1,12 @@
+lit: |
+  line1
+  line2
+lit_strip: |-
+  line1
+  line2
+folded: >
+  line1
+  line2
+folded_keep: >+
+  line1
+

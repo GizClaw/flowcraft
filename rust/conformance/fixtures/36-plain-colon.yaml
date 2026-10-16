@@ -1,0 +1,3 @@
+url: http://x:8080/y
+list_urls:
+  - http://a:1/b
