@@ -27,6 +27,10 @@ maintenance; `core/memory` stays implementation-neutral.
   the conversation's window, and falls back to the complete window when a
   commit changes a fact the tree already summarises; see *Summary compaction
   (per commit)* below.
+- Resident profile block: one bounded block per conversation, holding the host's
+  explicit lines and the lines a maintenance pass distilled from the facts, and
+  served on every context request as its own source class. It is off by default;
+  see *Resident profile block* below.
 - Trigger: the write paths append a **work record** to a scope-level journal
   when a turn, a document revision or a published fact lands, and the
   background runner drains it -- deriving the conversations the records name
@@ -848,6 +852,80 @@ written again by the next publish that needs it.
 
 Every name segment is encoded before it reaches a filesystem path, so user
 input never becomes a path verbatim.
+
+## Resident profile block
+
+A conversation's **resident block** is a bounded set of lines about its
+participants that every context request carries without retrieving them: what
+someone loves, works as, has been doing, is working toward. Retrieval is
+query-shaped and a profile is not -- a stable preference answers questions that
+share almost none of its words -- so the block is the other half of that
+contract: present whether or not the request resembles it.
+
+```yaml
+profile:
+  enabled: true     # serve the block and let the pass fill it; off by default
+  max_tokens: 512   # its bound in the module's cost model (ceiling 2048)
+  max_entries: 32   # and in lines (ceiling 128)
+```
+
+It is off by default, and that default is a statement rather than an omission:
+the block rides along with every request, so turning it on changes what every
+answer reads. Its bound is what keeps it from becoming a second retrieval pool.
+The bound holds whether or not the block is served -- every write is validated
+against the caps before it lands, and a value above the module ceiling is
+config-rejected rather than clamped.
+
+Two writers share one block, and the split is the point:
+
+- the **host's half** is what a host wrote through `Assembly.Profiles()`
+  (`SaveExplicit` replaces it whole, and no pass rewrites it);
+- the **pass's half** is what `Assembly.Maintain` judged from the
+  conversation's facts: the lines whose text states a profile class
+  (preference, identity, habit, goal) about one entity, newest first inside
+  each class, restatements folded away, superseded facts left out -- the block
+  states what holds now.
+
+A line is a fact's own text, verbatim: the block selects and orders, it never
+paraphrases. A distilled line names the facts it was judged from, and the pass's
+half carries the policy that judged it (vocabulary, caps, dedupe threshold) as a
+stamp: a stored half written under another policy is not served, so changing the
+vocabulary hides stale judgments instead of serving them under a new name, the
+way the maintenance overlay's stamp works.
+
+Serving is an addition to a request, not a lane in it. The item carries its own
+kind and source class (`profile`), is built after the lanes, the reranker and
+the source quotes -- a query, a score floor or a dataset filter does not select
+it -- and the packer admits it before its class reservations, so a retrieved
+class filling its own share cannot spend the room the block was bounded to
+occupy. A block the request budget cannot hold is not served at all rather than
+cut: half a block is not the lines the host and the pass put there, and a line
+dropped mid-block would read as a statement that changed. A host write that
+would exceed the bound makes room by dropping the pass's lowest-ranked lines
+(the next pass re-judges them) and is refused only when the host's lines alone
+do not fit; a pass's half that does not fit is refused whole.
+
+The block is a reading of the corpus, not a copy of it: **a hide reaches it**. A
+distilled line whose provenance names a forgotten fact is dropped from the
+served block -- restore the fact and the line is back, without a rewrite --
+while the host's half is the host's own words and is not filtered. Nothing here
+edits canonical state: the facts a line quotes keep their text, their dates and
+their place in the read path.
+
+The vocabulary is the module's measured default (`profile.DefaultClasses`): over
+this project's own evaluated facts it matched 240 of 3828 (6.3%, 17-38 per
+conversation), and what it matched reads as a profile: what each participant
+loves, plays, works as, and is working toward. Events are absent on purpose:
+"attended" describes a turn, not a person, and a class that admits them turns
+the block back into a retrieval pool. A deployment whose corpus is not English
+leaves the vocabulary empty or leaves the block off; the `memory.yaml` surface
+carries no vocabulary of its own and `profile.Config` is the extension point.
+
+The harness measures the block with two runs over one workspace: a deploy
+document that enables it plus `memory-eval -prepare-all -maintain`, against the
+same document without it. A run that enables the block without running a pass
+says so on stderr, because a blockless read path must not be reported as the
+block; `eval/README.md` documents the flag and what the fingerprint records.
 
 ## Context budgets
 
