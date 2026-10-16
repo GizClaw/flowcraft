@@ -111,6 +111,50 @@ func (fakeDeriver) Derive(context.Context, component.Artifact) ([]component.Arti
 	}}, nil
 }
 
+// TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot pins the pass a run that
+// measures the profile block owes the store: one pass per scope, a repeated
+// scope counted once, and a runner that cannot maintain reported as such
+// instead of quietly measuring a store no pass touched.
+func TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot(t *testing.T) {
+	ctx := context.Background()
+	if _, err := Maintain(ctx, stubRunner{}, nil); err == nil {
+		t.Fatal("a runner that does not maintain was accepted")
+	}
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	settings := `{
+	  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+	  "scopes": [{"runtime_id": "memories"}],
+	  "fact": {"strategy": "none"},
+	  "summary": {"disabled": true},
+	  "interval": "0"
+	}`
+	value, err := flowcraftmemory.NewFactory(flowcraftmemory.WithDeriver(fakeDeriver{})).New(
+		ctx, resource.Input{Settings: []byte(settings), Deps: map[string]any{"workspace": ws}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, ok := value.(Runner)
+	if !ok {
+		t.Fatalf("assembly does not satisfy Runner: %T", value)
+	}
+	ran, err := Maintain(ctx, assembly, []corememory.Scope{
+		{RuntimeID: "memories"}, {RuntimeID: "memories"}, {RuntimeID: "other"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran != 2 {
+		t.Fatalf("passes = %d, want one per scope with the repeat counted once", ran)
+	}
+	if _, err := Maintain(ctx, assembly, []corememory.Scope{{}}); err == nil {
+		t.Fatal("an invalid scope was maintained")
+	}
+}
+
 func TestRunAgainstAssembly(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {

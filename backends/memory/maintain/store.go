@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
@@ -690,8 +691,15 @@ type Service struct {
 	// one that was imported and never read; without it every fact decays from
 	// its event time.
 	Recalls RecallSource
-	Config  Config
-	Clock   func() time.Time
+	// Profiles, when set, is the resident block store this pass fills: every
+	// conversation it judges gets its distilled half replaced with the facts
+	// that state a profile line, minus the ones this pass superseded. It is
+	// the same judgment the overlay is, written where a request reads it
+	// without retrieving, so the two are planned and saved by one pass and
+	// cannot disagree about which fact is current.
+	Profiles *profile.Store
+	Config   Config
+	Clock    func() time.Time
 }
 
 // RunScope plans and saves one scope's maintenance overlay, then reclaims the
@@ -819,7 +827,58 @@ func (service *Service) run(
 		}
 		plan.ReclaimedChunks = reclaimed
 	}
+	if err := service.fillProfiles(ctx, scope, conversations, plan, now); err != nil {
+		return plan, err
+	}
 	return plan, nil
+}
+
+// fillProfiles replaces the distilled half of every judged conversation's
+// resident block with what the facts of this pass say: the lines whose text
+// states a profile class, newest first inside each class, minus the facts this
+// pass superseded -- the block states what holds now, and a superseded fact is
+// the state before. A conversation the pass judged and found nothing to say
+// gets an empty half, which is how a block drops a line the corpus stopped
+// supporting.
+//
+// The block is written from the same facts and the same judgment as the
+// overlay, in the same pass, so a request cannot read a line whose fact the
+// overlay already called replaced. A pass that cannot write the blocks reports
+// the error with the plan it already saved: the overlay is what the read path
+// applies, and a block left behind carries its own policy stamp, so the next
+// pass repairs it rather than serving it as this one's judgment.
+func (service *Service) fillProfiles(
+	ctx context.Context,
+	scope corememory.Scope,
+	conversations map[string][]factview.Fact,
+	plan Plan,
+	now time.Time,
+) error {
+	if service.Profiles == nil || len(conversations) == 0 {
+		return nil
+	}
+	config := service.Profiles.Config()
+	if !config.Distill {
+		// The block's pass-written half is not served under this store's
+		// policy, so a pass that filled it would be writing what nothing
+		// reads.
+		return nil
+	}
+	superseded := make(map[string]map[string]struct{}, len(plan.Supersedes))
+	for _, finding := range plan.Supersedes {
+		if _, exists := superseded[finding.Conversation]; !exists {
+			superseded[finding.Conversation] = make(map[string]struct{})
+		}
+		superseded[finding.Conversation][finding.FactID] = struct{}{}
+	}
+	blocks := make(map[string][]profile.Entry, len(conversations))
+	for conversationID, facts := range conversations {
+		blocks[conversationID] = profile.Distill(facts, superseded[conversationID], config)
+	}
+	if _, err := service.Profiles.SaveDistilledConversations(ctx, scope, blocks, now); err != nil {
+		return fmt.Errorf("maintain: fill profile blocks: %w", err)
+	}
+	return nil
 }
 
 // recallReceipts reads the receipt index, treating an unwired source as a

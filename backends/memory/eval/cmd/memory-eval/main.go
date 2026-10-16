@@ -63,6 +63,8 @@ func main() {
 		"ingest every scenario, run one derivation pass, then answer: lets derive.concurrency fan out across all conversations")
 	skipDerive := flag.Bool("skip-derive", false,
 		"answer from the derivation the workspace already holds: no ingest, no derive pass")
+	maintain := flag.Bool("maintain", false,
+		"run one maintenance pass per scope after the derivation: it saves the read-path overlay and fills the profile block")
 	baselinePath := flag.String("baseline", "", "compare the run against this baseline JSON and fail on regression")
 	baselineTolerance := flag.Float64("baseline-tolerance", 2.0, "allowed regression in percentage points")
 	out := flag.String("out", "", "write full reports JSON here")
@@ -74,6 +76,10 @@ func main() {
 	}
 	if *skipDerive && *prepareAll {
 		must(fmt.Errorf("memory eval: -skip-derive answers from the stored derivation, so it cannot run -prepare-all's ingest and derive pass"))
+	}
+	if *maintain && !*prepareAll && !*skipDerive {
+		must(fmt.Errorf("memory eval: -maintain runs one pass per scope after every conversation is derived, " +
+			"so it needs -prepare-all (or -skip-derive, to pass over the stored derivation)"))
 	}
 
 	raw, err := os.ReadFile(*dataset)
@@ -313,6 +319,12 @@ func main() {
 			// lives in the deploy document: without this, two runs that differ
 			// only in that switch carry the same fingerprint.
 			"rerank": onOff(deployment.Rerank),
+			// Whether a maintenance pass ran before this run answered. The
+			// pass saves the read-path overlay and fills the profile block, so
+			// a run that took the pass and one that did not measure different
+			// stores -- the retrieval summary names the block's settings, not
+			// whether anything ran a pass over them.
+			"maintain": onOff(*maintain),
 			// The retrieval-side configuration the policy digest does not
 			// cover -- lane weights and fusion, the bm25 parameters, source
 			// quotes, rerank -- read back off the built assembly, so the
@@ -367,6 +379,20 @@ func main() {
 	if pending > 0 {
 		fmt.Printf("prepared %d scenarios; running one derivation pass\n", pending)
 		must(deriveAllScenarios(context.Background(), deployment.Memory))
+	}
+	if deployment.Profile && !*maintain {
+		fmt.Fprintf(os.Stderr,
+			"warning: the deploy document enables the profile block and no maintenance pass runs: "+
+				"the block is served empty, so this run measures the blockless read path\n")
+	}
+	if *maintain {
+		scopes := make([]corememory.Scope, 0, len(scenarios))
+		for _, scenario := range scenarios {
+			scopes = append(scopes, scenario.Scope.MemoryScope())
+		}
+		ran, err := eval.Maintain(context.Background(), deployment.Memory, scopes)
+		must(err)
+		fmt.Printf("maintained %d scopes; the read-path overlay and the profile block are what a pass wrote\n", ran)
 	}
 	reports := make([]eval.Report, 0, len(scenarios))
 	for index, scenario := range scenarios {
