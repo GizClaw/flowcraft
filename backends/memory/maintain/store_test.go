@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
@@ -269,6 +270,163 @@ func TestRunScopeClearsAnIgnoredOverlay(t *testing.T) {
 	}
 	if again.IgnoredOverlay {
 		t.Fatalf("second pass reported an ignored overlay: %+v", again)
+	}
+}
+
+// staticReceipts is a receipt source a test drives directly: the maintenance
+// pass reads exactly what the read path is claimed to have returned.
+type staticReceipts map[string]recall.Receipt
+
+func (receipts staticReceipts) Receipts(context.Context, corememory.Scope) (map[string]recall.Receipt, error) {
+	return receipts, nil
+}
+
+// TestRunScopeReinforcesRecalledFacts is the v3 acceptance fixture end to end
+// through the service: a fact imported with an old event time is decayed, and
+// the receipt of a later context read lifts it back out of the overlay --
+// without the canonical fact changing.
+func TestRunScopeReinforcesRecalledFacts(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	facts, err := factview.NewFactStore(logStore, kv, factview.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(kv, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	if _, err := facts.Add(ctx, factview.AddRequest{
+		ID: "fact-1", Generation: "generation-1", Scope: scope, ConversationID: "conv-1",
+		Content:    coremessage.NewTextContent("Alice likes tea"),
+		EventTime:  now.Add(-1250 * time.Hour),
+		Provenance: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := facts.PublishActiveGeneration(ctx, scope, "conv-1", "generation-1"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := itemKey(scope, "conv-1", "fact-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A pass without receipts is the imported history judgment: the fact is
+	// 1250h old against a 720h half-life and is decayed to ~0.3.
+	service := &Service{Facts: facts, Store: store, Clock: func() time.Time { return now }}
+	plan, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RecalledFacts != 0 || len(plan.Decays) != 1 || plan.Decays[0].FactID != "fact-1" {
+		t.Fatalf("plan before any recall = %#v", plan)
+	}
+	if plan.Decays[0].Score > 0.31 || plan.Decays[0].Score < 0.29 {
+		t.Fatalf("imported fact score = %v", plan.Decays[0].Score)
+	}
+	scores, err := store.ScoreOverlay(ctx, scope)
+	if err != nil || len(scores) != 1 {
+		t.Fatalf("overlay after the import pass = %#v, %v", scores, err)
+	}
+
+	// The read path returned the fact an hour ago: the next pass judges it
+	// from that recall, finds it fresh, and the overlay it writes is empty --
+	// the call is served at its un-decayed score again.
+	service.Recalls = staticReceipts{identity: {
+		Identity: identity, Count: 3, Last: now.Add(-time.Hour), LastEvent: "run-1",
+	}}
+	plan, err = service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RecalledFacts != 1 || len(plan.Decays) != 0 {
+		t.Fatalf("plan after a recall = %#v", plan)
+	}
+	scores, err = store.ScoreOverlay(ctx, scope)
+	if err != nil || len(scores) != 0 {
+		t.Fatalf("overlay after a recall = %#v, %v", scores, err)
+	}
+}
+
+// TestOverlayStatusReportsExpiry pins the D8 signal: a stored overlay this
+// pass wrote but has not refreshed within one half-life reports Expired, so a
+// host can see that the read path is serving factors measured against an old
+// clock. An overlay from another pass is ignored rather than expired, and a
+// scope with no overlay reports neither.
+func TestOverlayStatusReportsExpiry(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	store, err := NewStore(kv, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+
+	status, err := store.Status(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Stored || status.Stale || status.Expired || !status.UpdatedAt.IsZero() {
+		t.Fatalf("status without an overlay = %+v", status)
+	}
+
+	if err := store.Save(ctx, Plan{
+		Scope: scope, Decays: []Decay{{FactID: "stale", Conversation: "conv-1", Score: 0.3}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = store.Status(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Stored || status.Stale || status.Expired || !status.UpdatedAt.Equal(now) {
+		t.Fatalf("fresh status = %+v", status)
+	}
+
+	now = now.Add(720*time.Hour + time.Hour)
+	status, err = store.Status(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Expired || status.Stale {
+		t.Fatalf("status past the half-life = %+v", status)
+	}
+
+	foreign, err := NewStore(kv, WithClock(func() time.Time { return now }),
+		WithConfig(Config{SimilarityThreshold: 0.9}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = foreign.Status(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Stale || status.Expired {
+		t.Fatalf("status at another pass = %+v", status)
 	}
 }
 

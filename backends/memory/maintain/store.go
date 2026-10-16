@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
@@ -45,6 +47,15 @@ type OverlayDiagnostics struct {
 	// Entries counts what the stored document holds, stale or not, so a host
 	// can see how much an ignored overlay covers.
 	Entries int `json:"entries,omitempty"`
+	// UpdatedAt is the newest entry time in the stored document: when the
+	// pass that wrote it last judged the scope's facts.
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// Expired reports a stored overlay this pass wrote but has not refreshed
+	// within one half-life. Its factors were measured against a clock at
+	// least that old, so the read path is serving decayed scores that are too
+	// high until the next pass rewrites them; a host schedules the pass, and
+	// the pass is the repair.
+	Expired bool `json:"expired,omitempty"`
 }
 
 // Store persists one overlay document per scope on the KV substrate.
@@ -191,6 +202,13 @@ func (store *Store) Status(ctx context.Context, scope corememory.Scope) (Overlay
 	status.StoredProducer = document.ProducerVersion
 	status.Entries = len(document.Entries)
 	status.Stale = document.ProducerVersion != status.ExpectedProducer
+	for _, entry := range document.Entries {
+		if entry.UpdatedAt.After(status.UpdatedAt) {
+			status.UpdatedAt = entry.UpdatedAt.UTC()
+		}
+	}
+	status.Expired = !status.Stale && status.Entries > 0 &&
+		store.clock().UTC().Sub(status.UpdatedAt) > store.config.withDefaults().DecayHalfLife
 	return status, nil
 }
 
@@ -266,9 +284,17 @@ func (store *Store) Adjust(ctx context.Context, scope corememory.Scope, identity
 	return entry.Factor, nil
 }
 
+// RecallSource reports the read path's receipts for one scope: hard-scope
+// item identity to how often and how recently a context result returned it.
+// A service without a source plans from event times alone, and the plan says
+// so by reporting zero recalled facts.
+type RecallSource interface {
+	Receipts(context.Context, corememory.Scope) (map[string]recall.Receipt, error)
+}
+
 // Service is the host-invoked batch entry point: it lists one scope's facts,
-// plans maintenance, saves the overlay, and reclaims the document builds the
-// scope no longer serves.
+// reads the read path's receipts, plans maintenance, saves the overlay, and
+// reclaims the document builds the scope no longer serves.
 type Service struct {
 	Facts *factview.FactStore
 	Store *Store
@@ -277,8 +303,13 @@ type Service struct {
 	// nothing to reclaim, and a host that would rather sweep them separately can
 	// call DocumentViewStore.RetireScopeBuilds itself.
 	Documents *docview.DocumentViewStore
-	Config    Config
-	Clock     func() time.Time
+	// Recalls, when set, is the receipt store the retrieval provider writes
+	// to. It is what lets the pass tell a fact that keeps being served from
+	// one that was imported and never read; without it every fact decays from
+	// its event time.
+	Recalls RecallSource
+	Config  Config
+	Clock   func() time.Time
 }
 
 // RunScope plans and saves one scope's maintenance overlay, then reclaims the
@@ -318,6 +349,10 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 	if err != nil {
 		return empty, fmt.Errorf("maintain: list facts: %w", err)
 	}
+	receipts, err := service.recallReceipts(ctx, scope)
+	if err != nil {
+		return empty, err
+	}
 	conversations := make(map[string][]factview.Fact)
 	for _, fact := range facts {
 		if strings.TrimSpace(fact.ConversationID) == "" {
@@ -325,7 +360,7 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 		}
 		conversations[fact.ConversationID] = append(conversations[fact.ConversationID], fact)
 	}
-	plan, err := DetectWithConfig(scope, conversations, now, service.Config)
+	plan, err := DetectWithRecalls(scope, conversations, now, service.Config, receipts)
 	if err != nil {
 		return empty, err
 	}
@@ -341,6 +376,29 @@ func (service *Service) RunScope(ctx context.Context, scope corememory.Scope) (P
 		plan.ReclaimedChunks = reclaimed
 	}
 	return plan, nil
+}
+
+// recallReceipts reads the receipt index, treating an unwired source as a
+// scope the read path never served. A store that is wired but unreadable
+// fails the pass: planning without the receipts would decay exactly the facts
+// the caller keeps using.
+func (service *Service) recallReceipts(ctx context.Context, scope corememory.Scope) (map[string]recall.Receipt, error) {
+	source := service.Recalls
+	if source == nil {
+		return nil, nil
+	}
+	reflected := reflect.ValueOf(source)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if reflected.IsNil() {
+			return nil, nil
+		}
+	}
+	receipts, err := source.Receipts(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("maintain: read recall receipts: %w", err)
+	}
+	return receipts, nil
 }
 
 const defaultSupersedeFactor = 0.5

@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/projection/bm25"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/entity"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
+	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/fusion"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/hydrate"
@@ -235,6 +236,14 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	// a pass with its own stamp wrote, so the service that plans and the store
 	// that serves have to name the same pass.
 	maintainConfig := maintain.Config{}
+	// The receipt store is shared by the two halves of the reinforcement
+	// loop: the retrieval provider writes a receipt after it packs a result,
+	// and the maintenance pass reads them back to tell a fact that keeps
+	// being served from one that was imported and never read.
+	recallStore, err := recall.NewStore(kvStore)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: recall receipts: %w", err))
+	}
 	maintainStore, err := maintain.NewStore(
 		kvStore, maintain.WithClock(clock), maintain.WithConfig(maintainConfig))
 	if err != nil {
@@ -242,7 +251,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	}
 	maintainService := &maintain.Service{
 		Facts: facts, Store: maintainStore, Documents: documentViews, Clock: clock,
-		Config: maintainConfig,
+		Recalls: recallStore, Config: maintainConfig,
 	}
 	var summaries *summaryview.SummaryStore
 	var compactor *summaryderive.Compactor
@@ -320,6 +329,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		ObservedAtAnchor: settings.anchorObservedAt(),
 		ExpandParents:    true,
 		ScoreAdjuster:    maintainStore,
+		RecallEvents:     recallStore,
+		// Receipts are stamped with the assembly's clock: the maintenance
+		// pass compares them against the same clock, so a host that runs
+		// both on its own clock gets one timeline, not two.
+		Clock: clock,
 	}
 	if settings.Retrieval.Rerank && !settings.Generate.isZero() {
 		reranker, rerankErr := rerank.New(engine, settings.Generate.ref())
