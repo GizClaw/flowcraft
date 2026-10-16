@@ -42,6 +42,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "flowcraft-contract"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "flowcraft-utils"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "flowcraft-contract",
+ "saphyr",
+ "saphyr-parser",
+ "serde_json",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -273,9 +291,9 @@ checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
 name = "yamlprobe"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "flowcraft-contract",
+ "flowcraft-utils",
  "saphyr",
- "saphyr-parser",
  "serde_json",
  "serde_norway",
  "serde_yaml_ng",

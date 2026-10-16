@@ -305,10 +305,14 @@ def main():
         if category in FAILING
     )
     if allowlist_path:
-        # oracle-unstable entries belong to stability.py; only the diff
-        # categories are diff.py's to keep honest.
+        # oracle-unstable entries belong to stability.py and error-text ones
+        # to errortext.py; only the diff categories are diff.py's to keep
+        # honest.
         allowlist.check_stale(
-            allowed, allowed_used, allowlist_path, ignore=("oracle-unstable",)
+            allowed,
+            allowed_used,
+            allowlist_path,
+            ignore=("oracle-unstable", "error-text"),
         )
     print(f"\nmismatches: {mismatches}")
     sys.exit(1 if mismatches else 0)

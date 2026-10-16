@@ -45,6 +45,10 @@ ignore = true
 # is worth a look, not a blocked PR.
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's own crates depend on each other by path, with no version
+# constraint: nothing here is published, so a constraint would be a fiction
+# and the path is the pin.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
