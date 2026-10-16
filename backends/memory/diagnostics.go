@@ -16,6 +16,10 @@ import (
 type Diagnostics struct {
 	Scopes []ScopeDiagnostics `json:"scopes"`
 	Worker worker.Stats       `json:"worker"`
+	// Trigger is the derivation trigger's cumulative counters. It is absent
+	// when the assembly was built without one, which is what a deployment that
+	// turned the fast path off reports.
+	Trigger *worker.TriggerStats `json:"trigger,omitempty"`
 }
 
 // ScopeDiagnostics is one hard scope's derivation state -- the cursors the
@@ -29,6 +33,9 @@ type ScopeDiagnostics struct {
 	// with maintenance: the pass that wrote the stored judgments and whether
 	// the policy this deployment runs is applying them.
 	Overlay *maintain.OverlayDiagnostics `json:"overlay,omitempty"`
+	// Trigger is the scope's consumer position in each source and the lease
+	// stored for it, when the assembly was built with a trigger.
+	Trigger *worker.TriggerDiagnostics `json:"trigger,omitempty"`
 }
 
 // LaneDiagnostics reports one projection lane's producer identity for one
@@ -96,8 +103,19 @@ func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) 
 				}
 				entry.Overlay = &overlay
 			}
+			if assembly.trigger != nil {
+				trigger, err := assembly.trigger.Diagnostics(ctx, scope)
+				if err != nil {
+					return Diagnostics{}, err
+				}
+				entry.Trigger = &trigger
+			}
 			result.Scopes = append(result.Scopes, entry)
 		}
+	}
+	if assembly.trigger != nil {
+		stats := assembly.trigger.Stats()
+		result.Trigger = &stats
 	}
 	return result, nil
 }

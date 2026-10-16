@@ -28,6 +28,11 @@ const (
 	defaultRecentMaxTokens = 2048
 	defaultProjection      = "facts"
 	defaultInterval        = "1m"
+	// defaultTriggerInterval is the period the derivation trigger polls the
+	// work journal at. It is what makes a committed turn retrievable in
+	// seconds instead of on the sweep's period, so it is much shorter than the
+	// sweep's default; "0" turns the trigger off and leaves the sweep.
+	defaultTriggerInterval = "1s"
 
 	// maxSummaryChunkSize and maxSummaryGroupSize bound the summary
 	// compactor's fan-in so one derivation cannot build an unbounded
@@ -87,6 +92,27 @@ type DeriveSettings struct {
 	// keeps its own watermark and commit order, so the derived content is the
 	// same either way.
 	Concurrency int `json:"concurrency,omitempty"`
+	// Trigger tunes the fast path beside the sweep. It rides on the background
+	// runner: interval "0" turns the whole runner off, trigger.interval "0"
+	// turns off just the trigger.
+	Trigger TriggerSettings `json:"trigger,omitempty"`
+}
+
+// TriggerSettings tunes the derivation trigger: the consumer that derives the
+// conversations and scopes the work journal and the fact outbox recorded work
+// for, instead of waiting for the next sweep.
+type TriggerSettings struct {
+	// Interval is the period the trigger polls at. Empty takes the default;
+	// "0" turns the trigger off, which leaves the sweep as the only runner.
+	Interval string `json:"interval,omitempty"`
+	// LeaseTTL bounds one scope's lease, so a runner that dies mid-pass stops
+	// holding the scope. Empty takes the worker default; runners sharing a
+	// workspace have to agree on both this and their clocks for the lease to
+	// mean anything across processes.
+	LeaseTTL string `json:"lease_ttl,omitempty"`
+	// Batch bounds how many records one poll reads from one source (the work
+	// journal, the fact outbox). Empty takes the worker default.
+	Batch int `json:"batch,omitempty"`
 }
 
 // DriverSettings names one storage driver plus its strict settings subtree.
@@ -240,6 +266,9 @@ func (settings *Settings) applyDefaults() {
 	if strings.TrimSpace(settings.Interval) == "" {
 		settings.Interval = defaultInterval
 	}
+	if strings.TrimSpace(settings.Derive.Trigger.Interval) == "" {
+		settings.Derive.Trigger.Interval = defaultTriggerInterval
+	}
 	defaults := chat.DefaultConfig()
 	fact := &settings.Fact
 	if fact.Strategy == "" {
@@ -377,6 +406,15 @@ func (settings Settings) Validate() error {
 	if _, err := settings.interval(); err != nil {
 		return err
 	}
+	if _, err := settings.triggerInterval(); err != nil {
+		return err
+	}
+	if _, err := settings.triggerLeaseTTL(); err != nil {
+		return err
+	}
+	if settings.Derive.Trigger.Batch < 0 {
+		return errors.New("derive.trigger.batch must not be negative")
+	}
 	switch chat.FactStrategy(settings.Fact.Strategy) {
 	case chat.StrategyNone, chat.StrategySimple, chat.StrategyRich:
 	default:
@@ -507,15 +545,46 @@ func (settings ScopeSettings) scope() corememory.Scope {
 }
 
 func (settings Settings) interval() (time.Duration, error) {
-	if settings.Interval == "0" {
+	return period("interval", settings.Interval)
+}
+
+// triggerInterval is the trigger's poll period. "0" turns the trigger off,
+// which leaves the sweep as the only runner.
+func (settings Settings) triggerInterval() (time.Duration, error) {
+	return period("derive.trigger.interval", settings.Derive.Trigger.Interval)
+}
+
+// triggerLeaseTTL is how long one scope's claim stays one without a renewal. A
+// ttl shorter than the work it bounds lets another runner take the scope while
+// the holder is still deriving, which costs duplicate work rather than
+// correctness, but a runner renews as it goes: the ttl has to outlast one
+// conversation's pass, not a scope's whole drain.
+func (settings Settings) triggerLeaseTTL() (time.Duration, error) {
+	if strings.TrimSpace(settings.Derive.Trigger.LeaseTTL) == "" {
 		return 0, nil
 	}
-	value, err := time.ParseDuration(settings.Interval)
+	value, err := period("derive.trigger.lease_ttl", settings.Derive.Trigger.LeaseTTL)
 	if err != nil {
-		return 0, fmt.Errorf("interval %q: %w", settings.Interval, err)
+		return 0, err
 	}
-	if value < 0 {
-		return 0, errors.New("interval must not be negative")
+	if value <= 0 {
+		return 0, errors.New("derive.trigger.lease_ttl must be positive")
 	}
 	return value, nil
+}
+
+// period parses one configured duration. "0" is a period of zero, which every
+// caller reads as "off"; anything else has to parse and must not be negative.
+func period(name, value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "0" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", name, value, err)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("%s must not be negative", name)
+	}
+	return parsed, nil
 }

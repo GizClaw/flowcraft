@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRetrievalSummaryRendersTheResolvedSettings pins the fingerprint value the
@@ -152,5 +153,92 @@ func TestFactQuotaMovesTheDerivationPolicyDigest(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "quota") {
 		t.Fatalf("a workspace without the quota marshals a key for it: %s", encoded)
+	}
+}
+
+// TestTriggerSettingsAreValidated pins the fast path's settings: the poll
+// period defaults to a second, "0" turns the trigger off without turning the
+// sweep off, and a lease ttl or a batch bound that cannot mean anything is
+// refused where the document is read rather than at the first poll.
+func TestTriggerSettingsAreValidated(t *testing.T) {
+	fresh := func() Settings {
+		settings := Settings{}
+		settings.applyDefaults()
+		return settings
+	}
+	defaults := fresh()
+	if defaults.Derive.Trigger.Interval != defaultTriggerInterval {
+		t.Fatalf("the trigger's default period = %q, want %q",
+			defaults.Derive.Trigger.Interval, defaultTriggerInterval)
+	}
+	period, err := defaults.triggerInterval()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if period != time.Second {
+		t.Fatalf("the trigger's default period = %v, want a second", period)
+	}
+	off := fresh()
+	off.Derive.Trigger.Interval = "0"
+	period, err = off.triggerInterval()
+	if err != nil || period != 0 {
+		t.Fatalf(`derive.trigger.interval "0" = %v, %v`, period, err)
+	}
+	// The ttl is the worker's default until it is named, and it has to bound
+	// something: a claim that expires before it is written is not a claim.
+	if ttl, err := fresh().triggerLeaseTTL(); err != nil || ttl != 0 {
+		t.Fatalf("an unnamed lease ttl = %v, %v", ttl, err)
+	}
+	for _, value := range []string{"0s", "-1s"} {
+		invalid := fresh()
+		invalid.Derive.Trigger.LeaseTTL = value
+		if _, err := invalid.triggerLeaseTTL(); err == nil {
+			t.Fatalf("lease_ttl %q was accepted", value)
+		}
+		invalid.Validate()
+	}
+	invalid := fresh()
+	invalid.Derive.Trigger.Interval = "whenever"
+	if _, err := invalid.triggerInterval(); err == nil {
+		t.Fatal("a period that is not a duration was accepted")
+	} else if !strings.Contains(err.Error(), "derive.trigger.interval") {
+		t.Fatalf("the refusal does not name the setting: %v", err)
+	}
+	negative := fresh()
+	negative.Derive.Trigger.Batch = -1
+	if err := negative.Validate(); err == nil {
+		t.Fatal("a negative batch bound was accepted")
+	}
+}
+
+// TestTriggerIntervalReachesTheRunner wires the switch through the factory: the
+// trigger is built whether or not its runner polls -- the write paths record
+// the same work either way -- and the interval is what the assembly reads when
+// it decides to run the polls. The polls ride on the sweep's runner, so a
+// deployment that turns the sweep off ("interval": "0") runs neither, which is
+// what the absent run context says.
+func TestTriggerIntervalReachesTheRunner(t *testing.T) {
+	manual, _ := newTestAssemblyWith(t, triggerSettings)
+	t.Cleanup(func() { _ = manual.Close() })
+	if manual.triggerInterval != 0 {
+		t.Fatalf("triggerInterval = %v, want the runner off", manual.triggerInterval)
+	}
+	if manual.trigger == nil || manual.journal == nil {
+		t.Fatal("turning the runner off must leave the journal and the consumer built")
+	}
+	if manual.cancel != nil {
+		t.Fatal(`"interval": "0" started a runner`)
+	}
+	polled, _ := newTestAssemblyWith(t, `{
+  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
+  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
+  "interval": "1m"
+}`)
+	t.Cleanup(func() { _ = polled.Close() })
+	if polled.triggerInterval != time.Second {
+		t.Fatalf("triggerInterval = %v, want the default second", polled.triggerInterval)
+	}
+	if polled.cancel == nil {
+		t.Fatal("a sweep with the trigger left on started no runner")
 	}
 }

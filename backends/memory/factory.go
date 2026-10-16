@@ -155,6 +155,14 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
+	triggerInterval, err := settings.triggerInterval()
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
+	}
+	triggerLeaseTTL, err := settings.triggerLeaseTTL()
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
+	}
 	ws, err := resolveWorkspace(in)
 	if err != nil {
 		return nil, err
@@ -361,6 +369,32 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: processor: %w", err))
 	}
+	// The trigger is the derivation runner's fast path: write paths record the
+	// work they owe in the journal, and the trigger derives it within a poll
+	// instead of waiting for the sweep. It is built even when its interval is
+	// "0", because the write paths read the journal's presence as "the fast
+	// path exists" and a deployment that turned the runner off can turn it
+	// back on without its workspaces changing shape.
+	journal, err := worker.NewTriggerJournal(logStore)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: trigger journal: %w", err))
+	}
+	leaseStore, err := worker.NewLeaseStore(kvStore, worker.WithLeaseClock(clock))
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: lease store: %w", err))
+	}
+	cursorStore, err := worker.NewTriggerStore(kvStore, worker.WithTriggerClock(clock))
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: trigger cursors: %w", err))
+	}
+	trigger, err := worker.NewTrigger(worker.TriggerConfig{
+		Journal: journal, Outbox: outbox, Processor: processor,
+		Leases: leaseStore, Cursors: cursorStore,
+		LeaseTTL: triggerLeaseTTL, Batch: settings.Derive.Trigger.Batch, Clock: clock,
+	})
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: trigger: %w", err))
+	}
 	seeds := make([]corememory.Scope, 0, len(settings.Scopes))
 	for _, seed := range settings.Scopes {
 		seeds = append(seeds, seed.scope())
@@ -373,6 +407,9 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		buildLaneStatus(auditors),
 		buildRepair(projections, processor, settings.Projection),
 		buildOverlayStatus(maintainStore),
+		journal,
+		trigger,
+		triggerInterval,
 		vectorStatsReader(vectorIndex),
 	)
 	if err != nil {
