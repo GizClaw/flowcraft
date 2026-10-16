@@ -109,7 +109,7 @@ func TestStoreAdjustSingleIdentity(t *testing.T) {
 // under the same key.
 func writeLegacyOverlay(t *testing.T, kv storage.Store, scope corememory.Scope, identity string, factor float64) {
 	t.Helper()
-	key, err := overlayKey(scope)
+	key, err := legacyOverlayKey(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
