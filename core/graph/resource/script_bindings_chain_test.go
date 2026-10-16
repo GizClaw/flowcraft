@@ -147,6 +147,71 @@ func TestScriptBindingsChainOrder(t *testing.T) {
 	}
 }
 
+func TestScriptBindingsChainBareUnitKeyOrder(t *testing.T) {
+	var log []string
+	base := &chainStub{name: "base", log: &log, ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+	bare := &chainStub{name: "bare", log: &log,
+		ord:  []bindings.Binding{{Name: "bare_one", Value: "1"}},
+		late: []bindings.Binding{{Name: "bare_late", Value: "1l"}},
+	}
+	unitA := &chainStub{name: "a", log: &log,
+		ord:  []bindings.Binding{{Name: "a_one", Value: "2"}},
+		late: []bindings.Binding{{Name: "a_late", Value: "2l"}},
+	}
+
+	// The bare "unit" key is the documented middle position: after
+	// "base", before the "unit." prefixes — in both phases.
+	provider := buildChain(t, map[string]any{
+		"unit.a": unitA, "unit": bare, "base": base,
+	})
+	list, err := provider.Bind(chainInvocation())
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	wantBind := []string{"board", "bare_one", "a_one"}
+	if got := bindingNames(list); !reflect.DeepEqual(got, wantBind) {
+		t.Fatalf("bind order = %v, want %v", got, wantBind)
+	}
+
+	// Assemble binds the units again; drop the first pass's entries so
+	// the late-phase order below comes from one call.
+	log = log[:0]
+	env := assembleChain(t, provider)
+	wantNames := []string{"a_late", "a_one", "bare_late", "bare_one", "board"}
+	if got := envNames(env); !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("globals = %v, want %v", got, wantNames)
+	}
+	wantLog := []string{"base.bind", "bare.bind", "a.bind", "base.late", "bare.late", "a.late"}
+	if !reflect.DeepEqual(log, wantLog) {
+		t.Fatalf("call order = %v, want %v", log, wantLog)
+	}
+}
+
+// structSurface is a provider whose dynamic type is a struct value,
+// like the standardBindings and chainProvider the kind itself builds.
+type structSurface struct{ ord []bindings.Binding }
+
+func (s structSurface) Bind(bindings.Invocation) ([]bindings.Binding, error) {
+	return append([]bindings.Binding(nil), s.ord...), nil
+}
+
+func TestScriptBindingsChainIdentityIsBestEffort(t *testing.T) {
+	// chainProviderIdentity only identifies pointer-backed values, so the
+	// kind's own impls — "standard" and "chain" return structs, "none" a
+	// function — never trip the build-time check: mounting one under two
+	// keys builds, and the duplicate global is caught at execution time
+	// naming both keys.
+	shared := structSurface{ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+	provider := buildChain(t, map[string]any{"base": shared, "unit.same": shared})
+	_, err := bindings.Assemble(chainInvocation(), nil, provider)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Assemble = %v, want Validation for the duplicate global", err)
+	}
+	if !strings.Contains(err.Error(), `global "board" bound by both "base" and "unit.same"`) {
+		t.Fatalf("error %v must name both dep keys", err)
+	}
+}
+
 func TestScriptBindingsChainLatePhase(t *testing.T) {
 	var log []string
 	var lateAt []string

@@ -120,6 +120,37 @@ const clashGraph = `{
   "edges": []
 }`
 
+// sameResourceDoc mounts one standard resource as both the base and a
+// unit: the kind's own impls are struct values, so the build cannot see
+// the double mount and the deployment succeeds.
+const sameResourceDoc = `version: v1
+
+resources:
+  js:
+    kind: agent.ScriptRuntime
+    impl: js
+  std:
+    kind: agent.ScriptBindings
+    impl: standard
+  panel:
+    kind: agent.ScriptBindings
+    impl: chain
+    deps: {base: std, unit.same: std}
+
+agents:
+  assistant:
+    card:
+      name: Assistant
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        script_runtime: js
+        script_bindings: panel
+      settings:
+        graph: {file: ./graphs/main.json}
+`
+
 // runChainDeployment builds dir/deploy.yaml through the real deploy
 // pipeline, then executes it and returns the board value the script
 // wrote together with the Execute error.
@@ -280,6 +311,21 @@ func TestDeployDocumentScriptBindingsChainDuplicateGlobal(t *testing.T) {
 		t.Fatal("want the duplicate global to fail the execution")
 	}
 	for _, want := range []string{`global "clash"`, `"unit.left"`, `"unit.right"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must contain %s", err, want)
+		}
+	}
+}
+
+func TestDeployDocumentScriptBindingsChainSharedStandardResource(t *testing.T) {
+	// The build-time guard is best-effort — it identifies pointer-backed
+	// values only — so one standard resource under two keys deploys, and
+	// the duplicate global fails the execution naming both dep keys.
+	_, err := runChainDeployment(t, sameResourceDoc, clashGraph)
+	if err == nil {
+		t.Fatal("want the duplicate global to fail the execution")
+	}
+	for _, want := range []string{`global "board"`, `"base"`, `"unit.same"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v must contain %s", err, want)
 		}

@@ -221,8 +221,10 @@ engine:
   graph.
 - **`impl: none`** — binds nothing: scripts run with an empty scope.
 - **`impl: chain`** — composes several bindings resources into one provider:
-  the optional `base` first, then every `unit.*` in sorted key order (the
-  order is the dep key order, not the document's).
+  the optional `base` first, then the bare `unit` key, then every `unit.*` in
+  sorted key order (the order is the dep key order, not the document's). It
+  replaces the standard fallback like any other provider, so mount
+  `standard` as `base` to extend it.
 - Hosts add their own globals with another impl of the kind; a name bound
   twice fails the execution instead of shadowing, and every global must be a
   JS/Lua identifier that is not a keyword (`tokens`, not `tokens.estimate`).

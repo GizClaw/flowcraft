@@ -398,9 +398,10 @@ agents:
   never breaks an existing graph.
 - **`impl: none`** — binds nothing at all: scripts still run, with an empty
   scope. The explicit way to disable the surface for a locked-down graph.
-- **`impl: chain`** — composes the kind's resources into one provider
-  instead of replacing the standard surface: the optional `base` first, then
-  every `unit` dep in sorted key order (see below).
+- **`impl: chain`** — composes the kind's resources into one provider: the
+  optional `base` first, then every `unit` dep in sorted key order (see
+  below). Like any other provider it replaces the standard fallback, so mount
+  `standard` as `base` to extend that surface rather than to drop it.
 
 The standard impl also carries the *policy* of the bridges whose shape the
 surface owns, so a deployment configures them without touching Go:

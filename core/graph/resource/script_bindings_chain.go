@@ -84,11 +84,14 @@ type chainUnit struct {
 }
 
 // chainUnits resolves the chain's deps in binding order: "base" first,
-// then every "unit" dep in sorted key order (the bare "unit" key sorts
-// before "unit." prefixes). A dep that is nil, not a provider or a
-// typed nil is rejected here; so is the same provider mounted under two
-// keys, because such a document could only ever fail the duplicate-name
-// check at execution time.
+// then every "unit" dep in sorted key order — "base" < "unit" <
+// "unit.a" < "unit.b" under plain string ordering, which is what puts
+// the bare "unit" key in its documented middle position. A dep that is
+// nil, not a provider or a typed nil is rejected here; so is the same
+// provider mounted under two keys, where chainProviderIdentity can tell
+// the two apart. That check is best-effort: a doubly mounted provider
+// the build cannot identify is caught by the duplicate-name check at
+// execution time instead, which names both dep keys.
 func chainUnits(in res.Input) ([]chainUnit, error) {
 	keys := make([]string, 0, len(in.Deps))
 	for key := range in.Deps {
@@ -131,6 +134,15 @@ func chainUnits(in res.Input) ([]chainUnit, error) {
 // code pointer, so two independent ProviderFunc resources (one per
 // "impl: none", say) would collapse into one identity, and a zero
 // pointer is no identity at all.
+//
+// Everything else is identity-free too, the kind's own impls included:
+// "standard" and "chain" return struct values, "none" a function, so
+// mounting one of them under two keys is caught only when the duplicate
+// global is bound, never at build time. Identity is pointer equality
+// rather than value equality, so two resources that share one
+// pointer-backed value are refused as well, and a value with no storage
+// of its own — a pointer to a zero-size type, an empty slice — can read
+// as the identity of an unrelated one.
 func chainProviderIdentity(value any) (string, bool) {
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() {
@@ -155,7 +167,12 @@ type chainProvider struct {
 	units []chainUnit
 }
 
-// Bind implements [bindings.Provider].
+// Bind implements [bindings.Provider]. The chain merges what the units
+// return itself, so a duplicate is reported with the dep keys that bound
+// it instead of by [bindings.Assemble] — which also means the merge
+// decides a colliding name's error: two units binding an empty or
+// otherwise unusable name report a duplicate, while one alone reports
+// Assemble's name error.
 func (c chainProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) {
 	out := make([]bindings.Binding, 0)
 	owner := make(map[string]string)

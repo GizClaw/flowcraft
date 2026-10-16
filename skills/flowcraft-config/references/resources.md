@@ -844,10 +844,12 @@ standard surface over its own deps. A settings section requires the
 capability dep it configures, and `tools.allow` names are checked against the
 assembly at build time, so a typo fails the deployment instead of the first
 call. `impl: chain` composes the kind's resources into one provider (an
-optional `base` first, then every `unit.*` in sorted key order) instead of
-replacing the standard surface; it takes no settings, and a duplicate global
-fails the execution naming the deps that bound it. Other impls are registered
-by the host build (see [graph.md](graph.md)).
+optional `base` first, then the bare `unit` key, then every `unit.*` in
+sorted key order); it takes no settings, and a duplicate global fails the
+execution naming the deps that bound it. The chain is wired like any other
+provider, so it replaces the standard fallback — mount the standard resource
+as `base` to extend it. Other impls are registered by the host build (see
+[graph.md](graph.md)).
 
 ## delegation
 
