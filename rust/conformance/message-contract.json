@@ -275,6 +275,44 @@
       "error": "media URL must be absolute"
     },
     {
+      "target": "image",
+      "op": "new_url",
+      "url": "HTTPS://EXAMPLE.COM/i.png",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"HTTPS://EXAMPLE.COM/i.png\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/i.png?q=1",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/i.png?q=1\",\"media_type\":\"image/png\"}"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://exa mple.com/i.png",
+      "media_type": "image/png",
+      "outcome": "error",
+      "error": "media URL must be absolute"
+    },
+    {
+      "target": "image",
+      "op": "new_url",
+      "url": "https://example.com/a b.png",
+      "media_type": "image/png",
+      "outcome": "ok",
+      "media_type_out": "image/png",
+      "base_media_type": "image/png",
+      "wire": "{\"kind\":\"url\",\"url\":\"https://example.com/a b.png\",\"media_type\":\"image/png\"}"
+    },
+    {
       "target": "audio",
       "op": "new_url",
       "url": "https://example.com/a",

@@ -303,13 +303,16 @@ fn optional_string(field: Option<&serde_json::Value>, name: &str) -> Result<Stri
 }
 
 /// core checks `url.ParseRequestURI`, then that scheme and host are both
-/// non-empty. The parser is strict in more ways than those two checks (no
-/// fragment, no control characters, no space); of those the port keeps the
-/// fragment rule, because a fragment is not part of a request URI.
+/// non-empty. What the port keeps of the parser is the shape a request URI has
+/// -- a scheme, an authority, a host in it -- plus those two checks. A
+/// fragment is *not* refused: the parser posts it, and the contract dump
+/// samples `https://x/y#f` accepted.
+///
+/// A space or a control character in the *authority* is refused, which the
+/// dump samples; a space in the path is not, which the dump samples too. The
+/// rest of the host's character rules are not sampled and therefore not
+/// claimed here.
 fn is_absolute_request_url(url: &str) -> bool {
-    if url.contains('#') {
-        return false;
-    }
     let Some((scheme, rest)) = url.split_once(':') else {
         return false;
     };
@@ -319,8 +322,10 @@ fn is_absolute_request_url(url: &str) -> bool {
     let Some(rest) = rest.strip_prefix("//") else {
         return false;
     };
-    let host_end = rest.find(['/', '?']).unwrap_or(rest.len());
-    !rest[..host_end].is_empty()
+    // The authority runs to the path, the query, or the fragment.
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    !host.is_empty() && !host.contains(' ') && !host.chars().any(|c| c.is_ascii_control())
 }
 
 fn is_scheme(scheme: &str) -> bool {
@@ -560,18 +565,20 @@ impl AudioEncoding {
 pub struct AudioFormat {
     /// The encoding family.
     pub encoding: AudioEncoding,
-    /// Samples per second, when the payload declares them.
-    pub sample_rate_hz: Option<u32>,
+    /// Samples per second, when the payload declares them. core's zero means
+    /// the same thing as the port's absent one, and a negative is refused
+    /// below rather than read as "not declared".
+    pub sample_rate_hz: Option<i32>,
     /// Channel count, when the payload declares it.
-    pub channels: Option<u32>,
+    pub channels: Option<i32>,
 }
 
 impl AudioFormat {
     /// A format with everything the caller knows.
     pub fn new(
         encoding: AudioEncoding,
-        sample_rate_hz: Option<u32>,
-        channels: Option<u32>,
+        sample_rate_hz: Option<i32>,
+        channels: Option<i32>,
     ) -> Self {
         AudioFormat {
             encoding,
@@ -580,12 +587,24 @@ impl AudioFormat {
         }
     }
 
-    /// core's `AudioFormat.Validate`: raw formats must carry both numbers, the
-    /// compressed ones tolerate the zeros that stand for "not declared", and
-    /// anything else is not an encoding at all.
+    /// core's `AudioFormat.Validate`: the raw families need both numbers and
+    /// need them positive; the compressed ones read a zero as "not declared"
+    /// and refuse only negatives.
+    ///
+    /// core's third branch -- `unknown audio encoding %q` -- has no reachable
+    /// input here: an encoding outside the table cannot be built, so that
+    /// refusal belongs to the decode that reads one (and is written there).
     pub fn validate(&self) -> Result<(), String> {
-        if self.encoding.is_raw() && (self.sample_rate_hz.is_none() || self.channels.is_none()) {
-            return Err("raw audio format requires sample rate and channels".into());
+        let rate = self.sample_rate_hz.unwrap_or(0);
+        let channels = self.channels.unwrap_or(0);
+        if self.encoding.is_raw() {
+            if rate <= 0 || channels <= 0 {
+                return Err("raw audio format requires sample rate and channels".into());
+            }
+            return Ok(());
+        }
+        if rate < 0 || channels < 0 {
+            return Err("audio sample rate and channels must not be negative".into());
         }
         Ok(())
     }
@@ -800,12 +819,15 @@ mod tests {
         assert_eq!(image.url(), "https://example.com/image.png");
         assert_eq!(image.bytes(), Vec::<u8>::new());
 
-        // Relative, schemeless and fragment-bearing urls are not request URIs.
-        for url in [
-            "/image.png",
-            "example.com/image.png",
-            "https://example.com/i#f",
-        ] {
+        // Relative and schemeless urls are not request URIs. A fragment is
+        // fine: core's parser posts it rather than refusing it (the contract
+        // dump samples this).
+        let fragment = ok(
+            ImageSource::new_url("https://example.com/i#f", "image/png"),
+            "fragment url",
+        );
+        assert_eq!(fragment.url(), "https://example.com/i#f");
+        for url in ["/image.png", "example.com/image.png"] {
             let refused = ImageSource::new_url(url, "image/png");
             assert_eq!(
                 refused,
@@ -945,9 +967,23 @@ mod tests {
             AudioFormat::new(AudioEncoding::Pcm16, None, None).validate(),
             Err("raw audio format requires sample rate and channels".to_owned())
         );
+        // A zero is not a declaration: the raw side refuses it, the compressed
+        // side reads it as absent.
+        assert_eq!(
+            AudioFormat::new(AudioEncoding::Pcm16, Some(0), Some(1)).validate(),
+            Err("raw audio format requires sample rate and channels".to_owned())
+        );
         assert_eq!(
             AudioFormat::new(AudioEncoding::Mp3, None, None).validate(),
             Ok(())
+        );
+        assert_eq!(
+            AudioFormat::new(AudioEncoding::Mp3, Some(0), None).validate(),
+            Ok(())
+        );
+        assert_eq!(
+            AudioFormat::new(AudioEncoding::Mp3, Some(-1), None).validate(),
+            Err("audio sample rate and channels must not be negative".to_owned())
         );
         assert_eq!(AudioEncoding::Pcm16.media_type(), "audio/pcm");
         assert_eq!(AudioEncoding::Mp3.media_type(), "audio/mpeg");

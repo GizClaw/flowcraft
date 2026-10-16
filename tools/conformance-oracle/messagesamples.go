@@ -46,6 +46,10 @@ var mediaRows = []mediaRow{
 	{Target: "image", Op: "new_url", URL: "example.com/i.png", MediaType: "image/png"},
 	{Target: "image", Op: "new_url", URL: "https://example.com/i.png#f", MediaType: "image/png"},
 	{Target: "image", Op: "new_url", URL: "mailto:x@example.com", MediaType: "image/png"},
+	{Target: "image", Op: "new_url", URL: "HTTPS://EXAMPLE.COM/i.png", MediaType: "image/png"},
+	{Target: "image", Op: "new_url", URL: "https://example.com/i.png?q=1", MediaType: "image/png"},
+	{Target: "image", Op: "new_url", URL: "https://exa mple.com/i.png", MediaType: "image/png"},
+	{Target: "image", Op: "new_url", URL: "https://example.com/a b.png", MediaType: "image/png"},
 	{Target: "audio", Op: "new_url", URL: "https://example.com/a", MediaType: "image/png"},
 
 	// The typed wire decode: payload rules, the type rules, the strict
