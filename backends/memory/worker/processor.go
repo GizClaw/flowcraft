@@ -1000,6 +1000,9 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 	if err != nil {
 		return nil, fmt.Errorf("memory worker: derive commit %q: %w", commit.ID, err)
 	}
+	written := make([]factview.Fact, 0, len(derived))
+	writtenAt := make(map[string]int, len(derived))
+	replaced := false
 	for _, artifact := range derived {
 		if artifact.Kind != chat.KindFact {
 			continue
@@ -1008,28 +1011,81 @@ func (processor *Processor) processCommit(ctx context.Context, commit msgsource.
 		if err != nil {
 			return nil, fmt.Errorf("memory worker: publish fact %q: %w", artifact.ID, err)
 		}
+		if fact.ID != artifact.ID {
+			// The content the deriver produced already existed under another
+			// fact: this commit changed a fact the summary tree may already
+			// name.
+			replaced = true
+		}
 		processor.bump(func(stats *Stats) { stats.FactsPublished++ })
 		artifacts = append(artifacts, factArtifact(fact))
+		if at, duplicate := writtenAt[fact.ID]; duplicate {
+			// The deriver named one fact twice: the compaction takes it once,
+			// in the state the last write left it.
+			written[at] = fact
+			continue
+		}
+		writtenAt[fact.ID] = len(written)
+		written = append(written, fact)
 	}
-	if err := processor.compact(ctx, commit); err != nil {
+	if err := processor.compact(ctx, commit, written, replaced); err != nil {
 		return nil, err
 	}
 	return artifacts, nil
 }
 
-// compact refreshes the summary branch after one commit. Compaction runs
-// before the watermark advances so a failure replays derivation; fact
-// publication is idempotent by canonical hash.
+// compact refreshes the summary branch after one commit, appending the commit's
+// own facts to the published tree.
 //
-// The complete conversation window is compacted, never just the facts of the
-// current commit: Compact replaces the active manifest, so a partial window
-// would drop the summary records of every earlier commit. Records are
-// content-addressed, so re-compacting the window reuses existing records and
-// only derives the new tail groups.
-func (processor *Processor) compact(ctx context.Context, commit msgsource.Commit) error {
-	if processor.compactor == nil {
+// The tree below the change is reused by identity: an extension reads the
+// manifest, the tail group of every level and the children that group shares
+// with the rebuilt region, so what one commit costs the summary branch follows
+// the commit and not the conversation. Two things send a pass back to the
+// complete window instead, which is always correct: a commit that changed a
+// fact the tree already names (the fact view merges identical content into the
+// fact that holds it, and the tree addresses facts, not identities, so the
+// group that fact sits in has to be rebuilt), and a tree the extension cannot
+// place the commit's facts in (another generation's, one published before the
+// tree was recorded, a window the facts do not continue).
+//
+// Compaction runs before the watermark advances so a failure replays
+// derivation; fact publication is idempotent by canonical hash.
+func (processor *Processor) compact(
+	ctx context.Context,
+	commit msgsource.Commit,
+	written []factview.Fact,
+	replaced bool,
+) error {
+	if processor.compactor == nil || len(written) == 0 {
+		// A commit that derives no fact changes no summary: every fact the
+		// conversation holds was appended by the pass that wrote it.
 		return nil
 	}
+	if !replaced {
+		inputs := make([]summaryderive.Input, 0, len(written))
+		for _, value := range written {
+			inputs = append(inputs, summaryderive.InputFromFact(value))
+		}
+		_, extended, err := processor.compactor.Extend(ctx, summaryderive.ExtendRequest{
+			Scope: commit.Scope, ConversationID: commit.ConversationID,
+			// The signature is part of every record id: an extension has to
+			// name the leaves the compaction that built the tree named, and the
+			// manifest identifies the same generation.
+			GenerationID: processor.policyDigest, PolicySignature: processor.policyDigest,
+			Inputs: inputs,
+		})
+		if err != nil {
+			return fmt.Errorf("memory worker: extend summaries: %w", err)
+		}
+		if extended {
+			processor.bump(func(stats *Stats) { stats.SummaryExtensions++ })
+			return nil
+		}
+	}
+	// Either the extension could not place the commit's facts in the published
+	// tree, or the commit changed a fact the tree already names: both are
+	// answered by compacting the complete window.
+	processor.bump(func(stats *Stats) { stats.SummaryRebuilds++ })
 	// Compaction summarises the complete fact window of the generation this
 	// pass is building, never the active one: during a re-derivation the active
 	// generation is the one being replaced, and summarising it is exactly how

@@ -12,13 +12,20 @@ import (
 
 // Stats is a snapshot of one processor's cumulative counters.
 type Stats struct {
-	CommitsProcessed       int64  `json:"commits_processed"`
-	FactsPublished         int64  `json:"facts_published"`
-	DocumentsProcessed     int64  `json:"documents_processed"`
-	ChunksPublished        int64  `json:"chunks_published"`
-	IndexDeltasApplied     int64  `json:"index_deltas_applied"`
-	GenerationConvergences int64  `json:"generation_convergences"`
-	LastError              string `json:"last_error,omitempty"`
+	CommitsProcessed       int64 `json:"commits_processed"`
+	FactsPublished         int64 `json:"facts_published"`
+	DocumentsProcessed     int64 `json:"documents_processed"`
+	ChunksPublished        int64 `json:"chunks_published"`
+	IndexDeltasApplied     int64 `json:"index_deltas_applied"`
+	GenerationConvergences int64 `json:"generation_convergences"`
+	// SummaryExtensions counts the commits the summary branch took by
+	// appending their facts to the published tree, and SummaryRebuilds the
+	// commits that made it compact the complete window instead. The second
+	// number is the one to watch: it is what a conversation pays when a commit
+	// changes a fact the tree already names.
+	SummaryExtensions int64  `json:"summary_extensions"`
+	SummaryRebuilds   int64  `json:"summary_rebuilds"`
+	LastError         string `json:"last_error,omitempty"`
 }
 
 // ConversationDiagnostics reports one conversation's derivation cursor.
