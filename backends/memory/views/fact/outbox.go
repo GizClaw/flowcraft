@@ -116,6 +116,38 @@ func (outbox *Outbox) Read(
 	after uint64,
 	limit int,
 ) ([]PublicationRecord, uint64, error) {
+	entries, cursor, err := outbox.ReadEntries(ctx, scope, after, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	records := make([]PublicationRecord, 0, len(entries))
+	for _, entry := range entries {
+		records = append(records, entry.Record)
+	}
+	return records, cursor, nil
+}
+
+// OutboxEntry is one outbox record together with the log sequence it is stored
+// at. Read hands back the records alone; a consumer that has to leave a record
+// for a later poll -- because the work it names is not done yet -- needs the
+// sequence, and that is what this is for.
+type OutboxEntry struct {
+	Seq    uint64
+	Record PublicationRecord
+}
+
+// ReadEntries returns the outbox entries of one scope in stream order, after
+// the given log sequence, together with the sequence of the last entry read. A
+// zero after reads from the beginning; a non-positive limit reads everything.
+// The sequence is the cursor a consumer resumes from, and the stream is the
+// reason records are append-only: a record is never rewritten, so a cursor
+// cannot skip one.
+func (outbox *Outbox) ReadEntries(
+	ctx context.Context,
+	scope corememory.Scope,
+	after uint64,
+	limit int,
+) ([]OutboxEntry, uint64, error) {
 	if outbox == nil || nilValue(outbox.log) {
 		return nil, 0, errors.New("fact view: outbox is required")
 	}
@@ -127,7 +159,7 @@ func (outbox *Outbox) Read(
 	if err != nil {
 		return nil, 0, fmt.Errorf("fact view: read outbox: %w", err)
 	}
-	records := make([]PublicationRecord, 0, len(events))
+	entries := make([]OutboxEntry, 0, len(events))
 	cursor := after
 	for _, event := range events {
 		var record PublicationRecord
@@ -137,10 +169,10 @@ func (outbox *Outbox) Read(
 		if err := validateRecord(record); err != nil {
 			return nil, 0, fmt.Errorf("fact view: corrupt outbox record %d: %w", event.Seq, err)
 		}
-		records = append(records, record)
+		entries = append(entries, OutboxEntry{Seq: event.Seq, Record: record})
 		cursor = event.Seq
 	}
-	return records, cursor, nil
+	return entries, cursor, nil
 }
 
 // publicationsStream names the scope-wide outbox stream, next to the view's

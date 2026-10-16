@@ -23,11 +23,19 @@ maintenance; `core/memory` stays implementation-neutral.
   document hierarchy, and reconciled into the projection lanes.
 - Summaries: derived facts compact into immutable L0-L3 summary records with
   an active manifest served as its own retrieval lane.
+- Trigger: the write paths append a **work record** to a scope-level journal
+  when a turn, a document revision or a published fact lands, and the
+  background runner drains it -- deriving the conversations the records name
+  within a poll instead of within the sweep's period. The journal is a queue,
+  not a log of authority: a record that does not land costs latency, and the
+  sweep stays the fallback that derives everything the journal never saw; see
+  *Derivation trigger (host-invoked runner)* below.
 - Diagnostics: `Assembly.Diagnostics` reports per-scope derivation cursors,
   pending work, and cumulative worker counters, together with the state of the
   scope's projection lanes -- the producer version each lane reads and writes,
   whether a rebuild would change what it answers with, and the names its family
-  holds state under -- and the state of its maintenance overlay.
+  holds state under -- the state of its maintenance overlay, and the trigger's
+  cursors, claim and counters.
   `Assembly.LaneStatus` and `Assembly.OverlayStatus` are those two reports for
   one scope; context calls feed `memory.context.requests` /
   `memory.context.items` OpenTelemetry counters when the host initializes
@@ -99,6 +107,8 @@ retrieval:
   rerank: false
 observed_at_anchor: true
 interval: 1m
+derive:
+  trigger: {interval: 1s, lease_ttl: 30s, batch: 256}
 ```
 
 `observed_at_anchor` is on by default. With it, the derivation source renders
@@ -117,6 +127,14 @@ recent and lexical/entity lanes. `interval: "0"` disables the background
 runner while `RunOnce` stays available. Decay, consolidation, and forgetting
 are host-owned maintenance jobs: the module keeps the canonical log and
 derived views correct, and hosts schedule whatever hygiene they need.
+
+`derive.trigger` tunes the fast path beside the sweep, and the same
+`interval: "0"` that turns the runner off turns the trigger off with it:
+`derive.trigger.interval` alone stops the polls and leaves the sweep as the
+only runner. `lease_ttl` has to outlast one conversation's pass and is the
+claim every runner over the workspace shares, so runners that poll the same
+workspace have to agree on it; `batch` bounds how many records one poll reads
+per source.
 
 `fact.quota` and `fact.max_facts` bound what one commit may add to a
 conversation, and `fact.max_facts` is the lever that makes the quota bite
@@ -170,6 +188,17 @@ With the workspace driver all state lives under the bound workspace:
   and the next pass replaces it.
 - `recall/v1/...` — the read path's receipts: one record per recalled item
   (count and last recall), read back by the maintenance pass.
+- `worker/v1/triggers/<partition>/journal` — the scope-level work journal: one
+  append-only record per derivation a write path owes, keyed by the durable
+  item it names (a commit, a document version) so a retry lands one record.
+  It is a queue: nothing verifies its completeness, and the sweep is what
+  derives whatever it never saw.
+- `worker/v1/triggers/<partition>/cursors/<source>` — one consumer position
+  per source, so a runner that restarts resumes at the records it had not
+  derived instead of at the beginning of the journal.
+- `worker/v1/leases/<partition>` — the scope's claim: the runner holding it,
+  when it took it and when it expires. It is written back as released rather
+  than deleted, so a host can still read who last held the scope.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
@@ -364,6 +393,66 @@ changed its projection setting or embedding model is the name it left behind.
 `Lanes: ["vector"]` in a `RepairRequest` is what fills the name the lane reads;
 the earlier generation stays where it is, unread and not reclaimed.
 
+## Derivation trigger (host-invoked runner)
+
+The sweep is the derivation runner's floor: it walks every scope's every
+conversation on `interval`, which is what makes a commit retrievable within a
+minute and an import retrievable eventually. The trigger is the fast path
+beside it. A write path appends a **work record** to the scope's journal when
+the durable item it describes lands -- `CommitTurn` names the conversation it
+committed to, `PutDocument` names the document version, and the fact view names
+the conversation whose generation gained a fact -- and `Assembly.RunTriggerOnce`
+drains the journal: it runs the document pass for a scope whose document stream
+advanced and one derivation pass per conversation a record names. With the
+default `derive.trigger.interval: 1s` a committed turn is retrievable within
+about a poll; the passes are the same `ProcessConversation` and document passes
+the sweep runs, so a conversation derived by either is one the other has
+nothing left to do for, and the watermarks and the published generation say so.
+The drain's report names the conversations it derived (`ConversationIDs`),
+which is the change signal a host needs to maintain what moved -- handing them
+to `maintain.Service.RunConversations` refreshes the overlay of exactly those
+conversations instead of re-judging the scope.
+
+The record is a trigger, not an instruction: it carries no payload, the work it
+asks for is idempotent, and a record read twice asks for work that is already
+done. Recording is best effort -- a record that does not land costs latency,
+never correctness, and the assembly reports the failure through diagnostics
+rather than failing the write that owed it. The sweep stays what it was: the
+fallback that derives everything the journal never saw, which is an importer
+writing to the message store directly, a record that failed to land, or a
+workspace an older version of this module wrote.
+
+Three kinds of record exist. A **turn** names a conversation whose messages
+were committed. A **document** names the scope whose document stream advanced:
+documents are scope-scoped, so one pass clears every document record of a
+drain. A **publication** names a conversation the fact view published a fact
+for -- an import, a backfill, a host writing facts directly -- which is how
+such a fact becomes indexed rather than waiting for the sweep. The view
+publishes every fact it stores, the ones a derivation pass just wrote included,
+so a pass leaves one more pass behind it: that pass derives nothing (the
+commits are behind the watermark, the generation is already published) and
+publishes nothing, so the polls settle instead of feeding themselves.
+
+### The claim and the cursors
+
+Runners are shared. `worker.LeaseStore` hands one scope to one holder at a
+time, so two runners over one workspace do not derive the same conversation at
+once: a drain takes the scope's claim, renews it as it derives, and stops when
+another holder has taken it -- keeping the passes it ran, and leaving the rest
+of the batch to the new holder. A claim that is not renewed expires
+(`derive.trigger.lease_ttl`), so a crashed runner does not hold a scope
+forever. Runners have to agree on the clock as well as on the ttl, because a
+claim is only expired relative to each runner's own notion of now.
+
+Each source has one durable cursor per scope, and a poll advances it over the
+longest prefix of its batch whose work is done: a conversation another pass is
+already deriving, or one whose pass failed, is left where it is for the next
+poll -- and so is every record behind it, since one cursor cannot skip a
+record. A pass that fails does not stop the drain: the conversations after it
+are derived too. `Assembly.Diagnostics` reports each source's cursor and
+whether it has pending work, the claim stored for the scope, and the trigger's
+cumulative counters.
+
 ## Lane repair (host-invoked)
 
 `Assembly.Repair(ctx, RepairRequest{Scope, Lanes})` re-indexes the named lanes
@@ -467,6 +556,13 @@ supersede and decay factors wins. The module ships no runner: hosts schedule
 the call however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
 decay floor, recall saturation).
+
+The derivation trigger is not a maintenance runner: it derives what a write
+path owed. A host that wants the overlay refreshed for what changed reads the
+conversations a drain derived and hands them to
+`maintain.Service.RunConversations`, which rewrites those conversations'
+buckets and leaves the rest of the overlay as the last whole pass measured it;
+see *Derivation trigger (host-invoked runner)* above.
 
 The overlay is per conversation: a scope's control record names the pass that
 wrote it and how much it holds, and each conversation's factors live in their

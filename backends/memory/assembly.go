@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 	"time"
 
@@ -54,6 +55,15 @@ type Assembly struct {
 	// assembly serves. It is nil when the assembly was built without
 	// maintenance.
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error)
+	// journal is the scope-level work journal the write paths record into, and
+	// trigger is the consumer that turns those records into passes. Both are
+	// nil when the assembly was built without a trigger, in which case only
+	// the sweep derives.
+	journal *worker.TriggerJournal
+	trigger *worker.Trigger
+	// triggerInterval is the period the trigger runner polls at. It is zero
+	// when the trigger is not configured or not run.
+	triggerInterval time.Duration
 	// vectorStats reads the vector lane's phase counters and resident tables.
 	// It is nil when the assembly was built without an embedding model, and
 	// like lanes and overlay it is a reading, not a control.
@@ -62,7 +72,9 @@ type Assembly struct {
 	wireOnce sync.Once
 	wireErr  error
 	cancel   context.CancelFunc
-	done     chan struct{}
+	// runners counts the background loops Wire started: the sweep and the
+	// trigger. Close cancels them and waits for both.
+	runners sync.WaitGroup
 	// lifecycleMu guards closed and the cancel/done pair it publishes, so a
 	// concurrent Wire and Close cannot race on them and Close-before-Wire
 	// cannot be followed by a runner started over closed pools.
@@ -97,6 +109,9 @@ func newAssembly(
 	lanes func(context.Context, corememory.Scope) ([]LaneDiagnostics, error),
 	repair func(context.Context, RepairRequest) (RepairResult, error),
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error),
+	journal *worker.TriggerJournal,
+	trigger *worker.Trigger,
+	triggerInterval time.Duration,
 	vectorStats func() vector.Stats,
 ) (*Assembly, error) {
 	if messages == nil {
@@ -126,13 +141,16 @@ func newAssembly(
 		provider: provider, processor: processor,
 		maintain: maintainService,
 		interval: interval, clock: clock,
-		metrics:     newAssemblyMetrics(),
-		closers:     append([]io.Closer(nil), closers...),
-		verify:      verify,
-		lanes:       lanes,
-		repair:      repair,
-		overlay:     overlay,
-		vectorStats: vectorStats,
+		metrics:         newAssemblyMetrics(),
+		closers:         append([]io.Closer(nil), closers...),
+		verify:          verify,
+		lanes:           lanes,
+		repair:          repair,
+		overlay:         overlay,
+		journal:         journal,
+		trigger:         trigger,
+		triggerInterval: triggerInterval,
+		vectorStats:     vectorStats,
 	}, nil
 }
 
@@ -160,8 +178,12 @@ func (assembly *Assembly) Wire(ctx context.Context) error {
 		} else {
 			runCtx, cancel := context.WithCancel(context.Background())
 			assembly.cancel = cancel
-			assembly.done = make(chan struct{})
+			assembly.runners.Add(1)
 			go assembly.runLoop(runCtx)
+			if assembly.trigger != nil && assembly.triggerInterval > 0 {
+				assembly.runners.Add(1)
+				go assembly.runTriggerLoop(runCtx)
+			}
 		}
 	})
 	return assembly.wireErr
@@ -182,12 +204,12 @@ func (assembly *Assembly) Close() error {
 		return nil
 	}
 	assembly.closed = true
-	cancel, done := assembly.cancel, assembly.done
+	cancel := assembly.cancel
 	assembly.lifecycleMu.Unlock()
 	if cancel != nil {
 		cancel()
-		<-done
 	}
+	assembly.runners.Wait()
 	for index := len(assembly.closers) - 1; index >= 0; index-- {
 		if err := assembly.closers[index].Close(); err != nil {
 			failures = append(failures, err)
@@ -218,7 +240,7 @@ func (assembly *Assembly) RunOnce(ctx context.Context) error {
 }
 
 func (assembly *Assembly) runLoop(ctx context.Context) {
-	defer close(assembly.done)
+	defer assembly.runners.Done()
 	ticker := time.NewTicker(assembly.interval)
 	defer ticker.Stop()
 	for {
@@ -233,6 +255,53 @@ func (assembly *Assembly) runLoop(ctx context.Context) {
 			// dropped here and never reach Diagnostics.
 			if err := assembly.RunOnce(ctx); err != nil && assembly.processor != nil {
 				assembly.processor.RecordError(err)
+			}
+		}
+	}
+}
+
+// RunTriggerOnce drains every registered scope's work records once: the work
+// journal the write paths record into, and the fact view's publication outbox.
+// It is the synchronous entry point behind the trigger runner and is safe to
+// call from tests. An assembly without a trigger reports nothing to do.
+func (assembly *Assembly) RunTriggerOnce(ctx context.Context) ([]worker.TriggerReport, error) {
+	if assembly == nil || assembly.trigger == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		return nil, corememory.NewError(corememory.KindInvalidRequest, "trigger", errors.New("context is required"))
+	}
+	scopes, err := assembly.catalog.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]worker.TriggerReport, 0, len(scopes))
+	var failures []error
+	for _, scope := range scopes {
+		report, err := assembly.trigger.RunScope(ctx, scope)
+		reports = append(reports, report)
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return reports, errors.Join(failures...)
+}
+
+// runTriggerLoop polls the work journal on the trigger interval, beside the
+// sweep. The two derive the same state; the trigger is what makes a write
+// visible without waiting for the sweep's period, and the sweep is what
+// catches up whatever the journal never saw.
+func (assembly *Assembly) runTriggerLoop(ctx context.Context) {
+	defer assembly.runners.Done()
+	ticker := time.NewTicker(assembly.triggerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := assembly.RunTriggerOnce(ctx); err != nil {
+				assembly.trigger.RecordError(err)
 			}
 		}
 	}
@@ -605,12 +674,18 @@ func (assembly *Assembly) CommitTurn(ctx context.Context, turn corememory.Turn) 
 	if err := assembly.catalog.Register(ctx, turn.Scope); err != nil {
 		return classify(err, "turn", corememory.KindProviderFailure)
 	}
-	_, err := assembly.messages.Commit(ctx, msgsource.AppendRequest{
+	commit, err := assembly.messages.Commit(ctx, msgsource.AppendRequest{
 		Scope: turn.Scope, ConversationID: turn.ConversationID,
 		IdempotencyKey: turn.IdempotencyKey, Messages: turn.Messages,
 		MessageMetadata: turn.MessageMetadata, Metadata: turn.Metadata,
 	})
-	return classify(err, "turn", corememory.KindProviderFailure)
+	if err != nil {
+		return classify(err, "turn", corememory.KindProviderFailure)
+	}
+	assembly.recordWork(ctx, turn.Scope, worker.TriggerRecord{
+		Kind: worker.TriggerKindTurn, ConversationID: turn.ConversationID, Ref: "commit:" + commit.ID,
+	})
+	return nil
 }
 
 // PutDocument implements core/memory.DocumentSink.
@@ -628,12 +703,44 @@ func (assembly *Assembly) PutDocument(ctx context.Context, document corememory.D
 	if err := assembly.catalog.Register(ctx, document.Scope); err != nil {
 		return classify(err, "document", corememory.KindProviderFailure)
 	}
-	_, err := assembly.documents.Put(ctx, docsource.PutRequest{
+	stored, err := assembly.documents.Put(ctx, docsource.PutRequest{
 		Scope: document.Scope, DatasetID: document.DatasetID, DocumentID: document.DocumentID,
 		IdempotencyKey: document.IdempotencyKey, Content: document.Content,
 		Provenance: document.Provenance, Metadata: document.Metadata,
 	})
-	return classify(err, "document", corememory.KindProviderFailure)
+	if err != nil {
+		return classify(err, "document", corememory.KindProviderFailure)
+	}
+	// The document is durable and its build is numbered by its version, so a
+	// re-put of the same document version replays as one record.
+	assembly.recordWork(ctx, document.Scope, worker.TriggerRecord{
+		Kind: worker.TriggerKindDocument,
+		Ref: "document:" + stored.DatasetID + "/" + stored.DocumentID + "@" +
+			strconv.FormatUint(stored.Version, 10),
+	})
+	return nil
+}
+
+// recordWork appends the work record a write path owes the trigger: the
+// durable item exists, and the record is what asks for its derivation.
+//
+// A record that does not land costs latency, not correctness. The sweep
+// derives what the journal never saw, so a failure here must not be reported
+// as a failure of a write that is already durable; it is recorded where a host
+// reads it instead.
+func (assembly *Assembly) recordWork(ctx context.Context, scope corememory.Scope, record worker.TriggerRecord) {
+	if assembly.journal == nil {
+		return
+	}
+	if err := assembly.journal.Record(ctx, scope, record); err != nil {
+		if assembly.trigger != nil {
+			assembly.trigger.RecordError(err)
+			return
+		}
+		if assembly.processor != nil {
+			assembly.processor.RecordError(err)
+		}
+	}
 }
 
 func classify(err error, capability string, fallback corememory.ErrorKind) error {

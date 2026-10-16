@@ -732,6 +732,31 @@ func (processor *Processor) scanConversation(ctx context.Context, scope corememo
 	}
 }
 
+// ProcessDocuments runs one pass over the scope's document outbox, the
+// document half of a scope pass. The sweep runs it beside the conversations it
+// scans; a caller that heard about one document -- the publication trigger --
+// runs it for that document's scope, which is the same pass over the same
+// cursor.
+//
+// An assembly without document derivation reports no work rather than leaving
+// the caller with a pass that never runs: there is nothing for a document to
+// be derived into.
+func (processor *Processor) ProcessDocuments(ctx context.Context, scope corememory.Scope) error {
+	if processor == nil {
+		return errors.New("memory worker: processor is required")
+	}
+	if ctx == nil {
+		return errors.New("memory worker: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	if nilInterface(processor.documents) || nilInterface(processor.knowledge) {
+		return nil
+	}
+	return processor.processDocumentStream(ctx, scope)
+}
+
 // processDocumentStream scans canonical document events after the stored
 // scope-wide outbox cursor.
 func (processor *Processor) processDocumentStream(ctx context.Context, scope corememory.Scope) error {
