@@ -730,6 +730,7 @@ func TestTriggerRejectsUnusableWiring(t *testing.T) {
 	if trigger.Holder() == "" {
 		t.Fatal("a trigger without a holder minted none")
 	}
+	//nolint:staticcheck // deliberate: a drain without a context must be refused
 	if _, err := fixture.trigger.RunScope(nil, fixture.scope); err == nil {
 		t.Fatal("a drain without a context was accepted")
 	}

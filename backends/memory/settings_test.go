@@ -195,7 +195,6 @@ func TestTriggerSettingsAreValidated(t *testing.T) {
 		if _, err := invalid.triggerLeaseTTL(); err == nil {
 			t.Fatalf("lease_ttl %q was accepted", value)
 		}
-		invalid.Validate()
 	}
 	invalid := fresh()
 	invalid.Derive.Trigger.Interval = "whenever"
