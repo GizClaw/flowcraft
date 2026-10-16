@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/GizClaw/flowcraft/core/utils"
+	yamlv2 "gopkg.in/yaml.v2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -60,9 +62,11 @@ func ParseFile(path string) (ParseResult, error) {
 // parseBytes parses SKILL.md content: frontmatter split, YAML decode,
 // validation and sanitization. The decode is lenient on purpose —
 // third-party skills carry extension fields (license, version,
-// metadata.*) that must not fail the parse. A missing or invalid name
-// falls back to the parent directory name with a warning; only
-// malformed files fail.
+// metadata.*) that must not fail the parse — but it does not hand the
+// frontmatter's key findings to map order: two distinct keys collapsing
+// onto one JSON key load with a warning, and a key the conversion cannot
+// spell refuses the file by name. A missing or invalid name falls back to
+// the parent directory name with a warning; only malformed files fail.
 func parseBytes(path string, data []byte) (ParseResult, error) {
 	if len(data) > maxSkillFileBytes {
 		return ParseResult{}, fmt.Errorf(
@@ -75,6 +79,21 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return ParseResult{}, fmt.Errorf("skill: SKILL.md body is empty")
+	}
+	// The findings below read the frontmatter as gopkg.in/yaml.v2 spells it
+	// — the shape the JSON conversion reads — so a document the conversion
+	// has no answer for can be refused or reported by name, instead of by
+	// whichever key a Go map walk met first: on `~` beside an integer past
+	// int64 the library's own wording flips with the process (measured: 342
+	// against 58 over 400 runs — ≈7 in 8, the start-offset split of a
+	// two-entry Go map, so a second measurement lands on other counts
+	// rather than on another answer).
+	var raw any
+	rawOK := yamlv2.Unmarshal(fm, &raw) == nil
+	if rawOK {
+		if unusable := utils.UnusableKeys(raw); unusable != "" {
+			return ParseResult{}, fmt.Errorf("skill: parse frontmatter: %s", unusable)
+		}
 	}
 	// sigs.k8s.io/yaml decodes with encoding/json semantics, so these
 	// are json tags: a yaml tag would be ignored.
@@ -92,6 +111,16 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 	f.Description = sanitizeSingleLine(f.Description)
 	fallback := slugify(filepath.Base(filepath.Dir(path)))
 	var warnings []string
+	if rawOK {
+		// A collapse cannot reach the fields this parser reads: only a
+		// string key spells a field name, and two keys that spell one string
+		// are one key to yaml.v2 before the conversion ever runs. The file
+		// is ambiguous all the same, so it loads with a note rather than
+		// silently carrying a mapping that means two things.
+		for _, collision := range utils.KeyCollisions(raw) {
+			warnings = append(warnings, "frontmatter: "+collision)
+		}
+	}
 	if !validName(f.Name) {
 		note := "name missing or invalid"
 		if f.Name != "" {

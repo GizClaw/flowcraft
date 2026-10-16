@@ -54,11 +54,13 @@ description: Draft release notes from a merged PR list. Use when preparing a rel
 | `metadata.short-description` | optional non-standard extension, surfaced for compact listings. |
 | file size | ≤ 256 KiB; larger files are refused by discovery and by the body readers. |
 | other fields | tolerated: the frontmatter decode is lenient, so vendor extensions (`license`, `version`, …) do not fail the parse. |
+| frontmatter keys | two distinct keys spelling one JSON key (`1` beside `"1"`) are a tolerated shape issue: the file loads, with a warning naming the collision. A key the conversion cannot spell (`null`, an integer past int64) refuses the parse, named rather than left to map order. |
 | encoding | a UTF-8 BOM before the frontmatter and CRLF line endings are accepted. |
 
 The standard expects `name` to equal the directory name; a mismatch
 is accepted with a warning. Only malformed files fail the parse
-(missing frontmatter, empty body, missing description).
+(missing frontmatter, empty body, missing description, a key the
+conversion cannot spell).
 
 ## Roots and discovery
 

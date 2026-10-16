@@ -206,3 +206,120 @@ func TestParseNamelessSkillInNonASCIIDirectory(t *testing.T) {
 		t.Fatalf("err = %v, want the fallback note", err)
 	}
 }
+
+// TestParseWarnsAboutCollapsingFrontmatter pins the lenient edge the collapse
+// class leaves here: a frontmatter mapping in which two distinct keys spell
+// one JSON key cannot change the fields this parser reads — only a string key
+// spells a field name, and two keys spelling one string are one key to
+// yaml.v2 — so the skill keeps loading, with a warning naming the collision.
+func TestParseWarnsAboutCollapsingFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	path := writeSkill(t, root, "collapsing",
+		"name: collapsing\ndescription: d\n1: x\n\"1\": y\n")
+	res, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile(collapsing frontmatter) = %v, want it tolerated", err)
+	}
+	if res.Metadata.Name != "collapsing" {
+		t.Fatalf("name = %q, want collapsing", res.Metadata.Name)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], `convert to the same JSON key "1"`) {
+		t.Fatalf("warnings = %v, want the collision named once", res.Warnings)
+	}
+
+	// A frontmatter whose keys stay distinct warns about nothing.
+	clean := writeSkill(t, root, "distinct",
+		"name: distinct\ndescription: d\n1: x\n\"2\": y\n")
+	res, err = ParseFile(clean)
+	if err != nil {
+		t.Fatalf("ParseFile(distinct keys) = %v", err)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", res.Warnings)
+	}
+
+	// The walk reaches a collapse wherever the mapping sits, and the fields
+	// read from a nested mapping are the ones an extension lives in.
+	nested := writeSkill(t, root, "nested",
+		"name: nested\ndescription: d\nmetadata:\n  short-description: s\n  1: x\n  \"1\": y\n")
+	res, err = ParseFile(nested)
+	if err != nil {
+		t.Fatalf("ParseFile(collapse under metadata) = %v, want it tolerated", err)
+	}
+	if res.Metadata.ShortDescription != "s" {
+		t.Fatalf("short-description = %q, want s", res.Metadata.ShortDescription)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], `convert to the same JSON key "1"`) {
+		t.Fatalf("warnings = %v, want the nested collision named once", res.Warnings)
+	}
+
+	// One warning per collision, in the sorted order of the JSON key, so a
+	// file with two of them reads the same on every run.
+	twice := writeSkill(t, root, "twice",
+		"name: twice\ndescription: d\n1: x\n\"1\": y\ntrue: x\n\"true\": y\n")
+	res, err = ParseFile(twice)
+	if err != nil {
+		t.Fatalf("ParseFile(two collapses) = %v, want it tolerated", err)
+	}
+	if len(res.Warnings) != 2 ||
+		!strings.Contains(res.Warnings[0], `same JSON key "1"`) ||
+		!strings.Contains(res.Warnings[1], `same JSON key "true"`) {
+		t.Fatalf("warnings = %v, want the two collisions in sorted key order", res.Warnings)
+	}
+
+	// A key written twice in the two spellings yaml.v2 folds into one is not
+	// a collapse: one entry reaches the conversion, the later value wins, and
+	// the name matches its directory because of it.
+	folded := writeSkill(t, root, "folding",
+		"name: other\n\"name\": folding\ndescription: d\n")
+	res, err = ParseFile(folded)
+	if err != nil {
+		t.Fatalf("ParseFile(folded duplicate key) = %v", err)
+	}
+	if res.Metadata.Name != "folding" {
+		t.Fatalf("name = %q, want folding (the later value)", res.Metadata.Name)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", res.Warnings)
+	}
+}
+
+// TestParseRefusesUnspellableFrontmatterKeys: the library's own message for a
+// frontmatter holding keys the conversion cannot spell is decided by map
+// iteration order — measured on `~` beside an integer past int64, 342 runs
+// against 58 over 400, the same ≈7 in 8 split the conversion's own wording
+// shows — so the parse names them itself, sorted, the way core's own
+// conversion does.
+func TestParseRefusesUnspellableFrontmatterKeys(t *testing.T) {
+	root := t.TempDir()
+	path := writeSkill(t, root, "unspellable",
+		"name: unspellable\ndescription: d\n~: x\n18446744073709551615: y\n")
+	const want = "skill: parse frontmatter: " +
+		"YAML keys !!int 18446744073709551615, !!null null cannot be spelled as JSON keys"
+	for i := 0; i < 64; i++ {
+		_, err := ParseFile(path)
+		if err == nil {
+			t.Fatal("ParseFile(unspellable keys) accepted the frontmatter")
+		}
+		if err.Error() != want {
+			t.Fatalf("err = %v, want %v", err, want)
+		}
+	}
+
+	// One unspellable key reads in the singular, like the conversion's own.
+	single := writeSkill(t, root, "single", "name: single\ndescription: d\n~: x\n")
+	_, err := ParseFile(single)
+	const wantOne = "skill: parse frontmatter: YAML key !!null null cannot be spelled as a JSON key"
+	if err == nil || err.Error() != wantOne {
+		t.Fatalf("err = %v, want %v", err, wantOne)
+	}
+
+	// An unspellable key beside a collapse is still the refusal, not the
+	// warning: no conversion of this frontmatter could ever be defined.
+	both := writeSkill(t, root, "both",
+		"name: both\ndescription: d\n~: x\n1: a\n\"1\": b\n")
+	_, err = ParseFile(both)
+	if err == nil || err.Error() != wantOne {
+		t.Fatalf("err = %v, want %v", err, wantOne)
+	}
+}
