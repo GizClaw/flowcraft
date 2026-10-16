@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
@@ -382,6 +383,139 @@ func TestRunScopeClearsAnIgnoredOverlay(t *testing.T) {
 	}
 	if again.IgnoredOverlay {
 		t.Fatalf("second pass reported an ignored overlay: %+v", again)
+	}
+}
+
+// TestRunScopeFillsTheResidentProfileBlock pins the pass's other write: the
+// distilled half of the resident block is the same judgment the overlay is,
+// made in the same pass from the same facts -- so a line whose fact this pass
+// superseded is not in it, and a conversation the pass did not judge keeps the
+// half an earlier pass wrote.
+func TestRunScopeFillsTheResidentProfileBlock(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	facts, err := factview.NewFactStore(logStore, kv, factview.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(kv, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := profile.NewStore(kv,
+		profile.WithClock(func() time.Time { return now }),
+		profile.WithConfig(profile.Config{Distill: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	seed := func(conversationID, id, text string, entities []string, at time.Time) {
+		t.Helper()
+		if _, err := facts.Add(ctx, factview.AddRequest{
+			ID: id, Generation: "generation-1", Scope: scope, ConversationID: conversationID,
+			Content:    coremessage.NewTextContent(text),
+			Entities:   entities,
+			EventTime:  at,
+			Provenance: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-" + id}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// conv-1: one older profile line the newer restates, one event that is not
+	// a line about a person at all, and one line that stands.
+	seed("conv-1", "fact-1", "Caroline loves pottery and glazing.", []string{"Caroline"}, now.Add(-3*time.Hour))
+	seed("conv-1", "fact-2", "Caroline loves pottery.", []string{"Caroline"}, now.Add(-time.Hour))
+	seed("conv-1", "fact-3", "Caroline attended the spring fair.", []string{"Caroline"}, now.Add(-2*time.Hour))
+	// conv-2: a conversation the full pass judges, holding one line.
+	seed("conv-2", "fact-4", "Nate works as a carpenter.", []string{"Nate"}, now.Add(-time.Hour))
+	// conv-3: nothing a profile line is made of.
+	seed("conv-3", "fact-5", "Nate attended the spring fair.", []string{"Nate"}, now.Add(-time.Hour))
+	for _, conversationID := range []string{"conv-1", "conv-2", "conv-3"} {
+		if err := facts.PublishActiveGeneration(ctx, scope, conversationID, "generation-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := &Service{Facts: facts, Store: store, Profiles: profiles, Clock: func() time.Time { return now }}
+	plan, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].FactID != "fact-1" {
+		t.Fatalf("supersedes = %#v", plan.Supersedes)
+	}
+
+	// The block states what holds now: the newer line, not the one this pass
+	// called replaced, and not the event.
+	block, found, err := profiles.Block(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || block.Text != "- Caroline loves pottery." {
+		t.Fatalf("block = %+v found = %t", block, found)
+	}
+	document, found, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil || !found {
+		t.Fatalf("stored block = %+v found = %t err = %v", document, found, err)
+	}
+	if document.Producer != profiles.ProducerVersion() || len(document.Distilled) != 1 ||
+		len(document.Distilled[0].Provenance) != 1 || document.Distilled[0].Provenance[0] != "fact-2" {
+		t.Fatalf("stored block = %+v", document)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-3"); err != nil || found {
+		t.Fatalf("conv-3 block = %+v found = %t err = %v, want none", block, found, err)
+	}
+
+	// An incremental pass fills what it judged and leaves the rest where it
+	// was: conv-2's block is the one that is fresh, conv-1's is untouched.
+	before, _, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = service.RunConversations(ctx, scope, []string{"conv-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 0 {
+		t.Fatalf("incremental plan = %#v", plan)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-2"); err != nil || !found ||
+		block.Text != "- Nate works as a carpenter." {
+		t.Fatalf("conv-2 block = %+v found = %t err = %v", block, found, err)
+	}
+	after, _, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) || len(after.Distilled) != 1 {
+		t.Fatalf("conv-1 block changed in a pass that did not judge it: %+v", after)
+	}
+
+	// A store whose distilled half is not served is not written either: a
+	// pass filling it would write what nothing reads.
+	unserved, err := profile.NewStore(kv, profile.WithConfig(profile.Config{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Profiles = unserved
+	if _, err := service.RunScope(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-3"); err != nil || found {
+		t.Fatalf("conv-3 block = %+v found = %t err = %v, want none", block, found, err)
 	}
 }
 

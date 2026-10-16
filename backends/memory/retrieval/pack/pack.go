@@ -25,6 +25,13 @@ const (
 	classRecent  = 0
 	classMidLong = 1
 	classSummary = 2
+	// classProfile is the resident profile block's class. It holds no
+	// reservation: Pack admits profile items before the class passes, so a
+	// retrieved class filling its own share cannot spend the room the block
+	// was bounded to occupy.
+	classProfile = 3
+	// classCount is how many classes the budget bookkeeping covers.
+	classCount = 4
 )
 
 type TokenCounter interface {
@@ -105,7 +112,8 @@ func (packer *Deterministic) Pack(ctx context.Context, items []corememory.Contex
 		// The class helpers below panic on an unknown class; check it here so
 		// unvalidated input becomes an error instead of a process crash.
 		switch item.SourceClass {
-		case corememory.ContextSourceRecent, corememory.ContextSourceLongTerm, corememory.ContextSourceSummary:
+		case corememory.ContextSourceRecent, corememory.ContextSourceLongTerm,
+			corememory.ContextSourceSummary, corememory.ContextSourceProfile:
 		default:
 			return corememory.ContextResult{}, fmt.Errorf("pack: item %d has unknown source class %q", i, item.SourceClass)
 		}
@@ -144,13 +152,13 @@ func (packer *Deterministic) Pack(ctx context.Context, items []corememory.Contex
 	// summary candidates get a chance. Classes with no candidates contribute
 	// no budget, and the lending pass below still lets them donate their
 	// unused capacity.
-	var available [3]int
+	var available [classCount]int
 	for _, value := range prepared {
 		available[value.class]++
 	}
 	itemCaps := itemCaps(maxItems, packer.ClassBudgets, available)
-	usedByClass := [3]int{}
-	itemsByClass := [3]int{}
+	usedByClass := [classCount]int{}
+	itemsByClass := [classCount]int{}
 	selected := make([]bool, len(prepared))
 	result := corememory.ContextResult{Items: make([]corememory.ContextItem, 0, min(maxItems, len(prepared)))}
 	usedChars := 0
@@ -185,6 +193,21 @@ func (packer *Deterministic) Pack(ctx context.Context, items []corememory.Contex
 	if newestRecent >= 0 && fitsGlobal(prepared[newestRecent]) {
 		add(newestRecent)
 	}
+	// The resident profile block is admitted next, before any class pass can
+	// spend the budget: it is served on every request by construction, so a
+	// retrieved class filling its own share must not be able to push the
+	// lines the block was bounded to carry out of the result. The packer does
+	// not cut it -- a block the budget cannot hold is not served at all,
+	// because half a block is not the lines the host and the pass put there,
+	// and a line dropped mid-block would read as a statement that changed.
+	for index, value := range prepared {
+		if value.class != classProfile {
+			continue
+		}
+		if fitsGlobal(value) {
+			add(index)
+		}
+	}
 	// First pass enforces the 0.6/0.3/0.1 reservations for both tokens and
 	// item slots.
 	for index, value := range prepared {
@@ -195,8 +218,9 @@ func (packer *Deterministic) Pack(ctx context.Context, items []corememory.Contex
 		}
 	}
 	// Empty or undersubscribed classes lend their remaining capacity in fixed
-	// recent -> mid/long -> summary priority.
-	for class := 0; class < 3; class++ {
+	// recent -> mid/long -> summary priority. The profile class is not lent:
+	// its items were admitted above, or they do not fit at all.
+	for class := classRecent; class < classProfile; class++ {
 		for index, value := range prepared {
 			if selected[index] || value.class != class {
 				continue
@@ -233,23 +257,24 @@ func normalizeBudgets(value ClassBudgets) (ClassBudgets, error) {
 	return ClassBudgets{Recent: value.Recent / total, MidLong: value.MidLong / total, Summary: value.Summary / total}, nil
 }
 
-func tokenCaps(total int, budgets ClassBudgets) [3]int {
+func tokenCaps(total int, budgets ClassBudgets) [classCount]int {
 	recent := int(math.Floor(float64(total) * budgets.Recent))
 	midLong := int(math.Floor(float64(total) * budgets.MidLong))
-	return [3]int{recent, midLong, total - recent - midLong}
+	return [classCount]int{recent, midLong, total - recent - midLong}
 }
 
 // itemCaps converts the class token budgets into item-slot budgets. Classes
 // without candidates receive no slots, so their share flows to the classes
-// that can actually fill it (via the global cap and the lending pass).
-func itemCaps(maxItems int, budgets ClassBudgets, available [3]int) [3]int {
+// that can actually fill it (via the global cap and the lending pass). The
+// profile class is left out: its items are admitted by need, not by share.
+func itemCaps(maxItems int, budgets ClassBudgets, available [classCount]int) [classCount]int {
 	if maxItems <= 0 {
-		return [3]int{}
+		return [classCount]int{}
 	}
 	ratios := [3]float64{budgets.Recent, budgets.MidLong, budgets.Summary}
-	var caps [3]int
+	var caps [classCount]int
 	total := 0
-	for class := range caps {
+	for class := classRecent; class < classProfile; class++ {
 		if available[class] == 0 {
 			continue
 		}
@@ -263,7 +288,7 @@ func itemCaps(maxItems int, budgets ClassBudgets, available [3]int) [3]int {
 	// first while keeping at least one slot for every class that has items.
 	for total > maxItems {
 		largest := -1
-		for class := range caps {
+		for class := classRecent; class < classProfile; class++ {
 			if caps[class] <= 1 {
 				continue
 			}
@@ -296,6 +321,8 @@ func budgetClass(item corememory.ContextItem) int {
 		return classMidLong
 	case corememory.ContextSourceSummary:
 		return classSummary
+	case corememory.ContextSourceProfile:
+		return classProfile
 	default:
 		panic(fmt.Sprintf("pack: invalid validated context source class %q", item.SourceClass))
 	}
@@ -306,12 +333,14 @@ func sourcePriority(item corememory.ContextItem) int {
 		return -1
 	}
 	switch item.SourceClass {
-	case corememory.ContextSourceRecent:
+	case corememory.ContextSourceProfile:
 		return 0
-	case corememory.ContextSourceLongTerm:
+	case corememory.ContextSourceRecent:
 		return 1
-	case corememory.ContextSourceSummary:
+	case corememory.ContextSourceLongTerm:
 		return 2
+	case corememory.ContextSourceSummary:
+		return 3
 	default:
 		panic(fmt.Sprintf("pack: invalid validated context source class %q", item.SourceClass))
 	}

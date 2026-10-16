@@ -5,7 +5,55 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 )
+
+// TestProfileSettingsTravelWithTheBlock pins the three things the block's
+// configuration decides: the settings resolve to the module's defaults, the
+// bound is checked against the module's ceiling, and the footprint names the
+// block only while it is served -- a deployment that leaves it off has to keep
+// the footprint it had, because it serves what it served before.
+func TestProfileSettingsTravelWithTheBlock(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if settings.Profile.MaxTokens != profile.DefaultMaxTokens ||
+		settings.Profile.MaxEntries != profile.DefaultMaxEntries {
+		t.Fatalf("profile defaults = %+v", settings.Profile)
+	}
+	off, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off, "profile") {
+		t.Fatalf("a disabled block is in the footprint: %s", off)
+	}
+
+	settings.Profile.Enabled = true
+	settings.Profile.MaxTokens, settings.Profile.MaxEntries = 256, 8
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	on, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(on, `"profile":{"enabled":true,"max_tokens":256,"max_entries":8}`) {
+		t.Fatalf("a served block is not in the footprint: %s", on)
+	}
+	if on == off {
+		t.Fatal("serving the block did not change the footprint")
+	}
+
+	settings.Profile.MaxTokens = maxProfileTokens + 1
+	if err := settings.Validate(); err == nil || !strings.Contains(err.Error(), "profile.max_tokens") {
+		t.Fatalf("over-limit max_tokens accepted: %v", err)
+	}
+	settings.Profile.MaxTokens, settings.Profile.MaxEntries = 256, maxProfileEntries+1
+	if err := settings.Validate(); err == nil || !strings.Contains(err.Error(), "profile.max_entries") {
+		t.Fatalf("over-limit max_entries accepted: %v", err)
+	}
+}
 
 // TestRetrievalSummaryRendersTheResolvedSettings pins the fingerprint value the
 // derivation policy digest does not cover: lane weights and fusion, the bm25
