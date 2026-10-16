@@ -135,9 +135,16 @@ func ComputeRollupSourceDigest(inputs []summaryview.Record) string {
 }
 
 type CompactRequest struct {
-	Scope           corememory.Scope
-	ConversationID  string
-	GenerationID    string
+	Scope          corememory.Scope
+	ConversationID string
+	GenerationID   string
+	// PolicySignature is the signature every record this compaction derives is
+	// addressed with, and it is optional here: a compaction builds the tree it
+	// is asked for, so an empty signature simply falls back to the compactor's
+	// own configuration digest. A caller that will later extend the tree has to
+	// state it, though -- Extend requires the signature the tree was built with,
+	// because a record id covers it -- so a caller that compacts and extends
+	// passes the same signature to both.
 	PolicySignature string
 	Inputs          []Input
 }
