@@ -95,7 +95,9 @@ fn exp_form(f: f64) -> String {
 }
 
 /// `encoding/json`'s string escaping, including the default HTML escaping.
-fn write_string(s: &str, out: &mut String) {
+/// Shared with the wire codecs, which have to write the same bytes core does
+/// for fields core writes as struct fields rather than as map entries.
+pub(crate) fn write_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {

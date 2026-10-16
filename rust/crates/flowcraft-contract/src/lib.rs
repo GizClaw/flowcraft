@@ -13,4 +13,6 @@
 
 pub mod error;
 pub mod json;
+pub mod message;
 pub mod provider;
+pub mod text;
