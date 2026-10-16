@@ -44,10 +44,16 @@ remembered.
 
 | Backend | Reading | Why it is not the one |
 | --- | --- | --- |
-| `norway` | `serde_norway` 0.9.42 straight into a JSON value | 22 records diverge today; the classes below |
-| `ng` | `serde_yaml_ng` 0.10.0, same shape | item for item identical to `norway` |
-| `saphyr` | `saphyr` 0.2.2 as delivered | 21 records; the same classes, plus fixture 24 — the BOM survives into the first key |
+| `norway` | `serde_norway` 0.9.42 straight into a JSON value | 40 files of 195 diverge today; the classes below |
+| `ng` | `serde_yaml_ng` 0.10.0, same shape | item for item identical to `norway` (checked, not assumed) |
+| `saphyr` | `saphyr` 0.2.2 as delivered | 33 files; the same classes, plus fixture 24 — the BOM survives into the first key |
 | `saphyr-go` | that parser plus the semantic layer in `crates/flowcraft-utils/src/decode.rs` | **adopted** — byte-identical to core over the whole corpus, refusals' wording included |
+
+Those counts are measured with the allowlist off, because `known-divergences.txt`
+records where the *adopted* port may disagree with core and a candidate is not
+that port: a candidate run compares raw and reports every disagreement, so
+`CONFORMANCE_BACKEND=norway make conformance` exits 1 — for a measurement that
+is the expected answer rather than a failure. Only `saphyr-go` gates.
 
 What the two serde forks get wrong, by the fixture that shows it:
 
