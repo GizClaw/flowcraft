@@ -1,0 +1,5 @@
+1: one
+1.5: onehalf
+true: true_key
+null: null_key
+yes: legacy_key

@@ -1,0 +1,4 @@
+s: !!str 1
+i: !!int "2"
+bin: !!binary "aGk="
+unknown: !custom x

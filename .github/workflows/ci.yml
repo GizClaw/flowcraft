@@ -175,7 +175,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil)
+          diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil tools)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -461,10 +461,53 @@ jobs:
         working-directory: core/sandbox
         run: go test -count=1 -race -timeout 300s ./...
 
+  conformance:
+    name: Conformance gate (Go oracle vs Rust port)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache-dependency-path: tools/conformance-oracle/go.sum
+      - name: Rust toolchain
+        # rust-toolchain.toml pins the channel and its components; the first
+        # cargo/rustc call is what installs it, so this step is also the check
+        # that the pin resolves at all.
+        run: |
+          rustup --version
+          cargo --version
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Format check
+        working-directory: rust
+        run: cargo fmt --all --check
+      - name: Lint
+        working-directory: rust
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        working-directory: rust
+        run: cargo nextest run --all-features
+      - name: Dependency posture
+        working-directory: rust
+        run: cargo deny check
+      - name: Oracle tests
+        # The oracle builds outside the workspace on purpose (GOWORK=off
+        # against a local replace), so it is not in the module matrix above
+        # and its tests belong to the lane that needs it built anyway.
+        working-directory: tools/conformance-oracle
+        run: GOWORK=off go test -count=1 ./...
+      - name: Gate
+        run: make conformance
+
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, check-consumers, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-craft-windows, test-sandbox-windows, test-sandbox-macos]
+    needs: [release-intent, gofmt, check-consumers, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-craft-windows, test-sandbox-windows, test-sandbox-macos, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -483,6 +526,7 @@ jobs:
             "${{ needs.test-craft-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \
             "${{ needs.test-sandbox-macos.result }}" \
+            "${{ needs.conformance.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
