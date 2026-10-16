@@ -34,11 +34,25 @@ const (
 )
 
 // Overlay is the read-path effect for one item: a score multiplier and the
-// fact that superseded it. Canonical facts are never edited.
+// fact that superseded it, with the window the item was current over.
+// Canonical facts are never edited.
 type Overlay struct {
-	Factor       float64   `json:"factor,omitempty"`
-	SupersededBy string    `json:"superseded_by,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	Factor       float64 `json:"factor,omitempty"`
+	SupersededBy string  `json:"superseded_by,omitempty"`
+	// Relation is the single-valued relation the supersede was judged on, and
+	// it is empty for a supersede judged by text similarity alone. It is what
+	// says which of the two the entry means; the finding itself
+	// (maintain.Supersede) carries the reason and the evidence.
+	Relation string `json:"relation,omitempty"`
+	// ValidAt and InvalidAt are the window the item was current over: dated
+	// from ValidAt, replaced at InvalidAt. A host answering "what did we know
+	// at time T" reads the entry and compares T against them; the read path
+	// itself only ever multiplies the score, so the window changes no
+	// retrieval -- it is what makes the penalty explainable and the older
+	// state recoverable by time rather than by guesswork.
+	ValidAt   time.Time `json:"valid_at,omitempty"`
+	InvalidAt time.Time `json:"invalid_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // overlayDocument is one scope's control record: the stamp of the pass that
@@ -428,8 +442,20 @@ func (store *Store) entries(plan Plan) (map[string]map[string]Overlay, int, erro
 		if err != nil {
 			return nil, 0, err
 		}
+		// A window is what a host reads to answer "was this true then", so a
+		// plan that would publish one running backwards is refused here rather
+		// than served: the pass orders a pair by the same dates, and a caller
+		// building findings by hand is the one that can get it wrong.
+		if !entry.ValidAt.IsZero() && entry.InvalidAt.Before(entry.ValidAt) {
+			return nil, 0, fmt.Errorf(
+				"maintain: supersede of %q names a window ending before it started (%s..%s)",
+				entry.FactID, entry.ValidAt.UTC().Format(time.RFC3339), entry.InvalidAt.UTC().Format(time.RFC3339))
+		}
 		put(entry.Conversation, key, func(current *Overlay) {
 			current.SupersededBy = entry.SupersededBy
+			current.Relation = entry.Relation
+			current.ValidAt = entry.ValidAt
+			current.InvalidAt = entry.InvalidAt
 			if current.Factor == 0 || current.Factor > defaultSupersedeFactor {
 				current.Factor = defaultSupersedeFactor
 			}
