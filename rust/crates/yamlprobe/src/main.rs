@@ -8,11 +8,14 @@
 //! (tools/conformance-oracle); see rust/conformance/tools/diff.py and the
 //! gate that runs both: rust/conformance/run.sh.
 //!
-//! The backends that were measured and rejected are behind the non-default
-//! `candidates` feature; the manifest says why.
+//! `saphyr-go` is not a reading of its own: it is `flowcraft-utils`, the code
+//! the port ships, so the gate compares the port against the oracle through
+//! this binary. The other three are measurements, kept runnable so the choice
+//! between them stays reproducible rather than remembered. The two that were
+//! rejected are behind the non-default `candidates` feature; the manifest says
+//! why.
 
-mod gojson;
-mod saphyr_backends;
+mod naive;
 #[cfg(feature = "candidates")]
 mod serde_backends;
 
@@ -20,22 +23,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use flowcraft_utils::decode::{self, Format};
 use serde_json::json;
-
-/// Mirrors `utils.FormatOf`: JSON when the first non-whitespace byte is `{`.
-pub fn is_json_prefix(data: &[u8]) -> bool {
-    data.iter()
-        .find(|b| !b.is_ascii_whitespace())
-        .is_some_and(|b| *b == b'{')
-}
-
-/// JSON input is validated and passed through as-is, like `utils.ToJSON`.
-pub fn json_passthrough(data: &[u8]) -> Result<String, String> {
-    let text = std::str::from_utf8(data).map_err(|e| format!("invalid UTF-8: {e}"))?;
-    serde_json::from_str::<serde_json::Value>(text)
-        .map_err(|e| format!("invalid JSON document: {e}"))?;
-    Ok(text.to_string())
-}
 
 type Backend = (&'static str, fn(&[u8]) -> Result<String, String>);
 
@@ -44,8 +33,8 @@ const BACKENDS: &[Backend] = &[
     ("norway", serde_backends::norway),
     #[cfg(feature = "candidates")]
     ("ng", serde_backends::yaml_ng),
-    ("saphyr", saphyr_backends::naive),
-    ("saphyr-go", saphyr_backends::go_layer),
+    ("saphyr", naive::naive),
+    ("saphyr-go", decode::to_json),
 ];
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -101,18 +90,23 @@ fn main() {
             }
         };
         let file = path.to_string_lossy().to_string();
-        let format = if is_json_prefix(&data) {
-            "json"
-        } else {
-            "yaml"
-        };
+        let format = decode::format_of(&data);
         for (backend, run) in BACKENDS {
-            let record = match run(&data) {
+            // The JSON branch is core's own, not a reader's: `utils.ToJSON`
+            // validates the bytes and returns them unchanged, so every reading
+            // of a JSON document gives the same answer and no backend is
+            // asked. The backends below only ever see YAML.
+            let result = if format == Format::Json {
+                decode::to_json(&data)
+            } else {
+                run(&data)
+            };
+            let record = match result {
                 Ok(json) => json!({
-                    "file": file, "backend": backend, "format": format, "json": json,
+                    "file": file, "backend": backend, "format": format.as_str(), "json": json,
                 }),
                 Err(error) => json!({
-                    "file": file, "backend": backend, "format": format, "error": error,
+                    "file": file, "backend": backend, "format": format.as_str(), "error": error,
                 }),
             };
             println!("{record}");

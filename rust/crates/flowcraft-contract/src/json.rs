@@ -9,6 +9,8 @@
 
 use serde_json::Value;
 
+/// The Go-compatible rendering of a value, which is what `utils.ToJSON` hands
+/// back for the documents the port converts.
 pub fn to_string(value: &Value) -> String {
     let mut out = String::new();
     write_value(value, &mut out);
@@ -80,8 +82,14 @@ pub fn f64_go(f: f64) -> String {
 /// Go's `'e'` form: `1e+21`, `1.5e-7` (leading zero stripped by the encoder).
 fn exp_form(f: f64) -> String {
     let s = format!("{f:e}"); // shortest mantissa, exponent without sign padding
-    let (mantissa, exponent) = s.split_once('e').expect("LowerExp emits 'e'");
-    let exponent: i32 = exponent.parse().expect("LowerExp exponent is an integer");
+    // `{:e}` always writes `<mantissa>e<exponent>`, so neither fallback below
+    // is reachable -- they are here because this crate forbids panicking.
+    let Some((mantissa, exponent)) = s.split_once('e') else {
+        return s;
+    };
+    let Ok(exponent) = exponent.parse::<i32>() else {
+        return s;
+    };
     let sign = if exponent < 0 { "-" } else { "+" };
     format!("{mantissa}e{sign}{}", exponent.abs())
 }

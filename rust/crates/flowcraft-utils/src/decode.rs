@@ -1,42 +1,77 @@
-//! The two saphyr readings of the same parser.
+//! `core/utils`'s decode layer, ported: the strict YAML/JSON conversion
+//! (`utils.ToJSON`) and the sniffing rule that decides what to feed it
+//! (`utils.FormatOf`).
 //!
-//! `naive` is the crate as delivered: YAML 1.2 core-schema resolution,
-//! straight into JSON.
+//! The Go implementation is the oracle. `rust/conformance` diffs this module
+//! against it file by file, byte for byte, and every rule below cites the Go
+//! behaviour it mirrors; the corpus in `rust/conformance/fixtures` is the
+//! check on that claim.
 //!
-//! `go_layer` keeps saphyr's *parser* (`early_parse(false)`, so every scalar
-//! arrives as raw text plus style and tag) and re-implements the rules that
-//! `sigs.k8s.io/yaml` (which vendors go-yaml v2 as `goyaml.v2`) gives the Go
-//! side: scalar resolution, key coercion, merge keys, strict duplicate
-//! detection, the key-collapse refusal, the alias guard, and the float64
-//! funnel that `utils.ToJSON` applies to every YAML document. Each rule cites
-//! the Go behaviour it mirrors; the corpus in rust/conformance/fixtures is
-//! the check.
+//! Errors are `String`s for now, exactly as the probe had them. The error
+//! contract -- the kinds, and the wording a caller may match on -- is a step
+//! of its own, and it is not this one.
 
 use base64::Engine as _;
-use saphyr::{LoadableYamlNode, Mapping, Scalar, Yaml};
+use flowcraft_contract::json;
+use saphyr::{Mapping, Scalar, Yaml};
 use saphyr_parser::{Parser, ScalarStyle, Tag};
 use serde_json::{Map, Number, Value};
 use std::collections::HashMap;
 
-use crate::{gojson, is_json_prefix, json_passthrough};
-
-pub fn naive(data: &[u8]) -> Result<String, String> {
-    if is_json_prefix(data) {
-        return json_passthrough(data);
-    }
-    let text = text_of(data)?;
-    let docs = Yaml::load_from_str(text).map_err(|e| e.to_string())?;
-    let value = match docs.len() {
-        0 => Value::Null,
-        1 => naive_value(&docs[0])?,
-        _ => return Err("multiple YAML documents".into()),
-    };
-    Ok(gojson::to_string(&value))
+/// The syntax of a configuration document, as `utils.Format` spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Every document that does not start with `{`: `utils.FormatYAML`.
+    Yaml,
+    /// The first non-whitespace byte is `{`: `utils.FormatJSON`.
+    Json,
 }
 
-pub fn go_layer(data: &[u8]) -> Result<String, String> {
-    if is_json_prefix(data) {
-        return json_passthrough(data);
+impl Format {
+    /// The name `utils.Format.String` reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Format::Yaml => "yaml",
+            Format::Json => "json",
+        }
+    }
+}
+
+impl std::fmt::Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `utils.FormatOf`: Kubernetes' sniffing rule -- JSON when the first
+/// non-whitespace byte is `{`, YAML otherwise.
+pub fn format_of(data: &[u8]) -> Format {
+    let json = data
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{');
+    if json { Format::Json } else { Format::Yaml }
+}
+
+/// JSON input is validated and passed through as-is, which is what
+/// `utils.ToJSON` does with a document `utils.FormatOf` calls JSON: the bytes
+/// are not re-encoded, so key order and number spelling survive.
+fn passthrough_json(data: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(data).map_err(|e| format!("invalid UTF-8: {e}"))?;
+    serde_json::from_str::<Value>(text).map_err(|e| format!("invalid JSON document: {e}"))?;
+    Ok(text.to_string())
+}
+
+/// `utils.ToJSON`: the strict conversion core applies to a configuration
+/// document before anything reads it.
+///
+/// The rules below are go-yaml v2's as `sigs.k8s.io/yaml` uses them, quirks
+/// included: scalar resolution, key coercion, merge keys, duplicate keys, the
+/// key-collapse refusal, the alias guard, and the float64 funnel every YAML
+/// number goes through.
+pub fn to_json(data: &[u8]) -> Result<String, String> {
+    if format_of(data) == Format::Json {
+        return passthrough_json(data);
     }
     let text = text_of(data)?;
     // libyaml (hence go-yaml) strips a BOM; the pure-Rust scanner does not.
@@ -57,61 +92,12 @@ pub fn go_layer(data: &[u8]) -> Result<String, String> {
         1 => go_value(&docs[0])?,
         _ => return Err("multiple YAML documents".into()),
     };
-    Ok(gojson::to_string(&value))
+    Ok(json::to_string(&value))
 }
 
 fn text_of(data: &[u8]) -> Result<&str, String> {
     std::str::from_utf8(data).map_err(|e| format!("invalid UTF-8: {e}"))
 }
-
-// ---------------------------------------------------------------------------
-// naive: saphyr's own resolution
-// ---------------------------------------------------------------------------
-
-fn naive_value(node: &Yaml<'_>) -> Result<Value, String> {
-    Ok(match node {
-        Yaml::Value(scalar) => match scalar {
-            Scalar::Null => Value::Null,
-            Scalar::Boolean(b) => Value::Bool(*b),
-            Scalar::Integer(i) => Value::Number((*i).into()),
-            Scalar::FloatingPoint(f) => number(f.0)?,
-            Scalar::String(s) => Value::String(s.to_string()),
-        },
-        Yaml::Representation(s, _, _) => Value::String(s.to_string()),
-        Yaml::Sequence(seq) => {
-            let mut out = Vec::with_capacity(seq.len());
-            for item in seq {
-                out.push(naive_value(item)?);
-            }
-            Value::Array(out)
-        }
-        Yaml::Mapping(map) => {
-            let mut out = Map::new();
-            for (key, value) in map.iter() {
-                out.insert(naive_key(key)?, naive_value(value)?);
-            }
-            Value::Object(out)
-        }
-        Yaml::Tagged(_, inner) => naive_value(inner)?,
-        Yaml::Alias(_) => return Err("unresolved alias".into()),
-        Yaml::BadValue => return Err("bad value".into()),
-    })
-}
-
-fn naive_key(key: &Yaml<'_>) -> Result<String, String> {
-    match key {
-        Yaml::Value(Scalar::String(s)) => Ok(s.to_string()),
-        Yaml::Value(Scalar::Integer(i)) => Ok(i.to_string()),
-        Yaml::Value(Scalar::FloatingPoint(f)) => Ok(format!("{}", f.0)),
-        Yaml::Value(Scalar::Boolean(b)) => Ok(b.to_string()),
-        Yaml::Representation(s, _, _) => Ok(s.to_string()),
-        _ => Err("mapping keys must be strings".into()),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// go_layer: go-yaml v2 / sigs.k8s.io/yaml semantics
-// ---------------------------------------------------------------------------
 
 /// The types go-yaml v2 resolves a scalar to.
 #[derive(Debug, Clone)]
@@ -435,7 +421,10 @@ fn insert_go(
 /// `!!float 1` share the JSON key "1" but not the spelling.
 fn yaml_key_spelling(resolved: &Resolved) -> String {
     match resolved {
-        Resolved::Null => "!!null".into(),
+        // `!!null null`, not `!!null`: core's spelling carries the value, and
+        // a message the two sides disagree on is a message a reader cannot
+        // compare (`core/utils/decode.go`, yamlKeySpelling).
+        Resolved::Null => "!!null null".into(),
         Resolved::Bool(b) => format!("!!bool {b}"),
         Resolved::Int(i) => format!("!!int {i}"),
         Resolved::UInt(u) => format!("!!int {u}"),
@@ -512,6 +501,12 @@ fn resolve_key(key: &Yaml<'_>) -> Result<Resolved, String> {
 /// `convertToJSONableObject`'s key spelling, quirks included: floats go
 /// through `strconv.FormatFloat(f, 'g', -1, 32)` (32-bit!), and any other
 /// type is a hard error.
+///
+/// The one error text in here is core's own sentence, not the library's: a nil
+/// key is a key no JSON key exists for, and core names it (`UnusableKeys`)
+/// where the library it replaced printed the type with `%s` and produced
+/// `unsupported map key of type: %!s(<nil>)`. A caller that reads the Go
+/// side's refusal should read the same sentence here.
 fn key_string_of(resolved: &Resolved) -> Result<String, String> {
     Ok(match resolved {
         Resolved::Str(s) => s.clone(),
@@ -530,7 +525,9 @@ fn key_string_of(resolved: &Resolved) -> Result<String, String> {
                 format!("{}", *f as f32)
             }
         }
-        Resolved::Null => return Err("unsupported map key of type: <nil>".into()),
+        Resolved::Null => {
+            return Err("YAML key !!null null cannot be spelled as a JSON key".into());
+        }
     })
 }
 
@@ -588,6 +585,16 @@ fn directive_guard(text: &str) -> Result<(), String> {
 fn alias_guard(text: &str) -> Result<(), String> {
     use saphyr_parser::Event;
 
+    /// Charges `size` nodes to the innermost open level. The root level is
+    /// pushed before the walk and never popped, so there is always one to
+    /// charge -- but the walk does not assume it: a stream that closes a level
+    /// it never opened is a malformed document, not a reason to panic.
+    fn charge(levels: &mut [(usize, usize)], size: usize) {
+        if let Some(top) = levels.last_mut() {
+            top.0 += size;
+        }
+    }
+
     let mut sizes: HashMap<usize, usize> = HashMap::new();
     // One accumulator per open collection: (expanded nodes inside, anchor id).
     let mut levels: Vec<(usize, usize)> = vec![(0, 0)];
@@ -597,7 +604,7 @@ fn alias_guard(text: &str) -> Result<(), String> {
         let event = event.map_err(|e| e.to_string())?.0;
         match event {
             Event::Scalar(_, _, anchor, _) => {
-                levels.last_mut().expect("a level is always open").0 += 1;
+                charge(&mut levels, 1);
                 if anchor > 0 {
                     sizes.insert(anchor, 1);
                 }
@@ -606,17 +613,18 @@ fn alias_guard(text: &str) -> Result<(), String> {
                 levels.push((0, anchor));
             }
             Event::SequenceEnd | Event::MappingEnd => {
-                let (inner, anchor) = levels.pop().expect("close matches an open");
-                let size = inner + 1;
-                levels.last_mut().expect("a level is always open").0 += size;
-                if anchor > 0 {
-                    sizes.insert(anchor, size);
+                if let Some((inner, anchor)) = levels.pop() {
+                    let size = inner + 1;
+                    charge(&mut levels, size);
+                    if anchor > 0 {
+                        sizes.insert(anchor, size);
+                    }
                 }
             }
             Event::Alias(id) => {
                 let size = sizes.get(&id).copied().unwrap_or(0);
                 aliased += size;
-                levels.last_mut().expect("a level is always open").0 += size;
+                charge(&mut levels, size);
             }
             _ => {}
         }

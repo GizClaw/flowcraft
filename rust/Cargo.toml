@@ -1,7 +1,6 @@
-# The Rust workspace. Today it holds one thing: the conformance probe, whose
-# job is to reproduce core's observable YAML behaviour byte for byte against
-# the Go oracle (rust/conformance/README.md). The port's own crates grow here
-# as they land, split by dependency direction rather than by Go package.
+# The Rust workspace: the port's crates, plus the probe that checks them
+# (rust/conformance/README.md). Crates are split by dependency direction
+# rather than by Go package, and a crate that ships inherits the lints below.
 [workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -14,13 +13,15 @@ license = "MIT"
 repository = "https://github.com/GizClaw/flowcraft"
 
 [workspace.dependencies]
+base64 = "0.22.1"
+saphyr = "0.2.2"
+saphyr-parser = "0.2.2"
 serde_json = "1.0.154"
 serde_norway = "0.9.42"
 serde_yaml_ng = "0.10.0"
-saphyr = "0.2.2"
 
-# Production posture, for the crates that ship. The probe does not inherit it
-# yet: it is a measurement binary, not a shipped crate.
+# Production posture, for the crates that ship. The probe does not inherit it:
+# it is a measurement binary, not a shipped crate.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
