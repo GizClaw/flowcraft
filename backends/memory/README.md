@@ -41,7 +41,9 @@ maintenance; `core/memory` stays implementation-neutral.
   configured), hydrates candidates, and packs them within the request
   budget.
 - Maintenance: `Assembly.Maintain` decays and soft-merges superseded facts on
-  the read path under a per-scope overlay stamped with the pass that wrote it;
+  the read path under an overlay stamped with the pass that wrote it -- one
+  bucket per conversation, so a context call reads the conversations its
+  candidates name rather than the scope;
   the decay clock reads from a fact's last recall as well as its event time,
   because the read path records a receipt for every long-term item a context
   result actually returns. `Assembly.RetireGenerations` drops the derived
@@ -157,9 +159,15 @@ With the workspace driver all state lives under the bound workspace:
   published-generation pointer.
 - `views/summary/v1/...` — immutable summary records, the active record
   catalog, and the manifest bookmark of every generation that published one.
-- `maintain/v1/overlay/...` — one document per scope: the read-path decay
-  factors and supersede marks the last maintenance pass wrote, stamped with the
-  pass that judged them.
+- `maintain/v2/overlay/...` — one control record per scope: the stamp of the
+  pass that judged it, how many entries its buckets hold, and when it last
+  judged the whole scope.
+- `maintain/v2/buckets/...` — one document per conversation: the read-path
+  decay factors and supersede marks the last maintenance pass wrote, stamped
+  with the pass that judged them, so a context call reads the buckets the
+  candidates' conversations own. A document in the pre-shard layout
+  (`maintain/v1/overlay/...`) is never read: the status reports it as ignored
+  and the next pass replaces it.
 - `recall/v1/...` — the read path's receipts: one record per recalled item
   (count and last recall), read back by the maintenance pass.
 - `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
@@ -333,7 +341,7 @@ which calibration produced a score. The other three are read where the state
 they wrote is read: the bm25 and entity versions are part of the producer
 version their lane's manifest carries (`okapi-bm25-v2+k1=1.2,b=0.75` -- the
 scoring parameters a persisted build carries are part of it too), the
-maintenance version is part of the stamp on the overlay document, and both
+maintenance version is part of the stamp on the scope's control record, and both
 `verify.Plan` and `Assembly.Diagnostics` report a lane whose stored stamp the
 running lane does not write, because a rebuild would change what it answers
 with.
@@ -460,6 +468,17 @@ the call however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
 decay floor, recall saturation).
 
+The overlay is per conversation: a scope's control record names the pass that
+wrote it and how much it holds, and each conversation's factors live in their
+own bucket. A context call therefore reads the buckets the conversations of its
+candidates own rather than the scope's whole overlay, and a pass that judges a
+subset of the conversations replaces exactly that subset
+(`maintain.Store.SaveConversations`; `Assembly.Maintain` stays the whole-scope
+pass). Supersede judgments never cross conversations, so re-judging the
+conversations that changed judges what a whole pass would judge them to be;
+decay is always recomputed from the pass's own clock, so a conversation a
+partial pass leaves behind keeps the factors the last whole pass measured.
+
 ### Recall receipts
 
 Every context request that carries a `RecallEventID` and returns long-term or
@@ -490,13 +509,14 @@ read path applies an overlay only when its stamp is the one this deployment's
 tuning serves. An overlay written before the stamp existed, or under another
 tuning, is ignored rather than applied to another policy's scores: canonical
 facts are untouched either way, which is what makes a pass its own repair, since
-the next one rewrites the document under the running policy. A host that wants
-to know before it schedules one reads `Assembly.OverlayStatus` (or
+the next one rewrites the scope's buckets under the running policy. A host that
+wants to know before it schedules one reads `Assembly.OverlayStatus` (or
 `Diagnostics`' per-scope overlay), and `Plan.IgnoredOverlay` says whether a pass
 replaced judgments it did not apply. That status also reports `UpdatedAt` and
-`Expired`: an overlay the running pass wrote but has not refreshed within one
-decay half-life carries factors measured against a clock at least that old, and
-`Expired` is the host's signal to schedule the pass.
+`Expired`: `UpdatedAt` is when the scope was last judged whole (a partial pass
+keeps it), and an overlay the running pass wrote but has not refreshed within
+one decay half-life carries factors measured against a clock at least that old
+-- `Expired` is the host's signal to schedule the whole-scope pass.
 
 The reclaim is the document half of the sweep surface, and it is deliberately
 not a generation sweep: see *Derived documents are not generation scoped*
