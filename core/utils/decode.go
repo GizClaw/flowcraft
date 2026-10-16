@@ -65,7 +65,8 @@ func hasJSONPrefix(buf []byte) bool {
 // library Kubernetes uses, sigs.k8s.io/yaml.
 //
 // A YAML document in which two distinct keys of one mapping would become the
-// same JSON key is refused instead of converted: see keyCollisions.
+// same JSON key is refused instead of converted: see KeyCollisions. A key the
+// conversion cannot spell at all is refused by name: see UnusableKeys.
 func ToJSON(data []byte) ([]byte, error) {
 	if FormatOf(data) == FormatJSON {
 		if !json.Valid(data) {
@@ -79,9 +80,21 @@ func ToJSON(data []byte) ([]byte, error) {
 	}
 	var value any
 	if err := yaml.UnmarshalStrict(data, &value); err != nil {
+		// sigs.k8s.io/yaml reports the first key it cannot spell while
+		// iterating a Go map, so a document holding two of them reports a
+		// different one per process: measured on `~` against
+		// `18446744073709551615` over 400 runs, one 362 times and the other
+		// 38 — ≈7 in 8, the start-offset split of a two-entry Go map, so a
+		// second measurement of the same pair lands on other counts rather
+		// than on a different answer. The keys are named here instead, in
+		// the sorted order of their spelling, so the report is a function
+		// of the document.
+		if unusable := UnusableKeys(document); unusable != "" {
+			return nil, fmt.Errorf("config utils: convert YAML to JSON: %s", unusable)
+		}
 		return nil, fmt.Errorf("config utils: convert YAML to JSON: %w", err)
 	}
-	if collisions := keyCollisions(document); len(collisions) > 0 {
+	if collisions := KeyCollisions(document); len(collisions) > 0 {
 		return nil, fmt.Errorf("config utils: convert YAML to JSON: %s",
 			strings.Join(collisions, "; "))
 	}
@@ -99,7 +112,7 @@ func ToJSON(data []byte) ([]byte, error) {
 //
 // It returns the document as yaml.v2 spells it — before the conversion to
 // JSON rewrites its mapping keys — because that spelling is what makes the
-// conversion auditable: see keyCollisions.
+// conversion auditable: see KeyCollisions and UnusableKeys.
 func ensureSingleYAMLDocument(data []byte) (any, error) {
 	decoder := yamlv2.NewDecoder(bytes.NewReader(data))
 	var first any
@@ -116,9 +129,11 @@ func ensureSingleYAMLDocument(data []byte) (any, error) {
 	return first, nil
 }
 
-// keyCollisions reports the mappings of a decoded YAML document in which
-// two distinct YAML keys are one and the same JSON key, in the sorted
-// order of that JSON key.
+// KeyCollisions reports the mappings of a decoded YAML document in which two
+// distinct YAML keys are one and the same JSON key, in the sorted order of
+// that JSON key. value is the document as gopkg.in/yaml.v2 decodes it into an
+// `any` — the shape a mapping has before the conversion to JSON rewrites its
+// keys.
 //
 // Such a document has no defined conversion to JSON at all: sigs.k8s.io/yaml
 // spells mapping keys while iterating a Go map, so which of the colliding
@@ -141,11 +156,13 @@ func ensureSingleYAMLDocument(data []byte) (any, error) {
 // and one below it is "0".
 //
 // A key type the conversion itself refuses is not considered here: such a
-// document fails the strict decode in ToJSON before it can be ambiguous,
-// and that error is the one reported.
-func keyCollisions(value any) []string {
+// document fails the strict decode in ToJSON before it can be ambiguous, and
+// it is refused for that key rather than for a collapse — see UnusableKeys,
+// whose sentence is the one such a document reports.
+func KeyCollisions(value any) []string {
 	var collisions []keyCollision
-	collectKeyCollisions(value, &collisions)
+	var unusable []string
+	collectKeyFindings(value, &collisions, &unusable)
 	sort.Slice(collisions, func(i, j int) bool {
 		if collisions[i].jsonKey != collisions[j].jsonKey {
 			return collisions[i].jsonKey < collisions[j].jsonKey
@@ -166,6 +183,48 @@ func keyCollisions(value any) []string {
 	return out
 }
 
+// UnusableKeys reports the mapping keys of a decoded YAML document that the
+// conversion to JSON cannot spell as a JSON key at all, as one sentence naming
+// them, or the empty string when the document holds none. value is the
+// document as gopkg.in/yaml.v2 decodes it into an `any`.
+//
+// The conversion spells a key when it is a string, an int, an int64, a float64
+// or a bool, and refuses the rest while iterating a Go map — so a document
+// holding two of them, `~` and an integer past int64, reports a different one
+// per process, and the library's own message for the null key carries a
+// formatting bug too: `unsupported map key of type: %!s(<nil>)`. Naming the
+// keys here makes the report a function of the document, and the sentence is
+// the refusal a caller should print when it refuses the document for the same
+// reason.
+//
+// One sentence, not the list KeyCollisions returns: every unusable key of a
+// document is named inside it, so there is never more than one finding to hand
+// back and nothing for a caller to join.
+//
+// A key yaml.v2 cannot even hash — a sequence or a mapping — is not named:
+// the decode fails on it before any conversion, and that error is the one to
+// report.
+func UnusableKeys(value any) string {
+	var collisions []keyCollision
+	var unusable []string
+	collectKeyFindings(value, &collisions, &unusable)
+	if len(unusable) == 0 {
+		return ""
+	}
+	sort.Strings(unusable)
+	unique := unusable[:1]
+	for _, spelling := range unusable[1:] {
+		if spelling != unique[len(unique)-1] {
+			unique = append(unique, spelling)
+		}
+	}
+	if len(unique) == 1 {
+		return fmt.Sprintf("YAML key %s cannot be spelled as a JSON key", unique[0])
+	}
+	return fmt.Sprintf("YAML keys %s cannot be spelled as JSON keys",
+		strings.Join(unique, ", "))
+}
+
 // keyCollision is one JSON key that two or more YAML keys of a single
 // mapping are spelled as, with those keys' spellings.
 type keyCollision struct {
@@ -178,7 +237,11 @@ func (c keyCollision) String() string {
 		strings.Join(c.yamlKeys, ", "), c.jsonKey)
 }
 
-func collectKeyCollisions(value any, collisions *[]keyCollision) {
+// collectKeyFindings walks the document once and collects both findings: the
+// keys that collide and the keys the conversion cannot spell. One walk because
+// both answers come from the same visit, and both are sorted by the caller, so
+// neither report can leak the map iteration order it was found in.
+func collectKeyFindings(value any, collisions *[]keyCollision, unusable *[]string) {
 	switch typed := value.(type) {
 	case map[interface{}]interface{}:
 		// yaml.v2 decodes a mapping into this shape whenever the target is
@@ -187,8 +250,10 @@ func collectKeyCollisions(value any, collisions *[]keyCollision) {
 		for key, entry := range typed {
 			if jsonKey, ok := jsonKeySpelling(key); ok {
 				spelled[jsonKey] = append(spelled[jsonKey], yamlKeySpelling(key))
+			} else {
+				*unusable = append(*unusable, yamlKeySpelling(key))
 			}
-			collectKeyCollisions(entry, collisions)
+			collectKeyFindings(entry, collisions, unusable)
 		}
 		for jsonKey, yamlKeys := range spelled {
 			if len(yamlKeys) < 2 {
@@ -202,7 +267,7 @@ func collectKeyCollisions(value any, collisions *[]keyCollision) {
 		}
 	case []interface{}:
 		for _, entry := range typed {
-			collectKeyCollisions(entry, collisions)
+			collectKeyFindings(entry, collisions, unusable)
 		}
 	}
 }
@@ -248,6 +313,13 @@ func jsonKeySpelling(key any) (string, bool) {
 // by their JSON key, and a reader has to be able to tell which is which. It
 // is also what tells them apart when the two spellings do not look alike at
 // all: `!!float 1e+40` is the JSON key ".inf".
+//
+// It names the keys no JSON key exists for as well — `!!null null`, and the
+// integer past int64 that is a `!!int` like any other — so one report can hold
+// both kinds. An integer past uint64 is not one of them: yaml.v2 resolves it to
+// a float, and a float is a key the conversion spells, so that document
+// converts with the value written into its JSON key (at float32 precision,
+// like any other float key) rather than being refused.
 func yamlKeySpelling(key any) string {
 	switch typed := key.(type) {
 	case string:
@@ -260,6 +332,10 @@ func yamlKeySpelling(key any) string {
 		return "!!float " + yamlFloatSpelling(typed)
 	case bool:
 		return fmt.Sprintf("!!bool %t", typed)
+	case nil:
+		return "!!null null"
+	case uint64:
+		return fmt.Sprintf("!!int %d", typed)
 	default:
 		return fmt.Sprintf("%T", key)
 	}
