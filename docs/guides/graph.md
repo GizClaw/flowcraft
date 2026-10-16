@@ -91,7 +91,8 @@ Engine deps are derived from the definition: an inference node needs the
 node needs `tools`, a script node needs `script_runtime`. `workspace` and
 `sandbox` are optional and unlock the script `fs` / `shell` globals (below).
 The optional `script_bindings` dep replaces the engine-level script surface;
-see "Script bindings" below.
+see "Script bindings" below — to keep the standard surface and extend it,
+compose it with `impl: chain` of the same kind.
 
 ### Budgets and timeouts
 
@@ -338,8 +339,9 @@ outlive it.
 Scripts never touch the Go context directly; the node exposes named globals
 through `core/agent/bindings` (plus three graph-layer bridges). This is the
 *standard* surface — a deployment replaces it wholesale with an
-`agent.ScriptBindings` provider (see "Script bindings" below). Its
-availability depends on the engine's deps:
+`agent.ScriptBindings` provider (see "Script bindings" below), and composes
+several surfaces with the `chain` impl of that kind. Its availability
+depends on the engine's deps:
 
 | Global      | Wired when                              | Provides                             |
 | ----------- | --------------------------------------- | ------------------------------------ |
@@ -396,6 +398,10 @@ agents:
   never breaks an existing graph.
 - **`impl: none`** — binds nothing at all: scripts still run, with an empty
   scope. The explicit way to disable the surface for a locked-down graph.
+- **`impl: chain`** — composes the kind's resources into one provider: the
+  optional `base` first, then every `unit` dep in sorted key order (see
+  below). Like any other provider it replaces the standard fallback, so mount
+  `standard` as `base` to extend that surface rather than to drop it.
 
 The standard impl also carries the *policy* of the bridges whose shape the
 surface owns, so a deployment configures them without touching Go:
@@ -427,7 +433,8 @@ resources:
       fs: {max_read_bytes: 65536}
 ```
 
-Hosts extend the surface by registering their own impl of the kind:
+Hosts extend the surface by registering their own impl of the kind. A
+provider binds its own globals only — composition is the deployment's job:
 
 ```go
 // The provider is built once per deployment: per-execution state (board,
@@ -447,27 +454,11 @@ func (tokensProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) 
 
 // The factory is registered on the host's resource registry.
 func (tokensFactory) Spec() resource.Spec {
-    return resource.Spec{
-        Kind: bindings.ResourceKind, Impl: "tokens",
-        // Optional: compose the deployment's other surfaces instead of
-        // replacing them.
-        Deps: []resource.DepSpec{
-            {Name: "base", Type: bindings.ResourceKind},
-        },
-    }
+    return resource.Spec{Kind: bindings.ResourceKind, Impl: "tokens"}
 }
 
-func (tokensFactory) New(ctx context.Context, in resource.Input) (any, error) {
-    extra := bindings.Provider(tokensProvider{})
-    base, ok := in.Dep("base")
-    if !ok {
-        return extra, nil
-    }
-    surface, ok := base.(bindings.Provider)
-    if !ok {
-        return nil, errdefs.Validationf("tokens bindings: base is %T", base)
-    }
-    return bindings.Chain(surface, extra), nil
+func (tokensFactory) New(context.Context, resource.Input) (any, error) {
+    return bindings.Provider(tokensProvider{}), nil
 }
 
 registry.Register(tokensFactory{})
@@ -476,12 +467,16 @@ registry.Register(tokensFactory{})
 ```yaml
 resources:
   std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
-  tok: {kind: agent.ScriptBindings, impl: tokens, deps: {base: std}}
+  tok: {kind: agent.ScriptBindings, impl: tokens}
+  panel:
+    kind: agent.ScriptBindings
+    impl: chain
+    deps: {base: std, unit.tokens: tok}
 
 agents:
   assistant:
     engine:
-      deps: {script_runtime: js, script_bindings: tok}
+      deps: {script_runtime: js, script_bindings: panel}
 ```
 
 A provider is built once per deployment and shared across runs, so it reads
@@ -495,7 +490,59 @@ bound twice fails the execution instead of silently shadowing, and every
 global name must be an identifier that is neither a JavaScript nor a Lua
 keyword (`tokens`, `db_query`; not `tokens.estimate`, `$helper`, `var`,
 `end`) — a name a script cannot reference is rejected at assembly rather
-than installed as an unreachable property.
+than installed as an unreachable property. Inside a chain the duplicate
+report names the dep keys that bound the name; direct wiring reports the
+name alone.
+
+A host impl may still take an optional `base` dep and `bindings.Chain` its
+own provider onto it — the pattern before `chain` existed. It keeps working,
+and a chain accepts such a provider as a unit; prefer `impl: chain` for new
+deployments, because the composition then lives in the document instead of
+in every host factory.
+
+#### Composing surfaces (`agent.ScriptBindings/chain`)
+
+`impl: chain` composes the kind's resources into one provider: the optional
+`base` dep binds first, then every `unit` dep in sorted key order (`unit`
+before `unit.a`, `unit.b`, ...). Order is the dep key order, not the order
+written in the document, so choose key names that read in the intended order.
+
+```yaml
+resources:
+  std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
+  tok: {kind: agent.ScriptBindings, impl: tokens}
+  audit:
+    kind: agent.ScriptBindings
+    impl: audit
+    deps: {events: bus}
+  panel:
+    kind: agent.ScriptBindings
+    impl: chain
+    deps: {base: std, unit.audit: audit, unit.tokens: tok}
+
+agents:
+  assistant:
+    engine:
+      deps: {script_runtime: js, script_bindings: panel}
+```
+
+- A unit binds its own globals only; a base or unit may itself be a chain, a
+  host impl, `standard` or `none`, so `std` + `tokens` + `audit` needs no
+  intermediate resources.
+- Both phases keep that order: every unit's ordinary bindings, then every
+  unit's `LateProvider` phase — exactly the order `bindings.Chain` applies.
+- The engine still consumes one provider: a chain replaces the standard
+  surface like any other provider, so mount the standard resource as `base`
+  to extend it rather than to drop it.
+- A duplicate global fails the execution, naming the deps that bound it
+  (`global "tokens" bound by both "unit.audit" and "unit.tokens"`). Names
+  exist only once a provider binds, so no chain can catch a duplicate at
+  deploy time — a chain at least says which deps collided.
+- The impl takes no settings: the composition is the deps, and a settings
+  key fails the build instead of being ignored.
+- A chain is a normal resource: built once, shareable by several engines,
+  and it needs a core release that registers the impl — an older pin rejects
+  the document with `no factory for agent.ScriptBindings/chain`.
 
 The surface is observable: the node span carries `script.bindings.count` and
 `script.bindings.source` (`engine` for a wired provider, `standard` for the
