@@ -22,7 +22,11 @@ maintenance; `core/memory` stays implementation-neutral.
   cursor, chunked by the deterministic knowledge line, published as a
   document hierarchy, and reconciled into the projection lanes.
 - Summaries: derived facts compact into immutable L0-L3 summary records with
-  an active manifest served as its own retrieval lane.
+  an active manifest served as its own retrieval lane. A pass extends the
+  published tree with the facts its commit published instead of recompacting
+  the conversation's window, and falls back to the complete window when a
+  commit changes a fact the tree already summarises; see *Summary compaction
+  (per commit)* below.
 - Trigger: the write paths append a **work record** to a scope-level journal
   when a turn, a document revision or a published fact lands, and the
   background runner drains it -- deriving the conversations the records name
@@ -452,6 +456,37 @@ record. A pass that fails does not stop the drain: the conversations after it
 are derived too. `Assembly.Diagnostics` reports each source's cursor and
 whether it has pending work, the claim stored for the scope, and the trigger's
 cumulative counters.
+
+## Summary compaction (per commit)
+
+Every published fact is a leaf of an immutable L0-L3 tree, and the
+conversation's active manifest names that tree. A pass used to compact the
+conversation's complete fact window after every commit, which made the branch
+cost the conversation instead of the commit. A pass now **extends** the
+published tree: it appends the facts its commit published to the leaves and
+re-derives only the groups those leaves fill, keeping every group below the
+change by identity -- records are content-addressed, so naming a group again is
+the whole of the work. What an extension reads is the manifest, the tail group
+of every level and the children those groups share with the rebuilt region.
+
+Two things send a pass back to the complete window, and `SummaryRebuilds`
+counts them. A commit that changed a fact the tree already summarises -- the
+fact view merges identical content into the fact that holds it, so the fact's
+record is no longer the one the tree names -- has to rebuild the groups that
+fact sits in; and a tree the extension cannot place the commit's facts in
+(another generation's, one published before the tree was recorded, a window the
+facts do not continue) is compacted afresh, which is always correct. Everything
+else counts as a `SummaryExtension`. A pass that derives what is already there
+-- `derive: fresh` re-deriving a conversation -- extends nothing and rewrites
+nothing: the manifest it leaves is the manifest it found, publication time
+included.
+
+`FactStore.List` pages the same way: a page is chosen from the identities and
+creation times the scan already carries, and reads only the facts it returns,
+so paging through a conversation costs each fact once instead of costing the
+whole conversation on every page. The scan itself still walks the area it
+lists -- the storage contract has no bounded range read -- so a page bounds the
+work behind it, not the bytes in front of it.
 
 ## Lane repair (host-invoked)
 

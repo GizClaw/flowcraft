@@ -23,10 +23,16 @@ type countingStore struct {
 	storage.CASStore
 	storage.PutIfAbsentStore
 
-	gets       int
-	readBytes  int
-	puts       int
-	writeBytes int
+	gets      int
+	readBytes int
+	// lists counts the prefix scans and what they carried. A scan reads the
+	// values of every key under its prefix, so this is where a pass that lists
+	// a whole area shows up.
+	lists       int
+	listEntries int
+	listBytes   int
+	puts        int
+	writeBytes  int
 	// cas counts the compare-and-swap writes, which is how the claim is taken
 	// and given back: a store that only counted Put would report an idle poll
 	// as writing nothing at all.
@@ -48,6 +54,18 @@ func (store *countingStore) Put(ctx context.Context, key string, data []byte) er
 	return store.Store.Put(ctx, key, data)
 }
 
+func (store *countingStore) List(ctx context.Context, prefix string) ([]storage.Entry, error) {
+	entries, err := store.Store.List(ctx, prefix)
+	if err == nil {
+		store.lists++
+		store.listEntries += len(entries)
+		for _, entry := range entries {
+			store.listBytes += len(entry.Key) + len(entry.Value)
+		}
+	}
+	return entries, err
+}
+
 func (store *countingStore) CompareAndSwap(ctx context.Context, key string, old, new []byte) (bool, error) {
 	store.cas++
 	return store.CASStore.CompareAndSwap(ctx, key, old, new)
@@ -61,6 +79,7 @@ func (store *countingStore) PutIfAbsent(ctx context.Context, key string, data []
 
 func (store *countingStore) reset() {
 	store.gets, store.readBytes, store.puts, store.writeBytes, store.cas = 0, 0, 0, 0, 0
+	store.lists, store.listEntries, store.listBytes = 0, 0, 0
 }
 
 // countingLog is the same for the log substrate: every record a pass reads

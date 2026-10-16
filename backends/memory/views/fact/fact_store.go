@@ -730,18 +730,59 @@ func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, 
 	if err != nil {
 		return nil, err
 	}
-	facts := make([]Fact, 0, len(entries))
+	// The page is chosen from the headers the scan already carries -- the id and
+	// the creation time, which aggregation does not change -- before any fact is
+	// read in full: a bounded List pays for the facts it returns, not for the
+	// conversation behind them.
+	type candidate struct {
+		id        string
+		createdAt time.Time
+		placeable bool
+	}
+	candidates := make([]candidate, 0, len(entries))
 	for _, entry := range entries {
 		factID, err := decodeFactKey(prefix, entry.Key)
 		if err != nil {
 			return nil, fmt.Errorf("fact view: decode fact filename %q: %w", entry.Key, err)
 		}
-		persisted, ok, err := store.read(ctx, scope, conversationID, generation, factID)
+		current := candidate{id: factID}
+		var head persistedFact
+		if err := decodeJSON(entry.Value, &head); err == nil && head.Fact.ID == factID {
+			current.placeable = true
+			current.createdAt = head.Fact.CreatedAt
+		}
+		// A fact whose header cannot be read has no place in the order the
+		// cursor pages through. It is never dropped, though: it sorts after
+		// every fact that can be placed, so a whole read reports it and a page
+		// reports it when it reaches it.
+		if current.placeable && !options.AfterCreatedAt.IsZero() &&
+			(current.createdAt.Before(options.AfterCreatedAt) ||
+				(current.createdAt.Equal(options.AfterCreatedAt) && factID <= options.AfterID)) {
+			continue
+		}
+		candidates = append(candidates, current)
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		first, second := candidates[left], candidates[right]
+		if first.placeable != second.placeable {
+			return first.placeable
+		}
+		if first.createdAt.Equal(second.createdAt) {
+			return first.id < second.id
+		}
+		return first.createdAt.Before(second.createdAt)
+	})
+	if options.Limit > 0 && len(candidates) > options.Limit {
+		candidates = candidates[:options.Limit]
+	}
+	facts := make([]Fact, 0, len(candidates))
+	for _, current := range candidates {
+		persisted, ok, err := store.read(ctx, scope, conversationID, generation, current.id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", factID)
+			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", current.id)
 		}
 		aggregated, err := store.aggregate(ctx, persisted)
 		if err != nil {
@@ -749,24 +790,7 @@ func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, 
 		}
 		facts = append(facts, aggregated)
 	}
-	sort.Slice(facts, func(i, j int) bool {
-		if facts[i].CreatedAt.Equal(facts[j].CreatedAt) {
-			return facts[i].ID < facts[j].ID
-		}
-		return facts[i].CreatedAt.Before(facts[j].CreatedAt)
-	})
-	result := make([]Fact, 0)
-	for _, item := range facts {
-		if item.CreatedAt.Before(options.AfterCreatedAt) ||
-			(item.CreatedAt.Equal(options.AfterCreatedAt) && item.ID <= options.AfterID) {
-			continue
-		}
-		result = append(result, cloneFact(item))
-		if options.Limit > 0 && len(result) == options.Limit {
-			break
-		}
-	}
-	return result, nil
+	return facts, nil
 }
 
 func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememory.Scope, conversationID, generation, canonicalHash string) (persistedFact, bool, error) {
