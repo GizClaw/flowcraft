@@ -218,7 +218,16 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
 
-	facts, err := factview.NewFactStore(logStore, kvStore, factview.WithClock(clock))
+	// The fact view publishes through the durable outbox as well: the view
+	// writes the record after the fact is durable, so a consumer that reads
+	// the stream sees only publications whose state is already there, and a
+	// store that loses the record still serves the polling path.
+	outbox, err := factview.NewOutbox(logStore)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: fact outbox: %w", err))
+	}
+	facts, err := factview.NewFactStore(logStore, kvStore,
+		factview.WithClock(clock), factview.WithPublicationSink(outbox))
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: fact view: %w", err))
 	}
