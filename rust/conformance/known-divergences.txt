@@ -4,13 +4,47 @@
 # the gate: the list has to stay true, or it turns into a blanket excuse.
 #
 # Categories: oracle-unstable, VALUE-DIFF, error-vs-value, unparseable,
-# missing-record. See rust/conformance/tools/allowlist.py.
+# missing-record, error-text. See rust/conformance/tools/allowlist.py;
+# diff.py owns the first five, errortext.py owns `error-text`.
 #
-# There are no entries today. The collapsing-key class (fixtures/44-50) used
-# to live here as `oracle-unstable`, back when the Go side had no defined
-# answer for such a document and the port was allowed to land on one of the
-# results it produced. core now refuses the class outright and the port
-# refuses it the same way, so the two sides agree (both refuse) and the
-# evidence check in tools/stability.py asserts the refusal rather than
-# excusing a coin flip. See the "Collapsing mapping keys" section of
-# rust/conformance/README.md.
+# The collapsing-key class (fixtures/44-50) used to live here as
+# `oracle-unstable`, back when the Go side had no defined answer for such a
+# document and the port was allowed to land on one of the results it
+# produced. core now refuses the class outright and the port refuses it the
+# same way, so the two sides agree (both refuse) and the evidence check in
+# tools/stability.py asserts the refusal rather than excusing a coin flip.
+# See the "Collapsing mapping keys" section of rust/conformance/README.md.
+#
+# Two entries remain, both about documents the port refuses or reads
+# differently rather than about wording, and both from the same root cause: a
+# conversion driven by the loaded tree instead of by the parser's events.
+
+# `<<` twice in one mapping. go-yaml merges both values; the loader the port
+# reads through keeps one value per textually equal key, so the port merges
+# the last one only and the mapping comes back incomplete.
+VALUE-DIFF rust/conformance/fixtures/71-two-merge-keys.yaml -- a second << key loses the first merge
+
+# An alias used as an implicit key (`*k: 1`). libyaml accepts the form and
+# go-yaml resolves it; saphyr's parser refuses it, so the port refuses a
+# document core converts.
+error-vs-value rust/conformance/fixtures/70-alias-key.yaml -- saphyr's parser does not accept an alias as an implicit key
+
+# UTF-16. libyaml's reader picks the encoding from a byte-order mark and
+# decodes it, so core converts these documents; saphyr's parser reads UTF-8
+# only, so the port refuses them at the reader. A reader capability, of the
+# same kind as the parser's alias keys above.
+error-vs-value rust/conformance/fixtures/77-utf16le.yaml -- libyaml decodes UTF-16 documents, saphyr reads UTF-8 only
+error-vs-value rust/conformance/fixtures/78-utf16be.yaml -- libyaml decodes UTF-16 documents, saphyr reads UTF-8 only
+
+# Wording only: the port reproduces core's sentences and go-yaml's own where
+# the document alone decides them, but not the scanner's. Both sides refuse
+# the document, and each says so in its own scanner's words and positions.
+error-text rust/conformance/fixtures/18-tab-indent.yaml -- the scanner's sentence and position, libyaml's against saphyr's
+error-text rust/conformance/fixtures/69-tag-syntax-error.yaml -- the scanner's sentence for an unparsable tag, libyaml's against saphyr's
+
+# Wording only, and the one case where Go's text is not a function of the
+# document: `%#v` of a mapping orders its keys by the addresses of their type
+# descriptors when they are of different concrete types, so `fmt` prints
+# string, int, float, bool in a build-dependent order. The port prints the
+# document's own order and cannot do better.
+error-text rust/conformance/fixtures/65-invalid-map-key-mixed.yaml -- a mapping key's %#v orders mixed-type keys by type address in Go

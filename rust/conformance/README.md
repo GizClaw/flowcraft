@@ -22,14 +22,15 @@ through this binary rather than through a copy of it.
 | --- | --- |
 | `fixtures/` | hand-written corner cases: scalars, int/float forms, keys, anchors, merge keys, duplicate keys, alias bombs, tag handling, BOM/CRLF/UTF-8, JSON-vs-YAML sniffing |
 | `tools/diff.py` | compares the dumps, per (file, backend) |
+| `tools/errortext.py` | compares the *words* of the two sides' refusals, per file |
 | `tools/stability.py` | checks the oracle reproduces itself, that every collapsing document is refused, and that every exemption is still true |
 | `tools/allowlist.py` | shared reader for `known-divergences.txt` |
 | `tools/selftest.py` | negative self-tests: each checker's failure modes, exercised against a broken input |
-| `known-divergences.txt` | every accepted disagreement, with a reason |
+| `known-divergences.txt` | every accepted disagreement -- a value, a side refusing where the other converts, or wording -- with a reason |
 | `out/` | generated dumps and the oracle binary (git-ignored) |
 
 Corpus: `fixtures/`, `examples/`, `skills/`, `docs/guides/`, `docs/migrations/`,
-`.release/`, `.github/` — 168 files today, about three seconds end to end
+`.release/`, `.github/` — 195 files today, about three seconds end to end
 (25 oracle runs dominate). Every listed directory is committed, and that is
 the rule: a directory that only exists in a local checkout would make CI and
 local runs disagree about which files even exist.
@@ -46,7 +47,7 @@ remembered.
 | `norway` | `serde_norway` 0.9.42 straight into a JSON value | 22 records diverge today; the classes below |
 | `ng` | `serde_yaml_ng` 0.10.0, same shape | item for item identical to `norway` |
 | `saphyr` | `saphyr` 0.2.2 as delivered | 21 records; the same classes, plus fixture 24 — the BOM survives into the first key |
-| `saphyr-go` | that parser plus the semantic layer in `crates/flowcraft-utils/src/decode.rs` | **adopted** — byte-identical to core over the whole corpus |
+| `saphyr-go` | that parser plus the semantic layer in `crates/flowcraft-utils/src/decode.rs` | **adopted** — byte-identical to core over the whole corpus, refusals' wording included |
 
 What the two serde forks get wrong, by the fixture that shows it:
 
@@ -120,8 +121,9 @@ collection leaking into the output would show up immediately.
 **The checkers are tested too.** `tools/selftest.py` drives each failure mode
 against a deliberately broken input — an evidenced collapse that is not
 refused, an evidenced file listed as `oracle-unstable`, a stale exemption,
-unlisted nondeterminism, an `error-vs-value` mismatch, a missing record and a
-stale allowlist entry — with the accepted case beside it. Run it directly:
+unlisted nondeterminism, an `error-vs-value` mismatch, a missing record, a
+stale allowlist entry, a refusal worded differently and a stale `error-text`
+entry — with the accepted case beside it. Run it directly:
 
 ```sh
 python3 rust/conformance/tools/selftest.py
@@ -163,19 +165,56 @@ refuses it and the port refuses it the same way, so the two sides are
 | --- | --- |
 | `exact` | byte-identical to the Go output |
 | `value-equal` | same value; number or escaping form differs (checked separately — form changes break typed decoding downstream) |
-| `both-error` | both sides refused; error *text* is out of scope here |
+| `both-error` | both sides refused; `errortext.py` compares the words |
 | `error-vs-value` | one side refused, the other returned a value |
 | `VALUE-DIFF` | both returned values, and they differ |
 | `unparseable` | a side returned something that is not JSON |
 | `missing-record` | no record for that (file, backend) |
 | `oracle-unstable-hit` / `-miss` | the oracle disagrees with itself; the port landed on one of its results / somewhere else |
 
-Error text is out of scope here on purpose. `both-error` says both sides
-refused a document, not that they refused it in the same words, and the one
-refusal the gate does read for wording is the collapsing-key class (see
-tools/stability.py). The port's error layer is a contract of its own and has
-not been written yet; this gate is what will keep it honest when it is.
+## Refusals, and which of them are wording
 
-Today's numbers: 148 exact, 20 `both-error`, and no `VALUE-DIFF`,
+`diff.py` treats a refusal as one observation — "both sides refused" — and
+`errortext.py` then compares the words, because a refusal *is* what a caller
+reads. What the port reproduces:
+
+- core's own sentences: the `config utils: ` wrapper, the unusable-key
+  sentence (every unspellable key of the document, named once each, sorted —
+  `~` and an integer past int64, fixtures 52, 53), and the collapsing-key
+  sentence (every key of the group, fixtures 44–50, 58–60);
+- go-yaml's refusals where the document alone decides them: a repeated key
+  with its line and its `%#v` (fixtures 12, 54–57), a value JSON cannot write
+  (`json: unsupported value: …`, fixtures 06, 61), a scalar a tag cannot
+  decode and a merge whose value is not a mapping (fixtures 67, 68), a
+  sequence used as a key (fixtures 39, 66);
+- libyaml's reader, which both sides run before the scanner: a control
+  character anywhere in a document, and the four ways a character can fail to
+  be UTF-8 (fixtures 72–75).
+
+The reader's *encoding* is the one capability it does not have: libyaml picks
+UTF-16 from a byte-order mark and decodes it, so core converts such a document
+where saphyr's parser — which reads UTF-8 only — makes the port refuse it
+(fixtures 77, 78).
+
+What it does not, and why each one is listed in `known-divergences.txt` as
+`error-text`:
+
+- the *scanner's* wording. saphyr and libyaml find the same faults and say so
+  in their own words and their own positions (fixtures 18, 69);
+- `%#v` of a mapping used as a key. `fmt` orders a map's keys by the addresses
+  of their type descriptors once the concrete types differ, so the sentence
+  is not a function of the document (fixture 65; all-string keys *are*
+  ordered by value and are reproduced — fixture 66).
+
+The remaining divergences are values rather than wording. A mapping with two
+`<<` keys keeps one merge (fixture 71, `VALUE-DIFF`): the conversion walks the
+*loaded tree*, which is a map, so a document a map cannot represent loses
+something there. An alias used as an implicit key (fixture 70) and a UTF-16
+document (fixtures 77, 78) are the two the parser cannot read at all. The
+first of those names its own fix: a conversion driven by the parser's events,
+which is a step of its own.
+
+Today's numbers: 150 exact, 41 `both-error` (38 of them word for word, 3
+exempted), 4 allowlisted divergences, and no `VALUE-DIFF`,
 `error-vs-value`, `value-equal`, `unparseable`, `missing-record` or
-`oracle-unstable-hit` anywhere.
+`oracle-unstable-hit` outside the allowlist.
