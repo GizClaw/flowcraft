@@ -195,9 +195,10 @@ With the workspace driver all state lives under the bound workspace:
   pass that judged it, how many entries its buckets hold, and when it last
   judged the whole scope.
 - `maintain/v2/buckets/...` — one document per conversation: the read-path
-  decay factors and supersede marks the last maintenance pass wrote, stamped
-  with the pass that judged them, so a context call reads the buckets the
-  candidates' conversations own. A document in the pre-shard layout
+  decay factors and supersede marks the last maintenance pass wrote — each
+  supersede mark with the relation it read and the window the fact was current
+  over — stamped with the pass that judged them, so a context call reads the
+  buckets the candidates' conversations own. A document in the pre-shard layout
   (`maintain/v1/overlay/...`) is never read: the status reports it as ignored
   and the next pass replaces it.
 - `recall/v1/...` — the read path's receipts: one record per recalled item
@@ -380,7 +381,7 @@ direction. The BM25 lane is unaffected by that part: it scores with prefix
 matching off and matches persisted terms exactly.
 
 The algorithm versions of the lines this changed name the splitter they were
-built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v3`,
+built with (`okapi-bm25-v2`, `deterministic-entity-v3`, `maintain-v4`,
 `bm25-query-sigmoid-v2`). The last rides on every candidate's score term as its
 calibration version (`fusion.BM25CalibrationVersion`), so a consumer can see
 which calibration produced a score. The other three are read where the state
@@ -595,7 +596,8 @@ not a free win.
 ## Maintenance (host-invoked)
 
 `Assembly.Maintain(ctx, scope)` runs one soft-merge and decay pass: it detects
-superseded facts (same entity plus similar text; the newer fact wins) and aged
+superseded facts (same entity plus similar text, or the same single-valued
+relation about the same subject; the newer fact wins) and aged
 facts (exponential decay by event time or last recall, whichever is later),
 writes a per-scope read-path overlay, reclaims the derived document builds the
 scope no longer serves, and returns the plan. Canonical fact text is never
@@ -603,7 +605,7 @@ edited — the overlay only multiplies retrieval scores, and the strongest of th
 supersede and decay factors wins. The module ships no runner: hosts schedule
 the call however they want (cron, queue, or an admin endpoint). Tuning lives in
 `maintain.Config` (similarity threshold, supersede factor, decay half-life,
-decay floor, recall saturation).
+decay floor, recall saturation, relation vocabulary).
 
 The derivation trigger is not a maintenance runner: it derives what a write
 path owed. A host that wants the overlay refreshed for what changed reads the
@@ -622,6 +624,59 @@ pass). Supersede judgments never cross conversations, so re-judging the
 conversations that changed judges what a whole pass would judge them to be;
 decay is always recomputed from the pass's own clock, so a conversation a
 partial pass leaves behind keeps the factors the last whole pass measured.
+
+### Supersede: two rules, one window
+
+A fact is superseded when a newer fact of its conversation replaces it, and the
+pass decides that two ways. The similarity rule reads the texts: facts sharing
+an entity whose token overlap reaches the threshold are restatements of one
+claim, and the older one is the earlier restatement. The relation rule reads the
+predicate the extractor wrote: two facts stating the same single-valued relation
+about the same subject cannot both be current, so the older one is replaced by
+the newer even when the two texts share almost no tokens — the "I moved" update
+that similarity cannot see. Each finding names the rule that decided it
+(`Plan.Supersedes[].Reason`) and, for a relation, the relation it read
+(`.Relation`), and carries the token similarity it measured either way: a
+relation finding with a low similarity is this rule's whole evidence.
+
+The relation rule is deliberately narrow. A relation joins the vocabulary only
+when one subject can be in it one way at a time, and `maintain.DefaultRelations`
+holds the profile relations that qualify — where someone lives, who employs
+them, what they work as, who they are married to, and where and when they were
+born. Preferences, events, plans and family-of relations all stay current
+together however a model phrases them — two facts about a pottery class and a
+choir rehearsal are two classes, not an update — so they are not in it, and a
+phrase the vocabulary does not recognize leaves the pair to the similarity rule:
+a missed update, never a wrong one. A predicate is matched by its folded form
+(case, `_`/`-` separators and stray punctuation are the model's spelling, not a
+different relation), the subject is read as the entity the fact's own text names
+first, and the two facts have to state different values of the relation — which
+the flat schema lets the pass decide only where they name different objects, so
+"moved to Berlin" does not replace "lives in Berlin". A deployment whose facts
+carry no predicates — the extractor writes them only under its `rich` strategy —
+configures an empty vocabulary (`maintain.Config.Relations`), which turns the
+rule off instead of digesting a vocabulary that can never match.
+
+The vocabulary is part of what the pass is, so it is digested into the overlay's
+stamp beside the tuning: the same facts judged under another vocabulary are
+another pass's judgments, and this deployment serves only its own.
+
+Both rules write one kind of overlay entry, and both carry the window the older
+fact was current over. `ValidAt` is the superseded fact's own date — its event
+time, or when the fact was created if the turn stated none — and `InvalidAt` is
+the superseding fact's date, which is the same key the pass ordered the pair by,
+so a window never runs backwards. `Plan.Supersedes[].ValidDetail` and
+`.InvalidDetail` carry each side's time expression as the extractor stated it,
+which is what a human checks the resolution against. The window is what answers
+"what did we know at time T": a host reads it back with `maintain.Store.Load`
+(or from the plan) and compares T against the interval. The read path itself
+only multiplies the score, because a context request carries no time of its own.
+
+Nothing here hides a fact or rewrites one, and that is deliberate: a superseded
+fact keeps its row in the view, its text, its dates and its place in the read
+path, served at the reduced factor (the strongest of its factors wins — see
+below), so a question about the state before the update is still answered from
+the fact that states it.
 
 ### Recall receipts
 
