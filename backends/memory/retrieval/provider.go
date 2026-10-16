@@ -152,6 +152,15 @@ type BulkScoreAdjuster interface {
 	ScoreOverlay(context.Context, corememory.Scope) (map[string]float64, error)
 }
 
+// ScopedScoreAdjuster resolves the adjustments of the named conversations in
+// one call: the read a request needs when its candidates span a few
+// conversations of a large scope. The provider prefers it over the whole-scope
+// read, which stays the fallback for implementations that have no
+// per-conversation read to offer.
+type ScopedScoreAdjuster interface {
+	ScoreOverlayFor(context.Context, corememory.Scope, []string) (map[string]float64, error)
+}
+
 // GenerationResolver reports the derivation generation readers should serve for
 // one conversation. Lanes that store their own generation label -- the summary
 // branch publishes one with its manifest -- drop candidates from a replaced
@@ -301,8 +310,19 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 	}
 	var scoreOverlay map[string]float64
 	if !isNilInterface(provider.ScoreAdjuster) {
-		if bulk, ok := provider.ScoreAdjuster.(BulkScoreAdjuster); ok {
-			overlay, overlayErr := bulk.ScoreOverlay(ctx, request.Scope)
+		switch adjuster := provider.ScoreAdjuster.(type) {
+		case ScopedScoreAdjuster:
+			// The adjustments this request can be affected by are the ones
+			// its candidates' conversations carry, and reading them costs
+			// the conversations, not the scope.
+			overlay, overlayErr := adjuster.ScoreOverlayFor(ctx, request.Scope, candidateConversations(candidates))
+			if overlayErr != nil {
+				diagnostics = append(diagnostics, Diagnostic{Stage: "score_adjust", Err: overlayErr})
+			} else {
+				scoreOverlay = overlay
+			}
+		case BulkScoreAdjuster:
+			overlay, overlayErr := adjuster.ScoreOverlay(ctx, request.Scope)
 			if overlayErr != nil {
 				diagnostics = append(diagnostics, Diagnostic{Stage: "score_adjust", Err: overlayErr})
 			} else {
@@ -614,6 +634,28 @@ func candidateIdentity(candidate component.Candidate) string {
 		}, "\x00")
 	}
 	return candidate.ID
+}
+
+// candidateConversations returns the conversations a candidate set can draw
+// adjustments from: the ones its addresses name, deduplicated. A candidate
+// whose address names none is a lane outside the overlay's scope and is
+// skipped; the overlay read that needs this list reads one bucket per
+// conversation instead of the scope's whole document.
+func candidateConversations(candidates []component.Candidate) []string {
+	conversations := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		conversation := strings.TrimSpace(candidate.Address.ConversationID)
+		if conversation == "" {
+			continue
+		}
+		if _, exists := seen[conversation]; exists {
+			continue
+		}
+		seen[conversation] = struct{}{}
+		conversations = append(conversations, conversation)
+	}
+	return conversations
 }
 
 // normalizeRerankedItems validates an item-reranker result: every returned
