@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -217,7 +218,8 @@ func DetectWithRecalls(
 			}
 			return left.Before(right)
 		})
-		for index, older := range facts {
+		entities := newEntityIndex(facts)
+		for position, older := range facts {
 			identity, keyErr := itemKey(scope, conversation, older.ID)
 			if keyErr != nil {
 				return Plan{}, keyErr
@@ -235,12 +237,14 @@ func DetectWithRecalls(
 			if len(older.Entities) == 0 {
 				continue
 			}
-			for newerIndex := index + 1; newerIndex < len(facts); newerIndex++ {
-				newer := facts[newerIndex]
-				if len(newer.Entities) == 0 || !sharesEntity(older.Entities, newer.Entities) {
-					continue
-				}
-				similarity := textsim.Jaccard(older.Text, newer.Text)
+			// Only a fact sharing an entity can supersede this one, and the
+			// pair-wise scan spent its time deciding that of every later
+			// fact. The index answers that question with the buckets it was
+			// built from: the candidates are exactly the later facts the
+			// scan would have tested, in the order it tested them.
+			for _, candidate := range entities.candidates(position) {
+				newer := facts[candidate]
+				similarity := textsim.Similarity(entities.tokens(position), entities.tokens(candidate))
 				if similarity < config.SimilarityThreshold {
 					continue
 				}
@@ -298,21 +302,80 @@ func decayScore(fact factview.Fact, now time.Time, config Config, receipt recall
 	return score
 }
 
-func sharesEntity(left, right []string) bool {
-	owned := make(map[string]struct{}, len(left))
-	for _, entity := range left {
-		owned[normalizeEntity(entity)] = struct{}{}
-	}
-	for _, entity := range right {
-		if _, ok := owned[normalizeEntity(entity)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func normalizeEntity(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// entityIndex resolves the supersede candidates of one conversation: which
+// facts a scan of one fact has to compare with. Sharing an entity is the
+// necessary condition of a supersede, so the pairs the index leaves out are
+// pairs no scan needed to look at -- for a scope whose facts carry a couple
+// of entities each, most of them.
+//
+// The positions are indices into the recency-ordered facts, so "later in the
+// scan" is "greater position", and every bucket is ascending by construction.
+type entityIndex struct {
+	facts    []factview.Fact
+	entities [][]string
+	byEntity map[string][]int
+	// tokenCache caches one fact's token set for the pairs that get compared: the
+	// pair-wise scan re-tokenized both texts for every pair it tested, and a
+	// fact is the older side once and the newer side as often as it shares an
+	// entity with one.
+	tokenCache []map[string]struct{}
+}
+
+func newEntityIndex(facts []factview.Fact) *entityIndex {
+	index := &entityIndex{
+		facts:      facts,
+		entities:   make([][]string, len(facts)),
+		byEntity:   make(map[string][]int, len(facts)*2),
+		tokenCache: make([]map[string]struct{}, len(facts)),
+	}
+	for position, fact := range facts {
+		if len(fact.Entities) == 0 {
+			continue
+		}
+		normalized := make([]string, 0, len(fact.Entities))
+		for _, entity := range fact.Entities {
+			normalized = append(normalized, normalizeEntity(entity))
+		}
+		sort.Strings(normalized)
+		normalized = slices.Compact(normalized)
+		index.entities[position] = normalized
+		for _, entity := range normalized {
+			index.byEntity[entity] = append(index.byEntity[entity], position)
+		}
+	}
+	return index
+}
+
+// candidates returns the positions of the facts sharing an entity with the
+// fact at position, later in the scan's order, ascending. A fact with no
+// entities has no candidates, and the caller does not ask for one.
+func (index *entityIndex) candidates(position int) []int {
+	var merged []int
+	for _, entity := range index.entities[position] {
+		bucket := index.byEntity[entity]
+		// Only the tail of the bucket is later than this fact; the rest was
+		// scanned when those positions were the fact being judged.
+		merged = append(merged, bucket[sort.SearchInts(bucket, position+1):]...)
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	// A fact carrying two entities a later fact also carries appears twice;
+	// the pair-wise scan visited it once.
+	sort.Ints(merged)
+	return slices.Compact(merged)
+}
+
+// tokens returns the fact's token set, built on first use.
+func (index *entityIndex) tokens(position int) map[string]struct{} {
+	if index.tokenCache[position] == nil {
+		index.tokenCache[position] = textsim.Set(index.facts[position].Text)
+	}
+	return index.tokenCache[position]
 }
 
 func finite(value float64) bool {
