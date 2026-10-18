@@ -23,6 +23,12 @@ serde = { version = "1.0.228", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 serde_norway = "0.9.42"
 serde_yaml_ng = "0.10.0"
+# The runtime the port chose (plan §6): the bus's backpressure is a pending
+# future, not a parked thread, and cancellation is a token rather than a
+# context. `sync` alone is enough for the bus; `rt`/`macros`/`time` are for its
+# tests, and land here so every crate measures against the same version.
+tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
 
 # Production posture, for the crates that ship. The probe does not inherit it:
 # it is a measurement binary, not a shipped crate.
