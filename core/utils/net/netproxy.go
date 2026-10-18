@@ -123,7 +123,8 @@ type ProxyConfig struct {
 }
 
 // ProxyDecision is one audit record: which destination was decided,
-// with which action, and which rule ("" = mode default) decided it.
+// with which action, which rule ("" = mode default) decided it, and the
+// address the connection was sent to.
 type ProxyDecision struct {
 	Host   string
 	Port   int
@@ -133,6 +134,12 @@ type ProxyDecision struct {
 	// Reason is the deny rule's model-facing explanation ("" when the
 	// mode default or an allow rule decided).
 	Reason string
+	// DialHost is the concrete "host:port" the decision resolved to:
+	// when IP/CIDR rules constrain the answer, the dial is pinned to an
+	// address they covered, so this can differ from Host. It is what the
+	// connection actually went to, which is what lets an audit trail
+	// answer "where did it go", not just "what was it called".
+	DialHost string
 }
 
 // Proxy is a host-side enforcement proxy listening on a unix socket
@@ -320,10 +327,10 @@ func (p *Proxy) serveSOCKS5(conn net.Conn, br *bufio.Reader) {
 		host, port := splitHostPort(hostport, 0)
 		action, rule, reason, dialHost, err := p.decide(ctx, hostport, 0)
 		if err != nil {
-			p.audit(host, port, NetDeny, rule, reason)
+			p.audit(host, port, NetDeny, rule, reason, dialHost)
 			return nil, err
 		}
-		p.audit(host, port, action, rule, reason)
+		p.audit(host, port, action, rule, reason, dialHost)
 		if action != NetAllow {
 			return nil, errDestinationNotAllowed
 		}
@@ -459,7 +466,7 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.audit(host, port, action, rule, reason)
+	p.audit(host, port, action, rule, reason, dialHost)
 	if action != NetAllow {
 		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
@@ -496,7 +503,7 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.audit(host, port, action, rule, reason)
+	p.audit(host, port, action, rule, reason, dialHost)
 	if action != NetAllow {
 		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
@@ -682,16 +689,48 @@ func (p *Proxy) decideAddrs(
 	}
 }
 
+// Decide reports what this proxy would do with one destination, without
+// connecting to it: the audit record the proxy would emit, carrying the
+// concrete address a dial would use.
+//
+// It is the dry-run form of the policy -- for checking a configuration
+// against a destination, or reconstructing what a rule set allows -- and it
+// is the same code path a served CONNECT or SOCKS5 request takes, so the two
+// cannot disagree. defaultPort fills in the port when hostport carries none
+// (443 for CONNECT, 80 for absolute-form HTTP, 0 for SOCKS5).
+//
+// The returned record is always populated; a non-nil error means the
+// destination could not be judged (the policy matcher failed to compile, or
+// an IP/CIDR rule needed a name resolved and the resolution failed), and the
+// record then carries the deny the proxy would have used.
+func (p *Proxy) Decide(ctx context.Context, hostport string, defaultPort int) (ProxyDecision, error) {
+	host, port := splitHostPort(hostport, defaultPort)
+	action, rule, reason, dialHost, err := p.decide(ctx, hostport, defaultPort)
+	if err != nil {
+		action = NetDeny
+	}
+	return ProxyDecision{
+		Host:     host,
+		Port:     port,
+		Action:   action,
+		Mode:     p.cfg.Mode,
+		Rule:     rule,
+		Reason:   reason,
+		DialHost: dialHost,
+	}, err
+}
+
 // audit emits one decision record when OnDecision is configured.
-func (p *Proxy) audit(host string, port int, action NetAction, rule, reason string) {
+func (p *Proxy) audit(host string, port int, action NetAction, rule, reason, dialHost string) {
 	if p.cfg.OnDecision != nil {
 		p.cfg.OnDecision(ProxyDecision{
-			Host:   host,
-			Port:   port,
-			Action: action,
-			Mode:   p.cfg.Mode,
-			Rule:   rule,
-			Reason: reason,
+			Host:     host,
+			Port:     port,
+			Action:   action,
+			Mode:     p.cfg.Mode,
+			Rule:     rule,
+			Reason:   reason,
+			DialHost: dialHost,
 		})
 	}
 }
