@@ -389,6 +389,21 @@ var netMatcherSamples = []netMatcherSample{
 		},
 	},
 	{
+		// An allow rule's reason comes back from Matcher.Match even though
+		// core's docs say allow reasons are ignored: what the field means and
+		// what the code returns are two different things, and only one of them
+		// is observable.
+		name: "an-allow-reason-comes-back-too",
+		rules: []netRuleSample{
+			{host: "allow.example", reason: "a CDN host"},
+			{host: "allow.example", port: 22, deny: true, reason: "but ssh is not"},
+		},
+		hosts: []netHostPort{
+			{"allow.example", 443},
+			{"allow.example", 22},
+		},
+	},
+	{
 		// No rules at all: every query is unmatched, and the answer is allow
 		// because the caller applies the mode.
 		name:  "empty-policy",

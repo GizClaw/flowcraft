@@ -4167,6 +4167,42 @@
       ]
     },
     {
+      "name": "an-allow-reason-comes-back-too",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "allow.example",
+          "port": 0,
+          "reason": "a CDN host"
+        },
+        {
+          "action": "deny",
+          "host": "allow.example",
+          "port": 22,
+          "reason": "but ssh is not"
+        }
+      ],
+      "has_ip_rules": false,
+      "hosts": [
+        {
+          "host": "allow.example",
+          "port": 443,
+          "action": "allow",
+          "rule": "allow allow.example",
+          "reason": "a CDN host",
+          "matched": true
+        },
+        {
+          "host": "allow.example",
+          "port": 22,
+          "action": "deny",
+          "rule": "deny allow.example:22",
+          "reason": "but ssh is not",
+          "matched": true
+        }
+      ]
+    },
+    {
       "name": "empty-policy",
       "has_ip_rules": false,
       "hosts": [
