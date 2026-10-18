@@ -145,6 +145,20 @@ if ! cmp -s "$out/filetype-contract.json" "$conf/filetype-contract.json"; then
   exit 1
 fi
 
+echo "==> net contract"
+# core/utils/net: host patterns (domain-and-descendants, leading *. wildcards,
+# IP literals, CIDR prefixes, IDNA on both sides), Set, and the Matcher's
+# verdicts over NetPolicy rules, replayed by
+# crates/flowcraft-utils/tests/net_contract.rs. The other half of the package
+# -- the proxy and SOCKS5 listener -- is sockets, and lands in its own slice.
+"$out/oracle" -net-contract > "$out/net-contract.json"
+if ! cmp -s "$out/net-contract.json" "$conf/net-contract.json"; then
+  echo "rust/conformance/net-contract.json no longer matches core:" >&2
+  diff "$conf/net-contract.json" "$out/net-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -net-contract) > rust/conformance/net-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

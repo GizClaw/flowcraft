@@ -14,6 +14,12 @@ repository = "https://github.com/GizClaw/flowcraft"
 
 [workspace.dependencies]
 base64 = "0.22.1"
+# Host normalization is IDNA (UTS #46), and core uses golang.org/x/net's
+# Lookup profile. The options below are chosen to be that profile: STD3 rules,
+# hyphen positions checked, non-transitional, no DNS length limit. Writing the
+# UTS #46 mapping tables by hand would be a larger artifact than the crate and
+# worse at it.
+idna = "1.1.0"
 saphyr = "0.2.2"
 saphyr-parser = "0.2.2"
 serde = { version = "1.0.228", default-features = false, features = ["std"] }
