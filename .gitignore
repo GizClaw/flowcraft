@@ -76,3 +76,7 @@
 **/.vscode/
 **/__debug_bin*
 skills/flowcraft-config/scripts/validator/validator
+
+# The oracle is built into this directory by `go build ./...`; the binary is a
+# build artifact, not a source file.
+/tools/conformance-oracle/conformance-oracle
