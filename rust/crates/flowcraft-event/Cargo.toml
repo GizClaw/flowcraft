@@ -1,0 +1,17 @@
+[package]
+name = "flowcraft-event"
+description = "The port's event bus: subjects, envelopes and the in-process bus."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Unpublished, like every crate here: the port has no release yet.
+publish = false
+
+[dependencies]
+flowcraft-contract = { path = "../flowcraft-contract" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

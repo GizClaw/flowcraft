@@ -111,6 +111,23 @@ types have no invalid state: an unknown message role, an absent media source,
 an audio encoding outside the table. The test's module docs say which of those
 the corpus samples and which it pins by hand.
 
+## The event contract
+
+`event-contract.json` is the routing half of `core/event`, dumped by
+`tools/conformance-oracle -event-contract` and replayed by
+`crates/flowcraft-event/tests/event_contract.rs`: the subject and pattern
+grammar with every refusal sentence, the matcher over a table of
+pattern/subject pairs, the producer-kind convention, and the envelope wire
+(field order, `omitempty`, RFC 3339 nanoseconds, header order, and the
+compaction `encoding/json` gives a `json.RawMessage` payload).
+
+The bus is deliberately not here. Which envelope reaches which subscription,
+under which backpressure policy, and with what happens on close, is a runtime —
+and the port's concurrency model is a decision to make on purpose rather than
+by translating Go's mutexes and wait groups. The bus slice pins that contract
+when it lands; the routing keys and the wire above are what every bus
+implementation underneath has to agree on.
+
 ## The backends it measured and rejected
 
 The port did not start from a favourite. Four readings ran into the same dump

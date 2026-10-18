@@ -1,0 +1,285 @@
+{
+  "note": "core/event's contract: subjects, patterns, the matcher, producer kinds and the envelope wire. Rows carry their input; the port replays them.",
+  "subjects": [
+    {
+      "subject": "a",
+      "valid": true
+    },
+    {
+      "subject": "graph.run.r1.start",
+      "valid": true
+    },
+    {
+      "subject": "graph.run.r1.node.n1.complete",
+      "valid": true
+    },
+    {
+      "subject": "kanban.board.b1.update",
+      "valid": true
+    },
+    {
+      "subject": "engine.step.actor.agent1.node.n1",
+      "valid": true
+    },
+    {
+      "subject": "a.b.c.d.e.f.g.h",
+      "valid": true
+    },
+    {
+      "subject": "",
+      "valid": false,
+      "error": "event: invalid subject: empty"
+    },
+    {
+      "subject": ".a",
+      "valid": false,
+      "error": "event: invalid subject: leading or trailing dot in \".a\""
+    },
+    {
+      "subject": "a.",
+      "valid": false,
+      "error": "event: invalid subject: leading or trailing dot in \"a.\""
+    },
+    {
+      "subject": "a..b",
+      "valid": false,
+      "error": "event: invalid subject: empty segment at index 1 in \"a..b\""
+    },
+    {
+      "subject": "a.*",
+      "valid": false,
+      "error": "event: invalid subject: wildcard \"*\" present at segment 1 (use Pattern, not Subject)"
+    },
+    {
+      "subject": "a.>",
+      "valid": false,
+      "error": "event: invalid subject: wildcard \">\" present at segment 1 (use Pattern, not Subject)"
+    },
+    {
+      "subject": "kanban.*.b1",
+      "valid": false,
+      "error": "event: invalid subject: wildcard \"*\" present at segment 1 (use Pattern, not Subject)"
+    }
+  ],
+  "patterns": [
+    {
+      "pattern": "a",
+      "valid": true
+    },
+    {
+      "pattern": "graph.run.r1.>",
+      "valid": true
+    },
+    {
+      "pattern": "graph.run.*.node.*.start",
+      "valid": true
+    },
+    {
+      "pattern": "kanban.>",
+      "valid": true
+    },
+    {
+      "pattern": "*>",
+      "valid": false,
+      "error": "event: invalid pattern: wildcard must occupy a whole segment, got \"*>\""
+    },
+    {
+      "pattern": "*.*",
+      "valid": true
+    },
+    {
+      "pattern": "a.*.b",
+      "valid": true
+    },
+    {
+      "pattern": "",
+      "valid": false,
+      "error": "event: invalid pattern: empty"
+    },
+    {
+      "pattern": ".a",
+      "valid": false,
+      "error": "event: invalid pattern: leading or trailing dot in \".a\""
+    },
+    {
+      "pattern": "a.",
+      "valid": false,
+      "error": "event: invalid pattern: leading or trailing dot in \"a.\""
+    },
+    {
+      "pattern": "a..b",
+      "valid": false,
+      "error": "event: invalid pattern: empty segment at index 1 in \"a..b\""
+    },
+    {
+      "pattern": "a.>.b",
+      "valid": false,
+      "error": "event: invalid pattern: '>' must be the last segment in \"a.>.b\""
+    },
+    {
+      "pattern": "a.b*",
+      "valid": false,
+      "error": "event: invalid pattern: wildcard must occupy a whole segment, got \"b*\""
+    },
+    {
+      "pattern": "*a",
+      "valid": false,
+      "error": "event: invalid pattern: wildcard must occupy a whole segment, got \"*a\""
+    },
+    {
+      "pattern": "a.>>",
+      "valid": false,
+      "error": "event: invalid pattern: wildcard must occupy a whole segment, got \">>\""
+    }
+  ],
+  "matches": [
+    {
+      "pattern": "graph.run.r1.>",
+      "subject": "graph.run.r1",
+      "matches": false
+    },
+    {
+      "pattern": "graph.run.r1.>",
+      "subject": "graph.run.r1.node.n1.start",
+      "matches": true
+    },
+    {
+      "pattern": "graph.run.>",
+      "subject": "graph.run.r1",
+      "matches": true
+    },
+    {
+      "pattern": "graph.run.>",
+      "subject": "graph.run",
+      "matches": false
+    },
+    {
+      "pattern": "graph.run.*.node.*.start",
+      "subject": "graph.run.r1.node.n1.start",
+      "matches": true
+    },
+    {
+      "pattern": "graph.run.*",
+      "subject": "graph.run.r1.start",
+      "matches": false
+    },
+    {
+      "pattern": "kanban.>",
+      "subject": "kanban.board.b1.update",
+      "matches": true
+    },
+    {
+      "pattern": "a.b",
+      "subject": "a.b",
+      "matches": true
+    },
+    {
+      "pattern": "a.b",
+      "subject": "a.b.c",
+      "matches": false
+    },
+    {
+      "pattern": "*",
+      "subject": "x",
+      "matches": true
+    },
+    {
+      "pattern": "*",
+      "subject": "x.y",
+      "matches": false
+    },
+    {
+      "pattern": "a.*.c",
+      "subject": "a.b.c",
+      "matches": true
+    },
+    {
+      "pattern": "a.*.c",
+      "subject": "a.b.d",
+      "matches": false
+    }
+  ],
+  "producers": [
+    {
+      "subject": "engine.run.start",
+      "kind": "engine"
+    },
+    {
+      "subject": "kanban.board.b1.update",
+      "kind": "kanban"
+    },
+    {
+      "subject": "graph.run.r1.start",
+      "kind": "graph"
+    },
+    {
+      "subject": "single",
+      "kind": ""
+    },
+    {
+      "subject": "a.b",
+      "kind": "a"
+    }
+  ],
+  "envelopes": [
+    {
+      "subject": "graph.run.r1.start",
+      "id": "d5cf0k0g1h2j3k4m5n6o",
+      "time_secs": 1760572800,
+      "time_nanos": 0,
+      "wire": "{\"id\":\"d5cf0k0g1h2j3k4m5n6o\",\"subject\":\"graph.run.r1.start\",\"time\":\"2025-10-16T00:00:00Z\"}"
+    },
+    {
+      "subject": "graph.run.r1.start",
+      "id": "d5cf0k0g1h2j3k4m5n6o",
+      "time_secs": 1760572800,
+      "time_nanos": 123000000,
+      "source": "engine",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "span_id": "00f067aa0ba902b7",
+      "headers": {
+        "node_id": "n1",
+        "run_id": "r1",
+        "tenant": "acme"
+      },
+      "payload": "{\"b\":1,\"a\":[true,null]}",
+      "wire": "{\"id\":\"d5cf0k0g1h2j3k4m5n6o\",\"subject\":\"graph.run.r1.start\",\"time\":\"2025-10-16T00:00:00.123Z\",\"source\":\"engine\",\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"span_id\":\"00f067aa0ba902b7\",\"headers\":{\"node_id\":\"n1\",\"run_id\":\"r1\",\"tenant\":\"acme\"},\"payload\":{\"b\":1,\"a\":[true,null]}}"
+    },
+    {
+      "subject": "kanban.board.b1.update",
+      "id": "d5cf0k0g1h2j3k4m5n6p",
+      "time_secs": 1760572800,
+      "time_nanos": 500000000,
+      "headers": {
+        "agent_id": "a1",
+        "parent_run_id": "r0"
+      },
+      "payload": "{ \"b\" : \"<1>\" }",
+      "wire": "{\"id\":\"d5cf0k0g1h2j3k4m5n6p\",\"subject\":\"kanban.board.b1.update\",\"time\":\"2025-10-16T00:00:00.5Z\",\"headers\":{\"agent_id\":\"a1\",\"parent_run_id\":\"r0\"},\"payload\":{\"b\":\"\\u003c1\\u003e\"}}"
+    },
+    {
+      "subject": "a.b",
+      "id": "00000000000000000000",
+      "time_secs": -62135596800,
+      "time_nanos": 0,
+      "wire": "{\"id\":\"00000000000000000000\",\"subject\":\"a.b\",\"time\":\"0001-01-01T00:00:00Z\"}"
+    },
+    {
+      "subject": "a.b",
+      "id": "d5cf0k0g1h2j3k4m5n6q",
+      "time_secs": 1700000000,
+      "time_nanos": 0,
+      "payload": "{\"doc\":\"a<b>&\\u2028c\",\"n\":1e100}",
+      "wire": "{\"id\":\"d5cf0k0g1h2j3k4m5n6q\",\"subject\":\"a.b\",\"time\":\"2023-11-14T22:13:20Z\",\"payload\":{\"doc\":\"a\\u003cb\\u003e\\u0026\\u2028c\",\"n\":1e100}}"
+    },
+    {
+      "subject": "a.b",
+      "id": "d5cf0k0g1h2j3k4m5n6r",
+      "time_secs": 1700000000,
+      "time_nanos": 0,
+      "payload": "not json",
+      "wire_error": "json: error calling MarshalJSON for type *jsontext.Value: invalid character 'o' in literal null (expecting 'u')",
+      "wire_text_from": "encoding/json"
+    }
+  ]
+}

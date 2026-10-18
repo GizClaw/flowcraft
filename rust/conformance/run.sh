@@ -91,6 +91,19 @@ if ! cmp -s "$out/message-contract.json" "$conf/message-contract.json"; then
   exit 1
 fi
 
+echo "==> event contract"
+# The routing half of core/event: subjects, patterns, the matcher and the
+# envelope wire, replayed by
+# crates/flowcraft-event/tests/event_contract.rs. The bus itself is a runtime
+# and lands with the slice that picks the port's concurrency model.
+"$out/oracle" -event-contract > "$out/event-contract.json"
+if ! cmp -s "$out/event-contract.json" "$conf/event-contract.json"; then
+  echo "rust/conformance/event-contract.json no longer matches core:" >&2
+  diff "$conf/event-contract.json" "$out/event-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -event-contract) > rust/conformance/event-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

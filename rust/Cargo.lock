@@ -51,6 +51,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowcraft-event"
+version = "0.0.0"
+dependencies = [
+ "flowcraft-contract",
+ "serde_json",
+]
+
+[[package]]
 name = "flowcraft-utils"
 version = "0.0.0"
 dependencies = [

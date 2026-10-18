@@ -112,7 +112,7 @@ fn exp_form(f: f64) -> String {
 /// `encoding/json`'s string escaping, including the default HTML escaping.
 /// Shared with the wire codecs, which have to write the same bytes core does
 /// for fields core writes as struct fields rather than as map entries.
-pub(crate) fn write_string(s: &str, out: &mut String) {
+pub fn write_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -142,8 +142,9 @@ pub(crate) fn write_string(s: &str, out: &mut String) {
 /// which is what `encoding/json` does to a `json.RawMessage` on the way out.
 ///
 /// The input is expected to be valid JSON; a caller that cannot promise that
-/// checks first ([`is_valid`]).
-pub(crate) fn compact(raw: &str) -> String {
+/// checks first with [`is_valid`] (which stays crate-internal: callers above
+/// this crate write their own refusal).
+pub fn compact(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut in_string = false;
