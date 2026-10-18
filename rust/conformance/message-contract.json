@@ -1,5 +1,5 @@
 {
-  "note": "The media DTOs of core/message, dumped for the port. Rows carry their input and the outcome core produced; the port replays them.",
+  "note": "The media DTOs of core/message, dumped for the port. Rows carry their input and the outcome core produced; the port replays them. Parts, messages, tool DTOs and schema builders are in the same file.",
   "media_sources": [
     {
       "target": "image",
@@ -429,8 +429,7 @@
       "op": "from_wire",
       "document": "{\"kind\":\"url\",\"url\":\"https://x/y\",\"extra\":1}",
       "outcome": "error",
-      "error": "json: unknown field \"extra\"",
-      "text_from": "encoding/json"
+      "error": "json: unknown field \"extra\""
     },
     {
       "target": "image",
@@ -557,6 +556,676 @@
       "outcome": "error",
       "error": "audio sample rate and channels must not be negative",
       "media_type": "audio/flac"
+    }
+  ],
+  "parts": [
+    {
+      "document": "{\"type\":\"text\",\"text\":\"hi\"}",
+      "decode": "ok",
+      "kind": "text",
+      "validate": "ok",
+      "wire": "{\"type\":\"text\",\"text\":\"hi\"}"
+    },
+    {
+      "document": "{\"type\":\"text\",\"text\":\"<a>&\\u2028 café\"}",
+      "decode": "ok",
+      "kind": "text",
+      "validate": "ok",
+      "wire": "{\"type\":\"text\",\"text\":\"\\u003ca\\u003e\\u0026\\u2028 café\"}"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"IMAGE/PNG\"}}",
+      "decode": "ok",
+      "kind": "image",
+      "validate": "ok",
+      "wire": "{\"type\":\"image\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"image/png\"}}"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/y.png\",\"media_type\":\"image/png; name=a.png\"}}",
+      "decode": "ok",
+      "kind": "image",
+      "validate": "ok",
+      "wire": "{\"type\":\"image\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/y.png\",\"media_type\":\"image/png; name=a.png\"}}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\",\"media_type\":\"audio/mpeg\"},\"format\":{\"encoding\":\"mp3\",\"sample_rate_hz\":44100,\"channels\":2}}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "ok",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\",\"media_type\":\"audio/mpeg\"},\"format\":{\"encoding\":\"mp3\",\"sample_rate_hz\":44100,\"channels\":2}}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/pcm\"},\"format\":{\"encoding\":\"pcm16\",\"sample_rate_hz\":24000,\"channels\":1},\"duration_millis\":1500}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "ok",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/pcm\"},\"format\":{\"encoding\":\"pcm16\",\"sample_rate_hz\":24000,\"channels\":1},\"duration_millis\":1500}"
+    },
+    {
+      "document": "{\"type\":\"video\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/v.mp4\",\"media_type\":\"video/mp4\"}}",
+      "decode": "ok",
+      "kind": "video",
+      "validate": "ok",
+      "wire": "{\"type\":\"video\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/v.mp4\",\"media_type\":\"video/mp4\"}}"
+    },
+    {
+      "document": "{\"type\":\"file\",\"uri\":\"file:///tmp/a.txt\",\"media_type\":\"text/plain\",\"name\":\"a.txt\"}",
+      "decode": "ok",
+      "kind": "file",
+      "validate": "ok",
+      "wire": "{\"type\":\"file\",\"uri\":\"file:///tmp/a.txt\",\"media_type\":\"text/plain\",\"name\":\"a.txt\"}"
+    },
+    {
+      "document": "{\"type\":\"file\",\"uri\":\"s3://bucket/key\"}",
+      "decode": "ok",
+      "kind": "file",
+      "validate": "ok",
+      "wire": "{\"type\":\"file\",\"uri\":\"s3://bucket/key\"}"
+    },
+    {
+      "document": "{\"type\":\"data\",\"media_type\":\"application/json\",\"value\":{\"b\":1,\"a\":[true,null]}}",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "ok",
+      "wire": "{\"type\":\"data\",\"media_type\":\"application/json\",\"value\":{\"b\":1,\"a\":[true,null]}}"
+    },
+    {
+      "document": "{\"type\":\"data\",\"value\": { \"a\" : 1 } }",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "ok",
+      "wire": "{\"type\":\"data\",\"value\":{\"a\":1}}"
+    },
+    {
+      "document": "{\"type\":\"data\",\"value\":{\"a\":\"<b>&\"}}",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "ok",
+      "wire": "{\"type\":\"data\",\"value\":{\"a\":\"\\u003cb\\u003e\\u0026\"}}"
+    },
+    {
+      "document": "{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}}",
+      "decode": "ok",
+      "kind": "tool_call",
+      "validate": "ok",
+      "wire": "{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}}"
+    },
+    {
+      "document": "{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]},\"is_error\":true}}",
+      "decode": "ok",
+      "kind": "tool_result",
+      "validate": "ok",
+      "wire": "{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]},\"is_error\":true}}"
+    },
+    {
+      "document": "{\"type\":\"reasoning\",\"text\":\"hmm\",\"signature\":\"sig\",\"id\":\"r1\",\"source\":\"openai/gpt\"}",
+      "decode": "ok",
+      "kind": "reasoning",
+      "validate": "ok",
+      "wire": "{\"type\":\"reasoning\",\"text\":\"hmm\",\"signature\":\"sig\",\"id\":\"r1\",\"source\":\"openai/gpt\"}"
+    },
+    {
+      "document": "{\"type\":\"reasoning\",\"signature\":\"sig\"}",
+      "decode": "ok",
+      "kind": "reasoning",
+      "validate": "ok",
+      "wire": "{\"type\":\"reasoning\",\"signature\":\"sig\"}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"mp3\",\"sample_rate_hz\":0}}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "ok",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"mp3\"}}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"pcm16\"}}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "error",
+      "validate_error": "raw audio format requires sample rate and channels",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"pcm16\"}}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"mp3\",\"sample_rate_hz\":-1}}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "error",
+      "validate_error": "audio sample rate and channels must not be negative",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"format\":{\"encoding\":\"mp3\",\"sample_rate_hz\":-1}}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"duration_millis\":0}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "ok",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"duration_millis\":0}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"duration_millis\":-1}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "error",
+      "validate_error": "audio duration must not be negative",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/a\"},\"duration_millis\":-1}"
+    },
+    {
+      "document": "{\"type\":\"audio\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/webm\"},\"format\":{\"encoding\":\"mp3\"}}",
+      "decode": "ok",
+      "kind": "audio",
+      "validate": "error",
+      "validate_error": "audio source media type does not match its format",
+      "wire": "{\"type\":\"audio\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/webm\"},\"format\":{\"encoding\":\"mp3\"}}"
+    },
+    {
+      "document": "{\"type\":\"blob\"}",
+      "decode": "error",
+      "decode_error": "content part has unknown type \"blob\""
+    },
+    {
+      "document": "{}",
+      "decode": "error",
+      "decode_error": "content part has unknown type \"\""
+    },
+    {
+      "document": "{\"type\":null}",
+      "decode": "error",
+      "decode_error": "content part has unknown type \"\""
+    },
+    {
+      "document": "{\"type\":\"text\"}",
+      "decode": "error",
+      "decode_error": "content part has no text payload"
+    },
+    {
+      "document": "{\"type\":\"text\",\"text\":null}",
+      "decode": "error",
+      "decode_error": "content part has no text payload"
+    },
+    {
+      "document": "{\"type\":\"reasoning\",\"text\":\"\",\"signature\":\"\"}",
+      "decode": "ok",
+      "kind": "reasoning",
+      "validate": "error",
+      "validate_error": "reasoning part carries neither text nor signature",
+      "wire": "{\"type\":\"reasoning\"}"
+    },
+    {
+      "document": "{\"type\":\"file\"}",
+      "decode": "ok",
+      "kind": "file",
+      "validate": "error",
+      "validate_error": "file URI is required",
+      "wire": "{\"type\":\"file\",\"uri\":\"\"}"
+    },
+    {
+      "document": "{\"type\":\"data\"}",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "error",
+      "validate_error": "data part value must be a JSON object",
+      "wire": "{\"type\":\"data\",\"value\":null}"
+    },
+    {
+      "document": "{\"type\":\"data\",\"value\":null}",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "error",
+      "validate_error": "data part value must be a JSON object",
+      "wire": "{\"type\":\"data\",\"value\":null}"
+    },
+    {
+      "document": "{\"type\":\"data\",\"value\":[1]}",
+      "decode": "ok",
+      "kind": "data",
+      "validate": "error",
+      "validate_error": "data part value must be a JSON object",
+      "wire": "{\"type\":\"data\",\"value\":[1]}"
+    },
+    {
+      "document": "{\"type\":\"tool_call\"}",
+      "decode": "ok",
+      "kind": "tool_call",
+      "validate": "error",
+      "validate_error": "tool call id is required",
+      "wire": "{\"type\":\"tool_call\",\"call\":{\"id\":\"\",\"name\":\"\",\"arguments\":null}}"
+    },
+    {
+      "document": "{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"x\"}}",
+      "decode": "ok",
+      "kind": "tool_call",
+      "validate": "error",
+      "validate_error": "tool call \"c1\" arguments must be a JSON object",
+      "wire": "{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"x\",\"arguments\":null}}"
+    },
+    {
+      "document": "{\"type\":\"tool_result\"}",
+      "decode": "ok",
+      "kind": "tool_result",
+      "validate": "error",
+      "validate_error": "tool result call id is required",
+      "wire_error": "json: error calling MarshalJSON for type *message.Content: content must contain at least one part",
+      "wire_text_from": "encoding/json"
+    },
+    {
+      "document": "{\"type\":\"tool_result\",\"result\":{\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"x\"}]}}}",
+      "decode": "ok",
+      "kind": "tool_result",
+      "validate": "error",
+      "validate_error": "tool result call id is required",
+      "wire": "{\"type\":\"tool_result\",\"result\":{\"call_id\":\"\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"x\"}]}}}"
+    },
+    {
+      "document": "{\"type\":\"text\",\"text\":\"hi\",\"zzz\":1}",
+      "decode": "error",
+      "decode_error": "content part: json: unknown field \"zzz\""
+    },
+    {
+      "document": "{\"type\":\"file\",\"uri\":\"u\",\"nope\":1}",
+      "decode": "error",
+      "decode_error": "content part: json: unknown field \"nope\""
+    },
+    {
+      "document": "{\"type\":\"text\",\"text\":5}",
+      "decode": "error",
+      "decode_error": "content part: json: cannot unmarshal number into Go struct field .text of type string",
+      "decode_text_from": "encoding/json"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":null}",
+      "decode": "error",
+      "decode_error": "content part: unknown media source kind \"\""
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{}}",
+      "decode": "error",
+      "decode_error": "content part: unknown media source kind \"\""
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"inline\",\"data\":\"aGk=\",\"media_type\":\"audio/mpeg\"}}",
+      "decode": "error",
+      "decode_error": "content part: media type \"audio/mpeg\" must use image/"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"stream\"}}",
+      "decode": "error",
+      "decode_error": "content part: stream media source has invalid payload"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"url\",\"url\":\"/relative\"}}",
+      "decode": "ok",
+      "kind": "image",
+      "validate": "ok",
+      "wire": "{\"type\":\"image\",\"source\":{\"kind\":\"url\",\"url\":\"/relative\"}}"
+    },
+    {
+      "document": "{\"type\":\"image\",\"source\":{\"kind\":\"url\",\"url\":\"https://x/y\",\"extra\":1}}",
+      "decode": "error",
+      "decode_error": "content part: json: unknown field \"extra\""
+    },
+    {
+      "document": "\"hi\"",
+      "decode": "error",
+      "decode_error": "content part: json: cannot unmarshal string into Go value of type struct { Type message.PartKind \"json:\\\"type\\\"\" }",
+      "decode_text_from": "encoding/json"
+    },
+    {
+      "document": "{\"type\":\"text\",\"text\":\"hi\"} {\"type\":\"text\"}",
+      "decode": "error",
+      "decode_error": "content part: invalid character '{' after top-level value",
+      "decode_text_from": "encoding/json"
+    }
+  ],
+  "messages": [
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}}",
+      "decode": "ok",
+      "role": "user",
+      "validate": "ok",
+      "wire": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"
+    },
+    {
+      "document": "{\"role\":\"system\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"s\"}]},\"extra\":1}",
+      "decode": "ok",
+      "role": "system",
+      "validate": "ok",
+      "wire": "{\"role\":\"system\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"s\"}]}}"
+    },
+    {
+      "document": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"reasoning\",\"text\":\"because\"}]}}",
+      "decode": "ok",
+      "role": "assistant",
+      "validate": "ok",
+      "wire": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"reasoning\",\"text\":\"because\"}]}}"
+    },
+    {
+      "document": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}}]}}",
+      "decode": "ok",
+      "role": "assistant",
+      "validate": "ok",
+      "wire": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}}]}}"
+    },
+    {
+      "document": "{\"role\":\"tool\",\"content\":{\"parts\":[{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}]}}",
+      "decode": "ok",
+      "role": "tool",
+      "validate": "ok",
+      "wire": "{\"role\":\"tool\",\"content\":{\"parts\":[{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}]}}"
+    },
+    {
+      "document": "{\"role\":\"tool\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"no result\"}]}}",
+      "decode": "ok",
+      "role": "tool",
+      "validate": "error",
+      "validate_error": "tool role requires a tool result part",
+      "wire": "{\"role\":\"tool\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"no result\"}]}}"
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"x\",\"arguments\":{}}}]}}",
+      "decode": "ok",
+      "role": "user",
+      "validate": "error",
+      "validate_error": "tool call parts require assistant role",
+      "wire": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"tool_call\",\"call\":{\"id\":\"c1\",\"name\":\"x\",\"arguments\":{}}}]}}"
+    },
+    {
+      "document": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"r\"}]}}}]}}",
+      "decode": "ok",
+      "role": "assistant",
+      "validate": "error",
+      "validate_error": "tool result parts require tool role",
+      "wire": "{\"role\":\"assistant\",\"content\":{\"parts\":[{\"type\":\"tool_result\",\"result\":{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"r\"}]}}}]}}"
+    },
+    {
+      "document": "{\"role\":\"user\"}",
+      "decode": "ok",
+      "role": "user",
+      "validate": "error",
+      "validate_error": "message content is required",
+      "wire_error": "json: error calling MarshalJSON for type *message.Content: content must contain at least one part",
+      "wire_text_from": "encoding/json"
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":null}",
+      "decode": "error",
+      "decode_error": "content must contain at least one part"
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[]}}",
+      "decode": "error",
+      "decode_error": "content must contain at least one part"
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}],\"intent\":\"x\"}}",
+      "decode": "error",
+      "decode_error": "json: unknown field \"intent\""
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"text\"}]}}",
+      "decode": "error",
+      "decode_error": "content part 0: content part has no text payload"
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"blob\"}]}}",
+      "decode": "error",
+      "decode_error": "content part 0: content part has unknown type \"blob\""
+    },
+    {
+      "document": "{\"role\":\"user\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}} x",
+      "decode": "error",
+      "decode_error": "invalid character 'x' after top-level value",
+      "decode_text_from": "encoding/json"
+    },
+    {
+      "document": "[1]",
+      "decode": "error",
+      "decode_error": "json: cannot unmarshal array into Go value of type message.Message",
+      "decode_text_from": "encoding/json"
+    },
+    {
+      "document": "{\"role\":5,\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}}",
+      "decode": "error",
+      "decode_error": "json: cannot unmarshal number into Go struct field Message.role of type message.Role",
+      "decode_text_from": "encoding/json"
+    }
+  ],
+  "tools": [
+    {
+      "op": "definition",
+      "name": "search",
+      "description": "Find things.",
+      "input_schema": "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}",
+      "validate": "ok",
+      "wire": "{\"name\":\"search\",\"description\":\"Find things.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}"
+    },
+    {
+      "op": "definition",
+      "name": "search",
+      "input_schema": "{\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"search\",\"input_schema\":{\"type\":\"object\"}}"
+    },
+    {
+      "op": "definition",
+      "input_schema": "{\"type\":\"object\"}",
+      "validate": "error",
+      "validate_error": "tool definition name is required",
+      "wire": "{\"name\":\"\",\"input_schema\":{\"type\":\"object\"}}"
+    },
+    {
+      "op": "definition",
+      "name": "x",
+      "input_schema": "[]",
+      "validate": "error",
+      "validate_error": "tool \"x\" input schema must be a JSON object",
+      "wire": "{\"name\":\"x\",\"input_schema\":[]}"
+    },
+    {
+      "op": "definition",
+      "name": "x",
+      "validate": "error",
+      "validate_error": "tool \"x\" input schema must be a JSON object",
+      "wire": "{\"name\":\"x\",\"input_schema\":null}"
+    },
+    {
+      "op": "call",
+      "name": "search",
+      "id": "c1",
+      "arguments": "{\"q\":\"x\"}",
+      "validate": "ok",
+      "wire": "{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}"
+    },
+    {
+      "op": "call",
+      "name": "search",
+      "id": "c1",
+      "arguments": "{ \"q\" : \"x\" }",
+      "validate": "ok",
+      "wire": "{\"id\":\"c1\",\"name\":\"search\",\"arguments\":{\"q\":\"x\"}}"
+    },
+    {
+      "op": "call",
+      "name": "search",
+      "arguments": "{}",
+      "validate": "error",
+      "validate_error": "tool call id is required",
+      "wire": "{\"id\":\"\",\"name\":\"search\",\"arguments\":{}}"
+    },
+    {
+      "op": "call",
+      "name": "search",
+      "id": "c1",
+      "arguments": "[1]",
+      "validate": "error",
+      "validate_error": "tool call \"c1\" arguments must be a JSON object",
+      "wire": "{\"id\":\"c1\",\"name\":\"search\",\"arguments\":[1]}"
+    },
+    {
+      "op": "call",
+      "name": "search",
+      "id": "c1",
+      "validate": "error",
+      "validate_error": "tool call \"c1\" arguments must be a JSON object",
+      "wire": "{\"id\":\"c1\",\"name\":\"search\",\"arguments\":null}"
+    },
+    {
+      "op": "result",
+      "call_id": "c1",
+      "text": "ok",
+      "validate": "ok",
+      "wire": "{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]}}"
+    },
+    {
+      "op": "result",
+      "call_id": "c1",
+      "text": "<failed>",
+      "is_error": true,
+      "validate": "ok",
+      "wire": "{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"\\u003cfailed\\u003e\"}]},\"is_error\":true}"
+    },
+    {
+      "op": "result",
+      "text": "ok",
+      "validate": "error",
+      "validate_error": "tool result call id is required",
+      "wire": "{\"call_id\":\"\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]}}"
+    },
+    {
+      "op": "result",
+      "call_id": "c1",
+      "validate": "ok",
+      "wire": "{\"call_id\":\"c1\",\"content\":{\"parts\":[{\"type\":\"text\",\"text\":\"\"}]}}"
+    }
+  ],
+  "schemas": [
+    {
+      "name": "search",
+      "description": "Find things.",
+      "props": [
+        {
+          "kind": "property",
+          "name": "query",
+          "type": "string",
+          "description": "What to look for."
+        },
+        {
+          "kind": "property",
+          "name": "limit",
+          "type": "integer",
+          "description": "How many."
+        }
+      ],
+      "required": [
+        "query"
+      ],
+      "closed": true,
+      "schema": "{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"How many.\",\"type\":\"integer\"},\"query\":{\"description\":\"What to look for.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"search\",\"description\":\"Find things.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"How many.\",\"type\":\"integer\"},\"query\":{\"description\":\"What to look for.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"}}"
+    },
+    {
+      "name": "noProps",
+      "description": "Nothing to pass.",
+      "props": null,
+      "schema": "{\"properties\":{},\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"noProps\",\"description\":\"Nothing to pass.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"}}"
+    },
+    {
+      "name": "objects",
+      "description": "Nested.",
+      "props": [
+        {
+          "kind": "object",
+          "name": "filter",
+          "description": "A filter.",
+          "properties": "{\"field\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}}"
+        }
+      ],
+      "schema": "{\"properties\":{\"filter\":{\"description\":\"A filter.\",\"properties\":{\"field\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"objects\",\"description\":\"Nested.\",\"input_schema\":{\"properties\":{\"filter\":{\"description\":\"A filter.\",\"properties\":{\"field\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"object\"}}"
+    },
+    {
+      "name": "arrays",
+      "description": "Arrays.",
+      "props": [
+        {
+          "kind": "array",
+          "name": "tags",
+          "description": "Tags.",
+          "items": "{\"type\":\"string\"}"
+        },
+        {
+          "kind": "string_map",
+          "name": "labels",
+          "description": "Labels."
+        }
+      ],
+      "required": [
+        "tags",
+        "tags",
+        "tags"
+      ],
+      "schema": "{\"properties\":{\"labels\":{\"additionalProperties\":{\"type\":\"string\"},\"description\":\"Labels.\",\"type\":\"object\"},\"tags\":{\"description\":\"Tags.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"tags\"],\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"arrays\",\"description\":\"Arrays.\",\"input_schema\":{\"properties\":{\"labels\":{\"additionalProperties\":{\"type\":\"string\"},\"description\":\"Labels.\",\"type\":\"object\"},\"tags\":{\"description\":\"Tags.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"tags\"],\"type\":\"object\"}}"
+    },
+    {
+      "name": "defaults",
+      "description": "Defaults.",
+      "props": [
+        {
+          "kind": "default",
+          "name": "verbose",
+          "type": "boolean",
+          "description": "Say more.",
+          "default": "true"
+        },
+        {
+          "kind": "enum",
+          "name": "mode",
+          "type": "string",
+          "description": "How.",
+          "values": [
+            "fast",
+            "thorough"
+          ]
+        }
+      ],
+      "schema": "{\"properties\":{\"mode\":{\"description\":\"How.\",\"enum\":[\"fast\",\"thorough\"],\"type\":\"string\"},\"verbose\":{\"default\":true,\"description\":\"Say more.\",\"type\":\"boolean\"}},\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"defaults\",\"description\":\"Defaults.\",\"input_schema\":{\"properties\":{\"mode\":{\"description\":\"How.\",\"enum\":[\"fast\",\"thorough\"],\"type\":\"string\"},\"verbose\":{\"default\":true,\"description\":\"Say more.\",\"type\":\"boolean\"}},\"type\":\"object\"}}"
+    },
+    {
+      "name": "duplicates",
+      "description": "Two props with one name.",
+      "props": [
+        {
+          "kind": "property",
+          "name": "x",
+          "type": "string",
+          "description": "first"
+        },
+        {
+          "kind": "property",
+          "name": "x",
+          "type": "integer",
+          "description": "second"
+        }
+      ],
+      "schema": "{\"properties\":{\"x\":{\"description\":\"second\",\"type\":\"integer\"}},\"type\":\"object\"}",
+      "validate": "ok",
+      "wire": "{\"name\":\"duplicates\",\"description\":\"Two props with one name.\",\"input_schema\":{\"properties\":{\"x\":{\"description\":\"second\",\"type\":\"integer\"}},\"type\":\"object\"}}"
+    },
+    {
+      "name": "",
+      "description": "No name.",
+      "props": null,
+      "schema": "{\"properties\":{},\"type\":\"object\"}",
+      "validate": "error",
+      "validate_error": "tool definition name is required",
+      "wire": "{\"name\":\"\",\"description\":\"No name.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"}}"
     }
   ]
 }

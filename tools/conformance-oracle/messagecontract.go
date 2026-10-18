@@ -19,19 +19,29 @@ import (
 // a validator writes -- because those are what callers match on; the two rows
 // whose text comes from encoding/json say so.
 //
+// The same file also carries the rest of the message surface -- parts,
+// messages, tool DTOs and schema builders (messagesurface.go) -- because it is
+// one contract: a part's media type is the media half's business, and a tool
+// result is a content.
+//
 // What this dump does not cover yet, and why: the stream kind (a live handle
-// has no wire form to dump), the `unknown audio encoding` refusal (it needs
-// the decode path, which lands with the codec that reads messages), and
-// AudioFormat's own JSON decode (core decodes it as a plain struct, so its
-// unknown-field behavior belongs to whichever decoder reads the part that
-// holds it).
+// has no wire form to dump) and the three refusals the port moves one stage
+// earlier because its types have no invalid state -- an unknown message role,
+// an absent media source, and an audio format encoding outside the table. The
+// replay's module docs (crates/flowcraft-contract/tests/message_contract.rs)
+// say which of those the corpus samples and how.
 const messageContractNote = "The media DTOs of core/message, dumped for the port. " +
-	"Rows carry their input and the outcome core produced; the port replays them."
+	"Rows carry their input and the outcome core produced; the port replays them. " +
+	"Parts, messages, tool DTOs and schema builders are in the same file."
 
 type messageContract struct {
-	Note         string      `json:"note"`
-	MediaSources []mediaRow  `json:"media_sources"`
-	AudioFormats []formatRow `json:"audio_formats"`
+	Note         string       `json:"note"`
+	MediaSources []mediaRow   `json:"media_sources"`
+	AudioFormats []formatRow  `json:"audio_formats"`
+	Parts        []partRow    `json:"parts"`
+	Messages     []messageRow `json:"messages"`
+	Tools        []toolRow    `json:"tools"`
+	Schemas      []schemaRow  `json:"schemas"`
 }
 
 // mediaRow is one call into the media constructors or one document handed to
@@ -82,6 +92,10 @@ func writeMessageContract(w io.Writer) error {
 		Note:         messageContractNote,
 		MediaSources: make([]mediaRow, 0, len(mediaRows)),
 		AudioFormats: make([]formatRow, 0, len(formatRows)),
+		Parts:        make([]partRow, 0, len(partSamples)),
+		Messages:     make([]messageRow, 0, len(messageSamples)),
+		Tools:        make([]toolRow, 0, len(toolSamples)),
+		Schemas:      make([]schemaRow, 0, len(schemaSamples)),
 	}
 	for _, row := range mediaRows {
 		contract.MediaSources = append(contract.MediaSources, mediaOutcome(row))
@@ -89,6 +103,7 @@ func writeMessageContract(w io.Writer) error {
 	for _, row := range formatRows {
 		contract.AudioFormats = append(contract.AudioFormats, formatOutcome(row))
 	}
+	writeSurface(&contract)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	encoder.SetEscapeHTML(false)

@@ -1,4 +1,5 @@
-//! Go-compatible JSON text output.
+//! Go-compatible JSON text: the output half, and the raw object reader the
+//! wire decoders need.
 //!
 //! `encoding/json`'s encoder is the reference: compact output, sorted map
 //! keys, HTML-escaped `<`, `>`, `&`, U+2028/U+2029 escaped, and a float
@@ -6,8 +7,22 @@
 //! `< 1e-6`, in which case `'e'` with the exponent's leading zero stripped
 //! (`1e-07` -> `1e-7`). Reproducing that byte for byte is what makes
 //! `utils.ToJSON` output diffable against the Go oracle.
+//!
+//! The reader half ([`Members`]) exists because Go's `json.RawMessage` keeps a
+//! sub-document's *text*: a tool call's arguments come back out exactly as they
+//! went in (compacted, but with their own key order and number spelling), and
+//! re-rendering them from a parsed `Value` would sort the keys and rewrite
+//! `1.0` as `1`. So a decoder here parses an object once into its members,
+//! each with the raw text of its value, and re-parses only the fields it has
+//! to understand.
 
+use std::fmt;
+use std::marker::PhantomData;
+
+use serde::Deserialize;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// The Go-compatible rendering of a value, which is what `utils.ToJSON` hands
 /// back for the documents the port converts.
@@ -120,10 +135,196 @@ pub(crate) fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// Go's `appendCompact` with the default HTML escaping: whitespace outside
+/// strings dropped, `<`, `>` and `&` rewritten as `\u00XX`, and the raw UTF-8
+/// of U+2028/U+2029 rewritten as its escape. Nothing is reordered or re-spelled
+/// -- numbers, key order and existing escapes are exactly as they came in,
+/// which is what `encoding/json` does to a `json.RawMessage` on the way out.
+///
+/// The input is expected to be valid JSON; a caller that cannot promise that
+/// checks first ([`is_valid`]).
+pub(crate) fn compact(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else {
+            match byte {
+                b' ' | b'\t' | b'\n' | b'\r' => {
+                    i += 1;
+                    continue;
+                }
+                b'"' => in_string = true,
+                _ => {}
+            }
+        }
+        if matches!(byte, b'<' | b'>' | b'&') {
+            out.extend_from_slice(format!("\\u{byte:04x}").as_bytes());
+            i += 1;
+            continue;
+        }
+        // U+2028 and U+2029 are E2 80 A8 and E2 80 A9.
+        if byte == 0xE2 && i + 2 < bytes.len() && bytes[i + 1] == 0x80 && bytes[i + 2] & !1 == 0xA8
+        {
+            out.extend_from_slice(if bytes[i + 2] == 0xA8 {
+                b"\\u2028".as_slice()
+            } else {
+                b"\\u2029".as_slice()
+            });
+            i += 3;
+            continue;
+        }
+        out.push(byte);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether `raw` is one well-formed JSON value with nothing after it.
+pub(crate) fn is_valid(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw).is_ok()
+}
+
+/// One JSON array's elements, each with its raw text -- the counterpart of
+/// [`Members`] for the arrays the wire carries (`content.parts`).
+pub(crate) fn raw_array(raw: &str) -> Result<Vec<&RawValue>, String> {
+    serde_json::from_str::<Vec<&RawValue>>(raw).map_err(|err| err.to_string())
+}
+
+/// One JSON object's members, in document order, each with the raw text of its
+/// value.
+///
+/// Go hands a sub-document's bytes to a custom unmarshaller untouched, and its
+/// strict struct decode names the *first* unknown field in document order. Both
+/// need the text and the order, which is why this is not a `serde_json::Map`.
+pub(crate) struct Members<'a> {
+    entries: Vec<(String, &'a RawValue)>,
+}
+
+impl<'a> Members<'a> {
+    /// Parses one object. A document that is not exactly one object is an
+    /// error in the caller's own words -- core's text for it comes from
+    /// `encoding/json` and is not reproduced here.
+    pub(crate) fn parse(document: &'a str) -> Result<Members<'a>, String> {
+        serde_json::from_str::<Members<'a>>(document).map_err(|err| err.to_string())
+    }
+
+    /// The raw text of a member, last occurrence first: a repeated key keeps
+    /// the last value, as Go's decoder does.
+    pub(crate) fn raw(&self, key: &str) -> Option<&'a str> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.get())
+    }
+
+    /// The first member, in document order, whose name is not in `allowed` --
+    /// what `DisallowUnknownFields` refuses.
+    pub(crate) fn first_unknown(&self, allowed: &[&str]) -> Option<&str> {
+        self.entries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .find(|name| !allowed.contains(name))
+    }
+
+    /// A string member with Go's rules: absent and `null` are the empty
+    /// string, anything else that is not a string is refused.
+    pub(crate) fn string(&self, key: &str) -> Result<String, String> {
+        let Some(raw) = self.raw(key) else {
+            return Ok(String::new());
+        };
+        match serde_json::from_str::<Value>(raw) {
+            Ok(Value::String(value)) => Ok(value),
+            Ok(Value::Null) => Ok(String::new()),
+            _ => Err(format!("field {key} must be a string, not {raw}")),
+        }
+    }
+
+    /// An integer member: absent and `null` are `None`, a number without a
+    /// fraction is `Some`, and everything else -- a fraction included, which
+    /// Go refuses as well -- is an error.
+    pub(crate) fn i64(&self, key: &str) -> Result<Option<i64>, String> {
+        let Some(raw) = self.raw(key) else {
+            return Ok(None);
+        };
+        match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Null) => Ok(None),
+            Ok(Value::Number(number)) => number
+                .as_i64()
+                .map(Some)
+                .ok_or_else(|| format!("field {key} must be an integer, not {raw}")),
+            _ => Err(format!("field {key} must be an integer, not {raw}")),
+        }
+    }
+
+    /// A boolean member: absent and `null` are false.
+    pub(crate) fn bool(&self, key: &str) -> Result<bool, String> {
+        let Some(raw) = self.raw(key) else {
+            return Ok(false);
+        };
+        match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Bool(value)) => Ok(value),
+            Ok(Value::Null) => Ok(false),
+            _ => Err(format!("field {key} must be a boolean, not {raw}")),
+        }
+    }
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for Members<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct MembersVisitor<'a>(PhantomData<&'a ()>);
+
+        impl<'de: 'a, 'a> Visitor<'de> for MembersVisitor<'a> {
+            type Value = Members<'a>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Members<'a>, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut entries = Vec::new();
+                while let Some((name, value)) = map.next_entry::<String, &'a RawValue>()? {
+                    entries.push((name, value));
+                }
+                Ok(Members { entries })
+            }
+        }
+
+        deserializer.deserialize_map(MembersVisitor(PhantomData))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Unwraps a rule the test expects to hold; a refusal fails the test with
+    /// its own sentence instead of a backtrace line.
+    fn ok<T>(result: Result<T, String>, what: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{what}: {err}"),
+        }
+    }
 
     /// Every expectation here was copied from `encoding/json` itself, one per
     /// rule the module doc names. The corpus reaches only some of these forms,
@@ -171,6 +372,57 @@ mod tests {
             to_string(&json!({"b": 1, "a": 2, "B": 3, "1": 4})),
             r#"{"1":4,"B":3,"a":2,"b":1}"#
         );
+    }
+
+    /// What `json.RawMessage` survives on the way out: whitespace gone, text
+    /// untouched. Key order, number spelling and existing escapes are Go's
+    /// reasons for compacting rather than re-marshalling, so they are what this
+    /// pins.
+    #[test]
+    fn compact_removes_only_whitespace_and_escapes() {
+        assert_eq!(
+            compact("{ \"b\" : 1 , \"a\" : [ 2 ] }"),
+            r#"{"b":1,"a":[2]}"#
+        );
+        // Inside a string the whitespace is text, and stays.
+        assert_eq!(compact(r#"{ "a" : " x " }"#), r#"{"a":" x "}"#);
+        // Number spelling and key order are the caller's, not the encoder's.
+        assert_eq!(compact(r#"{"z":1.0,"a":1e100}"#), r#"{"z":1.0,"a":1e100}"#);
+        // HTML escaping applies inside strings, as it does in Go.
+        assert_eq!(compact(r#"{"a":"<b>&"}"#), r#"{"a":"\u003cb\u003e\u0026"}"#);
+        // U+2028/2029 are escaped from their UTF-8 bytes, not their escape.
+        assert_eq!(
+            compact("{\"a\":\"\u{2028}\u{2029}\"}"),
+            r#"{"a":"\u2028\u2029"}"#
+        );
+        assert_eq!(compact(r#"{"a":"\u2028"}"#), r#"{"a":"\u2028"}"#);
+        // An escaped quote does not end the string, so the space after it is
+        // still inside one.
+        assert_eq!(compact(r#"{ "a" : "q\" x" }"#), r#"{"a":"q\" x"}"#);
+    }
+
+    /// An object reader that keeps order and text: `encoding/json` hands a
+    /// custom unmarshaller the raw bytes, and names the first unknown field in
+    /// document order.
+    #[test]
+    fn members_keep_document_order_and_the_last_duplicate() {
+        let members = ok(
+            Members::parse(r#"{"a": 1, "b": "x", "c": {"d": 2}, "a": 3}"#),
+            "the document is an object",
+        );
+        assert_eq!(members.raw("a"), Some("3"));
+        assert_eq!(members.raw("b"), Some(r#""x""#));
+        assert_eq!(members.raw("c"), Some(r#"{"d": 2}"#));
+        assert_eq!(members.raw("zzz"), None);
+        assert_eq!(ok(members.string("b"), "a string"), "x");
+        assert_eq!(ok(members.i64("a"), "an integer"), Some(3));
+        assert_eq!(members.first_unknown(&["a", "b"]), Some("c"));
+        assert_eq!(members.first_unknown(&["a", "b", "c"]), None);
+        // Absent and null read as the zero value; a wrong shape is refused.
+        assert_eq!(ok(members.string("zzz"), "absent"), "");
+        assert!(!ok(members.bool("zzz"), "absent"));
+        assert!(members.string("c").is_err());
+        assert!(Members::parse("[1]").is_err());
     }
 
     /// The value walk, not just the leaves: nesting, empty containers and the

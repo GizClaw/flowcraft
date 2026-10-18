@@ -169,8 +169,14 @@ impl Source {
     fn from_wire_json(document: &str) -> Result<Source, String> {
         let value: serde_json::Value =
             serde_json::from_str(document).map_err(|err| format!("media source: {err}"))?;
-        let serde_json::Value::Object(object) = value else {
-            return Err("media source: not a JSON object".into());
+        // `null` decodes into core's struct as a no-op, so it reaches the
+        // payload rules as the zero value -- and the zero value's kind is what
+        // they refuse. Anything else that is not an object never gets that far
+        // in core, where the strict decoder reports it in its own words.
+        let object = match value {
+            serde_json::Value::Object(object) => object,
+            serde_json::Value::Null => serde_json::Map::new(),
+            _ => return Err("media source: not a JSON object".into()),
         };
         for key in object.keys() {
             if !matches!(key.as_str(), "kind" | "url" | "data" | "media_type") {
@@ -607,6 +613,44 @@ impl AudioFormat {
             return Err("audio sample rate and channels must not be negative".into());
         }
         Ok(())
+    }
+
+    /// The struct core writes: `encoding`, then the two numbers, which
+    /// `omitempty` drops when they are zero -- and a format built here has no
+    /// zero to drop, so an absent number is simply not written.
+    pub fn to_wire_json(&self) -> String {
+        let mut out = String::from("{\"encoding\":");
+        json::write_string(self.encoding.as_str(), &mut out);
+        for (name, value) in [
+            ("sample_rate_hz", self.sample_rate_hz),
+            ("channels", self.channels),
+        ] {
+            if let Some(value) = value.filter(|value| *value != 0) {
+                out.push_str(&format!(",\"{name}\":{value}"));
+            }
+        }
+        out.push('}');
+        out
+    }
+
+    /// The struct core decodes: unknown fields are refused, and an encoding
+    /// outside the table is refused *here* -- core's decode accepts the string
+    /// and `Validate` refuses it later, but the port's encoding is a type.
+    pub fn from_wire_json(document: &str) -> Result<AudioFormat, String> {
+        let members = json::Members::parse(document)?;
+        if let Some(unknown) = members.first_unknown(&["encoding", "sample_rate_hz", "channels"]) {
+            return Err(format!("json: unknown field {}", text::quote(unknown)));
+        }
+        let name = members.string("encoding")?;
+        let encoding = AudioEncoding::parse(&name)
+            .ok_or_else(|| format!("unknown audio encoding {}", text::quote(&name)))?;
+        let sample_rate_hz = members.i64("sample_rate_hz")?.map(|value| value as i32);
+        let channels = members.i64("channels")?.map(|value| value as i32);
+        Ok(AudioFormat {
+            encoding,
+            sample_rate_hz,
+            channels,
+        })
     }
 }
 

@@ -74,6 +74,43 @@ the drivers that read the headers). The names in the file (`rate_limit`,
 `context_overflow`) identify rows; core spells neither these kinds nor these
 categories on the wire today.
 
+## The message contract
+
+`message-contract.json` is the other contract half: the shapes that travel
+between a caller, a provider and a tool. `tools/conformance-oracle
+-message-contract` writes it from `core/message`, and
+`crates/flowcraft-contract/tests/message_contract.rs` replays it. Six tables:
+
+| Table | What core is asked | What the port answers with |
+| --- | --- | --- |
+| `media_sources` | the constructors and the typed wire decode | the same call, the normal form, the wire bytes |
+| `audio_formats` | `AudioFormat.Validate` per encoding and number pair | the same rules |
+| `parts` | `UnmarshalPart`, then `Validate`, then `MarshalPart` | the same three stages |
+| `messages` | `json.Unmarshal` into a `Message`, then `Validate`, then the marshal | the same three stages |
+| `tools` | `Validate` and the marshal of the three tool DTOs | the same |
+| `schemas` | the property helpers and `SchemaBuilder.Build` | the same builder calls |
+
+Every row carries its input — the document, the numbers, the builder calls —
+so the port rebuilds the sample instead of comparing a snapshot of what core
+printed. Regenerating is the same one command as the error half:
+
+```sh
+(cd tools/conformance-oracle && GOWORK=off go run . -message-contract) \
+  > rust/conformance/message-contract.json
+```
+
+Three things are deliberately not compared. A refusal whose text `encoding/json`
+wrote (a wrong JSON type, a bad base64 payload, a second document, a marshal
+callback that failed) is marked by the oracle (`text_from`) and held to being a
+refusal; a hand-written decoder does not reproduce another library's syntax
+diagnostics, and the sentences the port *can* reproduce — core's own, and
+`json: unknown field %q` — are compared exactly. The stream kind is out (a live
+handle has no wire form). And three documents core refuses only from `Validate`
+are refused by the port at decode, with core's sentence, because the port's
+types have no invalid state: an unknown message role, an absent media source,
+an audio encoding outside the table. The test's module docs say which of those
+the corpus samples and which it pins by hand.
+
 ## The backends it measured and rejected
 
 The port did not start from a favourite. Four readings ran into the same dump

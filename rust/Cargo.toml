@@ -16,7 +16,11 @@ repository = "https://github.com/GizClaw/flowcraft"
 base64 = "0.22.1"
 saphyr = "0.2.2"
 saphyr-parser = "0.2.2"
-serde_json = "1.0.154"
+serde = { version = "1.0.228", default-features = false, features = ["std"] }
+# `raw_value` is what lets a decoder keep a sub-document's exact text -- the
+# bytes a caller wrote, not a re-rendering of them. The wire codecs need it:
+# a tool call's arguments and a data part's value ride through unparsed.
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 serde_norway = "0.9.42"
 serde_yaml_ng = "0.10.0"
 

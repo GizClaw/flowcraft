@@ -16,8 +16,9 @@
 // With -error-contract it prints no per-file records and instead dumps the
 // errdefs error contract -- the classification tables and the classifier
 // samples the port is held to (see errorcontract.go). With -message-contract
-// it dumps the other half of the contract the port is held to: the media DTOs
-// of core/message, with an outcome per sample (see messagecontract.go).
+// it dumps the other half of the contract the port is held to: the message
+// surface of core/message -- media DTOs, parts, messages, tool DTOs and schema
+// builders -- with an outcome per sample (see messagecontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract] <dir> [dir...]
 package main
