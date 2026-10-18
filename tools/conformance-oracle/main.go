@@ -22,7 +22,9 @@
 // core/event: subjects, patterns, the matcher and the envelope wire (see
 // eventcontract.go). With -bm25-contract it dumps core/utils/bm25's tokenizer,
 // scoring and refusals (see bm25contract.go). With -pathsafe-contract it dumps
-// core/utils/pathsafe's containment rules (see pathsafecontract.go).
+// core/utils/pathsafe's containment rules (see pathsafecontract.go). With
+// -filetype-contract it dumps core/utils/filetype's sniffer corpus and ordered
+// rule (see filetypecontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -70,6 +72,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-bm25-contract" {
 		if err := writeBM25Contract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "bm25 contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-filetype-contract" {
+		if err := writeFiletypeContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "filetype contract:", err)
 			os.Exit(1)
 		}
 		return

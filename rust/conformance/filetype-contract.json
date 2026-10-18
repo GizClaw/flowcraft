@@ -1,0 +1,700 @@
+{
+  "note": "core/utils/filetype: the WHATWG sniffer, and the ordered rule with a nameless payload. Name-derived answers are host-dependent and stay out.",
+  "sniffs": [
+    {
+      "data": "",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "cGxhaW4gdGV4dAo=",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "ICAJDQogdGV4dCBhZnRlciB3aGl0ZXNwYWNl",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "PCFET0NUWVBFIEhUTUw+PGh0bWw+PC9odG1sPg==",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PCFkb2N0eXBlIGh0bWw+PGh0bWw+PC9odG1sPg==",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PEhUTUw+",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PGh0bWw+",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PEhUTUxY",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "PEhUTUwgWA==",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "ICAgPGh0bWw+",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PD94bWwgdmVyc2lvbj0iMS4wIj8+",
+      "type": "text/xml; charset=utf-8"
+    },
+    {
+      "data": "ICA8P3htbA==",
+      "type": "text/xml; charset=utf-8"
+    },
+    {
+      "data": "PD94bWxub3Bl",
+      "type": "text/xml; charset=utf-8"
+    },
+    {
+      "data": "PGJvZHkgY2xhc3M9IngiPg==",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PGI+Ym9sZDwvYj4=",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PGgxPnRpdGxlPC9oMT4=",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "PCEtLSBjb21tZW50IC0tPg==",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "JVBERi0xLjQKJeLjz9MK",
+      "type": "application/pdf"
+    },
+    {
+      "data": "JSFQUy1BZG9iZS0zLjAK",
+      "type": "application/postscript"
+    },
+    {
+      "data": "/v8AAAAAAAAAAA==",
+      "type": "text/plain; charset=utf-16be"
+    },
+    {
+      "data": "//4AAAAAAAAAAA==",
+      "type": "text/plain; charset=utf-16le"
+    },
+    {
+      "data": "77u/dGV4dA==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "AAABAAEBAQEBAQEB",
+      "type": "image/x-icon"
+    },
+    {
+      "data": "AAACAAEBAQEBAQEB",
+      "type": "image/x-icon"
+    },
+    {
+      "data": "Qk0=",
+      "type": "image/bmp"
+    },
+    {
+      "data": "Qk0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "type": "image/bmp"
+    },
+    {
+      "data": "R0lGODdhAQEBAQEBAQE=",
+      "type": "image/gif"
+    },
+    {
+      "data": "R0lGODlhAQEBAQEBAQE=",
+      "type": "image/gif"
+    },
+    {
+      "data": "R0lGODhhAQEBAQEBAQE=",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "UklGRgAAAABXRUJQVlABAQEB",
+      "type": "image/webp"
+    },
+    {
+      "data": "UklGRgAAAABXRUJQVlgBAQEB",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "iVBORw0KGgoAAAAAAAAAAA==",
+      "type": "image/png"
+    },
+    {
+      "data": "/9j/4AAAAAAAAAAA",
+      "type": "image/jpeg"
+    },
+    {
+      "data": "Rk9STQAAAABBSUZGAAAAAA==",
+      "type": "audio/aiff"
+    },
+    {
+      "data": "SUQzAAAAAAAAAAA=",
+      "type": "audio/mpeg"
+    },
+    {
+      "data": "T2dnUwAAAAAAAAAAAA==",
+      "type": "application/ogg"
+    },
+    {
+      "data": "TVRoZAAAAAY=",
+      "type": "audio/midi"
+    },
+    {
+      "data": "UklGRgAAAABBVkkgAAAAAA==",
+      "type": "video/avi"
+    },
+    {
+      "data": "UklGRgAAAABXQVZFAAAAAA==",
+      "type": "audio/wave"
+    },
+    {
+      "data": "ZnR5cG1wNA==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "AAAAIGZ0eXBpc29tAAAAAG1wNDFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "type": "video/mp4"
+    },
+    {
+      "data": "AAAAH2Z0eXBpc29tbXA0MUJCQkJCQkJC",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "AAAAQGZ0eXBpc29tbXA0MUJCQkJCQkJC",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "AAAAIGZ0eXBqdW5rAAAAAG1wNDFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "type": "video/mp4"
+    },
+    {
+      "data": "AAAAIGZ0eXBpc29tAAAAAGF2YzFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "GkXfowEBAQEBAQEB",
+      "type": "video/webm"
+    },
+    {
+      "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAExQ",
+      "type": "application/vnd.ms-fontobject"
+    },
+    {
+      "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAExQAAA=",
+      "type": "application/vnd.ms-fontobject"
+    },
+    {
+      "data": "AAEAAAEBAQEBAQEB",
+      "type": "font/ttf"
+    },
+    {
+      "data": "T1RUTwEBAQEBAQEB",
+      "type": "font/otf"
+    },
+    {
+      "data": "dHRjZgEBAQEBAQEB",
+      "type": "font/collection"
+    },
+    {
+      "data": "d09GRgEBAQEBAQEB",
+      "type": "font/woff"
+    },
+    {
+      "data": "d09GMgEBAQEBAQEB",
+      "type": "font/woff2"
+    },
+    {
+      "data": "H4sIAQEBAQEBAQE=",
+      "type": "application/x-gzip"
+    },
+    {
+      "data": "UEsDBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "type": "application/zip"
+    },
+    {
+      "data": "UmFyIRoHAAEBAQEBAQEB",
+      "type": "application/x-rar-compressed"
+    },
+    {
+      "data": "UmFyIRoHAQABAQEBAQEBAQ==",
+      "type": "application/x-rar-compressed"
+    },
+    {
+      "data": "AGFzbQEBAQEBAQEB",
+      "type": "application/wasm"
+    },
+    {
+      "data": "AA==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "CA==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "CQ==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "Cw==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "DQ==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "Dg==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "Gg==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "Gw==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "HA==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "Hw==",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "fw==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "gA==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "/w==",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "dmFsaWQgdGV4dCDkuK3mloc=",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhiVBORw0KGgo=",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYlQTkcNChoK",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYlQTkcNChoK",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUI=",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFCTQ==",
+      "type": "text/plain; charset=utf-8"
+    }
+  ],
+  "classify": [
+    {
+      "data": "",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "cGxhaW4gdGV4dAo=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "ICAJDQogdGV4dCBhZnRlciB3aGl0ZXNwYWNl",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PCFET0NUWVBFIEhUTUw+PGh0bWw+PC9odG1sPg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PCFkb2N0eXBlIGh0bWw+PGh0bWw+PC9odG1sPg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PEhUTUw+",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PGh0bWw+",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PEhUTUxY",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PEhUTUwgWA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "ICAgPGh0bWw+",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PD94bWwgdmVyc2lvbj0iMS4wIj8+",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "ICA8P3htbA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PD94bWxub3Bl",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PGJvZHkgY2xhc3M9IngiPg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PGI+Ym9sZDwvYj4=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PGgxPnRpdGxlPC9oMT4=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "PCEtLSBjb21tZW50IC0tPg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "JVBERi0xLjQKJeLjz9MK",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "JSFQUy1BZG9iZS0zLjAK",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "/v8AAAAAAAAAAA==",
+      "media_type": "text/plain",
+      "text": false
+    },
+    {
+      "data": "//4AAAAAAAAAAA==",
+      "media_type": "text/plain",
+      "text": false
+    },
+    {
+      "data": "77u/dGV4dA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "AAABAAEBAQEBAQEB",
+      "media_type": "image/x-icon",
+      "text": false
+    },
+    {
+      "data": "AAACAAEBAQEBAQEB",
+      "media_type": "image/x-icon",
+      "text": false
+    },
+    {
+      "data": "Qk0=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Qk0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "media_type": "image/bmp",
+      "text": false
+    },
+    {
+      "data": "R0lGODdhAQEBAQEBAQE=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "R0lGODlhAQEBAQEBAQE=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "R0lGODhhAQEBAQEBAQE=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "UklGRgAAAABXRUJQVlABAQEB",
+      "media_type": "image/webp",
+      "text": false
+    },
+    {
+      "data": "UklGRgAAAABXRUJQVlgBAQEB",
+      "media_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "data": "iVBORw0KGgoAAAAAAAAAAA==",
+      "media_type": "image/png",
+      "text": false
+    },
+    {
+      "data": "/9j/4AAAAAAAAAAA",
+      "media_type": "image/jpeg",
+      "text": false
+    },
+    {
+      "data": "Rk9STQAAAABBSUZGAAAAAA==",
+      "media_type": "audio/aiff",
+      "text": false
+    },
+    {
+      "data": "SUQzAAAAAAAAAAA=",
+      "media_type": "audio/mpeg",
+      "text": false
+    },
+    {
+      "data": "T2dnUwAAAAAAAAAAAA==",
+      "media_type": "application/ogg",
+      "text": false
+    },
+    {
+      "data": "TVRoZAAAAAY=",
+      "media_type": "audio/midi",
+      "text": false
+    },
+    {
+      "data": "UklGRgAAAABBVkkgAAAAAA==",
+      "media_type": "video/avi",
+      "text": false
+    },
+    {
+      "data": "UklGRgAAAABXQVZFAAAAAA==",
+      "media_type": "audio/wave",
+      "text": false
+    },
+    {
+      "data": "ZnR5cG1wNA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "AAAAIGZ0eXBpc29tAAAAAG1wNDFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "media_type": "video/mp4",
+      "text": false
+    },
+    {
+      "data": "AAAAH2Z0eXBpc29tbXA0MUJCQkJCQkJC",
+      "media_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "data": "AAAAQGZ0eXBpc29tbXA0MUJCQkJCQkJC",
+      "media_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "data": "AAAAIGZ0eXBqdW5rAAAAAG1wNDFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "media_type": "video/mp4",
+      "text": false
+    },
+    {
+      "data": "AAAAIGZ0eXBpc29tAAAAAGF2YzFCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==",
+      "media_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "data": "GkXfowEBAQEBAQEB",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAExQ",
+      "media_type": "application/vnd.ms-fontobject",
+      "text": false
+    },
+    {
+      "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAExQAAA=",
+      "media_type": "application/vnd.ms-fontobject",
+      "text": false
+    },
+    {
+      "data": "AAEAAAEBAQEBAQEB",
+      "media_type": "font/ttf",
+      "text": false
+    },
+    {
+      "data": "T1RUTwEBAQEBAQEB",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "dHRjZgEBAQEBAQEB",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "d09GRgEBAQEBAQEB",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "d09GMgEBAQEBAQEB",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "H4sIAQEBAQEBAQE=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "UEsDBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "media_type": "application/zip",
+      "text": false
+    },
+    {
+      "data": "UmFyIRoHAAEBAQEBAQEB",
+      "media_type": "application/x-rar-compressed",
+      "text": false
+    },
+    {
+      "data": "UmFyIRoHAQABAQEBAQEBAQ==",
+      "media_type": "application/x-rar-compressed",
+      "text": false
+    },
+    {
+      "data": "AGFzbQEBAQEBAQEB",
+      "media_type": "application/wasm",
+      "text": false
+    },
+    {
+      "data": "AA==",
+      "media_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "data": "CA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "CQ==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Cw==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "DQ==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Dg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Gg==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Gw==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "HA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "Hw==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "fw==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "gA==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "/w==",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "dmFsaWQgdGV4dCDkuK3mloc=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhiVBORw0KGgo=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYlQTkcNChoK",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYlQTkcNChoK",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUI=",
+      "media_type": "text/plain",
+      "text": true
+    },
+    {
+      "data": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFCTQ==",
+      "media_type": "text/plain",
+      "text": true
+    }
+  ]
+}

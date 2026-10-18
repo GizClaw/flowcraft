@@ -131,6 +131,20 @@ if ! cmp -s "$out/pathsafe-contract.json" "$conf/pathsafe-contract.json"; then
   exit 1
 fi
 
+echo "==> filetype contract"
+# core/utils/filetype: the WHATWG sniffer core leans on (every signature, mask
+# and the 512-byte cutoff) and the ordered rule with a nameless payload, replayed
+# by crates/flowcraft-utils/tests/filetype_contract.rs. Name-derived answers are
+# host-dependent -- Go's table is builtin + the machine's mime.types -- so they
+# are not in the file; the port's parsers are tested against fixture text.
+"$out/oracle" -filetype-contract > "$out/filetype-contract.json"
+if ! cmp -s "$out/filetype-contract.json" "$conf/filetype-contract.json"; then
+  echo "rust/conformance/filetype-contract.json no longer matches core:" >&2
+  diff "$conf/filetype-contract.json" "$out/filetype-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -filetype-contract) > rust/conformance/filetype-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

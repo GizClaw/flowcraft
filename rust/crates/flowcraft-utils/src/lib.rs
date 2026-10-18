@@ -6,4 +6,5 @@
 
 pub mod bm25;
 pub mod decode;
+pub mod filetype;
 pub mod pathsafe;
