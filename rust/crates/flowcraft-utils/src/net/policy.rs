@@ -15,8 +15,15 @@
 //!
 //! # What is not here
 //!
-//! `NetPolicy.Validate`, and the proxy settings it checks. See the module docs
-//! for why the URL grammar travels with the proxy rather than with this type.
+//! The two `Validate` branches a Rust type cannot reach: an unknown
+//! [`NetMode`] and an unknown [`NetAction`]. The enums have no such value, so
+//! the checks that refuse them are always satisfied here and stay covered by
+//! core's own tests.
+
+use flowcraft_contract::error::{Error, ErrorKind};
+use flowcraft_contract::text;
+
+use super::url;
 
 /// The outbound-network posture a sandbox enforces.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -110,6 +117,110 @@ pub struct MitmPolicy {
     pub hosts: Vec<String>,
     /// The hosts never to intercept.
     pub exclude_hosts: Vec<String>,
+}
+
+impl NetPolicy {
+    /// `NetPolicy.Validate`: the cross-backend invariants of a policy.
+    ///
+    /// The refusals are core's, in core's order and wording, because a
+    /// configuration error is what an operator reads: the proxy URL is
+    /// checked first, then the rules, then the socket paths, then the MITM
+    /// settings. The proxy URL goes through [`url::parse`], so anything
+    /// `url.Parse` refuses is refused here too -- see that module for the
+    /// grammar and its deliberate limits.
+    ///
+    /// A refused policy is classified [`ErrorKind::Validation`], which is what
+    /// core's `errdefs.Validationf` produces.
+    pub fn validate(&self) -> Result<(), Error> {
+        if !self.proxy.is_empty() {
+            let parsed = url::parse(&self.proxy).map_err(|err| {
+                validation(format!(
+                    "net: invalid proxy URL {}: {err}",
+                    text::quote(&self.proxy)
+                ))
+            })?;
+            if parsed.scheme != "http" && parsed.scheme != "socks5" {
+                return Err(validation(format!(
+                    "net: proxy scheme {} must be http or socks5",
+                    text::quote(&parsed.scheme)
+                )));
+            }
+            if parsed.host.is_empty() {
+                return Err(validation(format!(
+                    "net: proxy URL {} has no host",
+                    text::quote(&self.proxy)
+                )));
+            }
+            if let Some(user) = &parsed.user
+                && user.password.is_some()
+                && user.username.is_empty()
+            {
+                return Err(validation(format!(
+                    "net: proxy URL {} has a password but no username",
+                    text::quote(&self.proxy)
+                )));
+            }
+        }
+        for (index, rule) in self.rules.iter().enumerate() {
+            // `rule.action` is always one of the two, so core's check cannot
+            // fail here (see the module docs).
+            if rule.host.trim().is_empty() {
+                return Err(validation(format!(
+                    "net: net rule {index} has an empty host"
+                )));
+            }
+            if rule.port < 0 || rule.port > 65535 {
+                return Err(validation(format!(
+                    "net: net rule {index} port {} out of range",
+                    rule.port
+                )));
+            }
+            if rule.reason.trim() != rule.reason {
+                return Err(validation(format!(
+                    "net: net rule {index} reason has leading or trailing whitespace"
+                )));
+            }
+            if rule.reason.contains(['\r', '\n']) {
+                return Err(validation(format!(
+                    "net: net rule {index} reason must be a single line"
+                )));
+            }
+        }
+        for path in &self.unix_sockets {
+            // `filepath.IsAbs`, which on the platforms this port targets means
+            // a leading separator.
+            if !path.starts_with('/') {
+                return Err(validation(format!(
+                    "net: unix socket path {} must be absolute",
+                    text::quote(path)
+                )));
+            }
+        }
+        if let Some(mitm) = &self.mitm {
+            if mitm.max_body_bytes < 0 {
+                return Err(validation(
+                    "net: mitm.max_body_bytes must be non-negative".to_owned(),
+                ));
+            }
+            for (index, host) in mitm.hosts.iter().enumerate() {
+                if host.trim().is_empty() {
+                    return Err(validation(format!("net: mitm.hosts[{index}] is empty")));
+                }
+            }
+            for (index, host) in mitm.exclude_hosts.iter().enumerate() {
+                if host.trim().is_empty() {
+                    return Err(validation(format!(
+                        "net: mitm.exclude_hosts[{index}] is empty"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validation(message: String) -> Error {
+    Error::new(ErrorKind::Validation, message)
 }
 
 #[cfg(test)]

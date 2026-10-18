@@ -159,6 +159,20 @@ if ! cmp -s "$out/net-contract.json" "$conf/net-contract.json"; then
   exit 1
 fi
 
+echo "==> proxy contract"
+# The proxy's policy half: the url.Parse grammar NetPolicy.Validate reads (with
+# its error spelling), Validate's refusals, splitHostPort's two fallbacks, and
+# Proxy.Decide's verdicts -- replayed by
+# crates/flowcraft-utils/tests/proxy_contract.rs. Every row is answerable
+# without a socket; the wire and the TLS engine are the next slice.
+"$out/oracle" -proxy-contract > "$out/proxy-contract.json"
+if ! cmp -s "$out/proxy-contract.json" "$conf/proxy-contract.json"; then
+  echo "rust/conformance/proxy-contract.json no longer matches core:" >&2
+  diff "$conf/proxy-contract.json" "$out/proxy-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -proxy-contract) > rust/conformance/proxy-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

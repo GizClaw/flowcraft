@@ -1,0 +1,1123 @@
+{
+  "note": "core/utils/net: the proxy's policy half -- the url.Parse grammar NetPolicy.Validate reads, its refusals, Proxy.Decide verdicts (split, rule, reason, pinned dial address), and the MITM include/exclude selection. Sockets and tunnels are not here.",
+  "urls": [
+    {
+      "raw": "http://127.0.0.1:3128",
+      "scheme": "http",
+      "host": "127.0.0.1:3128",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:8080",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example/",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "path": "/"
+    },
+    {
+      "raw": "socks5://proxy.example:1080",
+      "scheme": "socks5",
+      "host": "proxy.example:1080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "socks5://user:pass@proxy.example:1080",
+      "scheme": "socks5",
+      "host": "proxy.example:1080",
+      "has_user": true,
+      "user": "user",
+      "has_password": true,
+      "password": "pass"
+    },
+    {
+      "raw": "socks5://user@proxy.example:1080",
+      "scheme": "socks5",
+      "host": "proxy.example:1080",
+      "has_user": true,
+      "user": "user",
+      "has_password": false
+    },
+    {
+      "raw": "socks5://:pass@proxy.example:1080",
+      "scheme": "socks5",
+      "host": "proxy.example:1080",
+      "has_user": true,
+      "has_password": true,
+      "password": "pass"
+    },
+    {
+      "raw": "socks5://:@proxy.example:1080",
+      "scheme": "socks5",
+      "host": "proxy.example:1080",
+      "has_user": true,
+      "has_password": true
+    },
+    {
+      "raw": "HTTP://Proxy.Example:8080",
+      "scheme": "http",
+      "host": "Proxy.Example:8080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "https://proxy.example:443",
+      "scheme": "https",
+      "host": "proxy.example:443",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "proxy.example:3128",
+      "scheme": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "opaque": "3128"
+    },
+    {
+      "raw": "//proxy.example:3128",
+      "host": "proxy.example:3128",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "path": "proxy.example"
+    },
+    {
+      "raw": "",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "*",
+      "has_user": false,
+      "has_password": false,
+      "path": "*"
+    },
+    {
+      "raw": "http://",
+      "scheme": "http",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http:///path",
+      "scheme": "http",
+      "has_user": false,
+      "has_password": false,
+      "path": "/path"
+    },
+    {
+      "raw": "http://proxy.example:bad",
+      "error": "parse \"http://proxy.example:bad\": invalid port \":bad\" after host",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:",
+      "scheme": "http",
+      "host": "proxy.example:",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:65536",
+      "scheme": "http",
+      "host": "proxy.example:65536",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:80:90",
+      "error": "parse \"http://proxy.example:80:90\": invalid port \":80:90\" after host",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[::1]:8080",
+      "scheme": "http",
+      "host": "[::1]:8080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[::1]",
+      "scheme": "http",
+      "host": "[::1]",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[::1",
+      "error": "parse \"http://[::1\": missing ']' in host",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://::1:8080",
+      "error": "parse \"http://::1:8080\": invalid port \"::1:8080\" after host",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[127.0.0.1]:8080",
+      "error": "parse \"http://[127.0.0.1]:8080\": invalid IP-literal",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[::ffff:127.0.0.1]:8080",
+      "scheme": "http",
+      "host": "[::ffff:127.0.0.1]:8080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[fe80::1%25en0]:8080",
+      "scheme": "http",
+      "host": "[fe80::1%en0]:8080",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://[fe80::1%en0]:8080",
+      "error": "parse \"http://[fe80::1%en0]:8080\": invalid URL escape \"%en\"",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://user%20name:p%40ss@proxy.example:8080",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": true,
+      "user": "user name",
+      "has_password": true,
+      "password": "p@ss"
+    },
+    {
+      "raw": "http://u%zz@proxy.example",
+      "error": "parse \"http://u%zz@proxy.example\": invalid URL escape \"%zz\"",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://user:pa:ss@proxy.example:8080",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": true,
+      "user": "user",
+      "has_password": true,
+      "password": "pa:ss"
+    },
+    {
+      "raw": "http://a:b@proxy.example:8080",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": true,
+      "user": "a",
+      "has_password": true,
+      "password": "b"
+    },
+    {
+      "raw": "http://proxy.example/%zz",
+      "error": "parse \"http://proxy.example/%zz\": invalid URL escape \"%zz\"",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example/a%2Fb",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "path": "/a/b"
+    },
+    {
+      "raw": "http://proxy.example?q=%zz",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "raw_query": "q=%zz"
+    },
+    {
+      "raw": "http://proxy.example#f%zz",
+      "error": "parse \"http://proxy.example#f%zz\": invalid URL escape \"%zz\"",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example#frag",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "fragment": "frag"
+    },
+    {
+      "raw": "http://proxy.example?",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example/?a=b&c",
+      "scheme": "http",
+      "host": "proxy.example",
+      "has_user": false,
+      "has_password": false,
+      "path": "/",
+      "raw_query": "a=b&c"
+    },
+    {
+      "raw": "http://pro xy.example:8080",
+      "error": "parse \"http://pro xy.example:8080\": invalid character \" \" in host name",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:8080\u0001",
+      "error": "parse \"http://proxy.example:8080\\x01\": net/url: invalid control character in URL",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:8080/path",
+      "error": "parse \"http://proxy.example:8080/pa\\x7fth\": net/url: invalid control character in URL",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "1http://proxy.example",
+      "error": "parse \"1http://proxy.example\": first path segment in URL cannot contain colon",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "cache_object:foo/bar",
+      "error": "parse \"cache_object:foo/bar\": first path segment in URL cannot contain colon",
+      "has_user": false,
+      "has_password": false
+    },
+    {
+      "raw": "a:b",
+      "scheme": "a",
+      "has_user": false,
+      "has_password": false,
+      "opaque": "b"
+    },
+    {
+      "raw": "mailto:user@example.com",
+      "scheme": "mailto",
+      "has_user": false,
+      "has_password": false,
+      "opaque": "user@example.com"
+    },
+    {
+      "raw": "file:///tmp/x",
+      "scheme": "file",
+      "has_user": false,
+      "has_password": false,
+      "path": "/tmp/x"
+    },
+    {
+      "raw": "http://@proxy.example:8080",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": true,
+      "has_password": false
+    },
+    {
+      "raw": "http://proxy.example:8080/path?q=1#frag",
+      "scheme": "http",
+      "host": "proxy.example:8080",
+      "has_user": false,
+      "has_password": false,
+      "path": "/path",
+      "raw_query": "q=1",
+      "fragment": "frag"
+    }
+  ],
+  "validations": [
+    {
+      "name": "zero-policy",
+      "mode": "default"
+    },
+    {
+      "name": "allow-list-with-rules",
+      "mode": "allow_list",
+      "allow_hosts": [
+        "api.example.com:443"
+      ],
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 0
+        },
+        {
+          "action": "deny",
+          "host": "*.internal",
+          "port": 0,
+          "reason": "internal hosts are not reachable from the sandbox"
+        },
+        {
+          "action": "allow",
+          "host": "10.0.0.0/8",
+          "port": 0
+        },
+        {
+          "action": "allow",
+          "host": "[::1]:8443",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "name": "proxy-mode-http-upstream",
+      "mode": "proxy",
+      "proxy": "http://127.0.0.1:3128"
+    },
+    {
+      "name": "proxy-mode-socks-upstream",
+      "mode": "proxy",
+      "proxy": "socks5://user:pass@proxy.example:1080"
+    },
+    {
+      "name": "proxy-mode-https-upstream",
+      "mode": "proxy",
+      "proxy": "https://proxy.example:443",
+      "error": "net: proxy scheme \"https\" must be http or socks5"
+    },
+    {
+      "name": "proxy-mode-scheme-less",
+      "mode": "proxy",
+      "proxy": "proxy.example:3128",
+      "error": "net: proxy scheme \"proxy.example\" must be http or socks5"
+    },
+    {
+      "name": "proxy-mode-empty-host",
+      "mode": "proxy",
+      "proxy": "http://",
+      "error": "net: proxy URL \"http://\" has no host"
+    },
+    {
+      "name": "proxy-mode-unparsable",
+      "mode": "proxy",
+      "proxy": "://proxy.example",
+      "error": "net: invalid proxy URL \"://proxy.example\": parse \"://proxy.example\": missing protocol scheme"
+    },
+    {
+      "name": "proxy-mode-password-no-username",
+      "mode": "proxy",
+      "proxy": "socks5://:pass@proxy.example:1080",
+      "error": "net: proxy URL \"socks5://:pass@proxy.example:1080\" has a password but no username"
+    },
+    {
+      "name": "proxy-mode-bad-port",
+      "mode": "proxy",
+      "proxy": "http://proxy.example:bad",
+      "error": "net: invalid proxy URL \"http://proxy.example:bad\": parse \"http://proxy.example:bad\": invalid port \":bad\" after host"
+    },
+    {
+      "name": "rule-empty-host",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "",
+          "port": 0
+        }
+      ],
+      "error": "net: net rule 0 has an empty host"
+    },
+    {
+      "name": "rule-blank-host",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "   ",
+          "port": 0
+        }
+      ],
+      "error": "net: net rule 0 has an empty host"
+    },
+    {
+      "name": "rule-negative-port",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": -1
+        }
+      ],
+      "error": "net: net rule 0 port -1 out of range"
+    },
+    {
+      "name": "rule-port-out-of-range",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 65536
+        }
+      ],
+      "error": "net: net rule 0 port 65536 out of range"
+    },
+    {
+      "name": "rule-reason-padded",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "example.com",
+          "port": 0,
+          "reason": " padded"
+        }
+      ],
+      "error": "net: net rule 0 reason has leading or trailing whitespace"
+    },
+    {
+      "name": "rule-reason-two-lines",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "example.com",
+          "port": 0,
+          "reason": "first\nsecond"
+        }
+      ],
+      "error": "net: net rule 0 reason must be a single line"
+    },
+    {
+      "name": "rule-and-socket-both-wrong",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "example.com",
+          "port": 0,
+          "reason": "fine"
+        },
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 70000
+        }
+      ],
+      "unix_sockets": [
+        "relative/path.sock"
+      ],
+      "error": "net: net rule 1 port 70000 out of range"
+    },
+    {
+      "name": "socket-relative",
+      "mode": "allow_list",
+      "unix_sockets": [
+        "/tmp/ok.sock",
+        "relative.sock"
+      ],
+      "error": "net: unix socket path \"relative.sock\" must be absolute"
+    },
+    {
+      "name": "mitm-negative-body",
+      "mode": "allow_list",
+      "mitm": {
+        "enabled": true,
+        "inspect_bodies": false,
+        "max_body_bytes": -1
+      },
+      "error": "net: mitm.max_body_bytes must be non-negative"
+    },
+    {
+      "name": "mitm-empty-host",
+      "mode": "allow_list",
+      "mitm": {
+        "enabled": true,
+        "inspect_bodies": false,
+        "max_body_bytes": 0,
+        "hosts": [
+          "example.com",
+          " "
+        ]
+      },
+      "error": "net: mitm.hosts[1] is empty"
+    },
+    {
+      "name": "mitm-empty-exclude",
+      "mode": "allow_list",
+      "mitm": {
+        "enabled": true,
+        "inspect_bodies": false,
+        "max_body_bytes": 0,
+        "exclude_hosts": [
+          ""
+        ]
+      },
+      "error": "net: mitm.exclude_hosts[0] is empty"
+    },
+    {
+      "name": "mitm-valid",
+      "mode": "allow_list",
+      "mitm": {
+        "enabled": true,
+        "inspect_bodies": true,
+        "max_body_bytes": 1024,
+        "hosts": [
+          "*.example.com"
+        ],
+        "exclude_hosts": [
+          "secret.example.com"
+        ]
+      }
+    }
+  ],
+  "decisions": [
+    {
+      "name": "split-host-and-port",
+      "mode": "allow_list",
+      "request": "example.com:443",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:443"
+    },
+    {
+      "name": "split-no-port",
+      "mode": "allow_list",
+      "request": "example.com",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com"
+    },
+    {
+      "name": "split-empty-port",
+      "mode": "allow_list",
+      "request": "example.com:",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:"
+    },
+    {
+      "name": "split-non-numeric-port",
+      "mode": "allow_list",
+      "request": "example.com:bad",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:bad"
+    },
+    {
+      "name": "split-overflowing-port",
+      "mode": "allow_list",
+      "request": "example.com:999999999999999999999",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:999999999999999999999"
+    },
+    {
+      "name": "split-ipv6",
+      "mode": "allow_list",
+      "request": "[::1]:8443",
+      "default_port": 80,
+      "host": "::1",
+      "port": 8443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "[::1]:8443"
+    },
+    {
+      "name": "split-ipv6-no-port",
+      "mode": "allow_list",
+      "request": "[::1]",
+      "default_port": 80,
+      "host": "::1",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "[::1]"
+    },
+    {
+      "name": "split-bare-ipv6",
+      "mode": "allow_list",
+      "request": "::1:80",
+      "default_port": 80,
+      "host": "::1:80",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "::1:80"
+    },
+    {
+      "name": "split-doubled-brackets",
+      "mode": "allow_list",
+      "request": "[[::1]]:80",
+      "default_port": 80,
+      "host": "::1]]:80",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "[[::1]]:80"
+    },
+    {
+      "name": "split-empty-brackets",
+      "mode": "allow_list",
+      "request": "[]:80",
+      "default_port": 80,
+      "host": "",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "[]:80"
+    },
+    {
+      "name": "split-empty-host",
+      "mode": "allow_list",
+      "request": ":80",
+      "default_port": 80,
+      "host": "",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": ":80"
+    },
+    {
+      "name": "split-empty",
+      "mode": "allow_list",
+      "request": "",
+      "default_port": 443,
+      "host": "",
+      "port": 443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": ""
+    },
+    {
+      "name": "split-leading-space",
+      "mode": "allow_list",
+      "request": " [::1]:80",
+      "default_port": 80,
+      "host": " [::1]:80",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": " [::1]:80"
+    },
+    {
+      "name": "split-two-colons",
+      "mode": "allow_list",
+      "request": "a:b:c",
+      "default_port": 80,
+      "host": "a:b:c",
+      "port": 80,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "a:b:c"
+    },
+    {
+      "name": "split-zero-port",
+      "mode": "allow_list",
+      "request": "127.0.0.1:0",
+      "default_port": 443,
+      "host": "127.0.0.1",
+      "port": 0,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "127.0.0.1:0"
+    },
+    {
+      "name": "split-port-out-of-range",
+      "mode": "allow_list",
+      "request": "example.com:99999",
+      "default_port": 80,
+      "host": "example.com",
+      "port": 99999,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:99999"
+    },
+    {
+      "name": "host-rule-allows",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 0
+        }
+      ],
+      "request": "example.com:443",
+      "default_port": 0,
+      "host": "example.com",
+      "port": 443,
+      "action": "allow",
+      "rule": "allow example.com",
+      "dial_host": "example.com:443"
+    },
+    {
+      "name": "host-rule-default-port",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 0
+        }
+      ],
+      "request": "example.com",
+      "default_port": 443,
+      "host": "example.com",
+      "port": 443,
+      "action": "allow",
+      "rule": "allow example.com",
+      "dial_host": "example.com"
+    },
+    {
+      "name": "legacy-allow-hosts",
+      "mode": "allow_list",
+      "allow_hosts": [
+        "example.com"
+      ],
+      "request": "sub.example.com:443",
+      "default_port": 0,
+      "host": "sub.example.com",
+      "port": 443,
+      "action": "allow",
+      "rule": "allow example.com",
+      "dial_host": "sub.example.com:443"
+    },
+    {
+      "name": "legacy-allow-hosts-port-suffix",
+      "mode": "allow_list",
+      "allow_hosts": [
+        "example.com:443"
+      ],
+      "request": "example.com:8443",
+      "default_port": 0,
+      "host": "example.com",
+      "port": 8443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:8443"
+    },
+    {
+      "name": "deny-beats-allow",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "example.com",
+          "port": 0
+        },
+        {
+          "action": "deny",
+          "host": "*.example.com",
+          "port": 0,
+          "reason": "no subdomains"
+        }
+      ],
+      "request": "www.example.com:443",
+      "default_port": 0,
+      "host": "www.example.com",
+      "port": 443,
+      "action": "deny",
+      "rule": "deny *.example.com",
+      "reason": "no subdomains",
+      "dial_host": "www.example.com:443"
+    },
+    {
+      "name": "idna-query-matches-punycode-rule",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "xn--bcher-kva.example",
+          "port": 0
+        }
+      ],
+      "request": "bücher.example:443",
+      "default_port": 0,
+      "host": "bücher.example",
+      "port": 443,
+      "action": "allow",
+      "rule": "allow xn--bcher-kva.example",
+      "dial_host": "bücher.example:443"
+    },
+    {
+      "name": "uncovered-literal",
+      "mode": "allow_list",
+      "request": "93.184.216.34:443",
+      "default_port": 0,
+      "host": "93.184.216.34",
+      "port": 443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "93.184.216.34:443"
+    },
+    {
+      "name": "covered-literal",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "93.184.216.34",
+          "port": 0
+        }
+      ],
+      "request": "93.184.216.34:80",
+      "default_port": 0,
+      "host": "93.184.216.34",
+      "port": 80,
+      "action": "allow",
+      "rule": "allow 93.184.216.34",
+      "dial_host": "93.184.216.34:80"
+    },
+    {
+      "name": "denied-range-carries-reason",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "10.0.0.0/8",
+          "port": 0,
+          "reason": "metadata range"
+        }
+      ],
+      "request": "10.1.2.3:80",
+      "default_port": 0,
+      "host": "10.1.2.3",
+      "port": 80,
+      "action": "deny",
+      "rule": "deny 10.0.0.0/8",
+      "reason": "metadata range",
+      "dial_host": "10.1.2.3:80"
+    },
+    {
+      "name": "ipv6-literal",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "[::1]:8443",
+          "port": 0
+        }
+      ],
+      "request": "[::1]:8443",
+      "default_port": 0,
+      "host": "::1",
+      "port": 8443,
+      "action": "allow",
+      "rule": "allow ::1:8443",
+      "dial_host": "[::1]:8443"
+    },
+    {
+      "name": "ipv6-literal-uncovered-port",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "[::1]:8443",
+          "port": 0
+        }
+      ],
+      "request": "[::1]:443",
+      "default_port": 0,
+      "host": "::1",
+      "port": 443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "[::1]:443"
+    },
+    {
+      "name": "proxy-mode-delegates",
+      "mode": "proxy",
+      "upstream": "http://127.0.0.1:9",
+      "request": "anything.example:443",
+      "default_port": 0,
+      "host": "anything.example",
+      "port": 443,
+      "action": "allow",
+      "rule": "",
+      "dial_host": "anything.example:443"
+    },
+    {
+      "name": "proxy-mode-deny-subdomain",
+      "mode": "proxy",
+      "upstream": "http://127.0.0.1:9",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "*.internal",
+          "port": 0,
+          "reason": "internal"
+        }
+      ],
+      "request": "db.internal:5432",
+      "default_port": 0,
+      "host": "db.internal",
+      "port": 5432,
+      "action": "deny",
+      "rule": "deny *.internal",
+      "reason": "internal",
+      "dial_host": "db.internal:5432"
+    },
+    {
+      "name": "matcher-refuses-the-rules",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "*",
+          "port": 0
+        }
+      ],
+      "request": "example.com:443",
+      "default_port": 0,
+      "error": "netproxy: policy matcher unavailable",
+      "host": "example.com",
+      "port": 443,
+      "action": "deny",
+      "rule": "",
+      "dial_host": "example.com:443"
+    }
+  ],
+  "mitm": [
+    {
+      "name": "no-selection",
+      "queries": [
+        "example.com",
+        "sub.example.com",
+        "127.0.0.1",
+        "10.1.2.3",
+        ""
+      ],
+      "answers": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "name": "includes-only",
+      "hosts": [
+        "example.com"
+      ],
+      "queries": [
+        "example.com",
+        "sub.example.com",
+        "other.example",
+        "example.com.evil"
+      ],
+      "answers": [
+        true,
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "excludes-only",
+      "exclude_hosts": [
+        "internal.example"
+      ],
+      "queries": [
+        "internal.example",
+        "db.internal.example",
+        "example.com"
+      ],
+      "answers": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "exclude-inside-include",
+      "hosts": [
+        "example.com"
+      ],
+      "exclude_hosts": [
+        "*.example.com"
+      ],
+      "queries": [
+        "example.com",
+        "www.example.com"
+      ],
+      "answers": [
+        true,
+        false
+      ]
+    },
+    {
+      "name": "ip-pattern",
+      "hosts": [
+        "10.0.0.0/8"
+      ],
+      "queries": [
+        "10.1.2.3",
+        "127.0.0.1",
+        "mapped.example"
+      ],
+      "answers": [
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "empty-include-list",
+      "queries": [
+        "example.com"
+      ],
+      "answers": [
+        true
+      ]
+    },
+    {
+      "name": "invalid-pattern",
+      "hosts": [
+        "*"
+      ],
+      "error": "mitm: hosts: host \"*\": \"*\" is only allowed as a leading \"*.\" wildcard"
+    }
+  ]
+}

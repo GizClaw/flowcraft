@@ -25,7 +25,10 @@
 // core/utils/pathsafe's containment rules (see pathsafecontract.go). With
 // -filetype-contract it dumps core/utils/filetype's sniffer corpus and ordered
 // rule (see filetypecontract.go). With -net-contract it dumps core/utils/net's
-// host patterns and Matcher verdicts (see netcontract.go).
+// host patterns and Matcher verdicts (see netcontract.go), and with
+// -proxy-contract the proxy's policy half -- the URL grammar, Validate's
+// refusals, Decide's verdicts and the MITM host selection (see
+// proxycontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -105,8 +108,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-proxy-contract" {
+		if err := writeProxyContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "proxy contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

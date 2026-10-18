@@ -11,18 +11,21 @@
 //! [`host::compile`], [`host::Pattern::matches_host`] and
 //! [`matcher::Matcher::match_host`] do no I/O and no DNS, so
 //! `rust/conformance/net-contract.json` holds every one of their answers to a
-//! byte. The other half -- the host-side proxy that listens, multiplexes HTTP
-//! and SOCKS5 and tunnels -- is sockets and state machines, and lands in its own
-//! slice.
+//! byte. The proxy's policy half is here too: [`policy::NetPolicy::validate`],
+//! [`proxy::Proxy::decide`] and [`mitm::Selection::should_mitm`] answer what the
+//! serving proxy would do without serving anything, and
+//! `rust/conformance/proxy-contract.json` pins them.
+//!
+//! The other half -- the host-side proxy that listens, multiplexes HTTP and
+//! SOCKS5 and tunnels, and the TLS engine behind MITM -- is sockets and state
+//! machines, and lands in its own slice.
 //!
 //! # What a caller can tell apart from core
 //!
-//! - `NetPolicy.Validate` is not here. Every branch but one is a
-//!   range or a trim; the remaining one is `url.Parse`, which core leans on to
-//!   decide whether a proxy URL has a scheme it can use, a host, and a password
-//!   without a user. That grammar is a slice of its own, and a validation that
-//!   skipped it would accept a policy core refuses -- worse than not having the
-//!   check yet. The proxy slice brings both.
+//! - Two `NetPolicy.Validate` branches are unreachable: an unknown [`NetMode`]
+//!   and an unknown [`NetAction`] cannot be constructed, so the checks that
+//!   refuse them are always satisfied. Every other refusal is here, including
+//!   the URL grammar ([`url`]) the proxy settings are read with.
 //! - A rule's port is an `i32` where core has Go's `int`. The valid range is
 //!   `0..=65535`, which `i32` covers; the difference is only visible on inputs
 //!   `NetPolicy.Validate` would refuse anyway.
@@ -32,13 +35,22 @@
 //! - Non-ASCII patterns go through IDNA exactly where core's do (see
 //!   [`host::normalize`]) and nowhere else, including the one character where
 //!   Rust's lowercasing and Go's disagree.
+//! - [`proxy::Proxy`] takes its resolver as a trait object. Core reads a
+//!   package-level `net.DefaultResolver`; the serving proxy here will use
+//!   [`proxy::SystemResolver`], and the trait is what lets the address pass be
+//!   tested -- and contract-pinned -- without a network.
 
 pub mod addr;
 pub mod host;
 pub mod matcher;
+pub mod mitm;
 pub mod policy;
+pub mod proxy;
+pub mod url;
 
 pub use addr::{Addr, Prefix};
 pub use host::{Pattern, Set};
 pub use matcher::{Decision, Matcher};
+pub use mitm::Selection;
 pub use policy::{MitmPolicy, NetAction, NetMode, NetPolicy, NetRule};
+pub use proxy::{Audit, Proxy, ProxyConfig, Resolver, SystemResolver, Verdict};

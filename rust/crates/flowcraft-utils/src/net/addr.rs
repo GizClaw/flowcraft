@@ -113,6 +113,23 @@ impl Addr {
     }
 }
 
+impl std::fmt::Display for Addr {
+    /// `Addr.String`, which is what a pinned dial target is spelled with.
+    ///
+    /// Both spellings are RFC 5952: the compressed form, lowercase, with an
+    /// IPv4-mapped address written `::ffff:1.2.3.4` rather than as two hex
+    /// groups, and the zone after `%` when there is one.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Addr::V4(addr) => write!(f, "{addr}"),
+            Addr::V6 { addr, zone } => match zone {
+                Some(zone) => write!(f, "{addr}%{zone}"),
+                None => write!(f, "{addr}"),
+            },
+        }
+    }
+}
+
 /// A CIDR range, stored with its host bits cleared (core's `Prefix.Masked()`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefix {
