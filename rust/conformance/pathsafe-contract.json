@@ -1,0 +1,523 @@
+{
+  "note": "core/utils/pathsafe: containment, rel, resolve_under, rel_ref and clean. Rows carry their inputs; the port replays them.",
+  "within": [
+    {
+      "root": "/w/root",
+      "path": "/w/root",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/w/root/a",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/w/root/a/b/c",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/w",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root",
+      "path": "/w/rooted",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root",
+      "path": "/w/root/../other",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root",
+      "path": "",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root",
+      "path": "/W/ROOT",
+      "within": false,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/W/root/sub",
+      "within": false,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/W/ROOT/a/b",
+      "within": false,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/W/rooted",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root",
+      "path": "/W",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/w/root/",
+      "path": "/w/root/a",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/w/root",
+      "path": "/w/root/a/",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/w/roo",
+      "path": "/w/root",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "/",
+      "path": "/w/root",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "/",
+      "path": "/",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "",
+      "path": "/w/root",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "relative",
+      "path": "relative/sub",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "relative",
+      "path": "relativeish",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "relative",
+      "path": "other/sub",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "a/b",
+      "path": "a/b/c",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "a/b",
+      "path": "a/b/../c",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": "a/b",
+      "path": ".",
+      "within": false,
+      "within_fold": false
+    },
+    {
+      "root": ".",
+      "path": "a",
+      "within": true,
+      "within_fold": true
+    },
+    {
+      "root": "K",
+      "path": "K",
+      "within": true,
+      "within_fold": true
+    }
+  ],
+  "rel": [
+    {
+      "root": "/w/root",
+      "target": "/w/root",
+      "rel": ".",
+      "ok": true
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/root/a",
+      "rel": "a",
+      "ok": true
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/root/a/b",
+      "rel": "a/b",
+      "ok": true
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/other",
+      "ok": false
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/root/a/../b",
+      "rel": "b",
+      "ok": true
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/root/./a",
+      "rel": "a",
+      "ok": true
+    },
+    {
+      "root": "/w/root/",
+      "target": "/w/root/a",
+      "rel": "a",
+      "ok": true
+    },
+    {
+      "root": "/w/root",
+      "target": "/w/root/a/",
+      "rel": "a",
+      "ok": true
+    },
+    {
+      "root": "/a/b/c",
+      "target": "/a",
+      "ok": false
+    },
+    {
+      "root": "/a/b/c",
+      "target": "/a/x",
+      "ok": false
+    },
+    {
+      "root": "/a/b/c",
+      "target": "/a/b",
+      "ok": false
+    },
+    {
+      "root": "/a",
+      "target": "/a/b/c/d",
+      "rel": "b/c/d",
+      "ok": true
+    },
+    {
+      "root": "/a/b",
+      "target": "/a/b",
+      "rel": ".",
+      "ok": true
+    },
+    {
+      "root": "/",
+      "target": "/a/b",
+      "rel": "a/b",
+      "ok": true
+    },
+    {
+      "root": "/a/b",
+      "target": "/",
+      "ok": false
+    },
+    {
+      "root": "a/b",
+      "target": "a/c",
+      "ok": false
+    },
+    {
+      "root": "a/b",
+      "target": "../a/b/c",
+      "ok": false
+    },
+    {
+      "root": ".",
+      "target": "a",
+      "rel": "a",
+      "ok": true
+    },
+    {
+      "root": "a/b",
+      "target": ".",
+      "ok": false
+    },
+    {
+      "root": "/w/root",
+      "target": "relative/path",
+      "ok": false
+    },
+    {
+      "root": "relative/path",
+      "target": "/w/root",
+      "ok": false
+    },
+    {
+      "root": "",
+      "target": "",
+      "ok": false
+    },
+    {
+      "root": "",
+      "target": "/w",
+      "ok": false
+    },
+    {
+      "root": "/w",
+      "target": "",
+      "ok": false
+    }
+  ],
+  "resolve": [
+    {
+      "root": "/w/root",
+      "reference": "sub/file.txt",
+      "path": "/w/root/sub/file.txt"
+    },
+    {
+      "root": "/w/root",
+      "reference": ".",
+      "path": "/w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "a/b/c",
+      "path": "/w/root/a/b/c"
+    },
+    {
+      "root": "/w/root",
+      "reference": "../escape",
+      "error": "pathsafe: \"../escape\" escapes /w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "sub/../../escape",
+      "error": "pathsafe: \"sub/../../escape\" escapes /w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "..",
+      "error": "pathsafe: \"..\" escapes /w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "/absolute",
+      "path": "/w/root/absolute"
+    },
+    {
+      "root": "/w/root/",
+      "reference": "a/../b",
+      "path": "/w/root/b"
+    },
+    {
+      "root": "/",
+      "reference": "a",
+      "path": "/a"
+    },
+    {
+      "root": "/",
+      "reference": "..",
+      "path": "/"
+    },
+    {
+      "root": "/w/root/",
+      "reference": "../root/a",
+      "path": "/w/root/a"
+    },
+    {
+      "root": "",
+      "reference": "x",
+      "error": "pathsafe: empty root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "",
+      "path": "/w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "./",
+      "path": "/w/root"
+    },
+    {
+      "root": "/w/root",
+      "reference": "a//b/",
+      "path": "/w/root/a/b"
+    }
+  ],
+  "rel_ref": [
+    {
+      "reference": "bin/plugin",
+      "ok": true
+    },
+    {
+      "reference": "./bin/plugin",
+      "ok": true
+    },
+    {
+      "reference": "a/../b",
+      "ok": true
+    },
+    {
+      "reference": "..",
+      "ok": false
+    },
+    {
+      "reference": "../escape",
+      "ok": false
+    },
+    {
+      "reference": "a/../../escape",
+      "ok": false
+    },
+    {
+      "reference": "/absolute",
+      "ok": false
+    },
+    {
+      "reference": "",
+      "ok": true
+    },
+    {
+      "reference": "\\x",
+      "ok": true
+    },
+    {
+      "reference": ".",
+      "ok": true
+    },
+    {
+      "reference": "./",
+      "ok": true
+    },
+    {
+      "reference": "a/..",
+      "ok": true
+    },
+    {
+      "reference": "a/../..",
+      "ok": false
+    },
+    {
+      "reference": "../a/../b",
+      "ok": false
+    },
+    {
+      "reference": "/",
+      "ok": false
+    },
+    {
+      "reference": "//host/share",
+      "ok": false
+    },
+    {
+      "reference": "a\\..\\b",
+      "ok": true
+    }
+  ],
+  "clean": [
+    {
+      "input": "/w/root/",
+      "cleaned": "/w/root"
+    },
+    {
+      "input": "/w//root/./a",
+      "cleaned": "/w/root/a"
+    },
+    {
+      "input": "/w/root/../other",
+      "cleaned": "/w/other"
+    },
+    {
+      "input": "/w/root/a/..",
+      "cleaned": "/w/root"
+    },
+    {
+      "input": "/..",
+      "cleaned": "/"
+    },
+    {
+      "input": "/../..",
+      "cleaned": "/"
+    },
+    {
+      "input": "",
+      "cleaned": "."
+    },
+    {
+      "input": ".",
+      "cleaned": "."
+    },
+    {
+      "input": "..",
+      "cleaned": ".."
+    },
+    {
+      "input": "a/../../b",
+      "cleaned": "../b"
+    },
+    {
+      "input": "../../a",
+      "cleaned": "../../a"
+    },
+    {
+      "input": "a/b/./c/",
+      "cleaned": "a/b/c"
+    },
+    {
+      "input": "a//b",
+      "cleaned": "a/b"
+    },
+    {
+      "input": "//",
+      "cleaned": "/"
+    },
+    {
+      "input": "/",
+      "cleaned": "/"
+    },
+    {
+      "input": "a/..",
+      "cleaned": "."
+    },
+    {
+      "input": "a/../..",
+      "cleaned": ".."
+    },
+    {
+      "input": "./a",
+      "cleaned": "a"
+    },
+    {
+      "input": "a/./",
+      "cleaned": "a"
+    },
+    {
+      "input": "a/b/../../../c",
+      "cleaned": "../c"
+    }
+  ]
+}

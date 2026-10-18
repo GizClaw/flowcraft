@@ -117,6 +117,20 @@ if ! cmp -s "$out/bm25-contract.json" "$conf/bm25-contract.json"; then
   exit 1
 fi
 
+echo "==> pathsafe contract"
+# core/utils/pathsafe: containment, the relative form, the reference guard and
+# the lexical clean behind them, replayed by
+# crates/flowcraft-utils/tests/pathsafe_contract.rs. The filesystem half
+# (RealWithin/RealDir) depends on a tree, so it is tested where the tree is
+# built rather than here.
+"$out/oracle" -pathsafe-contract > "$out/pathsafe-contract.json"
+if ! cmp -s "$out/pathsafe-contract.json" "$conf/pathsafe-contract.json"; then
+  echo "rust/conformance/pathsafe-contract.json no longer matches core:" >&2
+  diff "$conf/pathsafe-contract.json" "$out/pathsafe-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -pathsafe-contract) > rust/conformance/pathsafe-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

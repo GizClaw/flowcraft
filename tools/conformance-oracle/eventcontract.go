@@ -69,8 +69,8 @@ type envelopeRow struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	Payload   string            `json:"payload,omitempty"`
 
-	Wire      string `json:"wire,omitempty"`
-	WireError string `json:"wire_error,omitempty"`
+	Wire         string `json:"wire,omitempty"`
+	WireError    string `json:"wire_error,omitempty"`
 	WireTextFrom string `json:"wire_text_from,omitempty"`
 }
 

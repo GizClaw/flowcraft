@@ -47,22 +47,22 @@ type messageContract struct {
 // mediaRow is one call into the media constructors or one document handed to
 // the typed wire decode, with the outcome core produced.
 type mediaRow struct {
-	Target    string `json:"target"` // image | audio | video
-	Op        string `json:"op"`     // new_inline | new_url | from_wire
-	Bytes     string `json:"bytes,omitempty"`     // base64, for new_inline
-	URL       string `json:"url,omitempty"`       // for new_url
+	Target    string `json:"target"`               // image | audio | video
+	Op        string `json:"op"`                   // new_inline | new_url | from_wire
+	Bytes     string `json:"bytes,omitempty"`      // base64, for new_inline
+	URL       string `json:"url,omitempty"`        // for new_url
 	MediaType string `json:"media_type,omitempty"` // for the constructors
-	Document  string `json:"document,omitempty"`  // for from_wire
+	Document  string `json:"document,omitempty"`   // for from_wire
 
-	Outcome    string `json:"outcome"` // ok | error
-	Error      string `json:"error,omitempty"`
+	Outcome string `json:"outcome"` // ok | error
+	Error   string `json:"error,omitempty"`
 	// TextFrom names the writer of Error when it is not core's own sentence:
 	// the strict decoder is encoding/json, and its refusals are spelled the
 	// way that package spells them.
-	TextFrom   string `json:"text_from,omitempty"`
-	MediaTypeOut string `json:"media_type_out,omitempty"`
+	TextFrom      string `json:"text_from,omitempty"`
+	MediaTypeOut  string `json:"media_type_out,omitempty"`
 	BaseMediaType string `json:"base_media_type,omitempty"`
-	Wire       string `json:"wire,omitempty"`
+	Wire          string `json:"wire,omitempty"`
 }
 
 // formatRow is one AudioFormat, built the way core's callers build it (a
@@ -211,7 +211,7 @@ func buildMedia(row mediaRow) (mediaView, error) {
 
 func formatOutcome(row formatRow) formatRow {
 	format := media.AudioFormat{
-		Encoding: media.AudioEncoding(row.Encoding),
+		Encoding:     media.AudioEncoding(row.Encoding),
 		SampleRateHz: intOf(row.SampleRateHz),
 		Channels:     intOf(row.Channels),
 	}

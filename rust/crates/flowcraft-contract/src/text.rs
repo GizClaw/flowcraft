@@ -52,6 +52,65 @@ pub fn quote(text: &str) -> String {
     out
 }
 
+/// `strings.EqualFold`: do two strings differ only in case?
+///
+/// Go compares rune by rune through `unicode.SimpleFold` cycles, so it is not a
+/// lowercase comparison: `K` (U+212A KELVIN SIGN) folds with `k`, `ſ` with
+/// `s`, `µ` (U+00B5 MICRO SIGN) with `μ` (U+03BC), and final sigma `ς` with
+/// `σ`. Length is not compared first either: `ſ` and `s` are one rune each, but
+/// `ß` and `SS` are *not* equal (simple folding keeps `ß`; only full folding
+/// expands it).
+///
+/// The port reaches the same cycle without a folding table by going up and back
+/// down: the uppercase form and then its lowercase, when both are single
+/// characters. Every cycle above is closed by that step, and the characters
+/// where it is not a no-op are the ones Unicode's case mappings already model
+/// as one-to-one. What it cannot represent is a character whose full lowercase
+/// mapping expands (`İ` -> `i` + U+0307): those do not have a simple fold to
+/// their base letter in Go either, so the two agree on refusing them.
+pub fn equal_fold(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let mut left = left.chars();
+    let mut right = right.chars();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(a), Some(b)) if a == b => continue,
+            (Some(a), Some(b)) if a.is_ascii() && b.is_ascii() => {
+                if !a.eq_ignore_ascii_case(&b) {
+                    return false;
+                }
+            }
+            (Some(a), Some(b)) => {
+                if fold_key(a) != fold_key(b) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// One character's simple-fold cycle, as a representative: lowercase of the
+/// uppercase form, falling back to whichever single-character mapping exists.
+fn fold_key(ch: char) -> char {
+    if let Some(upper) = single_case(ch.to_uppercase()) {
+        return single_case(upper.to_lowercase()).unwrap_or(upper);
+    }
+    single_case(ch.to_lowercase()).unwrap_or(ch)
+}
+
+/// The only character a case mapping produced, if it produced exactly one.
+fn single_case(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    let first = mapped.next()?;
+    match mapped.next() {
+        None => Some(first),
+        Some(_) => None,
+    }
+}
+
 /// `strconv.IsPrint`: letters, marks, numbers, punctuation and symbols are
 /// printable, and of the separators only the ASCII space is.
 fn is_print(ch: char) -> bool {
@@ -109,6 +168,32 @@ fn is_non_printable_nonascii(rune: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Go's answers, including the cycles a lowercase comparison misses and the
+    /// pairs a full-fold comparison would wrongly accept.
+    #[test]
+    fn folding_matches_strings_equal_fold() {
+        for (left, right, expected) in [
+            ("root", "ROOT", true),
+            ("Root", "rOOt", true),
+            ("", "", true),
+            ("", "a", false),
+            ("ab", "abc", false),
+            // The four non-ASCII simple folds.
+            ("\u{212a}", "k", true),
+            ("\u{17f}", "s", true),
+            ("\u{b5}", "\u{3bc}", true),
+            ("\u{3c2}", "\u{3c3}", true),
+            // Full folding would expand these; simple folding does not.
+            ("\u{df}", "SS", false),
+            ("\u{130}", "i", false),
+            // Case is per rune, not per byte.
+            ("日本", "日本", true),
+            ("é", "É", true),
+        ] {
+            assert_eq!(equal_fold(left, right), expected, "{left:?} vs {right:?}");
+        }
+    }
 
     /// The expectations are Go's own answers; the exotic ones are the same
     /// characters `flowcraft-utils`' port of the tables is pinned with, so

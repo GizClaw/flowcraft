@@ -21,7 +21,8 @@
 // (see messagecontract.go). With -event-contract it dumps the routing half of
 // core/event: subjects, patterns, the matcher and the envelope wire (see
 // eventcontract.go). With -bm25-contract it dumps core/utils/bm25's tokenizer,
-// scoring and refusals (see bm25contract.go).
+// scoring and refusals (see bm25contract.go). With -pathsafe-contract it dumps
+// core/utils/pathsafe's containment rules (see pathsafecontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -73,6 +74,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-pathsafe-contract" {
+		if err := writePathsafeContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "pathsafe contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-message-contract" {
 		if err := writeMessageContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "message contract:", err)
@@ -81,7 +89,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string
