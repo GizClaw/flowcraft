@@ -1,0 +1,3492 @@
+{
+  "note": "core/utils/bm25: the tokenizer's script decisions, the scoring and the refusals. Rows carry their input; the port replays them.",
+  "tokenize": [
+    {
+      "input": "",
+      "tokens": []
+    },
+    {
+      "input": " ",
+      "tokens": []
+    },
+    {
+      "input": "WebFetch",
+      "tokens": [
+        "webfetch"
+      ]
+    },
+    {
+      "input": "webfetch the URL and return its text",
+      "tokens": [
+        "webfetch",
+        "the",
+        "url",
+        "and",
+        "return",
+        "its",
+        "text"
+      ]
+    },
+    {
+      "input": "  ..hello--world.. ",
+      "tokens": [
+        "hello",
+        "world"
+      ]
+    },
+    {
+      "input": "CamelCase42",
+      "tokens": [
+        "camelcase42"
+      ]
+    },
+    {
+      "input": "snake_case_name",
+      "tokens": [
+        "snake",
+        "case",
+        "name"
+      ]
+    },
+    {
+      "input": "kebab-case-name",
+      "tokens": [
+        "kebab",
+        "case",
+        "name"
+      ]
+    },
+    {
+      "input": "v1.2.3",
+      "tokens": [
+        "v1",
+        "2",
+        "3"
+      ]
+    },
+    {
+      "input": "100% pure",
+      "tokens": [
+        "100",
+        "pure"
+      ]
+    },
+    {
+      "input": "读取工具",
+      "tokens": [
+        "读",
+        "读取",
+        "取",
+        "取工",
+        "工",
+        "工具",
+        "具"
+      ]
+    },
+    {
+      "input": "从工作区读取文件",
+      "tokens": [
+        "从",
+        "从工",
+        "工",
+        "工作",
+        "作",
+        "作区",
+        "区",
+        "区读",
+        "读",
+        "读取",
+        "取",
+        "取文",
+        "文",
+        "文件",
+        "件"
+      ]
+    },
+    {
+      "input": "日本語",
+      "tokens": [
+        "日",
+        "日本",
+        "本",
+        "本語",
+        "語"
+      ]
+    },
+    {
+      "input": "한국어 텍스트",
+      "tokens": [
+        "한",
+        "한국",
+        "국",
+        "국어",
+        "어",
+        "텍",
+        "텍스",
+        "스",
+        "스트",
+        "트"
+      ]
+    },
+    {
+      "input": "混合 mixed 文本 with latin",
+      "tokens": [
+        "混",
+        "混合",
+        "合",
+        "mixed",
+        "文",
+        "文本",
+        "本",
+        "with",
+        "latin"
+      ]
+    },
+    {
+      "input": "读a取",
+      "tokens": [
+        "读",
+        "a",
+        "取"
+      ]
+    },
+    {
+      "input": "读 取",
+      "tokens": [
+        "读",
+        "取"
+      ]
+    },
+    {
+      "input": "读读取",
+      "tokens": [
+        "读",
+        "读读",
+        "读",
+        "读取",
+        "取"
+      ]
+    },
+    {
+      "input": "東京タワーへ行く",
+      "tokens": [
+        "東",
+        "東京",
+        "京",
+        "京タ",
+        "タ",
+        "タワ",
+        "ワ",
+        "ー",
+        "へ",
+        "へ行",
+        "行",
+        "行く",
+        "く"
+      ]
+    },
+    {
+      "input": "アイウエオ",
+      "tokens": [
+        "ア",
+        "アイ",
+        "イ",
+        "イウ",
+        "ウ",
+        "ウエ",
+        "エ",
+        "エオ",
+        "オ"
+      ]
+    },
+    {
+      "input": "ｱｲｳｴｵ",
+      "tokens": [
+        "ｱ",
+        "ｱｲ",
+        "ｲ",
+        "ｲｳ",
+        "ｳ",
+        "ｳｴ",
+        "ｴ",
+        "ｴｵ",
+        "ｵ"
+      ]
+    },
+    {
+      "input": "Ａｂｃ１２３",
+      "tokens": [
+        "ａｂｃ１２３"
+      ]
+    },
+    {
+      "input": "éclair",
+      "tokens": [
+        "e",
+        "clair"
+      ]
+    },
+    {
+      "input": "İstanbul",
+      "tokens": [
+        "istanbul"
+      ]
+    },
+    {
+      "input": "ẞtraße",
+      "tokens": [
+        "ßtraße"
+      ]
+    },
+    {
+      "input": "ΟΔΟΣ",
+      "tokens": [
+        "οδοσ"
+      ]
+    },
+    {
+      "input": "МИР",
+      "tokens": [
+        "мир"
+      ]
+    },
+    {
+      "input": "٣٤٥",
+      "tokens": [
+        "٣٤٥"
+      ]
+    },
+    {
+      "input": "३४५",
+      "tokens": [
+        "३४५"
+      ]
+    },
+    {
+      "input": "½ Ⅻ ²",
+      "tokens": []
+    },
+    {
+      "input": "👩‍💻 emoji",
+      "tokens": [
+        "emoji"
+      ]
+    },
+    {
+      "input": "a b",
+      "tokens": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "input": "tab\there\nnewline",
+      "tokens": [
+        "tab",
+        "here",
+        "newline"
+      ]
+    },
+    {
+      "input": "tool=read_file&limit=3",
+      "tokens": [
+        "tool",
+        "read",
+        "file",
+        "limit",
+        "3"
+      ]
+    },
+    {
+      "input": "读取：文件",
+      "tokens": [
+        "读",
+        "读取",
+        "取",
+        "文",
+        "文件",
+        "件"
+      ]
+    },
+    {
+      "input": "々",
+      "tokens": [
+        "々"
+      ]
+    },
+    {
+      "input": "ー",
+      "tokens": [
+        "ー"
+      ]
+    }
+  ],
+  "scripts": [
+    {
+      "code": 65,
+      "single": [
+        "a"
+      ],
+      "double": [
+        "aa"
+      ]
+    },
+    {
+      "code": 97,
+      "single": [
+        "a"
+      ],
+      "double": [
+        "aa"
+      ]
+    },
+    {
+      "code": 48,
+      "single": [
+        "0"
+      ],
+      "double": [
+        "00"
+      ]
+    },
+    {
+      "code": 223,
+      "single": [
+        "ß"
+      ],
+      "double": [
+        "ßß"
+      ]
+    },
+    {
+      "code": 304,
+      "single": [
+        "i"
+      ],
+      "double": [
+        "ii"
+      ]
+    },
+    {
+      "code": 189,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 8555,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 178,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 769,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 1635,
+      "single": [
+        "٣"
+      ],
+      "double": [
+        "٣٣"
+      ]
+    },
+    {
+      "code": 2409,
+      "single": [
+        "३"
+      ],
+      "double": [
+        "३३"
+      ]
+    },
+    {
+      "code": 945,
+      "single": [
+        "α"
+      ],
+      "double": [
+        "αα"
+      ]
+    },
+    {
+      "code": 1040,
+      "single": [
+        "а"
+      ],
+      "double": [
+        "аа"
+      ]
+    },
+    {
+      "code": 8205,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 128105,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 11903,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 11904,
+      "single": [
+        "⺀"
+      ],
+      "double": [
+        "⺀",
+        "⺀⺀",
+        "⺀"
+      ]
+    },
+    {
+      "code": 11929,
+      "single": [
+        "⺙"
+      ],
+      "double": [
+        "⺙",
+        "⺙⺙",
+        "⺙"
+      ]
+    },
+    {
+      "code": 11930,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 11931,
+      "single": [
+        "⺛"
+      ],
+      "double": [
+        "⺛",
+        "⺛⺛",
+        "⺛"
+      ]
+    },
+    {
+      "code": 12019,
+      "single": [
+        "⻳"
+      ],
+      "double": [
+        "⻳",
+        "⻳⻳",
+        "⻳"
+      ]
+    },
+    {
+      "code": 12032,
+      "single": [
+        "⼀"
+      ],
+      "double": [
+        "⼀",
+        "⼀⼀",
+        "⼀"
+      ]
+    },
+    {
+      "code": 12245,
+      "single": [
+        "⿕"
+      ],
+      "double": [
+        "⿕",
+        "⿕⿕",
+        "⿕"
+      ]
+    },
+    {
+      "code": 12293,
+      "single": [
+        "々"
+      ],
+      "double": [
+        "々",
+        "々々",
+        "々"
+      ]
+    },
+    {
+      "code": 12294,
+      "single": [
+        "〆"
+      ],
+      "double": [
+        "〆〆"
+      ]
+    },
+    {
+      "code": 12295,
+      "single": [
+        "〇"
+      ],
+      "double": [
+        "〇",
+        "〇〇",
+        "〇"
+      ]
+    },
+    {
+      "code": 12321,
+      "single": [
+        "〡"
+      ],
+      "double": [
+        "〡",
+        "〡〡",
+        "〡"
+      ]
+    },
+    {
+      "code": 12329,
+      "single": [
+        "〩"
+      ],
+      "double": [
+        "〩",
+        "〩〩",
+        "〩"
+      ]
+    },
+    {
+      "code": 12344,
+      "single": [
+        "〸"
+      ],
+      "double": [
+        "〸",
+        "〸〸",
+        "〸"
+      ]
+    },
+    {
+      "code": 12347,
+      "single": [
+        "〻"
+      ],
+      "double": [
+        "〻",
+        "〻〻",
+        "〻"
+      ]
+    },
+    {
+      "code": 13312,
+      "single": [
+        "㐀"
+      ],
+      "double": [
+        "㐀",
+        "㐀㐀",
+        "㐀"
+      ]
+    },
+    {
+      "code": 19903,
+      "single": [
+        "䶿"
+      ],
+      "double": [
+        "䶿",
+        "䶿䶿",
+        "䶿"
+      ]
+    },
+    {
+      "code": 19904,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 19968,
+      "single": [
+        "一"
+      ],
+      "double": [
+        "一",
+        "一一",
+        "一"
+      ]
+    },
+    {
+      "code": 40959,
+      "single": [
+        "鿿"
+      ],
+      "double": [
+        "鿿",
+        "鿿鿿",
+        "鿿"
+      ]
+    },
+    {
+      "code": 40960,
+      "single": [
+        "ꀀ"
+      ],
+      "double": [
+        "ꀀꀀ"
+      ]
+    },
+    {
+      "code": 63744,
+      "single": [
+        "豈"
+      ],
+      "double": [
+        "豈",
+        "豈豈",
+        "豈"
+      ]
+    },
+    {
+      "code": 64109,
+      "single": [
+        "舘"
+      ],
+      "double": [
+        "舘",
+        "舘舘",
+        "舘"
+      ]
+    },
+    {
+      "code": 64110,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 64112,
+      "single": [
+        "並"
+      ],
+      "double": [
+        "並",
+        "並並",
+        "並"
+      ]
+    },
+    {
+      "code": 64217,
+      "single": [
+        "龎"
+      ],
+      "double": [
+        "龎",
+        "龎龎",
+        "龎"
+      ]
+    },
+    {
+      "code": 94178,
+      "single": [
+        "𖿢"
+      ],
+      "double": [
+        "𖿢",
+        "𖿢𖿢",
+        "𖿢"
+      ]
+    },
+    {
+      "code": 94179,
+      "single": [
+        "𖿣"
+      ],
+      "double": [
+        "𖿣",
+        "𖿣𖿣",
+        "𖿣"
+      ]
+    },
+    {
+      "code": 94192,
+      "single": [
+        "𖿰"
+      ],
+      "double": [
+        "𖿰",
+        "𖿰𖿰",
+        "𖿰"
+      ]
+    },
+    {
+      "code": 94193,
+      "single": [
+        "𖿱"
+      ],
+      "double": [
+        "𖿱",
+        "𖿱𖿱",
+        "𖿱"
+      ]
+    },
+    {
+      "code": 131072,
+      "single": [
+        "𠀀"
+      ],
+      "double": [
+        "𠀀",
+        "𠀀𠀀",
+        "𠀀"
+      ]
+    },
+    {
+      "code": 173791,
+      "single": [
+        "𪛟"
+      ],
+      "double": [
+        "𪛟",
+        "𪛟𪛟",
+        "𪛟"
+      ]
+    },
+    {
+      "code": 173824,
+      "single": [
+        "𪜀"
+      ],
+      "double": [
+        "𪜀",
+        "𪜀𪜀",
+        "𪜀"
+      ]
+    },
+    {
+      "code": 177977,
+      "single": [
+        "𫜹"
+      ],
+      "double": [
+        "𫜹",
+        "𫜹𫜹",
+        "𫜹"
+      ]
+    },
+    {
+      "code": 177984,
+      "single": [
+        "𫝀"
+      ],
+      "double": [
+        "𫝀",
+        "𫝀𫝀",
+        "𫝀"
+      ]
+    },
+    {
+      "code": 178205,
+      "single": [
+        "𫠝"
+      ],
+      "double": [
+        "𫠝",
+        "𫠝𫠝",
+        "𫠝"
+      ]
+    },
+    {
+      "code": 178208,
+      "single": [
+        "𫠠"
+      ],
+      "double": [
+        "𫠠",
+        "𫠠𫠠",
+        "𫠠"
+      ]
+    },
+    {
+      "code": 183969,
+      "single": [
+        "𬺡"
+      ],
+      "double": [
+        "𬺡",
+        "𬺡𬺡",
+        "𬺡"
+      ]
+    },
+    {
+      "code": 183984,
+      "single": [
+        "𬺰"
+      ],
+      "double": [
+        "𬺰",
+        "𬺰𬺰",
+        "𬺰"
+      ]
+    },
+    {
+      "code": 191456,
+      "single": [
+        "𮯠"
+      ],
+      "double": [
+        "𮯠",
+        "𮯠𮯠",
+        "𮯠"
+      ]
+    },
+    {
+      "code": 191472,
+      "single": [
+        "𮯰"
+      ],
+      "double": [
+        "𮯰",
+        "𮯰𮯰",
+        "𮯰"
+      ]
+    },
+    {
+      "code": 192093,
+      "single": [
+        "𮹝"
+      ],
+      "double": [
+        "𮹝",
+        "𮹝𮹝",
+        "𮹝"
+      ]
+    },
+    {
+      "code": 196608,
+      "single": [
+        "𰀀"
+      ],
+      "double": [
+        "𰀀",
+        "𰀀𰀀",
+        "𰀀"
+      ]
+    },
+    {
+      "code": 201546,
+      "single": [
+        "𱍊"
+      ],
+      "double": [
+        "𱍊",
+        "𱍊𱍊",
+        "𱍊"
+      ]
+    },
+    {
+      "code": 201552,
+      "single": [
+        "𱍐"
+      ],
+      "double": [
+        "𱍐",
+        "𱍐𱍐",
+        "𱍐"
+      ]
+    },
+    {
+      "code": 205743,
+      "single": [
+        "𲎯"
+      ],
+      "double": [
+        "𲎯",
+        "𲎯𲎯",
+        "𲎯"
+      ]
+    },
+    {
+      "code": 12352,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12353,
+      "single": [
+        "ぁ"
+      ],
+      "double": [
+        "ぁ",
+        "ぁぁ",
+        "ぁ"
+      ]
+    },
+    {
+      "code": 12438,
+      "single": [
+        "ゖ"
+      ],
+      "double": [
+        "ゖ",
+        "ゖゖ",
+        "ゖ"
+      ]
+    },
+    {
+      "code": 12439,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12445,
+      "single": [
+        "ゝ"
+      ],
+      "double": [
+        "ゝ",
+        "ゝゝ",
+        "ゝ"
+      ]
+    },
+    {
+      "code": 12447,
+      "single": [
+        "ゟ"
+      ],
+      "double": [
+        "ゟ",
+        "ゟゟ",
+        "ゟ"
+      ]
+    },
+    {
+      "code": 12448,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 110593,
+      "single": [
+        "𛀁"
+      ],
+      "double": [
+        "𛀁",
+        "𛀁𛀁",
+        "𛀁"
+      ]
+    },
+    {
+      "code": 110879,
+      "single": [
+        "𛄟"
+      ],
+      "double": [
+        "𛄟",
+        "𛄟𛄟",
+        "𛄟"
+      ]
+    },
+    {
+      "code": 110898,
+      "single": [
+        "𛄲"
+      ],
+      "double": [
+        "𛄲",
+        "𛄲𛄲",
+        "𛄲"
+      ]
+    },
+    {
+      "code": 110928,
+      "single": [
+        "𛅐"
+      ],
+      "double": [
+        "𛅐",
+        "𛅐𛅐",
+        "𛅐"
+      ]
+    },
+    {
+      "code": 110930,
+      "single": [
+        "𛅒"
+      ],
+      "double": [
+        "𛅒",
+        "𛅒𛅒",
+        "𛅒"
+      ]
+    },
+    {
+      "code": 12449,
+      "single": [
+        "ァ"
+      ],
+      "double": [
+        "ァ",
+        "ァァ",
+        "ァ"
+      ]
+    },
+    {
+      "code": 12538,
+      "single": [
+        "ヺ"
+      ],
+      "double": [
+        "ヺ",
+        "ヺヺ",
+        "ヺ"
+      ]
+    },
+    {
+      "code": 12539,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12541,
+      "single": [
+        "ヽ"
+      ],
+      "double": [
+        "ヽ",
+        "ヽヽ",
+        "ヽ"
+      ]
+    },
+    {
+      "code": 12543,
+      "single": [
+        "ヿ"
+      ],
+      "double": [
+        "ヿ",
+        "ヿヿ",
+        "ヿ"
+      ]
+    },
+    {
+      "code": 12544,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12784,
+      "single": [
+        "ㇰ"
+      ],
+      "double": [
+        "ㇰ",
+        "ㇰㇰ",
+        "ㇰ"
+      ]
+    },
+    {
+      "code": 12799,
+      "single": [
+        "ㇿ"
+      ],
+      "double": [
+        "ㇿ",
+        "ㇿㇿ",
+        "ㇿ"
+      ]
+    },
+    {
+      "code": 12800,
+      "single": [
+        "㈀"
+      ],
+      "double": [
+        "㈀",
+        "㈀㈀",
+        "㈀"
+      ]
+    },
+    {
+      "code": 13008,
+      "single": [
+        "㋐"
+      ],
+      "double": [
+        "㋐",
+        "㋐㋐",
+        "㋐"
+      ]
+    },
+    {
+      "code": 13054,
+      "single": [
+        "㋾"
+      ],
+      "double": [
+        "㋾",
+        "㋾㋾",
+        "㋾"
+      ]
+    },
+    {
+      "code": 13056,
+      "single": [
+        "㌀"
+      ],
+      "double": [
+        "㌀",
+        "㌀㌀",
+        "㌀"
+      ]
+    },
+    {
+      "code": 13143,
+      "single": [
+        "㍗"
+      ],
+      "double": [
+        "㍗",
+        "㍗㍗",
+        "㍗"
+      ]
+    },
+    {
+      "code": 65381,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 65382,
+      "single": [
+        "ｦ"
+      ],
+      "double": [
+        "ｦ",
+        "ｦｦ",
+        "ｦ"
+      ]
+    },
+    {
+      "code": 65391,
+      "single": [
+        "ｯ"
+      ],
+      "double": [
+        "ｯ",
+        "ｯｯ",
+        "ｯ"
+      ]
+    },
+    {
+      "code": 65392,
+      "single": [
+        "ｰ"
+      ],
+      "double": [
+        "ｰｰ"
+      ]
+    },
+    {
+      "code": 65393,
+      "single": [
+        "ｱ"
+      ],
+      "double": [
+        "ｱ",
+        "ｱｱ",
+        "ｱ"
+      ]
+    },
+    {
+      "code": 65437,
+      "single": [
+        "ﾝ"
+      ],
+      "double": [
+        "ﾝ",
+        "ﾝﾝ",
+        "ﾝ"
+      ]
+    },
+    {
+      "code": 65438,
+      "single": [
+        "ﾞ"
+      ],
+      "double": [
+        "ﾞﾞ"
+      ]
+    },
+    {
+      "code": 110576,
+      "single": [
+        "𚿰"
+      ],
+      "double": [
+        "𚿰",
+        "𚿰𚿰",
+        "𚿰"
+      ]
+    },
+    {
+      "code": 110579,
+      "single": [
+        "𚿳"
+      ],
+      "double": [
+        "𚿳",
+        "𚿳𚿳",
+        "𚿳"
+      ]
+    },
+    {
+      "code": 110581,
+      "single": [
+        "𚿵"
+      ],
+      "double": [
+        "𚿵",
+        "𚿵𚿵",
+        "𚿵"
+      ]
+    },
+    {
+      "code": 110590,
+      "single": [
+        "𚿾"
+      ],
+      "double": [
+        "𚿾",
+        "𚿾𚿾",
+        "𚿾"
+      ]
+    },
+    {
+      "code": 110592,
+      "single": [
+        "𛀀"
+      ],
+      "double": [
+        "𛀀",
+        "𛀀𛀀",
+        "𛀀"
+      ]
+    },
+    {
+      "code": 110880,
+      "single": [
+        "𛄠"
+      ],
+      "double": [
+        "𛄠",
+        "𛄠𛄠",
+        "𛄠"
+      ]
+    },
+    {
+      "code": 110882,
+      "single": [
+        "𛄢"
+      ],
+      "double": [
+        "𛄢",
+        "𛄢𛄢",
+        "𛄢"
+      ]
+    },
+    {
+      "code": 110933,
+      "single": [
+        "𛅕"
+      ],
+      "double": [
+        "𛅕",
+        "𛅕𛅕",
+        "𛅕"
+      ]
+    },
+    {
+      "code": 110948,
+      "single": [
+        "𛅤"
+      ],
+      "double": [
+        "𛅤",
+        "𛅤𛅤",
+        "𛅤"
+      ]
+    },
+    {
+      "code": 110951,
+      "single": [
+        "𛅧"
+      ],
+      "double": [
+        "𛅧",
+        "𛅧𛅧",
+        "𛅧"
+      ]
+    },
+    {
+      "code": 4351,
+      "single": [
+        "ჿ"
+      ],
+      "double": [
+        "ჿჿ"
+      ]
+    },
+    {
+      "code": 4352,
+      "single": [
+        "ᄀ"
+      ],
+      "double": [
+        "ᄀ",
+        "ᄀᄀ",
+        "ᄀ"
+      ]
+    },
+    {
+      "code": 4607,
+      "single": [
+        "ᇿ"
+      ],
+      "double": [
+        "ᇿ",
+        "ᇿᇿ",
+        "ᇿ"
+      ]
+    },
+    {
+      "code": 12593,
+      "single": [
+        "ㄱ"
+      ],
+      "double": [
+        "ㄱ",
+        "ㄱㄱ",
+        "ㄱ"
+      ]
+    },
+    {
+      "code": 12686,
+      "single": [
+        "ㆎ"
+      ],
+      "double": [
+        "ㆎ",
+        "ㆎㆎ",
+        "ㆎ"
+      ]
+    },
+    {
+      "code": 12687,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 43360,
+      "single": [
+        "ꥠ"
+      ],
+      "double": [
+        "ꥠ",
+        "ꥠꥠ",
+        "ꥠ"
+      ]
+    },
+    {
+      "code": 43388,
+      "single": [
+        "ꥼ"
+      ],
+      "double": [
+        "ꥼ",
+        "ꥼꥼ",
+        "ꥼ"
+      ]
+    },
+    {
+      "code": 43389,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 44032,
+      "single": [
+        "가"
+      ],
+      "double": [
+        "가",
+        "가가",
+        "가"
+      ]
+    },
+    {
+      "code": 55203,
+      "single": [
+        "힣"
+      ],
+      "double": [
+        "힣",
+        "힣힣",
+        "힣"
+      ]
+    },
+    {
+      "code": 55204,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 55216,
+      "single": [
+        "ힰ"
+      ],
+      "double": [
+        "ힰ",
+        "ힰힰ",
+        "ힰ"
+      ]
+    },
+    {
+      "code": 55238,
+      "single": [
+        "ퟆ"
+      ],
+      "double": [
+        "ퟆ",
+        "ퟆퟆ",
+        "ퟆ"
+      ]
+    },
+    {
+      "code": 55243,
+      "single": [
+        "ퟋ"
+      ],
+      "double": [
+        "ퟋ",
+        "ퟋퟋ",
+        "ퟋ"
+      ]
+    },
+    {
+      "code": 55291,
+      "single": [
+        "ퟻ"
+      ],
+      "double": [
+        "ퟻ",
+        "ퟻퟻ",
+        "ퟻ"
+      ]
+    },
+    {
+      "code": 55292,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 65440,
+      "single": [
+        "ﾠ"
+      ],
+      "double": [
+        "ﾠ",
+        "ﾠﾠ",
+        "ﾠ"
+      ]
+    },
+    {
+      "code": 65470,
+      "single": [
+        "ﾾ"
+      ],
+      "double": [
+        "ﾾ",
+        "ﾾﾾ",
+        "ﾾ"
+      ]
+    },
+    {
+      "code": 65474,
+      "single": [
+        "ￂ"
+      ],
+      "double": [
+        "ￂ",
+        "ￂￂ",
+        "ￂ"
+      ]
+    },
+    {
+      "code": 65479,
+      "single": [
+        "ￇ"
+      ],
+      "double": [
+        "ￇ",
+        "ￇￇ",
+        "ￇ"
+      ]
+    },
+    {
+      "code": 65482,
+      "single": [
+        "ￊ"
+      ],
+      "double": [
+        "ￊ",
+        "ￊￊ",
+        "ￊ"
+      ]
+    },
+    {
+      "code": 65487,
+      "single": [
+        "ￏ"
+      ],
+      "double": [
+        "ￏ",
+        "ￏￏ",
+        "ￏ"
+      ]
+    },
+    {
+      "code": 65490,
+      "single": [
+        "ￒ"
+      ],
+      "double": [
+        "ￒ",
+        "ￒￒ",
+        "ￒ"
+      ]
+    },
+    {
+      "code": 65495,
+      "single": [
+        "ￗ"
+      ],
+      "double": [
+        "ￗ",
+        "ￗￗ",
+        "ￗ"
+      ]
+    },
+    {
+      "code": 65498,
+      "single": [
+        "ￚ"
+      ],
+      "double": [
+        "ￚ",
+        "ￚￚ",
+        "ￚ"
+      ]
+    },
+    {
+      "code": 65500,
+      "single": [
+        "ￜ"
+      ],
+      "double": [
+        "ￜ",
+        "ￜￜ",
+        "ￜ"
+      ]
+    },
+    {
+      "code": 12334,
+      "single": [
+        "〮"
+      ],
+      "double": [
+        "〮",
+        "〮〮",
+        "〮"
+      ]
+    },
+    {
+      "code": 12335,
+      "single": [
+        "〯"
+      ],
+      "double": [
+        "〯",
+        "〯〯",
+        "〯"
+      ]
+    },
+    {
+      "code": 12336,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12800,
+      "single": [
+        "㈀"
+      ],
+      "double": [
+        "㈀",
+        "㈀㈀",
+        "㈀"
+      ]
+    },
+    {
+      "code": 12830,
+      "single": [
+        "㈞"
+      ],
+      "double": [
+        "㈞",
+        "㈞㈞",
+        "㈞"
+      ]
+    },
+    {
+      "code": 12831,
+      "single": [],
+      "double": []
+    },
+    {
+      "code": 12896,
+      "single": [
+        "㉠"
+      ],
+      "double": [
+        "㉠",
+        "㉠㉠",
+        "㉠"
+      ]
+    },
+    {
+      "code": 12926,
+      "single": [
+        "㉾"
+      ],
+      "double": [
+        "㉾",
+        "㉾㉾",
+        "㉾"
+      ]
+    },
+    {
+      "code": 12927,
+      "single": [],
+      "double": []
+    }
+  ],
+  "searches": [
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "webfetch",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "webfetch",
+          "score_bits": "4614797252209641566",
+          "score": "3.3816653520198505"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4607310712974121461",
+          "score": "1.0284870292031176"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "webf",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "WEbf",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 3,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616128227306952674",
+          "score": "3.9727370313148507"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 1,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616128227306952674",
+          "score": "3.9727370313148507"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616128227306952674",
+          "score": "3.9727370313148507"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "resume",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "resume",
+          "score_bits": "4617184718316640317",
+          "score": "4.883826578041462"
+        },
+        {
+          "id": "bookmark",
+          "score_bits": "4610351968517290361",
+          "score": "1.7037814147621175"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "resume resume",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "resume",
+          "score_bits": "4617184718316640317",
+          "score": "4.883826578041462"
+        },
+        {
+          "id": "bookmark",
+          "score_bits": "4610351968517290361",
+          "score": "1.7037814147621175"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "file write read",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "fileread",
+          "score_bits": "4617866007252441530",
+          "score": "5.488932708400563"
+        },
+        {
+          "id": "filewrite",
+          "score_bits": "4617452906063404504",
+          "score": "5.122025147145415"
+        },
+        {
+          "id": "bookmark",
+          "score_bits": "4605866990780760237",
+          "score": "0.8539581525783625"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "!!!",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "absent",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "e",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4609918871379619448",
+          "score": "1.6076145319338178"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 1,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4618821813882580036",
+          "score": "6.337859530695884"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4614797252209641566",
+          "score": "3.3816653520198505"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4607310712974121461",
+          "score": "1.0284870292031176"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4615909065367528012",
+          "score": "3.8754095788065452"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610095864701501610",
+          "score": "1.6469149441655113"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602546717131920089",
+          "score": "0.49266686363925555"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 0.5,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616364627133116960",
+          "score": "4.155439286649681"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610666406665259664",
+          "score": "1.77360070910132"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4603191578840153990",
+          "score": "0.5569277588965498"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 0,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616729372976108546",
+          "score": "4.479398673070138"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4611332038956310728",
+          "score": "1.921400768193097"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4603944032734385626",
+          "score": "0.6404669227310322"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "query": "web",
+      "k1": 1.2,
+      "b": 1,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4615803483294802095",
+          "score": "3.828521719555361"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610000774374208604",
+          "score": "1.6258006500095439"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602364352120673224",
+          "score": "0.4825435719206408"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "b",
+          "name": "same",
+          "text": "same"
+        },
+        {
+          "id": "a",
+          "name": "same",
+          "text": "same"
+        },
+        {
+          "id": "c",
+          "name": "same",
+          "text": "same"
+        }
+      ],
+      "query": "same",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "b",
+          "score_bits": "4602986194985804922",
+          "score": "0.5341255704980903"
+        },
+        {
+          "id": "a",
+          "score_bits": "4602986194985804922",
+          "score": "0.5341255704980903"
+        },
+        {
+          "id": "c",
+          "score_bits": "4602986194985804922",
+          "score": "0.5341255704980903"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "one",
+          "name": "alpha",
+          "text": "alpha beta"
+        }
+      ],
+      "query": "alpha",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "one",
+          "score_bits": "4607861238669826962",
+          "score": "1.1507282898071236"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "read",
+          "name": "读取工具",
+          "text": "从工作区读取文件"
+        },
+        {
+          "id": "write",
+          "name": "写入工具",
+          "text": "向工作区写入文件"
+        },
+        {
+          "id": "search",
+          "name": "搜索工具",
+          "text": "在工作区搜索文件名"
+        }
+      ],
+      "query": "读取",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "read",
+          "score_bits": "4620559672235802148",
+          "score": "7.881387816523361"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "read",
+          "name": "读取工具",
+          "text": "从工作区读取文件"
+        },
+        {
+          "id": "write",
+          "name": "写入工具",
+          "text": "向工作区写入文件"
+        },
+        {
+          "id": "search",
+          "name": "搜索工具",
+          "text": "在工作区搜索文件名"
+        }
+      ],
+      "query": "文件",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "search",
+          "score_bits": "4603606141345780298",
+          "score": "0.6029534427858121"
+        },
+        {
+          "id": "read",
+          "score_bits": "4598567829175294183",
+          "score": "0.27179421254676445"
+        },
+        {
+          "id": "write",
+          "score_bits": "4598567829175294183",
+          "score": "0.27179421254676445"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "read",
+          "name": "读取工具",
+          "text": "从工作区读取文件"
+        },
+        {
+          "id": "write",
+          "name": "写入工具",
+          "text": "向工作区写入文件"
+        },
+        {
+          "id": "search",
+          "name": "搜索工具",
+          "text": "在工作区搜索文件名"
+        }
+      ],
+      "query": "工具",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "read",
+          "score_bits": "4606615735020416240",
+          "score": "0.9370854620205176"
+        },
+        {
+          "id": "write",
+          "score_bits": "4606615735020416240",
+          "score": "0.9370854620205176"
+        },
+        {
+          "id": "search",
+          "score_bits": "4606553960417636108",
+          "score": "0.93022710338616"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "read",
+          "name": "读取工具",
+          "text": "从工作区读取文件"
+        },
+        {
+          "id": "write",
+          "name": "写入工具",
+          "text": "向工作区写入文件"
+        },
+        {
+          "id": "search",
+          "name": "搜索工具",
+          "text": "在工作区搜索文件名"
+        }
+      ],
+      "query": "搜索 文件",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "search",
+          "score_bits": "4620909158383307400",
+          "score": "8.383587741443321"
+        },
+        {
+          "id": "read",
+          "score_bits": "4598567829175294183",
+          "score": "0.27179421254676445"
+        },
+        {
+          "id": "write",
+          "score_bits": "4598567829175294183",
+          "score": "0.27179421254676445"
+        }
+      ]
+    },
+    {
+      "docs": [],
+      "query": "anything",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "x",
+          "name": "a",
+          "text": "b"
+        },
+        {
+          "id": "x",
+          "name": "c",
+          "text": "d"
+        }
+      ],
+      "query": "a",
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "error": "bm25: duplicate document id \"x\""
+    }
+  ],
+  "term_searches": [
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "terms": [
+        "web"
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616128227306952674",
+          "score": "3.9727370313148507"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "terms": [
+        "web",
+        "web"
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "websearch",
+          "score_bits": "4616128227306952674",
+          "score": "3.9727370313148507"
+        },
+        {
+          "id": "webfetch",
+          "score_bits": "4610293652582271070",
+          "score": "1.6908326760099253"
+        },
+        {
+          "id": "textonly",
+          "score_bits": "4602807113346750965",
+          "score": "0.5142435146015588"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "terms": [
+        "",
+        "file"
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0,
+      "results": [
+        {
+          "id": "fileread",
+          "score_bits": "4615440592380924877",
+          "score": "3.66736578034986"
+        },
+        {
+          "id": "filewrite",
+          "score_bits": "4615096167968564339",
+          "score": "3.5144106152115966"
+        }
+      ]
+    },
+    {
+      "docs": [
+        {
+          "id": "webfetch",
+          "name": "webfetch",
+          "text": "fetch a URL and return its text"
+        },
+        {
+          "id": "websearch",
+          "name": "websearch",
+          "text": "search the web for pages matching a query"
+        },
+        {
+          "id": "fileread",
+          "name": "fileread",
+          "text": "read a file from the workspace"
+        },
+        {
+          "id": "filewrite",
+          "name": "filewrite",
+          "text": "write or overwrite a file in the workspace"
+        },
+        {
+          "id": "bookmark",
+          "name": "bookmark",
+          "text": "save a resume position; resume reading later"
+        },
+        {
+          "id": "resume",
+          "name": "resume",
+          "text": "resume the last run"
+        },
+        {
+          "id": "empty",
+          "name": "",
+          "text": ""
+        },
+        {
+          "id": "textonly",
+          "name": "",
+          "text": "webfetch is mentioned here but not indexed as a name"
+        }
+      ],
+      "terms": [
+        "WEB"
+      ],
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "limit": 0
+    }
+  ],
+  "configs": [
+    {
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 0.5
+    },
+    {
+      "k1": 0,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "error": "bm25: k1 must be finite and positive"
+    },
+    {
+      "k1": -1,
+      "b": 0.75,
+      "prefix_weight": 0.5,
+      "error": "bm25: k1 must be finite and positive"
+    },
+    {
+      "k1": 1.2,
+      "b": -0.1,
+      "prefix_weight": 0.5,
+      "error": "bm25: b must be in [0,1]"
+    },
+    {
+      "k1": 1.2,
+      "b": 1.1,
+      "prefix_weight": 0.5,
+      "error": "bm25: b must be in [0,1]"
+    },
+    {
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": -0.1,
+      "error": "bm25: prefix weight must be in [0,1]"
+    },
+    {
+      "k1": 1.2,
+      "b": 0.75,
+      "prefix_weight": 1.1,
+      "error": "bm25: prefix weight must be in [0,1]"
+    },
+    {
+      "k1": 1.2,
+      "b": 0,
+      "prefix_weight": 0
+    },
+    {
+      "k1": 1.2,
+      "b": 1,
+      "prefix_weight": 1
+    }
+  ],
+  "frequencies": [
+    {
+      "id": "ok",
+      "name": {
+        "read": 2,
+        "tool": 1
+      },
+      "text": {
+        "file": 1
+      },
+      "results": [
+        {
+          "id": "ok",
+          "score_bits": "4608023189279113839",
+          "score": "1.1866885488635963"
+        }
+      ],
+      "query": "read"
+    },
+    {
+      "id": "empty-term",
+      "name": {
+        "": 1
+      },
+      "error": "bm25: document \"empty-term\": empty name term",
+      "query": "x"
+    },
+    {
+      "id": "zero",
+      "name": {
+        "tool": 0
+      },
+      "error": "bm25: document \"zero\": name term \"tool\": invalid frequency 0",
+      "query": "x"
+    },
+    {
+      "id": "negative",
+      "text": {
+        "tool": -3
+      },
+      "error": "bm25: document \"negative\": text term \"tool\": invalid frequency -3",
+      "query": "x"
+    },
+    {
+      "id": "big",
+      "name": {
+        "tool": 1048576
+      },
+      "results": [
+        {
+          "id": "big",
+          "score_bits": "4611229801557171259",
+          "score": "1.8986995052926108"
+        }
+      ],
+      "query": "tool"
+    },
+    {
+      "id": "nil-fields",
+      "query": "x"
+    }
+  ]
+}

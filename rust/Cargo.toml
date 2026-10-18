@@ -23,6 +23,11 @@ serde = { version = "1.0.228", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 serde_norway = "0.9.42"
 serde_yaml_ng = "0.10.0"
+# bm25's tokenizer asks two questions of every character -- is it a letter, is
+# it a digit -- and both are Unicode *general categories* (L*, Nd), not the
+# `Alphabetic` property Rust's `char` exposes. core asks the category, so the
+# port does too; a data-only crate is smaller than the table it replaces.
+unicode-general-category = "1.1.0"
 # The runtime the port chose (plan §6): the bus's backpressure is a pending
 # future, not a parked thread, and cancellation is a token rather than a
 # context. `sync` alone is enough for the bus; `rt`/`macros`/`time` are for its

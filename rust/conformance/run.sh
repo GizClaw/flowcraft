@@ -104,6 +104,19 @@ if ! cmp -s "$out/event-contract.json" "$conf/event-contract.json"; then
   exit 1
 fi
 
+echo "==> bm25 contract"
+# core/utils/bm25: the tokenizer's script decisions (every range boundary the
+# port spells out), the scoring, and the refusals, replayed by
+# crates/flowcraft-utils/tests/bm25_contract.rs. Same rule as the other halves
+# -- the file moves only when core's behaviour moves.
+"$out/oracle" -bm25-contract > "$out/bm25-contract.json"
+if ! cmp -s "$out/bm25-contract.json" "$conf/bm25-contract.json"; then
+  echo "rust/conformance/bm25-contract.json no longer matches core:" >&2
+  diff "$conf/bm25-contract.json" "$out/bm25-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -bm25-contract) > rust/conformance/bm25-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)
