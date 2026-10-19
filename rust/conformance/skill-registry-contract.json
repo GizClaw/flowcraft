@@ -1,0 +1,1329 @@
+{
+  "note": [
+    "core/skill's registry, as a table: trees the harness builds, and what discovery, ranking and the snapshot service answer about them.",
+    "Every absolute path is masked down to its logical form (a/alpha/SKILL.md), because the harness writes into a temporary directory whose name differs per run and per implementation.",
+    "An operating system's sentence is masked after the verb and path core wrote, and a YAML library's error text after the sentence that classifies it: both are the platform's wording, not core's decision.",
+    "Not rows: a body read of a file that grew past the cap or was deleted after discovery, and a directory the operator cannot read. Each needs a mutation step or a permission bit, and the second is the platform's sentence rather than the port's behavior."
+  ],
+  "masked": [
+    "the harness's directory, in every string, in both its given and its canonical form",
+    "an operating system's sentence after `open <path>: `, `stat <path>: `, `lstat <path>: ` or `read <path>: `",
+    "the path inside a `resolve symlink: lstat <path>: ` diagnostic",
+    "a YAML library's error text, after the sentence that classifies it"
+  ],
+  "trees": [
+    {
+      "name": "roots-and-duplicates",
+      "why": "two roots are walked, a duplicate name is listed once per path, and the canonical (name, path) order decides which one ByName resolves",
+      "entries": [
+        {
+          "path": "a/alpha/SKILL.md",
+          "data": "---\nname: alpha\ndescription: review a change for defects\n---\n\n# alpha\n\nInstructions for alpha.\n"
+        },
+        {
+          "path": "a/nested/beta/SKILL.md",
+          "data": "---\nname: beta\ndescription: run the test suite\n---\n\n# beta\n\nInstructions for beta.\n"
+        },
+        {
+          "path": "a/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root a\n---\n\n# dup\n\nInstructions for dup.\n"
+        },
+        {
+          "path": "b/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root b\n---\n\n# dup\n\nInstructions for dup.\n"
+        }
+      ],
+      "roots": [
+        "a",
+        "b"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "scan_roots": [
+          "a",
+          "b"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "diagnostics": [],
+        "mentions": [
+          {
+            "text": "please $alpha",
+            "answer": [
+              {
+                "name": "alpha",
+                "description": "review a change for defects",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "$dup",
+            "answer": [
+              {
+                "name": "dup",
+                "description": "duplicate in root a",
+                "path": "a/dup/SKILL.md"
+              }
+            ]
+          }
+        ],
+        "reads": [
+          {
+            "by": "name",
+            "key": "alpha",
+            "answer": {
+              "path": "a/alpha/SKILL.md",
+              "body": "# alpha\n\nInstructions for alpha."
+            }
+          },
+          {
+            "by": "path",
+            "key": "a/nested/beta/SKILL.md",
+            "answer": {
+              "path": "a/nested/beta/SKILL.md",
+              "body": "# beta\n\nInstructions for beta."
+            }
+          },
+          {
+            "by": "name",
+            "key": "missing",
+            "answer": {
+              "error": "skill: \"missing\" not found"
+            }
+          },
+          {
+            "by": "path",
+            "key": "a/hidden/SKILL.md",
+            "answer": {
+              "error": "skill: \"a/hidden/SKILL.md\" not found"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-root",
+      "why": "a configured root that does not exist is silently empty: no skill, no diagnostic, and it is still listed in ScanRoots",
+      "entries": [],
+      "roots": [
+        "does-not-exist",
+        "a"
+      ],
+      "discover": {
+        "skills": [],
+        "diagnostics": [],
+        "roots": [],
+        "scan_roots": [
+          "does-not-exist",
+          "a"
+        ]
+      },
+      "service": {
+        "list": [],
+        "roots": [],
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "hidden-and-shapes",
+      "why": "hidden entries are skipped at every level, a non-SKILL.md file is not a skill, and a directory named SKILL.md is walked rather than read",
+      "entries": [
+        {
+          "path": "a/visible/SKILL.md",
+          "data": "---\nname: visible\ndescription: a visible skill\n---\n\n# visible\n\nInstructions for visible.\n"
+        },
+        {
+          "path": "a/.hidden/SKILL.md",
+          "data": "---\nname: hidden\ndescription: must not be discovered\n---\n\n# hidden\n\nInstructions for hidden.\n"
+        },
+        {
+          "path": "a/.hidden-file.md",
+          "data": "not a skill"
+        },
+        {
+          "path": "a/notes.md",
+          "data": "not a skill either"
+        },
+        {
+          "path": "a/SKILL.md/inside/SKILL.md",
+          "data": "---\nname: deep\ndescription: inside a directory called SKILL.md\n---\n\n# deep\n\nInstructions for deep.\n"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "deep",
+            "description": "inside a directory called SKILL.md",
+            "path": "a/SKILL.md/inside/SKILL.md"
+          },
+          {
+            "name": "visible",
+            "description": "a visible skill",
+            "path": "a/visible/SKILL.md"
+          }
+        ],
+        "diagnostics": [
+          {
+            "path": "a/SKILL.md/inside/SKILL.md",
+            "message": "name \"deep\" does not match directory name \"inside\" (accepted)",
+            "warning": true
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "deep",
+            "description": "inside a directory called SKILL.md",
+            "path": "a/SKILL.md/inside/SKILL.md"
+          },
+          {
+            "name": "visible",
+            "description": "a visible skill",
+            "path": "a/visible/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [
+          {
+            "path": "a/SKILL.md/inside/SKILL.md",
+            "message": "name \"deep\" does not match directory name \"inside\" (accepted)",
+            "warning": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-alias-cycle",
+      "why": "an alias pointing back at a walked tree is not re-descended: directories are tracked by canonical path, so the walk stays finite and the skill is collected once",
+      "entries": [
+        {
+          "path": "a/real/SKILL.md",
+          "data": "---\nname: real\ndescription: the only real skill\n---\n\n# real\n\nInstructions for real.\n"
+        },
+        {
+          "path": "a/alias-one",
+          "kind": "link",
+          "target": "a"
+        },
+        {
+          "path": "a/alias-two",
+          "kind": "link",
+          "target": "a"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "real",
+            "description": "the only real skill",
+            "path": "a/real/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "real",
+            "description": "the only real skill",
+            "path": "a/real/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "symlink-inside-another-root",
+      "why": "a symlink whose target lives inside another configured root is followed, and the skill is collected once under its canonical path",
+      "entries": [
+        {
+          "path": "a/linked",
+          "kind": "link",
+          "target": "b/linked"
+        },
+        {
+          "path": "b/linked/SKILL.md",
+          "data": "---\nname: linked\ndescription: reached through a symlink\n---\n\n# linked\n\nInstructions for linked.\n"
+        }
+      ],
+      "roots": [
+        "a",
+        "b"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "linked",
+            "description": "reached through a symlink",
+            "path": "b/linked/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a",
+          "b"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "linked",
+            "description": "reached through a symlink",
+            "path": "b/linked/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "symlink-escape",
+      "why": "a file symlink and a directory symlink that both leave the configured roots are refused with an error diagnostic and never yield a skill",
+      "entries": [
+        {
+          "path": "outside/leak/SKILL.md",
+          "data": "---\nname: leak\ndescription: must not be reachable\n---\n\n# leak\n\nInstructions for leak.\n"
+        },
+        {
+          "path": "a/SKILL.md",
+          "kind": "link",
+          "target": "outside/leak/SKILL.md"
+        },
+        {
+          "path": "a/leak-dir",
+          "kind": "link",
+          "target": "outside/leak"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [],
+        "diagnostics": [
+          {
+            "path": "a/SKILL.md",
+            "message": "symlink escapes the configured skill roots"
+          },
+          {
+            "path": "a/leak-dir",
+            "message": "symlink escapes the configured skill roots"
+          }
+        ],
+        "roots": [],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [],
+        "roots": [],
+        "diagnostics": [
+          {
+            "path": "a/SKILL.md",
+            "message": "symlink escapes the configured skill roots"
+          },
+          {
+            "path": "a/leak-dir",
+            "message": "symlink escapes the configured skill roots"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-dangling",
+      "why": "a dangling symlink is an error diagnostic, not a silent skip: a walk that cannot follow a link must say so",
+      "entries": [
+        {
+          "path": "a/real/SKILL.md",
+          "data": "---\nname: real\ndescription: a real skill\n---\n\n# real\n\nInstructions for real.\n"
+        },
+        {
+          "path": "a/dangling",
+          "kind": "link",
+          "target": "nowhere"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "real",
+            "description": "a real skill",
+            "path": "a/real/SKILL.md"
+          }
+        ],
+        "diagnostics": [
+          {
+            "path": "a/dangling",
+            "message": "resolve symlink: <os error>"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "real",
+            "description": "a real skill",
+            "path": "a/real/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [
+          {
+            "path": "a/dangling",
+            "message": "resolve symlink: <os error>"
+          }
+        ]
+      }
+    },
+    {
+      "name": "repeated-roots",
+      "why": "the same root configured twice, plus an alias resolving to it, is walked and listed once, while ScanRoots keeps every configured entry",
+      "entries": [
+        {
+          "path": "a/solo/SKILL.md",
+          "data": "---\nname: solo\ndescription: one skill\n---\n\n# solo\n\nInstructions for solo.\n"
+        },
+        {
+          "path": "alias",
+          "kind": "link",
+          "target": "a"
+        }
+      ],
+      "roots": [
+        "a",
+        "a",
+        "alias"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "solo",
+            "description": "one skill",
+            "path": "a/solo/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a",
+          "a",
+          "alias"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "solo",
+            "description": "one skill",
+            "path": "a/solo/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "diagnostics-kind",
+      "why": "a name that disagrees with its directory is a warning while an unparsable SKILL.md is an error: discovery marks the tolerated shape issue, not the failure",
+      "entries": [
+        {
+          "path": "a/mismatch/SKILL.md",
+          "data": "---\nname: something-else\ndescription: tolerated mismatch\n---\n\n# something-else\n\nInstructions for something-else.\n"
+        },
+        {
+          "path": "a/broken/SKILL.md",
+          "data": "---\nname: broken\n---\n\nbody\n"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "something-else",
+            "description": "tolerated mismatch",
+            "path": "a/mismatch/SKILL.md"
+          }
+        ],
+        "diagnostics": [
+          {
+            "path": "a/broken/SKILL.md",
+            "message": "skill: description is required"
+          },
+          {
+            "path": "a/mismatch/SKILL.md",
+            "message": "name \"something-else\" does not match directory name \"mismatch\" (accepted)",
+            "warning": true
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "something-else",
+            "description": "tolerated mismatch",
+            "path": "a/mismatch/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [
+          {
+            "path": "a/broken/SKILL.md",
+            "message": "skill: description is required"
+          },
+          {
+            "path": "a/mismatch/SKILL.md",
+            "message": "name \"something-else\" does not match directory name \"mismatch\" (accepted)",
+            "warning": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "disabled",
+      "why": "a disabled name and a disabled absolute path are both excluded from List and from ranking, while discovery still sees them",
+      "entries": [
+        {
+          "path": "a/alpha/SKILL.md",
+          "data": "---\nname: alpha\ndescription: review a change for defects\n---\n\n# alpha\n\nInstructions for alpha.\n"
+        },
+        {
+          "path": "a/nested/beta/SKILL.md",
+          "data": "---\nname: beta\ndescription: run the test suite\n---\n\n# beta\n\nInstructions for beta.\n"
+        },
+        {
+          "path": "a/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root a\n---\n\n# dup\n\nInstructions for dup.\n"
+        },
+        {
+          "path": "b/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root b\n---\n\n# dup\n\nInstructions for dup.\n"
+        }
+      ],
+      "roots": [
+        "a",
+        "b"
+      ],
+      "disabled": [
+        {
+          "kind": "name",
+          "value": "alpha"
+        },
+        {
+          "kind": "path",
+          "value": "b/dup/SKILL.md"
+        }
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "scan_roots": [
+          "a",
+          "b"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "diagnostics": [],
+        "rankings": [
+          {
+            "query": "duplicate",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "dup",
+                "path": "a/dup/SKILL.md",
+                "score": 0.6931471805599453
+              }
+            ]
+          },
+          {
+            "query": "review defects",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "ranking",
+      "why": "the ranked list is capped by the call's limit, filtered by the call's threshold, stable for equal scores, and empty for an empty or unmatched query",
+      "entries": [
+        {
+          "path": "a/alpha/SKILL.md",
+          "data": "---\nname: alpha\ndescription: review a change for defects\n---\n\n# alpha\n\nInstructions for alpha.\n"
+        },
+        {
+          "path": "a/nested/beta/SKILL.md",
+          "data": "---\nname: beta\ndescription: run the test suite\n---\n\n# beta\n\nInstructions for beta.\n"
+        },
+        {
+          "path": "a/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root a\n---\n\n# dup\n\nInstructions for dup.\n"
+        },
+        {
+          "path": "b/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root b\n---\n\n# dup\n\nInstructions for dup.\n"
+        }
+      ],
+      "roots": [
+        "a",
+        "b"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "scan_roots": [
+          "a",
+          "b"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "diagnostics": [],
+        "rankings": [
+          {
+            "query": "duplicate",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "dup",
+                "path": "a/dup/SKILL.md",
+                "score": 0.7102384809025193
+              },
+              {
+                "name": "dup",
+                "path": "b/dup/SKILL.md",
+                "score": 0.7102384809025193
+              }
+            ]
+          },
+          {
+            "query": "duplicate",
+            "top_n": 1,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "dup",
+                "path": "a/dup/SKILL.md",
+                "score": 0.7102384809025193
+              }
+            ]
+          },
+          {
+            "query": "duplicate",
+            "top_n": 1,
+            "min_score": 0.9,
+            "answer": []
+          },
+          {
+            "query": "test suite",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "beta",
+                "path": "a/nested/beta/SKILL.md",
+                "score": 2.4673196099610966
+              }
+            ]
+          },
+          {
+            "query": "",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": []
+          },
+          {
+            "query": "   ",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": []
+          },
+          {
+            "query": "kubernetes",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": []
+          },
+          {
+            "query": "review",
+            "top_n": 2,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "alpha",
+                "path": "a/alpha/SKILL.md",
+                "score": 1.122907303785287
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "ranking-defaults",
+      "why": "a service configured with TopN and MinScore applies both when the call passes zero, and a call's own limit wins over the configured one",
+      "entries": [
+        {
+          "path": "a/alpha/SKILL.md",
+          "data": "---\nname: alpha\ndescription: review a change for defects\n---\n\n# alpha\n\nInstructions for alpha.\n"
+        },
+        {
+          "path": "a/nested/beta/SKILL.md",
+          "data": "---\nname: beta\ndescription: run the test suite\n---\n\n# beta\n\nInstructions for beta.\n"
+        },
+        {
+          "path": "a/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root a\n---\n\n# dup\n\nInstructions for dup.\n"
+        },
+        {
+          "path": "b/dup/SKILL.md",
+          "data": "---\nname: dup\ndescription: duplicate in root b\n---\n\n# dup\n\nInstructions for dup.\n"
+        }
+      ],
+      "roots": [
+        "a",
+        "b"
+      ],
+      "top_n": 2,
+      "min_score": 0.1,
+      "discover": {
+        "skills": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "scan_roots": [
+          "a",
+          "b"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "alpha",
+            "description": "review a change for defects",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "run the test suite",
+            "path": "a/nested/beta/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root a",
+            "path": "a/dup/SKILL.md"
+          },
+          {
+            "name": "dup",
+            "description": "duplicate in root b",
+            "path": "b/dup/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a",
+          "b"
+        ],
+        "diagnostics": [],
+        "rankings": [
+          {
+            "query": "duplicate",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "dup",
+                "path": "a/dup/SKILL.md",
+                "score": 0.7102384809025193
+              },
+              {
+                "name": "dup",
+                "path": "b/dup/SKILL.md",
+                "score": 0.7102384809025193
+              }
+            ]
+          },
+          {
+            "query": "duplicate",
+            "top_n": 1,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "dup",
+                "path": "a/dup/SKILL.md",
+                "score": 0.7102384809025193
+              }
+            ]
+          },
+          {
+            "query": "review",
+            "top_n": 0,
+            "min_score": 0,
+            "answer": [
+              {
+                "name": "alpha",
+                "path": "a/alpha/SKILL.md",
+                "score": 1.122907303785287
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "mentions",
+      "why": "the mention grammar: a mention needs a non-word character before the $, the character is consumed by the match, an upper-case or dotted name is not a mention, and an unknown name resolves to nothing",
+      "entries": [
+        {
+          "path": "a/alpha/SKILL.md",
+          "data": "---\nname: alpha\ndescription: the alpha skill\n---\n\n# alpha\n\nInstructions for alpha.\n"
+        },
+        {
+          "path": "a/beta/SKILL.md",
+          "data": "---\nname: beta\ndescription: the beta skill\n---\n\n# beta\n\nInstructions for beta.\n"
+        },
+        {
+          "path": "a/alpha-beta/SKILL.md",
+          "data": "---\nname: alpha-beta\ndescription: the hyphenated skill\n---\n\n# alpha-beta\n\nInstructions for alpha-beta.\n"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "alpha",
+            "description": "the alpha skill",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "alpha-beta",
+            "description": "the hyphenated skill",
+            "path": "a/alpha-beta/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "the beta skill",
+            "path": "a/beta/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "alpha",
+            "description": "the alpha skill",
+            "path": "a/alpha/SKILL.md"
+          },
+          {
+            "name": "alpha-beta",
+            "description": "the hyphenated skill",
+            "path": "a/alpha-beta/SKILL.md"
+          },
+          {
+            "name": "beta",
+            "description": "the beta skill",
+            "path": "a/beta/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [],
+        "mentions": [
+          {
+            "text": "$alpha",
+            "answer": [
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "a$alpha",
+            "answer": []
+          },
+          {
+            "text": "$500",
+            "answer": []
+          },
+          {
+            "text": "$alpha$beta",
+            "answer": [
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "$beta then $alpha then $beta",
+            "answer": [
+              {
+                "name": "beta",
+                "description": "the beta skill",
+                "path": "a/beta/SKILL.md"
+              },
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "$Alpha and $alpha.beta",
+            "answer": [
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "$alpha-beta and $alpha",
+            "answer": [
+              {
+                "name": "alpha-beta",
+                "description": "the hyphenated skill",
+                "path": "a/alpha-beta/SKILL.md"
+              },
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "unknown $missing and $alpha",
+            "answer": [
+              {
+                "name": "alpha",
+                "description": "the alpha skill",
+                "path": "a/alpha/SKILL.md"
+              }
+            ]
+          },
+          {
+            "text": "no mentions at all",
+            "answer": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "body-read",
+      "why": "a body read strips the frontmatter and trims the remainder; a path outside the snapshot is not found even when a skill with that name exists",
+      "entries": [
+        {
+          "path": "a/plain/SKILL.md",
+          "data": "---\nname: plain\ndescription: a plain skill\n---\n\n\n  # Plain\n\nBody text.\n\n"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "plain",
+            "description": "a plain skill",
+            "path": "a/plain/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "plain",
+            "description": "a plain skill",
+            "path": "a/plain/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [],
+        "reads": [
+          {
+            "by": "name",
+            "key": "plain",
+            "answer": {
+              "path": "a/plain/SKILL.md",
+              "body": "# Plain\n\nBody text."
+            }
+          },
+          {
+            "by": "path",
+            "key": "a/plain/SKILL.md",
+            "answer": {
+              "path": "a/plain/SKILL.md",
+              "body": "# Plain\n\nBody text."
+            }
+          },
+          {
+            "by": "path",
+            "key": "a/absent/SKILL.md",
+            "answer": {
+              "error": "skill: \"a/absent/SKILL.md\" not found"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "reload-sees-new-skills",
+      "why": "Reload re-runs discovery, so a skill written after construction becomes visible without rebuilding the service",
+      "entries": [
+        {
+          "path": "a/first/SKILL.md",
+          "data": "---\nname: first\ndescription: the skill of the first pass\n---\n\n# first\n\nInstructions for first.\n"
+        }
+      ],
+      "roots": [
+        "a"
+      ],
+      "discover": {
+        "skills": [
+          {
+            "name": "first",
+            "description": "the skill of the first pass",
+            "path": "a/first/SKILL.md"
+          }
+        ],
+        "diagnostics": [],
+        "roots": [
+          "a"
+        ],
+        "scan_roots": [
+          "a"
+        ]
+      },
+      "service": {
+        "list": [
+          {
+            "name": "first",
+            "description": "the skill of the first pass",
+            "path": "a/first/SKILL.md"
+          }
+        ],
+        "roots": [
+          "a"
+        ],
+        "diagnostics": [],
+        "reload": {
+          "add": {
+            "path": "a/second/SKILL.md",
+            "data": "---\nname: second\ndescription: written between the passes\n---\n\n# second\n\nInstructions for second.\n"
+          },
+          "list": [
+            {
+              "name": "first",
+              "description": "the skill of the first pass",
+              "path": "a/first/SKILL.md"
+            },
+            {
+              "name": "second",
+              "description": "written between the passes",
+              "path": "a/second/SKILL.md"
+            }
+          ],
+          "diagnostics": []
+        }
+      }
+    }
+  ],
+  "renders": [
+    {
+      "name": "empty",
+      "why": "an empty list renders the empty string, so the caller can skip the section entirely",
+      "skills": [],
+      "answer": ""
+    },
+    {
+      "name": "one",
+      "why": "one line per skill: the name, the description and the file path, with no trailing newline",
+      "skills": [
+        {
+          "name": "alpha",
+          "description": "review a change for defects",
+          "path": "/skills/alpha/SKILL.md"
+        }
+      ],
+      "answer": "## Skills\nSkills relevant to this turn. To use one, search with skill_search and load its full instructions with skill_read. The user can also activate a skill by mentioning $name.\n- alpha: review a change for defects (file: /skills/alpha/SKILL.md)"
+    },
+    {
+      "name": "two",
+      "why": "two lines keep the order they were given",
+      "skills": [
+        {
+          "name": "alpha",
+          "description": "review a change for defects",
+          "path": "/skills/alpha/SKILL.md"
+        },
+        {
+          "name": "beta",
+          "description": "run the test suite",
+          "path": "/skills/beta/SKILL.md"
+        }
+      ],
+      "answer": "## Skills\nSkills relevant to this turn. To use one, search with skill_search and load its full instructions with skill_read. The user can also activate a skill by mentioning $name.\n- alpha: review a change for defects (file: /skills/alpha/SKILL.md)\n- beta: run the test suite (file: /skills/beta/SKILL.md)"
+    },
+    {
+      "name": "description-truncated",
+      "why": "a description past the rune cap is truncated in runes at render time, which is where a caller that built Metadata by hand reaches",
+      "skills": [
+        {
+          "name": "long",
+          "description": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中",
+          "path": "/skills/long/SKILL.md"
+        }
+      ],
+      "answer": "## Skills\nSkills relevant to this turn. To use one, search with skill_search and load its full instructions with skill_read. The user can also activate a skill by mentioning $name.\n- long: 中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中 (file: /skills/long/SKILL.md)"
+    }
+  ]
+}

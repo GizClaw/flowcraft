@@ -241,6 +241,26 @@ if ! cmp -s "$out/skill-contract.json" "$conf/skill-contract.json"; then
   exit 1
 fi
 
+echo "==> skill registry contract"
+# core/skill's registry half: the trees discovery is asked about and what it
+# answers -- which symlinks are followed, which are refused, which directories
+# are walked once, how duplicate names and repeated roots are listed -- plus
+# what a Service ranks, resolves as a mention, and returns as a body, replayed
+# by crates/flowcraft-skill/tests/registry_contract.rs. The rows are
+# filesystems, so the harness's own directory is masked out of every string in
+# both its given and its canonical form, an operating system's sentence after
+# the verb and path core wrote, and a YAML library's error text after the
+# sentence that classifies it. Scores are compared with the same 1e-12 relative
+# tolerance `bm25-contract.json` uses: the two sides sum their postings in their
+# own order, and any drift that could reorder two skills would still fail.
+"$out/oracle" -skill-registry-contract > "$out/skill-registry-contract.json"
+if ! cmp -s "$out/skill-registry-contract.json" "$conf/skill-registry-contract.json"; then
+  echo "rust/conformance/skill-registry-contract.json no longer matches core:" >&2
+  diff "$conf/skill-registry-contract.json" "$out/skill-registry-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -skill-registry-contract) > rust/conformance/skill-registry-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

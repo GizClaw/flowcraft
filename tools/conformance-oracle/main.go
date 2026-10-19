@@ -129,6 +129,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-skill-registry-contract" {
+		if err := writeSkillRegistryContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "skill registry contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-hooks-contract" {
 		if err := writeHooksContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "hooks contract:", err)
@@ -151,7 +158,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract | -wire-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract | -wire-contract | -skill-contract | -skill-registry-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

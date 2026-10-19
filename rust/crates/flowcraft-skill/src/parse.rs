@@ -159,11 +159,11 @@ fn refusal_sentence(refusal: &LenientRefusal) -> &str {
 }
 
 /// The two halves of a `SKILL.md`.
-struct Parts<'a> {
+pub(crate) struct Parts<'a> {
     /// The bytes between the delimiters.
-    front: &'a [u8],
+    pub(crate) front: &'a [u8],
     /// The Markdown after the closing delimiter's line.
-    body: &'a [u8],
+    pub(crate) body: &'a [u8],
 }
 
 /// Extracts the frontmatter and the body.
@@ -171,7 +171,7 @@ struct Parts<'a> {
 /// Byte-wise on purpose: the YAML reader is the one that judges UTF-8, and it
 /// has to see the bytes the file actually holds, not a replacement-character
 /// version of them.
-fn split_frontmatter(data: &[u8]) -> Result<Parts<'_>, Error> {
+pub(crate) fn split_frontmatter(data: &[u8]) -> Result<Parts<'_>, Error> {
     // Editors write a BOM often enough that refusing the file would drop a
     // usable skill.
     let text = data
@@ -390,7 +390,7 @@ fn single_line(text: &str) -> String {
 /// At most `limit` runes. The caps are stated in characters, so a byte slice —
 /// which could cut a three-byte character in half or over-truncate CJK text — is
 /// not good enough.
-fn truncate_runes(text: &str, limit: usize) -> String {
+pub(crate) fn truncate_runes(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_owned();
     }
