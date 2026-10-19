@@ -28,15 +28,19 @@
 //! connection type belongs to the server slice. Writing the trait before the
 //! server exists would mean guessing that type and rewriting it.
 //!
-//! That slice also brings the hooks (`OnConnect`, `OnRequest`, `OnResponse` in
-//! core) and the certificate authority, neither of which is worth a type
-//! without a TLS stack behind it.
+//! The slice lands in two pieces. [`ca`] is the authority -- the root a run
+//! mints, and the leaves it signs per host -- and it is testable without a
+//! socket, because a handshake can be two in-memory `rustls` connections. The
+//! engine, the hooks (`OnConnect`, `OnRequest`, `OnResponse` in core) and the
+//! forwarding transport follow, on top of that authority.
 
 use flowcraft_contract::error::{Error, ErrorKind};
 
 use super::addr::Addr;
 use super::host::Set;
 use super::policy::MitmPolicy;
+
+pub mod ca;
 
 /// The compiled form of a [`MitmPolicy`]'s host selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

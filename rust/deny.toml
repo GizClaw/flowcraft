@@ -27,6 +27,11 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
+    # The TLS stack: `ring` is Apache-2.0 AND ISC, and `rustls-webpki` and
+    # `untrusted` are ISC outright. Adding it here is the whole license cost of
+    # choosing rustls over a platform TLS; the alternative (rustls' default
+    # `aws-lc-rs`) is also ISC, and additionally builds a C library.
+    "ISC",
     "BSD-3-Clause",
     "Unicode-3.0",
     "Unlicense",

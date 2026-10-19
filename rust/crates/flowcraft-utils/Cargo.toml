@@ -20,6 +20,9 @@ unicode-general-category.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+time = { workspace = true }
 
 [lints]
 workspace = true

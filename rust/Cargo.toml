@@ -45,6 +45,17 @@ unicode-general-category = "1.1.0"
 tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 
+# The MITM slice's TLS stack, chosen in docs/plans/2026-10-15-rust-core-port.md
+# §4.6. `ring` rather than rustls' default `aws-lc-rs`: the latter builds a C
+# library through cmake, and the port wants one provider on both sides of a
+# handshake rather than a second build system. `rcgen` signs with the same
+# provider, so what rustls verifies is what rcgen minted.
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# `rcgen` takes its validity window as a `time::OffsetDateTime`, and core's
+# window is a stated constant rather than a default.
+time = { version = "0.3", default-features = false, features = ["std"] }
+
 # Production posture, for the crates that ship. The probe does not inherit it:
 # it is a measurement binary, not a shipped crate.
 [workspace.lints.rust]
