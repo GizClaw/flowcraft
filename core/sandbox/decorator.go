@@ -97,7 +97,10 @@ func (r *allowCommandsRunner) OpenJournal(ctx context.Context) (FileJournal, err
 //   - WorkDir: caller wins. Empty caller WorkDir falls back to
 //     defaults.WorkDir.
 //   - Stdin: caller wins. nil caller Stdin falls back to
-//     defaults.Stdin (rare in practice; here for symmetry).
+//     defaults.Stdin (rare in practice; here for symmetry). It is
+//     Exec-only: Start never delivers those bytes and never treats
+//     them as an input side, so a merged-into-Start spec still runs on
+//     /dev/null and Write reports NotAvailable.
 //   - Timeout: min(caller, defaults) when both > 0. A non-zero side
 //     overrides a zero side. Zero on both sides means "no
 //     sandbox-imposed timeout"; the caller's ctx still applies. The

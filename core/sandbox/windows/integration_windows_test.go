@@ -120,13 +120,17 @@ func TestSessionTerminate(t *testing.T) {
 func TestSessionStdin(t *testing.T) {
 	r := mustNewRunner(t)
 	sess, err := r.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"cmd", "/c", "more"},
+		Argv:  []string{"cmd", "/c", "more"},
+		Stdin: true,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close() }()
 
+	if !sess.Capabilities().Stdin {
+		t.Fatal("Capabilities().Stdin = false, want true for a declared input side")
+	}
 	if err := sess.Write(context.Background(), []byte("hello world\r\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -139,6 +143,40 @@ func TestSessionStdin(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello world") {
 		t.Fatalf("output = %q, want echoed stdin", out)
+	}
+}
+
+// TestSessionWithoutStdinReadsNul is the Windows half of the fd 0 fix:
+// with no declaration the child's stdin is the NUL device, so `more`
+// reads EOF and exits instead of blocking on a pipe nobody writes.
+func TestSessionWithoutStdinReadsNul(t *testing.T) {
+	r := mustNewRunner(t)
+	sess, err := r.Start(context.Background(), sandbox.SessionSpec{
+		Argv: []string{"cmd", "/c", "more"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if sess.Capabilities().Stdin {
+		t.Fatal("Capabilities().Stdin = true, want false without SessionSpec.Stdin")
+	}
+	if err := sess.Write(context.Background(), []byte("x")); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Write error = %v, want NotAvailable", err)
+	}
+	if err := sess.CloseInput(); err != nil {
+		t.Fatalf("CloseInput = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v (the child is blocked reading an empty stdin?)", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want code 0", exit)
 	}
 }
 
@@ -195,6 +233,9 @@ func TestPipeSessionReportsNoTTY(t *testing.T) {
 	defer func() { _ = sess.Close() }()
 	if sess.Capabilities().TTY {
 		t.Fatal("pipe session reports TTY = true, want false")
+	}
+	if sess.Capabilities().Stdin {
+		t.Fatal("pipe session without a declared stdin reports Stdin = true")
 	}
 }
 

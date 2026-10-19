@@ -3,9 +3,13 @@ package sandbox_test
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
 // closingRunner records whether Close reached it, so tests can prove
@@ -57,6 +61,58 @@ func TestDecoratorsForwardClose(t *testing.T) {
 	}
 	if !inner.closed {
 		t.Fatal("Close was not forwarded to the inner runner")
+	}
+}
+
+// TestDefaultsStdinDoesNotBuyAPipe covers the merge path that never
+// touches Runner.Exec: WithDefaults copies one-shot bytes onto a spec the
+// caller built with Stdin false, and those bytes must not become an input
+// side. Start never delivers Opts.Stdin, so a pipe built for them would
+// have no writer and no close — the child would hang on it.
+func TestDefaultsStdinDoesNotBuyAPipe(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	runner := sandbox.WithDefaults(local.New(t.TempDir()),
+		sandbox.ExecOptions{Stdin: []byte("x")})
+	sess, err := runner.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"sh", "-c", fd0Check},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if sess.Capabilities().Stdin {
+		t.Error("Capabilities().Stdin = true, want false: Start does not deliver Opts.Stdin")
+	}
+	if out := strings.TrimSpace(drainSession(t, ctx, sess)); out != "chardev" {
+		t.Fatalf("fd 0 = %q, want chardev (injected bytes are Exec's input, not a session's)", out)
+	}
+	if err := sess.Write(ctx, []byte("x")); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Write error = %v, want NotAvailable", err)
+	}
+}
+
+// TestDefaultsStdinDoesNotStallTheChild is the hang half of the same
+// case, in the shape a tool meets it: a child that reads until EOF has to
+// exit on its own, because the merged bytes never declared an input side.
+func TestDefaultsStdinDoesNotStallTheChild(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runner := sandbox.WithDefaults(local.New(t.TempDir()),
+		sandbox.ExecOptions{Stdin: []byte("x\n")})
+	sess, err := runner.Start(ctx, sandbox.SessionSpec{Argv: []string{"cat"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if _, err := sess.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v (the child is blocked on a pipe nobody writes or closes?)", err)
 	}
 }
 
