@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
@@ -23,7 +22,10 @@ import (
 // it rides the resource DAG, is built once, can be shared by several
 // engines, and its failures name the dep they came from — a unit whose
 // Bind fails is reported with its dep key, a duplicate global with the
-// dep keys that bound it.
+// dep keys that bound it. The composition itself is [bindings.Merge],
+// which the chain labels with the dep keys that mounted each provider:
+// the attribution rules live in one place instead of a second
+// implementation of the merge.
 //
 //	resources:
 //	  panel:
@@ -74,35 +76,33 @@ func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (any, e
 	if _, err := res.DecodeTyped[ScriptBindingsChainSettings](ctx, in.Settings); err != nil {
 		return nil, err
 	}
-	units, err := chainUnits(in)
+	parts, err := chainParts(in)
 	if err != nil {
 		return nil, err
 	}
-	if len(units) == 0 {
+	if len(parts) == 0 {
 		return nil, errdefs.Validationf(
 			"script bindings chain: no %q or %q dep: mount at least one surface, or use impl %q to bind nothing",
 			chainBaseDep, chainUnitDep, NoScriptBindingsImpl)
 	}
-	return chainProvider{units: units}, nil
+	return bindings.Merge(parts...), nil
 }
 
-// chainUnit is one surface of the composed chain together with the dep
-// key that mounted it, kept for error attribution.
-type chainUnit struct {
-	dep     string
-	surface bindings.Provider
-}
-
-// chainUnits resolves the chain's deps in binding order: "base" first,
-// then every "unit" dep in sorted key order — "base" < "unit" <
-// "unit.a" < "unit.b" under plain string ordering, which is what puts
-// the bare "unit" key in its documented middle position. A dep that is
-// nil, not a provider or a typed nil is rejected here; so is the same
+// chainParts resolves the chain's deps into the parts of the merged
+// surface, in binding order: "base" first, then every "unit" dep in
+// sorted key order — "base" < "unit" < "unit.a" < "unit.b" under plain
+// string ordering, which is what puts the bare "unit" key in its
+// documented middle position.
+//
+// Each part carries the dep key that mounted it, written the way the
+// merge's messages should read ("dep \"unit.a\""), so a conflict names
+// what collided rather than a position in the chain. A dep that is nil,
+// not a provider or a typed nil is rejected here; so is the same
 // provider mounted under two keys, where chainProviderIdentity can tell
 // the two apart. That check is best-effort: a doubly mounted provider
-// the build cannot identify is caught by the duplicate-name check at
-// execution time instead, which names both dep keys.
-func chainUnits(in res.Input) ([]chainUnit, error) {
+// the build cannot identify is caught by the merge's duplicate-name
+// check at execution time instead, which names both dep keys.
+func chainParts(in res.Input) ([]bindings.Part, error) {
 	keys := make([]string, 0, len(in.Deps))
 	for key := range in.Deps {
 		if key == chainBaseDep || key == chainUnitDep || strings.HasPrefix(key, chainUnitDep+".") {
@@ -111,7 +111,7 @@ func chainUnits(in res.Input) ([]chainUnit, error) {
 	}
 	sort.Strings(keys)
 
-	out := make([]chainUnit, 0, len(keys))
+	out := make([]bindings.Part, 0, len(keys))
 	mounted := make(map[string]string) // provider identity -> dep key
 	for _, key := range keys {
 		value := in.Deps[key]
@@ -133,10 +133,15 @@ func chainUnits(in res.Input) ([]chainUnit, error) {
 			}
 			mounted[identity] = key
 		}
-		out = append(out, chainUnit{dep: key, surface: surface})
+		out = append(out, bindings.Part{Owner: chainDepOwner(key), Provider: surface})
 	}
 	return out, nil
 }
+
+// chainDepOwner renders a dep key as its part's owner label. The merge
+// prints a label verbatim, so the label names itself a dep and the
+// message reads "dep \"unit.a\": ..." wherever the merge attributes.
+func chainDepOwner(key string) string { return fmt.Sprintf("dep %q", key) }
 
 // chainProviderIdentity returns a stable identity for pointer-backed
 // provider values. It follows registrarIdentity but is narrower on
@@ -164,93 +169,4 @@ func chainProviderIdentity(value any) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// chainProvider is the composed surface: ordinary bindings run unit by
-// unit in order, then each unit's late phase in the same order.
-//
-// It mirrors bindings.Chain, but merges the bindings itself instead of
-// delegating, so a duplicate name can be reported with the dep keys
-// that bound it. The two implementations must stay in step; the parity
-// test in script_bindings_chain_test.go pins the behaviour.
-type chainProvider struct {
-	units []chainUnit
-}
-
-// Bind implements [bindings.Provider]. The chain merges what the units
-// return itself, so a duplicate is reported with the dep keys that bound
-// it instead of by [bindings.Assemble] — which also means the merge
-// decides a colliding name's error: two units binding an empty or
-// otherwise unusable name report a duplicate, while one alone reports
-// Assemble's name error.
-func (c chainProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) {
-	out := make([]bindings.Binding, 0)
-	owner := make(map[string]string)
-	for _, unit := range c.units {
-		list, err := unit.surface.Bind(inv)
-		if err != nil {
-			return nil, errdefs.Fmt("script bindings chain: dep %q: %w", unit.dep, err)
-		}
-		for _, b := range list {
-			if first, dup := owner[b.Name]; dup {
-				return nil, chainDuplicatef(b.Name, first, unit.dep)
-			}
-			owner[b.Name] = unit.dep
-			out = append(out, b)
-		}
-	}
-	return out, nil
-}
-
-// BindLate implements [bindings.LateProvider]: every unit that has a
-// late phase runs it in binding order, against the environment the
-// ordinary bindings built. Assemble installs the returned bindings
-// after this call, so a late binding does not see its siblings — the
-// same contract as bindings.Chain.
-func (c chainProvider) BindLate(inv bindings.Invocation, env *agent.ScriptEnv) ([]bindings.Binding, error) {
-	out := make([]bindings.Binding, 0)
-	owner := make(map[string]string, len(env.Bindings))
-	for name := range env.Bindings {
-		owner[name] = ""
-	}
-	for _, unit := range c.units {
-		late, ok := unit.surface.(bindings.LateProvider)
-		if !ok {
-			continue
-		}
-		list, err := late.BindLate(inv, env)
-		if err != nil {
-			return nil, errdefs.Fmt("script bindings chain: dep %q: %w", unit.dep, err)
-		}
-		for _, b := range list {
-			first, dup := owner[b.Name]
-			switch {
-			case !dup:
-			case first == "":
-				// Bound before this late phase — by the chain's own
-				// ordinary bindings or by an enclosing provider — so the
-				// chain cannot name the dep that bound it.
-				return nil, errdefs.Validationf(
-					"script bindings chain: global %q bound by dep %q was already bound in the ordinary phase",
-					b.Name, unit.dep)
-			default:
-				return nil, chainDuplicatef(b.Name, first, unit.dep)
-			}
-			owner[b.Name] = unit.dep
-			out = append(out, b)
-		}
-	}
-	return out, nil
-}
-
-// chainDuplicatef reports a global bound by two units, naming both.
-// A name bound twice by the same unit reads differently from one bound
-// by two: the later phrasing would otherwise name the same dep twice.
-func chainDuplicatef(name, first, second string) error {
-	if first == second {
-		return errdefs.Validationf(
-			"script bindings chain: global %q is bound twice by dep %q", name, first)
-	}
-	return errdefs.Validationf(
-		"script bindings chain: global %q bound by both %q and %q", name, first, second)
 }

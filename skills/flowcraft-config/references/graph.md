@@ -243,8 +243,8 @@ panel:
 ```
 
 A duplicate global fails the execution; through a chain the error names the
-deps that bound it (`global "tokens" bound by both "base" and "unit.tokens"`).
-`chain` takes no settings.
+deps that bound it (`global "tokens" bound by both dep "base" and dep
+"unit.tokens"`). `chain` takes no settings.
 
 The node span records `script.bindings.count` and `script.bindings.source`
 (`engine` or `standard`); a debug log lists the global names, so a missing

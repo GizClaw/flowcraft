@@ -188,7 +188,7 @@ func TestScriptBindingsChainBareUnitKeyOrder(t *testing.T) {
 }
 
 // structSurface is a provider whose dynamic type is a struct value,
-// like the standardBindings and chainProvider the kind itself builds.
+// like the standardBindings and merged surfaces the kind itself builds.
 type structSurface struct{ ord []bindings.Binding }
 
 func (s structSurface) Bind(bindings.Invocation) ([]bindings.Binding, error) {
@@ -207,7 +207,7 @@ func TestScriptBindingsChainIdentityIsBestEffort(t *testing.T) {
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("Assemble = %v, want Validation for the duplicate global", err)
 	}
-	if !strings.Contains(err.Error(), `global "board" bound by both "base" and "unit.same"`) {
+	if !strings.Contains(err.Error(), `global "board" bound by both dep "base" and dep "unit.same"`) {
 		t.Fatalf("error %v must name both dep keys", err)
 	}
 }
@@ -245,54 +245,6 @@ func TestScriptBindingsChainLatePhase(t *testing.T) {
 	wantLateAt := []string{"a,b,board", "a,b,board"}
 	if !reflect.DeepEqual(lateAt, wantLateAt) {
 		t.Fatalf("late phase saw %v, want %v", lateAt, wantLateAt)
-	}
-}
-
-func TestScriptBindingsChainMatchesBindingsChain(t *testing.T) {
-	units := []bindings.Provider{
-		&chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}},
-			late: []bindings.Binding{{Name: "base_late", Value: "bl"}}},
-		&chainStub{name: "a", ord: []bindings.Binding{{Name: "a", Value: "1"}},
-			late: []bindings.Binding{{Name: "a_late", Value: "1l"}}},
-		plainStub{name: "b", ord: []bindings.Binding{{Name: "b", Value: "2"}}},
-	}
-	composed := buildChain(t, map[string]any{"base": units[0], "unit.a": units[1], "unit.b": units[2]})
-	reference := bindings.Chain(units...)
-
-	gotOrd, err := composed.Bind(chainInvocation())
-	if err != nil {
-		t.Fatalf("chain Bind: %v", err)
-	}
-	wantOrd, err := reference.Bind(chainInvocation())
-	if err != nil {
-		t.Fatalf("bindings.Chain Bind: %v", err)
-	}
-	if !reflect.DeepEqual(gotOrd, wantOrd) {
-		t.Fatalf("ordinary phase = %v, want %v", gotOrd, wantOrd)
-	}
-
-	gotEnv := &agent.ScriptEnv{Bindings: map[string]any{}}
-	for _, b := range gotOrd {
-		gotEnv.Bindings[b.Name] = b.Value
-	}
-	gotLate, err := composed.(bindings.LateProvider).BindLate(chainInvocation(), gotEnv)
-	if err != nil {
-		t.Fatalf("chain BindLate: %v", err)
-	}
-	wantEnv := &agent.ScriptEnv{Bindings: map[string]any{}}
-	for _, b := range wantOrd {
-		wantEnv.Bindings[b.Name] = b.Value
-	}
-	wantLate, err := reference.(bindings.LateProvider).BindLate(chainInvocation(), wantEnv)
-	if err != nil {
-		t.Fatalf("bindings.Chain BindLate: %v", err)
-	}
-	if !reflect.DeepEqual(gotLate, wantLate) {
-		t.Fatalf("late phase = %v, want %v", gotLate, wantLate)
-	}
-
-	if got, want := assembleChain(t, composed).Bindings, assembleChain(t, reference).Bindings; !reflect.DeepEqual(got, want) {
-		t.Fatalf("assembled surface = %v, want %v", got, want)
 	}
 }
 
@@ -409,7 +361,7 @@ func TestScriptBindingsChainDuplicateGlobals(t *testing.T) {
 		if !errdefs.IsValidation(err) {
 			t.Fatalf("Assemble = %v, want Validation", err)
 		}
-		if !strings.Contains(err.Error(), `global "dup" bound by both "unit.a" and "unit.b"`) {
+		if !strings.Contains(err.Error(), `global "dup" bound by both dep "unit.a" and dep "unit.b"`) {
 			t.Fatalf("error %v must name both deps", err)
 		}
 	})
@@ -453,7 +405,7 @@ func TestScriptBindingsChainLateCollision(t *testing.T) {
 		if !errdefs.IsValidation(err) {
 			t.Fatalf("Assemble = %v, want Validation", err)
 		}
-		want := `global "board" bound by dep "unit.l" was already bound in the ordinary phase`
+		want := `global "board" bound by dep "unit.l" was already bound before the late phase`
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v must name the late dep", err)
 		}
@@ -467,7 +419,7 @@ func TestScriptBindingsChainLateCollision(t *testing.T) {
 		if !errdefs.IsValidation(err) {
 			t.Fatalf("Assemble = %v, want Validation", err)
 		}
-		want := `global "dup" bound by both "unit.a" and "unit.b"`
+		want := `global "dup" bound by both dep "unit.a" and dep "unit.b"`
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v must name both late deps", err)
 		}
@@ -485,7 +437,7 @@ func TestScriptBindingsChainLateCollision(t *testing.T) {
 		}
 		// The outer chain prefixes the unit it called: one wrapper, not
 		// one per inner dep.
-		want := `dep "unit.inner": script bindings chain: global "dup" bound by both "unit.a" and "unit.b"`
+		want := `dep "unit.inner": script bindings: global "dup" bound by both dep "unit.a" and dep "unit.b"`
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v must name the nested unit and both inner deps", err)
 		}

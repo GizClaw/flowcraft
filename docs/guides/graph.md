@@ -531,14 +531,15 @@ agents:
   host impl, `standard` or `none`, so `std` + `tokens` + `audit` needs no
   intermediate resources.
 - Both phases keep that order: every unit's ordinary bindings, then every
-  unit's `LateProvider` phase — exactly the order `bindings.Chain` applies.
+  unit's `LateProvider` phase — the order `bindings.Merge` applies for
+  every composed surface, `bindings.Chain` included.
 - The engine still consumes one provider: a chain replaces the standard
   surface like any other provider, so mount the standard resource as `base`
   to extend it rather than to drop it.
 - A duplicate global fails the execution, naming the deps that bound it
-  (`global "tokens" bound by both "unit.audit" and "unit.tokens"`). Names
-  exist only once a provider binds, so a duplicate *name* cannot be caught at
-  deploy time — a chain at least says which deps collided.
+  (`global "tokens" bound by both dep "unit.audit" and dep "unit.tokens"`).
+  Names exist only once a provider binds, so a duplicate *name* cannot be
+  caught at deploy time — a chain at least says which deps collided.
 - Mounting one provider value under two dep keys is refused earlier, at build
   time (`provider mounted twice (as "base" and "unit.same")`), when the value
   can be identified: identity is pointer equality, so pointer-backed providers

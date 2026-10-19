@@ -65,11 +65,12 @@
 // sub-scripts inherit the final map), rejects a name bound twice, and
 // rejects a name a script could not reference — every global must be an
 // identifier that is not a JavaScript or Lua keyword. [Chain] composes
-// providers, which is how a host extends the standard surface; core also
-// ships the "chain" impl of the kind (core/graph/resource), which composes
-// several resources of a deployment document and reports a duplicate global
-// with the dep keys that bound it. An impl should bind its own globals only
-// and leave composition to the deployment.
+// providers, and [Merge] composes [Part]s: the same two-phase order, with
+// an owner label per contributor so a conflict names what collided
+// instead of a position. Core also ships the "chain" impl of the kind
+// (core/graph/resource), which merges its resources that way and reports
+// a duplicate global with the dep keys that bound it. An impl should bind
+// its own globals only and leave composition to the deployment.
 //
 // The assembled surface is observable: [Assemble] sets a
 // "script.bindings.count" attribute on the caller's span and, when
