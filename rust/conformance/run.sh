@@ -224,6 +224,23 @@ if ! cmp -s "$out/hooks-contract.json" "$conf/hooks-contract.json"; then
   exit 1
 fi
 
+echo "==> skill contract"
+# core/skill's parse half: every SKILL.md its parser is asked about, and the
+# answer it gives -- the lenient half (a BOM, CRLF, extension fields, a name that
+# disagrees with its directory, a scalar coerced to its spelling) and the strict
+# half (one name shape, a required description, a cap on every string) as rows,
+# replayed by crates/flowcraft-skill/tests/parse_contract.rs. The rows are files,
+# so the harness's own directory is masked out of every string, an operating
+# system's sentence after the verb and path core wrote, and a YAML or JSON
+# library's own error text after the sentence that classifies it.
+"$out/oracle" -skill-contract > "$out/skill-contract.json"
+if ! cmp -s "$out/skill-contract.json" "$conf/skill-contract.json"; then
+  echo "rust/conformance/skill-contract.json no longer matches core:" >&2
+  diff "$conf/skill-contract.json" "$out/skill-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -skill-contract) > rust/conformance/skill-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

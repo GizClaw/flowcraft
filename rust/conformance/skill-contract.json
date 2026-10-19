@@ -1,0 +1,533 @@
+{
+  "note": [
+    "core/skill, as a table: every SKILL.md the package's parser is asked about, and the answer it gives.",
+    "A row is a file written into a temporary directory of the harness's own; the file's absolute path is masked out of every string, so what is left is the logical name the row spells (review/SKILL.md, My_Skill/SKILL.md).",
+    "The parser is deliberately lenient where a third-party skill needs it and strict where a model reads the result: both halves are rows here, because a port that accepts more than core is the failure this table exists to catch.",
+    "A YAML library's own error text is masked after the sentence that classifies it: Go and Rust word a syntax error differently, and a contract that pinned the wording would pin the library rather than the behavior.",
+    "Not rows: the 256 KiB file cap and an unreadable file. Each is one constant or one operator sentence, not a behavior, and each is pinned by the port's own test where the constant is named."
+  ],
+  "limits": {
+    "name": 64,
+    "description": 1024,
+    "file": 262144
+  },
+  "masked": [
+    "the harness's directory, in every string (metadata.path included)",
+    "an operating system's sentence after `stat <path>: ` or `read <path>: `",
+    "a YAML library's error text, after the sentence that classifies it"
+  ],
+  "rows": [
+    {
+      "name": "plain",
+      "why": "one well-formed skill: the three fields a caller reads, and the path it will open later",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: Review a change for defects\n---\n\n# Review\n\nRead the diff.\n",
+      "metadata": {
+        "name": "review",
+        "description": "Review a change for defects",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "bom",
+      "why": "an editor's BOM is trimmed rather than refusing a usable skill",
+      "path": "review/SKILL.md",
+      "data": "﻿---\nname: review\ndescription: Review a change for defects\n---\n\n# Review\n\nRead the diff.\n",
+      "metadata": {
+        "name": "review",
+        "description": "Review a change for defects",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "crlf-after-delimiter",
+      "why": "a CRLF file is split at the same two delimiters as an LF one",
+      "path": "review/SKILL.md",
+      "data": "---\r\nname: review\r\ndescription: Review a change for defects\r\n---\r\n\r\n# Review\r\n",
+      "metadata": {
+        "name": "review",
+        "description": "Review a change for defects",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "no-frontmatter",
+      "why": "a Markdown file without frontmatter is refused, and the refusal names the shape it wanted",
+      "path": "review/SKILL.md",
+      "data": "# Review\n\nNo frontmatter here.\n",
+      "error": "skill: missing YAML frontmatter (expected --- ... ---)"
+    },
+    {
+      "name": "unterminated",
+      "why": "an opening delimiter with no closing one is refused rather than treated as a body",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: Review a change for defects\n",
+      "error": "skill: unterminated YAML frontmatter"
+    },
+    {
+      "name": "empty-body",
+      "why": "frontmatter with a blank body is refused: a skill with no instructions is not a skill",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: Review a change for defects\n---\n\n   \n",
+      "error": "skill: SKILL.md body is empty"
+    },
+    {
+      "name": "delimiter-inside-a-block",
+      "why": "the first closing delimiter ends the frontmatter, so a --- line inside the YAML is where the block ends",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: Review a change for defects\n---\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "Review a change for defects",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "name-mismatch",
+      "why": "a valid name that differs from its directory is accepted with a warning: third-party skills violate the standard and refusing them would drop usable content",
+      "path": "review/SKILL.md",
+      "data": "---\nname: something-else\ndescription: tolerated name mismatch\n---\n\nbody\n",
+      "metadata": {
+        "name": "something-else",
+        "description": "tolerated name mismatch",
+        "path": "review/SKILL.md"
+      },
+      "warnings": [
+        "name \"something-else\" does not match directory name \"review\" (accepted)"
+      ]
+    },
+    {
+      "name": "name-invalid-falls-back",
+      "why": "an invalid name falls back to the slugified directory name, with a warning",
+      "path": "My_Skill/SKILL.md",
+      "data": "---\nname: My_Skill\ndescription: bad name\n---\n\nbody\n",
+      "metadata": {
+        "name": "my-skill",
+        "description": "bad name",
+        "path": "My_Skill/SKILL.md"
+      },
+      "warnings": [
+        "name \"My_Skill\" invalid; fell back to directory name \"my-skill\""
+      ]
+    },
+    {
+      "name": "name-missing-falls-back",
+      "why": "an absent name falls back to the slugified directory name, with a warning",
+      "path": "Some Dir/SKILL.md",
+      "data": "---\ndescription: no name at all\n---\n\nbody\n",
+      "metadata": {
+        "name": "some-dir",
+        "description": "no name at all",
+        "path": "Some Dir/SKILL.md"
+      },
+      "warnings": [
+        "name missing or invalid; fell back to directory name \"some-dir\""
+      ]
+    },
+    {
+      "name": "name-too-long-falls-back",
+      "why": "a name past the rune cap is invalid, so it falls back rather than truncating",
+      "path": "review/SKILL.md",
+      "data": "---\nname: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ndescription: d\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "d",
+        "path": "review/SKILL.md"
+      },
+      "warnings": [
+        "name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" invalid; fell back to directory name \"review\""
+      ]
+    },
+    {
+      "name": "name-at-the-cap",
+      "why": "a name of exactly 64 characters is valid, so the cap is a cap and not an off-by-one",
+      "path": "review/SKILL.md",
+      "data": "---\nname: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ndescription: d\n---\n\nbody\n",
+      "metadata": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "description": "d",
+        "path": "review/SKILL.md"
+      },
+      "warnings": [
+        "name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" does not match directory name \"review\" (accepted)"
+      ]
+    },
+    {
+      "name": "fallback-is-unusable",
+      "why": "a missing name whose directory slugifies to nothing is refused: there is no name to fall back to",
+      "path": "___/SKILL.md",
+      "data": "---\ndescription: nothing to call it\n---\n\nbody\n",
+      "error": "skill: name missing or invalid; directory \"___\" is not usable as a fallback"
+    },
+    {
+      "name": "description-missing",
+      "why": "the description is required: it is the only thing a per-turn ranking can rank on",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\n---\n\nbody\n",
+      "error": "skill: description is required"
+    },
+    {
+      "name": "description-folds-whitespace",
+      "why": "a description is folded to one line, because it is rendered into a single bullet",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: |\n  Review   a change\n  for   defects\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "Review a change for defects",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "description-truncated",
+      "why": "a description past the cap is truncated in runes, not bytes: a byte slice would cut a three-byte character in half",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "extension-fields",
+      "why": "third-party extension fields are tolerated, and metadata.short-description is read through its hyphenated key",
+      "path": "extended/SKILL.md",
+      "data": "---\nname: extended\ndescription: carries extensions\nlicense: MIT\nversion: 1.2.3\nmetadata:\n  short-description: short form\n  owner: someone\n---\n\nbody\n",
+      "metadata": {
+        "name": "extended",
+        "description": "carries extensions",
+        "short_description": "short form",
+        "path": "extended/SKILL.md"
+      }
+    },
+    {
+      "name": "short-description-folds",
+      "why": "the non-standard short description is folded like the description is",
+      "path": "short/SKILL.md",
+      "data": "---\nname: short\ndescription: d\nmetadata:\n  short-description: \"  two   words \\n and a newline \"\n---\n\nbody\n",
+      "metadata": {
+        "name": "short",
+        "description": "d",
+        "short_description": "two words and a newline",
+        "path": "short/SKILL.md"
+      }
+    },
+    {
+      "name": "capitalized-field-names",
+      "why": "the typed decode matches field names case-insensitively, which is encoding/json's rule: a SkILL.md that spells Name and DESCRIPTION reads the same as one that spells them in lower case",
+      "path": "review/SKILL.md",
+      "data": "---\nName: review\nDESCRIPTION: capitalised fields\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "capitalised fields",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "whitespace-around-name",
+      "why": "a name and description are folded before they are validated, so surrounding and interior whitespace never reaches a caller",
+      "path": "review/SKILL.md",
+      "data": "---\nname: \"  review \"\ndescription: \"  spaced   out  \"\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "spaced out",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "yaml-syntax-error",
+      "why": "a frontmatter that is not YAML is refused, and only the library's own wording is masked",
+      "path": "review/SKILL.md",
+      "data": "---\nname: [review\ndescription: d\n---\n\nbody\n",
+      "error": "skill: parse frontmatter: <decode error>"
+    },
+    {
+      "name": "yaml-not-a-mapping",
+      "why": "frontmatter that decodes to a list is refused by the typed decode rather than read as empty",
+      "path": "review/SKILL.md",
+      "data": "---\n- name: review\n- description: d\n---\n\nbody\n",
+      "error": "skill: parse frontmatter: <decode error>"
+    },
+    {
+      "name": "name-is-a-number",
+      "why": "a name that is not a string is refused rather than coerced, so a numeric name never reaches a caller",
+      "path": "review/SKILL.md",
+      "data": "---\nname: 123\ndescription: d\n---\n\nbody\n",
+      "metadata": {
+        "name": "123",
+        "description": "d",
+        "path": "review/SKILL.md"
+      },
+      "warnings": [
+        "name \"123\" does not match directory name \"review\" (accepted)"
+      ]
+    },
+    {
+      "name": "duplicate-keys",
+      "why": "a key written twice keeps the last value, which is what yaml.v2 does and what the typed decode then reads",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: first\ndescription: second\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "second",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "collapsing-keys",
+      "why": "two distinct keys that spell one JSON key load with a note rather than silently carrying a mapping that means two things",
+      "path": "collide/SKILL.md",
+      "data": "---\nname: collide\ndescription: d\nmetadata:\n  1: a\n  \"1\": b\n---\n\nbody\n",
+      "metadata": {
+        "name": "collide",
+        "description": "d",
+        "path": "collide/SKILL.md"
+      },
+      "warnings": [
+        "frontmatter: YAML keys !!int 1, !!str \"1\" convert to the same JSON key \"1\""
+      ]
+    },
+    {
+      "name": "unusable-key",
+      "why": "a key no JSON key can spell refuses the file by name, instead of by whichever key a map walk met first",
+      "path": "unusable/SKILL.md",
+      "data": "---\nname: unusable\ndescription: d\nmetadata:\n  ~: c\n---\n\nbody\n",
+      "error": "skill: parse frontmatter: YAML key !!null null cannot be spelled as a JSON key"
+    },
+    {
+      "name": "unhashable-key",
+      "why": "a list used as a key is refused by the YAML reader itself, before core's own key pre-check can name it: the two refusals are different sentences and different code",
+      "path": "unhashable/SKILL.md",
+      "data": "---\nname: unhashable\ndescription: d\nmetadata:\n  ? [a, b]\n  : c\n---\n\nbody\n",
+      "error": "skill: parse frontmatter: <decode error>"
+    },
+    {
+      "name": "invalid-utf8",
+      "why": "a byte that is not UTF-8 refuses the document in the YAML reader, before any field is read",
+      "path": "review/SKILL.md",
+      "data_hex": "2d2d2d0a6e616d653a207265766965770a6465736372697074696f6e3a20ff0a2d2d2d0a0a626f64790a",
+      "error": "skill: parse frontmatter: <decode error>"
+    },
+    {
+      "name": "missing-file",
+      "why": "a path that does not exist is refused by core's own stat, which names the verb and the path; the operating system's half of the sentence is the platform's, so it is masked",
+      "path": "absent/SKILL.md",
+      "error": "stat absent/SKILL.md: <os error>"
+    },
+    {
+      "name": "path-is-a-directory",
+      "why": "a directory in place of a file passes the stat and is refused by core's own read, which names the verb and the path",
+      "path": "dir-skill/SKILL.md",
+      "kind": "dir",
+      "error": "read dir-skill/SKILL.md: <os error>"
+    },
+    {
+      "name": "scalar-int",
+      "why": "a YAML scalar in a string field is coerced to its spelling: an integer is its decimal spelling",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 1\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-octal",
+      "why": "a YAML scalar in a string field is coerced to its spelling: YAML 1.1 octal: the value is 7, not the digits 007",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 007\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "7",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-hex",
+      "why": "a YAML scalar in a string field is coerced to its spelling: YAML 1.1 hex: the value is 16",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 0x10\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "16",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-underscored",
+      "why": "a YAML scalar in a string field is coerced to its spelling: YAML 1.1 underscores are separators, not characters",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 1_000\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1000",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-uint64",
+      "why": "a YAML scalar in a string field is coerced to its spelling: an unsigned value past int64 is still an integer, in decimal",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 18446744073709551615\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "18446744073709551615",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-overflowing",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a value past uint64 becomes a float, and is spelled at float32 precision",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 123456789012345678901234567890\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1.2345679e+29",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-float",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a plain float",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 1.5\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1.5",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-tenth",
+      "why": "a YAML scalar in a string field is coerced to its spelling: the shortest spelling that round-trips, not a full-precision one",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 0.1\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "0.1",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-exponent-folds",
+      "why": "a YAML scalar in a string field is coerced to its spelling: %g drops an exponent that fits the digit count: this is 1000, not 1e+03",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 1e3\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1000",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-exponent-kept",
+      "why": "a YAML scalar in a string field is coerced to its spelling: %g keeps the exponent once it outgrows the digits",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 1e21\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1e+21",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-small",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a small float takes the exponent form with Go's two-digit exponent",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: 0.000001\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "1e-06",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-infinity",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a special float is Go's +Inf, not YAML's .inf",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: .inf\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "+Inf",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-nan",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a special float is Go's NaN",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: .nan\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "NaN",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-bool",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a boolean is true, not True or 1",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: true\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "true",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-yaml11-bool",
+      "why": "a YAML scalar in a string field is coerced to its spelling: YAML 1.1 resolves yes to a boolean, which is then spelled true",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: yes\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "true",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-null",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a null in a string field is the empty string",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: null\n---\n\nbody\n",
+      "error": "skill: description is required"
+    },
+    {
+      "name": "scalar-quoted-number",
+      "why": "a YAML scalar in a string field is coerced to its spelling: a quoted scalar is a string and stays one",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: \"123\"\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "123",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-quoted-octal",
+      "why": "a YAML scalar in a string field is coerced to its spelling: quoting keeps the digits YAML would otherwise resolve",
+      "path": "review/SKILL.md",
+      "data": "---\nname: review\ndescription: '007'\n---\n\nbody\n",
+      "metadata": {
+        "name": "review",
+        "description": "007",
+        "path": "review/SKILL.md"
+      }
+    },
+    {
+      "name": "scalar-name",
+      "why": "a coerced name reaches the validator as the spelling: 007 is the valid name 7, and the mismatch warning quotes 7",
+      "path": "review/SKILL.md",
+      "data": "---\nname: 007\ndescription: d\n---\n\nbody\n",
+      "metadata": {
+        "name": "7",
+        "description": "d",
+        "path": "review/SKILL.md"
+      },
+      "warnings": [
+        "name \"7\" does not match directory name \"review\" (accepted)"
+      ]
+    }
+  ]
+}

@@ -161,7 +161,7 @@ fn convert_document(document: &Yaml<'_>, text: &str) -> Result<String, String> {
     // holds one reports the value (measured: `a: .nan` next to a
     // `1`/`"1"` pair is `json: unsupported value: NaN`).
     let mut unsupported = None;
-    let value = go_value(document, &mut unsupported)?;
+    let value = go_value(document, Numbers::Float64, &mut unsupported)?;
     if let Some(spelling) = unsupported {
         return Err(convert_refusal(format!(
             "error converting YAML to JSON: json: unsupported value: {spelling}"
@@ -171,6 +171,142 @@ fn convert_document(document: &Yaml<'_>, text: &str) -> Result<String, String> {
         return Err(convert_refusal(sentences.join("; ")));
     }
     Ok(json::to_string(&value))
+}
+
+/// What a lenient conversion produced.
+#[derive(Debug, Clone)]
+pub struct Lenient {
+    /// The document as JSON text, with go-yaml's value rules: a repeated key
+    /// keeps its last value, and nothing is reported about it.
+    pub json: String,
+    /// `YAML keys ... convert to the same JSON key ...`, one per collapsing
+    /// group, in `utils.KeyCollisions` order. Reported rather than refused.
+    pub collisions: Vec<String>,
+}
+
+/// Why a lenient conversion refused a document, split by who wrote the sentence.
+#[derive(Debug, Clone)]
+pub enum LenientRefusal {
+    /// A key no JSON key can spell, in core's own words (`utils.UnusableKeys`):
+    /// `YAML key !!null null cannot be spelled as a JSON key`.
+    UnusableKeys(String),
+    /// One of the refusals the YAML library makes for itself -- not YAML, a key
+    /// no Go map can hold, more than one document, a value JSON cannot write --
+    /// as a bare sentence. `to_json` puts `config utils: ` in front of these;
+    /// a caller that is not `utils.ToJSON` says what it was parsing instead.
+    Document(String),
+}
+
+/// The conversion a *typed* decode needs, which is not `utils.ToJSON`'s.
+///
+/// A caller that decodes a document into its own struct -- a skill's
+/// frontmatter, for one -- goes through `sigs.k8s.io/yaml`, and that path differs
+/// from `utils.ToJSON` in exactly two places:
+///
+///   - a repeated key keeps its last value and is reported to nobody, because
+///     `yaml.v2` decodes into a Go map before anything looks at the repetition;
+///   - distinct keys that spell one JSON key are converted, not refused: the
+///     library builds its `map[string]interface{}` by assignment, so one value
+///     wins. `utils.ToJSON` refuses such a document, which is what
+///     [`to_json`] does; a frontmatter is somebody else's file, and refusing it
+///     for a collapse inside an extension block would drop a usable skill.
+///
+/// What stays a refusal is everything the library itself refuses before any
+/// target exists: a document that is not YAML, a key no Go map can hold, and --
+/// through the key scan core runs first -- a key no JSON key can spell. The
+/// sentences are bare, so the caller can say what it was parsing.
+pub fn to_json_lenient(data: &[u8]) -> Result<Lenient, LenientRefusal> {
+    if format_of(data) == Format::Json {
+        let json =
+            passthrough_json(data).map_err(|message| LenientRefusal::Document(bare(message)))?;
+        return Ok(Lenient {
+            json,
+            collisions: Vec::new(),
+        });
+    }
+    let text = reader_check(data).map_err(|message| LenientRefusal::Document(bare(message)))?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    directive_guard(text).map_err(|message| LenientRefusal::Document(bare(message)))?;
+    alias_guard(text).map_err(|message| LenientRefusal::Document(bare(message)))?;
+
+    let mut loader: saphyr::YamlLoader<'_, Yaml<'_>> = saphyr::YamlLoader::default();
+    loader.early_parse(false);
+    loader.allow_duplicate_keys(true);
+    let mut parser = Parser::new_from_str(text);
+    parser
+        .load(&mut loader, true)
+        .map_err(|error| LenientRefusal::Document(bare(core_yaml(error))))?;
+    if let Some(error) = loader.error() {
+        return Err(LenientRefusal::Document(bare(core_yaml(error))));
+    }
+    let docs = loader.into_documents();
+    match docs.len() {
+        0 => Ok(Lenient {
+            json: json::to_string(&Value::Null),
+            collisions: Vec::new(),
+        }),
+        1 => convert_lenient(&docs[0], text),
+        _ => Err(LenientRefusal::Document("multiple YAML documents".into())),
+    }
+}
+
+/// The lenient conversion itself: the same walk as `convert_document`, with the
+/// two refusals a typed decode does not make removed.
+fn convert_lenient(document: &Yaml<'_>, text: &str) -> Result<Lenient, LenientRefusal> {
+    decode_check(document).map_err(|message| LenientRefusal::Document(bare(message)))?;
+    let scan = scan_keys(text).map_err(|message| LenientRefusal::Document(bare(message)))?;
+    if let Some(sentence) = scan.unusable_sentence() {
+        return Err(LenientRefusal::UnusableKeys(sentence));
+    }
+    let mut unsupported = None;
+    let value = go_value(document, Numbers::Exact, &mut unsupported)
+        .map_err(|message| LenientRefusal::Document(bare(message)))?;
+    if let Some(spelling) = unsupported {
+        return Err(LenientRefusal::Document(format!(
+            "json: unsupported value: {spelling}"
+        )));
+    }
+    Ok(Lenient {
+        json: json::to_string(&value),
+        collisions: scan.collision_sentences().unwrap_or_default(),
+    })
+}
+
+/// A sentence without core's `config utils: ` wrapper: the prefix belongs to
+/// `utils.ToJSON`, and a caller with a different subject writes its own.
+fn bare(message: String) -> String {
+    match message.strip_prefix("config utils: ") {
+        Some(rest) => rest.to_owned(),
+        None => message,
+    }
+}
+
+/// Go's `%q` for a string -- `strconv.Quote`'s spelling, which is what `%q`
+/// prints in a formatted message.
+///
+/// Public for the same reason [`go_float32`] is: a port that quotes a value its
+/// own way changes a sentence core wrote, and that sentence reaches a caller's
+/// log. A skill's warnings quote a name and a directory that a third party
+/// chose, so `\x07` and `\u0085` have to be spelled Go's way there too.
+pub fn quote(text: &str) -> String {
+    go_quote(text)
+}
+
+/// Go's `%g` at float32 precision -- `strconv.FormatFloat(v, 'g', -1, 32)`.
+///
+/// Not the same string as Go's `%v` for the same float: the digit count is what
+/// float32 can round-trip, so `123456789012345678901234567890` is `1.2345679e+29`
+/// here and `1.2345678901234568e+29` there, and a small float keeps the two-digit
+/// exponent (`1e-06`). It is the spelling `sigs.k8s.io/yaml` gives a float that
+/// lands in a string field, which is why it is public.
+pub fn go_float32(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "+Inf" } else { "-Inf" }.into();
+    }
+    shortest_g(&f32_digits(value as f32))
 }
 
 /// go-yaml's reader, which runs before the scanner sees anything: every *raw*
@@ -268,7 +404,9 @@ fn decode_check(node: &Yaml<'_>) -> Result<(), String> {
         // A tagged scalar is decoded here, so a tag the scalar cannot satisfy
         // is a refusal of this walk -- and a *fail*, which go-yaml reports
         // ahead of any duplicate it has collected so far.
-        Yaml::Representation(text, _, Some(tag)) => tagged_value(text, tag, &mut None).map(|_| ()),
+        Yaml::Representation(text, _, Some(tag)) => {
+            tagged_value(text, tag, Numbers::Float64, &mut None).map(|_| ())
+        }
         _ => Ok(()),
     }
 }
@@ -850,22 +988,41 @@ fn insert(scan: &mut KeyScan, entries: &mut Vec<Entry>, entry: Entry, at: usize)
 
 /// The collisions of one mapping: group its entries by the JSON key they are
 /// spelled as, and report every group with more than one *distinct* key.
+///
+/// Distinct is Go's key equality and not a spelling comparison, because the
+/// findings are read off a Go map: a key written twice collapsed into one entry
+/// before `KeyCollisions` ever sees it, so `description: a` above `description:
+/// b` collides with nothing -- while two `.nan` keys, which are unequal to
+/// themselves, are two entries that collide with each other and are reported
+/// twice. Counting spellings instead would get both of those backwards.
 fn report_collisions(scan: &mut KeyScan, entries: &[Entry]) {
-    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    let mut groups: Vec<(&str, Vec<&Entry>)> = Vec::new();
     for entry in entries {
-        let spelling = yaml_key_spelling(&entry.resolved);
         match groups
             .iter_mut()
             .find(|(json_key, _)| *json_key == entry.json_key)
         {
-            Some((_, spellings)) => spellings.push(spelling),
-            None => groups.push((entry.json_key.as_str(), vec![spelling])),
+            Some((_, group)) => group.push(entry),
+            None => groups.push((entry.json_key.as_str(), vec![entry])),
         }
     }
-    for (json_key, mut spellings) in groups {
-        if spellings.len() < 2 {
+    for (json_key, group) in groups {
+        let mut distinct: Vec<&Entry> = Vec::with_capacity(group.len());
+        for entry in group {
+            if !distinct
+                .iter()
+                .any(|known| go_key_eq(&known.resolved, &entry.resolved))
+            {
+                distinct.push(entry);
+            }
+        }
+        if distinct.len() < 2 {
             continue;
         }
+        let mut spellings: Vec<String> = distinct
+            .iter()
+            .map(|entry| yaml_key_spelling(&entry.resolved))
+            .collect();
         spellings.sort();
         scan.collisions.push(Collision {
             json_key: json_key.to_string(),
@@ -904,10 +1061,35 @@ enum Resolved {
     Str(String),
 }
 
-fn go_value(node: &Yaml<'_>, unsupported: &mut Option<String>) -> Result<Value, String> {
+/// How a resolved number reaches the JSON document.
+///
+/// The two policies are two callers' pipelines rather than a preference:
+/// `utils.ToJSON` converts for an `interface{}` target and so passes every
+/// number through a float64, while a typed decode converts for a target that
+/// knows what each field is, and `encoding/json` marshals an `int64` or a
+/// `uint64` as its exact decimal spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Numbers {
+    /// Through `interface{}`: a big integer loses its last digits to float64,
+    /// and a value JSON cannot write refuses the document. This is the strict
+    /// conversion.
+    Float64,
+    /// As itself: an integer keeps every digit, and a float JSON cannot write
+    /// becomes the spelling Go gives it -- `+Inf`, `-Inf`, `NaN` -- instead of
+    /// refusing, because the target has already said the field is a string
+    /// (`sigs.k8s.io/yaml` turns `.inf` into `"+Inf"` before it writes
+    /// anything). This is the typed decode's conversion.
+    Exact,
+}
+
+fn go_value(
+    node: &Yaml<'_>,
+    numbers: Numbers,
+    unsupported: &mut Option<String>,
+) -> Result<Value, String> {
     match node {
         Yaml::Representation(text, style, tag) => {
-            scalar_go(text, *style, tag.as_deref(), unsupported)
+            scalar_go(text, *style, tag.as_deref(), numbers, unsupported)
         }
         Yaml::Value(scalar) => resolved_to_json(
             match scalar {
@@ -917,19 +1099,20 @@ fn go_value(node: &Yaml<'_>, unsupported: &mut Option<String>) -> Result<Value, 
                 Scalar::FloatingPoint(f) => Resolved::F64(f.0),
                 Scalar::String(s) => Resolved::Str(s.to_string()),
             },
+            numbers,
             unsupported,
         ),
         Yaml::Sequence(seq) => {
             let mut out = Vec::with_capacity(seq.len());
             for item in seq {
-                out.push(go_value(item, unsupported)?);
+                out.push(go_value(item, numbers, unsupported)?);
             }
             Ok(Value::Array(out))
         }
-        Yaml::Mapping(map) => go_mapping(map, unsupported),
+        Yaml::Mapping(map) => go_mapping(map, numbers, unsupported),
         // A tag on a collection stays a tag on the node; the JSON view only
         // cares about the content.
-        Yaml::Tagged(_, inner) => go_value(inner, unsupported),
+        Yaml::Tagged(_, inner) => go_value(inner, numbers, unsupported),
         Yaml::Alias(_) => Err("unresolved alias".into()),
         Yaml::BadValue => Err("bad value".into()),
     }
@@ -939,16 +1122,17 @@ fn scalar_go(
     text: &str,
     style: ScalarStyle,
     tag: Option<&Tag>,
+    numbers: Numbers,
     unsupported: &mut Option<String>,
 ) -> Result<Value, String> {
     if let Some(tag) = tag {
-        return tagged_value(text, tag, unsupported);
+        return tagged_value(text, tag, numbers, unsupported);
     }
     // Quoted and block scalars are strings; go-yaml tags them `!!str`.
     if style != ScalarStyle::Plain {
         return Ok(Value::String(text.to_string()));
     }
-    resolved_to_json(resolve_plain(text)?, unsupported)
+    resolved_to_json(resolve_plain(text)?, numbers, unsupported)
 }
 
 /// The entries a JSON object gets, in the order `encoding/json` walks them.
@@ -961,13 +1145,17 @@ fn scalar_go(
 /// names is therefore the first one *there*: measured with `b: .inf` above
 /// `z: .nan`, which reports `+Inf` where document order alone would report
 /// `NaN` (fixtures 62 and 85).
-fn go_mapping(map: &Mapping<'_>, unsupported: &mut Option<String>) -> Result<Value, String> {
+fn go_mapping(
+    map: &Mapping<'_>,
+    numbers: Numbers,
+    unsupported: &mut Option<String>,
+) -> Result<Value, String> {
     let mut entries: Vec<(String, &Yaml<'_>)> = Vec::new();
     collect_entries(map, &mut entries)?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Map::new();
     for (json_key, value) in entries {
-        out.insert(json_key, go_value(value, unsupported)?);
+        out.insert(json_key, go_value(value, numbers, unsupported)?);
     }
     Ok(Value::Object(out))
 }
@@ -998,13 +1186,28 @@ fn collect_entries<'a>(
 /// the conversion, and the refusal names the value the way Go's marshaler
 /// does. The conversion itself carries on and writes a null in its place: the
 /// value is never serialized, and the refusal is raised above.
-fn resolved_to_json(resolved: Resolved, unsupported: &mut Option<String>) -> Result<Value, String> {
+fn resolved_to_json(
+    resolved: Resolved,
+    numbers: Numbers,
+    unsupported: &mut Option<String>,
+) -> Result<Value, String> {
     Ok(match resolved {
         Resolved::Null => Value::Null,
         Resolved::Bool(b) => Value::Bool(b),
-        Resolved::Int(i) => number(i as f64, unsupported),
-        Resolved::UInt(u) => number(u as f64, unsupported),
-        Resolved::F64(f) => number(f, unsupported),
+        Resolved::Int(i) => match numbers {
+            Numbers::Float64 => number(i as f64, unsupported),
+            Numbers::Exact => Value::Number(Number::from(i)),
+        },
+        Resolved::UInt(u) => match numbers {
+            Numbers::Float64 => number(u as f64, unsupported),
+            Numbers::Exact => Value::Number(Number::from(u)),
+        },
+        Resolved::F64(f) => match numbers {
+            // A value JSON cannot write, and a target that has already said
+            // the field is a string: the spelling, not a refusal.
+            Numbers::Exact if !f.is_finite() => Value::String(go_float_g(f)),
+            _ => number(f, unsupported),
+        },
         Resolved::Str(s) => Value::String(s),
     })
 }
@@ -1012,6 +1215,7 @@ fn resolved_to_json(resolved: Resolved, unsupported: &mut Option<String>) -> Res
 /// `utils.ToJSON` funnels every number through `interface{}`, i.e. through
 /// float64, so a YAML document's big integers come out rounded. The JSON
 /// *input* path does not: `utils.ToJSON` passes valid JSON through untouched.
+/// A typed decode does not either; see [`Numbers`].
 fn number(f: f64, unsupported: &mut Option<String>) -> Value {
     match Number::from_f64(f) {
         Some(number) => Value::Number(number),
@@ -1181,7 +1385,12 @@ fn parse_float_go(s: &str) -> Option<f64> {
 
 /// Explicit tags: `resolvableTag` decides whether the value is re-resolved or
 /// kept as the raw string.
-fn tagged_value(text: &str, tag: &Tag, unsupported: &mut Option<String>) -> Result<Value, String> {
+fn tagged_value(
+    text: &str,
+    tag: &Tag,
+    numbers: Numbers,
+    unsupported: &mut Option<String>,
+) -> Result<Value, String> {
     if !tag.is_yaml_core_schema() {
         return Ok(Value::String(text.to_string()));
     }
@@ -1203,13 +1412,13 @@ fn tagged_value(text: &str, tag: &Tag, unsupported: &mut Option<String>) -> Resu
             other => Err(tag_refusal(text, &other, tag)),
         },
         "int" => match resolve_plain(text)? {
-            Resolved::Int(i) => resolved_to_json(Resolved::Int(i), unsupported),
-            Resolved::UInt(u) => resolved_to_json(Resolved::UInt(u), unsupported),
+            Resolved::Int(i) => resolved_to_json(Resolved::Int(i), numbers, unsupported),
+            Resolved::UInt(u) => resolved_to_json(Resolved::UInt(u), numbers, unsupported),
             other => Err(tag_refusal(text, &other, tag)),
         },
         "float" => match resolve_plain(text)? {
-            Resolved::F64(f) => resolved_to_json(Resolved::F64(f), unsupported),
-            Resolved::Int(i) => resolved_to_json(Resolved::F64(i as f64), unsupported),
+            Resolved::F64(f) => resolved_to_json(Resolved::F64(f), numbers, unsupported),
+            Resolved::Int(i) => resolved_to_json(Resolved::F64(i as f64), numbers, unsupported),
             other => Err(tag_refusal(text, &other, tag)),
         },
         // An explicit `!!timestamp` is a string too, for the same

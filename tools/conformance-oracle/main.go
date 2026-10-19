@@ -122,6 +122,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-skill-contract" {
+		if err := writeSkillContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "skill contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-hooks-contract" {
 		if err := writeHooksContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "hooks contract:", err)
