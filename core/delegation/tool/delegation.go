@@ -83,7 +83,7 @@ func NewTargets(directory sdkdelegation.Directory) tool.Tool {
 
 func (t delegateTool) Definition() message.ToolDefinition {
 	targets := t.targets()
-	description := "Delegate work to another available target. Supports synchronous results, interaction handoff, and asynchronous execution. Prefer async mode for long-running or background work so the calling turn is not blocked."
+	description := "Delegate work to another available target. Supports synchronous results, interaction handoff, and asynchronous execution. Prefer async mode for long-running or background work so the calling turn is not blocked. The receiving target runs under the deployment's own execution policy, which this tool cannot change."
 	if len(targets) > 0 {
 		var listed strings.Builder
 		listed.WriteString(" Available targets: ")
@@ -151,6 +151,12 @@ func (delegateTool) Execute(ctx context.Context, arguments string) (message.Cont
 		Target:   args.Target,
 		Input:    args.Input,
 		Metadata: metadata,
+	}
+	// The caller's run attributes are stamped by deployment middleware
+	// (delegation.WithRunAttributes); the model cannot set them, so a
+	// delegated run never widens its own execution policy.
+	if attributes, ok := sdkdelegation.RunAttributesFromContext(ctx); ok {
+		request.Attributes = attributes
 	}
 	if err := request.Validate(); err != nil {
 		return message.Content{}, err

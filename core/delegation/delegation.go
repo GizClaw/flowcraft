@@ -62,10 +62,22 @@ func (t Target) Validate() error {
 
 // Request is the portable input accepted by a Service.
 type Request struct {
-	Mode           Mode              `json:"mode"`
-	Target         string            `json:"target"`
-	Input          string            `json:"input"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
+	Mode     Mode              `json:"mode"`
+	Target   string            `json:"target"`
+	Input    string            `json:"input"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Attributes are caller-declared run attributes for the delegated run
+	// (execution policy keys, tenant hints, …). Core treats them as
+	// opaque: they are copied onto the subagent's run attributes, below
+	// the lineage keys the service owns.
+	//
+	// Declare them explicitly; the caller's own run attributes are not
+	// propagated, because deployments keep run-scoped payloads there
+	// (e.g. checkpoint recovery blobs) that must not leak into a
+	// subagent. Unlike Metadata — which becomes graph inputs and
+	// participates in resume identity — Attributes travel as run
+	// metadata only.
+	Attributes     map[string]string `json:"attributes,omitempty"`
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 }
 
@@ -79,6 +91,9 @@ func (r Request) Validate() error {
 	}
 	if strings.TrimSpace(r.Input) == "" {
 		return errdefs.Validationf("delegation: request input is required")
+	}
+	if err := validateAttributes(r.Attributes); err != nil {
+		return err
 	}
 	if r.IdempotencyKey != "" && strings.TrimSpace(r.IdempotencyKey) == "" {
 		return errdefs.Validationf("delegation: request idempotency key must not be blank")

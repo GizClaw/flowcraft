@@ -267,6 +267,13 @@ Semantics worth relying on:
   an ordinary failure, so the retry lives at the Exec level.
   Interactive sessions keep their own chains and never restart behind
   the user's back.
+- **A delegated subagent is a separate session.** A mode store keyed on
+  the session identity answers for the subagent's own `ContextID`, not
+  the caller's, and core derives no mode for it. The delegation service
+  carries the deployment's decision instead: declared run attributes
+  (`Request.Attributes`) reach the subagent run, and
+  `delegation.WithSessionInitializer` stamps the session store before the
+  turn starts — see [delegation.md](delegation.md).
 
 `outcome` reports `Refused` / `Approved` / `Remembered`, so hosts can
 attach their audit note ("the sandbox refused this command; the user
