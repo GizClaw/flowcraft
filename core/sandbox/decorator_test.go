@@ -3,9 +3,12 @@ package sandbox_test
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
 // closingRunner records whether Close reached it, so tests can prove
@@ -57,6 +60,33 @@ func TestDecoratorsForwardClose(t *testing.T) {
 	}
 	if !inner.closed {
 		t.Fatal("Close was not forwarded to the inner runner")
+	}
+}
+
+// TestDefaultsStdinDeclaresAnInputSide covers the merge path that never
+// touches Runner.Exec: WithDefaults injects one-shot bytes into a spec
+// the caller built with Stdin false, and Start still has to build the
+// pipe — otherwise the bytes are silently dropped.
+func TestDefaultsStdinDeclaresAnInputSide(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	runner := sandbox.WithDefaults(local.New(t.TempDir()),
+		sandbox.ExecOptions{Stdin: []byte("x")})
+	sess, err := runner.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"sh", "-c", fd0Check},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if !sess.Capabilities().Stdin {
+		t.Error("Capabilities().Stdin = false, want true for injected Opts.Stdin")
+	}
+	if out := strings.TrimSpace(drainSession(t, ctx, sess)); out != "pipe" {
+		t.Fatalf("fd 0 = %q, want pipe", out)
 	}
 }
 

@@ -28,6 +28,17 @@ file journal, backend state — and the decorators (`AllowCommands`,
 `WithApproval`, `WithDefaults`) forward both `Close` and the journal so
 wrapping never hides the backend.
 
+Sessions declare their input surface up front. `SessionSpec.Stdin` says the
+caller will feed the child through `Write` / `CloseInput`, and
+`SessionCapabilities.Stdin` reports whether a started session has somewhere
+to write. A non-TTY session without that declaration leaves the child's fd 0
+at the OS default (`/dev/null`), so a tool that branches on stdin — `rg` with
+no path operand, `cat`, `test -p /dev/fd/0` — reads its operands instead of
+an empty pipe that never ends; `Write` on such a session fails with
+`errdefs.NotAvailable` instead of silently buffering. A spec that carries
+`ExecOptions.Stdin` bytes counts as declared too (`SessionSpec.WantsStdin`),
+which is what keeps `WithDefaults`-injected input and `Exec` working.
+
 ## Deployment resource
 
 The local runner is a no-isolation backend for trusted workflows:
@@ -465,5 +476,10 @@ that reports nothing.
 - `Env` allow-list/inject policy;
 - `Net` network policy;
 - `Resources` memory/cpu/output caps.
+
+`ExecOptions.Stdin` is the one-shot form: the bytes are written and the input
+side closed before the child exits. It is separate from `SessionSpec.Stdin`,
+which declares a streaming input side for `Start`. An empty slice is the same
+as omitting it — neither buys the child a pipe.
 
 See [workspace.md](workspace.md) for state storage.

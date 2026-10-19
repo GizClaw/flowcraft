@@ -61,15 +61,21 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		return nil, err
 	}
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return abort(classifyStartError(cmd.Path, err))
+	wantsStdin := spec.WantsStdin()
+	var stdin io.WriteCloser
+	if wantsStdin {
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return abort(classifyStartError(cmd.Path, err))
+		}
 	}
 	s := &winSession{
 		id:         spec.ID,
 		cmd:        cmd,
 		job:        j,
 		stdin:      stdin,
+		input:      wantsStdin,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
 		netIso:     iso,
 		done:       make(chan struct{}),
@@ -107,7 +113,9 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		cmd.SysProcAttr.Token = syscall.Token(token)
 	}
 	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
 		return abort(classifyStartError(cmd.Path, err))
 	}
 	s.proc = cmd.Process
@@ -173,6 +181,7 @@ func startTTYSession(ctx context.Context, spec sandbox.SessionSpec, workDir stri
 		id:         spec.ID,
 		job:        j,
 		stdin:      pt.in,
+		input:      true,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
 		pid:        pid,
 		ttyPty:     pt,
@@ -216,6 +225,7 @@ type winSession struct {
 	cmd        *exec.Cmd // pipe sessions only (nil for TTY)
 	job        *job
 	stdin      io.WriteCloser
+	input      bool        // an input side exists: Write has somewhere to go
 	proc       *os.Process // pipe sessions only (nil for TTY)
 	out        *outputLog
 	writeSlots chan struct{}
@@ -263,6 +273,11 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 	stdin := s.stdin
 	s.mu.Unlock()
 	if stdin == nil {
+		if !s.input {
+			// input is set once at spawn and needs no lock.
+			return errdefs.NotAvailablef(
+				"windows: session started without stdin; set SessionSpec.Stdin to stream input")
+		}
 		return sandbox.ErrSessionClosed
 	}
 	if len(data) == 0 {
@@ -298,7 +313,8 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 // CloseInput closes the session's stdin. Pipe sessions support it;
 // TTY sessions cannot close their input (the pseudo console is
 // bidirectional) and return NotAvailable, matching the shared
-// Session contract.
+// Session contract. A pipe session started without an input side is a
+// no-op success, so Exec can call it unconditionally.
 func (s *winSession) CloseInput() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -355,11 +371,13 @@ func (s *winSession) Watch(context.Context) (sandbox.SessionWatcher, error) {
 
 // Capabilities declares this session's actual surface: TTY sessions
 // expose Resize + merged output; signal and event features stay off.
+// Stdin reports whether Write has somewhere to go: a pipe session that
+// declared input, or any pty session.
 func (s *winSession) Capabilities() sandbox.SessionCapabilities {
 	s.mu.Lock()
 	tty := s.ttyPty != nil
 	s.mu.Unlock()
-	return sandbox.SessionCapabilities{TTY: tty}
+	return sandbox.SessionCapabilities{TTY: tty, Stdin: s.input}
 }
 
 // Terminate stops the whole job immediately (Windows has no SIGTERM).

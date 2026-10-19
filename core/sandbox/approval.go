@@ -16,12 +16,16 @@ import (
 // a DTO rather than loose parameters so new fields remain additive for
 // implementors. TTY marks interactive session starts so the approver
 // can see that approval covers a persistent command channel rather
-// than a single command; it is false for ordinary Exec calls.
+// than a single command; it is false for ordinary Exec calls. Stdin
+// marks that the child gets an input side ([SessionSpec.WantsStdin] for
+// Start, a non-empty ExecOptions.Stdin for Exec), so the approver can
+// see that the channel carries caller input rather than /dev/null.
 type ExecRequest struct {
 	Command string
 	Args    []string
 	Opts    ExecOptions
 	TTY     bool
+	Stdin   bool
 }
 
 // Predicate decides whether an Exec call crosses a policy boundary and
@@ -113,7 +117,7 @@ type approvalRunner struct {
 }
 
 func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
-	req := ExecRequest{Command: cmd, Args: args, Opts: opts}
+	req := ExecRequest{Command: cmd, Args: args, Opts: opts, Stdin: len(opts.Stdin) > 0}
 	if err := r.authorize(ctx, req); err != nil {
 		return nil, err
 	}
@@ -182,6 +186,7 @@ func (r *approvalRunner) Start(ctx context.Context, spec SessionSpec) (Session, 
 		Args:    spec.Argv[1:],
 		Opts:    spec.Opts,
 		TTY:     spec.TTY,
+		Stdin:   spec.WantsStdin(),
 	}
 	if err := r.authorize(ctx, req); err != nil {
 		return nil, err
