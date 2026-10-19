@@ -188,6 +188,22 @@ if ! cmp -s "$out/wire-contract.json" "$conf/wire-contract.json"; then
   exit 1
 fi
 
+echo "==> mitm contract"
+# The layer under a terminated tunnel: the handshake the engine offers, what the
+# decrypted traffic looks like to the hooks, and what the client and the target
+# each get -- the handshake rows replayed by
+# crates/flowcraft-utils/tests/mitm_contract.rs and the sessions by
+# crates/flowcraft-utils/tests/mitm_sessions.rs. The rows are sockets, so the
+# dump is what core's engine said; `date`, `connection` and the harness's own
+# filler header are masked, and no port is recorded at all.
+"$out/oracle" -mitm-contract > "$out/mitm-contract.json"
+if ! cmp -s "$out/mitm-contract.json" "$conf/mitm-contract.json"; then
+  echo "rust/conformance/mitm-contract.json no longer matches core:" >&2
+  diff "$conf/mitm-contract.json" "$out/mitm-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -mitm-contract) > rust/conformance/mitm-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

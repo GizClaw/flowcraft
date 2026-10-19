@@ -56,6 +56,24 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # window is a stated constant rather than a default.
 time = { version = "0.3", default-features = false, features = ["std"] }
 
+# The MITM engine's HTTP (plan §4.6). Both roles and both protocols are on
+# because a terminated tunnel serves h1 and h2 to the client -- whichever ALPN
+# picked -- and always h1 upstream, which is core's `dialTLS` without
+# `NextProtos`. `hyper-util` is here for two adapters only: `TokioIo` bridges
+# tokio's `AsyncRead`/`AsyncWrite` to hyper's runtime traits, and `TokioTimer`
+# is what `header_read_timeout` needs in order to exist at all.
+hyper = { version = "1.12", default-features = false, features = ["http1", "http2", "client", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# The transparent gzip half of core's outbound transport: `net/http` adds
+# `accept-encoding: gzip` to a request that asked for no encoding, and decodes
+# precisely what it asked for. Go has `gzip.NewReader(http.Response.Body)` and
+# gets a streaming decoder for free; the port's body is a `Stream`, so the
+# decoder has to be one too -- `flate2`'s is `Read`, which would mean buffering
+# a whole response in memory to hand it to it.
+async-compression = { version = "0.4", default-features = false, features = ["tokio", "gzip"] }
+
 # Production posture, for the crates that ship. The probe does not inherit it:
 # it is a measurement binary, not a shipped crate.
 [workspace.lints.rust]

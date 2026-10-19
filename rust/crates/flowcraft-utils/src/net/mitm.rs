@@ -30,9 +30,16 @@
 //!
 //! The slice lands in two pieces. [`ca`] is the authority -- the root a run
 //! mints, and the leaves it signs per host -- and it is testable without a
-//! socket, because a handshake can be two in-memory `rustls` connections. The
-//! engine, the hooks (`OnConnect`, `OnRequest`, `OnResponse` in core) and the
-//! forwarding transport follow, on top of that authority.
+//! socket, because a handshake can be two in-memory `rustls` connections.
+//! [`engine`] is what sits on that authority: the terminated tunnel, the hooks
+//! (`OnConnect`, `OnRequest`, `OnResponse` in core), and the forwarding
+//! transport.
+//!
+//! What both pieces are held to is committed: `rust/conformance/mitm-contract.json`
+//! pins the handshake the authority offers and, through the engine, the
+//! decrypted traffic -- what hooks see, what the client gets back, what the
+//! target receives. `tests/mitm_contract.rs` replays the first;
+//! `tests/mitm_sessions.rs` the second.
 
 use flowcraft_contract::error::{Error, ErrorKind};
 
@@ -41,6 +48,44 @@ use super::host::Set;
 use super::policy::MitmPolicy;
 
 pub mod ca;
+pub mod engine;
+
+pub use engine::{Engine, RequestInfo, ResponseInfo, UpstreamDialer};
+
+/// Core's `MITMHooks`, in the shape the port's two halves can both use.
+///
+/// Core's interface has three methods because Go has no defaults; here the two
+/// the engine calls are defaulted, so a proxy that only wants to watch `CONNECT`
+/// writes [`Hooks::on_connect`] and a backend that only wants content hooks
+/// writes the other two.
+///
+/// The three are one trait rather than three because they are one policy: a
+/// hook that refuses a host at `CONNECT` and a hook that refuses its requests
+/// are decided by the same configuration, and a caller that installs one almost
+/// always installs the other.
+pub trait Hooks: Send + Sync {
+    /// Called once the policy allowed a destination, before it is dialed. A
+    /// refusal blocks the connection.
+    ///
+    /// The sentence is handed back, not written: core's `onConnect` returns an
+    /// `error` whose text becomes the refusal, and the HTTP side surfaces it
+    /// where a `CONNECT` is answered.
+    fn on_connect(&self, _host: &str, _port: i32) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Called with every decrypted request before it is forwarded. A refusal is
+    /// answered `403` with core's sentence.
+    fn on_request(&self, _info: &RequestInfo) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called with every decrypted response before it is written back. A
+    /// refusal is answered `403` with core's sentence.
+    fn on_response(&self, _info: &ResponseInfo) -> Result<(), Error> {
+        Ok(())
+    }
+}
 
 /// The compiled form of a [`MitmPolicy`]'s host selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

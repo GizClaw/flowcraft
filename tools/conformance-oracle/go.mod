@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/core v0.0.0
+	golang.org/x/net v0.60.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -30,7 +31,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect

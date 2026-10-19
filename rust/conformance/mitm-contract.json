@@ -1,0 +1,2117 @@
+{
+  "note": "core/utils/net/mitm: the layer under the terminated tunnel -- the handshake the engine offers, what hooks see, what the client gets back, and what the target receives. Header names are lowercased and sorted and the authority is a field, not a header, because core's server moves it out of the map differently per protocol. Bodies are hex; null means the hook was given no body, \"\" means an empty one. `date` and `connection` are masked. A row's requests are sent in order on one connection, and its upstream answer is the answer to each of them. Ports never appear: the client side is a listener the harness owns and the dialer ignores the address it is handed. `server_name` is present only when the tunnel is not opened for example.test, `untrusted` marks an upstream certificate no root holds, and `refuse_dial` a dial that fails instead of connecting.",
+  "alpn": [
+    {
+      "name": "both-preferred-by-the-client",
+      "offered": [
+        "http/1.1",
+        "h2"
+      ],
+      "ok": true,
+      "negotiated": "h2",
+      "tls_version": "TLS 1.3"
+    },
+    {
+      "name": "both-preferred-by-us",
+      "offered": [
+        "h2",
+        "http/1.1"
+      ],
+      "ok": true,
+      "negotiated": "h2",
+      "tls_version": "TLS 1.3"
+    },
+    {
+      "name": "h1-only",
+      "offered": [
+        "http/1.1"
+      ],
+      "ok": true,
+      "negotiated": "http/1.1",
+      "tls_version": "TLS 1.3"
+    },
+    {
+      "name": "h2-only",
+      "offered": [
+        "h2"
+      ],
+      "ok": true,
+      "negotiated": "h2",
+      "tls_version": "TLS 1.3"
+    },
+    {
+      "name": "no-alpn",
+      "ok": true,
+      "tls_version": "TLS 1.3"
+    },
+    {
+      "name": "tls-1-1-refused",
+      "hello": "1603020038010000340302000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000004c02bc02c01000007002b0003020302",
+      "ok": false
+    },
+    {
+      "name": "tls-1-2-accepted",
+      "offered": [
+        "http/1.1"
+      ],
+      "max_version": "TLS 1.2",
+      "ok": true,
+      "negotiated": "http/1.1",
+      "tls_version": "TLS 1.2"
+    }
+  ],
+  "ambient": {
+    "row": "gzip-the-client-did-not-ask-for",
+    "adds_when_absent": {
+      "accept-encoding": "gzip",
+      "user-agent": "Go-http-client/1.1"
+    },
+    "decompresses_own_gzip": true,
+    "upstream_proto": "HTTP/1.1"
+  },
+  "sessions": [
+    {
+      "name": "get-allow-h1",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "get-allow-h2",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "h2",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/a?b=c",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/a?b=c",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/a?b=c",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "two-requests-one-tunnel",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/first",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        },
+        {
+          "method": "GET",
+          "target": "/second",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/first",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/second",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        },
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/first",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        },
+        {
+          "method": "GET",
+          "target": "/second",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "no-alpn-still-h1",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "an-ipv4-literal-verifies",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "server_name": "127.0.0.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "an-ipv6-literal-verifies",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "server_name": "::1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "deny-the-request",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "deny",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "POST",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/submit",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 403,
+          "headers": {
+            "content-length": [
+              "22"
+            ],
+            "content-type": [
+              "text/plain; charset=utf-8"
+            ],
+            "x-content-type-options": [
+              "nosniff"
+            ]
+          },
+          "body": "6d69746d3a20626c6f636b656420627920686f6f6b0a",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": []
+    },
+    {
+      "name": "deny-the-response",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "deny"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 403,
+          "headers": {
+            "content-length": [
+              "22"
+            ],
+            "content-type": [
+              "text/plain; charset=utf-8"
+            ],
+            "x-content-type-options": [
+              "nosniff"
+            ]
+          },
+          "body": "6d69746d3a20626c6f636b656420627920686f6f6b0a",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "no-hooks",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "trace": [],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "post-at-the-cap",
+      "policy": {
+        "inspect_bodies": true,
+        "max_body_bytes": 5
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "POST",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/submit",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f"
+        },
+        {
+          "event": "response",
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b"
+        }
+      ],
+      "client": [
+        {
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ]
+    },
+    {
+      "name": "post-over-the-cap",
+      "policy": {
+        "inspect_bodies": true,
+        "max_body_bytes": 4
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "POST",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/submit",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b"
+        }
+      ],
+      "client": [
+        {
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ]
+    },
+    {
+      "name": "post-chunked",
+      "policy": {
+        "inspect_bodies": true,
+        "max_body_bytes": 4
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "chunked"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "chunked"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "POST",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/submit",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 201,
+          "headers": {
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "chunked"
+        }
+      ]
+    },
+    {
+      "name": "response-over-the-cap",
+      "policy": {
+        "inspect_bodies": true,
+        "max_body_bytes": 4
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "68656c6c6f",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": ""
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "5"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "5"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "response-chunked",
+      "policy": {
+        "inspect_bodies": true,
+        "max_body_bytes": 4
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "68656c6c6f",
+        "framing": "chunked"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": ""
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "5"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "inspect-bodies-off",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream": {
+        "status": 201,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "68656c6c6f",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "POST",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/submit",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "5"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 201,
+          "headers": {
+            "content-length": [
+              "5"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "POST",
+          "target": "/submit",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "content-length": [
+              "5"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "68656c6c6f",
+          "framing": "length"
+        }
+      ]
+    },
+    {
+      "name": "upstream-refused",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "refuse_dial": true,
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 502,
+          "headers": {
+            "content-length": [
+              "30"
+            ],
+            "content-type": [
+              "text/plain; charset=utf-8"
+            ],
+            "x-content-type-options": [
+              "nosniff"
+            ]
+          },
+          "body": "6d69746d3a20757073747265616d2072657175657374206661696c65640a",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": []
+    },
+    {
+      "name": "upstream-tls-rejected",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "untrusted": true,
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 502,
+          "headers": {
+            "content-length": [
+              "30"
+            ],
+            "content-type": [
+              "text/plain; charset=utf-8"
+            ],
+            "x-content-type-options": [
+              "nosniff"
+            ]
+          },
+          "body": "6d69746d3a20757073747265616d2072657175657374206661696c65640a",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": []
+    },
+    {
+      "name": "oversized-request-header",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none",
+          "pad_header": 1064960
+        }
+      ],
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [],
+      "client": [
+        {
+          "status": 431
+        }
+      ],
+      "upstream_saw": []
+    },
+    {
+      "name": "gzip-the-client-did-not-ask-for",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/gzip",
+          "authority": "example.test",
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-encoding": [
+            "gzip"
+          ],
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/gzip",
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "17"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "68656c6c6f2068656c6c6f2068656c6c6f",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/gzip",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "gzip"
+            ],
+            "user-agent": [
+              "Go-http-client/1.1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "gzip-the-client-asked",
+      "policy": {
+        "inspect_bodies": true
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/gzip",
+          "authority": "example.test",
+          "headers": {
+            "accept-encoding": [
+              "gzip"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-encoding": [
+            "gzip"
+          ],
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "example.test",
+          "path": "/gzip",
+          "headers": {
+            "accept-encoding": [
+              "gzip"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": ""
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-encoding": [
+              "gzip"
+            ],
+            "content-length": [
+              "42"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000"
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-encoding": [
+              "gzip"
+            ],
+            "content-length": [
+              "42"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/gzip",
+          "authority": "example.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "gzip"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    },
+    {
+      "name": "host-is-not-the-sni",
+      "policy": {
+        "inspect_bodies": false
+      },
+      "negotiated": "http/1.1",
+      "requests": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "other.test",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "framing": "none"
+        }
+      ],
+      "upstream": {
+        "status": 200,
+        "headers": {
+          "content-type": [
+            "text/plain"
+          ]
+        },
+        "body": "6f6b",
+        "framing": "length"
+      },
+      "hooks": {
+        "request": "allow",
+        "response": "allow"
+      },
+      "trace": [
+        {
+          "event": "request",
+          "method": "GET",
+          "scheme": "https",
+          "host": "other.test",
+          "path": "/",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": null
+        },
+        {
+          "event": "response",
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": null
+        }
+      ],
+      "client": [
+        {
+          "status": 200,
+          "headers": {
+            "content-length": [
+              "2"
+            ],
+            "content-type": [
+              "text/plain"
+            ]
+          },
+          "body": "6f6b",
+          "framing": "length"
+        }
+      ],
+      "upstream_saw": [
+        {
+          "method": "GET",
+          "target": "/",
+          "authority": "other.test",
+          "sni": "example.test",
+          "proto": "HTTP/1.1",
+          "headers": {
+            "accept-encoding": [
+              "identity"
+            ],
+            "user-agent": [
+              "probe/1"
+            ]
+          },
+          "body": "",
+          "framing": "none"
+        }
+      ]
+    }
+  ]
+}

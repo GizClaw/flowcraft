@@ -23,6 +23,13 @@
 //! with the same inputs -- the reply bytes, the audit record they produce, and
 //! the bytes an upstream receives -- and `tests/wire_contract.rs` replays them.
 //!
+//! Under that wire sits a third: [`mitm::Engine`] terminates the TLS a policy
+//! says to terminate and forwards what it finds underneath. Its contract is
+//! `rust/conformance/mitm-contract.json` -- the handshake the engine offers, and
+//! the three views one tunnel has (what the hooks were told, what the client got
+//! back, what the target received) -- replayed by `tests/mitm_contract.rs` for
+//! the handshakes and `tests/mitm_sessions.rs` for the traffic.
+//!
 //! # What a caller can tell apart from core
 //!
 //! - Two `NetPolicy.Validate` branches are unreachable: an unknown [`NetMode`]
@@ -49,6 +56,17 @@
 //!   HTTP stack plugs into, and [`serve::Server::handle_connect`] is the whole
 //!   `CONNECT` path once a request has been parsed. Core hands both to
 //!   `net/http`.
+//! - [`mitm::Engine`] takes the roots it verifies targets with as a parameter
+//!   where core fills in the system pool from a `nil`. Loading the platform
+//!   store is the deploy slice's job; a run inside a sandbox pins one.
+//! - A pooled upstream connection that turns out to be dead answers `502`;
+//!   core's transport retries an idempotent request on a fresh connection. A
+//!   retry needs the body, which is a stream by then, so the port reports the
+//!   failure instead of replaying it.
+//! - The h2 branch of [`mitm::Engine::serve`] drops the error its server
+//!   returns, which is what core's does: `serveH2` runs the session in
+//!   `http.Server`'s goroutine, so a client that vanishes has no caller to
+//!   tell. The h1 branch reports everything that is not a closed connection.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -71,7 +89,7 @@ pub use addr::{Addr, Prefix};
 pub use dial::{Dialer, Upstream};
 pub use host::{Pattern, Set};
 pub use matcher::{Decision, Matcher};
-pub use mitm::Selection;
+pub use mitm::{Engine, Hooks, Selection};
 pub use policy::{MitmPolicy, NetAction, NetMode, NetPolicy, NetRule};
 pub use proxy::{Audit, Proxy, ProxyConfig, Resolver, SystemResolver, Verdict};
 pub use serve::{Bound, HttpHandler, Outcome, Refusal, Route, Server};

@@ -30,7 +30,10 @@
 // refusals, Decide's verdicts and the MITM host selection (see
 // proxycontract.go), and with -wire-contract its wire half -- what a SOCKS5 or
 // HTTP CONNECT session answers, the audit records it produces, and what an
-// upstream receives and returns (see wirecontract.go).
+// upstream receives and returns (see wirecontract.go). With -mitm-contract it
+// dumps the layer under a terminated tunnel -- the handshake the engine offers,
+// what hooks see of the decrypted traffic, and what the client and the target
+// each get (see mitmcontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -113,6 +116,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-proxy-contract" {
 		if err := writeProxyContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "proxy contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-mitm-contract" {
+		if err := writeMITMContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "mitm contract:", err)
 			os.Exit(1)
 		}
 		return

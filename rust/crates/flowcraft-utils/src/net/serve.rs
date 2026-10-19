@@ -38,7 +38,7 @@
 //! policy could not judge a destination, and the HTTP paths drop that record
 //! on the floor. The port keeps both, because a caller that migrates should see
 //! the trail it saw before; the record it does emit is
-//! [`Audit`][super::proxy::Audit], which is core's `ProxyDecision`.
+//! [`Audit`], which is core's `ProxyDecision`.
 
 use std::io;
 use std::net::SocketAddr;
@@ -138,13 +138,13 @@ impl<F: Fn(&Audit) + Send + Sync> AuditSink for F {
     }
 }
 
-/// The hooks core's `MITMHooks` exposes before TLS termination: `OnConnect`
-/// applies to every `CONNECT` (HTTP and SOCKS5 alike), and a refusal blocks the
-/// connection.
-pub trait Hooks: Send + Sync {
-    /// Called once the policy allowed a destination, before it is dialed.
-    fn on_connect(&self, host: &str, port: i32) -> Result<(), String>;
-}
+/// The half of core's `MITMHooks` this module calls: `OnConnect` applies to
+/// every `CONNECT` (HTTP and SOCKS5 alike), and a refusal blocks the connection
+/// before anything is dialed.
+///
+/// The trait lives in [`crate::net::mitm`] because the content hooks belong to
+/// the engine; this is the same object, reached from the side that runs first.
+pub use super::mitm::Hooks;
 
 /// What [`Server::handle_connect`] produced.
 #[derive(Debug)]

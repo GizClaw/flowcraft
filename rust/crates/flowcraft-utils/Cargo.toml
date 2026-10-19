@@ -23,6 +23,14 @@ tokio-util = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 time = { workspace = true }
+# The MITM engine's HTTP and TLS: hyper for both roles, `tokio-rustls` for the
+# terminated tunnel, and `async-compression` for the gzip half of core's
+# outbound transport. See the workspace manifest for why each one is here.
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tokio-rustls = { workspace = true }
+async-compression = { workspace = true }
 
 [lints]
 workspace = true
