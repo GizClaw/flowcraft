@@ -96,8 +96,8 @@ func Exec(
 	}
 	// One-shot input is known up front, so the spec declares it: a nil
 	// or empty Stdin means "no input side" and fd 0 stays /dev/null.
-	// Runners that spawn without StartSession (and therefore without
-	// WantsStdin's Opts.Stdin fallback) still see the shape here.
+	// Start ignores Opts.Stdin, so this flag is what buys the pipe the
+	// Write below fills.
 	spec.Stdin = len(opts.Stdin) > 0
 	// The one-shot Exec contract is first-max-bytes truncation on the
 	// returned result, while the session ring keeps a replayable tail

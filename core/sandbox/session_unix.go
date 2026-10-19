@@ -83,8 +83,8 @@ func startWithCleanSignalMask(start func() error) error {
 //
 //   - tty=true: a pty becomes the child's controlling terminal; stdout
 //     and stderr are merged into SessionStreamTTY.
-//   - tty=false: stdin is piped only when [SessionSpec.WantsStdin] says
-//     so; stdout/stderr are tagged streams. Without an input side
+//   - tty=false: stdin is piped only when spec.Stdin declares an input
+//     side; stdout/stderr are tagged streams. Without that declaration
 //     cmd.Stdin stays nil, so os/exec gives the child /dev/null and a
 //     program that tests fstat(0) reads its operands instead.
 //
@@ -122,7 +122,7 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		id:         id,
 		cmd:        cmd,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
-		input:      spec.WantsStdin() || spec.TTY,
+		input:      spec.Stdin || spec.TTY,
 		done:       make(chan struct{}),
 		writeSlots: make(chan struct{}, sessionWriteConcurrency),
 	}

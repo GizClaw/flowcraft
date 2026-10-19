@@ -17,9 +17,10 @@ import (
 // implementors. TTY marks interactive session starts so the approver
 // can see that approval covers a persistent command channel rather
 // than a single command; it is false for ordinary Exec calls. Stdin
-// marks that the child gets an input side ([SessionSpec.WantsStdin] for
-// Start, a non-empty ExecOptions.Stdin for Exec), so the approver can
-// see that the channel carries caller input rather than /dev/null.
+// marks that the child gets an input side (SessionSpec.Stdin — or a TTY,
+// whose pty master is writable — for Start; a non-empty
+// ExecOptions.Stdin for Exec), so the approver can see that the channel
+// carries caller input rather than /dev/null.
 type ExecRequest struct {
 	Command string
 	Args    []string
@@ -186,7 +187,7 @@ func (r *approvalRunner) Start(ctx context.Context, spec SessionSpec) (Session, 
 		Args:    spec.Argv[1:],
 		Opts:    spec.Opts,
 		TTY:     spec.TTY,
-		Stdin:   spec.WantsStdin(),
+		Stdin:   spec.Stdin || spec.TTY,
 	}
 	if err := r.authorize(ctx, req); err != nil {
 		return nil, err

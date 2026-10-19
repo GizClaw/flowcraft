@@ -61,9 +61,8 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		return nil, err
 	}
 
-	wantsStdin := spec.WantsStdin()
 	var stdin io.WriteCloser
-	if wantsStdin {
+	if spec.Stdin {
 		var err error
 		stdin, err = cmd.StdinPipe()
 		if err != nil {
@@ -75,7 +74,7 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		cmd:        cmd,
 		job:        j,
 		stdin:      stdin,
-		input:      wantsStdin,
+		input:      spec.Stdin,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
 		netIso:     iso,
 		done:       make(chan struct{}),

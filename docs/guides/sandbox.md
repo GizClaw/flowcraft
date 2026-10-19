@@ -35,9 +35,10 @@ to write. A non-TTY session without that declaration leaves the child's fd 0
 at the OS default (`/dev/null`), so a tool that branches on stdin — `rg` with
 no path operand, `cat`, `test -p /dev/fd/0` — reads its operands instead of
 an empty pipe that never ends; `Write` on such a session fails with
-`errdefs.NotAvailable` instead of silently buffering. A spec that carries
-`ExecOptions.Stdin` bytes counts as declared too (`SessionSpec.WantsStdin`),
-which is what keeps `WithDefaults`-injected input and `Exec` working.
+`errdefs.NotAvailable` instead of silently buffering. `ExecOptions.Stdin` is
+one-shot `Exec` input, not a declaration: `Start` neither delivers those bytes
+nor pipes fd 0 for them. `Exec` sets `SessionSpec.Stdin` itself before it
+writes those bytes and closes the pipe.
 
 ## Deployment resource
 

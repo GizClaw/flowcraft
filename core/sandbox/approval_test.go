@@ -96,9 +96,10 @@ func TestWorkDirOutsideRootFollowsSymlinks(t *testing.T) {
 }
 
 // TestApprovalSeesDeclaredStdin keeps the approver's view honest: the
-// request mirrors the spawn decision (SessionSpec.WantsStdin for Start,
-// non-empty bytes for Exec), so a predicate can gate on "this command
-// channel carries caller input".
+// request mirrors the spawn decision (SessionSpec.Stdin, or a TTY whose
+// pty master is writable, for Start; non-empty bytes for Exec), so a
+// predicate can gate on "this command channel carries caller input".
+// One-shot bytes alone reach Start as /dev/null, so they report false.
 func TestApprovalSeesDeclaredStdin(t *testing.T) {
 	var seen []sandbox.ExecRequest
 	predicate := sandbox.PredicateFunc(func(req sandbox.ExecRequest) (string, bool) {
@@ -110,12 +111,15 @@ func TestApprovalSeesDeclaredStdin(t *testing.T) {
 
 	// The stub rejects the spawn; only the request approval saw matters.
 	_, _ = runner.Start(ctx, sandbox.SessionSpec{Argv: []string{"true"}, Stdin: true})
+	_, _ = runner.Start(ctx, sandbox.SessionSpec{Argv: []string{"true"}, TTY: true})
+	_, _ = runner.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"true"}, Opts: sandbox.ExecOptions{Stdin: []byte("x")}})
 	_, _ = sandbox.Exec(ctx, runner, "true", nil,
 		sandbox.ExecOptions{Stdin: []byte("x")})
 	_, _ = sandbox.Exec(ctx, runner, "true", nil,
 		sandbox.ExecOptions{Stdin: []byte{}})
 
-	want := []bool{true, true, false}
+	want := []bool{true, true, false, true, false}
 	if len(seen) != len(want) {
 		t.Fatalf("predicate saw %d requests, want %d", len(seen), len(want))
 	}

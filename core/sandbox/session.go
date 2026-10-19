@@ -41,18 +41,21 @@ var (
 //   - Rows/Cols: initial pty window size (TTY only). Non-positive
 //     values default to 24x80.
 //   - Stdin: the session will receive input through
-//     [Session.Write]/[Session.CloseInput]. With TTY false this decides
-//     the child's fd 0: true gives it a pipe, false leaves cmd.Stdin
-//     nil so os/exec hands the child /dev/null — a program that branches
-//     on what fd 0 is then reads its operands instead of an empty pipe
-//     that never ends (this is how `rg pattern` searches the working
-//     tree rather than stdin). Ignored when TTY is true: the pty master
-//     is always writable.
+//     [Session.Write]/[Session.CloseInput], and is the only field that
+//     declares an input side. With TTY false it decides the child's
+//     fd 0: true gives it a pipe, false leaves cmd.Stdin nil so os/exec
+//     hands the child /dev/null — a program that branches on what fd 0
+//     is then reads its operands instead of an empty pipe that never
+//     ends (this is how `rg pattern` searches the working tree rather
+//     than stdin). Ignored when TTY is true: the pty master is always
+//     writable.
 //   - Opts: the same policy surface as Runner.Exec (WorkDir, Env, Net,
 //     Resources, Timeout). Policy is fixed at Start; Read/Write/Resize
-//     never re-negotiate it. Start never delivers Opts.Stdin; those
-//     bytes still count as a declaration of an input side (see
-//     [SessionSpec.WantsStdin]).
+//     never re-negotiate it. Start never delivers Opts.Stdin, and those
+//     bytes do not declare an input side either: a non-TTY spec that
+//     carries them without Stdin still gets /dev/null, and Write reports
+//     errdefs.NotAvailable. One-shot input is Exec's job — Exec sets
+//     Stdin itself before it calls Start, then writes and closes.
 type SessionSpec struct {
 	ID    string
 	Argv  []string
@@ -61,15 +64,6 @@ type SessionSpec struct {
 	Cols  int
 	Stdin bool
 	Opts  ExecOptions
-}
-
-// WantsStdin reports whether this spawn must create an input side: the
-// caller declared one (Stdin) or the spec carries one-shot bytes
-// (Opts.Stdin, which Runner.Exec sets and WithDefaults can inject).
-// Backends derive the spawn decision from this method rather than from
-// Stdin alone, so a spec that arrives holding bytes still gets a pipe.
-func (s SessionSpec) WantsStdin() bool {
-	return s.Stdin || len(s.Opts.Stdin) > 0
 }
 
 // SessionStream identifies which output stream a chunk belongs to.
@@ -200,7 +194,7 @@ type SessionInfo struct {
 //   - Write sends raw bytes to the child (stdin pipe or pty master).
 //     It writes all data or fails; a blocked child can block Write past
 //     ctx cancellation. A session started without an input side
-//     (SessionSpec.Stdin false and no Opts.Stdin) has nowhere to write
+//     (SessionSpec.Stdin false on a pipe session) has nowhere to write
 //     and returns errdefs.NotAvailable — that is a capability the spec
 //     did not ask for, not a closed handle.
 //   - Resize is only valid for TTY sessions; pipe sessions return
