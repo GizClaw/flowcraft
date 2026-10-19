@@ -74,6 +74,14 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # a whole response in memory to hand it to it.
 async-compression = { version = "0.4", default-features = false, features = ["tokio", "gzip"] }
 
+# Baselines, not gates. `bm25` is the one piece whose cost is a stated property
+# of the design ("a few hundred to a few thousand short documents"), so it gets a
+# harness that can answer "did this get slower" with a number. The default
+# features are narrowed to what a baseline needs: the plotting half pulls in
+# `plotters` for HTML nobody commits, and `rayon` would let one measurement run
+# on several threads and hide the per-query cost the question is about.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
 # Production posture, for the crates that ship. The probe does not inherit it:
 # it is a measurement binary, not a shipped crate.
 [workspace.lints.rust]

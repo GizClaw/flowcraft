@@ -32,5 +32,15 @@ http-body-util = { workspace = true }
 tokio-rustls = { workspace = true }
 async-compression = { workspace = true }
 
+[dev-dependencies]
+# Baselines only (`cargo bench -p flowcraft-utils`): nothing here is a gate, and
+# no test reads a number. See the manifest's entry for why the default features
+# are narrowed.
+criterion = { workspace = true }
+
+[[bench]]
+name = "bm25"
+harness = false
+
 [lints]
 workspace = true
