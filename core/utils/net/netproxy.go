@@ -783,7 +783,13 @@ func (p *Proxy) dialTarget(ctx context.Context, hostport string) (net.Conn, erro
 				}
 				return nil, fmt.Errorf("netproxy: upstream refused CONNECT: %d", resp.StatusCode)
 			}
-			return up, nil
+			// ReadResponse stops at the end of the response head, so
+			// an upstream that wrote its 200 and the first tunnel
+			// bytes in one write left those bytes in br. Returning
+			// up alone would drop them, which for a server that
+			// speaks first (an SSH banner, a MySQL greeting) means a
+			// tunnel that never works.
+			return &bufferedConn{Conn: up, r: br}, nil
 		case "socks5":
 			return p.socksDial.DialContext(ctx, "tcp", hostport)
 		}
