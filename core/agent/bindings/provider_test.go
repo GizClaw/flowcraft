@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -179,6 +180,20 @@ func TestChainRunsProvidersInOrder(t *testing.T) {
 	}
 	if env.Bindings["a"] != 1 || env.Bindings["b"] != 2 || env.Bindings["c"] != 3 {
 		t.Fatalf("bindings = %v", env.Bindings)
+	}
+}
+
+func TestChainRejectsDuplicateNames(t *testing.T) {
+	// Chain is a merge of unlabeled parts, so it reports the collision
+	// itself: the wording is Assemble's, because a chained surface has
+	// nothing but positions to attribute it to.
+	dup := ordinaryOnly(Binding{Name: "dup", Value: 1})
+	_, err := Chain(dup, dup).Bind(testInvocation())
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Chain Bind = %v, want Validation", err)
+	}
+	if !strings.Contains(err.Error(), `global "dup" is bound more than once`) {
+		t.Fatalf("error %v must report the collision the way Assemble does", err)
 	}
 }
 

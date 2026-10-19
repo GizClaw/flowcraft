@@ -102,49 +102,17 @@ func (f ProviderFunc) Bind(inv Invocation) ([]Binding, error) { return f(inv) }
 // provider in order, then each provider's late phase in the same
 // order. Nil providers are skipped.
 //
-// Chain does not deduplicate names — [Assemble] rejects a name bound
-// twice, so a collision between chained providers fails the execution
-// instead of letting the later provider shadow the earlier one.
+// Chain is [Merge] without owners: a name bound twice fails the Bind
+// with the wording [Assemble] uses for the same collision, because a
+// chained surface has nothing but positions to attribute it to. Use
+// [Merge] with [Part.Owner] set when a conflict should name what bound
+// it.
 func Chain(providers ...Provider) Provider {
-	filtered := make([]Provider, 0, len(providers))
+	parts := make([]Part, 0, len(providers))
 	for _, p := range providers {
-		if p != nil {
-			filtered = append(filtered, p)
-		}
+		parts = append(parts, Part{Provider: p})
 	}
-	return chained(filtered)
-}
-
-type chained []Provider
-
-// Bind implements [Provider].
-func (c chained) Bind(inv Invocation) ([]Binding, error) {
-	var out []Binding
-	for _, p := range c {
-		list, err := p.Bind(inv)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, list...)
-	}
-	return out, nil
-}
-
-// BindLate implements [LateProvider].
-func (c chained) BindLate(inv Invocation, env *agent.ScriptEnv) ([]Binding, error) {
-	var out []Binding
-	for _, p := range c {
-		late, ok := p.(LateProvider)
-		if !ok {
-			continue
-		}
-		list, err := late.BindLate(inv, env)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, list...)
-	}
-	return out, nil
+	return Merge(parts...)
 }
 
 // Assemble builds one execution's environment from provider: ordinary
@@ -192,19 +160,31 @@ func Assemble(inv Invocation, config map[string]any, provider Provider) (*agent.
 // duplicates, and names a script could not reference as an identifier.
 func installBindings(env *agent.ScriptEnv, list []Binding) error {
 	for _, b := range list {
-		if b.Name == "" {
-			return errdefs.Validationf("script bindings: provider returned an empty global name")
-		}
-		if !validGlobalName(b.Name) {
-			return errdefs.Validationf(
-				"script bindings: %q is not a usable global name: it must be a "+
-					"JavaScript/Lua identifier that is not a keyword", b.Name)
+		if err := bindingNameError(b.Name); err != nil {
+			return err
 		}
 		if _, dup := env.Bindings[b.Name]; dup {
 			return errdefs.Validationf(
 				"script bindings: global %q is bound more than once", b.Name)
 		}
 		env.Bindings[b.Name] = b.Value
+	}
+	return nil
+}
+
+// bindingNameError returns the validation error for a global name no
+// script could reference, or nil when the name is usable. [Assemble] and
+// [Merge] apply the same rule, so a surface validates identically
+// whichever path built it — and a merge rejects a bad name at the part
+// that returned it, before it can be mistaken for a duplicate.
+func bindingNameError(name string) error {
+	if name == "" {
+		return errdefs.Validationf("script bindings: provider returned an empty global name")
+	}
+	if !validGlobalName(name) {
+		return errdefs.Validationf(
+			"script bindings: %q is not a usable global name: it must be a "+
+				"JavaScript/Lua identifier that is not a keyword", name)
 	}
 	return nil
 }
