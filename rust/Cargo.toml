@@ -29,6 +29,16 @@ serde = { version = "1.0.228", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 serde_norway = "0.9.42"
 serde_yaml_ng = "0.10.0"
+# A hook group's `matcher` is a regular expression, and core compiles it with Go's
+# `regexp` -- RE2. `regex` is the same family: no backreferences, no lookaround,
+# linear time. That matters for more than speed here: a matcher is user input in
+# a file, and a backtracking engine would let one pattern hang a run. The two
+# engines' *error text* differs, which is why the contract masks a bad pattern's
+# tail instead of pretending to compare it.
+regex = "1.13"
+# `kill(-pid, SIGKILL)` without the `unsafe` block `libc` needs: a timed-out hook
+# is one process group, and `sh -c` puts the work a level down from the shell.
+rustix = { version = "1.1", features = ["process"] }
 # bm25's tokenizer asks two questions of every character -- is it a letter, is
 # it a digit -- and both are Unicode *general categories* (L*, Nd), not the
 # `Alphabetic` property Rust's `char` exposes. core asks the category, so the
@@ -42,7 +52,7 @@ unicode-general-category = "1.1.0"
 # bridge, an ephemeral loopback port for seatbelt), and `io-util` is the
 # split/copy the tunnel is made of -- the port has no `net.Listen` to fall back
 # on, so these two are part of the runtime choice rather than extras.
-tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
+tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util", "process"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 
 # The MITM slice's TLS stack, chosen in docs/plans/2026-10-15-rust-core-port.md

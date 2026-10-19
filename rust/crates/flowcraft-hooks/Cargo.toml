@@ -1,0 +1,30 @@
+[package]
+name = "flowcraft-hooks"
+description = "The port's external command hooks, mirroring core/hooks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+flowcraft-contract = { path = "../flowcraft-contract" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# A group's matcher is a regular expression, and core compiles it with Go's
+# `regexp` -- the RE2 family. `regex` is the same family (no backreferences, no
+# lookaround), so a pattern that compiles on one side compiles on the other for
+# everything a hooks.json is likely to contain; the contract dump pins the
+# patterns a matcher is actually compared against.
+regex = { workspace = true }
+tokio = { workspace = true }
+# A hook that overruns its timeout has its whole process group killed, because
+# `sh -c` is a wrapper and the work a timeout is meant to stop is one level
+# down. `rustix` is the safe call for that: the workspace forbids `unsafe`, and
+# `libc` would need it.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[lints]
+workspace = true

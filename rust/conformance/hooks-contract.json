@@ -1,0 +1,575 @@
+{
+  "note": [
+    "core/hooks, as a table: what a hooks.json loads as, and what firing an event does to the commands it names.",
+    "Each row runs in a temporary directory of the harness's own, so its absolute path is masked out of every string; what is left is the logical name the row spells.",
+    "A regular expression's or a JSON document's own error text is masked: Go and Rust word both differently, and a contract that pinned the wording would pin the library.",
+    "A warning's error attribute is masked for the same reason; its message, event, command and output are compared exactly.",
+    "The timeout row is the only one with a clock in it: it records whether a process the hook left behind survived the kill."
+  ],
+  "events": [
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "TurnEnd",
+    "SessionStart",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop"
+  ],
+  "masked": [
+    "the harness's directory, in every string",
+    "a matcher's or a hooks.json's parse error, after the sentence that classifies it",
+    "a warning's error attribute"
+  ],
+  "rows": [
+    {
+      "name": "load-empty-file",
+      "why": "an empty hooks.json is a runner with no groups, not a refusal",
+      "config": "{}",
+      "empty": true
+    },
+    {
+      "name": "load-missing-file",
+      "why": "a deployment with no hooks.json still starts",
+      "empty": true
+    },
+    {
+      "name": "unknown-event",
+      "why": "the vocabulary is closed: an unknown key is a validation failure whose sentence lists what is known",
+      "config": "{\"hooks\":{\"PreToolUse\":[],\"Bogus\":[]}}",
+      "error": "hooks: hooks.json: unknown event \"Bogus\"; known events are PreToolUse, PostToolUse, UserPromptSubmit, PermissionRequest, TurnEnd, SessionStart, SessionEnd, SubagentStart, SubagentStop"
+    },
+    {
+      "name": "unknown-event-sorted",
+      "why": "the key named is the first in sorted order, so two faults report the same one every time",
+      "config": "{\"hooks\":{\"Zed\":[],\"Aardvark\":[]}}",
+      "error": "hooks: hooks.json: unknown event \"Aardvark\"; known events are PreToolUse, PostToolUse, UserPromptSubmit, PermissionRequest, TurnEnd, SessionStart, SessionEnd, SubagentStart, SubagentStop"
+    },
+    {
+      "name": "bad-matcher",
+      "why": "a matcher that does not compile is refused with its group's coordinates",
+      "config": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"[\",\"hooks\":[{\"command\":\"true\"}]}]}}",
+      "error": "hooks: hooks.json: PreToolUse[0]: matcher: <regexp>"
+    },
+    {
+      "name": "empty-command",
+      "why": "a command hook with no command is refused rather than loaded as a no-op",
+      "config": "{\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"command\":\"   \"}]}]}}",
+      "error": "hooks: hooks.json: PreToolUse[0]: hook command is required"
+    },
+    {
+      "name": "unknown-kind-only",
+      "why": "a hook kind this runner does not run is dropped, and a group left with no hooks is not a group",
+      "config": "{\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"webhook\",\"command\":\"true\"}]}]}}",
+      "empty": true
+    },
+    {
+      "name": "unknown-kind-mixed",
+      "why": "the same group keeps the command hook beside the kind the runner does not know",
+      "config": "{\"hooks\":{\"TurnEnd\":[{\"hooks\":[{\"type\":\"webhook\",\"command\":\"true\"},{\"command\":\"printf 'kept:' >> trace.part; cat >> trace.part; printf '\\n' >> trace.part\"}]}]}}",
+      "fires": [
+        {
+          "event": "TurnEnd",
+          "payload": {},
+          "trace": [
+            {
+              "label": "kept",
+              "body": {
+                "event": "TurnEnd"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "matcher-wildcard",
+      "why": "empty and * both match everything, and every matching group runs in load order",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'empty:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]},{\"matcher\":\"*\",\"hooks\":[{\"command\":\"printf 'star:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "PreToolUse",
+          "payload": {
+            "tool": "Bash"
+          },
+          "trace": [
+            {
+              "label": "empty",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "Bash"
+              }
+            },
+            {
+              "label": "star",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "Bash"
+              }
+            }
+          ]
+        },
+        {
+          "event": "PreToolUse",
+          "payload": {
+            "tool": "Read"
+          },
+          "trace": [
+            {
+              "label": "empty",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "Read"
+              }
+            },
+            {
+              "label": "star",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "Read"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "matcher-regex",
+      "why": "a matcher is a regular expression over the occurrence's match value",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"^(WebFetch|WebSearch)$\",\"hooks\":[{\"command\":\"printf 'web:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "PreToolUse",
+          "payload": {
+            "tool": "WebFetch"
+          },
+          "trace": [
+            {
+              "label": "web",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "WebFetch"
+              }
+            }
+          ]
+        },
+        {
+          "event": "PreToolUse",
+          "payload": {
+            "tool": "WebSearch"
+          },
+          "trace": [
+            {
+              "label": "web",
+              "body": {
+                "event": "PreToolUse",
+                "tool": "WebSearch"
+              }
+            }
+          ]
+        },
+        {
+          "event": "PreToolUse",
+          "payload": {
+            "tool": "Read"
+          },
+          "trace": []
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "match-value-skips-empty",
+      "why": "the match value is the first non-empty of tool, source, reason, subagent",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"^cli$\",\"hooks\":[{\"command\":\"printf 'cli:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "UserPromptSubmit",
+          "payload": {
+            "prompt": "hello",
+            "source": "cli",
+            "tool": ""
+          },
+          "trace": [
+            {
+              "label": "cli",
+              "body": {
+                "event": "UserPromptSubmit",
+                "prompt": "hello",
+                "source": "cli",
+                "tool": ""
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "match-value-empty-declines",
+      "why": "an occurrence with no match field matches only a group that names no matcher",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"TurnEnd\":[{\"matcher\":\".+\",\"hooks\":[{\"command\":\"printf 'wants-a-value:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "TurnEnd",
+          "payload": {
+            "status": "done"
+          },
+          "trace": []
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "primary-parse-error",
+      "why": "a primary hooks.json that does not parse is refused, rather than loading as nothing",
+      "config": "{\"hooks\":{\"TurnEnd\":",
+      "error": "hooks: parse hooks.json: <parse error>"
+    },
+    {
+      "name": "broken-source-is-skipped",
+      "why": "a contributed source that does not parse is skipped with a warning, and the source after it still loads",
+      "extras": [
+        {
+          "path": "broken.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"TurnEnd\":",
+          "trusted": true
+        },
+        {
+          "path": "good.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"TurnEnd\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'kept:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "TurnEnd",
+          "payload": {},
+          "trace": [
+            {
+              "label": "kept",
+              "body": {
+                "event": "TurnEnd"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false,
+      "load_warnings": [
+        {
+          "message": "hooks: skipping hook source",
+          "fields": {
+            "error": "<error>",
+            "path": "broken.json"
+          }
+        }
+      ]
+    },
+    {
+      "name": "untrusted-strips-content",
+      "why": "a plugin's command sees that an event happened, never the content it carried",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'plugin:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": false
+        }
+      ],
+      "fires": [
+        {
+          "event": "PostToolUse",
+          "payload": {
+            "command": "secret",
+            "error": "secret",
+            "message": "secret",
+            "prompt": "secret",
+            "status": "ok",
+            "target": "secret",
+            "tool": "Bash",
+            "tool_input": "secret",
+            "tool_result": "secret"
+          },
+          "trace": [
+            {
+              "label": "plugin",
+              "body": {
+                "event": "PostToolUse",
+                "status": "ok",
+                "tool": "Bash"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "trusted-keeps-content",
+      "why": "the same payload reaches a source the host marked trusted",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'host:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "PostToolUse",
+          "payload": {
+            "command": "secret",
+            "error": "secret",
+            "message": "secret",
+            "prompt": "secret",
+            "status": "ok",
+            "target": "secret",
+            "tool": "Bash",
+            "tool_input": "secret",
+            "tool_result": "secret"
+          },
+          "trace": [
+            {
+              "label": "host",
+              "body": {
+                "command": "secret",
+                "error": "secret",
+                "event": "PostToolUse",
+                "message": "secret",
+                "prompt": "secret",
+                "status": "ok",
+                "target": "secret",
+                "tool": "Bash",
+                "tool_input": "secret",
+                "tool_result": "secret"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "stamped-event",
+      "why": "the runner stamps the event, so a producer cannot mislabel the object a command reads",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"TurnEnd\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'stamped:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "TurnEnd",
+          "payload": {
+            "event": "Bogus"
+          },
+          "trace": [
+            {
+              "label": "stamped",
+              "body": {
+                "event": "TurnEnd"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "two-sources-order",
+      "why": "sources append in load order, and a source's hooks run in declaration order",
+      "extras": [
+        {
+          "path": "a.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'first:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        },
+        {
+          "path": "b.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'second:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "SessionStart",
+          "payload": {
+            "source": "cli"
+          },
+          "trace": [
+            {
+              "label": "first",
+              "body": {
+                "event": "SessionStart",
+                "source": "cli"
+              }
+            },
+            {
+              "label": "second",
+              "body": {
+                "event": "SessionStart",
+                "source": "cli"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "failing-hook-continues",
+      "why": "a hook that exits non-zero is logged and skipped, and the next one still runs",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"TurnEnd\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'failing:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part; echo boom >&2; exit 3\"}]},{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'next:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "TurnEnd",
+          "payload": {},
+          "trace": [
+            {
+              "label": "failing",
+              "body": {
+                "event": "TurnEnd"
+              }
+            },
+            {
+              "label": "next",
+              "body": {
+                "event": "TurnEnd"
+              }
+            }
+          ],
+          "warnings": [
+            {
+              "message": "hooks: command hook failed",
+              "fields": {
+                "command": "printf 'failing:' >> trace.part; cat >> trace.part; printf '\\n' >> trace.part; echo boom >&2; exit 3",
+                "error": "<error>",
+                "event": "TurnEnd",
+                "output": "boom\n"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    },
+    {
+      "name": "timeout-kills-group",
+      "why": "a hook that overruns is killed with the group it started, because sh -c is a wrapper",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"command\":\"(sleep 2; printf late > late.part) & sleep 5\",\"timeout\":1}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "SessionStart",
+          "payload": {},
+          "trace": [],
+          "warnings": [
+            {
+              "message": "hooks: command hook did not finish in time",
+              "fields": {
+                "command": "(sleep 2; printf late > late.part) & sleep 5",
+                "error": "<error>",
+                "event": "SessionStart",
+                "output": ""
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false,
+      "descendant_killed": true
+    },
+    {
+      "name": "repeated-fire",
+      "why": "firing the same event twice runs the hooks twice: the runner keeps no state",
+      "extras": [
+        {
+          "path": "plugin.json",
+          "dir": ".",
+          "config": "{\"hooks\":{\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"command\":\"printf 'again:' >> trace.part; cat >> trace.part; printf '\\\\n' >> trace.part\"}]}]}}",
+          "trusted": true
+        }
+      ],
+      "fires": [
+        {
+          "event": "SessionEnd",
+          "payload": {},
+          "trace": [
+            {
+              "label": "again",
+              "body": {
+                "event": "SessionEnd"
+              }
+            }
+          ]
+        },
+        {
+          "event": "SessionEnd",
+          "payload": {},
+          "trace": [
+            {
+              "label": "again",
+              "body": {
+                "event": "SessionEnd"
+              }
+            }
+          ]
+        }
+      ],
+      "empty": false
+    }
+  ]
+}

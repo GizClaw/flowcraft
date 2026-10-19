@@ -204,6 +204,26 @@ if ! cmp -s "$out/mitm-contract.json" "$conf/mitm-contract.json"; then
   exit 1
 fi
 
+echo "==> hooks contract"
+# core/hooks, both halves: what a hooks.json loads as (the closed vocabulary,
+# sorted keys, groups that survive only if a hook in them survives, one sentence
+# per way of getting it wrong) and what firing an event does to the commands it
+# names (one JSON object on stdin, the source's directory, the trust rule, a
+# warning instead of an error), replayed by
+# crates/flowcraft-hooks/tests/hooks_contract.rs. The rows are processes, so the
+# harness's own directory is masked out of every string, and a matcher's or a
+# JSON document's own error text is masked after the sentence that classifies
+# it: Go and Rust word those differently, and pinning the wording would pin the
+# library. Everything else -- the message, the event, the command, the output --
+# is compared exactly.
+"$out/oracle" -hooks-contract > "$out/hooks-contract.json"
+if ! cmp -s "$out/hooks-contract.json" "$conf/hooks-contract.json"; then
+  echo "rust/conformance/hooks-contract.json no longer matches core:" >&2
+  diff "$conf/hooks-contract.json" "$out/hooks-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -hooks-contract) > rust/conformance/hooks-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

@@ -33,7 +33,9 @@
 // upstream receives and returns (see wirecontract.go). With -mitm-contract it
 // dumps the layer under a terminated tunnel -- the handshake the engine offers,
 // what hooks see of the decrypted traffic, and what the client and the target
-// each get (see mitmcontract.go).
+// each get (see mitmcontract.go). With -hooks-contract it dumps what a
+// hooks.json loads as and what firing an event does to the commands it names
+// (see hookscontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -116,6 +118,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-proxy-contract" {
 		if err := writeProxyContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "proxy contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-hooks-contract" {
+		if err := writeHooksContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "hooks contract:", err)
 			os.Exit(1)
 		}
 		return
