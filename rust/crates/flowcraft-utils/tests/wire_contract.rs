@@ -22,12 +22,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use flowcraft_utils::net::BoxFuture;
 use flowcraft_utils::net::dial::{Dialer, Upstream};
 use flowcraft_utils::net::policy::{MitmPolicy, NetAction, NetMode, NetRule};
 use flowcraft_utils::net::proxy::{Audit, Proxy, ProxyConfig};
-use flowcraft_utils::net::socks5::{self, Connector, Stream, Target};
 use flowcraft_utils::net::serve::{self, Hooks, HttpHandler, Outcome, Server};
-use flowcraft_utils::net::BoxFuture;
+use flowcraft_utils::net::socks5::{self, Connector, Stream, Target};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -262,10 +262,7 @@ async fn replay_upstream_row(row: &Value, failures: &mut Vec<String>) {
         }
     };
     let (host, port) = split_target(text(row, "target"));
-    let target = Target {
-        host,
-        port,
-    };
+    let target = Target { host, port };
     match dialer.connect(&target).await {
         Ok(mut dialed) => {
             // A target that speaks first puts its greeting on the tunnel
@@ -857,9 +854,13 @@ fn split_target(target: &str) -> (String, u16) {
     match target.rsplit_once(':') {
         Some((host, port)) => {
             let port = port.parse::<u16>().unwrap_or_default();
-            (host.trim_start_matches('[').trim_end_matches(']').to_owned(), port)
+            (
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_owned(),
+                port,
+            )
         }
         None => (target.to_owned(), 443),
     }
 }
-

@@ -209,11 +209,7 @@ impl<C: Connector> Server<C> {
 
     /// The same server with other deadlines (core keeps these as variables so
     /// its tests can shrink them).
-    pub fn with_timeouts(
-        mut self,
-        handshake: Duration,
-        dial: Duration,
-    ) -> Server<C> {
+    pub fn with_timeouts(mut self, handshake: Duration, dial: Duration) -> Server<C> {
         self.handshake_timeout = handshake;
         self.dial_timeout = dial;
         self
@@ -242,15 +238,14 @@ impl<C: Connector> Server<C> {
             Ok(Err(_)) | Err(_) => return,
         };
 
-        let dialed = match tokio::time::timeout(self.dial_timeout, self.connect.connect(&target))
-            .await
-        {
-            Ok(Ok(dialed)) => dialed,
-            Ok(Err(_)) | Err(_) => {
-                let _ = write_reply(&mut client_write, FAILURE, None).await;
-                return;
-            }
-        };
+        let dialed =
+            match tokio::time::timeout(self.dial_timeout, self.connect.connect(&target)).await {
+                Ok(Ok(dialed)) => dialed,
+                Ok(Err(_)) | Err(_) => {
+                    let _ = write_reply(&mut client_write, FAILURE, None).await;
+                    return;
+                }
+            };
         if write_reply(&mut client_write, SUCCESS, dialed.local)
             .await
             .is_err()
@@ -258,7 +253,13 @@ impl<C: Connector> Server<C> {
             return;
         }
         let (mut target_read, mut target_write) = tokio::io::split(dialed.stream);
-        pump(&mut client_read, &mut client_write, &mut target_read, &mut target_write).await;
+        pump(
+            &mut client_read,
+            &mut client_write,
+            &mut target_read,
+            &mut target_write,
+        )
+        .await;
     }
 }
 
@@ -464,9 +465,7 @@ impl std::fmt::Display for ClientError {
             ClientError::UnexpectedVersion(version) => {
                 write!(f, "unexpected protocol version {version}")
             }
-            ClientError::NoAcceptableMethods => {
-                f.write_str("no acceptable authentication methods")
-            }
+            ClientError::NoAcceptableMethods => f.write_str("no acceptable authentication methods"),
             ClientError::InvalidCredentials => f.write_str("invalid username/password"),
             ClientError::BadAuthVersion => f.write_str("invalid username/password version"),
             ClientError::AuthFailed => f.write_str("username/password authentication failed"),
@@ -743,8 +742,7 @@ mod tests {
         let mut output = Vec::new();
         let mut buffer = [0u8; 4096];
         loop {
-            match tokio::time::timeout(Duration::from_millis(100), client.read(&mut buffer)).await
-            {
+            match tokio::time::timeout(Duration::from_millis(100), client.read(&mut buffer)).await {
                 Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                 Ok(Ok(read)) => output.extend_from_slice(&buffer[..read]),
             }
@@ -800,11 +798,7 @@ mod tests {
         ] {
             let connector = Arc::new(Echo::new());
             let asked = Arc::clone(&connector.asked);
-            let output = session(
-                Server::new(connector),
-                &greeting_no_auth(host, port),
-            )
-            .await;
+            let output = session(Server::new(connector), &greeting_no_auth(host, port)).await;
             assert!(
                 output.len() >= 2 && output[1] == SUCCESS,
                 "{host} was refused: {output:?}"
@@ -855,7 +849,22 @@ mod tests {
     async fn no_auth_is_found_wherever_it_sits() {
         let output = session(
             Server::new(Echo::new()),
-            &[VERSION, 0x02, USER_PASS, NO_AUTH, VERSION, CMD_CONNECT, 0x00, ATYP_IPV4, 127, 0, 0, 1, 0, 80],
+            &[
+                VERSION,
+                0x02,
+                USER_PASS,
+                NO_AUTH,
+                VERSION,
+                CMD_CONNECT,
+                0x00,
+                ATYP_IPV4,
+                127,
+                0,
+                0,
+                1,
+                0,
+                80,
+            ],
         )
         .await;
         assert_eq!(output.first().copied(), Some(VERSION));
@@ -868,7 +877,9 @@ mod tests {
         // implemented, which is the one refusal that is not silence.
         let output = session(
             Server::new(Echo::new()),
-            &[VERSION, 0x01, NO_AUTH, VERSION, 0x03, 0x00, ATYP_IPV4, 127, 0, 0, 1, 0, 53],
+            &[
+                VERSION, 0x01, NO_AUTH, VERSION, 0x03, 0x00, ATYP_IPV4, 127, 0, 0, 1, 0, 53,
+            ],
         )
         .await;
         let mut expected = vec![VERSION, NO_AUTH];
@@ -1080,8 +1091,31 @@ mod tests {
         .await;
         assert_eq!(result.as_ref().err().map(ToString::to_string), None);
         let expected = vec![
-            VERSION, 2, NO_AUTH, USER_PASS, 0x01, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's',
-            VERSION, CMD_CONNECT, 0x00, ATYP_IPV4, 203, 0, 113, 7, 0, 80,
+            VERSION,
+            2,
+            NO_AUTH,
+            USER_PASS,
+            0x01,
+            4,
+            b'u',
+            b's',
+            b'e',
+            b'r',
+            4,
+            b'p',
+            b'a',
+            b's',
+            b's',
+            VERSION,
+            CMD_CONNECT,
+            0x00,
+            ATYP_IPV4,
+            203,
+            0,
+            113,
+            7,
+            0,
+            80,
         ];
         assert_eq!(received, expected);
     }
@@ -1138,7 +1172,10 @@ mod tests {
     #[tokio::test]
     async fn a_destination_without_a_port_is_refused_before_anything_is_written() {
         for (address, wanted) in [
-            ("example.com", "address example.com: missing port in address"),
+            (
+                "example.com",
+                "address example.com: missing port in address",
+            ),
             ("example.com:", "address example.com:: invalid port"),
             ("example.com:0", "port number out of range 0"),
             ("example.com:70000", "port number out of range 70000"),

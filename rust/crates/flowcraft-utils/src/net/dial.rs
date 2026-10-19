@@ -110,7 +110,9 @@ impl std::fmt::Display for Error {
             Error::RefusedConnect { status } => {
                 write!(f, "netproxy: upstream refused CONNECT: {status}")
             }
-            Error::MalformedResponse => f.write_str("netproxy: malformed upstream CONNECT response"),
+            Error::MalformedResponse => {
+                f.write_str("netproxy: malformed upstream CONNECT response")
+            }
             Error::ResponseHeadTooLarge => {
                 f.write_str("netproxy: upstream CONNECT response head too large")
             }
@@ -291,11 +293,7 @@ impl Dialer {
 
     /// The same dialer with other deadlines (core keeps these as variables so
     /// its tests can shrink them).
-    pub fn with_timeouts(
-        mut self,
-        connect: Duration,
-        response: Duration,
-    ) -> Dialer {
+    pub fn with_timeouts(mut self, connect: Duration, response: Duration) -> Dialer {
         self.connect_timeout = connect;
         self.response_timeout = response;
         self
@@ -371,7 +369,10 @@ impl Dialer {
 }
 
 impl socks5::Connector for Dialer {
-    fn connect<'a>(&'a self, target: &'a socks5::Target) -> super::BoxFuture<'a, io::Result<Dialed>> {
+    fn connect<'a>(
+        &'a self,
+        target: &'a socks5::Target,
+    ) -> super::BoxFuture<'a, io::Result<Dialed>> {
         Box::pin(async move {
             self.dial(&target.host_port()).await.map_err(|err| {
                 // A SOCKS5 client is told the dial failed, never why; the text

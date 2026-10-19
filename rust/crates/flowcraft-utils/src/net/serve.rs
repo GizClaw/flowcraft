@@ -99,7 +99,10 @@ impl Refusal {
     pub fn denied(reason: &str) -> Refusal {
         Refusal {
             status: 403,
-            body: format!("netproxy: destination not allowed{}\n", deny_reason_suffix(reason)),
+            body: format!(
+                "netproxy: destination not allowed{}\n",
+                deny_reason_suffix(reason)
+            ),
         }
     }
 
@@ -258,8 +261,8 @@ impl Server {
             audit: self.audit.clone(),
             hooks: self.hooks.clone(),
         };
-        let server = socks5::Server::new(connector)
-            .with_timeouts(self.handshake_timeout, self.dial_timeout);
+        let server =
+            socks5::Server::new(connector).with_timeouts(self.handshake_timeout, self.dial_timeout);
         self.socks5 = server;
     }
 
@@ -350,7 +353,10 @@ struct PolicyConnector {
 }
 
 impl socks5::Connector for PolicyConnector {
-    fn connect<'a>(&'a self, target: &'a socks5::Target) -> BoxFuture<'a, io::Result<socks5::Dialed>> {
+    fn connect<'a>(
+        &'a self,
+        target: &'a socks5::Target,
+    ) -> BoxFuture<'a, io::Result<socks5::Dialed>> {
         Box::pin(async move {
             let hostport = target.host_port();
             let verdict = self.proxy.decide(&hostport, 0);
@@ -531,7 +537,6 @@ fn unique_temp_dir() -> io::Result<PathBuf> {
     Ok(place)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,7 +651,11 @@ mod tests {
         let target = echo().await;
         let (service, mut client) = tokio::io::duplex(64 * 1024);
         let (server, seen) = server(
-            vec![rule(NetAction::Allow, "127.0.0.1", i32::from(target.port()))],
+            vec![rule(
+                NetAction::Allow,
+                "127.0.0.1",
+                i32::from(target.port()),
+            )],
             NetMode::AllowList,
         );
         let authority = target.to_string();
@@ -683,7 +692,9 @@ mod tests {
             NetMode::AllowList,
         );
         let (mut service, mut client) = tokio::io::duplex(64 * 1024);
-        let outcome = server.handle_connect(&mut service, "blocked.example:443").await;
+        let outcome = server
+            .handle_connect(&mut service, "blocked.example:443")
+            .await;
         // The connection is core's to close, and closing it is how the client
         // learns the request is over.
         drop(service);
@@ -718,7 +729,10 @@ mod tests {
         match server.handle_connect(&mut service, "example.com:443").await {
             Outcome::Refused(refusal) => {
                 assert_eq!(refusal.status, 502);
-                assert_eq!(refusal.body, "netproxy: netproxy: policy matcher unavailable\n");
+                assert_eq!(
+                    refusal.body,
+                    "netproxy: netproxy: policy matcher unavailable\n"
+                );
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -740,7 +754,11 @@ mod tests {
         let target = echo().await;
         let (service, _client) = tokio::io::duplex(64 * 1024);
         let (server, _seen) = server(
-            vec![rule(NetAction::Allow, "127.0.0.1", i32::from(target.port()))],
+            vec![rule(
+                NetAction::Allow,
+                "127.0.0.1",
+                i32::from(target.port()),
+            )],
             NetMode::AllowList,
         );
         let server = server.with_hooks(Arc::new(Refuse));
@@ -769,12 +787,18 @@ mod tests {
                     if let Ok(mut seen) = marker.lock() {
                         *seen = true;
                     }
-                    let _ = connection.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").await;
+                    let _ = connection
+                        .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+                        .await;
                 })
             },
         );
         let (server, _seen) = server(
-            vec![rule(NetAction::Allow, "127.0.0.1", i32::from(target.port()))],
+            vec![rule(
+                NetAction::Allow,
+                "127.0.0.1",
+                i32::from(target.port()),
+            )],
             NetMode::AllowList,
         );
         let bound = ok(bind_tcp(server.with_http(http)).await, "bind");
