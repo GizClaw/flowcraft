@@ -45,7 +45,13 @@ func scaleText(index int, entities []string) string {
 // five hundred and next to no shared wording -- the bulk a scan has to skip --
 // and one thousand are the "Caroline" family, which shares one entity and
 // near-identical text so the supersede path does real similarity work and
-// reports real findings.
+// reports real findings. The family also states a predicate the default
+// vocabulary recognizes, so the relation rule is asked about the family's pairs
+// on a scope this size. The scan still stops at the first judgment of a fact,
+// so what this measures is the rule's cost per judged fact, not the cost of
+// scanning every candidate of one: a fixture of facts that state the same
+// relation about one subject in *dissimilar* words is what would do that, and
+// it is the reference fixture's job.
 func scaleFacts(now time.Time) []factview.Fact {
 	facts := make([]factview.Fact, 0, 10_000)
 	for index := 0; index < 10_000; index++ {
@@ -53,12 +59,16 @@ func scaleFacts(now time.Time) []factview.Fact {
 		other := fmt.Sprintf("entity-%d", (index*7+13)%500)
 		entities := []string{entity, other}
 		text := scaleText(index, entities)
+		predicate := ""
 		if index%10 == 0 {
 			entities = append(entities, "Caroline")
 			text = fmt.Sprintf("Caroline works at Acme Corporation since %d, in the Berlin office", 2000+index%20)
+			predicate = "works at"
 		}
-		facts = append(facts, planFact(fmt.Sprintf("fact-%d", index), text, entities,
-			now.Add(-time.Duration(index%1440)*time.Hour)))
+		fact := planFact(fmt.Sprintf("fact-%d", index), text, entities,
+			now.Add(-time.Duration(index%1440)*time.Hour))
+		fact.Predicate = predicate
+		facts = append(facts, fact)
 	}
 	return facts
 }

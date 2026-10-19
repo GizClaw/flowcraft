@@ -202,11 +202,92 @@ func TestSystemRecentPriorityAndOversizedItemNeverExceedsTotal(t *testing.T) {
 	}
 }
 
+// TestProfileBlockIsAdmittedBeforeTheClassPasses pins the resident block's
+// admission order: the retrieved classes can fill every share the budget
+// names, and the block is still served -- it is admitted first, so what it
+// costs comes out of the retrieved material and never the other way around.
+func TestProfileBlockIsAdmittedBeforeTheClassPasses(t *testing.T) {
+	packer := New(counterFunc(func(context.Context, coremessage.Content) (int, error) { return 1, nil }))
+	var items []corememory.ContextItem
+	for index := 0; index < 10; index++ {
+		recent := item(fmt.Sprintf("recent-%02d", index), "r", 1)
+		recent.SourceClass = corememory.ContextSourceRecent
+		long := item(fmt.Sprintf("long-%02d", index), "l", 1)
+		items = append(items, recent, long)
+	}
+	items = append(items, blockItem("conv-1", "b"))
+	result, err := packer.Pack(context.Background(), items, corememory.Budget{MaxItems: 10, MaxTokens: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 10 || result.Items[0].SourceClass != corememory.ContextSourceProfile {
+		t.Fatalf("items = %+v", result.Items)
+	}
+	counts := map[corememory.ContextSourceClass]int{}
+	for _, got := range result.Items {
+		counts[got.SourceClass]++
+	}
+	// The block's room comes off the retrieved shares, and the reservations
+	// still bind on what is left of the budget: 6 recent and 3 mid/long.
+	if counts[corememory.ContextSourceProfile] != 1 ||
+		counts[corememory.ContextSourceRecent] != 6 ||
+		counts[corememory.ContextSourceLongTerm] != 3 {
+		t.Fatalf("class counts=%v", counts)
+	}
+	if !result.Truncated || result.TokenCount != 10 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// TestProfileBlockThatDoesNotFitTheBudgetIsNotServed is the other half of that
+// order: the packer does not cut a block in two. A block the request cannot
+// hold is not served at all, and the budget goes to the retrieved items.
+func TestProfileBlockThatDoesNotFitTheBudgetIsNotServed(t *testing.T) {
+	packer := New(counterFunc(func(_ context.Context, content coremessage.Content) (int, error) {
+		if content.Text() == "b" {
+			return 9, nil
+		}
+		return 1, nil
+	}))
+	items := []corememory.ContextItem{blockItem("conv-1", "b")}
+	for index := 0; index < 10; index++ {
+		recent := item(fmt.Sprintf("recent-%02d", index), "r", 1)
+		recent.SourceClass = corememory.ContextSourceRecent
+		items = append(items, recent)
+	}
+	result, err := packer.Pack(context.Background(), items, corememory.Budget{MaxItems: 10, MaxTokens: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TokenCount > 5 || !result.Truncated {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, got := range result.Items {
+		if got.SourceClass == corememory.ContextSourceProfile {
+			t.Fatalf("a block that does not fit was served: %+v", result.Items)
+		}
+	}
+	if len(result.Items) == 0 {
+		t.Fatalf("the budget went unspent: %+v", result.Items)
+	}
+}
+
 func item(id, content string, score float64) corememory.ContextItem {
 	return corememory.ContextItem{
 		ID: id, Kind: corememory.ContextFact, Content: text(content), Score: score,
 		Sources:     []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-" + id}},
 		SourceClass: corememory.ContextSourceLongTerm,
+	}
+}
+
+func blockItem(conversationID, content string) corememory.ContextItem {
+	return corememory.ContextItem{
+		ID: conversationID, Kind: corememory.ContextProfile, Content: text(content), Score: 1,
+		Address: corememory.ContextAddress{
+			Kind: corememory.ContextProfile, ConversationID: conversationID, ItemID: conversationID,
+		},
+		Sources:     []corememory.SourceRef{{Kind: corememory.SourceExternal, ID: "profile/" + conversationID + "/entry"}},
+		SourceClass: corememory.ContextSourceProfile,
 	}
 }
 

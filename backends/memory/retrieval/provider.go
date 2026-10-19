@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/fusion"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/hydrate"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/pack"
@@ -63,6 +64,13 @@ type Provider struct {
 	RecallEvents     RecallEventRecorder
 	Visibility       Visibility
 	Clock            func() time.Time
+	// Profiles, when set, is the resident profile block this provider serves:
+	// one bounded item per request, read by conversation rather than
+	// retrieved, added after the lanes and read by the packer as its own
+	// class. It is what makes stable material present on a request whose
+	// words do not resemble it, and it is wired only when a deployment wants
+	// every request to carry it.
+	Profiles ProfileSource
 	// ObservePool, when set, receives the hydrated items one request hands to
 	// the packer -- the pool the budget chooses from and cuts. It exists for
 	// diagnostics: a harness that only sees the pack cannot tell "the budget
@@ -194,6 +202,15 @@ type ProviderConfig struct {
 	RecallEvents     RecallEventRecorder
 	Visibility       Visibility
 	Clock            func() time.Time
+	// Profiles, when set, is the resident profile block: memory about the
+	// conversation's participants that is not retrieved because the request
+	// looked like it, but served on every request that names the
+	// conversation, up to the block's own bound. Nothing in the request
+	// selects it -- not the query, the score floor or the dataset filters --
+	// so a deployment wires it only when every request carrying it is what it
+	// wants, and the packer takes its room before the retrieved classes fill
+	// the budget.
+	Profiles ProfileSource
 }
 
 type RecallEventRecorder interface {
@@ -202,6 +219,16 @@ type RecallEventRecorder interface {
 
 type Visibility interface {
 	Visible(context.Context, corememory.Scope, string) (bool, error)
+}
+
+// ProfileSource reads one conversation's resident profile block. The hide
+// filter is the read path's visibility overlay as a question about facts: a
+// distilled line names the facts a pass judged it from, and the block store
+// asks whether any of them is hidden before it serves the line. It is how a
+// hide reaches the block, which is a reading of the corpus rather than a copy
+// of it.
+type ProfileSource interface {
+	BlockServing(context.Context, corememory.Scope, string, func(factID string) (bool, error)) (profile.Block, int, error)
 }
 
 // BulkVisibility optionally resolves the complete visibility overlay in one
@@ -240,6 +267,7 @@ func NewProviderWithConfig(config ProviderConfig) (*Provider, error) {
 		ObservedAtAnchor: config.ObservedAtAnchor,
 		ExpandParents:    config.ExpandParents,
 		RecallEvents:     config.RecallEvents, Visibility: config.Visibility, Clock: config.Clock,
+		Profiles: config.Profiles,
 	}
 	if provider.Fusion != nil {
 		provider.Fusion.ObserveLane = func(name string, elapsed time.Duration) {
@@ -460,6 +488,13 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 		quotesStarted := time.Now()
 		hydrated = provider.withSourceQuotes(ctx, request.Scope, hydrated)
 		provider.recordStage("quotes", quotesStarted)
+	}
+	// The resident block is added last, after the reranker and the source
+	// quotes: it is not a candidate, so nothing that decides about candidates
+	// may decide about it, and a reranker that only knows the lanes cannot
+	// drop what was never theirs to rank.
+	if item, ok := provider.profileItem(ctx, request, hidden, &diagnostics); ok {
+		hydrated = append(hydrated, item)
 	}
 	if provider.ObservePool != nil {
 		provider.ObservePool(request, hydrated)
@@ -826,6 +861,65 @@ func (provider *Provider) visible(
 		return !forgotten, nil
 	}
 	return provider.Visibility.Visible(ctx, scope, identity)
+}
+
+// profileItem returns the conversation's resident block as one context item, or
+// false when this request serves none. The block is an addition to a request
+// rather than a candidate: a deployment without one serves exactly what it
+// served before, a conversation without one is served the same way, and a block
+// that cannot be read is reported and left out -- the derived block must not be
+// what fails a request the canonical views can answer.
+//
+// The lines are a pass's reading of the corpus, so a line is served only while
+// the facts it was judged from are: the overlay that drops a forgotten fact
+// drops the line with it, and a provenance the read path cannot decide about
+// is not served, which is the direction the visibility overlay fails in.
+func (provider *Provider) profileItem(
+	ctx context.Context,
+	request corememory.ContextRequest,
+	hidden map[string]struct{},
+	diagnostics *[]Diagnostic,
+) (corememory.ContextItem, bool) {
+	if isNilInterface(provider.Profiles) || request.ConversationID == "" {
+		return corememory.ContextItem{}, false
+	}
+	var hide func(string) (bool, error)
+	if !isNilInterface(provider.Visibility) {
+		hide = func(factID string) (bool, error) {
+			if strings.TrimSpace(factID) == "" {
+				return false, nil
+			}
+			identity := corememory.ContextAddress{
+				Kind: corememory.ContextFact, ConversationID: request.ConversationID, ItemID: factID,
+			}.Identity(request.Scope)
+			visible, err := provider.visible(ctx, request.Scope, identity, hidden)
+			if err != nil {
+				return true, err
+			}
+			return !visible, nil
+		}
+	}
+	started := time.Now()
+	block, _, err := provider.Profiles.BlockServing(ctx, request.Scope, request.ConversationID, hide)
+	provider.recordStage("profile", started)
+	if err != nil {
+		*diagnostics = append(*diagnostics, Diagnostic{Stage: "profile", Lane: "profile", Err: err})
+		return corememory.ContextItem{}, false
+	}
+	if strings.TrimSpace(block.Text) == "" || len(block.Sources) == 0 {
+		return corememory.ContextItem{}, false
+	}
+	return corememory.ContextItem{
+		ID: request.ConversationID,
+		Address: corememory.ContextAddress{
+			Kind: corememory.ContextProfile, ConversationID: request.ConversationID, ItemID: request.ConversationID,
+		},
+		Kind:        corememory.ContextProfile,
+		Content:     coremessage.NewTextContent(block.Text),
+		Score:       1,
+		Sources:     append([]corememory.SourceRef(nil), block.Sources...),
+		SourceClass: corememory.ContextSourceProfile,
+	}, true
 }
 
 // recentTokenLimit bounds one recent item to both the recent lane budget and

@@ -43,7 +43,12 @@ type Deployment struct {
 	// effective value: rerank.AlgorithmVersion names the policy linked into the
 	// binary whether or not retrieval ever calls it.
 	Rerank bool
-	Close  func()
+	// Profile is the profile.enabled setting the memory resource was built
+	// with. A run needs it for the same reason it needs Rerank: an enabled
+	// block that no maintenance pass filled is served empty, and a report has
+	// to say which of the two it measured.
+	Profile bool
+	Close   func()
 }
 
 // Build returns the deployment the document at deployPath describes. An empty
@@ -100,7 +105,10 @@ func Build(deployPath string, recentItems int) (Deployment, error) {
 		return Deployment{
 			Memory: assembly, Inference: engine, Recent: assembly.RecentSettings(),
 			Rerank: settings.Retrieval.Rerank,
-			Close:  func() { _ = result.Close() },
+			// The ad-hoc document below names no profile, so the block is off
+			// here; a run that measures it builds from a deploy document.
+			Profile: settings.Profile.Enabled,
+			Close:   func() { _ = result.Close() },
 		}, nil
 	}
 	dir, err := os.MkdirTemp("", "memory-eval-*")
@@ -141,6 +149,9 @@ type resourceSettings struct {
 	Retrieval struct {
 		Rerank bool `json:"rerank,omitempty"`
 	} `json:"retrieval,omitempty"`
+	Profile struct {
+		Enabled bool `json:"enabled,omitempty"`
+	} `json:"profile,omitempty"`
 }
 
 // LibraryState summarizes the derivation the assembly will answer from: the

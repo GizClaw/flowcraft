@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/backends/memory/forget"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
 	"github.com/GizClaw/flowcraft/backends/memory/sources"
@@ -61,6 +62,12 @@ type Assembly struct {
 	// ledger here. It is nil when the assembly was built without one, in which
 	// case the read path serves everything the views hold.
 	forgotten *forget.Store
+	// profiles is the resident block store: the host's half and the pass's
+	// half of what a context request carries about the conversation's
+	// participants. It is always built, and whether the read path serves it is
+	// the settings' decision -- a host editing a block of a disabled profile
+	// is preparing it, not serving it.
+	profiles *profile.Store
 	// journal is the scope-level work journal the write paths record into, and
 	// trigger is the consumer that turns those records into passes. Both are
 	// nil when the assembly was built without a trigger, in which case only
@@ -116,6 +123,7 @@ func newAssembly(
 	repair func(context.Context, RepairRequest) (RepairResult, error),
 	overlay func(context.Context, corememory.Scope) (maintain.OverlayDiagnostics, error),
 	forgotten *forget.Store,
+	profiles *profile.Store,
 	journal *worker.TriggerJournal,
 	trigger *worker.Trigger,
 	triggerInterval time.Duration,
@@ -155,6 +163,7 @@ func newAssembly(
 		repair:          repair,
 		overlay:         overlay,
 		forgotten:       forgotten,
+		profiles:        profiles,
 		journal:         journal,
 		trigger:         trigger,
 		triggerInterval: triggerInterval,
@@ -723,6 +732,18 @@ func (assembly *Assembly) Forgotten(
 		return nil, errors.New("memory assembly: context is required")
 	}
 	return assembly.forgotten.Forgotten(ctx, scope, conversationID)
+}
+
+// Profiles returns the resident block store: one bounded block per
+// conversation, which a host reads and edits here and which the maintenance
+// pass fills when the profile is enabled. Whether the read path serves it is
+// the profile settings' decision -- editing a block of a disabled profile
+// prepares it rather than serving it.
+func (assembly *Assembly) Profiles() *profile.Store {
+	if assembly == nil {
+		return nil
+	}
+	return assembly.profiles
 }
 
 // Catalog returns the scope catalog.

@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/knowledge"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/bm25"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/entity"
 	"github.com/GizClaw/flowcraft/backends/memory/projection/vector"
@@ -262,6 +263,23 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		Facts: facts, Store: maintainStore, Documents: documentViews, Clock: clock,
 		Recalls: recallStore, Config: maintainConfig,
 	}
+	// The profile block store is built whether or not the block is served: a
+	// host reads and edits blocks through the assembly, and a deployment that
+	// turns the block on later serves what is already there. Serving and
+	// filling are what the setting gates -- the read path below gets the
+	// store only when it is on, and Distill keeps a disabled block's stored
+	// half out of any request even if a host wires the store itself.
+	profiles, err := profile.NewStore(kvStore,
+		profile.WithClock(clock),
+		profile.WithConfig(profile.Config{
+			MaxTokens:  settings.Profile.MaxTokens,
+			MaxEntries: settings.Profile.MaxEntries,
+			Distill:    settings.Profile.Enabled,
+		}))
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: profile blocks: %w", err))
+	}
+	maintainService.Profiles = profiles
 	// The ledger is the read path's other overlay: the items a host asked to be
 	// unreachable. Unlike maintenance's judgments it carries no policy -- a
 	// forget is the host's decision, and it outlives the derivation that
@@ -364,6 +382,9 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		}
 		providerConfig.ItemReranker = reranker
 	}
+	if settings.Profile.Enabled {
+		providerConfig.Profiles = profiles
+	}
 	provider, err := retrieval.NewProviderWithConfig(providerConfig)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: retrieval provider: %w", err))
@@ -422,6 +443,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 		buildRepair(projections, processor, settings.Projection),
 		buildOverlayStatus(maintainStore),
 		forgotten,
+		profiles,
 		journal,
 		trigger,
 		triggerInterval,

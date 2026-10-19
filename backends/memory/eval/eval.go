@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
@@ -27,6 +28,16 @@ type Runner interface {
 	CommitTurn(context.Context, corememory.Turn) error
 	Context(context.Context, corememory.ContextRequest) (corememory.ContextResult, error)
 	RunOnce(context.Context) error
+}
+
+// Maintainer is the maintenance pass the harness drives when a run measures
+// what a pass wrote. It is a separate interface rather than a fourth method on
+// Runner because it is a separate schedule: a run that measures the read path
+// of what derivation wrote does not maintain, and the profile block is exactly
+// the case that does -- an empty block is served until a pass fills it, which a
+// report that never maintained would measure as if the block were the feature.
+type Maintainer interface {
+	Maintain(context.Context, corememory.Scope) (maintain.Plan, error)
 }
 
 // DatasetTurnMetadataKey is the per-message metadata key ingest writes the
@@ -95,6 +106,11 @@ type Scope struct {
 func (scope Scope) memoryScope() corememory.Scope {
 	return corememory.Scope{RuntimeID: scope.RuntimeID, UserID: scope.UserID, AgentID: scope.AgentID}
 }
+
+// MemoryScope is the hard partition this scenario's scope names, for a host
+// that drives the assembly outside the harness -- running the maintenance pass
+// a run measures, for one.
+func (scope Scope) MemoryScope() corememory.Scope { return scope.memoryScope() }
 
 // QuestionResult records one graded question.
 type QuestionResult struct {
@@ -287,6 +303,43 @@ func Derive(ctx context.Context, runner Runner) error {
 		return fmt.Errorf("memory eval: derive: %w", err)
 	}
 	return nil
+}
+
+// Maintain runs one maintenance pass per scope and returns how many it ran: the
+// pass that saves the read-path overlay and fills the resident profile block.
+// It is what a run that measures either has to do between deriving and
+// answering, and it is deliberately not folded into Derive: a pass costs the
+// scope's facts, and a run that does not measure a pass must not pay for one.
+//
+// A runner that cannot maintain fails here rather than measuring a store no
+// pass touched -- the same direction the fingerprint's resume check fails in.
+func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (int, error) {
+	if ctx == nil {
+		return 0, errors.New("memory eval: context is required")
+	}
+	if runner == nil {
+		return 0, errors.New("memory eval: runner is required")
+	}
+	maintainer, ok := runner.(Maintainer)
+	if !ok {
+		return 0, errors.New("memory eval: the runner does not maintain")
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	ran := 0
+	for _, scope := range scopes {
+		if err := scope.Validate(); err != nil {
+			return ran, fmt.Errorf("memory eval: maintain: %w", err)
+		}
+		if _, dup := seen[scope.HardPartitionKey()]; dup {
+			continue
+		}
+		seen[scope.HardPartitionKey()] = struct{}{}
+		if _, err := maintainer.Maintain(ctx, scope); err != nil {
+			return ran, fmt.Errorf("memory eval: maintain: %w", err)
+		}
+		ran++
+	}
+	return ran, nil
 }
 
 // Answer grades one already-ingested scenario: every question is retrieved,

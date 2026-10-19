@@ -11,6 +11,7 @@ import (
 	summaryderive "github.com/GizClaw/flowcraft/backends/memory/derive/summary"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/knowledge"
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
@@ -39,6 +40,12 @@ const (
 	// hierarchy in a single step.
 	maxSummaryChunkSize = 10_000
 	maxSummaryGroupSize = 1_000
+	// maxProfileTokens and maxProfileEntries bound what a deployment may make
+	// its profile block. The block rides along with every request, so its
+	// ceiling is a module bound and not a tuning: a block larger than this is
+	// a second retrieval pool wearing the block's name.
+	maxProfileTokens  = 2_048
+	maxProfileEntries = 128
 )
 
 // Settings is the strict memory.yaml document owned by this module. It has
@@ -52,6 +59,7 @@ type Settings struct {
 	Fact       FactSettings      `json:"fact,omitempty"`
 	BM25       BM25Settings      `json:"bm25,omitempty"`
 	Summary    SummarySettings   `json:"summary,omitempty"`
+	Profile    ProfileSettings   `json:"profile,omitempty"`
 	Chunk      ChunkSettings     `json:"chunk,omitempty"`
 	Lanes      LanesSettings     `json:"lanes,omitempty"`
 	Retrieval  RetrievalSettings `json:"retrieval,omitempty"`
@@ -233,6 +241,30 @@ type LanesSettings struct {
 	VectorCache *VectorCacheSettings `json:"vector_cache,omitempty"`
 }
 
+// ProfileSettings configures the resident profile block: the bounded lines
+// about a conversation's participants that ride along with every context
+// request instead of being retrieved by it.
+//
+// It is off by default, and that default is a statement rather than an
+// omission: the block is served on every request whatever the query says, so
+// turning it on changes what every answer reads. The vocabulary that fills the
+// pass's half is the module's measured default (profile.DefaultClasses); a
+// deployment that needs another one configures the block store in Go, and a
+// deployment whose corpus has no facts in this shape leaves the block off.
+type ProfileSettings struct {
+	// Enabled serves the block and lets the maintenance pass fill its
+	// distilled half. Off means the read path serves nothing from a block
+	// whatever the store holds: a block nobody serves is cheap, a block
+	// served by accident is not.
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxTokens bounds one served block in the module's cost model
+	// (pack.EstimatedTokens), default profile.DefaultMaxTokens.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// MaxEntries bounds how many lines one served block holds, default
+	// profile.DefaultMaxEntries.
+	MaxEntries int `json:"max_entries,omitempty"`
+}
+
 // VectorCacheSettings bounds what the vector lane keeps resident. Both fields
 // are a count of what may be held: zero is no bound, and a bound never changes
 // what a query sees, only what the lane keeps after reading it.
@@ -304,6 +336,12 @@ func (settings *Settings) applyDefaults() {
 			settings.Summary.MaxDepth = summaryDefaults.MaxDepth
 		}
 	}
+	if settings.Profile.MaxTokens == 0 {
+		settings.Profile.MaxTokens = profile.DefaultMaxTokens
+	}
+	if settings.Profile.MaxEntries == 0 {
+		settings.Profile.MaxEntries = profile.DefaultMaxEntries
+	}
 	if settings.Chunk.MaxRunes == 0 {
 		settings.Chunk.MaxRunes = 1600
 		if settings.Chunk.OverlapRunes == 0 {
@@ -348,11 +386,20 @@ func (settings Settings) anchorObservedAt() bool {
 // built-in default" (k1 = 1.2, b = 0.75), not a value this configuration
 // chose.
 func (settings Settings) retrievalSummary() (string, error) {
+	// The block is named only while it is served: a deployment that leaves it
+	// off serves exactly what it served before the block existed, so its
+	// footprint has to stay the one it had -- two runs may share a fingerprint
+	// only while they share what a request reads.
+	var served *ProfileSettings
+	if settings.Profile.Enabled {
+		served = &settings.Profile
+	}
 	encoded, err := json.Marshal(struct {
 		Lanes     LanesSettings     `json:"lanes"`
 		BM25      BM25Settings      `json:"bm25"`
 		Retrieval RetrievalSettings `json:"retrieval"`
-	}{Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval})
+		Profile   *ProfileSettings  `json:"profile,omitempty"`
+	}{Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval, Profile: served})
 	if err != nil {
 		return "", fmt.Errorf("retrieval summary: %w", err)
 	}
@@ -486,6 +533,16 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Chunk.MaxRunes > knowledge.MaxChunkRunes {
 		return fmt.Errorf("chunk.max_runes must not exceed %d", knowledge.MaxChunkRunes)
+	}
+	// The block's bound holds whether or not it is served: a block store
+	// written under one setting and read under another must not be the place
+	// the ceiling moves, and a value no request could carry is a typo rather
+	// than an intent.
+	if settings.Profile.MaxTokens <= 0 || settings.Profile.MaxTokens > maxProfileTokens {
+		return fmt.Errorf("profile.max_tokens must be positive and must not exceed %d", maxProfileTokens)
+	}
+	if settings.Profile.MaxEntries <= 0 || settings.Profile.MaxEntries > maxProfileEntries {
+		return fmt.Errorf("profile.max_entries must be positive and must not exceed %d", maxProfileEntries)
 	}
 	if (settings.Chunk.Summary.Document || settings.Chunk.Summary.Sections) && settings.Chunk.Summary.MaxRunes <= 0 {
 		return errors.New("chunk.summary.max_runes must be positive when summaries are enabled")

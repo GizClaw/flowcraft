@@ -90,6 +90,7 @@ type ContextItemKind string
 const (
 	ContextRawMessage       ContextItemKind = "raw_message"
 	ContextFact             ContextItemKind = "fact"
+	ContextProfile          ContextItemKind = "profile"
 	ContextDocumentResource ContextItemKind = "document_resource"
 	ContextDocumentSection  ContextItemKind = "document_section"
 	ContextDocumentChunk    ContextItemKind = "document_chunk"
@@ -101,6 +102,7 @@ func (kind ContextItemKind) Validate() error {
 	switch kind {
 	case ContextRawMessage,
 		ContextFact,
+		ContextProfile,
 		ContextDocumentResource,
 		ContextDocumentSection,
 		ContextDocumentChunk,
@@ -120,11 +122,18 @@ const (
 	ContextSourceRecent   ContextSourceClass = "recent"
 	ContextSourceLongTerm ContextSourceClass = "long_term"
 	ContextSourceSummary  ContextSourceClass = "summary"
+	// ContextSourceProfile is the resident profile block: memory about the
+	// conversation's participants that is not retrieved because the request
+	// asked for it, but served on every request up to its own bound. It is
+	// neither a retrieved fact nor a compressed transcript, so it carries its
+	// own class: an implementation may keep a slot for it that retrieved
+	// classes cannot spend.
+	ContextSourceProfile ContextSourceClass = "profile"
 )
 
 func (class ContextSourceClass) Validate() error {
 	switch class {
-	case ContextSourceRecent, ContextSourceLongTerm, ContextSourceSummary:
+	case ContextSourceRecent, ContextSourceLongTerm, ContextSourceSummary, ContextSourceProfile:
 		return nil
 	default:
 		return fmt.Errorf("memory: unknown context source class %q", class)
@@ -158,7 +167,7 @@ func (address ContextAddress) Validate() error {
 		return errors.New("memory: context address item_id is required")
 	}
 	switch address.Kind {
-	case ContextRawMessage, ContextFact, ContextSummary:
+	case ContextRawMessage, ContextFact, ContextSummary, ContextProfile:
 		if strings.TrimSpace(address.ConversationID) == "" {
 			return errors.New("memory: context address conversation_id is required")
 		}
