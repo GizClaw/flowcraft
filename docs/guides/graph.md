@@ -401,7 +401,8 @@ agents:
 - **`impl: chain`** — composes the kind's resources into one provider: the
   optional `base` first, then every `unit` dep in sorted key order (see
   below). Like any other provider it replaces the standard fallback, so mount
-  `standard` as `base` to extend that surface rather than to drop it.
+  `standard` as `base` to extend that surface rather than to drop it. It needs
+  at least one dep; `impl: none` is the empty surface.
 
 The standard impl also carries the *policy* of the bridges whose shape the
 surface owns, so a deployment configures them without touching Go:
@@ -536,8 +537,17 @@ agents:
   to extend it rather than to drop it.
 - A duplicate global fails the execution, naming the deps that bound it
   (`global "tokens" bound by both "unit.audit" and "unit.tokens"`). Names
-  exist only once a provider binds, so no chain can catch a duplicate at
+  exist only once a provider binds, so a duplicate *name* cannot be caught at
   deploy time — a chain at least says which deps collided.
+- Mounting one provider value under two dep keys is refused earlier, at build
+  time (`provider mounted twice (as "base" and "unit.same")`), when the value
+  can be identified: identity is pointer equality, so pointer-backed providers
+  only. `standard` and `chain` return struct values and `none` a function, so
+  a doubly mounted core impl builds and falls through to the execution-time
+  check above, which names both keys.
+- A chain with no `base` and no `unit` fails the build instead of deploying a
+  surface that binds nothing: binding nothing on purpose is what `impl: none`
+  says.
 - The impl takes no settings: the composition is the deps, and a settings
   key fails the build instead of being ignored.
 - A chain is a normal resource: built once, shareable by several engines,

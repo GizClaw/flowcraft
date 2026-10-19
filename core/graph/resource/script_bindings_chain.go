@@ -34,6 +34,11 @@ import (
 // A unit should bind its own globals only: the base is already in the
 // chain, and a name bound twice fails the execution instead of
 // shadowing.
+//
+// A chain composes what it is given, so it needs at least one dep: a
+// document that writes "impl: chain" and forgets them fails the build
+// instead of deploying a surface that binds nothing, because that is
+// what "impl: none" already says explicitly.
 const ChainImpl = "chain"
 
 // Dep names of the chain resource.
@@ -72,6 +77,11 @@ func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (any, e
 	units, err := chainUnits(in)
 	if err != nil {
 		return nil, err
+	}
+	if len(units) == 0 {
+		return nil, errdefs.Validationf(
+			"script bindings chain: no %q or %q dep: mount at least one surface, or use impl %q to bind nothing",
+			chainBaseDep, chainUnitDep, NoScriptBindingsImpl)
 	}
 	return chainProvider{units: units}, nil
 }

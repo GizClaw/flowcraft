@@ -846,10 +846,13 @@ assembly at build time, so a typo fails the deployment instead of the first
 call. `impl: chain` composes the kind's resources into one provider (an
 optional `base` first, then the bare `unit` key, then every `unit.*` in
 sorted key order); it takes no settings, and a duplicate global fails the
-execution naming the deps that bound it. The chain is wired like any other
-provider, so it replaces the standard fallback — mount the standard resource
-as `base` to extend it. Other impls are registered by the host build (see
-[graph.md](graph.md)).
+execution naming the deps that bound it. A chain needs at least one dep (an
+empty one fails the build; `impl: none` is the empty surface), and the same
+provider mounted under two dep keys is refused at build time when its value is
+pointer-backed, falling through to that duplicate check otherwise. The chain
+is wired like any other provider, so it replaces the standard fallback — mount
+the standard resource as `base` to extend it. Other impls are registered by
+the host build (see [graph.md](graph.md)).
 
 ## delegation
 

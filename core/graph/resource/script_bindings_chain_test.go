@@ -310,11 +310,19 @@ func TestScriptBindingsChainNests(t *testing.T) {
 	}
 }
 
-func TestScriptBindingsChainEmpty(t *testing.T) {
+func TestScriptBindingsChainRejectsNoDeps(t *testing.T) {
+	// A chain composes what it is given: written with no deps it would
+	// deploy a surface that binds nothing, which is what "impl: none"
+	// says on purpose — so it fails the build instead.
 	for name, deps := range map[string]map[string]any{"nil deps": nil, "empty deps": {}} {
 		t.Run(name, func(t *testing.T) {
-			if env := assembleChain(t, buildChain(t, deps)); len(env.Bindings) != 0 {
-				t.Fatalf("bindings = %v, want none", env.Bindings)
+			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
+				context.Background(), resource.Input{Deps: deps})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("New = %v, want Validation for a chain that composes nothing", err)
+			}
+			if !strings.Contains(err.Error(), `impl "none"`) {
+				t.Fatalf("error %v must point at the explicit empty surface", err)
 			}
 		})
 	}
@@ -437,17 +445,51 @@ func TestScriptBindingsChainAttributesUnitErrors(t *testing.T) {
 }
 
 func TestScriptBindingsChainLateCollision(t *testing.T) {
-	base := &chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}}}
-	late := &chainStub{name: "l", late: []bindings.Binding{{Name: "board", Value: "l"}}}
-	_, err := bindings.Assemble(chainInvocation(), nil,
-		buildChain(t, map[string]any{"base": base, "unit.l": late}))
-	if !errdefs.IsValidation(err) {
-		t.Fatalf("Assemble = %v, want Validation", err)
-	}
-	want := `global "board" bound by dep "unit.l" was already bound in the ordinary phase`
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("error %v must name the late dep", err)
-	}
+	t.Run("with the ordinary phase", func(t *testing.T) {
+		base := &chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+		late := &chainStub{name: "l", late: []bindings.Binding{{Name: "board", Value: "l"}}}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"base": base, "unit.l": late}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		want := `global "board" bound by dep "unit.l" was already bound in the ordinary phase`
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must name the late dep", err)
+		}
+	})
+
+	t.Run("with an earlier unit's late phase", func(t *testing.T) {
+		first := &chainStub{name: "a", late: []bindings.Binding{{Name: "dup", Value: "1"}}}
+		second := &chainStub{name: "b", late: []bindings.Binding{{Name: "dup", Value: "2"}}}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.a": first, "unit.b": second}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		want := `global "dup" bound by both "unit.a" and "unit.b"`
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must name both late deps", err)
+		}
+	})
+
+	t.Run("inside a nested chain", func(t *testing.T) {
+		inner := buildChain(t, map[string]any{
+			"unit.a": &chainStub{name: "a", late: []bindings.Binding{{Name: "dup", Value: "1"}}},
+			"unit.b": &chainStub{name: "b", late: []bindings.Binding{{Name: "dup", Value: "2"}}},
+		})
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.inner": inner}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		// The outer chain prefixes the unit it called: one wrapper, not
+		// one per inner dep.
+		want := `dep "unit.inner": script bindings chain: global "dup" bound by both "unit.a" and "unit.b"`
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must name the nested unit and both inner deps", err)
+		}
+	})
 }
 
 func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
@@ -464,8 +506,10 @@ func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
 		})
 	}
 
+	// A dep, since a chain with none is itself a build error.
 	if _, err := (graphresource.ScriptBindingsChainFactory{}).New(
-		context.Background(), resource.Input{}); err != nil {
+		context.Background(),
+		resource.Input{Deps: map[string]any{"unit.a": &chainStub{name: "a"}}}); err != nil {
 		t.Fatalf("empty settings: %v", err)
 	}
 }

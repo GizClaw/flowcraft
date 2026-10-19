@@ -224,7 +224,9 @@ engine:
   the optional `base` first, then the bare `unit` key, then every `unit.*` in
   sorted key order (the order is the dep key order, not the document's). It
   replaces the standard fallback like any other provider, so mount
-  `standard` as `base` to extend it.
+  `standard` as `base` to extend it. It needs at least one dep — an empty
+  chain fails the build, since `impl: none` is the empty surface — and
+  mounting one pointer-backed provider under two dep keys fails the build too.
 - Hosts add their own globals with another impl of the kind; a name bound
   twice fails the execution instead of shadowing, and every global must be a
   JS/Lua identifier that is not a keyword (`tokens`, not `tokens.estimate`).
