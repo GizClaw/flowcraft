@@ -832,7 +832,7 @@ empty:
 
 panel:
   kind: agent.ScriptBindings
-  impl: chain             # compose surfaces instead of replacing them
+  impl: chain             # composes its deps into one provider
   deps: {base: std, unit.tokens: tok}   # base first, then unit.* by key
 ```
 

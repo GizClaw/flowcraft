@@ -242,9 +242,10 @@ panel:
   deps: {base: std, unit.tokens: tok}   # base first, then unit.* by key
 ```
 
-A duplicate global fails the execution; through a chain the error names the
-deps that bound it (`global "tokens" bound by both dep "base" and dep
-"unit.tokens"`). `chain` takes no settings.
+A duplicate global fails the execution; through a chain the error names what
+collided (`global "board" bound by both dep "base" and dep "unit.tokens"` for
+a unit that rebinds a base global, and the dep that landed late when a late
+binding hits a name an earlier phase bound). `chain` takes no settings.
 
 The node span records `script.bindings.count` and `script.bindings.source`
 (`engine` or `standard`); a debug log lists the global names, so a missing

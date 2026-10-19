@@ -536,16 +536,22 @@ agents:
 - The engine still consumes one provider: a chain replaces the standard
   surface like any other provider, so mount the standard resource as `base`
   to extend it rather than to drop it.
-- A duplicate global fails the execution, naming the deps that bound it
-  (`global "tokens" bound by both dep "unit.audit" and dep "unit.tokens"`).
-  Names exist only once a provider binds, so a duplicate *name* cannot be
-  caught at deploy time — a chain at least says which deps collided.
+- A duplicate global fails the execution, naming the deps that bound it. The
+  common case is a unit that rebinds a base global:
+  `global "board" bound by both dep "base" and dep "unit.tokens"`. A late
+  binding that lands on a name an ordinary one already bound names the late
+  dep only — `global "board" bound by dep "unit.tokens" was already bound
+  before the late phase` — because the merge does not carry the ordinary
+  phase across the two calls. Names exist only once a provider binds, so a
+  duplicate *name* cannot be caught at deploy time — a chain at least says
+  what collided.
 - Mounting one provider value under two dep keys is refused earlier, at build
   time (`provider mounted twice (as "base" and "unit.same")`), when the value
   can be identified: identity is pointer equality, so pointer-backed providers
   only. `standard` and `chain` return struct values and `none` a function, so
-  a doubly mounted core impl builds and falls through to the execution-time
-  check above, which names both keys.
+  a doubly mounted `standard` or `chain` builds and falls through to the
+  execution-time check above, which names both keys; a doubly mounted `none`
+  binds nothing, so it has nothing to collide.
 - A chain with no `base` and no `unit` fails the build instead of deploying a
   surface that binds nothing: binding nothing on purpose is what `impl: none`
   says.
