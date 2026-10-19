@@ -15,6 +15,16 @@ func ordinaryOnly(list ...Binding) Provider {
 	return ProviderFunc(func(Invocation) ([]Binding, error) { return list, nil })
 }
 
+// bindingNames lists bindings in the order a merge returned them, so a
+// test can pin the order rather than the set.
+func bindingNames(list []Binding) []string {
+	names := make([]string, 0, len(list))
+	for _, b := range list {
+		names = append(names, b.Name)
+	}
+	return names
+}
+
 // loggedPart is a two-phase stub that logs its ordinary phase, so a test
 // can pin the order a merge calls its parts in.
 type loggedPart struct {
@@ -147,6 +157,13 @@ func TestMergeRejectsDuplicateGlobals(t *testing.T) {
 			})}},
 			want: `global "dup" is bound more than once`,
 		},
+		"a labeled part and an unlabeled one": {
+			parts: []Part{
+				{Owner: `dep "unit.b"`, Provider: ordinaryOnly(Binding{Name: "dup", Value: 2})},
+				{Provider: ordinaryOnly(Binding{Name: "dup", Value: 1})},
+			},
+			want: `global "dup" bound by both dep "unit.b" and an unlabeled part`,
+		},
 		"late phase against the ordinary one": {
 			parts: []Part{{Owner: `dep "unit.l"`, Provider: providerWithLate{
 				ordinary: []Binding{{Name: "dup", Value: 1}},
@@ -187,24 +204,83 @@ func TestMergeRejectsDuplicateGlobals(t *testing.T) {
 func TestMergeRejectsUnusableGlobalNames(t *testing.T) {
 	// A bad name is rejected as a name, even when two parts bind it: the
 	// merge validates before it records, the rule Assemble applies.
-	merged := Merge(Part{Owner: `dep "unit.a"`, Provider: ordinaryOnly(
-		Binding{Name: "tokens.estimate", Value: 1},
-		Binding{Name: "tokens.estimate", Value: 2})})
-	_, err := Assemble(testInvocation(), nil, merged)
-	if !errdefs.IsValidation(err) {
-		t.Fatalf("Assemble = %v, want Validation", err)
+	unwanted := []string{"bound more than once", "bound by both", "bound twice"}
+	cases := map[string]struct {
+		part   Part
+		want   string
+		absent []string
+	}{
+		"unlabeled": {
+			part:   Part{Provider: ordinaryOnly(Binding{Name: "tokens.estimate", Value: 1})},
+			want:   `"tokens.estimate" is not a usable global name`,
+			absent: unwanted,
+		},
+		"labeled": {
+			part: Part{Owner: `dep "unit.a"`, Provider: ordinaryOnly(
+				Binding{Name: "tokens.estimate", Value: 1})},
+			want:   `dep "unit.a": "tokens.estimate" is not a usable global name`,
+			absent: unwanted,
+		},
+		"labeled and bound twice": {
+			part: Part{Owner: `dep "unit.a"`, Provider: ordinaryOnly(
+				Binding{Name: "tokens.estimate", Value: 1},
+				Binding{Name: "tokens.estimate", Value: 2})},
+			want:   `dep "unit.a": "tokens.estimate" is not a usable global name`,
+			absent: unwanted,
+		},
+		"empty name": {
+			part: Part{Owner: `dep "unit.a"`, Provider: ordinaryOnly(Binding{Value: 1})},
+			want: `dep "unit.a": provider returned an empty global name`,
+		},
+		"late phase": {
+			part: Part{Owner: `dep "unit.l"`, Provider: providerWithLate{
+				late: func(*agent.ScriptEnv) ([]Binding, error) {
+					return []Binding{{Value: 1}}, nil
+				}}},
+			want: `dep "unit.l": provider returned an empty global name`,
+		},
 	}
-	if !strings.Contains(err.Error(), `"tokens.estimate" is not a usable global name`) {
-		t.Fatalf("error %v must name the identifier rule", err)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Assemble(testInvocation(), nil, Merge(tc.part))
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("Assemble = %v, want Validation", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v must contain %s", err, tc.want)
+			}
+			for _, unwanted := range tc.absent {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Fatalf("error %v must report the name, not the duplicate %q", err, unwanted)
+				}
+			}
+		})
 	}
-	for _, unwanted := range []string{"bound more than once", "bound by both", "bound twice"} {
-		if strings.Contains(err.Error(), unwanted) {
-			t.Fatalf("error %v must report the name, not the duplicate %q", err, unwanted)
-		}
-	}
+}
 
-	_, err = Assemble(testInvocation(), nil, Merge(Part{Provider: ordinaryOnly(Binding{Value: 1})}))
-	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "empty global name") {
-		t.Fatalf("Assemble = %v, want Validation for the empty name", err)
+func TestMergeBindsInPartOrder(t *testing.T) {
+	list, err := Merge(
+		Part{Owner: `dep "unit.b"`, Provider: ordinaryOnly(
+			Binding{Name: "b_one", Value: 1}, Binding{Name: "b_two", Value: 2})},
+		Part{Owner: `dep "unit.a"`, Provider: ordinaryOnly(Binding{Name: "a", Value: 3})},
+	).Bind(testInvocation())
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	// Part order, and each part's own order within it: the merge
+	// concatenates, it does not sort.
+	if got, want := bindingNames(list), []string{"b_one", "b_two", "a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("bind order = %v, want %v", got, want)
+	}
+}
+
+func TestMergeOfNothingBindsNothing(t *testing.T) {
+	list, err := Merge().Bind(testInvocation())
+	if err != nil || len(list) != 0 {
+		t.Fatalf("Bind = %v, %v; want no bindings and no error", list, err)
+	}
+	env, err := Assemble(testInvocation(), nil, Merge())
+	if err != nil || len(env.Bindings) != 0 {
+		t.Fatalf("Assemble = %v, %v; want an empty surface", env, err)
 	}
 }

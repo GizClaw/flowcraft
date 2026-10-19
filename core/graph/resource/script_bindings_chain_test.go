@@ -281,21 +281,78 @@ func TestScriptBindingsChainRejectsNoDeps(t *testing.T) {
 }
 
 func TestScriptBindingsChainRejectsBadDeps(t *testing.T) {
-	cases := map[string]map[string]any{
-		"plain nil":      {"base": nil},
-		"non provider":   {"unit.a": "nope"},
-		"typed nil":      {"unit.a": (*chainStub)(nil)},
-		"typed nil base": {"base": (*chainStub)(nil)},
+	cases := map[string]struct {
+		deps map[string]any
+		want string
+	}{
+		"plain nil":      {map[string]any{"base": nil}, `dep "base" is nil`},
+		"non provider":   {map[string]any{"unit.a": "nope"}, `dep "unit.a" is string, want a bindings.Provider`},
+		"typed nil":      {map[string]any{"unit.a": (*chainStub)(nil)}, `dep "unit.a" is a typed nil`},
+		"typed nil base": {map[string]any{"base": (*chainStub)(nil)}, `dep "base" is a typed nil`},
 	}
-	for name, deps := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
-				context.Background(), resource.Input{Deps: deps})
+				context.Background(), resource.Input{Deps: tc.deps})
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation", err)
 			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v must contain %s", err, tc.want)
+			}
 		})
 	}
+}
+
+func TestScriptBindingsChainAttributesBadGlobalNames(t *testing.T) {
+	// A unit that returns a name no script could reference fails the
+	// execution like any other unit failure: the message names the dep,
+	// not just the rule.
+	t.Run("ordinary phase", func(t *testing.T) {
+		unit := &chainStub{name: "a", ord: []bindings.Binding{{Name: "tokens.estimate"}}}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.a": unit}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		want := `script bindings: dep "unit.a": "tokens.estimate" is not a usable global name`
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must contain %s", err, want)
+		}
+	})
+
+	t.Run("late phase", func(t *testing.T) {
+		unit := &chainStub{name: "l", late: []bindings.Binding{{Name: ""}}}
+		_, err := bindings.Assemble(chainInvocation(), nil,
+			buildChain(t, map[string]any{"unit.l": unit}))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("Assemble = %v, want Validation", err)
+		}
+		want := `script bindings: dep "unit.l": provider returned an empty global name`
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v must contain %s", err, want)
+		}
+	})
+}
+
+func TestScriptBindingsChainMinimalShapes(t *testing.T) {
+	// Both deps are optional in the spec; only the pair together is
+	// required to be non-empty.
+	t.Run("base only", func(t *testing.T) {
+		base := &chainStub{name: "base", ord: []bindings.Binding{{Name: "board", Value: "b"}}}
+		env := assembleChain(t, buildChain(t, map[string]any{"base": base}))
+		if got, want := envNames(env), []string{"board"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("globals = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("bare unit only", func(t *testing.T) {
+		unit := &chainStub{name: "unit", ord: []bindings.Binding{{Name: "tokens", Value: "t"}}}
+		env := assembleChain(t, buildChain(t, map[string]any{"unit": unit}))
+		if got, want := envNames(env), []string{"tokens"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("globals = %v, want %v", got, want)
+		}
+	})
 }
 
 func TestScriptBindingsChainRejectsSameProviderUnderTwoKeys(t *testing.T) {
@@ -322,7 +379,11 @@ func TestScriptBindingsChainKeepsIndependentFunctionProviders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("none New: %v", err)
 		}
-		return value.(bindings.Provider)
+		provider, ok := value.(bindings.Provider)
+		if !ok {
+			t.Fatalf("none New returned %T, want bindings.Provider", value)
+		}
+		return provider
 	}
 	same := func(bindings.Invocation) ([]bindings.Binding, error) { return nil, nil }
 	provider := buildChain(t, map[string]any{
@@ -435,11 +496,12 @@ func TestScriptBindingsChainLateCollision(t *testing.T) {
 		if !errdefs.IsValidation(err) {
 			t.Fatalf("Assemble = %v, want Validation", err)
 		}
-		// The outer chain prefixes the unit it called: one wrapper, not
-		// one per inner dep.
-		want := `dep "unit.inner": script bindings: global "dup" bound by both dep "unit.a" and dep "unit.b"`
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %v must name the nested unit and both inner deps", err)
+		// The outer chain prefixes the unit it called, and the package
+		// prefix appears once: the inner merge's message already carries
+		// it, so attribution does not stack it.
+		want := `script bindings: dep "unit.inner": global "dup" bound by both dep "unit.a" and dep "unit.b"`
+		if got := err.Error(); got != want {
+			t.Fatalf("error = %q, want %q", got, want)
 		}
 	})
 }
@@ -468,7 +530,7 @@ func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
 
 func TestScriptBindingsChainSpec(t *testing.T) {
 	if graphresource.ChainImpl != "chain" {
-		t.Fatalf("ChainImpl = %q, want the documented impl name", graphresource.ChainImpl)
+		t.Fatalf("ChainImpl = %q, want %q", graphresource.ChainImpl, "chain")
 	}
 	spec := (graphresource.ScriptBindingsChainFactory{}).Spec()
 	if err := spec.Validate(); err != nil {

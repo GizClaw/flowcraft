@@ -82,7 +82,7 @@ func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (any, e
 	}
 	if len(parts) == 0 {
 		return nil, errdefs.Validationf(
-			"script bindings chain: no %q or %q dep: mount at least one surface, or use impl %q to bind nothing",
+			"script bindings: no %q or %q dep: mount at least one surface, or use impl %q to bind nothing",
 			chainBaseDep, chainUnitDep, NoScriptBindingsImpl)
 	}
 	return bindings.Merge(parts...), nil
@@ -116,20 +116,20 @@ func chainParts(in res.Input) ([]bindings.Part, error) {
 	for _, key := range keys {
 		value := in.Deps[key]
 		if value == nil {
-			return nil, errdefs.Validationf("script bindings chain: dep %q is nil", key)
+			return nil, errdefs.Validationf("script bindings: dep %q is nil", key)
 		}
 		surface, ok := value.(bindings.Provider)
 		if !ok {
 			return nil, errdefs.Validationf(
-				"script bindings chain: dep %q is %T, want a bindings.Provider", key, value)
+				"script bindings: dep %q is %T, want a bindings.Provider", key, value)
 		}
 		if ptr.IsNil(surface) {
-			return nil, errdefs.Validationf("script bindings chain: dep %q is a typed nil", key)
+			return nil, errdefs.Validationf("script bindings: dep %q is a typed nil", key)
 		}
 		if identity, has := chainProviderIdentity(value); has {
 			if first, dup := mounted[identity]; dup {
 				return nil, errdefs.Conflictf(
-					"script bindings chain: provider mounted twice (as %q and %q)", first, key)
+					"script bindings: provider mounted twice (as %q and %q)", first, key)
 			}
 			mounted[identity] = key
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/agent/scriptrt"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	graphresource "github.com/GizClaw/flowcraft/core/graph/resource"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -307,8 +308,8 @@ func TestDeployDocumentScriptBindingsChain(t *testing.T) {
 
 func TestDeployDocumentScriptBindingsChainDuplicateGlobal(t *testing.T) {
 	_, err := runChainDeployment(t, clashDoc, clashGraph)
-	if err == nil {
-		t.Fatal("want the duplicate global to fail the execution")
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Execute = %v, want Validation for the duplicate global", err)
 	}
 	for _, want := range []string{`global "clash"`, `"unit.left"`, `"unit.right"`} {
 		if !strings.Contains(err.Error(), want) {
@@ -322,8 +323,8 @@ func TestDeployDocumentScriptBindingsChainSharedStandardResource(t *testing.T) {
 	// values only — so one standard resource under two keys deploys, and
 	// the duplicate global fails the execution naming both dep keys.
 	_, err := runChainDeployment(t, sameResourceDoc, clashGraph)
-	if err == nil {
-		t.Fatal("want the duplicate global to fail the execution")
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Execute = %v, want Validation for the duplicate global", err)
 	}
 	for _, want := range []string{`global "board"`, `"base"`, `"unit.same"`} {
 		if !strings.Contains(err.Error(), want) {

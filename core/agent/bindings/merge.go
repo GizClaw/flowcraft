@@ -1,21 +1,28 @@
 package bindings
 
 import (
+	"strings"
+
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
+
+// messagePrefix opens every error this package writes about a script
+// surface. A merge strips it off a part's failure before naming the part,
+// so a merge nested in another prints it once instead of once per level.
+const messagePrefix = "script bindings: "
 
 // Part is one provider's contribution to a merged surface: the provider
 // itself, and the label the merge reports it under.
 type Part struct {
 	// Owner labels the contributor in the errors the merge reports — a
 	// deployment dep key, say, written the way the message should read
-	// ("dep \"unit.tokens\""). It is printed verbatim: the merge puts it
-	// in front of a failure the contributor caused and names the owners
-	// that bound the same global. An empty Owner leaves the contributor
-	// unlabeled, so its errors travel unwrapped and a conflict is
-	// reported without attribution.
+	// ("dep \"unit.tokens\""). It is printed verbatim, in front of a
+	// failure the contributor caused and beside the owners that bound the
+	// same global; the unlabeled side of a conflict reads "an unlabeled
+	// part". An empty Owner leaves a part's own errors unwrapped and a
+	// conflict between unlabeled parts unattributed.
 	Owner string
 
 	// Provider supplies the contribution. A nil Provider contributes
@@ -37,20 +44,24 @@ type Part struct {
 // installation.
 //
 // [Chain] is a merge of unlabeled parts; a caller that can attribute a
-// conflict to something more useful than a position passes owners. Like
-// any provider, a merged surface is built once and shared across
-// executions, so configure it before use and never mutate it after.
-func Merge(parts ...Part) Provider { return merged{parts: parts} }
+// conflict to something more useful than a position passes owners. Merge
+// keeps a copy of parts, and like any provider the surface it returns is
+// built once and shared across executions, so configure it before use.
+func Merge(parts ...Part) Provider {
+	return merged{parts: append([]Part(nil), parts...)}
+}
 
-// merged is the composed surface. It stays a struct value rather than a
-// slice so its parts are the only thing it is: two resources that
-// compose the same providers are still distinct surfaces.
+// merged is the composed surface: the parts it was built from, in binding
+// order. They live in a field of a struct value rather than being the
+// slice itself, so a merge has no pointer identity of its own — what a
+// merge binds is its parts, not where they are stored.
 type merged struct {
 	parts []Part
 }
 
 // preBound marks a global that was bound before the late phase ran: the
-// merge can attribute it to the environment it inherited, not to a part.
+// merge can report that the name was taken, not which part took it, since
+// the ordinary phase that bound it has already returned.
 const preBound = -1
 
 // Bind implements [Provider].
@@ -64,7 +75,7 @@ func (m merged) Bind(inv Invocation) ([]Binding, error) {
 		}
 		for _, b := range list {
 			if err := bindingNameError(b.Name); err != nil {
-				return nil, err
+				return nil, part.attribute(err)
 			}
 			if first, dup := owner[b.Name]; dup {
 				return nil, mergeDuplicatef(b.Name, m.parts[first].Owner, part.Owner)
@@ -80,6 +91,11 @@ func (m merged) Bind(inv Invocation) ([]Binding, error) {
 // it in order, against the environment the ordinary bindings built.
 // [Assemble] installs the returned bindings after this call, so a late
 // binding does not see its siblings — the same contract as [Chain].
+//
+// The environment is also how the merge detects a late collision with an
+// earlier name: it reads the globals already installed there. Pass the
+// environment [Assemble] installed the ordinary bindings into; an empty
+// one leaves the clash to the caller's own duplicate check.
 func (m merged) BindLate(inv Invocation, env *agent.ScriptEnv) ([]Binding, error) {
 	out := make([]Binding, 0)
 	// Global name -> part index, or preBound for a name the environment
@@ -102,7 +118,7 @@ func (m merged) BindLate(inv Invocation, env *agent.ScriptEnv) ([]Binding, error
 		}
 		for _, b := range list {
 			if err := bindingNameError(b.Name); err != nil {
-				return nil, err
+				return nil, part.attribute(err)
 			}
 			first, dup := owner[b.Name]
 			switch {
@@ -147,17 +163,17 @@ func (p Part) bindLate(late LateProvider, inv Invocation, env *agent.ScriptEnv) 
 }
 
 // typedNil rejects a provider that is a nil pointer or similar: calling
-// it would panic rather than fail the execution.
+// it would panic rather than fail the execution. The chain resource
+// rejects one at build time, so this guards a surface assembled by hand.
 func (p Part) typedNil() error {
 	if p.Provider == nil || !ptr.IsNil(p.Provider) {
 		return nil
 	}
 	if p.Owner == "" {
-		return errdefs.Validationf(
-			"script bindings: provider is a typed nil %T", p.Provider)
+		return errdefs.Validationf("%sprovider is a typed nil %T", messagePrefix, p.Provider)
 	}
 	return errdefs.Validationf(
-		"script bindings: %s is a typed nil %T", p.Owner, p.Provider)
+		"%s%s: provider is a typed nil %T", messagePrefix, p.Owner, p.Provider)
 }
 
 // attribute puts the part's owner in front of a failure it caused,
@@ -168,8 +184,16 @@ func (p Part) attribute(err error) error {
 	if p.Owner == "" || err == nil {
 		return err
 	}
-	return errdefs.Fmt("script bindings: %s: %w", p.Owner, err)
+	return errdefs.Fmt("%s%s: %w", messagePrefix, p.Owner, unprefixed{err})
 }
+
+// unprefixed renders err without the prefix this package opens its
+// messages with, so a merge nested in another names one owner per level
+// instead of repeating "script bindings:" on the same line.
+type unprefixed struct{ err error }
+
+func (u unprefixed) Error() string { return strings.TrimPrefix(u.err.Error(), messagePrefix) }
+func (u unprefixed) Unwrap() error { return u.err }
 
 // mergeDuplicatef reports one global bound twice within a merge. Two
 // unlabeled parts cannot be told apart, so that case keeps the wording
