@@ -38,7 +38,11 @@ unicode-general-category = "1.1.0"
 # future, not a parked thread, and cancellation is a token rather than a
 # context. `sync` alone is enough for the bus; `rt`/`macros`/`time` are for its
 # tests, and land here so every crate measures against the same version.
-tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+# `net` is the listener the egress proxy binds (a unix socket for the bwrap
+# bridge, an ephemeral loopback port for seatbelt), and `io-util` is the
+# split/copy the tunnel is made of -- the port has no `net.Listen` to fall back
+# on, so these two are part of the runtime choice rather than extras.
+tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 
 # Production posture, for the crates that ship. The probe does not inherit it:

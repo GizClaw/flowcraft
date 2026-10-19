@@ -28,7 +28,9 @@
 // host patterns and Matcher verdicts (see netcontract.go), and with
 // -proxy-contract the proxy's policy half -- the URL grammar, Validate's
 // refusals, Decide's verdicts and the MITM host selection (see
-// proxycontract.go).
+// proxycontract.go), and with -wire-contract its wire half -- what a SOCKS5 or
+// HTTP CONNECT session answers, the audit records it produces, and what an
+// upstream receives and returns (see wirecontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -115,8 +117,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-wire-contract" {
+		if err := writeWireContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "wire contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract | -wire-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

@@ -1,0 +1,438 @@
+{
+  "note": "core/utils/net: the wire half -- the bytes a SOCKS5 or HTTP CONNECT session answers, the audit records it produces, and what an upstream receives and returns. SOCKS5 bind addresses are masked (BND.ADDR and BND.PORT zeroed, ATYP kept) because they report an ephemeral local port.",
+  "socks5": [
+    {
+      "name": "connect-through-an-http-upstream",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "client": "050100050100030b6578616d706c652e636f6d01bb70696e67",
+      "reply": "05000500000100000000000070696e67",
+      "mask_bind": true,
+      "upstream_request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-keeps-the-name-as-written",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "client": "050100050100030b4578616d706c652e434f4d01bb",
+      "reply": "050005000001000000000000",
+      "mask_bind": true,
+      "upstream_request": "434f4e4e454354204578616d706c652e434f4d3a34343320485454502f312e310d0a486f73743a204578616d706c652e434f4d3a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "Example.COM",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "Example.COM:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-an-ipv4-literal",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "client": "05010005010001cb00710901bb",
+      "reply": "050005000001000000000000",
+      "mask_bind": true,
+      "upstream_request": "434f4e4e454354203230332e302e3131332e393a34343320485454502f312e310d0a486f73743a203230332e302e3131332e393a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "203.0.113.9",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "203.0.113.9:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-an-ipv6-literal",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "client": "0501000501000420010db800000000000000000000000120fb",
+      "reply": "050005000001000000000000",
+      "mask_bind": true,
+      "upstream_request": "434f4e4e454354205b323030313a6462383a3a315d3a3834343320485454502f312e310d0a486f73743a205b323030313a6462383a3a315d3a383434330d0a0d0a",
+      "audit": [
+        {
+          "host": "2001:db8::1",
+          "port": 8443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "[2001:db8::1]:8443"
+        }
+      ]
+    },
+    {
+      "name": "connect-denied",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "blocked.example",
+          "port": 0,
+          "reason": "blocked for the demo"
+        }
+      ],
+      "client": "050100050100030f626c6f636b65642e6578616d706c6501bb",
+      "reply": "050005010001000000000000",
+      "audit": [
+        {
+          "host": "blocked.example",
+          "port": 443,
+          "action": "deny",
+          "mode": "allow_list",
+          "rule": "deny blocked.example",
+          "reason": "blocked for the demo",
+          "dial_host": "blocked.example:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-not-allow-listed",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "allowed.example",
+          "port": 0
+        }
+      ],
+      "client": "050100050100030d6f746865722e6578616d706c6501bb",
+      "reply": "050005010001000000000000",
+      "audit": [
+        {
+          "host": "other.example",
+          "port": 443,
+          "action": "deny",
+          "mode": "allow_list",
+          "rule": "",
+          "dial_host": "other.example:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-blocked-by-a-hook",
+      "mode": "proxy",
+      "hooks": true,
+      "client": "050100050100030b6578616d706c652e636f6d01bb",
+      "reply": "050005010001000000000000",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-the-policy-cannot-judge",
+      "mode": "proxy",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "exa*mple.com",
+          "port": 0
+        }
+      ],
+      "client": "050100050100030b6578616d706c652e636f6d01bb",
+      "reply": "050005010001000000000000",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "deny",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-to-an-upstream-that-speaks-first",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a62616e6e6572"
+      },
+      "client": "050100050100030b6578616d706c652e636f6d01bb",
+      "reply": "05000500000100000000000062616e6e6572",
+      "mask_bind": true,
+      "upstream_request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "no-acceptable-method",
+      "mode": "proxy",
+      "client": "050102",
+      "reply": "05ff",
+      "audit": []
+    },
+    {
+      "name": "unsupported-command",
+      "mode": "proxy",
+      "client": "050100050200030b6578616d706c652e636f6d01bb",
+      "reply": "050005070001000000000000",
+      "audit": []
+    },
+    {
+      "name": "unsupported-address-type",
+      "mode": "proxy",
+      "client": "05010005010009",
+      "reply": "0500",
+      "audit": []
+    },
+    {
+      "name": "empty-domain",
+      "mode": "proxy",
+      "client": "0501000501000300",
+      "reply": "0500",
+      "audit": []
+    },
+    {
+      "name": "zero-destination-port",
+      "mode": "proxy",
+      "client": "050100050100030b6578616d706c652e636f6d0000",
+      "reply": "0500",
+      "audit": []
+    },
+    {
+      "name": "bad-request-version",
+      "mode": "proxy",
+      "client": "050100040100017f0000010050",
+      "reply": "0500",
+      "audit": []
+    },
+    {
+      "name": "nothing-after-the-greeting",
+      "mode": "proxy",
+      "client": "050100",
+      "reply": "0500",
+      "audit": []
+    }
+  ],
+  "http": [
+    {
+      "name": "connect-allowed-through-an-upstream",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "request": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "payload": "70696e67",
+      "status": 200,
+      "head": "485454502f312e312032303020436f6e6e656374696f6e2045737461626c69736865640d0a0d0a",
+      "body": "70696e67",
+      "upstream_request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-denied",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "deny",
+          "host": "blocked.example",
+          "port": 0,
+          "reason": "blocked for the demo"
+        }
+      ],
+      "request": "CONNECT blocked.example:443 HTTP/1.1\r\nHost: blocked.example:443\r\n\r\n",
+      "status": 403,
+      "body": "6e657470726f78793a2064657374696e6174696f6e206e6f7420616c6c6f7765643a20626c6f636b656420666f72207468652064656d6f0a",
+      "audit": [
+        {
+          "host": "blocked.example",
+          "port": 443,
+          "action": "deny",
+          "mode": "allow_list",
+          "rule": "deny blocked.example",
+          "reason": "blocked for the demo",
+          "dial_host": "blocked.example:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-not-allow-listed",
+      "mode": "allow_list",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "allowed.example",
+          "port": 0
+        }
+      ],
+      "request": "CONNECT other.example:443 HTTP/1.1\r\nHost: other.example:443\r\n\r\n",
+      "status": 403,
+      "body": "6e657470726f78793a2064657374696e6174696f6e206e6f7420616c6c6f7765640a",
+      "audit": [
+        {
+          "host": "other.example",
+          "port": 443,
+          "action": "deny",
+          "mode": "allow_list",
+          "rule": "",
+          "dial_host": "other.example:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-blocked-by-a-hook",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e3120323030204f4b0d0a0d0a",
+        "echo": true
+      },
+      "hooks": true,
+      "request": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "status": 403,
+      "body": "6e657470726f78793a20636f6e6e65637420626c6f636b656420627920686f6f6b0a",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    },
+    {
+      "name": "connect-the-policy-cannot-judge",
+      "mode": "proxy",
+      "rules": [
+        {
+          "action": "allow",
+          "host": "exa*mple.com",
+          "port": 0
+        }
+      ],
+      "request": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "status": 502,
+      "body": "6e657470726f78793a206e657470726f78793a20706f6c696379206d61746368657220756e617661696c61626c650a",
+      "audit": []
+    },
+    {
+      "name": "connect-to-an-upstream-that-refuses",
+      "mode": "proxy",
+      "upstream": {
+        "scheme": "http",
+        "script": "485454502f312e312034303320466f7262696464656e0d0a0d0a"
+      },
+      "request": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "status": 200,
+      "head": "485454502f312e312032303020436f6e6e656374696f6e2045737461626c69736865640d0a0d0a",
+      "upstream_request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a0d0a",
+      "audit": [
+        {
+          "host": "example.com",
+          "port": 443,
+          "action": "allow",
+          "mode": "proxy",
+          "rule": "",
+          "dial_host": "example.com:443"
+        }
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "name": "http-upstream-sees-the-connect",
+      "scheme": "http",
+      "target": "example.com:443",
+      "script": "485454502f312e3120323030204f4b0d0a0d0a",
+      "request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a0d0a"
+    },
+    {
+      "name": "http-upstream-sees-credentials",
+      "scheme": "http",
+      "user": "user",
+      "has_password": true,
+      "password": "pass",
+      "target": "example.com:443",
+      "script": "485454502f312e3120323030204f4b0d0a0d0a",
+      "request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a50726f78792d417574686f72697a6174696f6e3a2042617369632064584e6c636a707759584e7a0d0a0d0a"
+    },
+    {
+      "name": "http-upstream-sees-a-user-without-a-password",
+      "scheme": "http",
+      "user": "user",
+      "target": "example.com:443",
+      "script": "485454502f312e3120323030204f4b0d0a0d0a",
+      "request": "434f4e4e454354206578616d706c652e636f6d3a34343320485454502f312e310d0a486f73743a206578616d706c652e636f6d3a3434330d0a50726f78792d417574686f72697a6174696f6e3a2042617369632064584e6c636a6f3d0d0a0d0a"
+    },
+    {
+      "name": "socks5-upstream-sees-the-connect",
+      "scheme": "socks5",
+      "target": "example.com:443",
+      "script": "485454502f312e3120323030204f4b0d0a0d0a",
+      "request": "050100050100030b6578616d706c652e636f6d01bb"
+    },
+    {
+      "name": "socks5-upstream-sees-the-handshake",
+      "scheme": "socks5",
+      "user": "user",
+      "has_password": true,
+      "password": "pass",
+      "require_auth": true,
+      "target": "example.com:443",
+      "script": "485454502f312e3120323030204f4b0d0a0d0a",
+      "request": "050200020104757365720470617373050100030b6578616d706c652e636f6d01bb"
+    }
+  ]
+}

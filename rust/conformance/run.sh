@@ -173,6 +173,21 @@ if ! cmp -s "$out/proxy-contract.json" "$conf/proxy-contract.json"; then
   exit 1
 fi
 
+echo "==> wire contract"
+# The proxy's other half: what a SOCKS5 or HTTP CONNECT session answers, the
+# audit records it produces, and what an upstream receives and returns --
+# replayed by crates/flowcraft-utils/tests/wire_contract.rs. The rows are not
+# pure functions of their input, so the dump is what core's sockets said: the
+# bind address is masked (it reports an ephemeral local port) and nothing else
+# is. Regenerating it is a deliberate act, like every other half.
+"$out/oracle" -wire-contract > "$out/wire-contract.json"
+if ! cmp -s "$out/wire-contract.json" "$conf/wire-contract.json"; then
+  echo "rust/conformance/wire-contract.json no longer matches core:" >&2
+  diff "$conf/wire-contract.json" "$out/wire-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -wire-contract) > rust/conformance/wire-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

@@ -385,8 +385,9 @@ pub fn split_host_port(hostport: &str, default_port: i32) -> (String, i32) {
     }
 }
 
-/// `net.SplitHostPort`: the split core falls back from.
-fn split_host_port_strict(hostport: &str) -> Option<(&str, &str)> {
+/// `net.SplitHostPort`: the split core falls back from, and the one the SOCKS5
+/// client refuses on (`golang.org/x/net` calls it directly, so no fallback).
+pub fn split_host_port_strict(hostport: &str) -> Option<(&str, &str)> {
     let bytes = hostport.as_bytes();
     let last_colon = hostport.rfind(':')?;
     if bytes.first() == Some(&b'[') {
