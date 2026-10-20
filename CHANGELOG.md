@@ -12,7 +12,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.8.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.9.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 | `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
@@ -20,6 +20,12 @@ Release PR before their tags are published.
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.9.0` - 2026-10-20
+
+### Changed
+
+- feat(core)!: replace the stringly-typed assembly protocol with a typed one, so a deployment is type-checked before anything is constructed. `resource.Factory` is generic (`New` returns the value's own type), the registry keeps that type as the entry's build type, and a dependency is declared and read through one handle (`resource.Require[tool.Source]("tool")` contributes the `Spec` requirement and reads the value), with `Input.deps` unexported so a factory can only read what it declared; `Register` is a free function because Go has no generic methods. `deploy.Plan` is a new pure phase: it resolves every kind, validates supplied and required deps, checks the DAG, and checks every edge's Go type — a factory's build type, a container's declared item type or an external's injected type against the consumer's requirement — including agent engine and hook sockets and the secret-store socket the assembler itself requires, reporting every dependency edge together and naming the resource and dep; `Plan.Build` then only constructs, `Builder.Build` is Plan plus Build, and `Builder.Deploy` adds Wire. Reads are typed (`deploy.Resolve`, `Collect`, `CollectNamed`) and internal wiring moved off `Result.Value`, which stays as the dynamic accessor for host-level discovery where the resource name comes from configuration. `resource.DeploymentBinder(any)` becomes `deploy.Binder` over a typed `deploy.View` (a stale untyped implementation is now a loud error instead of a silent skip), and injected externals carry their Go type via `deploy.NewExternal`/`runtime.NewExternal`, so a mismatched injection is a startup error. Removed: `DepSpec`, `Input.Dep`/`DepsMany`, `validateDeps`, `validateExternalContracts`. Fixed along the way: the memory hooks declared no dependency while reading one, so the assembly could never be supplied through a document (`memory/context` and `memory/turn` now declare it); the delegation directory stopped satisfying the binder contract and silently never bound; a typed read names the concrete dep key (`unit.a`, not `unit`) and distinguishes nil from a typed nil; `Spec.DepSpecFor` resolves an exact dep name before a `Many` prefix, so a spec declaring both `tool` and `tool.x` no longer checks `tool.x` against the wrong contract; `Specs()` clones so a caller cannot mutate a registered factory. A migration guide is in `docs/migrations/core-v0.9.0.md`.
 
 ## `core/v0.8.1` - 2026-10-20
 
