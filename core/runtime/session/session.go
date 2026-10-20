@@ -548,8 +548,14 @@ func (s *Session) startTurnLocked(
 	// confirmed deltas, so it explicitly blocks instead of using the
 	// bus default (external Runtime.Attach consumers keep the
 	// non-blocking default).
+	// The subscription rides the turn's own context so the coordinator's
+	// deliveries and its run-end drain stay inside the turn's span, but it
+	// drops cancellation: the coordinator is detached deliberately at run
+	// end (finish), and a turn cancelled mid-run still has to receive its
+	// terminal run-end event — detaching on cancellation would strand the
+	// drain until the timeout. The router detaches it explicitly instead.
 	detach, attachErr := s.router.Attach(
-		context.Background(),
+		context.WithoutCancel(turn.runCtx),
 		agent.PatternRun(runID),
 		coordinator,
 		event.WithAttachBackpressure(event.Block),

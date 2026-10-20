@@ -154,12 +154,12 @@ func (r *Router) AddBus(bus Bus) error {
 		sub, err := bus.Subscribe(a.ctx, a.pattern, a.subOpts...)
 		if err != nil {
 			for _, bs := range subs {
-				logSubClose(bs.sub)
+				logSubClose(bs.attachment.ctx, bs.sub)
 			}
 			r.mu.Unlock()
 			return err
 		}
-		bs := &busSub{attachment: a, bus: bus, sub: sub, ctx: a.ctx}
+		bs := &busSub{attachment: a, bus: bus, sub: sub}
 		a.subs = append(a.subs, bs)
 		subs = append(subs, bs)
 	}
@@ -188,29 +188,30 @@ func (r *Router) RemoveBus(bus Bus) error {
 		return nil
 	}
 	delete(r.buses, bus)
-	var closed []Subscription
+	var closed []*busSub
 	for _, a := range r.attachments {
 		for i := len(a.subs) - 1; i >= 0; i-- {
 			if a.subs[i].bus != bus {
 				continue
 			}
-			closed = append(closed, a.subs[i].sub)
+			closed = append(closed, a.subs[i])
 			a.subs = append(a.subs[:i], a.subs[i+1:]...)
 		}
 	}
 	r.mu.Unlock()
-	for _, sub := range closed {
-		logSubClose(sub)
+	for _, bs := range closed {
+		logSubClose(bs.attachment.ctx, bs.sub)
 	}
 	return nil
 }
 
-// busSub is one attachment's subscription on one bus.
+// busSub is one attachment's subscription on one bus. It carries no
+// context of its own: the subscription was opened on, and is delivered
+// on, the attachment's context.
 type busSub struct {
 	attachment *routerAttachment
 	bus        Bus
 	sub        Subscription
-	ctx        context.Context
 }
 
 // Attach subscribes pattern and delivers matching envelopes to sink
@@ -266,13 +267,13 @@ func (r *Router) Attach(
 		sub, err := bus.Subscribe(ctx, pattern, subOpts...)
 		if err != nil {
 			for _, bs := range subs {
-				logSubClose(bs.sub)
+				logSubClose(bs.attachment.ctx, bs.sub)
 			}
 			delete(r.attachments, a.id)
 			r.mu.Unlock()
 			return nil, err
 		}
-		bs := &busSub{attachment: a, bus: bus, sub: sub, ctx: ctx}
+		bs := &busSub{attachment: a, bus: bus, sub: sub}
 		a.subs = append(a.subs, bs)
 		subs = append(subs, bs)
 	}
@@ -297,18 +298,16 @@ func (r *Router) Close() error {
 	}
 	r.closed = true
 	r.buses = make(map[Bus]struct{})
-	var subs []Subscription
+	var subs []*busSub
 	for _, a := range r.attachments {
-		for _, bs := range a.subs {
-			subs = append(subs, bs.sub)
-		}
+		subs = append(subs, a.subs...)
 		a.subs = nil
 	}
 	r.attachments = make(map[string]*routerAttachment)
 	r.mu.Unlock()
 
-	for _, sub := range subs {
-		logSubClose(sub)
+	for _, bs := range subs {
+		logSubClose(bs.attachment.ctx, bs.sub)
 	}
 	r.wg.Wait()
 	return nil
@@ -325,7 +324,7 @@ func (r *Router) detach(a *routerAttachment, cause error) {
 		a.subs = nil
 		r.mu.Unlock()
 		for _, bs := range subs {
-			logSubClose(bs.sub)
+			logSubClose(a.ctx, bs.sub)
 		}
 		if cause != nil && a.onDetach != nil {
 			a.onDetach(cause)
@@ -334,13 +333,14 @@ func (r *Router) detach(a *routerAttachment, cause error) {
 }
 
 // logSubClose best-effort closes a subscription and leaves a failed
-// close visible to telemetry.
-func logSubClose(sub Subscription) {
+// close visible to telemetry on the context the subscription was
+// opened with.
+func logSubClose(ctx context.Context, sub Subscription) {
 	if sub == nil {
 		return
 	}
 	if err := sub.Close(); err != nil {
-		telemetry.WarnErr(context.Background(),
+		telemetry.WarnErr(ctx,
 			"event router: close subscription failed", err,
 			attribute.String("event.subscription", string(sub.ID())))
 	}
@@ -372,11 +372,11 @@ func (a *routerAttachment) runBus(bs *busSub) {
 				a.subEnded(bs)
 				return
 			}
-			if err := a.sink.OnEnvelope(bs.ctx, env); err != nil {
+			if err := a.sink.OnEnvelope(a.ctx, env); err != nil {
 				a.router.detach(a, err)
 				return
 			}
-		case <-bs.ctx.Done():
+		case <-a.ctx.Done():
 			a.router.detach(a, nil)
 			return
 		}

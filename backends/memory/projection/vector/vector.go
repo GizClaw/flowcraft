@@ -204,10 +204,14 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 // serving path -- a query's load has to stay the query's own -- but it pays
 // the same materialization, so a reading that adds the two sees the whole
 // scope's first read.
-func (index *Index) warmSnapshots(scope corememory.Scope) {
+func (index *Index) warmSnapshots(ctx context.Context, scope corememory.Scope) {
+	// The warm keeps running after the write that triggered it returns, so the
+	// read must not inherit the caller's cancellation; dropping only the
+	// cancellation keeps the write's span on the warm-up's load.
+	readCtx := context.WithoutCancel(ctx)
 	go func() {
 		started := time.Now()
-		_, loaded, err := index.cachedSnapshot(context.Background(), scope)
+		_, loaded, err := index.cachedSnapshot(readCtx, scope)
 		// A warm that failed is recorded too: it is the reason a later query
 		// pays a load of its own, and a warm nobody can see is how a state
 		// that cannot be read stayed invisible.
@@ -334,7 +338,7 @@ func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
-	defer index.warmSnapshots(request.Scope)
+	defer index.warmSnapshots(ctx, request.Scope)
 	defer index.invalidateScope(request.Scope)
 	if err := index.validateRequest(request); err != nil {
 		return err
@@ -380,7 +384,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	// Warm the cache for this scope after the write instead of leaving the
 	// first query to pay the materialization (measured: the cold query cost up
 	// to 22s while warm queries sat at ~0.6s).
-	defer index.warmSnapshots(delta.Scope)
+	defer index.warmSnapshots(ctx, delta.Scope)
 	defer index.invalidateScope(delta.Scope)
 	if err := delta.ValidateDocumentAddresses(); err != nil {
 		return fmt.Errorf("vector projection: %w", err)

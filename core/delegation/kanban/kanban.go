@@ -374,7 +374,7 @@ func (b *Board) Claim(ctx context.Context) (delegation.Work, error) {
 			leaseCtx, cancelLease := context.WithCancel(b.ctx)
 			b.leases[card.ID] = lease{token: leaseToken, cancel: cancelLease}
 			b.mu.Unlock()
-			b.afterTransition(snapshot)
+			b.afterTransition(ctx, snapshot)
 			return delegation.Work{
 				ID:         snapshot.ID,
 				LeaseToken: leaseToken,
@@ -464,7 +464,7 @@ func (b *Board) Complete(
 	if cancelLease != nil {
 		cancelLease()
 	}
-	b.afterTransition(snapshot)
+	b.afterTransition(ctx, snapshot)
 	return nil
 }
 
@@ -497,7 +497,7 @@ func (b *Board) NoteRunID(ctx context.Context, ref, runID string) error {
 	card.UpdatedAt = time.Now()
 	snapshot := card.clone()
 	b.mu.Unlock()
-	b.afterTransition(snapshot)
+	b.afterTransition(ctx, snapshot)
 	return nil
 }
 
@@ -511,13 +511,15 @@ func (b *Board) ClaimCard(id, consumer string) bool {
 	}
 	snapshot := b.claimLocked(card, consumer)
 	b.mu.Unlock()
-	b.afterTransition(snapshot)
+	// ClaimCard is an operational entry point with no caller context, so
+	// the transition rides the board's lifetime context.
+	b.afterTransition(b.ctx, snapshot)
 	return true
 }
 
 // Suspend parks a claimed delegation until Resume is called.
 func (b *Board) Suspend(id, resumeRef string) bool {
-	return b.transition(id, func(card *Card) bool {
+	return b.transition(b.ctx, id, func(card *Card) bool {
 		if card.Status != StatusClaimed {
 			return false
 		}
@@ -531,7 +533,7 @@ func (b *Board) Suspend(id, resumeRef string) bool {
 // Resume returns a suspended delegation to pending work.
 func (b *Board) Resume(id string) (string, bool) {
 	var resumeRef string
-	ok := b.transition(id, func(card *Card) bool {
+	ok := b.transition(b.ctx, id, func(card *Card) bool {
 		if card.Status != StatusSuspended {
 			return false
 		}
@@ -549,7 +551,7 @@ func (b *Board) Cancel(id, reason string) bool {
 		Status: delegation.StatusCanceled,
 		Error:  reason,
 	}
-	return b.transition(id, func(card *Card) bool {
+	return b.transition(b.ctx, id, func(card *Card) bool {
 		if card.Status.IsTerminal() {
 			return false
 		}
@@ -597,7 +599,7 @@ func (b *Board) Len() int {
 	return len(b.cards)
 }
 
-func (b *Board) transition(id string, mutate func(*Card) bool) bool {
+func (b *Board) transition(ctx context.Context, id string, mutate func(*Card) bool) bool {
 	b.mu.Lock()
 	card, ok := b.index[id]
 	if !ok {
@@ -621,7 +623,7 @@ func (b *Board) transition(id string, mutate func(*Card) bool) bool {
 	if cancelLease != nil {
 		cancelLease()
 	}
-	b.afterTransition(snapshot)
+	b.afterTransition(ctx, snapshot)
 	return true
 }
 
@@ -653,10 +655,15 @@ func (b *Board) takeLeaseLocked(id string) context.CancelFunc {
 	return current.cancel
 }
 
-func (b *Board) afterTransition(snapshot *Card) {
-	b.metrics.cardTransitioned(b.ctx, snapshot)
+func (b *Board) afterTransition(ctx context.Context, snapshot *Card) {
+	// The card already moved, so a cancelled caller must not lose the
+	// terminal event: publish and record on a context the caller cannot
+	// cancel, while keeping its span so the transition stays attributable
+	// to the work that caused it.
+	ctx = context.WithoutCancel(ctx)
+	b.metrics.cardTransitioned(ctx, snapshot)
 	b.notify(snapshot)
-	b.publish(b.ctx, snapshot)
+	b.publish(ctx, snapshot)
 }
 
 func (b *Board) evictLocked() {

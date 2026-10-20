@@ -402,7 +402,7 @@ func BindAgent(
 
 	var constructed []io.Closer
 	fail := func(err error) (*agent.Agent, error) {
-		closeAgentParts(constructed)
+		closeAgentParts(ctx, constructed)
 		return nil, err
 	}
 
@@ -486,7 +486,7 @@ func buildHookList[T any](
 	var values []T
 	var constructed []io.Closer
 	fail := func(err error) ([]T, error) {
-		closeAgentParts(constructed)
+		closeAgentParts(ctx, constructed)
 		return nil, err
 	}
 	want := reflect.TypeFor[T]()
@@ -555,11 +555,12 @@ func appendClosers[T any](dst []io.Closer, values []T) []io.Closer {
 }
 
 // closeAgentParts closes every constructed part in reverse order,
-// best-effort.
-func closeAgentParts(closers []io.Closer) {
+// best-effort, reporting on the build's context so a failing close stays
+// inside the build's span.
+func closeAgentParts(ctx context.Context, closers []io.Closer) {
 	for i := len(closers) - 1; i >= 0; i-- {
 		if err := closers[i].Close(); err != nil {
-			telemetry.WarnErr(context.Background(),
+			telemetry.WarnErr(ctx,
 				"deploy: close agent part failed", err)
 		}
 	}
