@@ -726,7 +726,7 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 	}
 	for {
 		_, err := session.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

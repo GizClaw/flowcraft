@@ -69,7 +69,7 @@ func (s *decodedGenerateStream[RawEvent]) Next(
 	}
 	rawEvent, err := s.raw.Next(ctx)
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			s.finishResult()
 			if s.resultErr != nil {
 				return GenerateStreamEvent{}, s.resultErr

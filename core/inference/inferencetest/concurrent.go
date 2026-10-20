@@ -2,6 +2,7 @@ package inferencetest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -97,7 +98,7 @@ func RunGenerateConcurrent(t *testing.T, suite GenerateConcurrentSuite) {
 				defer func() { _ = stream.Close() }()
 				for {
 					_, err := stream.Next(context.Background())
-					if err == io.EOF {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 					if err != nil {

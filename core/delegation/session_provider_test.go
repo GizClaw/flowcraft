@@ -2,6 +2,7 @@ package delegation
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -617,7 +618,7 @@ func (s *delegationCheckpointStore) Load(_ context.Context, execID string) (*age
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadFailPrefix != "" && strings.HasPrefix(execID, s.loadFailPrefix) {
-		return nil, errdefs.Fmt("delegation test store: read failed for %s", execID)
+		return nil, fmt.Errorf("delegation test store: read failed for %s", execID)
 	}
 	cp, ok := s.cps[execID]
 	if !ok {

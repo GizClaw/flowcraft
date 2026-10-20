@@ -550,7 +550,7 @@ func TestImageStreamTransport(t *testing.T) {
 	var events []inference.GenerateStreamEvent
 	for {
 		raw, err := rawStream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -699,7 +699,7 @@ func TestImageEditStreamTransport(t *testing.T) {
 	var events []inference.GenerateStreamEvent
 	for {
 		raw, err := rawStream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -1038,7 +1038,7 @@ func TestTTSStreamTransport(t *testing.T) {
 	var audio []byte
 	for {
 		event, err := stream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -1186,7 +1186,7 @@ func TestGenerateStreamReasoning(t *testing.T) {
 	}
 	for {
 		_, err = stream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

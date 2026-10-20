@@ -2,6 +2,7 @@ package inferencetest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -331,7 +332,7 @@ func RunTranscribeSession(t *testing.T, suite TranscriptionSessionSuite) {
 	}
 	for {
 		event, err := session.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
