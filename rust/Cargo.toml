@@ -14,6 +14,14 @@ repository = "https://github.com/GizClaw/flowcraft"
 
 [workspace.dependencies]
 base64 = "0.22.1"
+# core's `workspace.LocalWorkspace` pins its root with `os.Root`: a directory
+# handle, and per-component symlink containment, so there is no check-then-use
+# window to race. `cap-std`'s `Dir` is that primitive (openat/`openat2` beneath
+# the handle, on Windows the same rules), and it stays an *implementation
+# detail* of the local backend -- the port's `Workspace` trait is path-based, so
+# adopting it does not reshape the API (`docs/plans/2026-10-15-rust-core-port.md`
+# §4.14).
+cap-std = "4.0"
 # Host normalization is IDNA (UTS #46), and core uses golang.org/x/net's
 # Lookup profile. The options below are chosen to be that profile: STD3 rules,
 # hyphen positions checked, non-transitional, no DNS length limit. Writing the

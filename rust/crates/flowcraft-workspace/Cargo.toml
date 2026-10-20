@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+cap-std = { workspace = true }
 flowcraft-contract = { path = "../flowcraft-contract" }
 flowcraft-utils = { path = "../flowcraft-utils" }
 

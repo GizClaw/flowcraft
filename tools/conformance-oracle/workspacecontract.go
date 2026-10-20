@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -40,9 +43,15 @@ import (
 //   - `atomic-*` pins the temp name (`.a.txt.tmp` beside the target) because a
 //     failed rename names it, and pins that the temp file is gone afterwards.
 //
-// Deliberately not rows: anything that needs a real filesystem (symlink escape,
-// a directory handle, permission bits) -- that is the local backend's slice, and
-// the two implementations' containment is only comparable once the port has one.
+// The `local` section is the other half: the same questions over a real directory
+// tree, because that is where the backend's rules actually live. Its medium is a
+// temporary directory (fixtures may be symlinks, and a symlink may point outside),
+// so a row there is built from two areas: `root`, the workspace, and `outside`, a
+// sibling the links reach for. What the two filesystems must agree on is the
+// *outcome* -- and, per row, either core's sentence or, when the host wrote it, the
+// classification. `kind` names that classification; `internal` is the marker for
+// "the host's words", which is why those rows are the ones a reader must not
+// compare word for word.
 
 // wsContract is the committed document.
 type wsContract struct {
@@ -53,6 +62,8 @@ type wsContract struct {
 	Masked []string `json:"masked"`
 	// Cases are the fixtures and their answers.
 	Cases []wsCase `json:"cases"`
+	// Local is the same table over a real directory tree.
+	Local wsLocal `json:"local"`
 }
 
 // wsFile is one entry the harness writes into the medium.
@@ -60,7 +71,15 @@ type wsFile struct {
 	// Path is where it is written, relative to the view.
 	Path string `json:"path"`
 	// Data is the file's bytes.
-	Data string `json:"data"`
+	Data string `json:"data,omitempty"`
+	// Symlink, when set, makes the entry a symlink to that target instead of a
+	// file. A target of the form "abs:<path>" is made absolute against the
+	// workspace root, so no row has to name the run's temporary directory.
+	Symlink string `json:"symlink,omitempty"`
+	// Area is "outside" for a fixture that lives beside the workspace rather than
+	// in it, which is how a link out of the tree gets a target. Empty means the
+	// workspace.
+	Area string `json:"area,omitempty"`
 }
 
 // wsCase is one medium, one view over it, and the questions put to the view.
@@ -115,6 +134,11 @@ type wsOp struct {
 	Error string `json:"error,omitempty"`
 	// Violations are the records the scope logged for this operation.
 	Violations []wsViolation `json:"violations,omitempty"`
+	// Kind is the error's classification, for the rows where the sentence alone
+	// would over-assert: "internal" means the host wrote the words, so only the
+	// outcome and this field are comparable. Empty on success, and empty in the
+	// map-medium rows, whose sentences are core's own.
+	Kind string `json:"kind,omitempty"`
 }
 
 // wsEntry is one name or path in an answer.
@@ -135,6 +159,43 @@ type wsViolation struct {
 	Reason string `json:"reason"`
 }
 
+// wsLocal is the real-filesystem half of the table.
+type wsLocal struct {
+	// Note says what the section is for.
+	Note []string `json:"note"`
+	// Masked names what a reader must not compare word for word.
+	Masked []string `json:"masked"`
+	// Cases are the trees and their answers.
+	Cases []wsLocalCase `json:"cases"`
+}
+
+// wsLocalCase is one temporary tree and the questions put to it.
+type wsLocalCase struct {
+	// Name identifies the case in a mismatch.
+	Name string `json:"name"`
+	// Why says what the case is evidence of.
+	Why string `json:"why"`
+	// Kind is "raw" (the workspace itself) or "sub" (the backend's own Sub, which
+	// creates the directory and shares the handle).
+	Kind string `json:"kind,omitempty"`
+	// Prefixes are the Sub prefixes, outermost last.
+	Prefixes []string `json:"prefixes,omitempty"`
+	// Files are the fixtures, in the workspace or beside it.
+	Files []wsFile `json:"files,omitempty"`
+	// Build is the refusal a Sub answered with instead of a view: the prefix a
+	// symlink made escape the root is refused before any operation runs.
+	Build string `json:"build,omitempty"`
+	// BuildKind is that refusal's classification.
+	BuildKind string `json:"build_kind,omitempty"`
+	// Ops are the questions, in order.
+	Ops []wsOp `json:"ops,omitempty"`
+	// Final is the workspace tree after the operations, directories included.
+	Final []wsEntry `json:"final"`
+	// FinalOutside is the tree beside the workspace, which is how a row shows
+	// that removing a link never removed its target.
+	FinalOutside []wsFile `json:"final_outside,omitempty"`
+}
+
 // writeWorkspaceContract dumps the table to out.
 func writeWorkspaceContract(out io.Writer) error {
 	document := wsContract{
@@ -148,6 +209,24 @@ func writeWorkspaceContract(out io.Writer) error {
 	}
 	for _, testCase := range workspaceCases() {
 		document.Cases = append(document.Cases, runCase(testCase))
+	}
+	document.Local = wsLocal{
+		Note: []string{
+			"The same questions over a real directory tree: the local backend is where a path can leave the tree, and where the host, not core, writes some of the words.",
+			"Each case builds two areas: `root`, the workspace, and `outside`, a sibling the fixtures' symlinks reach for. A symlink target of `abs:<path>` is made absolute against the workspace root, so no row names the run's temporary directory.",
+			"`kind` classifies every error the way core's callers read it. When it is `internal`, the host wrote the sentence (`openat a: no such file or directory` on one side, `a path led outside of the filesystem` on the other), so the row asserts the outcome and the kind and not the words. Every other kind carries core's own sentence, and is compared exactly.",
+			"Not covered here: permission bits (the harness cannot make them portable), and Windows (its own slice, `docs/plans/2026-10-15-rust-core-port.md` section 12).",
+		},
+		Masked: []string{
+			"the sentence of every row whose kind is internal: the host's words, per platform and per implementation of the directory handle",
+		},
+	}
+	for _, testCase := range localCases() {
+		run, err := localRoot(testCase)
+		if err != nil {
+			return err
+		}
+		document.Local.Cases = append(document.Local.Cases, run)
 	}
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
@@ -425,7 +504,11 @@ func (r *recordingLogger) LogViolation(_ context.Context, record workspace.Viola
 }
 
 // runOp performs one operation and records its answer.
-func runOp(ws workspace.Workspace, logger *recordingLogger, in wsOp) wsOp {
+//
+// The error comes back too: the map-medium rows only need its sentence, while the
+// real-tree rows also record how it classifies, because there the sentence is not
+// always core's (see the file's opening comment).
+func runOp(ws workspace.Workspace, logger *recordingLogger, in wsOp) (wsOp, error) {
 	ctx := context.Background()
 	out := wsOp{Op: in.Op, Path: in.Path, Arg: in.Arg, Max: in.Max}
 	var err error
@@ -457,7 +540,14 @@ func runOp(ws workspace.Workspace, logger *recordingLogger, in wsOp) wsOp {
 		var info fs.FileInfo
 		info, err = ws.Stat(ctx, in.Path)
 		if info != nil {
-			out.Data = fmt.Sprintf("%s:%d:%t", info.Name(), info.Size(), info.IsDir())
+			// A directory's size is the host's -- an inode's blocks on one
+			// filesystem, nothing on another -- so the row states zero for it, as
+			// core's in-memory medium does. The port reports the same.
+			size := info.Size()
+			if info.IsDir() {
+				size = 0
+			}
+			out.Data = fmt.Sprintf("%s:%d:%t", info.Name(), size, info.IsDir())
 		}
 	case "walk":
 		err = workspace.Walk(ctx, ws, in.Path, func(path string, entry fs.DirEntry) error {
@@ -487,6 +577,12 @@ func runOp(ws workspace.Workspace, logger *recordingLogger, in wsOp) wsOp {
 		err = workspace.AtomicWrite(ctx, ws, in.Path, []byte(in.Arg))
 	case "copy":
 		err = workspace.Copy(ctx, ws, in.Path, in.Arg)
+	case "capabilities":
+		// The optional interface, asked as core's callers ask it: a backend that
+		// does not report is the conservative all-false answer.
+		caps := workspace.CapabilitiesOf(ws)
+		out.Data = fmt.Sprintf("%t,%t,%t,%t",
+			caps.AtomicRename, caps.ReadAfterWrite, caps.DurableOnWrite, caps.Distributed)
 	default:
 		err = fmt.Errorf("harness: unknown op %q", in.Op)
 	}
@@ -503,7 +599,7 @@ func runOp(ws workspace.Workspace, logger *recordingLogger, in wsOp) wsOp {
 		}
 		logger.records = nil
 	}
-	return out
+	return out, err
 }
 
 // errText is the error's sentence, or the empty string.
@@ -520,7 +616,7 @@ func runCase(testCase wsCase) wsCase {
 	medium.refuseRename = testCase.RefuseRename
 	ws, logger := viewOver(medium, testCase)
 	for i, in := range testCase.Ops {
-		testCase.Ops[i] = runOp(ws, logger, in)
+		testCase.Ops[i], _ = runOp(ws, logger, in)
 	}
 	testCase.Final = filesOf(medium)
 	return testCase
@@ -561,6 +657,160 @@ func filesOf(medium *memWorkspace) []wsFile {
 		out = append(out, wsFile{Path: path, Data: string(medium.files[path])})
 	}
 	return out
+}
+
+// kindOf classifies an error the way core's callers read it.
+//
+// `internal` is the answer for everything core did not wrap in one of its own
+// markers, which for the local backend means the host wrote the sentence: those
+// rows are the ones whose words cannot be compared between two filesystems.
+func kindOf(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, workspace.ErrNotFound):
+		return "not_found"
+	case errors.Is(err, workspace.ErrPathTraversal):
+		return "forbidden"
+	case errdefs.IsValidation(err):
+		return "validation"
+	case errdefs.IsForbidden(err):
+		return "forbidden"
+	case errdefs.IsNotAvailable(err):
+		return "not_available"
+	case errdefs.IsConflict(err):
+		return "conflict"
+	case errdefs.IsTimeout(err):
+		return "timeout"
+	default:
+		return "internal"
+	}
+}
+
+// localRoot builds one case's temporary tree and answers its questions.
+//
+// The two areas are the point of the section: `root` is the workspace and
+// `outside` is a sibling, so a symlink can be made to leave the tree and a row can
+// show that removing it removed the link, not what it pointed at.
+func localRoot(testCase wsLocalCase) (wsLocalCase, error) {
+	base, err := os.MkdirTemp("", "flowcraft-workspace-")
+	if err != nil {
+		return testCase, fmt.Errorf("harness: create the temporary tree: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(base)
+	}()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, area := range []string{root, outside} {
+		if err := os.MkdirAll(area, 0o700); err != nil {
+			return testCase, fmt.Errorf("harness: create %s: %w", area, err)
+		}
+	}
+	for _, fixture := range testCase.Files {
+		if err := applyLocalFixture(root, outside, fixture); err != nil {
+			return testCase, err
+		}
+	}
+
+	workspaceRoot, err := workspace.NewLocalWorkspace(root)
+	if err != nil {
+		return testCase, fmt.Errorf("harness: open the workspace: %w", err)
+	}
+	defer func() {
+		_ = workspaceRoot.Close()
+	}()
+
+	var view workspace.Workspace = workspaceRoot
+	for _, prefix := range testCase.Prefixes {
+		sub, subErr := workspaceRoot.Sub(prefix)
+		if subErr != nil {
+			// The view a link made escape is refused before any operation runs, so
+			// the row records the refusal instead of a tree's answers.
+			testCase.Build = subErr.Error()
+			testCase.BuildKind = kindOf(subErr)
+			testCase.Final = treeOf(root)
+			testCase.FinalOutside = filesOfTree(outside)
+			return testCase, nil
+		}
+		view = sub
+	}
+
+	for i, in := range testCase.Ops {
+		out, opErr := runOp(view, nil, in)
+		out.Kind = kindOf(opErr)
+		testCase.Ops[i] = out
+	}
+	testCase.Final = treeOf(root)
+	testCase.FinalOutside = filesOfTree(outside)
+	return testCase, nil
+}
+
+// applyLocalFixture writes one fixture into its area.
+func applyLocalFixture(root, outside string, fixture wsFile) error {
+	area := root
+	if fixture.Area == "outside" {
+		area = outside
+	}
+	target := filepath.Join(area, fixture.Path)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return fmt.Errorf("harness: create the parent of %q: %w", fixture.Path, err)
+	}
+	if fixture.Symlink == "" {
+		if err := os.WriteFile(target, []byte(fixture.Data), 0o600); err != nil {
+			return fmt.Errorf("harness: write %q: %w", fixture.Path, err)
+		}
+		return nil
+	}
+	link := fixture.Symlink
+	if rest, ok := strings.CutPrefix(link, "abs:"); ok {
+		// Absolute against the workspace's root, spelled by the harness so the row
+		// does not carry the run's temporary directory.
+		link = filepath.Join(root, rest)
+	}
+	if err := os.Symlink(link, target); err != nil {
+		return fmt.Errorf("harness: symlink %q: %w", fixture.Path, err)
+	}
+	return nil
+}
+
+// treeOf lists a directory tree, directories included, in walk order.
+func treeOf(root string) []wsEntry {
+	entries := []wsEntry{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		entries = append(entries, wsEntry{Path: filepath.ToSlash(rel), Dir: entry.IsDir()})
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("harness: walk %s: %v", root, err))
+	}
+	return entries
+}
+
+// filesOfTree lists a directory tree's regular files, with their bytes.
+func filesOfTree(root string) []wsFile {
+	files := []wsFile{}
+	for _, entry := range treeOf(root) {
+		if entry.Dir {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(entry.Path)))
+		if err != nil {
+			panic(fmt.Sprintf("harness: read %s: %v", entry.Path, err))
+		}
+		files = append(files, wsFile{Path: entry.Path, Data: string(data)})
+	}
+	return files
 }
 
 // workspaceCases is the table.
@@ -911,6 +1161,157 @@ func workspaceCases() []wsCase {
 				op("glob", "[a-z][0-9].go"),
 				op("glob", "*[0-9].go"),
 				op("glob", "**/[a-z][0-9].go"),
+			},
+		},
+	}
+}
+
+// localCases is the real-tree table.
+func localCases() []wsLocalCase {
+	file := func(path, data string) wsFile { return wsFile{Path: path, Data: data} }
+	outsideFile := func(path, data string) wsFile {
+		return wsFile{Path: path, Data: data, Area: "outside"}
+	}
+	link := func(path, target string) wsFile { return wsFile{Path: path, Symlink: target} }
+	op := func(name, path string) wsOp { return wsOp{Op: name, Path: path} }
+	read := func(path string) wsOp { return op("read", path) }
+
+	return []wsLocalCase{
+		{
+			Name: "local-ops",
+			Why:  "the backend's own answers over a real tree, and the same rules the map medium's rows state: implied parents, idempotent delete and remove_all, list of a missing directory, a directory's size left unstated, the capability report only a real backend can give",
+			Files: []wsFile{
+				file("a.txt", "a"),
+				file("d/c.txt", "c"),
+			},
+			Ops: []wsOp{
+				read("a.txt"),
+				op("list", ""),
+				op("list", "d"),
+				op("list", "missing"),
+				op("exists", "a.txt"),
+				op("exists", "zz"),
+				op("stat", "a.txt"),
+				op("stat", "d"),
+				op("stat", "missing"),
+				{Op: "write", Path: "e/f.txt", Arg: "f"},
+				{Op: "append", Path: "a.txt", Arg: "!"},
+				read("a.txt"),
+				{Op: "rename", Path: "a.txt", Arg: "e/g.txt"},
+				read("e/g.txt"),
+				op("delete", "e/g.txt"),
+				op("delete", "e/g.txt"),
+				op("delete", "d"),
+				op("remove_all", "d"),
+				op("remove_all", "d"),
+				op("list", ""),
+				op("walk", ""),
+				op("glob", "**/*.txt"),
+				op("capabilities", ""),
+			},
+		},
+		{
+			Name:  "local-refusals",
+			Why:   "every operation refuses a path that climbs out, an absolute path and one that only looks like a climb, before the host is asked; removing a view's root is refused in core's words",
+			Files: []wsFile{file("a.txt", "a")},
+			Ops: []wsOp{
+				read("../x"),
+				read("/etc/passwd"),
+				read("..a"),
+				{Op: "write", Path: "../x", Arg: "x"},
+				op("list", "../x"),
+				op("exists", "../x"),
+				{Op: "rename", Path: "../x", Arg: "y"},
+				op("remove_all", "../x"),
+				op("remove_all", ""),
+				op("remove_all", "."),
+			},
+		},
+		{
+			Name: "local-symlinks",
+			Why:  "what a pinned root decides: a relative link inside the tree is followed, an absolute one is refused even when it points back inside, a link that leaves is refused, a dangling one is not found, remove_all removes the link and never the target, and delete -- which stats first -- cannot even see a link that escapes",
+			Files: []wsFile{
+				file("a.txt", "aaa"),
+				file("d/kept.txt", "k"),
+				outsideFile("secret.txt", "s"),
+				link("link-in", "a.txt"),
+				link("link-abs-in", "abs:a.txt"),
+				link("link-out", "../outside/secret.txt"),
+				link("link-dir", "d"),
+				link("link-dangling", "nope.txt"),
+			},
+			Ops: []wsOp{
+				read("link-in"),
+				op("stat", "link-in"),
+				read("link-abs-in"),
+				read("link-out"),
+				read("link-dangling"),
+				op("exists", "link-dangling"),
+				op("exists", "link-out"),
+				{Op: "write", Path: "link-dir/new.txt", Arg: "n"},
+				read("d/new.txt"),
+				op("list", ""),
+				op("delete", "link-out"),
+				op("remove_all", "link-out"),
+				op("delete", "link-in"),
+				op("remove_all", "link-dir"),
+				read("d/new.txt"),
+				read("d/kept.txt"),
+				op("list", ""),
+			},
+		},
+		{
+			Name:     "local-sub",
+			Why:      "the backend's own Sub creates the prefix through the pinned handle and prefixes every operation with it; the view's own root cannot be removed, and a path that climbs is still refused lexically",
+			Kind:     "sub",
+			Prefixes: []string{"s/t"},
+			Files:    []wsFile{file("a.txt", "a")},
+			Ops: []wsOp{
+				{Op: "write", Path: "f.txt", Arg: "f"},
+				read("f.txt"),
+				op("list", ""),
+				op("walk", ""),
+				read("../a.txt"),
+				read("../../a.txt"),
+				op("remove_all", ""),
+				op("remove_all", "."),
+				{Op: "write", Path: "../../../x", Arg: "x"},
+			},
+		},
+		{
+			Name:     "local-sub-escape",
+			Why:      "a prefix a symlink made leave the tree is refused as a traversal -- the advisory classification, in core's words, before the handle is even asked to create it",
+			Kind:     "sub",
+			Prefixes: []string{"link-out/deeper"},
+			Files: []wsFile{
+				outsideFile("secret.txt", "s"),
+				link("link-out", "../outside"),
+			},
+		},
+		{
+			Name:  "local-capped",
+			Why:   "the real backend answers the bounded read itself, so the oversized file is refused at the read layer with the sentence that says so, and a zero cap is refused before the host is asked",
+			Files: []wsFile{file("big.txt", "0123456789")},
+			Ops: []wsOp{
+				{Op: "capped", Path: "big.txt", Max: 9},
+				{Op: "capped", Path: "big.txt", Max: 10},
+				{Op: "capped", Path: "big.txt", Max: 20},
+				{Op: "capped", Path: "missing.txt", Max: 5},
+				{Op: "capped", Path: "big.txt", Max: 0},
+			},
+		},
+		{
+			Name:  "local-atomic",
+			Why:   "atomic publish and copy are the helpers over this backend too: the temp file appears beside the target, the rename publishes it, and nothing is left behind",
+			Files: []wsFile{file("a.txt", "old")},
+			Ops: []wsOp{
+				{Op: "atomic", Path: "dir/a.txt", Arg: "new"},
+				read("dir/a.txt"),
+				op("list", "dir"),
+				{Op: "copy", Path: "a.txt", Arg: "b/c.txt"},
+				read("b/c.txt"),
+				op("list", "b"),
+				op("list", ""),
 			},
 		},
 	}

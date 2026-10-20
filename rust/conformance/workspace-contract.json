@@ -1757,5 +1757,772 @@
         }
       ]
     }
-  ]
+  ],
+  "local": {
+    "note": [
+      "The same questions over a real directory tree: the local backend is where a path can leave the tree, and where the host, not core, writes some of the words.",
+      "Each case builds two areas: `root`, the workspace, and `outside`, a sibling the fixtures' symlinks reach for. A symlink target of `abs:\u003cpath\u003e` is made absolute against the workspace root, so no row names the run's temporary directory.",
+      "`kind` classifies every error the way core's callers read it. When it is `internal`, the host wrote the sentence (`openat a: no such file or directory` on one side, `a path led outside of the filesystem` on the other), so the row asserts the outcome and the kind and not the words. Every other kind carries core's own sentence, and is compared exactly.",
+      "Not covered here: permission bits (the harness cannot make them portable), and Windows (its own slice, `docs/plans/2026-10-15-rust-core-port.md` section 12)."
+    ],
+    "masked": [
+      "the sentence of every row whose kind is internal: the host's words, per platform and per implementation of the directory handle"
+    ],
+    "cases": [
+      {
+        "name": "local-ops",
+        "why": "the backend's own answers over a real tree, and the same rules the map medium's rows state: implied parents, idempotent delete and remove_all, list of a missing directory, a directory's size left unstated, the capability report only a real backend can give",
+        "files": [
+          {
+            "path": "a.txt",
+            "data": "a"
+          },
+          {
+            "path": "d/c.txt",
+            "data": "c"
+          }
+        ],
+        "ops": [
+          {
+            "op": "read",
+            "path": "a.txt",
+            "ok": true,
+            "data": "a"
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "a.txt"
+              },
+              {
+                "path": "d",
+                "dir": true
+              }
+            ]
+          },
+          {
+            "op": "list",
+            "path": "d",
+            "ok": true,
+            "list": [
+              {
+                "path": "c.txt"
+              }
+            ]
+          },
+          {
+            "op": "list",
+            "path": "missing",
+            "ok": true
+          },
+          {
+            "op": "exists",
+            "path": "a.txt",
+            "ok": true,
+            "bool": true
+          },
+          {
+            "op": "exists",
+            "path": "zz",
+            "ok": true
+          },
+          {
+            "op": "stat",
+            "path": "a.txt",
+            "ok": true,
+            "data": "a.txt:1:false"
+          },
+          {
+            "op": "stat",
+            "path": "d",
+            "ok": true,
+            "data": "d:0:true"
+          },
+          {
+            "op": "stat",
+            "path": "missing",
+            "ok": false,
+            "error": "workspace: not found: missing",
+            "kind": "not_found"
+          },
+          {
+            "op": "write",
+            "path": "e/f.txt",
+            "arg": "f",
+            "ok": true
+          },
+          {
+            "op": "append",
+            "path": "a.txt",
+            "arg": "!",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "a.txt",
+            "ok": true,
+            "data": "a!"
+          },
+          {
+            "op": "rename",
+            "path": "a.txt",
+            "arg": "e/g.txt",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "e/g.txt",
+            "ok": true,
+            "data": "a!"
+          },
+          {
+            "op": "delete",
+            "path": "e/g.txt",
+            "ok": true
+          },
+          {
+            "op": "delete",
+            "path": "e/g.txt",
+            "ok": true
+          },
+          {
+            "op": "delete",
+            "path": "d",
+            "ok": false,
+            "error": "workspace: d is a directory (use RemoveAll)",
+            "kind": "validation"
+          },
+          {
+            "op": "remove_all",
+            "path": "d",
+            "ok": true
+          },
+          {
+            "op": "remove_all",
+            "path": "d",
+            "ok": true
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "e",
+                "dir": true
+              }
+            ]
+          },
+          {
+            "op": "walk",
+            "ok": true,
+            "list": [
+              {
+                "path": "e",
+                "dir": true
+              },
+              {
+                "path": "e/f.txt"
+              }
+            ]
+          },
+          {
+            "op": "glob",
+            "path": "**/*.txt",
+            "ok": true,
+            "data": "**/*.txt",
+            "list": [
+              {
+                "path": "e/f.txt"
+              }
+            ]
+          },
+          {
+            "op": "capabilities",
+            "ok": true,
+            "data": "true,true,false,false"
+          }
+        ],
+        "final": [
+          {
+            "path": "e",
+            "dir": true
+          },
+          {
+            "path": "e/f.txt"
+          }
+        ]
+      },
+      {
+        "name": "local-refusals",
+        "why": "every operation refuses a path that climbs out, an absolute path and one that only looks like a climb, before the host is asked; removing a view's root is refused in core's words",
+        "files": [
+          {
+            "path": "a.txt",
+            "data": "a"
+          }
+        ],
+        "ops": [
+          {
+            "op": "read",
+            "path": "../x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "read",
+            "path": "/etc/passwd",
+            "ok": false,
+            "error": "workspace: path traversal denied: /etc/passwd",
+            "kind": "forbidden"
+          },
+          {
+            "op": "read",
+            "path": "..a",
+            "ok": false,
+            "error": "workspace: path traversal denied: ..a",
+            "kind": "forbidden"
+          },
+          {
+            "op": "write",
+            "path": "../x",
+            "arg": "x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "list",
+            "path": "../x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "exists",
+            "path": "../x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "rename",
+            "path": "../x",
+            "arg": "y",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "remove_all",
+            "path": "../x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../x",
+            "kind": "forbidden"
+          },
+          {
+            "op": "remove_all",
+            "ok": false,
+            "error": "workspace: refusing to remove root",
+            "kind": "forbidden"
+          },
+          {
+            "op": "remove_all",
+            "path": ".",
+            "ok": false,
+            "error": "workspace: refusing to remove root",
+            "kind": "forbidden"
+          }
+        ],
+        "final": [
+          {
+            "path": "a.txt"
+          }
+        ]
+      },
+      {
+        "name": "local-symlinks",
+        "why": "what a pinned root decides: a relative link inside the tree is followed, an absolute one is refused even when it points back inside, a link that leaves is refused, a dangling one is not found, remove_all removes the link and never the target, and delete -- which stats first -- cannot even see a link that escapes",
+        "files": [
+          {
+            "path": "a.txt",
+            "data": "aaa"
+          },
+          {
+            "path": "d/kept.txt",
+            "data": "k"
+          },
+          {
+            "path": "secret.txt",
+            "data": "s",
+            "area": "outside"
+          },
+          {
+            "path": "link-in",
+            "symlink": "a.txt"
+          },
+          {
+            "path": "link-abs-in",
+            "symlink": "abs:a.txt"
+          },
+          {
+            "path": "link-out",
+            "symlink": "../outside/secret.txt"
+          },
+          {
+            "path": "link-dir",
+            "symlink": "d"
+          },
+          {
+            "path": "link-dangling",
+            "symlink": "nope.txt"
+          }
+        ],
+        "ops": [
+          {
+            "op": "read",
+            "path": "link-in",
+            "ok": true,
+            "data": "aaa"
+          },
+          {
+            "op": "stat",
+            "path": "link-in",
+            "ok": true,
+            "data": "link-in:3:false"
+          },
+          {
+            "op": "read",
+            "path": "link-abs-in",
+            "ok": false,
+            "error": "workspace: read link-abs-in: openat link-abs-in: path escapes from parent",
+            "kind": "internal"
+          },
+          {
+            "op": "read",
+            "path": "link-out",
+            "ok": false,
+            "error": "workspace: read link-out: openat link-out: path escapes from parent",
+            "kind": "internal"
+          },
+          {
+            "op": "read",
+            "path": "link-dangling",
+            "ok": false,
+            "error": "workspace: not found: link-dangling",
+            "kind": "not_found"
+          },
+          {
+            "op": "exists",
+            "path": "link-dangling",
+            "ok": true
+          },
+          {
+            "op": "exists",
+            "path": "link-out",
+            "ok": false,
+            "error": "workspace: exists link-out: statat link-out: path escapes from parent",
+            "kind": "internal"
+          },
+          {
+            "op": "write",
+            "path": "link-dir/new.txt",
+            "arg": "n",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "d/new.txt",
+            "ok": true,
+            "data": "n"
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "a.txt"
+              },
+              {
+                "path": "d",
+                "dir": true
+              },
+              {
+                "path": "link-abs-in"
+              },
+              {
+                "path": "link-dangling"
+              },
+              {
+                "path": "link-dir"
+              },
+              {
+                "path": "link-in"
+              },
+              {
+                "path": "link-out"
+              }
+            ]
+          },
+          {
+            "op": "delete",
+            "path": "link-out",
+            "ok": false,
+            "error": "workspace: delete link-out: statat link-out: path escapes from parent",
+            "kind": "internal"
+          },
+          {
+            "op": "remove_all",
+            "path": "link-out",
+            "ok": true
+          },
+          {
+            "op": "delete",
+            "path": "link-in",
+            "ok": true
+          },
+          {
+            "op": "remove_all",
+            "path": "link-dir",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "d/new.txt",
+            "ok": true,
+            "data": "n"
+          },
+          {
+            "op": "read",
+            "path": "d/kept.txt",
+            "ok": true,
+            "data": "k"
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "a.txt"
+              },
+              {
+                "path": "d",
+                "dir": true
+              },
+              {
+                "path": "link-abs-in"
+              },
+              {
+                "path": "link-dangling"
+              }
+            ]
+          }
+        ],
+        "final": [
+          {
+            "path": "a.txt"
+          },
+          {
+            "path": "d",
+            "dir": true
+          },
+          {
+            "path": "d/kept.txt"
+          },
+          {
+            "path": "d/new.txt"
+          },
+          {
+            "path": "link-abs-in"
+          },
+          {
+            "path": "link-dangling"
+          }
+        ],
+        "final_outside": [
+          {
+            "path": "secret.txt",
+            "data": "s"
+          }
+        ]
+      },
+      {
+        "name": "local-sub",
+        "why": "the backend's own Sub creates the prefix through the pinned handle and prefixes every operation with it; the view's own root cannot be removed, and a path that climbs is still refused lexically",
+        "kind": "sub",
+        "prefixes": [
+          "s/t"
+        ],
+        "files": [
+          {
+            "path": "a.txt",
+            "data": "a"
+          }
+        ],
+        "ops": [
+          {
+            "op": "write",
+            "path": "f.txt",
+            "arg": "f",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "f.txt",
+            "ok": true,
+            "data": "f"
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "f.txt"
+              }
+            ]
+          },
+          {
+            "op": "walk",
+            "ok": true,
+            "list": [
+              {
+                "path": "f.txt"
+              }
+            ]
+          },
+          {
+            "op": "read",
+            "path": "../a.txt",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../a.txt",
+            "kind": "forbidden"
+          },
+          {
+            "op": "read",
+            "path": "../../a.txt",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../../a.txt",
+            "kind": "forbidden"
+          },
+          {
+            "op": "remove_all",
+            "ok": false,
+            "error": "workspace: refusing to remove root",
+            "kind": "forbidden"
+          },
+          {
+            "op": "remove_all",
+            "path": ".",
+            "ok": false,
+            "error": "workspace: refusing to remove root",
+            "kind": "forbidden"
+          },
+          {
+            "op": "write",
+            "path": "../../../x",
+            "arg": "x",
+            "ok": false,
+            "error": "workspace: path traversal denied: ../../../x",
+            "kind": "forbidden"
+          }
+        ],
+        "final": [
+          {
+            "path": "a.txt"
+          },
+          {
+            "path": "s",
+            "dir": true
+          },
+          {
+            "path": "s/t",
+            "dir": true
+          },
+          {
+            "path": "s/t/f.txt"
+          }
+        ]
+      },
+      {
+        "name": "local-sub-escape",
+        "why": "a prefix a symlink made leave the tree is refused as a traversal -- the advisory classification, in core's words, before the handle is even asked to create it",
+        "kind": "sub",
+        "prefixes": [
+          "link-out/deeper"
+        ],
+        "files": [
+          {
+            "path": "secret.txt",
+            "data": "s",
+            "area": "outside"
+          },
+          {
+            "path": "link-out",
+            "symlink": "../outside"
+          }
+        ],
+        "build": "workspace: path traversal denied: link-out/deeper (symlink escape)",
+        "build_kind": "forbidden",
+        "final": [
+          {
+            "path": "link-out"
+          }
+        ],
+        "final_outside": [
+          {
+            "path": "secret.txt",
+            "data": "s"
+          }
+        ]
+      },
+      {
+        "name": "local-capped",
+        "why": "the real backend answers the bounded read itself, so the oversized file is refused at the read layer with the sentence that says so, and a zero cap is refused before the host is asked",
+        "files": [
+          {
+            "path": "big.txt",
+            "data": "0123456789"
+          }
+        ],
+        "ops": [
+          {
+            "op": "capped",
+            "path": "big.txt",
+            "max": 9,
+            "ok": false,
+            "error": "workspace: big.txt exceeds 9 bytes",
+            "kind": "validation"
+          },
+          {
+            "op": "capped",
+            "path": "big.txt",
+            "max": 10,
+            "ok": true,
+            "data": "0123456789"
+          },
+          {
+            "op": "capped",
+            "path": "big.txt",
+            "max": 20,
+            "ok": true,
+            "data": "0123456789"
+          },
+          {
+            "op": "capped",
+            "path": "missing.txt",
+            "max": 5,
+            "ok": false,
+            "error": "workspace: not found: missing.txt",
+            "kind": "not_found"
+          },
+          {
+            "op": "capped",
+            "path": "big.txt",
+            "ok": false,
+            "error": "workspace: read cap must be positive, got 0",
+            "kind": "validation"
+          }
+        ],
+        "final": [
+          {
+            "path": "big.txt"
+          }
+        ]
+      },
+      {
+        "name": "local-atomic",
+        "why": "atomic publish and copy are the helpers over this backend too: the temp file appears beside the target, the rename publishes it, and nothing is left behind",
+        "files": [
+          {
+            "path": "a.txt",
+            "data": "old"
+          }
+        ],
+        "ops": [
+          {
+            "op": "atomic",
+            "path": "dir/a.txt",
+            "arg": "new",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "dir/a.txt",
+            "ok": true,
+            "data": "new"
+          },
+          {
+            "op": "list",
+            "path": "dir",
+            "ok": true,
+            "list": [
+              {
+                "path": "a.txt"
+              }
+            ]
+          },
+          {
+            "op": "copy",
+            "path": "a.txt",
+            "arg": "b/c.txt",
+            "ok": true
+          },
+          {
+            "op": "read",
+            "path": "b/c.txt",
+            "ok": true,
+            "data": "old"
+          },
+          {
+            "op": "list",
+            "path": "b",
+            "ok": true,
+            "list": [
+              {
+                "path": "c.txt"
+              }
+            ]
+          },
+          {
+            "op": "list",
+            "ok": true,
+            "list": [
+              {
+                "path": "a.txt"
+              },
+              {
+                "path": "b",
+                "dir": true
+              },
+              {
+                "path": "dir",
+                "dir": true
+              }
+            ]
+          }
+        ],
+        "final": [
+          {
+            "path": "a.txt"
+          },
+          {
+            "path": "b",
+            "dir": true
+          },
+          {
+            "path": "b/c.txt"
+          },
+          {
+            "path": "dir",
+            "dir": true
+          },
+          {
+            "path": "dir/a.txt"
+          }
+        ]
+      }
+    ]
+  }
 }

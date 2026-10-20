@@ -66,9 +66,10 @@
 //! factory) belongs to the deploy-assembly slice, and `context.go`
 //! (`WithWorkspace` / `WorkspaceFrom`) to whatever ends up owning execution
 //! context: the plan is an explicit `ExecCtx` field, not a task-local. The
-//! local backend itself (`local.go`, `os.Root`, symlink containment) is the
-//! next slice of this crate; everything here is written against the trait, so
-//! it does not wait for that decision.
+//! local backend is [`local::LocalWorkspace`]: `os.Root`'s containment is taken
+//! from `cap-std`'s `Dir`, which is a directory handle with per-component
+//! resolution beneath it -- the same primitive, so the rules at the edges are
+//! the same ones (`docs/plans/2026-10-15-rust-core-port.md` §4.14).
 //!
 //! [`mem::MemWorkspace`] is the port's own: core has no in-memory workspace in
 //! this package, and the helpers need a medium that is not a filesystem to be
@@ -79,6 +80,7 @@
 mod atomic;
 mod capped;
 mod clean;
+pub mod local;
 pub mod mem;
 mod pattern;
 mod scoped;
@@ -90,6 +92,7 @@ mod walk;
 pub use atomic::{atomic_write, copy};
 pub use capped::capped;
 pub use clean::{base, clean, clean_path, dir, fold_case, join};
+pub use local::LocalWorkspace;
 pub use pattern::matches_any;
 pub use scoped::{Scoped, ScopedOptions, ViolationLogger, ViolationRecord};
 pub use sub::{Refusing, Sub, sub};
