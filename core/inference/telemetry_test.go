@@ -6,6 +6,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/inference/usage"
+
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -190,11 +192,11 @@ func testUsage() Usage {
 		TotalTokens:  13,
 		Model:        ModelRef{ID: ModelID{Provider: "fake", Name: "model-1"}},
 		LatencyMs:    42,
-		Input: InputTokenUsage{
+		Input: usage.InputTokenUsage{
 			CacheReadTokens:  &cacheRead,
 			CacheWriteTokens: &cacheWrite,
 		},
-		Billing: &BillingUsage{Cost: &Money{Currency: "usd", Units: 150, Scale: 4}},
+		Billing: &usage.BillingUsage{Cost: &usage.Money{Currency: "usd", Units: 150, Scale: 4}},
 	}
 }
 

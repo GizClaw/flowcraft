@@ -26,7 +26,7 @@ func TestBoardBridge(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	y, ok := board.GetVar("y")
+	y, ok := board.Var("y")
 	if !ok {
 		t.Fatal("board should have 'y'")
 	}
@@ -170,7 +170,7 @@ func TestBoardBridge_Channel_AppendChannel_ValidationError_ThrowsToScript(t *tes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("caught"); v != true {
+	if v, _ := board.Var("caught"); v != true {
 		t.Fatal("script should have caught the validation error")
 	}
 }
@@ -195,7 +195,7 @@ func TestBoardBridge_Channel_SetChannel_RejectsUnknownPartField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("caught"); v != true {
+	if v, _ := board.Var("caught"); v != true {
 		t.Fatal("script should have caught the typo")
 	}
 	// And the bad batch must NOT have landed on the board.

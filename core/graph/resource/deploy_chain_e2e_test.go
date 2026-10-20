@@ -204,7 +204,7 @@ func runChainDeployment(t *testing.T, doc, graph string) (string, error) {
 		agent.NoopHost{}, board); err != nil {
 		return "", err
 	}
-	seen, _ := board.GetVar("seen")
+	seen, _ := board.Var("seen")
 	text, _ := seen.(string)
 	return text, nil
 }

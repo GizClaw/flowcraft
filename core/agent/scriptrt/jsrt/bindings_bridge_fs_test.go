@@ -43,7 +43,7 @@ func TestFSBridge_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("ok"); v != true {
+	if v, _ := board.Var("ok"); v != true {
 		t.Fatal("script should have completed all assertions")
 	}
 }
@@ -90,7 +90,7 @@ func TestFSBridge_ReadError_PropagatesToScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("caught"); v != true {
+	if v, _ := board.Var("caught"); v != true {
 		t.Fatal("script should have caught the missing-file error")
 	}
 }

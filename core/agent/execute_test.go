@@ -155,7 +155,7 @@ func TestRun_AgentPreparersRunBeforeEngine(t *testing.T) {
 	eng := agent.EngineFunc(func(
 		_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board,
 	) (*agent.Board, error) {
-		if v, ok := b.GetVar("world.prepped"); ok {
+		if v, ok := b.Var("world.prepped"); ok {
 			engineSeen, _ = v.(string)
 		}
 		b.AppendChannelMessage(agent.MainChannel,

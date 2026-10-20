@@ -16,7 +16,7 @@ import (
 type RoleKind string
 
 const (
-	// RoleVar is an untyped board variable (Board.GetVar/SetVar).
+	// RoleVar is an untyped board variable (Board.Var/SetVar).
 	RoleVar RoleKind = "var"
 
 	// RoleMessages is a typed message channel (Board.Channel).

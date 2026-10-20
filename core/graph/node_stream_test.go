@@ -281,7 +281,7 @@ func TestExecuteParallelCancelledBranchIgnoringContextIsCancelledAndNotMerged(t 
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if value, ok := board.GetVar("cancelled-output"); ok {
+	if value, ok := board.Var("cancelled-output"); ok {
 		t.Fatalf("cancelled branch output merged: %v", value)
 	}
 	assertTerminalSet(t, host.terminals(t), map[string]agent.StreamDeltaType{

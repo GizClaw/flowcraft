@@ -152,10 +152,10 @@ func TestSeedBoard_CopiesInputsToVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := b.GetVar("a"); v != 1 {
+	if v, _ := b.Var("a"); v != 1 {
 		t.Errorf("vars[a] = %v, want 1", v)
 	}
-	if v, _ := b.GetVar("b"); v != "two" {
+	if v, _ := b.Var("b"); v != "two" {
 		t.Errorf("vars[b] = %v, want two", v)
 	}
 }

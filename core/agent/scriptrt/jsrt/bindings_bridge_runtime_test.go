@@ -50,7 +50,7 @@ func TestRuntimeBinding_ChildInheritsParentBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("from_child"); v != int64(99) {
+	if v, _ := board.Var("from_child"); v != int64(99) {
 		t.Fatalf("child failed to mutate inherited board: got %v (%T)", v, v)
 	}
 }
@@ -73,7 +73,7 @@ func TestRuntimeBinding_ChildSignalSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("ok"); v != true {
+	if v, _ := board.Var("ok"); v != true {
 		t.Fatal("script did not complete signal assertions")
 	}
 }
@@ -98,7 +98,7 @@ func TestRuntimeBinding_ChildErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("caught"); v != true {
+	if v, _ := board.Var("caught"); v != true {
 		t.Fatal("script did not catch propagated child error")
 	}
 }
@@ -117,7 +117,7 @@ func TestRuntimeBinding_ChildReceivesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("g"); v != "hi" {
+	if v, _ := board.Var("g"); v != "hi" {
 		t.Fatalf("child did not see config.greeting: got %v", v)
 	}
 }
@@ -137,10 +137,10 @@ func TestRuntimeBinding_PoolSizeOneRejectsNestedExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("rejected"); v != true {
+	if v, _ := board.Var("rejected"); v != true {
 		t.Fatal("script did not observe nested exec rejection")
 	}
-	if v, ok := board.GetVar("from_child"); ok && v != nil {
+	if v, ok := board.Var("from_child"); ok && v != nil {
 		t.Fatalf("child script should not have run, got from_child=%v", v)
 	}
 }
@@ -161,10 +161,10 @@ func TestRuntimeBinding_LuaPoolSizeOneRejectsNestedExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent exec failed: %v", err)
 	}
-	if v, _ := board.GetVar("rejected_lua"); v != true {
+	if v, _ := board.Var("rejected_lua"); v != true {
 		t.Fatal("script did not observe nested exec rejection")
 	}
-	if v, ok := board.GetVar("from_child"); ok && v != nil {
+	if v, ok := board.Var("from_child"); ok && v != nil {
 		t.Fatalf("child script should not have run, got from_child=%v", v)
 	}
 }
@@ -214,7 +214,7 @@ func TestRuntimeBinding_ConcurrentParentsFailFastWhenPoolBusy(t *testing.T) {
 			t.Fatal("concurrent nested exec did not fail fast")
 		}
 	}
-	if v, ok := board.GetVar("from_child"); ok && v != nil {
+	if v, ok := board.Var("from_child"); ok && v != nil {
 		t.Fatalf("child script should not have run, got from_child=%v", v)
 	}
 }

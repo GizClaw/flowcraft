@@ -148,7 +148,7 @@ func TestScriptNode_ScriptMutatesTheSameBoard(t *testing.T) {
 	if err := executeGraph(g, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if v, ok := board.GetVar("done"); !ok || v != true {
+	if v, ok := board.Var("done"); !ok || v != true {
 		t.Fatalf("board var done = %v, want true — script writes must land on the graph board", v)
 	}
 }

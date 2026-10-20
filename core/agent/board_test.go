@@ -324,17 +324,17 @@ func TestBoard_VarsRoundTrip(t *testing.T) {
 	b.SetVar("k", "v")
 	b.SetVar("n", 42)
 
-	if got, _ := b.GetVar("k"); got != "v" {
+	if got, _ := b.Var("k"); got != "v" {
 		t.Errorf("k = %v", got)
 	}
-	if got := b.GetVarString("k"); got != "v" {
-		t.Errorf("GetVarString = %q", got)
+	if got := b.VarString("k"); got != "v" {
+		t.Errorf("VarString = %q", got)
 	}
-	if got := b.GetVarString("n"); got != "" {
-		t.Errorf("GetVarString on non-string should be empty; got %q", got)
+	if got := b.VarString("n"); got != "" {
+		t.Errorf("VarString on non-string should be empty; got %q", got)
 	}
-	if got := b.GetVarString("missing"); got != "" {
-		t.Errorf("GetVarString on missing key should be empty; got %q", got)
+	if got := b.VarString("missing"); got != "" {
+		t.Errorf("VarString on missing key should be empty; got %q", got)
 	}
 
 	if v, ok := agent.GetTyped[int](b, "n"); !ok || v != 42 {
@@ -352,7 +352,7 @@ func TestBoard_VarsReturnsSnapshot(t *testing.T) {
 	got := b.Vars()
 	got["k"] = "MUTATED"
 
-	if v, _ := b.GetVar("k"); v != "v" {
+	if v, _ := b.Var("k"); v != "v" {
 		t.Errorf("Board mutated through Vars copy: got %v", v)
 	}
 }
@@ -366,7 +366,7 @@ func TestBoard_AppendSliceVar_NewKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	v, _ := b.GetVar("xs")
+	v, _ := b.Var("xs")
 	xs, ok := v.([]any)
 	if !ok || len(xs) != 2 {
 		t.Fatalf("xs = %+v, want []any{first, second}", v)
@@ -397,7 +397,7 @@ func TestBoard_UpdateSliceVarItem(t *testing.T) {
 		func(any) any { return 99 },
 	)
 
-	v, _ := b.GetVar("xs")
+	v, _ := b.Var("xs")
 	xs := v.([]any)
 	if xs[0] != 1 || xs[1] != 99 || xs[2] != 3 {
 		t.Errorf("UpdateSliceVarItem: %+v", xs)
@@ -410,7 +410,7 @@ func TestBoard_UpdateSliceVarItem_MissingKeyIsNoOp(t *testing.T) {
 		func(any) bool { return true },
 		func(any) any { return "x" },
 	)
-	if v, ok := b.GetVar("missing"); ok {
+	if v, ok := b.Var("missing"); ok {
 		t.Errorf("UpdateSliceVarItem on missing key should not create the key; got %v", v)
 	}
 }
@@ -476,7 +476,7 @@ func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 	}
 
 	restored := agent.RestoreBoard(snap)
-	if v, _ := restored.GetVar("k"); v != "v" {
+	if v, _ := restored.Var("k"); v != "v" {
 		t.Errorf("RestoreBoard k = %v, want v", v)
 	}
 	if got := restored.Channel("a"); len(got) != 1 || got[0].Content.Text() != "alpha" {
@@ -524,7 +524,7 @@ func TestBoard_RestoreFrom_EmptyChannelsRehydratesMain(t *testing.T) {
 	snap := &agent.BoardSnapshot{Vars: map[string]any{"k": "v"}}
 	b.RestoreFrom(snap)
 
-	if v, _ := b.GetVar("k"); v != "v" {
+	if v, _ := b.Var("k"); v != "v" {
 		t.Errorf("RestoreFrom did not import vars: got %v", v)
 	}
 	if got := b.Channel("a"); got != nil {
@@ -536,7 +536,7 @@ func TestBoard_RestoreFrom_NilIsNoOp(t *testing.T) {
 	b := agent.NewBoard()
 	b.SetVar("k", "v")
 	b.RestoreFrom(nil)
-	if v, _ := b.GetVar("k"); v != "v" {
+	if v, _ := b.Var("k"); v != "v" {
 		t.Errorf("RestoreFrom(nil) should be a no-op; got %v", v)
 	}
 }

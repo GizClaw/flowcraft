@@ -365,7 +365,7 @@ func (g *Graph) validateReads(board *agent.Board, slot *nodeSlot) error {
 	for _, r := range slot.reads {
 		switch r.Kind {
 		case RoleVar:
-			if _, ok := board.GetVar(r.Key); !ok && r.Required {
+			if _, ok := board.Var(r.Key); !ok && r.Required {
 				return errdefs.Validationf(
 					"graph %q node %q: required variable %q missing on board",
 					g.name, slot.def.ID, r.Key)
@@ -387,7 +387,7 @@ func (g *Graph) validateWrites(board *agent.Board, slot *nodeSlot, preInvoke map
 	for _, w := range slot.writes {
 		switch w.Kind {
 		case RoleVar:
-			if _, ok := board.GetVar(w.Key); !ok && w.Required {
+			if _, ok := board.Var(w.Key); !ok && w.Required {
 				return errdefs.Validationf(
 					"graph %q node %q: handler did not write required variable %q",
 					g.name, slot.def.ID, w.Key)

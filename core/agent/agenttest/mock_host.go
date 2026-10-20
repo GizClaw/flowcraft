@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -30,7 +30,7 @@ type MockHost struct {
 
 	mu          sync.Mutex
 	envelopes   []event.Envelope
-	usages      []inference.Usage
+	usages      []usage.Usage
 	checkpoints []agent.Checkpoint
 	prompts     []agent.UserPrompt
 	steered     []message.Message
@@ -170,9 +170,9 @@ func (h *MockHost) Checkpoints() []agent.Checkpoint {
 // ReportUsage records the usage delta. Multiple calls are kept in
 // order so tests can assert per-call totals; sum them with
 // [MockHost.TotalUsage] when only the total matters.
-func (h *MockHost) ReportUsage(_ context.Context, usage inference.Usage) error {
+func (h *MockHost) ReportUsage(_ context.Context, report usage.Usage) error {
 	h.mu.Lock()
-	h.usages = append(h.usages, usage)
+	h.usages = append(h.usages, report)
 	err := h.usageErr
 	h.mu.Unlock()
 	return err
@@ -187,19 +187,19 @@ func (h *MockHost) SetUsageError(err error) {
 }
 
 // Usages returns a copy of every usage report.
-func (h *MockHost) Usages() []inference.Usage {
+func (h *MockHost) Usages() []usage.Usage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make([]inference.Usage, len(h.usages))
+	out := make([]usage.Usage, len(h.usages))
 	copy(out, h.usages)
 	return out
 }
 
 // TotalUsage sums every recorded usage report.
-func (h *MockHost) TotalUsage() inference.Usage {
+func (h *MockHost) TotalUsage() usage.Usage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var sum inference.Usage
+	var sum usage.Usage
 	for _, u := range h.usages {
 		sum = sum.Add(u)
 	}

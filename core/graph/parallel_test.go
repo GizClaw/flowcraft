@@ -152,10 +152,10 @@ func TestExecuteParallelInterruptMergesAssistantDeltasOnlyInBranchOrder(t *testi
 	if got := board.Channel("tools"); len(got) != 0 {
 		t.Fatalf("tool channel merged on interruption: %+v", got)
 	}
-	if _, ok := board.GetVar("branch-b-partial"); ok {
+	if _, ok := board.Var("branch-b-partial"); ok {
 		t.Fatal("branch vars merged on interruption")
 	}
-	if _, ok := board.GetVar("branch-c-partial"); ok {
+	if _, ok := board.Var("branch-c-partial"); ok {
 		t.Fatal("branch vars merged on interruption")
 	}
 }

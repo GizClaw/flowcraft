@@ -262,7 +262,7 @@ func TestHookFactoriesDriveRealAssembly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, ok := next.GetVar("memory_items")
+	value, ok := next.Var("memory_items")
 	if !ok {
 		t.Fatal("memory_items was not written to the board")
 	}
