@@ -24,21 +24,3 @@ func TestWorkspaceFrom_Missing(t *testing.T) {
 		t.Fatal("expected no workspace in empty context")
 	}
 }
-
-func TestMustWorkspaceFrom_OK(t *testing.T) {
-	ws := newTestWorkspace(t)
-	ctx := WithWorkspace(context.Background(), ws)
-	got := MustWorkspaceFrom(ctx)
-	if got != ws {
-		t.Fatal("expected same workspace instance")
-	}
-}
-
-func TestMustWorkspaceFrom_Panic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic from MustWorkspaceFrom")
-		}
-	}()
-	MustWorkspaceFrom(context.Background())
-}

@@ -14,7 +14,7 @@ type ServiceProvider interface {
 
 // WithService wraps h with a ServiceProvider capability. Install this wrapper
 // before agent Host middleware so built-in decorators can preserve access
-// through agent.CapabilityFromHost.
+// through agent.CapabilityFromHost. h must be non-nil.
 func WithService(h agent.Host, service Service) agent.Host {
 	if ptr.IsNil(h) {
 		panic("delegation.WithService: Host is nil")

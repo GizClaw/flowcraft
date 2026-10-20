@@ -117,7 +117,7 @@ func (f memoryFactory) New(ctx context.Context, in res.Input) (*kanban.Board, er
 	} else if ok {
 		options = append(options, kanban.WithBus(bus))
 	}
-	return kanban.New(scopeID, options...), nil
+	return kanban.New(scopeID, options...)
 }
 
 // Register adds the kanban-memory backend factory to r.

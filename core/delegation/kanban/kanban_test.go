@@ -15,7 +15,10 @@ import (
 
 func newBoard(t *testing.T, options ...kanban.Option) *kanban.Board {
 	t.Helper()
-	board := kanban.New("test-backend", options...)
+	board, err := kanban.New("test-backend", options...)
+	if err != nil {
+		t.Fatalf("kanban.New: %v", err)
+	}
 	t.Cleanup(func() { _ = board.Close() })
 	return board
 }
@@ -318,7 +321,10 @@ func TestClaimLeaseCanceledByCancelAndClose(t *testing.T) {
 	})
 
 	t.Run("close", func(t *testing.T) {
-		board := kanban.New("lease-close")
+		board, err := kanban.New("lease-close")
+		if err != nil {
+			t.Fatalf("kanban.New: %v", err)
+		}
 		id := submit(t, board, "worker")
 		work, err := board.Claim(context.Background())
 		if err != nil {
@@ -348,7 +354,10 @@ func TestClaimLeaseCanceledByCancelAndClose(t *testing.T) {
 
 func TestClaimLeaseConcurrentCancelComplete(t *testing.T) {
 	for range 100 {
-		board := kanban.New("lease-race")
+		board, err := kanban.New("lease-race")
+		if err != nil {
+			t.Fatalf("kanban.New: %v", err)
+		}
 		id := submit(t, board, "worker")
 		work, err := board.Claim(context.Background())
 		if err != nil {
@@ -532,7 +541,10 @@ func TestClaimCancellationAndClose(t *testing.T) {
 		}
 	})
 	t.Run("close", func(t *testing.T) {
-		board := kanban.New("close-test")
+		board, err := kanban.New("close-test")
+		if err != nil {
+			t.Fatalf("kanban.New: %v", err)
+		}
 		result := make(chan error, 1)
 		go func() {
 			_, err := board.Claim(context.Background())
@@ -854,12 +866,15 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 }
 
 func TestIdempotencyRetentionMustBePositive(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("New accepted a non-positive idempotency retention")
+	for _, retention := range []time.Duration{0, -time.Second} {
+		board, err := kanban.New("invalid", kanban.WithIdempotencyRetention(retention))
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("retention = %s: err = %v, want Validation", retention, err)
 		}
-	}()
-	_ = kanban.New("invalid", kanban.WithIdempotencyRetention(0))
+		if board != nil {
+			t.Fatalf("retention = %s: board = %v, want nil", retention, board)
+		}
+	}
 }
 
 func TestCompleteRejectsInvalidTransitions(t *testing.T) {

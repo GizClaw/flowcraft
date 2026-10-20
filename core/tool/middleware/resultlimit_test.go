@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -18,7 +19,7 @@ func longTool(n int) tool.Tool {
 }
 
 func TestResultLimiter_TruncatesWithMarker(t *testing.T) {
-	exec := tool.NewExecutor(catalogWith(longTool(1000)), ResultLimiter(100))
+	exec := tool.NewExecutor(catalogWith(longTool(1000)), MustResultLimiter(100))
 	res := exec.Execute(context.Background(), call("long"))
 	if res.IsError {
 		t.Fatalf("unexpected error result: %q", res.Content.Text())
@@ -32,7 +33,7 @@ func TestResultLimiter_TruncatesWithMarker(t *testing.T) {
 }
 
 func TestResultLimiter_UnderLimitUntouched(t *testing.T) {
-	exec := tool.NewExecutor(catalogWith(longTool(50)), ResultLimiter(100))
+	exec := tool.NewExecutor(catalogWith(longTool(50)), MustResultLimiter(100))
 	res := exec.Execute(context.Background(), call("long"))
 	if res.Content.Text() != strings.Repeat("x", 50) {
 		t.Errorf("content = %q, want the full 50 runes", res.Content.Text())
@@ -44,7 +45,7 @@ func TestResultLimiter_TruncatesErrorResults(t *testing.T) {
 		message.ToolDefinition{Name: "boom"},
 		func(_ context.Context, _ string) (string, error) {
 			return "", &errLike{}
-		})), ResultLimiter(20))
+		})), MustResultLimiter(20))
 	res := exec.Execute(context.Background(), call("boom"))
 	if !res.IsError {
 		t.Fatal("expected IsError to survive truncation")
@@ -60,7 +61,7 @@ func (e *errLike) Error() string { return strings.Repeat("y", 500) }
 
 func TestResultLimiter_CustomMarker(t *testing.T) {
 	exec := tool.NewExecutor(catalogWith(longTool(1000)),
-		ResultLimiter(64, WithResultMarker("[cut here]")))
+		MustResultLimiter(64, WithResultMarker("[cut here]")))
 	res := exec.Execute(context.Background(), call("long"))
 	if !strings.HasSuffix(res.Content.Text(), "[cut here]") {
 		t.Errorf("content %q does not end with custom marker", res.Content.Text())
@@ -69,7 +70,7 @@ func TestResultLimiter_CustomMarker(t *testing.T) {
 
 func TestResultLimiter_TrimsMarkerToFitTinyLimit(t *testing.T) {
 	exec := tool.NewExecutor(catalogWith(longTool(1000)),
-		ResultLimiter(3, WithResultMarker("MARK")))
+		MustResultLimiter(3, WithResultMarker("MARK")))
 	res := exec.Execute(context.Background(), call("long"))
 	if res.Content.Text() != "MAR" {
 		t.Errorf("content = %q, want marker trimmed to 3 runes", res.Content.Text())
@@ -81,7 +82,7 @@ func TestResultLimiter_DoesNotSplitRunes(t *testing.T) {
 	exec := tool.NewExecutor(catalogWith(tool.TextTool(
 		message.ToolDefinition{Name: "cjk"},
 		func(_ context.Context, _ string) (string, error) { return content, nil })),
-		ResultLimiter(40))
+		MustResultLimiter(40))
 	res := exec.Execute(context.Background(), call("cjk"))
 	if !strings.HasSuffix(res.Content.Text(), DefaultResultMarker) {
 		t.Fatalf("content %q does not end with marker", res.Content.Text())
@@ -105,7 +106,7 @@ func TestResultLimiter_TruncatesTextAndKeepsMedia(t *testing.T) {
 			}}, nil
 		})
 
-	exec := tool.NewExecutor(catalogWith(mediaTool), ResultLimiter(50))
+	exec := tool.NewExecutor(catalogWith(mediaTool), MustResultLimiter(50))
 	res := exec.Execute(context.Background(), call("shot"))
 	if res.IsError {
 		t.Fatalf("unexpected error result: %s", res.Content.Text())
@@ -141,7 +142,7 @@ func TestResultLimiter_MarkerSurvivesExhaustedBudget(t *testing.T) {
 			}}, nil
 		})
 
-	exec := tool.NewExecutor(catalogWith(mediaTool), ResultLimiter(5))
+	exec := tool.NewExecutor(catalogWith(mediaTool), MustResultLimiter(5))
 	res := exec.Execute(context.Background(), call("shot"))
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want 2 (image + marker)", len(res.Content.Parts))
@@ -173,7 +174,7 @@ func TestResultLimiter_MediaAloneNeverTriggersMarker(t *testing.T) {
 
 	// The rendered form is far longer than the limit, but every text part
 	// fits, so nothing is dropped and the result stays intact.
-	exec := tool.NewExecutor(catalogWith(mediaTool), ResultLimiter(30))
+	exec := tool.NewExecutor(catalogWith(mediaTool), MustResultLimiter(30))
 	res := exec.Execute(context.Background(), call("shot"))
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want 2 (nothing to truncate)", len(res.Content.Parts))
@@ -183,13 +184,25 @@ func TestResultLimiter_MediaAloneNeverTriggersMarker(t *testing.T) {
 	}
 }
 
-func TestResultLimiter_InvalidMaxPanics(t *testing.T) {
+func TestResultLimiter_InvalidMaxIsValidationError(t *testing.T) {
+	for _, max := range []int{0, -1} {
+		limiter, err := ResultLimiter(max)
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("max = %d: err = %v, want Validation", max, err)
+		}
+		if limiter != nil {
+			t.Fatalf("max = %d: middleware = %v, want nil", max, limiter)
+		}
+	}
+}
+
+func TestMustResultLimiter_InvalidMaxPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Error("expected panic for non-positive max")
 		}
 	}()
-	ResultLimiter(0)
+	MustResultLimiter(0)
 }
 
 // TestResultLimiter_PartsCutKeepsTextBudget pins the shared budget promise: a
@@ -210,7 +223,7 @@ func TestResultLimiter_PartsCutKeepsTextBudget(t *testing.T) {
 				data.Parts[0],
 			}}, nil
 		},
-	)), ResultLimiter(30, WithResultPartBudget(256)))
+	)), MustResultLimiter(30, WithResultPartBudget(256)))
 
 	res := exec.Execute(context.Background(), call("cap"))
 	text := res.Content.Text()
@@ -244,7 +257,7 @@ func TestResultLimiter_BothCutsKeepOneMarker(t *testing.T) {
 				data.Parts[0],
 			}}, nil
 		},
-	)), ResultLimiter(20, WithResultPartBudget(256)))
+	)), MustResultLimiter(20, WithResultPartBudget(256)))
 
 	res := exec.Execute(context.Background(), call("both"))
 	text := res.Content.Text()
@@ -277,7 +290,7 @@ func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
 			}}, nil
 		})
 
-	exec := tool.NewExecutor(catalogWith(mediaTool), ResultPartLimiter(256))
+	exec := tool.NewExecutor(catalogWith(mediaTool), MustResultPartLimiter(256))
 	res := exec.Execute(context.Background(), call("shot"))
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want the text part plus the marker", len(res.Content.Parts))
@@ -293,7 +306,7 @@ func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
 		t.Fatalf("part 1 = %#v, want the truncation marker", res.Content.Parts[1])
 	}
 
-	within := tool.NewExecutor(catalogWith(dataTool("data", `{"answer":42}`)), ResultPartLimiter(256))
+	within := tool.NewExecutor(catalogWith(dataTool("data", `{"answer":42}`)), MustResultPartLimiter(256))
 	parts := within.Execute(context.Background(), call("data")).Content.Parts
 	if len(parts) != 1 {
 		t.Fatalf("parts = %d, want the untouched data part", len(parts))
@@ -303,13 +316,25 @@ func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
 	}
 }
 
-func TestResultPartLimiter_InvalidBudgetPanics(t *testing.T) {
+func TestResultPartLimiter_InvalidBudgetIsValidationError(t *testing.T) {
+	for _, budget := range []int{0, -1} {
+		limiter, err := ResultPartLimiter(budget)
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("budget = %d: err = %v, want Validation", budget, err)
+		}
+		if limiter != nil {
+			t.Fatalf("budget = %d: middleware = %v, want nil", budget, limiter)
+		}
+	}
+}
+
+func TestMustResultPartLimiter_InvalidBudgetPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Error("expected panic for non-positive budget")
 		}
 	}()
-	ResultPartLimiter(0)
+	MustResultPartLimiter(0)
 }
 
 // dataTool returns a tool whose result is one structured data part
@@ -324,7 +349,7 @@ func dataTool(name, payload string) tool.Tool {
 func TestResultLimiter_DropsPartOverByteBudget(t *testing.T) {
 	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
 	exec := tool.NewExecutor(catalogWith(dataTool("data", payload)),
-		ResultLimiter(1000, WithResultPartBudget(256)))
+		MustResultLimiter(1000, WithResultPartBudget(256)))
 
 	res := exec.Execute(context.Background(), call("data"))
 	if res.IsError {
@@ -344,7 +369,7 @@ func TestResultLimiter_DropsPartOverByteBudget(t *testing.T) {
 func TestResultLimiter_KeepsPartWithinByteBudget(t *testing.T) {
 	payload := `{"answer":42}`
 	exec := tool.NewExecutor(catalogWith(dataTool("data", payload)),
-		ResultLimiter(1000, WithResultPartBudget(4096)))
+		MustResultLimiter(1000, WithResultPartBudget(4096)))
 
 	res := exec.Execute(context.Background(), call("data"))
 	if len(res.Content.Parts) != 1 {
@@ -371,7 +396,7 @@ func TestResultLimiter_SpendsPartBudgetAcrossParts(t *testing.T) {
 
 	// The budget covers exactly one part, so the second is dropped.
 	exec := tool.NewExecutor(catalogWith(two),
-		ResultLimiter(1000, WithResultPartBudget(len(encoded)+8)))
+		MustResultLimiter(1000, WithResultPartBudget(len(encoded)+8)))
 	res := exec.Execute(context.Background(), call("two"))
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want one data part plus the marker", len(res.Content.Parts))
@@ -387,7 +412,7 @@ func TestResultLimiter_SpendsPartBudgetAcrossParts(t *testing.T) {
 func TestResultLimiter_PartBudgetLifted(t *testing.T) {
 	payload := `{"blob":"` + strings.Repeat("z", 8192) + `"}`
 	exec := tool.NewExecutor(catalogWith(dataTool("data", payload)),
-		ResultLimiter(1000, WithResultPartBudget(0)))
+		MustResultLimiter(1000, WithResultPartBudget(0)))
 
 	res := exec.Execute(context.Background(), call("data"))
 	if len(res.Content.Parts) != 1 {
@@ -414,7 +439,7 @@ func TestResultLimiter_MarkerKeepsPartOrder(t *testing.T) {
 	// The text budget is exhausted before any text survives, so the
 	// marker stands where the cut happened — ahead of the media that
 	// followed the dropped text.
-	exec := tool.NewExecutor(catalogWith(mediaTool), ResultLimiter(5))
+	exec := tool.NewExecutor(catalogWith(mediaTool), MustResultLimiter(5))
 	res := exec.Execute(context.Background(), call("shot"))
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want the marker plus the image", len(res.Content.Parts))

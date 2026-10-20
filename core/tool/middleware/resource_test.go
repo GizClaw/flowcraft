@@ -125,6 +125,9 @@ func TestAssemblyFactoryAppliesTruncate(t *testing.T) {
 func TestAssemblyFactoryRejectsBadResultLimit(t *testing.T) {
 	for name, settings := range map[string]string{
 		"non-positive max": `{"middlewares": {"result_limit": {"max": 0}}}`,
+		// A present concurrency block must carry a positive limit; the
+		// field used to be dropped silently.
+		"non-positive concurrency": `{"middlewares": {"concurrency": {"limit": 0}}}`,
 		// The settings subtree is strict: a typo fails the build instead
 		// of silently dropping the budget.
 		"misspelled key": `{"middlewares": {"result_limit": {"max": 100, "part_budget_byte": 1}}}`,
