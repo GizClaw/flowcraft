@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -318,7 +320,7 @@ func (store *Store) SaveDistilledConversations(
 		prepared[conversationID] = stamped
 	}
 	written := 0
-	for _, conversationID := range sortedKeys(prepared) {
+	for _, conversationID := range slices.Sorted(maps.Keys(prepared)) {
 		if _, err := store.writeDistilled(ctx, scope, conversationID, prepared[conversationID], at); err != nil {
 			return written, err
 		}
@@ -645,7 +647,7 @@ func (store *Store) distilledEntries(entries []Entry, at time.Time) ([]Entry, er
 		seen[id] = struct{}{}
 		stamped = append(stamped, Entry{
 			ID: id, Text: text, Origin: OriginDistilled,
-			Provenance: sortedStrings(entry.Provenance), UpdatedAt: at,
+			Provenance: slices.Sorted(slices.Values(entry.Provenance)), UpdatedAt: at,
 		})
 	}
 	return stamped, nil
@@ -683,15 +685,6 @@ func decodeJSON(data []byte, target any) error {
 		return err
 	}
 	return nil
-}
-
-func sortedKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func nilValue(value any) bool {

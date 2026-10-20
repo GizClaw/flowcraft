@@ -316,7 +316,9 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 			duration := *value.DurationMillis
 			p.audioDuration = &duration
 		}
-		_, _ = p.audio.Write(value.Data)
+		// bytes.Buffer never fails; the absence of an error arm here is not an
+		// omission.
+		p.audio.Write(value.Data)
 	case ImagePartDelta:
 		if !value.Interim && p.completeImage != nil && !p.imageInterim {
 			return fmt.Errorf("image emitted more than one complete value")

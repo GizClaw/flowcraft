@@ -3,7 +3,7 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,7 +48,7 @@ func TestResponseSchemaIsStrictCompatible(t *testing.T) {
 					t.Fatalf("item type/additionalProperties = %q/%v, want object/false",
 						item.Type, item.AdditionalProperties)
 				}
-				if got, want := sortedStrings(item.Required), sortedStrings(propertiesOf(item.Properties)); !equalStrings(got, want) {
+				if got, want := slices.Sorted(slices.Values(item.Required)), slices.Sorted(slices.Values(propertiesOf(item.Properties))); !equalStrings(got, want) {
 					t.Fatalf("required = %v, want every property %v; strict structured outputs reject the schema otherwise", got, want)
 				}
 				for _, key := range []string{"text", "entities", "event_time"} {
@@ -104,12 +104,6 @@ func propertiesOf(values map[string]json.RawMessage) []string {
 	for key := range values {
 		out = append(out, key)
 	}
-	return out
-}
-
-func sortedStrings(values []string) []string {
-	out := append([]string(nil), values...)
-	sort.Strings(out)
 	return out
 }
 
