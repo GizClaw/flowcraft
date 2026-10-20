@@ -88,9 +88,11 @@ A retried delegation with the same `ContextID` resumes the parked run from
 its last checkpoint instead of starting fresh, but only when **both** the
 request and the session key match:
 
-- identical message and metadata inputs → the turn replays from the
-  checkpoint under the original run id (`runtime.sessions.resume` and a
-  `checkpoint_store` are required);
+- identical message, metadata inputs, and declared run attributes → the
+  turn replays from the checkpoint under the original run id
+  (`runtime.sessions.resume` and a `checkpoint_store` are required). The
+  lineage keys the service owns (`tool.call_id`) are excluded: a retry is
+  a new tool call and still replays;
 - a different message or inputs → a fresh turn starts on the same session;
 - any failure to replay — a missing checkpoint, unreadable parked state,
   transient checkpoint-store read errors, or an engine that cannot
@@ -106,6 +108,67 @@ Agent preparers run again on resume before the engine restores the
 checkpoint board. Preparers with side effects (uploads, live-progress
 resets) must be idempotent or detect the replay via `agent.ResumeContext`
 / `Run.ResumeFrom` and skip.
+
+## Delegated policy
+
+A delegated run has its own session identity and its own execution
+environment, so a deployment that confines or gates work per session has
+to decide the subagent's policy explicitly — core never derives one from
+the caller. Two seams carry that decision, and neither makes core
+interpret it.
+
+**Declared run attributes.** `Request.Attributes` is a caller-declared map
+that reaches the subagent's `Run.Attributes` (via `agent.Request`), so
+policy keys such as `sandbox.mode` or `tenant.id` arrive as run metadata.
+Core treats the map as opaque, with two guarantees:
+
+- lineage is service-owned — declaring `tool.call_id` is a validation
+  error, and the service layers its own value over anything a lower-level
+  caller hands it, so a delegation cannot be made to look like a
+  different tool call. Middleware that forwards the caller's attribute
+  bag has to drop the lineage keys first; forwarding them as-is is
+  rejected, not silently trimmed;
+- the caller's own run attributes are **not** inherited. Deployments keep
+  run-scoped payloads there (checkpoint recovery blobs, for instance) that
+  must not appear inside a subagent, so a subagent sees only what the
+  delegation declares.
+
+Model-facing arguments cannot set them: `delegate` takes `metadata` and
+`note`, and stamps attributes only from the context.
+`delegation.WithRunAttributes` is the producer, and tool middleware is the
+natural caller — it is the last seam that still sees the caller's context
+before the service is invoked. Declared attributes take part in
+idempotency identity, so replaying an idempotency key under a different
+policy is a conflict instead of a silent reuse of the earlier (possibly
+wider) decision. `nil` and an empty map are equivalent; blank keys and
+surrounding whitespace in a key or value are validation errors, because
+the map is compared verbatim.
+
+**Session initializer.** `WithSessionInitializer` runs once per delegated
+run that has a session identity, after that identity is minted and before
+the turn starts **or resumes** on it. That is where a deployment writes
+the per-session state core does not model — sandbox mode, think level,
+model hint — into its own store. The hook fails closed: an initializer
+error fails the delegation, because a policy that could not be applied
+must not run under the store's default.
+
+The identity comes from a bound session manager, or from a
+`SessionProvider` on the manager-less path, where the hook runs just the
+same. A delegation configured with an initializer but with neither is
+rejected rather than run without the policy it was told to apply. Only
+this seam reaches a store keyed on the session: run attributes are not
+what such a store reads.
+
+Neither seam widens what the subagent may do once its policy is applied.
+In particular approval is not inherited: the subagent's asker refuses
+user prompts, so an escalation the caller could have answered fails
+closed inside the delegated run. Until that changes, a deployment whose
+subagents need a wider allowance has to grant it in the initializer
+rather than relying on a prompt.
+
+An application wired through a deployment document injects both through
+`delegation.NewServiceFactory(opts…)`, which accepts app-owned options the
+document cannot express.
 
 ## Stream inheritance
 
@@ -173,6 +236,7 @@ any other run — never through the parent's. See [runtime.md](runtime.md) for
 ## Sources of truth
 
 `core/delegation/delegation.go`, `core/delegation/service.go`,
-`core/delegation/directory.go`, `core/delegation/host.go`,
+`core/delegation/attributes.go`, `core/delegation/directory.go`,
+`core/delegation/host.go`,
 `core/delegation/hostwrap/`, `core/delegation/resource.go`,
 `core/delegation/tool/`.

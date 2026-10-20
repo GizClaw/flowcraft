@@ -1,13 +1,31 @@
 package sandbox_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
+
+// stubRunner answers every Start with NotAvailable so approval tests can
+// inspect the request without spawning anything.
+type stubRunner struct{}
+
+func (stubRunner) Close() error { return nil }
+
+func (stubRunner) Capabilities() sandbox.Capabilities { return sandbox.Capabilities{} }
+
+func (stubRunner) Start(context.Context, sandbox.SessionSpec) (sandbox.Session, error) {
+	return nil, errdefs.NotAvailablef("stub runner: no sessions")
+}
+
+func (stubRunner) List(context.Context) ([]sandbox.SessionInfo, error) { return nil, nil }
+
+func (stubRunner) Terminate(context.Context, string) error { return nil }
 
 // The workdir predicate decides whether a workdir escape prompts the
 // user, so it has to catch a parent traversal and an absolute path
@@ -74,5 +92,40 @@ func TestWorkDirOutsideRootFollowsSymlinks(t *testing.T) {
 		Opts: sandbox.ExecOptions{WorkDir: filepath.Join(link, "sub")},
 	}); !matched {
 		t.Fatal("a workdir below the escaping symlink must match")
+	}
+}
+
+// TestApprovalSeesDeclaredStdin keeps the approver's view honest: the
+// request mirrors the spawn decision (SessionSpec.Stdin, or a TTY whose
+// pty master is writable, for Start; non-empty bytes for Exec), so a
+// predicate can gate on "this command channel carries caller input".
+// One-shot bytes alone reach Start as /dev/null, so they report false.
+func TestApprovalSeesDeclaredStdin(t *testing.T) {
+	var seen []sandbox.ExecRequest
+	predicate := sandbox.PredicateFunc(func(req sandbox.ExecRequest) (string, bool) {
+		seen = append(seen, req)
+		return "", false
+	})
+	runner := sandbox.WithApproval(stubRunner{}, nil, nil, predicate)
+	ctx := context.Background()
+
+	// The stub rejects the spawn; only the request approval saw matters.
+	_, _ = runner.Start(ctx, sandbox.SessionSpec{Argv: []string{"true"}, Stdin: true})
+	_, _ = runner.Start(ctx, sandbox.SessionSpec{Argv: []string{"true"}, TTY: true})
+	_, _ = runner.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"true"}, Opts: sandbox.ExecOptions{Stdin: []byte("x")}})
+	_, _ = sandbox.Exec(ctx, runner, "true", nil,
+		sandbox.ExecOptions{Stdin: []byte("x")})
+	_, _ = sandbox.Exec(ctx, runner, "true", nil,
+		sandbox.ExecOptions{Stdin: []byte{}})
+
+	want := []bool{true, true, false, true, false}
+	if len(seen) != len(want) {
+		t.Fatalf("predicate saw %d requests, want %d", len(seen), len(want))
+	}
+	for i, req := range seen {
+		if req.Stdin != want[i] {
+			t.Errorf("request %d: Stdin = %v, want %v", i, req.Stdin, want[i])
+		}
 	}
 }

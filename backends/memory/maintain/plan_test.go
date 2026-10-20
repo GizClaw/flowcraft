@@ -18,6 +18,29 @@ func planFact(id, text string, entities []string, eventTime time.Time) factview.
 	}
 }
 
+// planRelationFact is planFact plus the two fields a rich extractor writes and
+// the relation rule reads: the predicate the fact states its relation with, and
+// the turn's own time expression.
+func planRelationFact(
+	id, text string,
+	entities []string,
+	eventTime time.Time,
+	predicate, temporalDetail string,
+) factview.Fact {
+	fact := planFact(id, text, entities, eventTime)
+	fact.Predicate, fact.TemporalDetail = predicate, temporalDetail
+	return fact
+}
+
+func namesEntity(entities []string, name string) bool {
+	for _, entity := range entities {
+		if strings.EqualFold(strings.TrimSpace(entity), name) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestProducerVersionNamesTheTuning pins what the overlay's stamp has to carry:
 // the policy version alone cannot separate two deployments that tune the same
 // policy differently, and what those two write about the same facts differs.
@@ -32,10 +55,20 @@ func TestProducerVersionNamesTheTuning(t *testing.T) {
 		"half-life":  {DecayHalfLife: 24 * time.Hour},
 		"floor":      {DecayFloor: 0.2},
 		"saturation": {RecallSaturation: 1},
+		"vocabulary": {Relations: Relations{"residence": {"lives in"}}},
 	} {
 		if config.ProducerVersion() == base {
 			t.Fatalf("the %s tuning did not change the stamp %q", name, base)
 		}
+	}
+	// The fold is part of what a vocabulary is, so two spellings of one
+	// vocabulary are one pass: the stamp identifies the judgments the pass
+	// makes, not the bytes the host wrote.
+	spelled := Config{Relations: Relations{"Residence": {"Lives_In", "Moved  To"}}}
+	folded := Config{Relations: Relations{"residence": {"lives in", "moved to"}}}
+	if spelled.ProducerVersion() != folded.ProducerVersion() {
+		t.Fatalf("the same vocabulary spelled two ways has two stamps: %q and %q",
+			spelled.ProducerVersion(), folded.ProducerVersion())
 	}
 	// Every pass carries the stamp it wrote under, so the overlay it saves is
 	// read back by the deployment that asked for it and by no other.
@@ -130,6 +163,195 @@ func TestDetectSupersedesCJKFactWithoutWordBoundaries(t *testing.T) {
 	}
 }
 
+// TestDetectSupersedesAReplacedValueWithDissimilarText is the O10 acceptance:
+// "I moved" updates -- the same single-valued relation restated in different
+// words -- are judged by the predicate both facts state, which is the case
+// text similarity cannot see. The finding also carries the window the older
+// fact was current over, which is what a "was it true then" read needs.
+func TestDetectSupersedesAReplacedValueWithDissimilarText(t *testing.T) {
+	older := planRelationFact("old", "Caroline lives in Berlin, in the flat above the bakery.",
+		[]string{"Caroline", "Berlin"}, time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
+		"lives in", "since 2019")
+	newer := planRelationFact("new",
+		"Caroline moved her whole household to Lisbon in the spring of 2024, and the bakery flat is behind her.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+		"moved to", "in the spring of 2024")
+	plan, err := Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, older},
+	}, newer.EventTime.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 {
+		t.Fatalf("plan = %#v", plan.Supersedes)
+	}
+	finding := plan.Supersedes[0]
+	if finding.FactID != "old" || finding.SupersededBy != "new" ||
+		finding.Reason != ReasonRelation || finding.Relation != "residence" {
+		t.Fatalf("finding = %+v", finding)
+	}
+	// The measured similarity is the evidence that the wording alone would not
+	// have caught this pair: 5 shared tokens out of a 20-token union (0.25),
+	// half the threshold. The window pins that the measure is still made and
+	// reported rather than skipped for a finding the text did not decide.
+	if finding.Similarity <= 0.1 || finding.Similarity >= 0.5 {
+		t.Fatalf("similarity = %v, want the pair's own measure below the threshold", finding.Similarity)
+	}
+	if !finding.ValidAt.Equal(older.EventTime) || !finding.InvalidAt.Equal(newer.EventTime) {
+		t.Fatalf("window = %v..%v, want the two facts' own dates", finding.ValidAt, finding.InvalidAt)
+	}
+	if finding.ValidDetail != "since 2019" || finding.InvalidDetail != "in the spring of 2024" {
+		t.Fatalf("window evidence = %q..%q", finding.ValidDetail, finding.InvalidDetail)
+	}
+}
+
+// TestDetectLeavesRepeatableRelationsAlone pins what the relation rule must not
+// judge. Every case is a candidate pair -- the two facts share the entity named
+// in the case -- and every case stays unmerged, because the pair is either
+// about a relation that holds several values at once, about two different
+// subjects, or about two relations that are both current.
+func TestDetectLeavesRepeatableRelationsAlone(t *testing.T) {
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	march := planRelationFact("mar", "Caroline attended the pottery class in March 2024.",
+		[]string{"Caroline"}, time.Date(2024, 3, 4, 0, 0, 0, 0, time.UTC), "attended", "in March 2024")
+	april := planRelationFact("apr", "Caroline attended the choir rehearsal in April 2024.",
+		[]string{"Caroline"}, time.Date(2024, 4, 8, 0, 0, 0, 0, time.UTC), "attended", "in April 2024")
+	berlin := planRelationFact("ber", "Caroline lives in Berlin.",
+		[]string{"Caroline", "Berlin"}, time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC), "lives in", "since 2019")
+	melanie := planRelationFact("mel", "Melanie has made Berlin her home.",
+		[]string{"Melanie", "Berlin"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC), "moved to", "in spring 2024")
+	moved := planRelationFact("mov", "Caroline moved to Lisbon in January 2024.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 1, 9, 0, 0, 0, 0, time.UTC), "moved to", "in January 2024")
+	lives := planRelationFact("liv", "Caroline lives in Lisbon.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 1, 20, 0, 0, 0, 0, time.UTC), "lives in", "since January 2024")
+	observatory := planRelationFact("obs", "Caroline works at the Berlin Observatory, which she joined in 2024.",
+		[]string{"Caroline", "Berlin", "Berlin Observatory"}, time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC), "works at", "since 2024")
+	cases := []struct {
+		name           string
+		older, newer   factview.Fact
+		shared, reason string
+	}{
+		{
+			name: "an event the subject can repeat", older: march, newer: april, shared: "Caroline",
+			reason: "two classes in two months are both current; \"attended\" holds several values",
+		},
+		{
+			name: "the same relation about two subjects", older: berlin, newer: melanie, shared: "Berlin",
+			reason: "Caroline's residence does not go stale because Melanie has one in the same city",
+		},
+		{
+			name: "the same value stated twice", older: moved, newer: lives, shared: "Caroline",
+			reason: "moving to Lisbon and living in Lisbon agree about the place, so the older fact is compatible",
+		},
+		{
+			name: "two relations that are both current", older: berlin, newer: observatory, shared: "Berlin",
+			reason: "where Caroline lives and who she works for are different relations",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if !namesEntity(test.older.Entities, test.shared) || !namesEntity(test.newer.Entities, test.shared) {
+				t.Fatalf("the fixture no longer shares %q, so it is not a candidate pair", test.shared)
+			}
+			plan, err := Detect(scope, map[string][]factview.Fact{"conv-1": {test.newer, test.older}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Supersedes) != 0 {
+				t.Fatalf("superseded: %+v (want none: %s)", plan.Supersedes, test.reason)
+			}
+		})
+	}
+}
+
+// TestDetectReadsAModelsSpellingOfAPredicate pins the fold. A predicate is the
+// model's own wording, so case, separators, and a trailing period are the same
+// predicate -- the vocabulary is matched, not the bytes.
+func TestDetectReadsAModelsSpellingOfAPredicate(t *testing.T) {
+	older := planRelationFact("old", "Caroline lives in Berlin, above the bakery.",
+		[]string{"Caroline", "Berlin"}, time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
+		"Lives_In", "since 2019")
+	newer := planRelationFact("new", "Caroline traded Berlin for Lisbon last spring.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+		"Moved-To.", "last spring")
+	plan, err := Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, older},
+	}, newer.EventTime.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].Reason != ReasonRelation ||
+		plan.Supersedes[0].Relation != "residence" {
+		t.Fatalf("plan = %#v", plan.Supersedes)
+	}
+}
+
+// TestDetectTurnsTheRelationRuleOff pins the vocabulary as what makes the
+// judgment: the acceptance fixture judged with an empty vocabulary is not
+// judged at all, because the texts alone do not reach the similarity
+// threshold. A deployment whose facts carry no predicates configures that map.
+func TestDetectTurnsTheRelationRuleOff(t *testing.T) {
+	older := planRelationFact("old", "Caroline lives in Berlin, in the flat above the bakery.",
+		[]string{"Caroline", "Berlin"}, time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
+		"lives in", "since 2019")
+	newer := planRelationFact("new",
+		"Caroline moved her whole household to Lisbon in the spring of 2024, and the bakery flat is behind her.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+		"moved to", "in the spring of 2024")
+	now := newer.EventTime.Add(24 * time.Hour)
+	plan, err := DetectWithConfig(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, older},
+	}, now, Config{Relations: Relations{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 0 {
+		t.Fatalf("an empty vocabulary still judged: %#v", plan.Supersedes)
+	}
+	plan, err = Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, older},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 {
+		t.Fatalf("the default vocabulary judged nothing: %#v", plan.Supersedes)
+	}
+}
+
+// TestDetectDatesTheWindowTheSupersededFactWasCurrentOver pins what the window
+// is measured from: the superseded fact's own date -- its event time, or when
+// the fact was created if the turn stated no time -- to the date of the fact
+// that replaced it, which is the key the pass ordered the pair by. A window
+// never runs backwards, and a turn that stated no time leaves its evidence
+// empty rather than guessed.
+func TestDetectDatesTheWindowTheSupersededFactWasCurrentOver(t *testing.T) {
+	undated := planRelationFact("undated", "Caroline lives in Berlin, and the flat is in Prenzlauer Berg.",
+		[]string{"Caroline", "Berlin"}, time.Time{}, "lives in", "")
+	undated.CreatedAt = time.Date(2023, 5, 5, 0, 0, 0, 0, time.UTC)
+	newer := planRelationFact("moved", "Caroline left Berlin and set up in Lisbon.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+		"moved to", "in the spring of 2024")
+	plan, err := Detect(corememory.Scope{RuntimeID: "runtime"}, map[string][]factview.Fact{
+		"conv-1": {newer, undated},
+	}, newer.EventTime.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 {
+		t.Fatalf("plan = %#v", plan.Supersedes)
+	}
+	finding := plan.Supersedes[0]
+	if !finding.ValidAt.Equal(undated.CreatedAt) || !finding.ValidAt.Before(finding.InvalidAt) {
+		t.Fatalf("window = %v..%v, want the created-at fallback", finding.ValidAt, finding.InvalidAt)
+	}
+	if !finding.InvalidAt.Equal(newer.EventTime) || finding.ValidDetail != "" ||
+		finding.InvalidDetail != "in the spring of 2024" {
+		t.Fatalf("finding = %+v", finding)
+	}
+}
+
 // TestDetectDecaysAgedFacts pins the decay half-life.
 func TestDetectDecaysAgedFacts(t *testing.T) {
 	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
@@ -164,6 +386,23 @@ func TestDetectValidatesConfigAndScope(t *testing.T) {
 		Config{RecallSaturation: -1})
 	if err == nil {
 		t.Fatal("negative recall saturation accepted")
+	}
+	for name, relations := range map[string]Relations{
+		"unnamed class": {"": {"lives in"}},
+		"empty phrase":  {"residence": {"  "}},
+		"two classes":   {"residence": {"lives in"}, "employer": {"Lives_In"}},
+	} {
+		_, err := DetectWithConfig(corememory.Scope{RuntimeID: "runtime"}, nil, time.Now(),
+			Config{Relations: relations})
+		if err == nil {
+			t.Fatalf("a vocabulary with a %s accepted", name)
+		}
+	}
+	// The same phrase twice in one class is a redundant way to write it, not
+	// an ambiguous one.
+	if _, err := DetectWithConfig(corememory.Scope{RuntimeID: "runtime"}, nil, time.Now(),
+		Config{Relations: Relations{"residence": {"lives in", "Lives_In"}}}); err != nil {
+		t.Fatalf("repeated phrase refused: %v", err)
 	}
 }
 

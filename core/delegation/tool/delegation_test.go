@@ -204,6 +204,38 @@ func TestDelegateExecuteModesAndNoteMetadata(t *testing.T) {
 	}
 }
 
+// TestDelegateExecuteStampsMiddlewareRunAttributes pins the policy channel:
+// deployment middleware stamps the caller's run attributes on the context
+// (delegation.WithRunAttributes), the tool copies them onto the Request,
+// and the model's arguments cannot influence them.
+func TestDelegateExecuteStampsMiddlewareRunAttributes(t *testing.T) {
+	service := &fakeService{delegate: func(sdkdelegation.Request) (sdkdelegation.Response, error) {
+		return sdkdelegation.Response{ID: "sync-1", Status: sdkdelegation.StatusSucceeded}, nil
+	}}
+	ctx := sdkdelegation.WithRunAttributes(serviceContext(service), map[string]string{
+		"sandbox.mode": "read-only",
+	})
+	delegate := tooldelegation.NewDelegate(&fakeDirectory{})
+	if _, err := delegate.Execute(ctx, `{"mode":"sync","target":"billing","input":"refund"}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := service.requests[0].Attributes; !reflect.DeepEqual(got, map[string]string{
+		"sandbox.mode": "read-only",
+	}) {
+		t.Fatalf("request attributes = %#v, want the stamped policy", got)
+	}
+
+	// No stamp: the request carries no attributes at all, rather than an
+	// empty map that would take part in idempotency comparisons.
+	if _, err := delegate.Execute(serviceContext(service),
+		`{"mode":"sync","target":"billing","input":"refund"}`); err != nil {
+		t.Fatalf("Execute without stamp: %v", err)
+	}
+	if got := service.requests[1].Attributes; got != nil {
+		t.Fatalf("request attributes without a stamp = %#v, want nil", got)
+	}
+}
+
 func TestDelegateRejectsMissingHostUnknownTargetAndStrictArguments(t *testing.T) {
 	delegate := tooldelegation.NewDelegate(&fakeDirectory{})
 	if _, err := delegate.Execute(context.Background(), `{"mode":"sync","target":"billing","input":"refund"}`); !errdefs.IsNotAvailable(err) {

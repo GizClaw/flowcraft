@@ -5,9 +5,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
+
+// drainSession reads the session's output to EOF and returns it. Read
+// blocks until data, EOF or ctx, so the order relative to Wait does not
+// matter; the log stays readable after the process exits.
+func drainSession(t *testing.T, ctx context.Context, sess sandbox.Session) string {
+	t.Helper()
+	var out []byte
+	afterSeq := int64(0)
+	for {
+		output, err := sess.Read(ctx, afterSeq, 64*1024)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, chunk := range output.Chunks {
+			out = append(out, chunk.Data...)
+		}
+		afterSeq = output.NextSeq
+		if output.EOF {
+			return string(out)
+		}
+	}
+}
 
 func TestRunnerCapabilities(t *testing.T) {
 	r := local.New(t.TempDir())
@@ -169,5 +192,125 @@ func TestRunnerCloseTerminatesSessions(t *testing.T) {
 	// A second Close must be safe and must not error.
 	if err := r.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestSessionWithoutStdinReadsEOF is the session half of the fd 0 fix:
+// a child that reads stdin with no declaration must see EOF and exit,
+// not block on a pipe nobody will ever write.
+func TestSessionWithoutStdinReadsEOF(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := local.New(t.TempDir()).Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer waitCancel()
+	exit, err := sess.Wait(waitCtx)
+	if err != nil {
+		t.Fatalf("Wait: %v (the child is blocked reading an empty stdin?)", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want code 0", exit)
+	}
+	if out := drainSession(t, ctx, sess); out != "" {
+		t.Fatalf("output = %q, want empty", out)
+	}
+}
+
+// TestSessionWithoutStdinRejectsWrite covers the declared surface: no
+// input side means Capabilities.Stdin is false, Write says so with a
+// self-explaining NotAvailable, and CloseInput stays a no-op success so
+// Exec can call it unconditionally.
+func TestSessionWithoutStdinRejectsWrite(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := local.New(t.TempDir()).Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"sleep", "30"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if sess.Capabilities().Stdin {
+		t.Error("Capabilities().Stdin = true, want false without SessionSpec.Stdin")
+	}
+	if err := sess.Write(ctx, []byte("x")); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Write error = %v, want NotAvailable", err)
+	}
+	if err := sess.CloseInput(); err != nil {
+		t.Fatalf("CloseInput = %v, want nil", err)
+	}
+}
+
+// TestSessionWithStdinStreams is the positive control: a declared input
+// side still streams bytes into the child.
+func TestSessionWithStdinStreams(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := local.New(t.TempDir()).Start(ctx, sandbox.SessionSpec{
+		Argv:  []string{"cat"},
+		Stdin: true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if !sess.Capabilities().Stdin {
+		t.Error("Capabilities().Stdin = false, want true for a declared input side")
+	}
+	if err := sess.Write(ctx, []byte("hi")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := sess.CloseInput(); err != nil {
+		t.Fatalf("CloseInput: %v", err)
+	}
+	if out := drainSession(t, ctx, sess); out != "hi" {
+		t.Fatalf("output = %q, want hi", out)
+	}
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want code 0", exit)
+	}
+}
+
+// TestTTYSessionStillWritable keeps the pty contract intact: the pty
+// master is always writable, so Stdin is true whatever the spec said,
+// and CloseInput stays NotAvailable.
+func TestTTYSessionStillWritable(t *testing.T) {
+	skipOnWindows(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := local.New(t.TempDir()).Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"sh"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if !sess.Capabilities().Stdin {
+		t.Error("Capabilities().Stdin = false, want true for a pty session")
+	}
+	if err := sess.CloseInput(); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("CloseInput error = %v, want NotAvailable", err)
 	}
 }

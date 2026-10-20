@@ -40,16 +40,30 @@ var (
 //     streams.
 //   - Rows/Cols: initial pty window size (TTY only). Non-positive
 //     values default to 24x80.
+//   - Stdin: the session will receive input through
+//     [Session.Write]/[Session.CloseInput], and is the only field that
+//     declares an input side. With TTY false it decides the child's
+//     fd 0: true gives it a pipe, false leaves cmd.Stdin nil so os/exec
+//     hands the child /dev/null — a program that branches on what fd 0
+//     is then reads its operands instead of an empty pipe that never
+//     ends (this is how `rg pattern` searches the working tree rather
+//     than stdin). Ignored when TTY is true: the pty master is always
+//     writable.
 //   - Opts: the same policy surface as Runner.Exec (WorkDir, Env, Net,
 //     Resources, Timeout). Policy is fixed at Start; Read/Write/Resize
-//     never re-negotiate it.
+//     never re-negotiate it. Start never delivers Opts.Stdin, and those
+//     bytes do not declare an input side either: a non-TTY spec that
+//     carries them without Stdin still gets /dev/null, and Write reports
+//     errdefs.NotAvailable. One-shot input is Exec's job — Exec sets
+//     Stdin itself before it calls Start, then writes and closes.
 type SessionSpec struct {
-	ID   string
-	Argv []string
-	TTY  bool
-	Rows int
-	Cols int
-	Opts ExecOptions
+	ID    string
+	Argv  []string
+	TTY   bool
+	Rows  int
+	Cols  int
+	Stdin bool
+	Opts  ExecOptions
 }
 
 // SessionStream identifies which output stream a chunk belongs to.
@@ -179,7 +193,10 @@ type SessionInfo struct {
 //     Close, including after Wait.
 //   - Write sends raw bytes to the child (stdin pipe or pty master).
 //     It writes all data or fails; a blocked child can block Write past
-//     ctx cancellation.
+//     ctx cancellation. A session started without an input side
+//     (SessionSpec.Stdin false on a pipe session) has nowhere to write
+//     and returns errdefs.NotAvailable — that is a capability the spec
+//     did not ask for, not a closed handle.
 //   - Resize is only valid for TTY sessions; pipe sessions return
 //     errdefs.NotAvailable.
 //   - Terminate sends SIGTERM, then SIGKILL after a short grace period
@@ -202,8 +219,9 @@ type Session interface {
 	Read(ctx context.Context, afterSeq int64, maxBytes int) (SessionOutput, error)
 	Write(ctx context.Context, data []byte) error
 	// CloseInput closes the process's stdin after all input has been
-	// written. Non-TTY sessions support it; TTY sessions return
-	// errdefs.NotAvailable.
+	// written. TTY sessions return errdefs.NotAvailable; a pipe session
+	// started without an input side is a no-op success, so a caller that
+	// never declared stdin needs no special case.
 	CloseInput() error
 	Resize(ctx context.Context, rows, cols int) error
 	Signal(ctx context.Context, sig SessionSignal) error
@@ -221,6 +239,7 @@ type Session interface {
 // corresponding operation returns errdefs.NotAvailable.
 type SessionCapabilities struct {
 	TTY    bool // Resize + merged TTY output; CloseInput is NotAvailable
+	Stdin  bool // Write has somewhere to go (stdin pipe, or the pty master)
 	Signal bool // Signal delivery
 	Events bool // Watch push streams
 }

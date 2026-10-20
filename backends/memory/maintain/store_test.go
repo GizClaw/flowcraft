@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	docview "github.com/GizClaw/flowcraft/backends/memory/views/document"
@@ -188,6 +189,118 @@ func TestOverlayFromAnotherPolicyIsIgnoredAndReported(t *testing.T) {
 	}
 }
 
+// TestStoreCarriesTheWindowASupersededFactWasCurrentOver pins the read-path half
+// of the relation rule: the window the pass judged is what a host reads back,
+// and the superseded fact is still served -- at the reduced factor, beside the
+// entry that says which relation replaced it. The pair is dated inside one
+// decay half-life of the pass that judged it, so the factor on the entry is the
+// supersede factor: an older fact carries the strongest of its factors, which
+// is what its own decay tests pin.
+func TestStoreCarriesTheWindowASupersededFactWasCurrentOver(t *testing.T) {
+	ctx := context.Background()
+	store, _ := testStore(t)
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	older := planRelationFact("old", "Caroline lives in Berlin, in the flat above the bakery.",
+		[]string{"Caroline", "Berlin"}, time.Date(2024, 4, 20, 0, 0, 0, 0, time.UTC), "lives in", "since 2019")
+	newer := planRelationFact("new", "Caroline moved her whole household to Lisbon this spring.",
+		[]string{"Caroline", "Lisbon"}, time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+		"moved to", "this spring")
+	plan, err := Detect(scope, map[string][]factview.Fact{"conv-1": {newer, older}},
+		newer.EventTime.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].Reason != ReasonRelation {
+		t.Fatalf("plan = %#v", plan.Supersedes)
+	}
+	if err := store.Save(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := itemKey(scope, "conv-1", "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Load(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, found := entries[identity]
+	if !found {
+		t.Fatalf("the overlay holds no entry for the superseded fact: %#v", entries)
+	}
+	if entry.SupersededBy != "new" || entry.Relation != "residence" ||
+		entry.Factor != defaultSupersedeFactor ||
+		!entry.ValidAt.Equal(older.EventTime) || !entry.InvalidAt.Equal(newer.EventTime) {
+		t.Fatalf("entry = %#v", entry)
+	}
+	// A window is not a removal: the read path still serves the fact, which is
+	// what keeps a question about the older state answerable.
+	if factor, err := store.Adjust(ctx, scope, identity); err != nil || factor != defaultSupersedeFactor {
+		t.Fatalf("factor = %v, %v", factor, err)
+	}
+}
+
+// TestOverlayFromAnotherVocabularyIsIgnored pins the vocabulary as part of the
+// pass's identity, the way the tuning is: the same facts judged under another
+// vocabulary are another pass's judgments, and this deployment's read path
+// serves the pass it runs.
+func TestOverlayFromAnotherVocabularyIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	store, kv := testStore(t)
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	extended := Config{Relations: Relations{
+		"residence": {"lives in"},
+		"hometown":  {"grew up in"},
+	}}
+	writer, err := NewStore(kv, WithConfig(extended))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := DetectWithConfig(scope, map[string][]factview.Fact{}, time.Now().UTC(), extended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Decays = []Decay{{FactID: "aged", Conversation: "conv-1", Score: 0.4}}
+	if err := writer.Save(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if scores, err := store.ScoreOverlay(ctx, scope); err != nil || len(scores) != 0 {
+		t.Fatalf("scores from another vocabulary's overlay = %#v, %v", scores, err)
+	}
+	if status, err := store.Status(ctx, scope); err != nil || !status.Stale {
+		t.Fatalf("status of another vocabulary's overlay = %+v, %v", status, err)
+	}
+	// The deployment that wrote it reads it back, so the vocabulary is what
+	// separates the two, not the document format.
+	if scores, err := writer.ScoreOverlay(ctx, scope); err != nil || len(scores) != 1 {
+		t.Fatalf("scores at the writing vocabulary = %#v, %v", scores, err)
+	}
+}
+
+// TestSaveRefusesAWindowThatRunsBackwards pins the guard on the one field a host
+// reads to answer "was this true then": a window ending before it started is
+// corrupt rather than surprising, and a refused save writes nothing.
+func TestSaveRefusesAWindowThatRunsBackwards(t *testing.T) {
+	ctx := context.Background()
+	store, _ := testStore(t)
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	plan := Plan{
+		Scope: scope, AlgorithmVersion: AlgorithmVersion,
+		Supersedes: []Supersede{{
+			FactID: "old", Conversation: "conv-1", SupersededBy: "new", Reason: ReasonRelation,
+			ValidAt:   time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC),
+			InvalidAt: time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
+		}},
+	}
+	err := store.Save(ctx, plan)
+	if err == nil || !strings.Contains(err.Error(), "window") {
+		t.Fatalf("save = %v, want a refusal naming the window", err)
+	}
+	if status, err := store.Status(ctx, scope); err != nil || status.Stored {
+		t.Fatalf("a refused save left state behind: %+v, %v", status, err)
+	}
+}
+
 // TestSaveRefusesAPlanFromAnotherPolicy pins the wiring guard: an overlay this
 // store's own read path would ignore is a mistake to write, not a state to
 // produce, so the save fails instead of publishing judgments nobody reads.
@@ -270,6 +383,139 @@ func TestRunScopeClearsAnIgnoredOverlay(t *testing.T) {
 	}
 	if again.IgnoredOverlay {
 		t.Fatalf("second pass reported an ignored overlay: %+v", again)
+	}
+}
+
+// TestRunScopeFillsTheResidentProfileBlock pins the pass's other write: the
+// distilled half of the resident block is the same judgment the overlay is,
+// made in the same pass from the same facts -- so a line whose fact this pass
+// superseded is not in it, and a conversation the pass did not judge keeps the
+// half an earlier pass wrote.
+func TestRunScopeFillsTheResidentProfileBlock(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	facts, err := factview.NewFactStore(logStore, kv, factview.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(kv, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := profile.NewStore(kv,
+		profile.WithClock(func() time.Time { return now }),
+		profile.WithConfig(profile.Config{Distill: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	seed := func(conversationID, id, text string, entities []string, at time.Time) {
+		t.Helper()
+		if _, err := facts.Add(ctx, factview.AddRequest{
+			ID: id, Generation: "generation-1", Scope: scope, ConversationID: conversationID,
+			Content:    coremessage.NewTextContent(text),
+			Entities:   entities,
+			EventTime:  at,
+			Provenance: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-" + id}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// conv-1: one older profile line the newer restates, one event that is not
+	// a line about a person at all, and one line that stands.
+	seed("conv-1", "fact-1", "Caroline loves pottery and glazing.", []string{"Caroline"}, now.Add(-3*time.Hour))
+	seed("conv-1", "fact-2", "Caroline loves pottery.", []string{"Caroline"}, now.Add(-time.Hour))
+	seed("conv-1", "fact-3", "Caroline attended the spring fair.", []string{"Caroline"}, now.Add(-2*time.Hour))
+	// conv-2: a conversation the full pass judges, holding one line.
+	seed("conv-2", "fact-4", "Nate works as a carpenter.", []string{"Nate"}, now.Add(-time.Hour))
+	// conv-3: nothing a profile line is made of.
+	seed("conv-3", "fact-5", "Nate attended the spring fair.", []string{"Nate"}, now.Add(-time.Hour))
+	for _, conversationID := range []string{"conv-1", "conv-2", "conv-3"} {
+		if err := facts.PublishActiveGeneration(ctx, scope, conversationID, "generation-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := &Service{Facts: facts, Store: store, Profiles: profiles, Clock: func() time.Time { return now }}
+	plan, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].FactID != "fact-1" {
+		t.Fatalf("supersedes = %#v", plan.Supersedes)
+	}
+
+	// The block states what holds now: the newer line, not the one this pass
+	// called replaced, and not the event.
+	block, found, err := profiles.Block(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || block.Text != "- Caroline loves pottery." {
+		t.Fatalf("block = %+v found = %t", block, found)
+	}
+	document, found, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil || !found {
+		t.Fatalf("stored block = %+v found = %t err = %v", document, found, err)
+	}
+	if document.Producer != profiles.ProducerVersion() || len(document.Distilled) != 1 ||
+		len(document.Distilled[0].Provenance) != 1 || document.Distilled[0].Provenance[0] != "fact-2" {
+		t.Fatalf("stored block = %+v", document)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-3"); err != nil || found {
+		t.Fatalf("conv-3 block = %+v found = %t err = %v, want none", block, found, err)
+	}
+
+	// An incremental pass fills what it judged and leaves the rest where it
+	// was: conv-2's block is the one that is fresh, conv-1's is untouched.
+	before, _, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = service.RunConversations(ctx, scope, []string{"conv-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Supersedes) != 0 {
+		t.Fatalf("incremental plan = %#v", plan)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-2"); err != nil || !found ||
+		block.Text != "- Nate works as a carpenter." {
+		t.Fatalf("conv-2 block = %+v found = %t err = %v", block, found, err)
+	}
+	after, _, err := profiles.Load(ctx, scope, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) || len(after.Distilled) != 1 {
+		t.Fatalf("conv-1 block changed in a pass that did not judge it: %+v", after)
+	}
+
+	// A store whose distilled half is not served is not written either: a
+	// pass filling it would write what nothing reads.
+	unserved, err := profile.NewStore(kv, profile.WithConfig(profile.Config{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Profiles = unserved
+	if _, err := service.RunScope(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if block, found, err := profiles.Block(ctx, scope, "conv-3"); err != nil || found {
+		t.Fatalf("conv-3 block = %+v found = %t err = %v, want none", block, found, err)
 	}
 }
 

@@ -83,7 +83,10 @@ func startWithCleanSignalMask(start func() error) error {
 //
 //   - tty=true: a pty becomes the child's controlling terminal; stdout
 //     and stderr are merged into SessionStreamTTY.
-//   - tty=false: stdin is piped and stdout/stderr are tagged streams.
+//   - tty=false: stdin is piped only when spec.Stdin declares an input
+//     side; stdout/stderr are tagged streams. Without that declaration
+//     cmd.Stdin stays nil, so os/exec gives the child /dev/null and a
+//     program that tests fstat(0) reads its operands instead.
 //
 // Policy validation belongs to the backend (see ValidateExecPolicy);
 // this constructor enforces mechanics only. spec.Opts.Resources.
@@ -119,6 +122,7 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		id:         id,
 		cmd:        cmd,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
+		input:      spec.Stdin || spec.TTY,
 		done:       make(chan struct{}),
 		writeSlots: make(chan struct{}, sessionWriteConcurrency),
 	}
@@ -142,9 +146,13 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 			s.copyLoop(ptmx)
 		}()
 	} else {
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			return nil, classifyStartError(cmd.Path, err)
+		var stdin io.WriteCloser
+		if s.input {
+			var err error
+			stdin, err = cmd.StdinPipe()
+			if err != nil {
+				return nil, classifyStartError(cmd.Path, err)
+			}
 		}
 		cmd.Stdout = sessionWriter{out: s.out, stream: SessionStreamStdout}
 		cmd.Stderr = sessionWriter{out: s.out, stream: SessionStreamStderr}
@@ -153,9 +161,11 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		// ctx kill — the session lives until Terminate/Close.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := startWithCleanSignalMask(cmd.Start); err != nil {
-			if cerr := stdin.Close(); cerr != nil {
-				telemetry.WarnErr(ctx, "sandbox: close stdin pipe after start failure", cerr,
-					attribute.String("sandbox.session_id", s.id))
+			if stdin != nil {
+				if cerr := stdin.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "sandbox: close stdin pipe after start failure", cerr,
+						attribute.String("sandbox.session_id", s.id))
+				}
 			}
 			return nil, classifyStartError(cmd.Path, err)
 		}
@@ -190,6 +200,7 @@ type localSession struct {
 	cmd        *exec.Cmd
 	ptmx       *os.File
 	stdin      io.WriteCloser
+	input      bool // an input side exists: Write has somewhere to go
 	proc       *os.Process
 	pgid       int
 	out        *outputLog
@@ -226,7 +237,18 @@ func (s *localSession) Write(ctx context.Context, data []byte) error {
 	if s.isClosed() {
 		return ErrSessionClosed
 	}
-	if s.stdin == nil {
+	// Snapshot stdin under the lock: CloseInput / Close nil it out
+	// concurrently, so the writer goroutine below must never read the
+	// field itself (that would be a data race and could panic on a nil
+	// writer). input is set once at spawn and needs no lock.
+	s.mu.Lock()
+	stdin := s.stdin
+	s.mu.Unlock()
+	if stdin == nil {
+		if !s.input {
+			return errdefs.NotAvailablef(
+				"sandbox: session started without stdin; set SessionSpec.Stdin to stream input")
+		}
 		return ErrSessionClosed
 	}
 	if len(data) == 0 {
@@ -242,7 +264,7 @@ func (s *localSession) Write(ctx context.Context, data []byte) error {
 	done := make(chan error, 1)
 	go func() {
 		defer func() { <-s.writeSlots }()
-		_, err := io.Copy(s.stdin, bytes.NewReader(data))
+		_, err := io.Copy(stdin, bytes.NewReader(data))
 		done <- err
 	}()
 	select {
@@ -260,7 +282,9 @@ func (s *localSession) Write(ctx context.Context, data []byte) error {
 }
 
 // CloseInput closes the session's stdin. TTY sessions cannot close
-// their input (the pty is bidirectional) and return NotAvailable.
+// their input (the pty is bidirectional) and return NotAvailable; a
+// pipe session started without an input side is a no-op success, so
+// Exec can call it unconditionally.
 func (s *localSession) CloseInput() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -408,12 +432,13 @@ func (s *localSession) Watch(ctx context.Context) (SessionWatcher, error) {
 // Capabilities declares this session's actual surface. On unix the
 // local backend supports Signal and Watch on every session; TTY is
 // true only for pty sessions (which also makes Resize available and
-// CloseInput NotAvailable).
+// CloseInput NotAvailable). Stdin reports whether Write has somewhere
+// to go: a pipe session that declared input, or any pty session.
 func (s *localSession) Capabilities() SessionCapabilities {
 	s.mu.Lock()
 	tty := s.ptmx != nil
 	s.mu.Unlock()
-	return SessionCapabilities{TTY: tty, Signal: true, Events: true}
+	return SessionCapabilities{TTY: tty, Stdin: s.input, Signal: true, Events: true}
 }
 
 func (s *localSession) Wait(ctx context.Context) (SessionExit, error) {

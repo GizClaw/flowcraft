@@ -22,7 +22,10 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     against the runner's root (e.g. local.Runner.rootDir); absolute paths
 //     must stay inside the root or the call is rejected with
 //     ErrPathTraversal. Empty means "use the runner's root".
-//   - Stdin: bytes piped to the command's stdin. nil means no stdin.
+//   - Stdin: bytes piped to the command's stdin. nil or empty means no
+//     stdin: the child's fd 0 stays the OS default (/dev/null), so a
+//     program that branches on stdin reads its operands instead of an
+//     empty pipe. An empty slice is not "a pipe with nothing in it".
 //   - Timeout: per-call deadline. Zero means "no sandbox-imposed timeout"
 //     (the caller's ctx still applies).
 //   - Env: see EnvPolicy. Replaces the historical "inherit everything"
@@ -56,7 +59,8 @@ type ExecResult struct {
 
 // Exec is the one-shot view of a sandbox: it runs cmd to completion
 // through the runner's session capability. The command is started as a
-// non-TTY process, stdin is written and closed, stdout/stderr are
+// non-TTY process, stdin is written and closed when the caller supplied
+// any (otherwise the child's fd 0 is /dev/null), stdout/stderr are
 // collected (truncated to the first MaxOutputBytes per stream, the
 // same semantics as the former local Runner.Exec), and the exit code is
 // surfaced on ExecResult. Non-zero exits return err == nil.
@@ -90,6 +94,11 @@ func Exec(
 		Argv: append([]string{cmd}, args...),
 		Opts: opts,
 	}
+	// One-shot input is known up front, so the spec declares it: a nil
+	// or empty Stdin means "no input side" and fd 0 stays /dev/null.
+	// Start ignores Opts.Stdin, so this flag is what buys the pipe the
+	// Write below fills.
+	spec.Stdin = len(opts.Stdin) > 0
 	// The one-shot Exec contract is first-max-bytes truncation on the
 	// returned result, while the session ring keeps a replayable tail
 	// for concurrent watchers. Exec itself drains the ring sequentially

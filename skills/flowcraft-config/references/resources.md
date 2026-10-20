@@ -829,6 +829,11 @@ std:
 empty:
   kind: agent.ScriptBindings
   impl: none              # binds nothing: scripts run with an empty scope
+
+panel:
+  kind: agent.ScriptBindings
+  impl: chain             # composes its deps into one provider
+  deps: {base: std, unit.tokens: tok}   # base first, then unit.* by key
 ```
 
 A bindings resource decides which globals script nodes see. It is wired into
@@ -838,8 +843,16 @@ shared. Without the dep, each script-running node type falls back to the
 standard surface over its own deps. A settings section requires the
 capability dep it configures, and `tools.allow` names are checked against the
 assembly at build time, so a typo fails the deployment instead of the first
-call. Other impls are registered by the host build (see
-[graph.md](graph.md)).
+call. `impl: chain` composes the kind's resources into one provider (an
+optional `base` first, then the bare `unit` key, then every `unit.*` in
+sorted key order); it takes no settings, and a duplicate global fails the
+execution naming the deps that bound it. A chain needs at least one dep (an
+empty one fails the build; `impl: none` is the empty surface), and the same
+provider mounted under two dep keys is refused at build time when its value is
+pointer-backed, falling through to that duplicate check otherwise. The chain
+is wired like any other provider, so it replaces the standard fallback — mount
+the standard resource as `base` to extend it. Other impls are registered by
+the host build (see [graph.md](graph.md)).
 
 ## delegation
 
