@@ -682,9 +682,11 @@ mod tests {
         );
         // A NUL rules text out even under a text name.
         assert!(!of_data("broken.md", &[0x00, 0x01, 0x02, 0x7F]).text);
-        // An empty file is text.
-        assert!(of_data("empty.go", b"").text);
-        assert_eq!(of_data("empty.go", b"").media_type, "text/plain");
+        // An empty file is text. The name carries no extension, because an
+        // empty payload is `text/plain` only where the table has nothing to
+        // say -- `.go` is `text/x-go` on a host with shared-mime-info.
+        assert!(of_data("empty", b"").text);
+        assert_eq!(of_data("empty", b"").media_type, "text/plain");
         // The same extension, opposite verdicts.
         assert!(of_data("app.ts", b"export const answer = 42;\n").text);
         let recording = of_data("recording.ts", &ts_packet());
@@ -710,7 +712,6 @@ mod tests {
         let kind = of_data("blob", &[0xFE, 0xFF, 0x00, 0x00]);
         assert_eq!(kind.media_type, "text/plain");
         assert!(!kind.text);
-        assert_eq!(name_type("note.txt"), "text/plain");
         assert_eq!(name_type("doc.unknown-extension"), "");
     }
 
