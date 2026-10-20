@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/core v0.9.0
-	github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -14,6 +13,7 @@ require (
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
+	github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e
 	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
@@ -30,8 +30,6 @@ require (
 )
 
 require (
-	github.com/GizClaw/flowcraft/driver/anthropic v0.3.5-0.20261020050117-f3bb9f3e651c
-	github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

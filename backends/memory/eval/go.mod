@@ -5,8 +5,7 @@ go 1.26.0
 require (
 	github.com/GizClaw/flowcraft/backends/memory v0.0.0
 	github.com/GizClaw/flowcraft/core v0.9.0
-	github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c
-	github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c
+	github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e
 	github.com/reiver/go-porterstemmer v1.0.1
 )
 
