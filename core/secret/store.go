@@ -1,8 +1,10 @@
 // Package secret provides the "secret.Store" resource kind: pluggable
 // credential backends that the deploy builder assembles into the
-// ${secret:...} reference scheme. Implementations are registered as
-// ordinary resource factories, so external backends (keychain, vault,
-// 1Password, k8s, ...) plug in with zero core changes.
+// ${secret:...} reference scheme. This package ships the `env` and `file`
+// stores; the encrypted `keychain` store lives in its own subpackage
+// (core/secret/keychain). Implementations are registered as ordinary
+// resource factories, so external backends (vault, 1Password, k8s, ...)
+// plug in with zero core changes.
 package secret
 
 import (
