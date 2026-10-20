@@ -165,8 +165,8 @@ struct MaskedRanking {
 struct MaskedScored {
     /// Its path, masked.
     path: String,
-    /// Its score.
-    score: f64,
+    /// Its score, printed to twelve significant digits.
+    score: String,
 }
 
 /// One body read.
@@ -355,12 +355,18 @@ fn differences_service(
         if same {
             for (got, want) in actual.iter().zip(row.answer.iter()) {
                 // The same tolerance `bm25_contract.rs` states, for the same
-                // reason: the two sides sum their postings in their own order,
-                // so the last bits of a sum are the platform's, while a drift
-                // large enough to reorder two skills would still fail.
-                let tolerance = want.score.abs() * 1e-12;
-                if mask(&got.skill.path) != want.path || (got.score - want.score).abs() > tolerance
-                {
+                // reason: ranking goes through idf and `math.Log`, whose last
+                // bit is the platform's, and the dump itself gives up the
+                // thirteenth digit for that. A drift large enough to reorder
+                // two skills would still fail.
+                let ok = match want.score.parse::<f64>() {
+                    Ok(want_score) => {
+                        let tolerance = want_score.abs() * 1e-11;
+                        (got.score - want_score).abs() <= tolerance
+                    }
+                    Err(_) => false,
+                };
+                if mask(&got.skill.path) != want.path || !ok {
                     same = false;
                     break;
                 }
@@ -371,10 +377,10 @@ fn differences_service(
                 .iter()
                 .map(|scored| (mask(&scored.skill.path), scored.score))
                 .collect();
-            let core: Vec<(String, f64)> = row
+            let core: Vec<(String, &str)> = row
                 .answer
                 .iter()
-                .map(|scored| (scored.path.clone(), scored.score))
+                .map(|scored| (scored.path.clone(), scored.score.as_str()))
                 .collect();
             out.push(format!(
                 "ranking {:?} limit {} threshold {}\n  core: {core:?}\n  port: {port:?}",

@@ -42,6 +42,11 @@ import (
 // serves paths it discovered, and each would need a post-discovery mutation
 // step), and a directory the operator cannot read (a permission bit is not a
 // contract).
+//
+// A ranking answer prints each score to twelve significant digits, by the same
+// `pinnedScore` the bm25 dump uses and for the same reason: ranking goes
+// through idf and `math.Log`, whose last bit is the host's rather than core's,
+// and this file too is compared byte for byte on every architecture.
 
 // registryContract is the committed document.
 type registryContract struct {
@@ -180,8 +185,9 @@ type registryScored struct {
 	Name string `json:"name"`
 	// Path is the masked path.
 	Path string `json:"path"`
-	// Score is the BM25 score.
-	Score float64 `json:"score"`
+	// Score is the BM25 score, to twelve significant digits; see the note at
+	// the top about why it is not the whole double.
+	Score string `json:"score"`
 }
 
 // registryRead is one body read.
@@ -361,7 +367,7 @@ func runRegistryRanking(service *skill.Service, row registryRanking, mask func(s
 		out = append(out, registryScored{
 			Name:  item.Skill.Name,
 			Path:  mask(item.Skill.Path),
-			Score: item.Score,
+			Score: pinnedScore(item.Score),
 		})
 	}
 	return out

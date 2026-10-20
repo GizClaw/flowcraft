@@ -681,7 +681,7 @@
               {
                 "name": "dup",
                 "path": "a/dup/SKILL.md",
-                "score": 0.6931471805599453
+                "score": "0.69314718056"
               }
             ]
           },
@@ -789,12 +789,12 @@
               {
                 "name": "dup",
                 "path": "a/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               },
               {
                 "name": "dup",
                 "path": "b/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               }
             ]
           },
@@ -806,7 +806,7 @@
               {
                 "name": "dup",
                 "path": "a/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               }
             ]
           },
@@ -824,7 +824,7 @@
               {
                 "name": "beta",
                 "path": "a/nested/beta/SKILL.md",
-                "score": 2.4673196099610966
+                "score": "2.46731960996"
               }
             ]
           },
@@ -854,7 +854,7 @@
               {
                 "name": "alpha",
                 "path": "a/alpha/SKILL.md",
-                "score": 1.122907303785287
+                "score": "1.12290730379"
               }
             ]
           }
@@ -958,12 +958,12 @@
               {
                 "name": "dup",
                 "path": "a/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               },
               {
                 "name": "dup",
                 "path": "b/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               }
             ]
           },
@@ -975,7 +975,7 @@
               {
                 "name": "dup",
                 "path": "a/dup/SKILL.md",
-                "score": 0.7102384809025193
+                "score": "0.710238480903"
               }
             ]
           },
@@ -987,7 +987,7 @@
               {
                 "name": "alpha",
                 "path": "a/alpha/SKILL.md",
-                "score": 1.122907303785287
+                "score": "1.12290730379"
               }
             ]
           }

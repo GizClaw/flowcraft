@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"strconv"
 
 	"github.com/GizClaw/flowcraft/core/utils/bm25"
 )
@@ -213,18 +212,6 @@ func hits(results []bm25.Result) []hitRow {
 		})
 	}
 	return rows
-}
-
-// pinnedScore prints a score to twelve significant digits.
-//
-// The last bit of a score is not portable: idf goes through `math.Log`, which
-// Go implements twice (once in assembly for amd64, once in Go for everything
-// else), so the two architectures disagree there and the dump has to compare
-// byte for byte on both. Twelve digits still pin the arithmetic -- a change to
-// the idf, to k1 or b, or to the length normalisation moves the fourth or fifth
-// digit, not the thirteenth.
-func pinnedScore(value float64) string {
-	return strconv.FormatFloat(value, 'g', 12, 64)
 }
 
 func tokensOrEmpty(tokens []string) []string {
