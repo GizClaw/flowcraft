@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/secret"
 )
 
 // The secret contract: what a `${secret:...}` reference means, what a Secret
@@ -46,6 +51,67 @@ type secretContract struct {
 	Resolves []secretResolveCase `json:"resolves"`
 	// Values holds Secret documents, their wire form and their resolution.
 	Values []secretValueCase `json:"values"`
+	// Stores holds the built-in stores, their settings decode and their
+	// lookups.
+	Stores []secretStoreCase `json:"stores"`
+}
+
+// secretStoreCase builds one store from its settings and asks it about names.
+type secretStoreCase struct {
+	// Name identifies the case in a mismatch.
+	Name string `json:"name"`
+	// Why says what the row is evidence of.
+	Why string `json:"why"`
+	// Impl is the `secret.Store` implementation to build.
+	Impl string `json:"impl"`
+	// Settings is the factory's settings subtree. A string equal to
+	// `$BASE` is the harness's temporary directory, which both sides
+	// substitute, so no path in this file depends on the run.
+	Settings json.RawMessage `json:"settings"`
+	// Files is the medium a file-backed store reads, written under the
+	// temporary directory before the store is built.
+	Files []secretFile `json:"files,omitempty"`
+	// ID is the store's `SecretStoreID`, nil when it answers "".
+	ID *string `json:"id"`
+	// Default is the store's `DefaultSecretStore` answer.
+	Default bool `json:"default"`
+	// Error is the factory's refusal, when it refused the settings.
+	Error string `json:"error,omitempty"`
+	// ErrorPrefix is the factory's refusal up to the point where the
+	// decoder's own words begin. A settings document the decode refuses
+	// ends in a sentence that belongs to `encoding/json` (`json: unknown
+	// field "x"`), which no port can reproduce; the sentence core wrote
+	// around it is the contract, and it is compared as a prefix.
+	ErrorPrefix string `json:"error_prefix,omitempty"`
+	// Lookups are the questions put to the built store.
+	Lookups []secretLookupAnswer `json:"lookups,omitempty"`
+}
+
+// secretFile is one file the harness writes into the medium.
+type secretFile struct {
+	// Name is the path inside the base directory.
+	Name string `json:"name"`
+	// Data is the file's contents.
+	Data string `json:"data,omitempty"`
+	// Fill writes that many `x` bytes instead of Data, for a file whose
+	// size is the point.
+	Fill int `json:"fill,omitempty"`
+}
+
+// secretLookupAnswer is what one lookup answered.
+type secretLookupAnswer struct {
+	// Name is the secret name asked about.
+	Name string `json:"name"`
+	// Found is the store's `found` return.
+	Found bool `json:"found"`
+	// Value is the value a found secret answered.
+	Value string `json:"value,omitempty"`
+	// FromProcess means the value is the process's environment and is not
+	// in this file: the replay compares the store's answer against its own
+	// `os.LookupEnv` rather than against a string committed here.
+	FromProcess bool `json:"from_process,omitempty"`
+	// Error is the lookup's refusal, when it refused.
+	Error string `json:"error,omitempty"`
 }
 
 // secretStoreSpec is one store in a scenario: the id it is addressable by,
@@ -177,6 +243,7 @@ func writeSecretContract(w io.Writer) error {
 		Refs:     secretRefsCases(),
 		Resolves: secretResolveCases(),
 		Values:   secretValueCases(),
+		Stores:   secretStoreCases(),
 	}
 	for i := range contract.Refs {
 		row := &contract.Refs[i]
@@ -191,9 +258,236 @@ func writeSecretContract(w io.Writer) error {
 		row := &contract.Values[i]
 		secretValueAnswer(row)
 	}
+	for i := range contract.Stores {
+		row := &contract.Stores[i]
+		if err := secretStoreAnswer(row); err != nil {
+			return err
+		}
+	}
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(contract)
+}
+
+// secretStoreCases is the built-in stores' table.
+func secretStoreCases() []secretStoreCase {
+	return []secretStoreCase{
+		{
+			Name:     "env-default",
+			Why:      "the env store reads the process environment by the name the reference gives it, and reports a missing variable as not-found rather than as a failure",
+			Impl:     "env",
+			Settings: json.RawMessage(`{"default": true}`),
+			Lookups: []secretLookupAnswer{
+				{Name: "PATH", Found: true, FromProcess: true},
+				{Name: "FLOWCRAFT_CONTRACT_ABSENT", Found: false},
+			},
+		},
+		{
+			Name:     "env-id",
+			Why:      "id and default come from the settings, and an absent id means the deployment resource's name is used instead -- the store answers no id",
+			Impl:     "env",
+			Settings: json.RawMessage(`{"id": "vault-env"}`),
+		},
+		{
+			Name:     "file-base-required",
+			Why:      "a file store without a base directory is refused at build time, before any lookup",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"default": true}`),
+		},
+		{
+			Name:     "file-token",
+			Why:      "a file store reads one file per secret and strips the trailing newline a `printf` or `echo` leaves, so a key stored as a line works",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": "$BASE"}`),
+			Files: []secretFile{
+				{Name: "token", Data: "tok-456\n"},
+				{Name: "crlf", Data: "tok-789\r\n\r\n"},
+			},
+			Lookups: []secretLookupAnswer{
+				{Name: "token", Found: true, Value: "tok-456"},
+				{Name: "crlf", Found: true, Value: "tok-789"},
+				{Name: "missing", Found: false},
+				{Name: "../secret", Found: false},
+				{Name: "/etc/passwd", Found: false},
+			},
+		},
+		{
+			Name:     "file-cap",
+			Why:      "the loader caps what it will read, and a file over the cap is a refusal rather than a truncated secret",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": "$BASE"}`),
+			Files: []secretFile{
+				{Name: "small", Fill: 3},
+				{Name: "big", Fill: 1<<20 + 1},
+			},
+			Lookups: []secretLookupAnswer{
+				{Name: "small", Found: true, Value: "xxx"},
+				{Name: "big", Found: false},
+			},
+		},
+		{
+			Name:     "file-id",
+			Why:      "a file store carries its id and default flag from the settings, like the env store",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": "$BASE", "id": "files", "default": true}`),
+			Files: []secretFile{
+				{Name: "token", Data: "tok-456"},
+			},
+			Lookups: []secretLookupAnswer{
+				{Name: "token", Found: true, Value: "tok-456"},
+			},
+		},
+		{
+			Name:     "file-blank-base",
+			Why:      "a base directory of spaces is blank after trimming, so it is missing rather than a path",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": "  "}`),
+		},
+		{
+			Name:     "file-null-base",
+			Why:      "a null field leaves its scalar untouched, which is encoding/json's rule for every type -- so a null base is the same missing base, not a shape refusal",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": null, "default": true}`),
+		},
+		{
+			Name:     "env-unknown-field",
+			Why:      "settings decode strictly, so a typo is refused instead of silently dropped -- and the part of the sentence that is core's is the prefix",
+			Impl:     "env",
+			Settings: json.RawMessage(`{"defualt": true}`),
+		},
+		{
+			Name:     "file-unknown-field",
+			Why:      "the same strictness in the other store's struct: one row per settings type, because a typo in one proves nothing about the other",
+			Impl:     "file",
+			Settings: json.RawMessage(`{"base": "$BASE", "defualt": true}`),
+		},
+	}
+}
+
+// secretStoreAnswer builds one row's store and asks it its questions.
+func secretStoreAnswer(row *secretStoreCase) error {
+	base, err := os.MkdirTemp("", "flowcraft-secret-contract")
+	if err != nil {
+		return fmt.Errorf("secret store %q: temp dir: %w", row.Name, err)
+	}
+	defer func() {
+		if err := os.RemoveAll(base); err != nil {
+			fmt.Fprintf(os.Stderr, "secret store %q: remove temp dir: %v\n", row.Name, err)
+		}
+	}()
+	for _, file := range row.Files {
+		data := []byte(file.Data)
+		if file.Fill > 0 {
+			data = bytes.Repeat([]byte("x"), file.Fill)
+		}
+		path := filepath.Join(base, file.Name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("secret store %q: %w", row.Name, err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return fmt.Errorf("secret store %q: %w", row.Name, err)
+		}
+	}
+	settings, err := substituteBase(row.Settings, base)
+	if err != nil {
+		return fmt.Errorf("secret store %q: %w", row.Name, err)
+	}
+	value, err := buildSecretStore(row.Impl, settings)
+	if err != nil {
+		// A decode refusal ends in the decoder's own words, which belong to
+		// `encoding/json`; core's part of the sentence is a prefix and is
+		// what this document commits.
+		if prefix := decodePrefix(row.Impl); strings.HasPrefix(err.Error(), prefix) {
+			row.ErrorPrefix = prefix
+		} else {
+			row.Error = err.Error()
+		}
+		return nil
+	}
+	store, ok := value.(resource.SecretStore)
+	if !ok {
+		return fmt.Errorf("secret store %q: %T is not a resource.SecretStore", row.Name, value)
+	}
+	row.Default = store.DefaultSecretStore()
+	if named, ok := value.(resource.SecretStoreID); ok && named.SecretStoreID() != "" {
+		id := named.SecretStoreID()
+		row.ID = &id
+	}
+	for i := range row.Lookups {
+		answer := &row.Lookups[i]
+		value, found, err := store.Lookup(context.Background(), answer.Name)
+		switch {
+		case err != nil:
+			answer.Error = err.Error()
+			answer.Found = false
+		case !found:
+			answer.Found = false
+		default:
+			answer.Found = true
+			// A process-environment row does not commit the machine's
+			// value: the replay compares against its own process.
+			if !answer.FromProcess {
+				answer.Value = value
+			}
+		}
+	}
+	return nil
+}
+
+// decodePrefix is the sentence core writes before a settings decode failure's
+// decoder text: the factory's wrapper, then DecodeTyped's, then
+// DecodeSettings'. The tail names the field the way that decoder names it and
+// is not part of the contract.
+func decodePrefix(impl string) string {
+	return "secret " + impl + " store: decode settings: resource settings decode: resource settings: "
+}
+
+// buildSecretStore builds one `secret.Store` value through the registry, which
+// is the only way core exposes its built-in impls -- `Register` is the seam, so
+// the row also proves both impls are registered.
+func buildSecretStore(impl string, settings []byte) (any, error) {
+	registry := resource.NewRegistry()
+	if err := secret.Register(registry); err != nil {
+		return nil, fmt.Errorf("register secret stores: %w", err)
+	}
+	factory, ok := registry.Lookup(secret.ResourceKind, impl)
+	if !ok {
+		return nil, fmt.Errorf("%s/%s is not registered", secret.ResourceKind, impl)
+	}
+	return factory.New(context.Background(), resource.Input{Settings: settings})
+}
+
+// substituteBase replaces every string equal to `$BASE` -- at any depth -- with
+// the harness's temporary directory, and returns the settings as bytes.
+func substituteBase(settings json.RawMessage, base string) ([]byte, error) {
+	var decoded any
+	if err := json.Unmarshal(settings, &decoded); err != nil {
+		return nil, fmt.Errorf("decode settings: %w", err)
+	}
+	return json.Marshal(substituteString(decoded, "$BASE", base))
+}
+
+// substituteString is the walk behind substituteBase.
+func substituteString(value any, from, to string) any {
+	switch typed := value.(type) {
+	case string:
+		if typed == from {
+			return to
+		}
+		return typed
+	case map[string]any:
+		for key, item := range typed {
+			typed[key] = substituteString(item, from, to)
+		}
+		return typed
+	case []any:
+		for i, item := range typed {
+			typed[i] = substituteString(item, from, to)
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 // secretRefsCases is the scheme's table.

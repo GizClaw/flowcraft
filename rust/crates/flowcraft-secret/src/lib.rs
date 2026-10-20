@@ -1,7 +1,7 @@
 //! `core/secret` and the reference grammar behind it: a `${secret:...}` span is
 //! a *lazy* reference, resolved at use time, and it never renders its value.
 //!
-//! The crate has three pieces, and they fail differently on purpose:
+//! The crate has four pieces, and they fail differently on purpose:
 //!
 //! - the **scheme** ([`SecretResolver::expand`]) runs at build time. It reads a
 //!   reference path and emits a [`SecretRef`] marker rather than a value, so a
@@ -16,6 +16,10 @@
 //!   reference, [`Display`](std::fmt::Display)-ing and `Debug`-ing as
 //!   `<secret>`, and serializing as `"<secret>"` -- every verb redacts, because
 //!   a secret leaks through the one spelling nobody compared.
+//! - the **stores** core ships, [`env`] and [`file`], behind the strict settings
+//!   decode each performs and the [`loader`] a file store reads through. Both
+//!   answer "no such secret" as `Ok(None)` and a store failure as `Err`, so the
+//!   resolver can tell the two apart.
 //!
 //! # What the port changed
 //!
@@ -40,20 +44,27 @@
 //!
 //! # What is deliberately not here yet
 //!
-//! The stores core ships (`env`, `file`), the strict settings decode behind them,
-//! the TTL cache `core/deploy` wraps around every store, and the wiring rules the
-//! deploy builder applies (id fallback to the resource name, duplicate ids, one
-//! default). They arrive with the store tables, and the contract's first table
-//! covers the grammar these rest on.
+//! The resource registry the two stores are registered in (core's
+//! `secret.Register`), the TTL cache `core/deploy` wraps around every store, and
+//! the wiring rules the deploy builder applies (id fallback to the resource name,
+//! duplicate ids, one default). The contract's fourth table covers the stores
+//! themselves; the wiring arrives with the deploy builder.
 
+pub mod env;
+pub mod file;
+pub mod loader;
 pub mod resolver;
 pub mod store;
 pub mod value;
 
 use flowcraft_contract::error::{Error, ErrorKind};
+use serde::Deserialize;
 
+pub use env::EnvSettings;
+pub use file::FileSettings;
+pub use loader::{DEFAULT_MAX_BYTES, Loader, Source};
 pub use resolver::{SecretRef, SecretResolver};
-pub use store::{SecretStore, SecretStoreFunc};
+pub use store::{RESOURCE_KIND, SecretStore, SecretStoreFunc, Store};
 pub use value::Secret;
 
 /// The crate's result type: a [`flowcraft_contract::Error`], whose text is
@@ -65,4 +76,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// reclassify a store outage, and neither does the port.
 fn validation(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, message.into())
+}
+
+/// `encoding/json`'s rule for `null`: it leaves the field untouched, so a `null`
+/// is that field's zero value rather than a shape error. serde refuses it, so
+/// every scalar in a settings subtree core decodes with `resource.DecodeTyped`
+/// takes its `Deserialize` through here.
+///
+/// Unknown *fields* stay strict (`deny_unknown_fields`, core's
+/// `DisallowUnknownFields`); this is only about a field that is present and
+/// null.
+pub(crate) fn go_null<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
