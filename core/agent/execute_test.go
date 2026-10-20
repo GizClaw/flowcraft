@@ -12,7 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -155,7 +155,7 @@ func TestRun_AgentPreparersRunBeforeEngine(t *testing.T) {
 	eng := agent.EngineFunc(func(
 		_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board,
 	) (*agent.Board, error) {
-		if v, ok := b.GetVar("world.prepped"); ok {
+		if v, ok := b.Var("world.prepped"); ok {
 			engineSeen, _ = v.(string)
 		}
 		b.AppendChannelMessage(agent.MainChannel,
@@ -1020,7 +1020,7 @@ func TestRun_AgentScopedDecidersFireBeforeCallScoped(t *testing.T) {
 // usageReporterEngine reports a fixed delta then completes. Any
 // budget error from the host is propagated so the agent layer sees
 // the same termination shape it would observe in a real sandbox host.
-func usageReporterEngine(u inference.Usage) agent.Engine {
+func usageReporterEngine(u usage.Usage) agent.Engine {
 	return agent.EngineFunc(func(ctx context.Context, _ agent.Run, h agent.Host, b *agent.Board) (*agent.Board, error) {
 		if err := h.ReportUsage(ctx, u); err != nil {
 			return b, err
@@ -1039,24 +1039,24 @@ type usageHost struct {
 	agent.NoopHost
 
 	mu    sync.Mutex
-	total inference.Usage
+	total usage.Usage
 }
 
-func (h *usageHost) ReportUsage(_ context.Context, u inference.Usage) error {
+func (h *usageHost) ReportUsage(_ context.Context, u usage.Usage) error {
 	h.mu.Lock()
 	h.total = h.total.Add(u)
 	h.mu.Unlock()
 	return nil
 }
 
-func (h *usageHost) Total() inference.Usage {
+func (h *usageHost) Total() usage.Usage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.total
 }
 
 func TestRun_CustomHostAccumulatesUsage(t *testing.T) {
-	delta := inference.Usage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}
+	delta := usage.Usage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}
 	host := &usageHost{}
 
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"},
@@ -1066,7 +1066,7 @@ func TestRun_CustomHostAccumulatesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := inference.Usage{InputTokens: 10, OutputTokens: 14, TotalTokens: 24}
+	want := usage.Usage{InputTokens: 10, OutputTokens: 14, TotalTokens: 24}
 	got := host.Total()
 	if got.InputTokens != want.InputTokens ||
 		got.OutputTokens != want.OutputTokens ||
@@ -1080,7 +1080,7 @@ func TestRun_CustomHostAccumulatesUsage(t *testing.T) {
 // ReportUsage / Publish / etc. all silently drop. The run still
 // succeeds — just produces no observability.
 func TestRun_DefaultHostIsNoop(t *testing.T) {
-	delta := inference.Usage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}
+	delta := usage.Usage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"},
 		usageReporterEngine(delta), newReq("hi"),

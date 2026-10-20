@@ -200,7 +200,7 @@ func RecordLLMTelemetry(ctx context.Context, metadata Metadata, usage Usage, err
 	recordLLMAttrs(span, metadata, usage, err)
 }
 
-// recordInferenceUsage mirrors an inference.Usage envelope onto span as
+// recordInferenceUsage mirrors a Usage envelope onto span as
 // llm.* attributes. Zero-valued optional dimensions are omitted, so
 // spans stay slim on the common path and dashboards can rely on
 // presence rather than zero-sentinel values.

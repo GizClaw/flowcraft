@@ -141,7 +141,7 @@ func TestShellBridge_AllowList_Allowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("shell_ok")
+	v, _ := board.Var("shell_ok")
 	if v != true {
 		t.Fatal("shell command should have succeeded")
 	}
@@ -165,7 +165,7 @@ func TestShellBridge_AllowList_Blocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("blocked")
+	v, _ := board.Var("blocked")
 	if v != true {
 		t.Fatal("blocked command check should have passed")
 	}
@@ -188,7 +188,7 @@ func TestShellBridge_NoAllowList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("no_list_ok")
+	v, _ := board.Var("no_list_ok")
 	if v != true {
 		t.Fatal("without allow list, any command should pass")
 	}
@@ -210,7 +210,7 @@ func TestShellBridge_NilRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("nil_ok")
+	v, _ := board.Var("nil_ok")
 	if v != true {
 		t.Fatal("nil runner should return exit_code -1")
 	}
@@ -233,7 +233,7 @@ func TestShellBridge_AllowList_FullPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("fullpath_ok")
+	v, _ := board.Var("fullpath_ok")
 	if v != true {
 		t.Fatal("full-path command matching via filepath.Base should work")
 	}
@@ -264,7 +264,7 @@ func TestShellBridge_EmptyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("ok"); v != true {
+	if v, _ := board.Var("ok"); v != true {
 		t.Fatal("script did not complete assertions")
 	}
 }
@@ -290,7 +290,7 @@ func TestShellBridge_RunnerError_SurfacedAsExitMinusOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := board.GetVar("ok"); v != true {
+	if v, _ := board.Var("ok"); v != true {
 		t.Fatal("script did not complete assertions")
 	}
 }
@@ -313,7 +313,7 @@ func TestShellBridge_AllowList_FullPath_Blocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("blocked_ok")
+	v, _ := board.Var("blocked_ok")
 	if v != true {
 		t.Fatal("full-path command not in allow list should be blocked")
 	}

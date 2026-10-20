@@ -71,7 +71,7 @@ func TestFallbackHandler(t *testing.T) {
 	if called != "unregistered-type" {
 		t.Fatalf("fallback not invoked, called=%q", called)
 	}
-	if v, _ := board.GetVar("fell_back"); v != true {
+	if v, _ := board.Var("fell_back"); v != true {
 		t.Fatal("fallback did not run its handler")
 	}
 }

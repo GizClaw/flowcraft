@@ -36,7 +36,7 @@ func TestExecuteLinearRun(t *testing.T) {
 	}, reg)
 
 	board := mustRun(t, g, agent.NewBoard())
-	if v, _ := board.GetVar("x"); v != float64(42) {
+	if v, _ := board.Var("x"); v != float64(42) {
 		t.Fatalf("var x = %v", v)
 	}
 	msgs := board.Channel(agent.MainChannel)
@@ -64,7 +64,7 @@ func TestExecuteConditionalRouting(t *testing.T) {
 	}
 	g := mustBuild(t, def, reg)
 	board := mustRun(t, g, agent.NewBoard())
-	if v, _ := board.GetVar("went"); v != "left" {
+	if v, _ := board.Var("went"); v != "left" {
 		t.Fatalf("went = %v", v)
 	}
 }
@@ -84,10 +84,10 @@ func TestExecuteSkipCondition(t *testing.T) {
 	}, reg)
 
 	board := mustRun(t, g, agent.NewBoard())
-	if _, ok := board.GetVar("ran"); ok {
+	if _, ok := board.Var("ran"); ok {
 		t.Fatal("skipped node ran")
 	}
-	if v, _ := board.GetVar("after"); v != true {
+	if v, _ := board.Var("after"); v != true {
 		t.Fatal("skipped node did not route")
 	}
 }
@@ -162,7 +162,7 @@ func TestExecuteSkipOnlyCycleExhaustsBudget(t *testing.T) {
 	if !errdefs.IsBudgetExceeded(err) {
 		t.Fatalf("skipped-node cycle error = %v, want budget exceeded", err)
 	}
-	if v, _ := board.GetVar("ran"); v != nil {
+	if v, _ := board.Var("ran"); v != nil {
 		t.Fatalf("skipped node ran: ran = %v", v)
 	}
 }
@@ -183,7 +183,7 @@ func TestExecuteInterrupt(t *testing.T) {
 	if !errdefs.IsInterrupted(err) {
 		t.Fatalf("expected interrupted, got %v", err)
 	}
-	if v, _ := board.GetVar(VarInterruptedNode); v == nil {
+	if v, _ := board.Var(VarInterruptedNode); v == nil {
 		t.Fatal("interrupted node not recorded")
 	}
 }
@@ -206,7 +206,7 @@ func TestExecuteContextCausePreservesInterrupt(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("error = %v, want original cause %v", err, cause)
 	}
-	if got, _ := board.GetVar(VarInterruptedNode); got != "a" {
+	if got, _ := board.Var(VarInterruptedNode); got != "a" {
 		t.Fatalf("interrupted node = %v, want a", got)
 	}
 }
@@ -225,7 +225,7 @@ func TestExecuteNodeRetry(t *testing.T) {
 	}, reg, WithMaxNodeRetries(3))
 
 	board := mustRun(t, g, agent.NewBoard())
-	if v, _ := board.GetVar("ok"); v != true {
+	if v, _ := board.Var("ok"); v != true {
 		t.Fatal("retry did not recover")
 	}
 	if fails.Load() != 0 {
@@ -380,10 +380,10 @@ func TestExecuteResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume Execute: %v", err)
 	}
-	if v, _ := board.GetVar("y"); v != float64(2) {
+	if v, _ := board.Var("y"); v != float64(2) {
 		t.Fatalf("successor node did not run, y=%v", v)
 	}
-	if v, _ := board.GetVar("a_ran"); v != true {
+	if v, _ := board.Var("a_ran"); v != true {
 		t.Fatal("checkpoint board state not restored")
 	}
 }
@@ -492,7 +492,7 @@ func TestExecuteParallelMerge(t *testing.T) {
 	board := mustRun(t, g, agent.NewBoard())
 
 	// First write wins: b precedes c in wave order.
-	if v, _ := board.GetVar("shared"); v != "from-b" {
+	if v, _ := board.Var("shared"); v != "from-b" {
 		t.Fatalf("first-write-wins violated, shared=%v", v)
 	}
 	// Both branch messages merged in wave order.
@@ -522,7 +522,7 @@ func TestExecuteParallelFailureSkipsMerge(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "branch-boom") {
 		t.Fatalf("branch failure not propagated: %v", err)
 	}
-	if _, ok := board.GetVar("from_c"); ok {
+	if _, ok := board.Var("from_c"); ok {
 		t.Fatal("merge applied despite branch failure")
 	}
 }
@@ -609,7 +609,7 @@ func TestExecuteParallelCancelNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cancelled branch must not fail the wave: %v", err)
 	}
-	if v, _ := board.GetVar("from_c"); v != true {
+	if v, _ := board.Var("from_c"); v != true {
 		t.Fatal("canceller's write missing — merge must still run")
 	}
 }
@@ -870,11 +870,11 @@ func TestWithStartNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if _, ok := board.GetVar("hit_a"); ok {
+	if _, ok := board.Var("hit_a"); ok {
 		t.Fatal("prefix node a ran despite the start override")
 	}
 	for _, key := range []string{"hit_b", "hit_c"} {
-		if v, _ := board.GetVar(key); v != true {
+		if v, _ := board.Var(key); v != true {
 			t.Fatalf("%s missing after starting at b", key)
 		}
 	}
@@ -899,7 +899,7 @@ func TestWithStartNode(t *testing.T) {
 	}
 	// The resume frontier starts after c (END): nothing runs at all,
 	// and the start override must not fire either.
-	if _, ok := board.GetVar("hit_b"); ok {
+	if _, ok := board.Var("hit_b"); ok {
 		t.Fatal("start override fired despite resume precedence")
 	}
 }
@@ -959,10 +959,10 @@ func TestExecuteResumeRestoresFullFrontier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume Execute: %v", err)
 	}
-	if v, _ := board.GetVar("hit_d"); v != true {
+	if v, _ := board.Var("hit_d"); v != true {
 		t.Fatal("d (first branch's successor) lost on resume")
 	}
-	if v, _ := board.GetVar("hit_e"); v != true {
+	if v, _ := board.Var("hit_e"); v != true {
 		t.Fatal("e (last branch's successor) lost on resume")
 	}
 }

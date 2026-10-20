@@ -113,7 +113,7 @@ func TestEngineMountsCustomScriptNode(t *testing.T) {
 	if gotEnv.Config["name"] != "world" {
 		t.Fatalf("env.Config = %v, want board-resolved name", gotEnv.Config)
 	}
-	if v, _ := board.GetVar("greeting"); v != "hi world" {
+	if v, _ := board.Var("greeting"); v != "hi world" {
 		t.Fatalf("greeting = %v, want the script's write", v)
 	}
 }
@@ -138,7 +138,7 @@ func TestEngineMountsCustomNodeTypesViaManyDeps(t *testing.T) {
 	if err := runCustomEngine(t, engine, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if v, _ := board.GetVar("seen"); v != float64(7) {
+	if v, _ := board.Var("seen"); v != float64(7) {
 		t.Fatalf("seen = %v, want 7", v)
 	}
 }
@@ -166,7 +166,7 @@ func TestCustomNodeConfigKeyRoles(t *testing.T) {
 	if err := runCustomEngine(t, engine, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if v, _ := board.GetVar("out"); v != "processed:payload" {
+	if v, _ := board.Var("out"); v != "processed:payload" {
 		t.Fatalf("out = %v, want processed payload", v)
 	}
 
@@ -291,7 +291,7 @@ func TestEngineMountsGoBackedNodeTypeWithFileRefs(t *testing.T) {
 	if got.Prompt != "hello from file" {
 		t.Fatalf("handler received prompt %q, want materialized file content", got.Prompt)
 	}
-	if v, _ := board.GetVar("out"); v != "hello from file" {
+	if v, _ := board.Var("out"); v != "hello from file" {
 		t.Fatalf("out = %v, want file content", v)
 	}
 }

@@ -82,7 +82,7 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 		}
 	}
 
-	v, ok := board.GetVar("results")
+	v, ok := board.Var("results")
 	if !ok {
 		t.Fatal("results_key var missing")
 	}

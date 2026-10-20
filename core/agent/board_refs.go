@@ -206,14 +206,14 @@ func (b *Board) Resolve(v any) (any, error) {
 // nested maps (any map type with string keys) and exported struct
 // fields.
 func (b *Board) lookupBoardRef(path string) (any, bool) {
-	if v, ok := b.GetVar(path); ok {
+	if v, ok := b.Var(path); ok {
 		return v, true
 	}
 	segs := strings.Split(path, ".")
 	if len(segs) == 1 {
 		return nil, false
 	}
-	v, ok := b.GetVar(segs[0])
+	v, ok := b.Var(segs[0])
 	if !ok {
 		return nil, false
 	}

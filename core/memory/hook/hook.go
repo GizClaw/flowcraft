@@ -125,7 +125,7 @@ func (ContextPreparer) New(ctx context.Context, input resource.Input) (agent.Pre
 		}
 		query := settings.Query.Literal
 		if settings.Query.Board != "" {
-			query = previous.GetVarString(settings.Query.Board)
+			query = previous.VarString(settings.Query.Board)
 		} else if settings.Query.CurrentMessage {
 			query = req.Message.Content.Text()
 		}

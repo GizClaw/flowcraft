@@ -434,7 +434,7 @@ func recoverableUndefinedToolCall(
 
 // recoveryCount reads the per-run undefined-tool recovery counter.
 func recoveryCount(board *agent.Board, cfg InferenceConfig) int {
-	count, ok := board.GetVar(cfg.RecoverCountKey)
+	count, ok := board.Var(cfg.RecoverCountKey)
 	if !ok {
 		return 0
 	}
@@ -510,7 +510,7 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 	// round.
 	if recoveryPending(board, cfg) {
 		feedbackKey := recoverFeedbackKey(ec, cfg)
-		feedback := board.GetVarString(feedbackKey)
+		feedback := board.VarString(feedbackKey)
 		if feedback == "" {
 			return req, errdefs.Validationf(
 				"inference node: recovery pending but var %q holds no feedback text",
@@ -585,7 +585,7 @@ func recoveryPending(board *agent.Board, cfg InferenceConfig) bool {
 		cfg.RecoverPendingKey == "" {
 		return false
 	}
-	pending, ok := board.GetVar(cfg.RecoverPendingKey)
+	pending, ok := board.Var(cfg.RecoverPendingKey)
 	return ok && pending == true
 }
 

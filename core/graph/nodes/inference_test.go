@@ -176,15 +176,15 @@ func TestInferenceNode_Unary_WritesMessageAndVars(t *testing.T) {
 	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
 		t.Fatalf("assistant message = %+v, want text %q", msgs[1].Content.Parts[0], "ok")
 	}
-	if v, ok := board.GetVar("answer"); !ok {
+	if v, ok := board.Var("answer"); !ok {
 		t.Fatal("output_key var missing")
 	} else if msg, ok := v.(message.Message); !ok || msg.Role != message.RoleAssistant {
 		t.Fatalf("output var = %T, want message.Message", v)
 	}
-	if pending, ok := board.GetVar("tool_pending"); !ok || pending != false {
+	if pending, ok := board.Var("tool_pending"); !ok || pending != false {
 		t.Fatalf("tool_pending = %v, want false", pending)
 	}
-	if _, ok := board.GetVar("usage"); !ok {
+	if _, ok := board.Var("usage"); !ok {
 		t.Fatal("usage_key var missing")
 	}
 
@@ -293,7 +293,7 @@ func TestInferenceNode_ToolPendingFlagAndCatalogTools(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	if pending, _ := board.GetVar("tool_pending"); pending != true {
+	if pending, _ := board.Var("tool_pending"); pending != true {
 		t.Fatalf("tool_pending = %v, want true", pending)
 	}
 	msgs := board.Channel(agent.MainChannel)
@@ -361,17 +361,17 @@ func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("channel length = %d, want 1 (feedback must not enter the transcript)", len(msgs))
 	}
-	feedback := board.GetVarString("recover_feedback")
+	feedback := board.VarString("recover_feedback")
 	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
 		t.Fatalf("recover_feedback var = %q, want ghost + tool_search text", feedback)
 	}
-	if v, _ := board.GetVar("recover_pending"); v != true {
+	if v, _ := board.Var("recover_pending"); v != true {
 		t.Fatalf("recover_pending = %v, want true", v)
 	}
-	if v, _ := board.GetVar("recover_count"); v != 1 {
+	if v, _ := board.Var("recover_count"); v != 1 {
 		t.Fatalf("recover_count = %v, want 1", v)
 	}
-	if v, _ := board.GetVar("tool_pending"); v != false {
+	if v, _ := board.Var("tool_pending"); v != false {
 		t.Fatalf("tool_pending = %v, want false", v)
 	}
 }
@@ -418,14 +418,14 @@ func TestInferenceNode_UndefinedToolRecoveryStreamDiscardsPartial(t *testing.T) 
 	if len(msgs) != 1 {
 		t.Fatalf("channel length = %d (%+v), want 1 (partial discarded)", len(msgs), msgs)
 	}
-	feedback := board.GetVarString("recover_feedback")
+	feedback := board.VarString("recover_feedback")
 	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
 		t.Fatalf("recover_feedback var = %q, want ghost + tool_search text", feedback)
 	}
-	if v, _ := board.GetVar("recover_pending"); v != true {
+	if v, _ := board.Var("recover_pending"); v != true {
 		t.Fatalf("recover_pending = %v, want true", v)
 	}
-	if v, _ := board.GetVar("recover_count"); v != 1 {
+	if v, _ := board.Var("recover_count"); v != 1 {
 		t.Fatalf("recover_count = %v, want 1", v)
 	}
 }
@@ -594,7 +594,7 @@ func TestInferenceNode_UndefinedToolRecoveryDefaultFeedbackKey(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	feedback := board.GetVarString("__recover_feedback.n")
+	feedback := board.VarString("__recover_feedback.n")
 	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
 		t.Fatalf("__recover_feedback var = %q, want ghost + tool_search text", feedback)
 	}
@@ -616,10 +616,10 @@ func TestInferenceNode_UndefinedToolRecoveryDefaultFeedbackKey(t *testing.T) {
 		!strings.Contains(text.Text, "ghost") {
 		t.Fatalf("recovered input = %+v, want stored feedback", req.Input.Content.Parts[0])
 	}
-	if v, _ := board.GetVar("recover_pending"); v != false {
+	if v, _ := board.Var("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success", v)
 	}
-	if _, ok := board.GetVar("__recover_feedback.n"); ok {
+	if _, ok := board.Var("__recover_feedback.n"); ok {
 		t.Fatalf("__recover_feedback.n var still present, want deleted after success")
 	}
 }
@@ -679,10 +679,10 @@ func TestInferenceGraph_UndefinedToolRecoveryScopesDefaultFeedbackByNode(t *test
 		t.Fatalf("Execute: %v", err)
 	}
 
-	if fa := board.GetVarString("__recover_feedback.a"); !strings.Contains(fa, "ghost-a") {
+	if fa := board.VarString("__recover_feedback.a"); !strings.Contains(fa, "ghost-a") {
 		t.Fatalf("__recover_feedback.a = %q, want node a's own rejection", fa)
 	}
-	if fb := board.GetVarString("__recover_feedback.b"); !strings.Contains(fb, "ghost-b") {
+	if fb := board.VarString("__recover_feedback.b"); !strings.Contains(fb, "ghost-b") {
 		t.Fatalf("__recover_feedback.b = %q, want node b's own rejection", fb)
 	}
 	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
@@ -716,10 +716,10 @@ func TestInferenceNode_UndefinedToolRecoveryClearsMarker(t *testing.T) {
 		!strings.Contains(text.Text, "ghost") {
 		t.Fatalf("recovered input = %+v, want stored feedback", req.Input.Content.Parts[0])
 	}
-	if v, _ := board.GetVar("recover_pending"); v != false {
+	if v, _ := board.Var("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success", v)
 	}
-	if _, ok := board.GetVar("recover_feedback"); ok {
+	if _, ok := board.Var("recover_feedback"); ok {
 		t.Fatalf("recover_feedback var still present, want deleted after success")
 	}
 }
@@ -877,13 +877,13 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
 		t.Fatalf("final assistant message = %+v, want text %q", msgs[1], "ok")
 	}
-	if v, _ := board.GetVar("recover_pending"); v != false {
+	if v, _ := board.Var("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success round", v)
 	}
-	if v, _ := board.GetVar("recover_count"); v != 1 {
+	if v, _ := board.Var("recover_count"); v != 1 {
 		t.Fatalf("recover_count = %v, want 1 retained to run end", v)
 	}
-	if _, ok := board.GetVar("recover_feedback"); ok {
+	if _, ok := board.Var("recover_feedback"); ok {
 		t.Fatalf("recover_feedback var still present, want deleted after success round")
 	}
 }
@@ -937,7 +937,7 @@ func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) 
 	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
 		t.Fatalf("channel length = %d, want 1 (feedback never enters the transcript)", len(msgs))
 	}
-	if feedback := board.GetVarString("recover_feedback"); !strings.Contains(feedback, "ghost") {
+	if feedback := board.VarString("recover_feedback"); !strings.Contains(feedback, "ghost") {
 		t.Fatalf("recover_feedback var = %q, want stored rejection text", feedback)
 	}
 }

@@ -111,17 +111,19 @@ func (b *Board) DeleteVar(key string) {
 	b.mu.Unlock()
 }
 
-// GetVar retrieves a board-level variable.
-func (b *Board) GetVar(key string) (any, bool) {
+// Var retrieves one board-level variable. Vars, one letter away, returns the
+// whole set; neither takes a "Get" prefix, matching the other accessors on
+// Board.
+func (b *Board) Var(key string) (any, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	v, ok := b.vars[key]
 	return v, ok
 }
 
-// GetVarString retrieves a board variable as a string. It returns ""
+// VarString retrieves a board variable as a string. It returns ""
 // when the key is missing or the stored value is not a string.
-func (b *Board) GetVarString(key string) string {
+func (b *Board) VarString(key string) string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if s, ok := b.vars[key].(string); ok {
@@ -134,7 +136,7 @@ func (b *Board) GetVarString(key string) string {
 // generic helper rather than a method because Go does not allow type
 // parameters on methods.
 func GetTyped[T any](b *Board, key string) (T, bool) {
-	raw, ok := b.GetVar(key)
+	raw, ok := b.Var(key)
 	if !ok {
 		var zero T
 		return zero, false

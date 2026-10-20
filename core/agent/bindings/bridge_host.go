@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 )
 
 // StreamEmitter is the structural contract NewHostBridge accepts for
@@ -192,7 +192,7 @@ func NewHostBridge(host agent.Host, source string, emitter StreamEmitter, opts .
 			},
 
 			"reportUsage": func(raw any) error {
-				usage, err := parseUsage(raw)
+				report, err := parseUsage(raw)
 				if err != nil {
 					// parseUsage rejects malformed scripts inputs; a
 					// Validation classification lets the runtime
@@ -207,7 +207,7 @@ func NewHostBridge(host agent.Host, source string, emitter StreamEmitter, opts .
 				// preserves any classification (e.g. BudgetExceeded)
 				// the host attached, so errdefs.IsBudgetExceeded
 				// still reports true on the returned error.
-				if err := host.ReportUsage(callCtx, usage); err != nil {
+				if err := host.ReportUsage(callCtx, report); err != nil {
 					return fmt.Errorf("host.reportUsage: %w", err)
 				}
 				return nil
@@ -342,42 +342,42 @@ func userReplyToMap(reply agent.UserReply) (map[string]any, error) {
 }
 
 // parseUsage maps {input, output, total} (any of which may be missing)
-// onto an inference.Usage. Numbers may arrive as float64 (the JSON
+// onto a usage.Usage. Numbers may arrive as float64 (the JSON
 // default in script VMs) or int64; both are folded down to int64 here.
-func parseUsage(raw any) (inference.Usage, error) {
-	var usage inference.Usage
+func parseUsage(raw any) (usage.Usage, error) {
+	var parsed usage.Usage
 	if raw == nil {
-		return usage, nil
+		return parsed, nil
 	}
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return usage, errdefs.Validationf("usage: expected object, got %T", raw)
+		return parsed, errdefs.Validationf("usage: expected object, got %T", raw)
 	}
 	if v, ok := m["input"]; ok {
 		n, err := asInt64(v, "input")
 		if err != nil {
-			return usage, err
+			return parsed, err
 		}
-		usage.InputTokens = n
+		parsed.InputTokens = n
 	}
 	if v, ok := m["output"]; ok {
 		n, err := asInt64(v, "output")
 		if err != nil {
-			return usage, err
+			return parsed, err
 		}
-		usage.OutputTokens = n
+		parsed.OutputTokens = n
 	}
 	if v, ok := m["total"]; ok {
 		n, err := asInt64(v, "total")
 		if err != nil {
-			return usage, err
+			return parsed, err
 		}
-		usage.TotalTokens = n
+		parsed.TotalTokens = n
 	}
-	if usage.TotalTokens == 0 {
-		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	if parsed.TotalTokens == 0 {
+		parsed.TotalTokens = parsed.InputTokens + parsed.OutputTokens
 	}
-	return usage, nil
+	return parsed, nil
 }
 
 func asInt64(v any, field string) (int64, error) {

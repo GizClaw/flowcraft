@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 )
 
 // fakeEngine is the minimum-correct agent.Engine for the contract
@@ -91,7 +91,7 @@ func (fakeUsageReportingEngine) Execute(
 		return board, errdefs.NotAvailablef("fakeUsageReportingEngine: resume not supported")
 	}
 
-	if err := host.ReportUsage(ctx, inference.Usage{InputTokens: 1}); err != nil {
+	if err := host.ReportUsage(ctx, usage.Usage{InputTokens: 1}); err != nil {
 		return board, err
 	}
 

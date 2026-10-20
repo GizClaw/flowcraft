@@ -23,7 +23,7 @@ func TestExprBridge(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	v, _ := board.GetVar("expr_result")
+	v, _ := board.Var("expr_result")
 	if v != int64(7) {
 		t.Fatalf("expr_result = %v (type %T)", v, v)
 	}
@@ -44,7 +44,7 @@ func TestExprBridge_CachedResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("cache_ok")
+	v, _ := board.Var("cache_ok")
 	if v != true {
 		t.Fatal("cached expr results should be correct")
 	}
@@ -66,7 +66,7 @@ func TestExprBridge_InvalidExpression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	v, _ := board.GetVar("caught")
+	v, _ := board.Var("caught")
 	if v != true {
 		t.Fatal("invalid expression should throw error")
 	}

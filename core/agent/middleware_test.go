@@ -14,8 +14,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -26,7 +26,7 @@ func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
 		return func(inner agent.Host) agent.Host {
 			return agent.HostFuncs{
 				Inner: inner,
-				ReportUsageFn: func(ctx context.Context, u inference.Usage) error {
+				ReportUsageFn: func(ctx context.Context, u usage.Usage) error {
 					seen = append(seen, name)
 					return inner.ReportUsage(ctx, u)
 				},
@@ -35,7 +35,7 @@ func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
 	}
 
 	composed := agent.ComposeHost(agent.NoopHost{}, mw("A"), mw("B"), mw("C"))
-	if err := composed.ReportUsage(context.Background(), inference.Usage{}); err != nil {
+	if err := composed.ReportUsage(context.Background(), usage.Usage{}); err != nil {
 		t.Fatalf("ReportUsage: %v", err)
 	}
 	want := []string{"A", "B", "C"}
@@ -77,7 +77,7 @@ func TestHostFuncs_DelegatesUntouchedMethods(t *testing.T) {
 	called := false
 	wrapped := agent.HostFuncs{
 		Inner: agent.NoopHost{},
-		ReportUsageFn: func(_ context.Context, _ inference.Usage) error {
+		ReportUsageFn: func(_ context.Context, _ usage.Usage) error {
 			called = true
 			return nil
 		},
@@ -95,7 +95,7 @@ func TestHostFuncs_DelegatesUntouchedMethods(t *testing.T) {
 	if err := wrapped.Checkpoint(context.Background(), agent.Checkpoint{}); err != nil {
 		t.Errorf("Checkpoint should delegate to NoopHost (returns nil); got %v", err)
 	}
-	if err := wrapped.ReportUsage(context.Background(), inference.Usage{}); err != nil {
+	if err := wrapped.ReportUsage(context.Background(), usage.Usage{}); err != nil {
 		t.Errorf("ReportUsage override returned %v, want nil", err)
 	}
 	if !called {
@@ -114,7 +114,7 @@ func TestHostFuncs_BudgetGateRefusesNextCall(t *testing.T) {
 
 	gated := agent.HostFuncs{
 		Inner: agent.NoopHost{},
-		ReportUsageFn: func(_ context.Context, u inference.Usage) error {
+		ReportUsageFn: func(_ context.Context, u usage.Usage) error {
 			totalTokens += u.TotalTokens
 			if totalTokens > quota {
 				return errdefs.BudgetExceededf("token budget exceeded: %d/%d", totalTokens, quota)
@@ -123,10 +123,10 @@ func TestHostFuncs_BudgetGateRefusesNextCall(t *testing.T) {
 		},
 	}
 
-	if err := gated.ReportUsage(context.Background(), inference.Usage{TotalTokens: 60}); err != nil {
+	if err := gated.ReportUsage(context.Background(), usage.Usage{TotalTokens: 60}); err != nil {
 		t.Fatalf("first call within budget; got %v", err)
 	}
-	err := gated.ReportUsage(context.Background(), inference.Usage{TotalTokens: 60})
+	err := gated.ReportUsage(context.Background(), usage.Usage{TotalTokens: 60})
 	if !errdefs.IsBudgetExceeded(err) {
 		t.Fatalf("second call must trip BudgetExceeded; got %v", err)
 	}
@@ -232,7 +232,7 @@ func TestTracingMiddleware_RecordsErrorOnFailure(t *testing.T) {
 func TestTracingMiddleware_ReportUsageAttribs(t *testing.T) {
 	rec := installTestTracer(t)
 	host := agent.ComposeHost(agent.NoopHost{}, agent.TracingMiddleware())
-	if err := host.ReportUsage(context.Background(), inference.Usage{
+	if err := host.ReportUsage(context.Background(), usage.Usage{
 		Model: model.ModelRef{
 			ID: model.ModelID{Provider: "openai", Name: "gpt-4o"},
 		},

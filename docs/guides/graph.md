@@ -188,7 +188,7 @@ onto `tool_pending_key` and the graph routes onward.
 | `messages_channel`                       | board channel holding the conversation; empty means the main channel (`__main_channel`)                          |
 | `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
-| `usage_key`                              | board var receiving the call's `inference.Usage`                                                                  |
+| `usage_key`                              | board var receiving the call's `inference/usage.Usage`                                                            |
 | `tool_pending_key`                       | board var receiving `finish_reason == tool_calls` (the condition edges branch on)                                 |
 | `undefined_tool_recovery`                | `{enabled, max_per_run}`: convert an undefined-tool rejection into recoverable board feedback instead of failing the node; disabled by default |
 | `recover_pending_key`                    | board var receiving whether the round was recovered from an undefined-tool response (loop-back condition)             |

@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -68,7 +68,7 @@ func ComposeHost(base Host, mws ...HostMiddleware) Host {
 //
 //	wrapped := agent.HostFuncs{
 //	    Inner: base,
-//	    ReportUsageFn: func(ctx context.Context, u inference.Usage) error {
+//	    ReportUsageFn: func(ctx context.Context, u usage.Usage) error {
 //	        // budget enforcement here
 //	        return base.ReportUsage(ctx, u)
 //	    },
@@ -84,7 +84,7 @@ type HostFuncs struct {
 	InterruptsFn  func() <-chan Interrupt
 	AskUserFn     func(ctx context.Context, prompt UserPrompt) (UserReply, error)
 	CheckpointFn  func(ctx context.Context, cp Checkpoint) error
-	ReportUsageFn func(ctx context.Context, usage inference.Usage) error
+	ReportUsageFn func(ctx context.Context, report usage.Usage) error
 }
 
 // Publish routes through PublishFn or Inner.
@@ -120,11 +120,11 @@ func (h HostFuncs) Checkpoint(ctx context.Context, cp Checkpoint) error {
 }
 
 // ReportUsage routes through ReportUsageFn or Inner.
-func (h HostFuncs) ReportUsage(ctx context.Context, usage inference.Usage) error {
+func (h HostFuncs) ReportUsage(ctx context.Context, report usage.Usage) error {
 	if h.ReportUsageFn != nil {
-		return h.ReportUsageFn(ctx, usage)
+		return h.ReportUsageFn(ctx, report)
 	}
-	return h.requireInner().ReportUsage(ctx, usage)
+	return h.requireInner().ReportUsage(ctx, report)
 }
 
 // UnwrapHost preserves optional capabilities only when Publish still delegates
@@ -268,17 +268,17 @@ func (h tracingHost) Checkpoint(ctx context.Context, cp Checkpoint) error {
 	return nil
 }
 
-func (h tracingHost) ReportUsage(ctx context.Context, usage inference.Usage) error {
+func (h tracingHost) ReportUsage(ctx context.Context, report usage.Usage) error {
 	ctx, span := h.tracer.Start(ctx, "agent.host.report_usage",
 		trace.WithAttributes(
-			attribute.String(telemetry.AttrLLMProvider, usage.Model.ID.Provider),
-			attribute.String(telemetry.AttrLLMModel, usage.Model.ID.Name),
-			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
+			attribute.String(telemetry.AttrLLMProvider, report.Model.ID.Provider),
+			attribute.String(telemetry.AttrLLMModel, report.Model.ID.Name),
+			attribute.Int64(telemetry.AttrLLMInputTokens, report.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, report.OutputTokens),
 		),
 	)
 	defer span.End()
-	if err := h.inner.ReportUsage(ctx, usage); err != nil {
+	if err := h.inner.ReportUsage(ctx, report); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err

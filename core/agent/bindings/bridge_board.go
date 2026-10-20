@@ -49,11 +49,11 @@ func NewBoardBridge(board *agent.Board) BindingFunc {
 		return "board", map[string]any{
 			"MAIN_CHANNEL": agent.MainChannel,
 
-			"getVar":    func(key string) any { v, _ := board.GetVar(key); return v },
+			"getVar":    func(key string) any { v, _ := board.Var(key); return v },
 			"setVar":    func(key string, value any) { board.SetVar(key, value) },
 			"deleteVar": func(key string) { board.DeleteVar(key) },
 			"getVars":   func() map[string]any { return board.Vars() },
-			"hasVar":    func(key string) bool { _, ok := board.GetVar(key); return ok },
+			"hasVar":    func(key string) bool { _, ok := board.Var(key); return ok },
 
 			"resolve": func(s string) (any, error) {
 				return board.ResolveString(s)

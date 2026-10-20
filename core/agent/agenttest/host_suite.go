@@ -26,7 +26,7 @@ package agenttest
 //     from any goroutine"; the suite hammers each method from 16
 //     goroutines under -race.
 //   - Zero-value tolerance: zero Envelope, Checkpoint, UserPrompt,
-//     inference.Usage must not crash. Catches hosts that dereference
+//     usage.Usage must not crash. Catches hosts that dereference
 //     unset fields blindly.
 //   - agent.SteerSource conformance for hosts that implement the
 //     optional capability: an empty drain returns without blocking,
@@ -49,7 +49,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 )
 
 // HostFactory builds a fresh [agent.Host] for each subtest. The
@@ -136,7 +136,7 @@ func hostReportUsageZero(t *testing.T, f HostFactory, c HostCapabilities) {
 	t.Helper()
 	h := f()
 	defer hostRecoverPanicAs(t, "ReportUsage(zero usage)")
-	err := h.ReportUsage(context.Background(), inference.Usage{})
+	err := h.ReportUsage(context.Background(), usage.Usage{})
 	if err != nil && !c.AcceptsBudgetExceeded {
 		t.Errorf("ReportUsage(zero) = %v; hosts with no configured budget MUST return nil — see host.go UsageReporter contract", err)
 	}
@@ -251,7 +251,7 @@ func hostConcurrentAccess(t *testing.T, f HostFactory, c HostCapabilities) {
 				_ = h.Publish(ctx, event.Envelope{Subject: "test"})
 			}
 			_ = h.Checkpoint(ctx, agent.Checkpoint{ExecID: "x"})
-			_ = h.ReportUsage(ctx, inference.Usage{})
+			_ = h.ReportUsage(ctx, usage.Usage{})
 			_ = h.Interrupts()
 		}()
 	}

@@ -105,7 +105,7 @@ func runBindingsDeployment(t *testing.T, doc string) string {
 		agent.NoopHost{}, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	seen, _ := board.GetVar("seen")
+	seen, _ := board.Var("seen")
 	text, _ := seen.(string)
 	return text
 }
@@ -313,7 +313,7 @@ agents:
 		agent.NoopHost{}, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	seen, _ := board.GetVar("seen")
+	seen, _ := board.Var("seen")
 	if seen != "4:compact" {
 		t.Fatalf("board.seen = %v, want the composed surface output", seen)
 	}

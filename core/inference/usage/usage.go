@@ -1,8 +1,39 @@
-package inference
+// Package usage is the token and cost accounting vocabulary: the per-call
+// totals an engine reports, their breakdowns by modality, cache and tool, and
+// the exact money a provider billed. It carries no runtime: a host implements
+// usage reporting without depending on the inference packages that produce the
+// numbers.
+//
+// # Roles
+//
+// [Usage] is one call's account: token totals, an optional Model / LatencyMs
+// envelope the runtime stamps on, per-modality and cache breakdowns, and
+// [BillingUsage] for provider-reported billed units and [Money] cost. [Money]
+// is units over 10^scale in a currency, so a provider's 10^-10 USD ticks
+// survive without floating point. [Usage.Add] and [Money.Add] accumulate;
+// [Money.Add] refuses a mismatched currency or scale, because converting
+// between them is a policy decision this package does not make.
+//
+// # Invariants
+//
+// Every optional counter is a pointer, so "not reported" and "reported zero"
+// stay distinguishable end to end. Totals are inclusive prompt counts: the
+// cache buckets are disjoint subsets of Input, not additions to it. Validate is
+// the single consistency rule set (totals against their parts, modalities
+// against their total) and runs where a response is validated, not on every
+// read.
+//
+// # Boundary
+//
+// Producing the numbers is the drivers' and the runtime's job; deciding what
+// they cost is the host's (a pricing catalog lives outside this package). This
+// package only carries and adds them up.
+package usage
 
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
@@ -32,7 +63,7 @@ type Usage struct {
 	// reporter does not know which model produced the call (aggregate
 	// reports). Hosts that bucket usage by model for budgeting / quota
 	// enforcement consume this field.
-	Model ModelRef `json:"model,omitzero"`
+	Model model.ModelRef `json:"model,omitzero"`
 
 	// LatencyMs is the wall-clock latency of the producing call in
 	// milliseconds. Zero when not measured. It surfaces per-call timing
@@ -236,15 +267,15 @@ func (u Usage) Clone() Usage {
 // writes, tool details) have no provider-independent sum semantics and
 // are not carried into the result.
 func (u Usage) Add(other Usage) Usage {
-	model := u.Model
-	if model == (ModelRef{}) {
-		model = other.Model
+	ref := u.Model
+	if ref == (model.ModelRef{}) {
+		ref = other.Model
 	}
 	return Usage{
 		InputTokens:  u.InputTokens + other.InputTokens,
 		OutputTokens: u.OutputTokens + other.OutputTokens,
 		TotalTokens:  u.TotalTokens + other.TotalTokens,
-		Model:        model,
+		Model:        ref,
 		LatencyMs:    u.LatencyMs + other.LatencyMs,
 		Input: InputTokenUsage{
 			CacheReadTokens:  addPointers(u.Input.CacheReadTokens, other.Input.CacheReadTokens),
@@ -280,7 +311,7 @@ func (u Usage) Validate() error {
 	if u.LatencyMs < 0 {
 		return fmt.Errorf("usage latency must be non-negative")
 	}
-	if u.Model != (ModelRef{}) {
+	if u.Model != (model.ModelRef{}) {
 		if err := u.Model.Validate(); err != nil {
 			return fmt.Errorf("usage model: %w", err)
 		}

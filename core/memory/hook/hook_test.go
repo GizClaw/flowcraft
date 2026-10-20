@@ -95,7 +95,7 @@ output: recalled
 	if next == previous {
 		t.Fatal("preparer returned the input board")
 	}
-	if _, ok := previous.GetVar("recalled"); ok {
+	if _, ok := previous.Var("recalled"); ok {
 		t.Fatal("preparer mutated the input board")
 	}
 	items, ok := agent.GetTyped[[]sdkmemory.ContextItem](next, "recalled")
@@ -130,7 +130,7 @@ render:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := previous.GetVar("memory_content"); exists {
+	if _, exists := previous.Var("memory_content"); exists {
 		t.Fatal("preparer mutated previous board")
 	}
 	items, ok := agent.GetTyped[[]sdkmemory.ContextItem](next, "recalled")
@@ -350,6 +350,6 @@ func settingsNode(t *testing.T, source string) json.RawMessage {
 }
 
 func boardValue(board *agent.Board, key string) any {
-	value, _ := board.GetVar(key)
+	value, _ := board.Var(key)
 	return value
 }
