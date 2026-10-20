@@ -1838,7 +1838,7 @@
             "text/plain"
           ]
         },
-        "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+        "body": "1f8b08000000000000ffca48cdc9c957402201010000ffff8088f9e511000000",
         "framing": "length"
       },
       "hooks": {
@@ -1932,7 +1932,7 @@
             "text/plain"
           ]
         },
-        "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+        "body": "1f8b08000000000000ffca48cdc9c957402201010000ffff8088f9e511000000",
         "framing": "length"
       },
       "hooks": {
@@ -1964,13 +1964,13 @@
               "gzip"
             ],
             "content-length": [
-              "42"
+              "32"
             ],
             "content-type": [
               "text/plain"
             ]
           },
-          "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000"
+          "body": "1f8b08000000000000ffca48cdc9c957402201010000ffff8088f9e511000000"
         }
       ],
       "client": [
@@ -1981,13 +1981,13 @@
               "gzip"
             ],
             "content-length": [
-              "42"
+              "32"
             ],
             "content-type": [
               "text/plain"
             ]
           },
-          "body": "1f8b08000000000000ff001100eeff68656c6c6f2068656c6c6f2068656c6c6f03008088f9e511000000",
+          "body": "1f8b08000000000000ffca48cdc9c957402201010000ffff8088f9e511000000",
           "framing": "length"
         }
       ],

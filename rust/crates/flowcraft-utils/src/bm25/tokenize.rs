@@ -134,7 +134,8 @@ const HAN: Ranges = &[
     (0x2B740, 0x2B81D),
     (0x2B820, 0x2CEA1),
     (0x2CEB0, 0x2EBE0),
-    (0x2EBF0, 0x2EE5D),
+    // CJK ext-I (0x2EBF0..0x2EE5D) is Unicode 15.1; the oracle's Go (1.26,
+    // Unicode 15.0) has it unassigned, so core emits no token there either.
     (0x30000, 0x3134A),
     (0x31350, 0x323AF),
 ];

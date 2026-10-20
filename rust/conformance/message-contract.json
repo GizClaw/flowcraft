@@ -436,7 +436,7 @@
       "op": "from_wire",
       "document": "{\"kind\":\"inline\",\"data\":\"!!!\",\"media_type\":\"image/png\"}",
       "outcome": "error",
-      "error": "json: cannot unmarshal string into Go struct field .data of type []uint8: illegal base64 data at input byte 0",
+      "error": "illegal base64 data at input byte 0",
       "text_from": "encoding/json"
     },
     {
@@ -804,7 +804,7 @@
       "kind": "tool_result",
       "validate": "error",
       "validate_error": "tool result call id is required",
-      "wire_error": "json: error calling MarshalJSON for type *message.Content: content must contain at least one part",
+      "wire_error": "json: error calling MarshalJSON for type message.Content: content must contain at least one part",
       "wire_text_from": "encoding/json"
     },
     {
@@ -942,7 +942,7 @@
       "role": "user",
       "validate": "error",
       "validate_error": "message content is required",
-      "wire_error": "json: error calling MarshalJSON for type *message.Content: content must contain at least one part",
+      "wire_error": "json: error calling MarshalJSON for type message.Content: content must contain at least one part",
       "wire_text_from": "encoding/json"
     },
     {

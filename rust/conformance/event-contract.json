@@ -278,7 +278,7 @@
       "time_secs": 1700000000,
       "time_nanos": 0,
       "payload": "not json",
-      "wire_error": "json: error calling MarshalJSON for type *jsontext.Value: invalid character 'o' in literal null (expecting 'u')",
+      "wire_error": "json: error calling MarshalJSON for type json.RawMessage: invalid character 'o' in literal null (expecting 'u')",
       "wire_text_from": "encoding/json"
     }
   ]

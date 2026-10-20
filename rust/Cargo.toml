@@ -51,7 +51,12 @@ rustix = { version = "1.1", features = ["process"] }
 # it a digit -- and both are Unicode *general categories* (L*, Nd), not the
 # `Alphabetic` property Rust's `char` exposes. core asks the category, so the
 # port does too; a data-only crate is smaller than the table it replaces.
-unicode-general-category = "1.1.0"
+# Pinned to the Unicode version the oracle's toolchain ships (Go 1.26 = Unicode
+# 15.0.0). Two CJK compatibility-ideograph boundaries (U+2EBF0, U+2EE5D) are
+# Unicode 15.1 letters, and Go 1.26 has them unassigned, so the contract dump
+# says "not a token" there; 0.6.0 answers the same. Bumping this crate is a
+# toolchain bump and has to regenerate the bm25 dump with it.
+unicode-general-category = "0.6.0"
 # The runtime the port chose (plan §6): the bus's backpressure is a pending
 # future, not a parked thread, and cancellation is a token rather than a
 # context. `sync` alone is enough for the bus; `rt`/`macros`/`time` are for its

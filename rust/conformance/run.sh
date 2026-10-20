@@ -22,6 +22,17 @@
 # by tools/selftest.py: a gate that cannot fail is not a gate.
 set -euo pipefail
 
+# The oracle answers as one toolchain, not as whatever `go` happens to be on
+# this machine. Three parts of the contract move with Go's own releases:
+# `encoding/json` words its refusals differently (`*message.Content` in 1.27,
+# `message.Content` in 1.26), `compress/flate` emits different bytes for the
+# same input (so the MITM dump's gzip body moves), and the `unicode` tables
+# decide which code points are letters (so two CJK ext-I boundaries move). A
+# dump compared byte for byte has to fix all three, so the toolchain is pinned
+# here -- `go` downloads it if it is not the local one -- and CI installs the
+# same version rather than "1.26".
+export GOTOOLCHAIN="${CONFORMANCE_GO_TOOLCHAIN:-go1.26.9}"
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 conf="$root/rust/conformance"
 out="${CONFORMANCE_OUT:-$conf/out}"
@@ -59,7 +70,7 @@ echo "==> selftest (checker failure modes)"
 python3 "$conf/tools/selftest.py"
 
 echo "==> oracle (Go)"
-(cd "$root/tools/conformance-oracle" && GOWORK=off go build -o "$out/oracle" .)
+(cd "$root/tools/conformance-oracle" && go version && GOWORK=off go build -o "$out/oracle" .)
 
 echo "==> error contract"
 # The committed dump is the error half of the contract: errdefs' tables and
