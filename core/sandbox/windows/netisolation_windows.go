@@ -16,8 +16,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
-	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
+	"github.com/GizClaw/flowcraft/core/utils/netpolicy/mitm"
 
 	"go.opentelemetry.io/otel/attribute"
 	xwin "golang.org/x/sys/windows"

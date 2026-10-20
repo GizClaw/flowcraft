@@ -5,7 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
-	"github.com/GizClaw/flowcraft/core/utils/net"
+	"github.com/GizClaw/flowcraft/core/utils/netpolicy"
 )
 
 // RunnerOption configures a Runner at construction time.
@@ -20,8 +20,8 @@ type runnerConfig struct {
 	writable     []string // additional explicitly writable host paths
 	readOnlyRoot bool     // keep the runner root read-only for every exec
 	journal      *journal.Config
-	decision     func(net.ProxyDecision)
-	hooks        net.MITMHooks
+	decision     func(netpolicy.ProxyDecision)
+	hooks        netpolicy.MITMHooks
 	roots        *x509.CertPool
 }
 
@@ -102,7 +102,7 @@ func WithFileJournalConfig(cfg journal.Config) RunnerOption {
 
 // WithProxyDecision installs the per-decision audit callback used by
 // the host-side enforcement proxy. Keep it fast and non-throwing.
-func WithProxyDecision(fn func(net.ProxyDecision)) RunnerOption {
+func WithProxyDecision(fn func(netpolicy.ProxyDecision)) RunnerOption {
 	return func(c *runnerConfig) {
 		c.decision = fn
 	}
@@ -110,7 +110,7 @@ func WithProxyDecision(fn func(net.ProxyDecision)) RunnerOption {
 
 // WithProxyHooks installs MITM observation/blocking hooks. They only
 // fire when the sandbox policy enables MITM.
-func WithProxyHooks(h net.MITMHooks) RunnerOption {
+func WithProxyHooks(h netpolicy.MITMHooks) RunnerOption {
 	return func(c *runnerConfig) {
 		c.hooks = h
 	}

@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 )
 
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot Exec

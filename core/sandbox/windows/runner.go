@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 
 	"go.opentelemetry.io/otel/attribute"

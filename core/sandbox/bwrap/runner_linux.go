@@ -17,8 +17,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox/bwrap/internal/bridge"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	"github.com/GizClaw/flowcraft/core/utils/net"
-	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
+	"github.com/GizClaw/flowcraft/core/utils/netpolicy"
+	"github.com/GizClaw/flowcraft/core/utils/netpolicy/mitm"
 	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
@@ -39,8 +39,8 @@ type Runner struct {
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	journal          *journal.Journal
-	decision         func(net.ProxyDecision)
-	hooks            net.MITMHooks
+	decision         func(netpolicy.ProxyDecision)
+	hooks            netpolicy.MITMHooks
 	outboundRoots    *x509.CertPool
 }
 
@@ -50,7 +50,7 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 	caps := sandbox.GroupCapsSupported()
 	return sandbox.Enforcement{
 		EnvAllowList:     true,
-		NetModes:         []net.NetMode{net.NetDenyAll, net.NetAllowList, net.NetProxy},
+		NetModes:         []netpolicy.NetMode{netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy},
 		Socks5:           true,
 		MITM:             true,
 		UnixSocketPolicy: true,
@@ -230,11 +230,11 @@ func (r *Runner) spawnProcess(
 	}
 	spec.Opts.WorkDir = resolvedWorkDir
 
-	proxyMode := spec.Opts.Net.Mode == net.NetAllowList ||
-		spec.Opts.Net.Mode == net.NetProxy
-	var proxy *net.Proxy
+	proxyMode := spec.Opts.Net.Mode == netpolicy.NetAllowList ||
+		spec.Opts.Net.Mode == netpolicy.NetProxy
+	var proxy *netpolicy.Proxy
 	if proxyMode {
-		proxy, err = net.Start(net.ProxyConfig{
+		proxy, err = netpolicy.Start(netpolicy.ProxyConfig{
 			Mode:          spec.Opts.Net.Mode,
 			AllowHosts:    spec.Opts.Net.AllowHosts,
 			Rules:         spec.Opts.Net.Rules,
@@ -370,7 +370,7 @@ func (r *Runner) filesystemFlagsFor(write sandbox.WritePolicy) []string {
 // closeProxy best-effort closes the enforcement proxy, leaving the
 // error visible to telemetry. It is nil-safe for uniform use on every
 // spawnProcess teardown path.
-func closeProxy(ctx context.Context, proxy *net.Proxy) {
+func closeProxy(ctx context.Context, proxy *netpolicy.Proxy) {
 	if proxy == nil {
 		return
 	}

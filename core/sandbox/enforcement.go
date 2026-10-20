@@ -1,6 +1,6 @@
 package sandbox
 
-import corenet "github.com/GizClaw/flowcraft/core/utils/net"
+import corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 
 // Enforcement reports which policy dimensions a Runner can actually
 // enforce on the current platform, so callers and UIs never have to
