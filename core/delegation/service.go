@@ -111,7 +111,9 @@ type Runner interface {
 // the seam for per-session state the application owns — sandbox mode,
 // think level, model hint — which core deliberately does not model.
 // Returning an error fails the delegation: a policy that could not be
-// applied must not silently fall back to a wider default.
+// applied must not silently fall back to a wider default. A run on the
+// manager-less path is initialized too when a [SessionProvider] supplied
+// the identity.
 type SessionInitializer func(ctx context.Context, key session.Key, req AsyncRequest) error
 
 // Option configures a local Service.
@@ -275,9 +277,13 @@ func WithSessionProvider(provider SessionProvider) Option {
 
 // WithSessionInitializer registers a per-run hook that stamps
 // application-owned session state onto the subagent's freshly minted
-// session, before its turn starts or resumes. It runs on the session path
-// only: without a bound session manager the delegated run has no session
-// identity to initialize (see [LocalService.runAtLegacy]).
+// session, before its turn starts or resumes. It runs wherever the
+// delegated run has a session identity: on the session path, and on
+// [LocalService.runAtLegacy] when a [SessionProvider] minted one.
+//
+// A delegation that would run without any identity is rejected instead of
+// skipped: the hook was configured to narrow the run, and a run that
+// cannot receive its policy must not proceed under a wider default.
 //
 // A hook error fails the delegation rather than degrading to a default, so
 // a policy that could not be applied never runs under a wider one.
@@ -1070,6 +1076,24 @@ func (s *LocalService) runAtLegacy(
 			defer func() { <-s.slots }()
 		case <-execCtx.Done():
 			return canceledResponse("", execCtx.Err()), nil
+		}
+	}
+
+	// A configured initializer is a policy, not a suggestion. This path
+	// steps around session lifecycle, but an injected SessionProvider
+	// still mints an identity here, so the hook has the same job and the
+	// same fail-closed contract as it does on the session path. With no
+	// identity at all it refuses the delegation: running anyway would
+	// apply the store's default to a run that was told to narrow it.
+	if s.sessionInitializer != nil {
+		if !hasKey {
+			return Response{}, errdefs.Validationf(
+				"local delegation: session initializer requires a session identity; " +
+					"bind a session manager or configure a session provider")
+		}
+		if err := s.sessionInitializer(execCtx, key, req); err != nil {
+			return Response{}, fmt.Errorf(
+				"local delegation: initialize session %q: %w", key.ContextID, err)
 		}
 	}
 

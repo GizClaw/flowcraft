@@ -81,6 +81,37 @@ func TestRequestIdempotencyKeyJSON(t *testing.T) {
 	}
 }
 
+// TestRequestAttributesJSON pins the wire contract of the declared
+// policy. Async work crosses a queue as JSON, so a renamed field or a
+// dropped tag would lose the policy across processes — and change what
+// counts as the same request for idempotency — without failing any
+// in-process test.
+func TestRequestAttributesJSON(t *testing.T) {
+	encoded, err := json.Marshal(delegation.Request{
+		Attributes: map[string]string{"sandbox.mode": "read-only"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"attributes":{"sandbox.mode":"read-only"}`) {
+		t.Fatalf("encoded request = %s", encoded)
+	}
+	var decoded delegation.Request
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Attributes) != 1 || decoded.Attributes["sandbox.mode"] != "read-only" {
+		t.Fatalf("round-tripped attributes = %v", decoded.Attributes)
+	}
+	encoded, err = json.Marshal(delegation.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"attributes"`) {
+		t.Fatalf("empty attributes were not omitted: %s", encoded)
+	}
+}
+
 func TestResponseValidate(t *testing.T) {
 	if err := (delegation.Response{
 		ID:     "delegation-1",

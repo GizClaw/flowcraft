@@ -11,21 +11,23 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// subagentAttributes runs one sync delegation and returns the attribute
-// map the subagent's engine observed.
-func subagentAttributes(t *testing.T, ctx context.Context, req Request) map[string]string {
-	t.Helper()
-	var got map[string]string
-	engine := agent.EngineFunc(func(
+// recordingEngine stores the attribute map the subagent's engine observed
+// into got.
+func recordingEngine(got *map[string]string) agent.Engine {
+	return agent.EngineFunc(func(
 		_ context.Context,
 		run agent.Run,
 		_ agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
-		got = maps.Clone(run.Attributes)
+		*got = maps.Clone(run.Attributes)
 		return board, nil
 	})
-	service, _ := newSessionPathService(t, engine, nil)
+}
+
+// delegateSucceeded asserts that a sync delegation completes.
+func delegateSucceeded(t *testing.T, service *LocalService, ctx context.Context, req Request) {
+	t.Helper()
 	response, err := service.Delegate(ctx, req)
 	if err != nil {
 		t.Fatalf("Delegate: %v", err)
@@ -33,6 +35,29 @@ func subagentAttributes(t *testing.T, ctx context.Context, req Request) map[stri
 	if response.Status != StatusSucceeded {
 		t.Fatalf("response status = %q, want succeeded", response.Status)
 	}
+}
+
+// subagentAttributes runs one sync delegation and returns the attribute
+// map the subagent's engine observed.
+func subagentAttributes(t *testing.T, ctx context.Context, req Request) map[string]string {
+	t.Helper()
+	var got map[string]string
+	service, _ := newSessionPathService(t, recordingEngine(&got), nil)
+	delegateSucceeded(t, service, ctx, req)
+	return got
+}
+
+// legacySubagentAttributes is subagentAttributes with no session manager
+// bound, so the delegation takes [LocalService.runAtLegacy].
+func legacySubagentAttributes(t *testing.T, ctx context.Context, req Request) map[string]string {
+	t.Helper()
+	var got map[string]string
+	service, err := NewService(boundDirectory(t, recordingEngine(&got)), nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+	delegateSucceeded(t, service, ctx, req)
 	return got
 }
 
@@ -51,20 +76,68 @@ func TestRequestAttributesReachSubagentRun(t *testing.T) {
 	}
 }
 
-func TestLineageWinsOverDeclaredAttributes(t *testing.T) {
-	req := syncRequest("writer")
-	req.Attributes = map[string]string{
-		telemetry.AttrToolCallID: "spoofed-call",
-		"sandbox.mode":           "read-only",
-	}
-	ctx := tool.WithCallID(context.Background(), "call-real")
-	got := subagentAttributes(t, ctx, req)
-	if got[telemetry.AttrToolCallID] != "call-real" {
+// TestMergeRunAttributesLineageWins pins the merge order below
+// [Request.Validate]: the lineage keys the service owns win even when a
+// caller assembles the merged map directly.
+func TestMergeRunAttributesLineageWins(t *testing.T) {
+	merged := mergeRunAttributes(
+		map[string]string{telemetry.AttrToolCallID: "call-real"},
+		map[string]string{
+			telemetry.AttrToolCallID: "spoofed-call",
+			"sandbox.mode":           "read-only",
+		})
+	if merged[telemetry.AttrToolCallID] != "call-real" {
 		t.Fatalf("tool.call_id = %q, want the service-owned call id (all: %v)",
+			merged[telemetry.AttrToolCallID], merged)
+	}
+	if merged["sandbox.mode"] != "read-only" {
+		t.Fatalf("declared attribute dropped by the lineage merge: %v", merged)
+	}
+}
+
+// TestDeclaredLineageAttributeRejected pins the guard the merge alone
+// cannot give: with no ambient call id there is nothing to layer over a
+// declared one, so the request is refused before the subagent runs.
+func TestDeclaredLineageAttributeRejected(t *testing.T) {
+	var got map[string]string
+	service, err := NewService(boundDirectory(t, recordingEngine(&got)), nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+
+	req := syncRequest("writer")
+	req.Attributes = map[string]string{telemetry.AttrToolCallID: "spoofed-call"}
+	if _, err := service.Delegate(context.Background(), req); !errdefs.IsValidation(err) {
+		t.Fatalf("Delegate = %v, want validation for a declared lineage key", err)
+	}
+	if got != nil {
+		t.Fatalf("the subagent ran with a caller-chosen lineage attribute: %v", got)
+	}
+}
+
+// TestLegacyRunCarriesDeclaredAttributes pins the merge on the
+// manager-less path. Every other attribute test binds a session manager,
+// so a regression here would silently drop a deployment's policy for the
+// unbound deployments the guide explicitly supports.
+func TestLegacyRunCarriesDeclaredAttributes(t *testing.T) {
+	req := syncRequest("writer")
+	req.Attributes = map[string]string{"sandbox.mode": "read-only"}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{
+		Identity:   agent.Identity{AgentID: "caller", RunID: "run-caller"},
+		Attributes: map[string]string{"oc.checkpoint.request": "blob"},
+	})
+	ctx = tool.WithCallID(ctx, "call-legacy")
+	got := legacySubagentAttributes(t, ctx, req)
+	if got["sandbox.mode"] != "read-only" {
+		t.Fatalf("declared attribute missing from the legacy run: %v", got)
+	}
+	if got[telemetry.AttrToolCallID] != "call-legacy" {
+		t.Fatalf("tool.call_id = %q, want call-legacy (all: %v)",
 			got[telemetry.AttrToolCallID], got)
 	}
-	if got["sandbox.mode"] != "read-only" {
-		t.Fatalf("declared attribute dropped by lineage merge: %v", got)
+	if _, ok := got["oc.checkpoint.request"]; ok {
+		t.Fatalf("caller run attribute leaked into the legacy run: %v", got)
 	}
 }
 
@@ -111,6 +184,7 @@ func TestRequestAttributesValidate(t *testing.T) {
 		"padded value":     {"sandbox.mode": " read-only"},
 		"trailing value":   {"sandbox.mode": "read-only "},
 		"whitespace value": {"sandbox.mode": " "},
+		"lineage key":      {telemetry.AttrToolCallID: "call-forged"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := valid(attributes).Validate(); !errdefs.IsValidation(err) {

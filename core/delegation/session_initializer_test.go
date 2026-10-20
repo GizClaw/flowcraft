@@ -19,6 +19,7 @@ type initializerRecorder struct {
 	order     []string
 	keys      []session.Key
 	requests  []AsyncRequest
+	contexts  []string
 	err       error
 	engineRan int
 }
@@ -35,12 +36,13 @@ func (r *initializerRecorder) initialize(_ context.Context, key session.Key, req
 func (r *initializerRecorder) engineHook() agent.Engine {
 	return agent.EngineFunc(func(
 		_ context.Context,
-		_ agent.Run,
+		run agent.Run,
 		_ agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
 		r.mu.Lock()
 		r.order = append(r.order, "engine")
+		r.contexts = append(r.contexts, run.ConversationID)
 		r.engineRan++
 		r.mu.Unlock()
 		board.AppendChannelMessage(agent.MainChannel,
@@ -55,6 +57,14 @@ func (r *initializerRecorder) snapshot() ([]string, []session.Key, []AsyncReques
 	return append([]string(nil), r.order...),
 		append([]session.Key(nil), r.keys...),
 		append([]AsyncRequest(nil), r.requests...)
+}
+
+// engineContextIDs returns the ConversationID of every run the engine
+// executed, in order.
+func (r *initializerRecorder) engineContextIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.contexts...)
 }
 
 func TestSessionInitializerRunsBeforeStart(t *testing.T) {
@@ -149,22 +159,84 @@ func TestSessionInitializerErrorFailsDelegation(t *testing.T) {
 	}
 }
 
-// TestSessionInitializerSkippedWithoutSessionManager pins the documented
-// gap: the legacy path has no session identity, so there is nothing for an
-// initializer to stamp.
-func TestSessionInitializerSkippedWithoutSessionManager(t *testing.T) {
+// TestSessionInitializerRunsOnLegacyPath pins that an injected provider
+// is enough to initialize: the manager-less path still mints an identity,
+// so the hook runs before the run and sees the same session.
+func TestSessionInitializerRunsOnLegacyPath(t *testing.T) {
+	recorder := &initializerRecorder{}
+	service, err := NewService(boundDirectory(t, recorder.engineHook()), nil,
+		WithSessionInitializer(recorder.initialize),
+		WithSessionProvider(&testSessionProvider{contextID: "legacy-init-ctx", persistent: true}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+
+	response, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	order, keys, _ := recorder.snapshot()
+	if len(order) != 2 || order[0] != "initialize" || order[1] != "engine" {
+		t.Fatalf("lifecycle order = %v, want [initialize engine]", order)
+	}
+	if keys[0].ContextID != "legacy-init-ctx" || keys[0].AgentID != "writer" {
+		t.Fatalf("initializer key = %+v, want the provider-minted identity", keys[0])
+	}
+	if ids := recorder.engineContextIDs(); len(ids) != 1 || ids[0] != keys[0].ContextID {
+		t.Fatalf("run ContextIDs = %v, want the session the hook initialized (%q)",
+			ids, keys[0].ContextID)
+	}
+}
+
+// TestSessionInitializerLegacyErrorFailsDelegation pins the fail-closed
+// contract on the manager-less path: the hook has the same veto it has on
+// the session path.
+func TestSessionInitializerLegacyErrorFailsDelegation(t *testing.T) {
+	recorder := &initializerRecorder{err: errdefs.PolicyDeniedf("no policy for this target")}
+	service, err := NewService(boundDirectory(t, recorder.engineHook()), nil,
+		WithSessionInitializer(recorder.initialize),
+		WithSessionProvider(&testSessionProvider{contextID: "legacy-denied", persistent: true}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+
+	_, err = service.Delegate(context.Background(), syncRequest("writer"))
+	if !errdefs.IsPolicyDenied(err) {
+		t.Fatalf("Delegate = %v, want the initializer's policy-denied error", err)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.engineRan != 0 {
+		t.Fatal("the subagent ran despite the initializer failing")
+	}
+}
+
+// TestSessionInitializerWithoutIdentityFailsDelegation pins the other half
+// of the same contract: with neither a session manager nor a provider there
+// is nothing to initialize, so a configured hook refuses the delegation
+// instead of letting it run under the store's default.
+func TestSessionInitializerWithoutIdentityFailsDelegation(t *testing.T) {
 	recorder := &initializerRecorder{}
 	service, err := NewService(boundDirectory(t, recorder.engineHook()), nil,
 		WithSessionInitializer(recorder.initialize))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewService: %v", err)
 	}
 	defer func() { _ = service.Close() }()
-	if _, err := service.Delegate(context.Background(), syncRequest("writer")); err != nil {
-		t.Fatalf("Delegate: %v", err)
+
+	_, err = service.Delegate(context.Background(), syncRequest("writer"))
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Delegate = %v, want validation for a delegation without session identity", err)
 	}
-	if _, keys, _ := recorder.snapshot(); len(keys) != 0 {
-		t.Fatalf("initializer ran on the legacy path: %v", keys)
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.engineRan != 0 {
+		t.Fatal("the subagent ran without the session identity the hook was asked to initialize")
 	}
 }
 
