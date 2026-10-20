@@ -78,7 +78,7 @@ func (s *Store) Asset(id, rel string) ([]byte, error) {
 		return nil, errdefs.Forbiddenf(
 			"plugin %s: asset %q escapes the plugin directory", id, rel)
 	case err != nil:
-		return nil, errdefs.NotFoundf("plugin %s: asset %q: %v", id, rel, err)
+		return nil, errdefs.NotFoundf("plugin %s: asset %q: %w", id, rel, err)
 	}
 	data, err := readAsset(path)
 	switch {
@@ -89,7 +89,7 @@ func (s *Store) Asset(id, rel string) ([]byte, error) {
 		return nil, errdefs.Validationf(
 			"plugin %s: asset %q is not a regular file", id, rel)
 	case err != nil:
-		return nil, errdefs.NotFoundf("plugin %s: asset %q: %v", id, rel, err)
+		return nil, errdefs.NotFoundf("plugin %s: asset %q: %w", id, rel, err)
 	}
 	return data, nil
 }

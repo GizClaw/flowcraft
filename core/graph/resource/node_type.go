@@ -74,7 +74,7 @@ func (ScriptNodeTypeFactory) Spec() res.Spec {
 func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (*scriptNodeType, error) {
 	settings, err := res.DecodeTyped[ScriptNodeTypeSettings](ctx, in.Settings)
 	if err != nil {
-		return nil, errdefs.Validationf("graph node type: decode settings: %v", err)
+		return nil, errdefs.Validationf("graph node type: decode settings: %w", err)
 	}
 	if settings.Type == "" {
 		return nil, errdefs.Validationf("graph node type: settings.type is required")
@@ -86,7 +86,7 @@ func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (*scriptNode
 	src, err := res.ParseSource(settings.Source)
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"graph node type %q: settings.source: %v", settings.Type, err)
+			"graph node type %q: settings.source: %w", settings.Type, err)
 	}
 	data, err := resolveSource(ctx, in, src)
 	if err != nil {

@@ -227,7 +227,7 @@ func (s ServerSpec) transport(client *http.Client) (mcpsdk.Transport, error) {
 			timeout, err := time.ParseDuration(*s.HTTPTimeout)
 			if err != nil {
 				return nil, errdefs.Validationf(
-					"mcp: server %q: http_timeout: %v", s.Name, err)
+					"mcp: server %q: http_timeout: %w", s.Name, err)
 			}
 			client = utils.NewHttpClient(utils.WithTimeout(timeout))
 		}
@@ -253,7 +253,7 @@ func (s ServerSpec) options() ([]ServerOption, error) {
 	if s.Liveness != nil {
 		interval, err := parseLiveness(*s.Liveness)
 		if err != nil {
-			return nil, errdefs.Validationf("mcp: server %q: liveness: %v", s.Name, err)
+			return nil, errdefs.Validationf("mcp: server %q: liveness: %w", s.Name, err)
 		}
 		opts = append(opts, WithServerLiveness(interval))
 	}

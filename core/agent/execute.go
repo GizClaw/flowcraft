@@ -439,7 +439,7 @@ func applyRunTimeout(
 		parsed, err := time.ParseDuration(policyTimeout)
 		if err != nil {
 			return nil, nil, errdefs.Validationf(
-				"agent: policy.run_timeout %q: %v", policyTimeout, err)
+				"agent: policy.run_timeout %q: %w", policyTimeout, err)
 		}
 		if parsed <= 0 {
 			return nil, nil, errdefs.Validationf(

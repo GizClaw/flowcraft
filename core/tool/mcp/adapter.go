@@ -85,7 +85,7 @@ func (a *adaptedTool) Execute(ctx context.Context, arguments string) (message.Co
 	if err != nil {
 		a.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
-			"mcp: server %q: call tool %q: %v", a.server.name, a.remote, err)
+			"mcp: server %q: call tool %q: %w", a.server.name, a.remote, err)
 	}
 	content := resultContent(res)
 	if res != nil && res.IsError {
@@ -109,7 +109,7 @@ func decodeArguments(arguments string) (any, error) {
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return nil, errdefs.Validationf("mcp: parse arguments: %v", err)
+		return nil, errdefs.Validationf("mcp: parse arguments: %w", err)
 	}
 	if decoded == nil {
 		return map[string]any{}, nil

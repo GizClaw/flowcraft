@@ -48,7 +48,7 @@ func Approval(approver Approver, tools ...string) tool.Middleware {
 			}
 			if err := approver.Approve(ctx, call); err != nil {
 				return message.NewErrorToolResult(call.ID,
-					errdefs.PolicyDeniedf("tool %q call denied: %v", call.Name, err).Error())
+					errdefs.PolicyDeniedf("tool %q call denied: %w", call.Name, err).Error())
 			}
 			return next(ctx, call)
 		}

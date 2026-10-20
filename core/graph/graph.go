@@ -206,7 +206,7 @@ func checkConfigFields(nd NodeDefinition, et *erasedType) error {
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(nd.Config, &fields); err != nil {
-		return errdefs.Validationf("graph: node %q: config is not a JSON object: %v", nd.ID, err)
+		return errdefs.Validationf("graph: node %q: config is not a JSON object: %w", nd.ID, err)
 	}
 	for name := range fields {
 		if !et.configFields[name] {

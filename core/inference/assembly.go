@@ -488,7 +488,7 @@ func (a *Assembly) lookupEntry(
 	registry, err := a.registryView()
 	if err != nil {
 		return providerEntry{}, ModelImplementation{},
-			errdefs.Validationf("inference assembly: %v", err)
+			errdefs.Validationf("inference assembly: %w", err)
 	}
 	if err := ref.Validate(); err != nil {
 		return providerEntry{}, ModelImplementation{},

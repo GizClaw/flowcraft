@@ -84,7 +84,7 @@ func (f pluginNodeFactory) New(
 			if len(out) > 0 {
 				if err := json.Unmarshal(out, &result); err != nil {
 					return errdefs.Validationf(
-						"craft: graph node %q: decode plugin result: %v",
+						"craft: graph node %q: decode plugin result: %w",
 						settings.Type, err)
 				}
 			}

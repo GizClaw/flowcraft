@@ -698,7 +698,7 @@ func resolveConfig(cfg Config) (resolved, error) {
 	}
 	root, err := filepath.Abs(cfg.Root)
 	if err != nil {
-		return resolved{}, errdefs.Validationf("sandbox/journal: resolve root: %v", err)
+		return resolved{}, errdefs.Validationf("sandbox/journal: resolve root: %w", err)
 	}
 	if resolved, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
 		root = resolved

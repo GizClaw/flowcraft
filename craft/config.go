@@ -174,7 +174,7 @@ func injectExternalDeps(
 	}
 	section := map[string]any{}
 	if err := json.Unmarshal(raw, &section); err != nil {
-		return errdefs.Validationf("craft: decode runtime section: %v", err)
+		return errdefs.Validationf("craft: decode runtime section: %w", err)
 	}
 	existing := []map[string]any{}
 	if value, ok := section["external_deps"]; ok {
@@ -185,7 +185,7 @@ func injectExternalDeps(
 		}
 		if err := json.Unmarshal(encoded, &existing); err != nil {
 			return errdefs.Validationf(
-				"craft: runtime.external_deps must be a list: %v", err)
+				"craft: runtime.external_deps must be a list: %w", err)
 		}
 	}
 	seen := make(map[string]struct{}, len(existing)+len(externals))

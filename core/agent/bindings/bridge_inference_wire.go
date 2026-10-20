@@ -313,7 +313,7 @@ func routeExplainResult(
 ) (any, error) {
 	descriptor, err := router.Target().InspectModel(decision.Selected)
 	if err != nil {
-		return nil, errdefs.Internalf("%s: inspect selected model: %v", field, err)
+		return nil, errdefs.Internalf("%s: inspect selected model: %w", field, err)
 	}
 	out, err := toScriptJSON(map[string]any{
 		"explanation": explanation,

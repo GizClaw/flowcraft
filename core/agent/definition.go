@@ -57,7 +57,7 @@ func (d Definition) Validate() error {
 		duration, err := time.ParseDuration(d.Policy.RunTimeout)
 		if err != nil {
 			return errdefs.Validationf(
-				"agent: policy.run_timeout %q: %v", d.Policy.RunTimeout, err)
+				"agent: policy.run_timeout %q: %w", d.Policy.RunTimeout, err)
 		}
 		if duration <= 0 {
 			return errdefs.Validationf(
@@ -77,7 +77,7 @@ func (d Definition) Validate() error {
 		for i, hook := range list.hooks {
 			if err := hook.Validate(); err != nil {
 				return errdefs.Validationf(
-					"agent: hooks[%q][%d]: %v", list.slot, i, err)
+					"agent: hooks[%q][%d]: %w", list.slot, i, err)
 			}
 		}
 	}

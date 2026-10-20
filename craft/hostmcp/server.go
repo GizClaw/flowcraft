@@ -133,7 +133,7 @@ func (s *Server) Start() error {
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return errdefs.NotAvailablef("hostmcp: listen: %v", err)
+		return errdefs.NotAvailablef("hostmcp: listen: %w", err)
 	}
 	s.listen = listener
 	s.url = "http://" + listener.Addr().String() + "/mcp"

@@ -35,7 +35,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (*Router, error) {
 		return nil, err
 	}
 	if err := policy.ValidateFor(target); err != nil {
-		return nil, errdefs.Validationf("inference router: %v", err)
+		return nil, errdefs.Validationf("inference router: %w", err)
 	}
 	options, err := policy.Options()
 	if err != nil {
@@ -43,7 +43,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (*Router, error) {
 	}
 	router, err := New(target, policy.Selectors(target), options...)
 	if err != nil {
-		return nil, errdefs.Validationf("inference router: %v", err)
+		return nil, errdefs.Validationf("inference router: %w", err)
 	}
 	return router, nil
 }

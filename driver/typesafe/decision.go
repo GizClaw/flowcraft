@@ -536,7 +536,7 @@ func transportDecision(
 			// a body that does not marshal is a fact about the driver, not
 			// about the route: permanent, and no retry buys a different one.
 			return decisionRaw{}, errdefs.Validationf(
-				"typesafe: marshal system one request: %v", err)
+				"typesafe: marshal system one request: %w", err)
 		}
 		request, err := http.NewRequestWithContext(
 			ctx,
@@ -549,7 +549,7 @@ func transportDecision(
 			// URL net/http refuses here is the deployment's, not a transient
 			// one: retrying it would retry the same typo.
 			return decisionRaw{}, errdefs.Validationf(
-				"typesafe: build system one request: %v", err)
+				"typesafe: build system one request: %w", err)
 		}
 		request.Header.Set(headerAuthorization, "Bearer "+cls.key)
 		request.Header.Set(headerContentType, "application/json")

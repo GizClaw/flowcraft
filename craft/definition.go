@@ -67,7 +67,7 @@ type BaseLayer struct {
 func ParseDefinition(data []byte) (Definition, error) {
 	def, err := utils.Decode[Definition](data)
 	if err != nil {
-		return Definition{}, errdefs.Validationf("craft: parse definition: %v", err)
+		return Definition{}, errdefs.Validationf("craft: parse definition: %w", err)
 	}
 	if err := def.Validate(); err != nil {
 		return Definition{}, err

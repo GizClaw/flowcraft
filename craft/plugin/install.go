@@ -46,7 +46,7 @@ func (s *Store) inspect(source string) (Summary, Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(source, "plugin.json"))
 	if err != nil {
 		return Summary{}, Manifest{}, errdefs.Validationf(
-			"plugin install: plugin.json: %v", err)
+			"plugin install: plugin.json: %w", err)
 	}
 	manifest, err := ParseManifest(context.Background(), data)
 	if err != nil {
@@ -108,7 +108,7 @@ func (s *Store) Install(
 		replacing = true
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return Summary{}, errdefs.Validationf(
-			"plugin install: inspect %s: %v", summary.ID, err)
+			"plugin install: inspect %s: %w", summary.ID, err)
 	}
 	if replacing {
 		if err := s.snapshot(root, summary.ID, target); err != nil {
@@ -116,7 +116,7 @@ func (s *Store) Install(
 		}
 		if err := os.RemoveAll(target); err != nil {
 			return Summary{}, errdefs.Validationf(
-				"plugin install: replace %s: %v", summary.ID, err)
+				"plugin install: replace %s: %w", summary.ID, err)
 		}
 	}
 	if err := copyDir(source, target); err != nil {
@@ -159,13 +159,13 @@ func (s *Store) Rollback(ctx context.Context, id string) (Summary, error) {
 	if _, err := os.Stat(target); err == nil {
 		if err := os.Rename(target, trash); err != nil {
 			return Summary{}, errdefs.Validationf(
-				"plugin install: stash %s: %v", id, err)
+				"plugin install: stash %s: %w", id, err)
 		}
 	}
 	if err := os.Rename(backup, target); err != nil {
 		_ = os.Rename(trash, target)
 		return Summary{}, errdefs.Validationf(
-			"plugin install: restore %s: %v", id, err)
+			"plugin install: restore %s: %w", id, err)
 	}
 	_ = os.RemoveAll(trash)
 	s.bump()
@@ -176,7 +176,7 @@ func (s *Store) snapshot(root, id, target string) error {
 	backup := backupPath(root, id)
 	_ = os.RemoveAll(backup)
 	if err := os.MkdirAll(filepath.Dir(backup), 0o700); err != nil {
-		return errdefs.Validationf("plugin install: backup dir: %v", err)
+		return errdefs.Validationf("plugin install: backup dir: %w", err)
 	}
 	if err := copyDir(target, backup); err != nil {
 		return err
@@ -256,7 +256,7 @@ func (s *Store) Uninstall(
 		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return errdefs.Validationf("plugin uninstall: remove %s: %v", id, err)
+		return errdefs.Validationf("plugin uninstall: remove %s: %w", id, err)
 	}
 	// Snapshots live beside the copy they belong to — the snapshot and,
 	// if a rollback died halfway, whatever it parked while swapping.
@@ -337,11 +337,11 @@ func pluginFileMode(mode fs.FileMode) fs.FileMode {
 func copyDir(source, target string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return errdefs.Validationf("plugin install: walk: %v", err)
+			return errdefs.Validationf("plugin install: walk: %w", err)
 		}
 		relative, err := filepath.Rel(source, path)
 		if err != nil {
-			return errdefs.Validationf("plugin install: rel: %v", err)
+			return errdefs.Validationf("plugin install: rel: %w", err)
 		}
 		destination := filepath.Join(target, relative)
 		switch {
@@ -350,23 +350,23 @@ func copyDir(source, target string) error {
 				"plugin install: symlink %q is not allowed", relative)
 		case entry.IsDir():
 			if err := os.MkdirAll(destination, 0o700); err != nil {
-				return errdefs.Validationf("plugin install: mkdir: %v", err)
+				return errdefs.Validationf("plugin install: mkdir: %w", err)
 			}
 			return nil
 		default:
 			info, err := entry.Info()
 			if err != nil {
-				return errdefs.Validationf("plugin install: stat: %v", err)
+				return errdefs.Validationf("plugin install: stat: %w", err)
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
-				return errdefs.Validationf("plugin install: read: %v", err)
+				return errdefs.Validationf("plugin install: read: %w", err)
 			}
 			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-				return errdefs.Validationf("plugin install: mkdir: %v", err)
+				return errdefs.Validationf("plugin install: mkdir: %w", err)
 			}
 			if err := os.WriteFile(destination, data, pluginFileMode(info.Mode())); err != nil {
-				return errdefs.Validationf("plugin install: write: %v", err)
+				return errdefs.Validationf("plugin install: write: %w", err)
 			}
 			return nil
 		}

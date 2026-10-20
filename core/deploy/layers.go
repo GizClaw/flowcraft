@@ -60,13 +60,13 @@ func LoadLayers(ctx context.Context, layers []Layer) (Document, Provenance, erro
 		data, err := layer.load(ctx)
 		if err != nil {
 			return Document{}, provenance, errdefs.Validationf(
-				"deploy: layer %d (%s): %v",
+				"deploy: layer %d (%s): %w",
 				layer.Priority, layer.Name, err)
 		}
 		partial, err := decodeLayer(data, index == 0)
 		if err != nil {
 			return Document{}, provenance, errdefs.Validationf(
-				"deploy: layer %d (%s): %v",
+				"deploy: layer %d (%s): %w",
 				layer.Priority, layer.Name, err)
 		}
 		merged = mergeDocument(merged, partial)
@@ -80,7 +80,7 @@ func LoadLayers(ctx context.Context, layers []Layer) (Document, Provenance, erro
 	}
 	if err := merged.Validate(); err != nil {
 		return Document{}, provenance, errdefs.Validationf(
-			"deploy: merged document: %v", err)
+			"deploy: merged document: %w", err)
 	}
 	return merged, provenance, nil
 }

@@ -101,11 +101,11 @@ func NewStore(opts Options) (*Store, error) {
 	}
 	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
 		return nil, errdefs.Validationf(
-			"plugin store: create state dir: %v", err)
+			"plugin store: create state dir: %w", err)
 	}
 	if err := os.MkdirAll(opts.DataDirRoot, 0o700); err != nil {
 		return nil, errdefs.Validationf(
-			"plugin store: create data dir: %v", err)
+			"plugin store: create data dir: %w", err)
 	}
 	return &Store{
 		opts: opts,
@@ -300,7 +300,7 @@ func (s *Store) DataDir(id string) (string, error) {
 	}
 	dir := filepath.Join(s.opts.DataDirRoot, id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", errdefs.Validationf("plugin: create data dir: %v", err)
+		return "", errdefs.Validationf("plugin: create data dir: %w", err)
 	}
 	return dir, nil
 }
@@ -447,12 +447,12 @@ func (s *Store) loadStateLocked() (map[string]bool, error) {
 	}
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"plugin store: read %s: %v", s.statePath(), err)
+			"plugin store: read %s: %w", s.statePath(), err)
 	}
 	state := map[string]bool{}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, errdefs.Validationf(
-			"plugin store: parse %s: %v", s.statePath(), err)
+			"plugin store: parse %s: %w", s.statePath(), err)
 	}
 	return state, nil
 }
@@ -484,12 +484,12 @@ func openKV(path string) (*KV, error) {
 		return store, nil
 	}
 	if err != nil {
-		return nil, errdefs.Validationf("plugin store: read %s: %v", path, err)
+		return nil, errdefs.Validationf("plugin store: read %s: %w", path, err)
 	}
 	values := map[string]string{}
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, errdefs.Validationf(
-			"plugin store: %s is not a valid KV file: %v", path, err)
+			"plugin store: %s is not a valid KV file: %w", path, err)
 	}
 	if values == nil {
 		values = map[string]string{}
@@ -544,27 +544,27 @@ func (k *KV) persistLocked() error {
 // writeFileAtomic writes data through a temporary file and rename.
 func writeFileAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return errdefs.Validationf("plugin store: create dir: %v", err)
+		return errdefs.Validationf("plugin store: create dir: %w", err)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
-		return errdefs.Validationf("plugin store: temp file: %v", err)
+		return errdefs.Validationf("plugin store: temp file: %w", err)
 	}
 	name := temp.Name()
 	defer func() { _ = os.Remove(name) }()
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
-		return errdefs.Validationf("plugin store: write: %v", err)
+		return errdefs.Validationf("plugin store: write: %w", err)
 	}
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
-		return errdefs.Validationf("plugin store: chmod: %v", err)
+		return errdefs.Validationf("plugin store: chmod: %w", err)
 	}
 	if err := temp.Close(); err != nil {
-		return errdefs.Validationf("plugin store: close: %v", err)
+		return errdefs.Validationf("plugin store: close: %w", err)
 	}
 	if err := os.Rename(name, path); err != nil {
-		return errdefs.Validationf("plugin store: rename: %v", err)
+		return errdefs.Validationf("plugin store: rename: %w", err)
 	}
 	return nil
 }

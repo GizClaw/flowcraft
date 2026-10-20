@@ -77,7 +77,7 @@ func ResolvePath(root, rel string) (string, error) {
 	}
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
-		return "", errdefs.Validationf("plugin: resolve root: %v", err)
+		return "", errdefs.Validationf("plugin: resolve root: %w", err)
 	}
 	joined := filepath.Join(absoluteRoot, clean)
 	relative, err := filepath.Rel(absoluteRoot, joined)

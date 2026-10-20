@@ -582,7 +582,7 @@ func (a *reloadAttempt) commit() error {
 	}); err != nil {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
 		a.rollbackTo(oldGen, "runtime reload: remove new bus after swap failure")
-		return errdefs.Internalf("runtime reload swap: %v", err)
+		return errdefs.Internalf("runtime reload swap: %w", err)
 	}
 
 	a.r.current.Store(newGen)

@@ -458,7 +458,7 @@ func emitGenerationTerminal(ec graph.ExecutionContext, resp inference.GenerateRe
 			raw, err := json.Marshal(output)
 			if err != nil {
 				return errdefs.Validationf(
-					"inference node: marshal provider output %q/%q: %v",
+					"inference node: marshal provider output %q/%q: %w",
 					output.ProviderID(), output.ExtensionID(), err)
 			}
 			envelopes = append(envelopes, agent.ProviderOutputEnvelope{
@@ -634,7 +634,7 @@ func resolveIntent(ctx context.Context, cfg InferenceConfig, deps InferenceNodeD
 		intent.Text.ToolChoice = cfg.ToolChoice
 	}
 	if err := intent.Validate(); err != nil {
-		return intent, errdefs.Validationf("inference node: intent: %v", err)
+		return intent, errdefs.Validationf("inference node: intent: %w", err)
 	}
 	return intent, nil
 }

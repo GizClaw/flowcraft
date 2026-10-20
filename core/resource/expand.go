@@ -178,7 +178,7 @@ func HomeScheme() Scheme {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return "", errdefs.Validationf(
-					"resource settings expand: home: %v", err)
+					"resource settings expand: home: %w", err)
 			}
 			if r.Path == "" {
 				return home, nil
@@ -278,7 +278,7 @@ func Expand(ctx context.Context, raw []byte, opts ...ExpandOption) (json.RawMess
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, errdefs.Validationf(
-			"resource settings expand: %v", err)
+			"resource settings expand: %w", err)
 	}
 	expanded, err := expandValue(ctx, value, &cfg)
 	if err != nil {
@@ -287,7 +287,7 @@ func Expand(ctx context.Context, raw []byte, opts ...ExpandOption) (json.RawMess
 	out, err := json.Marshal(expanded)
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"resource settings expand: encode: %v", err)
+			"resource settings expand: encode: %w", err)
 	}
 	return out, nil
 }
@@ -299,7 +299,7 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error)
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", errdefs.Validationf(
-				"resource settings expand: home: %v", err)
+				"resource settings expand: home: %w", err)
 		}
 		return filepath.Join(home, strings.TrimPrefix(s, "~")), nil
 	}

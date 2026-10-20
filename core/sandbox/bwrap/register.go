@@ -43,7 +43,7 @@ func (factory) Spec() resource.Spec {
 func (factory) New(ctx context.Context, in resource.Input) (sandbox.Runner, error) {
 	s, err := resource.DecodeTyped[settings](ctx, in.Settings)
 	if err != nil {
-		return nil, errdefs.Validationf("decode bwrap settings: %v", err)
+		return nil, errdefs.Validationf("decode bwrap settings: %w", err)
 	}
 	if s.Root == "" {
 		return nil, errdefs.Validationf("bwrap settings.root is required")

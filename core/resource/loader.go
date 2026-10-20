@@ -98,7 +98,7 @@ func (l *Loader) loadFile(ctx context.Context, name string) ([]byte, error) {
 	root, err := os.OpenRoot(l.baseDir)
 	if err != nil {
 		return nil, errdefs.Forbiddenf(
-			"resource loader: open base dir: %v", err)
+			"resource loader: open base dir: %w", err)
 	}
 	defer func() {
 		if cerr := root.Close(); cerr != nil {
@@ -113,7 +113,7 @@ func (l *Loader) loadFile(ctx context.Context, name string) ([]byte, error) {
 				"resource loader: file %q not found", name)
 		}
 		return nil, errdefs.Forbiddenf(
-			"resource loader: read file %q: %v", name, err)
+			"resource loader: read file %q: %w", name, err)
 	}
 	if l.maxBytes >= 0 && int64(len(data)) > l.maxBytes {
 		return nil, errdefs.Validationf(
@@ -134,7 +134,7 @@ func (l *Loader) loadEmbed(_ context.Context, name string) ([]byte, error) {
 	data, err := fs.ReadFile(l.embed, name)
 	if err != nil {
 		return nil, errdefs.NotFoundf(
-			"resource loader: embed %q: %v", name, err)
+			"resource loader: embed %q: %w", name, err)
 	}
 	if l.maxBytes >= 0 && int64(len(data)) > l.maxBytes {
 		return nil, errdefs.Validationf(

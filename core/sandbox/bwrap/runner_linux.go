@@ -83,12 +83,12 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		binary = resolved
 	} else if _, err := exec.LookPath(binary); err != nil {
 		return nil, errdefs.NotAvailablef(
-			"bwrap: binary %q not executable: %v", binary, err)
+			"bwrap: binary %q not executable: %w", binary, err)
 	}
 
 	abs, err := filepath.Abs(rootDir)
 	if err != nil {
-		return nil, errdefs.Validationf("bwrap: resolve rootDir: %v", err)
+		return nil, errdefs.Validationf("bwrap: resolve rootDir: %w", err)
 	}
 	if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
 		abs = resolved
@@ -246,7 +246,7 @@ func (r *Runner) spawnProcess(
 			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
-			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
+			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %w", err)
 		}
 	}
 
@@ -260,7 +260,7 @@ func (r *Runner) spawnProcess(
 		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
 		if err != nil {
 			closeProxy(ctx, proxy)
-			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+			return nil, errdefs.Internalf("bwrap: write CA bundle: %w", err)
 		}
 		if spec.Opts.Env.Inject == nil {
 			spec.Opts.Env.Inject = make(map[string]string)
@@ -291,7 +291,7 @@ func (r *Runner) spawnProcess(
 			closeProxy(ctx, proxy)
 			abortBundle()
 			return nil, errdefs.NotFoundf(
-				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
+				"bwrap: allowed unix socket %q does not exist: %w", path, statErr)
 		}
 		fsFlags = append(fsFlags, "--bind", path, path)
 	}
@@ -303,7 +303,7 @@ func (r *Runner) spawnProcess(
 			closeProxy(ctx, proxy)
 			abortBundle()
 			return nil, errdefs.Internalf(
-				"bwrap: resolve host binary for in-netns bridge: %v", err)
+				"bwrap: resolve host binary for in-netns bridge: %w", err)
 		}
 		fsFlags = append(fsFlags,
 			"--ro-bind", exe, exe,
@@ -402,12 +402,12 @@ type sessionCleanup struct {
 func resolveConfiguredPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", errdefs.Validationf("bwrap: resolve writable path %q: %v", path, err)
+		return "", errdefs.Validationf("bwrap: resolve writable path %q: %w", path, err)
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", errdefs.Validationf(
-			"bwrap: writable path %q must exist: %v", path, err)
+			"bwrap: writable path %q must exist: %w", path, err)
 	}
 	return real, nil
 }

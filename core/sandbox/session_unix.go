@@ -599,7 +599,7 @@ func (s *localSession) classifyExit(waitErr error) (SessionExit, error) {
 		if sampleErr := s.watcher.Unenforceable(); sampleErr != nil {
 			return SessionExit{Code: -1, Reason: SessionUnenforceable},
 				errdefs.NotAvailablef(
-					"sandbox: resource caps became unenforceable while running process: %v", sampleErr)
+					"sandbox: resource caps became unenforceable while running process: %w", sampleErr)
 		}
 		if cap := s.watcher.Exceeded(); cap != "" {
 			return SessionExit{Code: -1, Reason: SessionBudgetExceeded},

@@ -71,7 +71,7 @@ func (d Deps) Validate() error {
 			return errdefs.Validationf("resource deps: dep name is empty")
 		}
 		if err := ref.Validate(); err != nil {
-			return errdefs.Validationf("resource deps[%q]: %v", name, err)
+			return errdefs.Validationf("resource deps[%q]: %w", name, err)
 		}
 	}
 	return nil
@@ -112,7 +112,7 @@ func (rs Resources) Validate() error {
 			return errdefs.Validationf("resources: resource name is empty")
 		}
 		if err := res.Validate(); err != nil {
-			return errdefs.Validationf("resources[%q]: %v", name, err)
+			return errdefs.Validationf("resources[%q]: %w", name, err)
 		}
 	}
 	return nil

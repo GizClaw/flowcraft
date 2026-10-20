@@ -50,7 +50,7 @@ func DecodeSettings(ctx context.Context, target any, raw []byte, opts ...ExpandO
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {
-		return errdefs.Validationf("resource settings: %v", err)
+		return errdefs.Validationf("resource settings: %w", err)
 	}
 	return nil
 }

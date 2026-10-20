@@ -175,7 +175,7 @@ func (r *SecretResolver) Resolve(ctx context.Context, storeName, name string) (s
 	value, found, err := store.Lookup(ctx, name)
 	if err != nil {
 		return "", errdefs.Validationf(
-			"resource secret: store %q: %v", storeName, err)
+			"resource secret: store %q: %w", storeName, err)
 	}
 	if !found {
 		return "", errdefs.Validationf(

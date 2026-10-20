@@ -32,7 +32,7 @@ func (g *Graph) Add(name string, res Resource) error {
 		return errdefs.Conflictf("resource graph: node %q duplicates an external node", name)
 	}
 	if err := res.Validate(); err != nil {
-		return errdefs.Validationf("resource graph: node %q: %v", name, err)
+		return errdefs.Validationf("resource graph: node %q: %w", name, err)
 	}
 	g.nodes[name] = res
 	return nil
@@ -80,7 +80,7 @@ func (g *Graph) Names() []string {
 func (g *Graph) Validate() error {
 	for name, res := range g.nodes {
 		if err := res.Validate(); err != nil {
-			return errdefs.Validationf("resource graph: node %q: %v", name, err)
+			return errdefs.Validationf("resource graph: node %q: %w", name, err)
 		}
 		for depName, ref := range res.Deps {
 			refName := ref.ResourceName()

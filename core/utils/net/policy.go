@@ -85,7 +85,7 @@ func (p NetPolicy) Validate() error {
 	if p.Proxy != "" {
 		u, err := url.Parse(p.Proxy)
 		if err != nil {
-			return errdefs.Validationf("net: invalid proxy URL %q: %v", p.Proxy, err)
+			return errdefs.Validationf("net: invalid proxy URL %q: %w", p.Proxy, err)
 		}
 		if u.Scheme != "http" && u.Scheme != "socks5" {
 			return errdefs.Validationf("net: proxy scheme %q must be http or socks5", u.Scheme)

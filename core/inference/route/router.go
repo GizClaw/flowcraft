@@ -237,7 +237,7 @@ func New(
 			return nil, errdefs.Validationf("router option %d is nil", index)
 		}
 		if err := option(&configured); err != nil {
-			return nil, errdefs.Validationf("router option %d: %v", index, err)
+			return nil, errdefs.Validationf("router option %d: %w", index, err)
 		}
 	}
 	if err := validateRetryPolicies(configured.retry, selectors); err != nil {
@@ -281,7 +281,7 @@ func validateRetryPolicies(
 			)
 		}
 		if err := entry.policy.validate(); err != nil {
-			return errdefs.Validationf("%s retry policy: %v", entry.operation, err)
+			return errdefs.Validationf("%s retry policy: %w", entry.operation, err)
 		}
 	}
 	if policies.Transcription != nil {
@@ -295,7 +295,7 @@ func validateRetryPolicies(
 		}
 		if err := policies.Transcription.validate(); err != nil {
 			return errdefs.Validationf(
-				"transcription retry policy: %v",
+				"transcription retry policy: %w",
 				err,
 			)
 		}

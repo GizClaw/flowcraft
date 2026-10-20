@@ -137,7 +137,7 @@ func filterTargets(targets []sdkdelegation.Target) []sdkdelegation.Target {
 func (delegateTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	var args delegateArgs
 	if err := decodeStrict(arguments, &args); err != nil {
-		return message.Content{}, errdefs.Validationf("%s: parse arguments: %v", sdkdelegation.ToolName, err)
+		return message.Content{}, errdefs.Validationf("%s: parse arguments: %w", sdkdelegation.ToolName, err)
 	}
 	metadata := cloneMetadata(args.Metadata)
 	if args.Note != nil {
@@ -196,7 +196,7 @@ func (statusTool) Definition() message.ToolDefinition {
 func (statusTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	var args statusArgs
 	if err := decodeStrict(arguments, &args); err != nil {
-		return message.Content{}, errdefs.Validationf("%s: parse arguments: %v", StatusToolName, err)
+		return message.Content{}, errdefs.Validationf("%s: parse arguments: %w", StatusToolName, err)
 	}
 	if strings.TrimSpace(args.DelegationID) == "" {
 		return message.Content{}, errdefs.Validationf("%s: delegation_id must be non-empty", StatusToolName)
@@ -255,7 +255,7 @@ func rejectUnexpectedArguments(arguments string) error {
 	}
 	var probe any
 	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
-		return errdefs.Validationf("%s: parse arguments: %v", TargetsToolName, err)
+		return errdefs.Validationf("%s: parse arguments: %w", TargetsToolName, err)
 	}
 	if err := decodeStrict(trimmed, &struct{}{}); err != nil {
 		return errdefs.Validationf("%s: no arguments expected", TargetsToolName)

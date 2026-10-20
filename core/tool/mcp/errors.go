@@ -36,30 +36,30 @@ func connectError(serverName string, err error) error {
 	case errors.Is(err, context.Canceled):
 		return err
 	case errors.Is(err, context.DeadlineExceeded):
-		return errdefs.Timeoutf("mcp: server %q: connect timed out: %v", serverName, err)
+		return errdefs.Timeoutf("mcp: server %q: connect timed out: %w", serverName, err)
 	}
 
 	if cannotStart(err) {
 		return errdefs.Validationf(
-			"mcp: server %q: cannot start command: %v", serverName, err)
+			"mcp: server %q: cannot start command: %w", serverName, err)
 	}
 	var execErr *exec.Error
 	if errors.As(err, &execErr) {
 		return errdefs.NotAvailablef(
-			"mcp: server %q: cannot start command: %v", serverName, err)
+			"mcp: server %q: cannot start command: %w", serverName, err)
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return errdefs.NotAvailablef(
-			"mcp: server %q: server process exited during startup: %v", serverName, err)
+			"mcp: server %q: server process exited during startup: %w", serverName, err)
 	}
 	if isUnreachable(err) {
-		return errdefs.NotAvailablef("mcp: server %q: unreachable: %v", serverName, err)
+		return errdefs.NotAvailablef("mcp: server %q: unreachable: %w", serverName, err)
 	}
 	if isRejection(err) {
-		return errdefs.Validationf("mcp: server %q: rejected connection: %v", serverName, err)
+		return errdefs.Validationf("mcp: server %q: rejected connection: %w", serverName, err)
 	}
-	return errdefs.NotAvailablef("mcp: server %q: connect failed: %v", serverName, err)
+	return errdefs.NotAvailablef("mcp: server %q: connect failed: %w", serverName, err)
 }
 
 // cannotStart reports whether err is a failure to spawn the child

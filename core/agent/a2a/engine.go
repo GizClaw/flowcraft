@@ -751,7 +751,7 @@ func (e *Engine) CanResume(cp agent.Checkpoint) error {
 	}
 	var p resumePayload
 	if err := json.Unmarshal(cp.Payload, &p); err != nil {
-		return errdefs.Validationf("a2a: checkpoint payload: %v", err)
+		return errdefs.Validationf("a2a: checkpoint payload: %w", err)
 	}
 	if p.TaskID == "" {
 		return errdefs.Validationf("a2a: checkpoint payload missing task id")
@@ -773,7 +773,7 @@ func (x *executor) resume(ctx context.Context, cp *agent.Checkpoint) error {
 	x.board.RestoreFrom(cp.Board)
 	var p resumePayload
 	if err := json.Unmarshal(cp.Payload, &p); err != nil {
-		return errdefs.Validationf("a2a: checkpoint payload: %v", err)
+		return errdefs.Validationf("a2a: checkpoint payload: %w", err)
 	}
 	if p.TaskID == "" {
 		return errdefs.Validationf("a2a: checkpoint payload missing task id")

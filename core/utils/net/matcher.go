@@ -54,7 +54,7 @@ func NewMatcher(policy NetPolicy) (*Matcher, error) {
 	for i, rule := range policy.Rules {
 		c, err := compileRule(rule)
 		if err != nil {
-			return nil, errdefs.Validationf("sandbox: net rule %d: %v", i, err)
+			return nil, errdefs.Validationf("sandbox: net rule %d: %w", i, err)
 		}
 		if c.host.IsIP() {
 			m.hasIPRules = true
@@ -67,7 +67,7 @@ func NewMatcher(policy NetPolicy) (*Matcher, error) {
 	for _, host := range policy.AllowHosts {
 		c, err := compileRule(NetRule{Action: NetAllow, Host: host})
 		if err != nil {
-			return nil, errdefs.Validationf("sandbox: allow_hosts entry %q: %v", host, err)
+			return nil, errdefs.Validationf("sandbox: allow_hosts entry %q: %w", host, err)
 		}
 		if c.host.IsIP() {
 			m.hasIPRules = true
