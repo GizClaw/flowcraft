@@ -8,6 +8,19 @@
 //
 // Sentinel errors remain plain stdlib errors; classification is orthogonal
 // to identity — errors.Is checks identity, IsXxx checks category.
+//
+// Classification is this package's whole job. Identity, wrapping and
+// unwrapping stay with the standard library — errors.Is, errors.As,
+// errors.Unwrap, errors.Join — and the package re-exports none of them, so a
+// reader never has to ask which implementation sits behind the name.
+//
+// The classified constructors that take a format string — Validationf,
+// NotFoundf, Timeoutf and the rest — wrap like fmt.Errorf does. A caller that
+// formats an error argument uses %w rather than %v, so the inner error, and the
+// category it carries, stays reachable through the chain: a
+// NotFoundf("fetch: %w", Timeout(err)) is still matched by IsTimeout.
+// errorlint cannot see inside these helpers, so this stays a review convention
+// rather than a lint-enforced one.
 package errdefs
 
 import (
@@ -16,20 +29,6 @@ import (
 	"fmt"
 	"net/http"
 )
-
-// Re-export standard library functions so callers only need one import.
-var (
-	Is     = errors.Is
-	As     = errors.As
-	Unwrap = errors.Unwrap
-	Join   = errors.Join
-)
-
-// New creates a plain error (re-export of stdlib errors.New).
-func New(text string) error { return errors.New(text) }
-
-// Fmt creates a formatted error with optional wrapping (re-export of fmt.Errorf).
-func Fmt(format string, args ...any) error { return fmt.Errorf(format, args...) }
 
 // ---------------------------------------------------------------------------
 // Marker interfaces — each defines a single behavior method.
@@ -57,31 +56,31 @@ type (
 // Check functions
 // ---------------------------------------------------------------------------
 
-func IsNotFound(err error) bool     { var e notFound; return As(err, &e) }
-func IsValidation(err error) bool   { var e validation; return As(err, &e) }
-func IsUnauthorized(err error) bool { var e unauthorized; return As(err, &e) }
-func IsForbidden(err error) bool    { var e forbidden; return As(err, &e) }
-func IsConflict(err error) bool     { var e conflict; return As(err, &e) }
-func IsRateLimit(err error) bool    { var e rateLimit; return As(err, &e) }
-func IsTimeout(err error) bool      { var e timeoutErr; return As(err, &e) }
-func IsInterrupted(err error) bool  { var e interrupted; return As(err, &e) }
-func IsAborted(err error) bool      { var e aborted; return As(err, &e) }
-func IsNotAvailable(err error) bool { var e notAvailable; return As(err, &e) }
-func IsInternal(err error) bool     { var e internalErr; return As(err, &e) }
+func IsNotFound(err error) bool     { var e notFound; return errors.As(err, &e) }
+func IsValidation(err error) bool   { var e validation; return errors.As(err, &e) }
+func IsUnauthorized(err error) bool { var e unauthorized; return errors.As(err, &e) }
+func IsForbidden(err error) bool    { var e forbidden; return errors.As(err, &e) }
+func IsConflict(err error) bool     { var e conflict; return errors.As(err, &e) }
+func IsRateLimit(err error) bool    { var e rateLimit; return errors.As(err, &e) }
+func IsTimeout(err error) bool      { var e timeoutErr; return errors.As(err, &e) }
+func IsInterrupted(err error) bool  { var e interrupted; return errors.As(err, &e) }
+func IsAborted(err error) bool      { var e aborted; return errors.As(err, &e) }
+func IsNotAvailable(err error) bool { var e notAvailable; return errors.As(err, &e) }
+func IsInternal(err error) bool     { var e internalErr; return errors.As(err, &e) }
 
 // IsBudgetExceeded reports whether err carries the BudgetExceeded
 // classification — i.e. a per-pod / per-tenant token, cost, or quota
 // limit has been hit. Use this to distinguish "we are stopping you on
 // purpose" from external rate limits (IsRateLimit) and from generic
 // internal failures (IsInternal). Maps to HTTP 429 by default.
-func IsBudgetExceeded(err error) bool { var e budgetExceeded; return As(err, &e) }
+func IsBudgetExceeded(err error) bool { var e budgetExceeded; return errors.As(err, &e) }
 
 // IsPolicyDenied reports whether err was produced by a policy-layer
 // refusal — tool allow-list, network egress filter, role-based access
 // check, etc. Distinguishes "you are not allowed to do this in this
 // pod" from authentication failures (IsUnauthorized) and from external
 // authorisation failures (IsForbidden). Maps to HTTP 403 by default.
-func IsPolicyDenied(err error) bool { var e policyDenied; return As(err, &e) }
+func IsPolicyDenied(err error) bool { var e policyDenied; return errors.As(err, &e) }
 
 // ---------------------------------------------------------------------------
 // Wrapper types — each embeds an error and adds a marker method.

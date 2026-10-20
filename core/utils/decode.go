@@ -8,6 +8,7 @@ package utils
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -116,11 +117,11 @@ func ToJSON(data []byte) ([]byte, error) {
 func ensureSingleYAMLDocument(data []byte) (any, error) {
 	decoder := yamlv2.NewDecoder(bytes.NewReader(data))
 	var first any
-	if err := decoder.Decode(&first); err != nil && err != io.EOF {
+	if err := decoder.Decode(&first); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return nil, fmt.Errorf("multiple YAML documents")
 		}
@@ -374,7 +375,7 @@ func Decode[T any](data []byte) (T, error) {
 			"config utils: decode %s config: %w", FormatOf(data), err)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = fmt.Errorf("multiple JSON documents")
 		}

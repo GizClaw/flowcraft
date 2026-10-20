@@ -2,6 +2,7 @@ package inferencetest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"testing"
@@ -119,7 +120,7 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 	}
 	for {
 		event, err := stream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -216,7 +217,7 @@ func RunGenerateStreamFailure(t *testing.T, suite GenerateStreamFailureSuite) {
 	var nextErr error
 	for {
 		_, err := stream.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			t.Fatal("Next reached EOF, want a mid-stream error")
 		}
 		if err != nil {

@@ -344,10 +344,9 @@ func CauseMessage(err error) string {
 	if !errors.As(err, &inferenceErr) {
 		return ""
 	}
-	for cause := inferenceErr.cause; cause != nil; cause = errors.Unwrap(cause) {
-		if marked, ok := cause.(redactedCause); ok {
-			return marked.Error()
-		}
+	var marked redactedCause
+	if errors.As(inferenceErr.cause, &marked) {
+		return marked.Error()
 	}
 	return ""
 }

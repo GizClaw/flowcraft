@@ -47,7 +47,7 @@ func FeedTranscription(
 			}
 			if interruptErr := session.Interrupt(); interruptErr != nil {
 				return fmt.Errorf(
-					"feed transcription: interrupt session after stream failure: %v (stream: %w)",
+					"feed transcription: interrupt session after stream failure: %w (stream: %w)",
 					interruptErr, err,
 				)
 			}

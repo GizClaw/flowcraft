@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	pathpkg "path"
@@ -77,7 +78,7 @@ func Walk(ctx context.Context, ws Workspace, dir string, fn WalkFunc) error {
 		// compare against "/"-rooted prefixes.
 		child := pathpkg.Join(dir, entry.Name())
 		if err := fn(child, entry); err != nil {
-			if err == filepath.SkipDir {
+			if errors.Is(err, filepath.SkipDir) {
 				continue
 			}
 			return err

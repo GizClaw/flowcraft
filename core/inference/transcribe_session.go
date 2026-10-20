@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -110,7 +111,7 @@ func (s *decodedTranscriptionSession[RawEvent]) Next(
 		return TranscriptionSessionEvent{}, io.EOF
 	}
 	rawEvent, err := s.raw.Next(ctx)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		s.finishResultLocked()
 		if s.resultErr != nil {
 			return TranscriptionSessionEvent{}, s.resultErr

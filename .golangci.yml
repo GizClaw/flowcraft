@@ -6,7 +6,10 @@
 # the gate.
 #
 # The enabled set mirrors golangci-lint's "standard" linters, made explicit so
-# future additions are deliberate changes.
+# future additions are deliberate changes. errorlint is the one addition beyond
+# that set: error wrapping is a contract here — a caller routes on
+# errors.Is / errors.As — so a `==` comparison, a bare type assertion, or a
+# non-wrapping %v on an error is a defect rather than a style choice.
 version: "2"
 
 run:
@@ -22,6 +25,7 @@ linters:
   default: none
   enable:
     - errcheck
+    - errorlint
     - govet
     - ineffassign
     - staticcheck

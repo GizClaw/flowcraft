@@ -280,7 +280,7 @@ func (l *singleConnListener) Addr() net.Addr {
 
 func (e *Engine) serveH1Request(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
 	resp, err := e.forward(r, transport, serverName, dialHostport)
-	if err == errBlocked {
+	if errors.Is(err, errBlocked) {
 		http.Error(w, "mitm: blocked by hook", http.StatusForbidden)
 		return
 	}
@@ -298,7 +298,7 @@ func (e *Engine) serveH1Request(w http.ResponseWriter, r *http.Request, transpor
 
 func (e *Engine) serveH2Request(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
 	resp, err := e.forward(r, transport, serverName, dialHostport)
-	if err == errBlocked {
+	if errors.Is(err, errBlocked) {
 		http.Error(w, "mitm: blocked by hook", http.StatusForbidden)
 		return
 	}

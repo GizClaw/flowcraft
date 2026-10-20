@@ -321,7 +321,7 @@ func collectErrorMessages(err error) string {
 			b.WriteByte(' ')
 		}
 		b.WriteString(strings.ToLower(e.Error()))
-		switch x := e.(type) {
+		switch x := e.(type) { //nolint:errorlint // walks both single and joined Unwrap shapes to collect messages; errors.As cannot
 		case interface{ Unwrap() error }:
 			if u := x.Unwrap(); u != nil {
 				walk(u)

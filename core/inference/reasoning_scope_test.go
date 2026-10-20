@@ -3,6 +3,7 @@ package inference
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -99,7 +100,7 @@ func TestWithReasoningSourcePassesFailureThrough(t *testing.T) {
 		},
 		"scope",
 	)
-	if _, err := decode(context.Background(), "raw"); err != want {
+	if _, err := decode(context.Background(), "raw"); !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
 }

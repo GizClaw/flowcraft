@@ -1,6 +1,7 @@
 package bindings
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -184,7 +185,7 @@ func (p Part) attribute(err error) error {
 	if p.Owner == "" || err == nil {
 		return err
 	}
-	return errdefs.Fmt("%s%s: %w", messagePrefix, p.Owner, unprefixed{err})
+	return fmt.Errorf("%s%s: %w", messagePrefix, p.Owner, unprefixed{err})
 }
 
 // unprefixed renders err without the prefix this package opens its

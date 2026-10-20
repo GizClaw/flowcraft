@@ -2,6 +2,7 @@ package inference_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -135,7 +136,7 @@ func TestTranscriptionSessionFinishInputDelegates(t *testing.T) {
 	}
 
 	for {
-		if _, err := session.Next(context.Background()); err == io.EOF {
+		if _, err := session.Next(context.Background()); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			t.Fatalf("Next: %v", err)

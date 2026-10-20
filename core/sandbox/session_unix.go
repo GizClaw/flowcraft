@@ -619,7 +619,8 @@ func (s *localSession) classifyExit(waitErr error) (SessionExit, error) {
 	if waitErr == nil {
 		return SessionExit{Code: 0, Reason: SessionExited}, nil
 	}
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
 		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 			if terminated {
 				return SessionExit{Code: -1, Signal: int(ws.Signal()), Reason: SessionTerminated}, nil

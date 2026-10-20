@@ -2,6 +2,7 @@ package luart
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -271,7 +272,7 @@ func TestRuntime_ExecAfterClose(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Exec after Close")
 	}
-	if err != ErrRuntimeClosed {
+	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("err = %v, want ErrRuntimeClosed", err)
 	}
 }

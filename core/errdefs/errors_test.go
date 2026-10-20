@@ -55,7 +55,7 @@ func TestCategory_WrapExisting(t *testing.T) {
 	if !IsNotFound(err) {
 		t.Fatal("should be NotFound")
 	}
-	if Unwrap(err) != cause {
+	if errors.Unwrap(err) != cause { //nolint:errorlint // asserts the direct unwrap target is the cause, not chain membership
 		t.Fatal("Unwrap should return cause")
 	}
 	if err.Error() != "connection refused" {
@@ -111,9 +111,9 @@ func TestCategory_DoubleWrap(t *testing.T) {
 }
 
 func TestSentinel_WorksWithCategory(t *testing.T) {
-	ErrNotExist := Interrupted(New("execution interrupted"))
+	ErrNotExist := Interrupted(errors.New("execution interrupted"))
 	wrapped := fmt.Errorf("node x: %w", ErrNotExist)
-	if !Is(wrapped, ErrNotExist) {
+	if !errors.Is(wrapped, ErrNotExist) {
 		t.Fatal("errors.Is should find sentinel through wrapping")
 	}
 	if !IsInterrupted(wrapped) {
@@ -214,18 +214,6 @@ func TestPolicyDenied_SurvivesWrapping(t *testing.T) {
 	}
 }
 
-func TestStdlibReexports(t *testing.T) {
-	sentinel := New("sentinel")
-	wrapped := fmt.Errorf("wrap: %w", sentinel)
-	if !Is(wrapped, sentinel) {
-		t.Fatal("Is should delegate to stdlib")
-	}
-	inner := Unwrap(wrapped)
-	if inner != sentinel {
-		t.Fatal("Unwrap should delegate to stdlib")
-	}
-}
-
 // TestFromContext_Mapping pins the context.Err() → errdefs translation.
 // Pod-level SLO accounting depends on these specific buckets:
 //   - DeadlineExceeded → Timeout (counts against latency SLO)
@@ -279,7 +267,7 @@ func TestFromContext_DoesNotOverrideExistingClass(t *testing.T) {
 func TestFromContext_PassesThroughUnknown(t *testing.T) {
 	custom := errors.New("custom cause")
 	got := FromContext(custom)
-	if got != custom {
+	if got != custom { //nolint:errorlint // asserts the error is returned unchanged, not that it matches deep in the chain
 		t.Errorf("FromContext mutated unknown error: got %v, want %v", got, custom)
 	}
 	if IsTimeout(got) || IsAborted(got) {

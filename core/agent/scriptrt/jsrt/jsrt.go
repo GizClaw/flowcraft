@@ -238,7 +238,8 @@ func (r *Runtime) exec(ctx context.Context, name, source string, env *agent.Scri
 	_, runErr := vm.RunString(wrapIIFE(source))
 
 	if runErr != nil {
-		if _, ok := runErr.(*goja.InterruptedError); ok {
+		var interrupted *goja.InterruptedError
+		if errors.As(runErr, &interrupted) {
 			if sig != nil {
 				return sig, nil
 			}
@@ -300,7 +301,8 @@ func parseSignalArg(arg any) (kind, message string, detail map[string]any) {
 }
 
 func enrichError(scriptName string, err error) error {
-	if ex, ok := err.(*goja.Exception); ok {
+	var ex *goja.Exception
+	if errors.As(err, &ex) {
 		return fmt.Errorf("jsrt: script %q: %s", scriptName, ex.String())
 	}
 	return fmt.Errorf("jsrt: script %q: %w", scriptName, err)

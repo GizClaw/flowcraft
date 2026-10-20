@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -585,7 +586,7 @@ func TestRouterTranscribeSessionOpens(t *testing.T) {
 	}
 	for {
 		_, err := session.Next(context.Background())
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -2083,7 +2084,7 @@ func TestRouterGenerateStreamHintFallsBackAfterPreflight(t *testing.T) {
 		t.Fatalf("first event = %+v, want text delta", event)
 	}
 	for {
-		if _, err := stream.Next(context.Background()); err == io.EOF {
+		if _, err := stream.Next(context.Background()); errors.Is(err, io.EOF) {
 			break
 		}
 	}
