@@ -124,7 +124,9 @@ func TestRunAttributesContextRoundTrip(t *testing.T) {
 	if _, ok := RunAttributesFromContext(context.Background()); ok {
 		t.Fatal("bare context carries run attributes")
 	}
-	if _, ok := RunAttributesFromContext(nil); ok {
+	// A nil context must not panic: middleware may hand one over unwittingly.
+	var noContext context.Context
+	if _, ok := RunAttributesFromContext(noContext); ok {
 		t.Fatal("nil context carries run attributes")
 	}
 	if _, ok := RunAttributesFromContext(WithRunAttributes(context.Background(), nil)); ok {
