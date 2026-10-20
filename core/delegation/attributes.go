@@ -3,6 +3,7 @@ package delegation
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -80,6 +81,12 @@ func withoutLineageAttributes(attributes map[string]string) map[string]string {
 // once trimmed: attribute maps are compared verbatim for idempotency and
 // resume identity, so "policy" and " policy " must not both be accepted.
 // An empty value is allowed and is distinct from an absent key.
+//
+// The lineage keys are rejected outright. They identify one specific tool
+// call, so only the service may supply them: a declared value would
+// survive the merge whenever the caller has no ambient call id to
+// override it, and the run would then report a delegation structure that
+// never happened.
 func validateAttributes(attributes map[string]string) error {
 	for key, value := range attributes {
 		if strings.TrimSpace(key) == "" {
@@ -88,6 +95,11 @@ func validateAttributes(attributes map[string]string) error {
 		if key != strings.TrimSpace(key) {
 			return errdefs.Validationf(
 				"delegation: attribute key %q has surrounding whitespace", key)
+		}
+		if slices.Contains(lineageOwnedAttributes, key) {
+			return errdefs.Validationf(
+				"delegation: attribute %q is owned by the service and cannot be declared",
+				key)
 		}
 		if value != strings.TrimSpace(value) {
 			return errdefs.Validationf(

@@ -270,10 +270,14 @@ Semantics worth relying on:
 - **A delegated subagent is a separate session.** A mode store keyed on
   the session identity answers for the subagent's own `ContextID`, not
   the caller's, and core derives no mode for it. The delegation service
-  carries the deployment's decision instead: declared run attributes
-  (`Request.Attributes`) reach the subagent run, and
-  `delegation.WithSessionInitializer` stamps the session store before the
-  turn starts — see [delegation.md](delegation.md).
+  carries the deployment's decision instead, through two seams that reach
+  different places: `delegation.WithSessionInitializer` writes the store
+  before the turn starts, which is what a session-keyed store needs,
+  while declared run attributes (`Request.Attributes`) only reach the
+  subagent's `Run.Attributes` — metadata for a store that reads run
+  attributes, invisible to a session-keyed one. Core reads a mode out of
+  neither, so a policy is only in force once the deployment's own store
+  has it. See [delegation.md](delegation.md).
 
 `outcome` reports `Refused` / `Approved` / `Remembered`, so hosts can
 attach their audit note ("the sandbox refused this command; the user

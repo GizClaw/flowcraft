@@ -122,8 +122,12 @@ that reaches the subagent's `Run.Attributes` (via `agent.Request`), so
 policy keys such as `sandbox.mode` or `tenant.id` arrive as run metadata.
 Core treats the map as opaque, with two guarantees:
 
-- lineage wins — the service-owned keys (`tool.call_id`) are layered over
-  the declared ones, so a caller cannot forge the delegation structure;
+- lineage is service-owned — declaring `tool.call_id` is a validation
+  error, and the service layers its own value over anything a lower-level
+  caller hands it, so a delegation cannot be made to look like a
+  different tool call. Middleware that forwards the caller's attribute
+  bag has to drop the lineage keys first; forwarding them as-is is
+  rejected, not silently trimmed;
 - the caller's own run attributes are **not** inherited. Deployments keep
   run-scoped payloads there (checkpoint recovery blobs, for instance) that
   must not appear inside a subagent, so a subagent sees only what the
@@ -141,13 +145,26 @@ surrounding whitespace in a key or value are validation errors, because
 the map is compared verbatim.
 
 **Session initializer.** `WithSessionInitializer` runs once per delegated
-run, after the session identity is minted and before the turn starts **or
-resumes** on it. That is where a deployment writes the per-session state
-core does not model — sandbox mode, think level, model hint — into its own
-store. The hook fails closed: an initializer error fails the delegation,
-because a policy that could not be applied must not run under the store's
-default. It runs on the session path only; without a bound session manager
-the delegated run has no session identity to initialize.
+run that has a session identity, after that identity is minted and before
+the turn starts **or resumes** on it. That is where a deployment writes
+the per-session state core does not model — sandbox mode, think level,
+model hint — into its own store. The hook fails closed: an initializer
+error fails the delegation, because a policy that could not be applied
+must not run under the store's default.
+
+The identity comes from a bound session manager, or from a
+`SessionProvider` on the manager-less path, where the hook runs just the
+same. A delegation configured with an initializer but with neither is
+rejected rather than run without the policy it was told to apply. Only
+this seam reaches a store keyed on the session: run attributes are not
+what such a store reads.
+
+Neither seam widens what the subagent may do once its policy is applied.
+In particular approval is not inherited: the subagent's asker refuses
+user prompts, so an escalation the caller could have answered fails
+closed inside the delegated run. Until that changes, a deployment whose
+subagents need a wider allowance has to grant it in the initializer
+rather than relying on a prompt.
 
 An application wired through a deployment document injects both through
 `delegation.NewServiceFactory(opts…)`, which accepts app-owned options the
