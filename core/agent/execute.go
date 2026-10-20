@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -90,50 +91,393 @@ func Execute(
 	}
 
 	rc := applyOptions(ag, opts)
+	ctx, cancel, err := applyRunTimeout(ctx, ag.Policy.RunTimeout, rc.runTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	runID, err := resolveRunID(req, rc)
+	if err != nil {
+		return nil, err
+	}
+	run := &runState{
+		ctx:           ctx,
+		id:            buildIdentity(ag.ID, runID, req, rc),
+		eng:           eng,
+		req:           &req,
+		rc:            rc,
+		host:          hostOrDefault(rc.host),
+		obs:           composeObservers(rc.hooks),
+		toolAllowList: resolveToolAllowList(ag, rc),
+		maxAttempts:   max(rc.maxRevise, 1),
+	}
+	run.logAttrs = runLogAttrs(run.id)
+	telemetry.Info(ctx, "agent run started", run.logAttrs...)
 
-	// Run-level wall clock. Unlike an engine's per-Execute timeout
-	// (which restarts on every attempt), this budget spans the whole
-	// call: seeder, every revise attempt, Referees and Committers. The
-	// shorter of this deadline and the caller's context wins, and
-	// engines that bound themselves keep their own (typically tighter)
-	// limits.
-	runTimeout := rc.runTimeout
-	if runTimeout == 0 && ag.Policy.RunTimeout != "" {
-		parsed, err := time.ParseDuration(ag.Policy.RunTimeout)
+	fin := runFinalizer{ctx: ctx, id: run.id, obs: run.obs}
+	var res *Result
+	for attempt := 1; attempt <= run.maxAttempts; attempt++ {
+		var decision Decision
+		res, decision, err = run.attempt(attempt)
+		// A nil result means the attempt never got as far as producing
+		// one: an infrastructure failure the caller cannot recover from.
+		if res == nil {
+			return nil, err
+		}
 		if err != nil {
-			return nil, errdefs.Validationf(
-				"agent: policy.run_timeout %q: %v", ag.Policy.RunTimeout, err)
+			return fin.fail(res, "referee_failed", "agent run referee failed", "", err)
+		}
+		// Revise gate: only fires for completed attempts that have
+		// budget remaining AND a Referee asked for revision. A
+		// non-completed status NEVER triggers revise (see the attempt
+		// rules above) so a flapping engine cannot consume the entire
+		// budget against transient failures.
+		if !decision.Revise || res.Status != StatusCompleted || attempt >= run.maxAttempts {
+			break
+		}
+		if run.obs != nil {
+			run.obs.OnRunRevise(ctx, run.id, res, attempt+1)
+		}
+		telemetry.Warn(ctx, "agent run revised and will retry", slices.Concat(
+			run.logAttrs,
+			[]attribute.KeyValue{
+				attribute.Int("agent.attempt", attempt),
+				attribute.String(telemetry.AttrRunStatus, string(res.Status)),
+			},
+		)...)
+	}
+
+	if failed, final, commitErr := run.finalize(res, fin); failed {
+		return final, commitErr
+	}
+	fin.end(res)
+	logRunOutcome(ctx, run.id, res, run.logAttrs)
+	return res, nil
+}
+
+// runState is one Execute call's resolved inputs: the identity, context,
+// and options every attempt and the finalize phase read. It is built once
+// and never mutated, which is what lets the loop and the finalize rules
+// live in named steps instead of one long function.
+type runState struct {
+	ctx           context.Context
+	id            Identity
+	eng           Engine
+	req           *Request
+	rc            execConfig
+	host          Host
+	obs           Observer
+	toolAllowList []string
+	maxAttempts   int
+	logAttrs      []attribute.KeyValue
+}
+
+// attempt is one iteration of the revise loop: seed a fresh board, run the
+// engine once, classify the outcome, then run the Referee chain over it.
+//
+// A nil result means the attempt failed before producing one (the Preparer
+// chain errored or returned nothing); a non-nil result with an error means
+// a Referee failed and the caller must end the run on that result.
+func (r *runState) attempt(n int) (*Result, Decision, error) {
+	// Re-seed board on every attempt so revise restarts see a
+	// fresh state derived from the same Request. The first
+	// attempt's seeder error is fatal (infrastructure); a seeder
+	// error on a revise attempt is also surfaced as nil result +
+	// error so callers do not silently see stale Messages.
+	board, err := seedBoard(r.ctx, r.id, r.req, r.rc.preparers)
+	if err != nil {
+		logRunError(r.ctx, r.id, "agent run seed failed", err)
+		return nil, Decision{}, fmt.Errorf("agent: seed board (attempt %d): %w", n, err)
+	}
+	if board == nil {
+		nilBoardErr := errdefs.Validationf("agent: Preparer chain returned nil board")
+		logRunError(r.ctx, r.id, "agent run seed returned nil board", nilBoardErr)
+		return nil, Decision{}, nilBoardErr
+	}
+	// Messages at or before this index are seed/context, never output
+	// of this attempt. The engine's appended messages start after it.
+	seedLen := board.ChannelLen(MainChannel)
+
+	// The engine run is assembled before the observers see the attempt:
+	// OnRunStart receives the request by pointer, and an observer that mutates
+	// it must not change the run already built for this attempt.
+	engineRun := r.engineRun(n)
+	if r.obs != nil {
+		r.obs.OnRunStart(r.ctx, r.id, r.req)
+	}
+	finalBoard, execErr := r.eng.Execute(r.ctx, engineRun, r.host, board)
+	if finalBoard == nil {
+		finalBoard = board
+	}
+	if ctxErr := r.ctx.Err(); ctxErr != nil && !errdefs.IsInterrupted(execErr) {
+		execErr = ctxErr
+	}
+	res := &Result{
+		TaskID:   r.req.TaskID,
+		RunID:    r.id.RunID,
+		State:    map[string]any{"run_id": r.id.RunID},
+		Attempts: n,
+	}
+	materializeResult(res, finalBoard, r.rc.artifactChannels, seedLen)
+	r.applyEngineOutcome(res, execErr)
+	decision, err := r.referees(res)
+	if err != nil {
+		return res, Decision{}, err
+	}
+	return res, decision, nil
+}
+
+// engineRun builds the engine-facing run for one attempt. ResumeFrom is
+// honoured for attempt 1 only (revise is not "resume", it is a fresh
+// retry), and Attributes carry the attempt index so engines / hosts can
+// correlate retries in their telemetry. RunID stays constant across
+// attempts so observers / dashboards see one logical run with N attempts,
+// not N separate runs.
+func (r *runState) engineRun(attempt int) Run {
+	attributes := make(map[string]string, len(r.req.Attributes)+len(r.rc.attributes)+1)
+	maps.Copy(attributes, r.req.Attributes)
+	// Explicit WithAttributes options win per key over Request
+	// attributes; the attempt index is engine-owned and always
+	// wins over both.
+	maps.Copy(attributes, r.rc.attributes)
+	attributes["agent.attempt"] = itoa(attempt)
+	run := Run{
+		Identity:      r.id,
+		Attributes:    attributes,
+		ToolAllowList: r.toolAllowList,
+	}
+	if attempt == 1 {
+		run.ResumeFrom = r.rc.resumeFrom
+	}
+	return run
+}
+
+// applyEngineOutcome maps one engine error onto the public status
+// vocabulary and fires the interrupt observer when the engine reported a
+// cause. An interrupted run carries its InterruptedError so callers can
+// recover the interrupt payload; a cancelled or bounded context surfaces
+// as StatusCanceled rather than as an engine failure.
+func (r *runState) applyEngineOutcome(res *Result, execErr error) {
+	switch {
+	case execErr == nil:
+		res.Status = StatusCompleted
+	case errdefs.IsInterrupted(execErr):
+		res.Status = StatusInterrupted
+		res.Err = execErr
+		var interrupted InterruptedError
+		if errors.As(execErr, &interrupted) {
+			res.Cause = interrupted.Cause
+			if r.obs != nil {
+				r.obs.OnInterrupt(r.ctx, r.id, interrupted.Interrupt)
+			}
+		}
+	case errors.Is(execErr, context.Canceled),
+		errors.Is(execErr, context.DeadlineExceeded):
+		res.Status = StatusCanceled
+		res.Err = execErr
+	case errdefs.IsAborted(execErr):
+		res.Status = StatusAborted
+		res.Err = execErr
+	default:
+		res.Status = StatusFailed
+		res.Err = execErr
+	}
+	res.Committed = res.Status == StatusCompleted
+}
+
+// referees runs the Referee chain over one attempt's result and folds its
+// decision into the result: Committed follows AcceptOutput/DiscardOutput
+// and the reason and state a Referee reported are recorded for the caller.
+func (r *runState) referees(res *Result) (Decision, error) {
+	if len(r.rc.afters) == 0 {
+		return Decision{}, nil
+	}
+	decision, err := composeReferees(r.ctx, r.id, r.req, res, r.rc.afters)
+	if err != nil {
+		return Decision{}, err
+	}
+	if decision.AcceptOutput {
+		res.Committed = true
+	}
+	if decision.DiscardOutput {
+		res.Committed = false
+	}
+	if decision.Reason != "" {
+		res.State["finalize_reason"] = decision.Reason
+	}
+	if len(decision.State) > 0 {
+		maps.Copy(res.State, decision.State)
+	}
+	return decision, nil
+}
+
+// finalize applies the post-loop outcome rules to the last attempt's
+// result: a cancelled context overrides an otherwise completed run, the
+// board's stream-backed media is materialized into durable history, and
+// the Committer chain runs against the projected view.
+//
+// It reports failed=true with the (result, error) pair Execute must return
+// when one of those infrastructure steps fails.
+func (r *runState) finalize(res *Result, fin runFinalizer) (failed bool, final *Result, err error) {
+	if ctxErr := r.ctx.Err(); ctxErr != nil && res.Status != StatusInterrupted {
+		res.Status = StatusCanceled
+		res.Cause = ""
+		res.Err = ctxErr
+		res.Committed = false
+	}
+	if !res.Committed {
+		return false, nil, nil
+	}
+	// History forbids stream-backed media sources: a message that is about
+	// to become conversation history materializes each stream into the
+	// existing inline-byte parts before it is stored or handed to
+	// observers. This runs exactly once, on the final committed result —
+	// never per attempt, so a revise retry still sees the live stream.
+	if historyErr := materializeHistory(r.ctx, res.LastBoard); historyErr != nil {
+		final, err = fin.fail(res, "history_materialize_failed",
+			"agent run history materialize failed",
+			"agent: materialize history", historyErr)
+		return true, final, err
+	}
+	if len(r.rc.committers) == 0 {
+		return false, nil, nil
+	}
+	commitRes := res
+	if r.rc.commitViewProvider != nil {
+		commitRes, final, err = r.commitView(res, fin)
+		if commitRes == nil {
+			return true, final, err
+		}
+	}
+	if commitErr := commitResult(r.ctx, r.id, r.req, commitRes, r.rc.committers); commitErr != nil {
+		final, err = fin.fail(res, "commit_failed",
+			"agent run commit failed", "agent: commit result", commitErr)
+		return true, final, err
+	}
+	return false, nil, nil
+}
+
+// commitView asks the caller's CommitViewProvider for the board the
+// Committers judge, materializes its media, and projects it into a copy of
+// the result so the committed view and the returned result never diverge.
+// A nil view means the step failed and final carries what Execute returns.
+func (r *runState) commitView(res *Result, fin runFinalizer) (*Result, *Result, error) {
+	view, viewErr := r.rc.commitViewProvider.CommitView(r.ctx, r.id, r.req, res)
+	if viewErr != nil {
+		final, err := fin.fail(res, "commit_view_failed",
+			"agent run commit view failed", "agent: provide commit view", viewErr)
+		return nil, final, err
+	}
+	if view.LastBoard == nil {
+		nilViewErr := errdefs.Validationf("agent: CommitViewProvider returned nil board")
+		final, err := fin.fail(res, "commit_view_failed",
+			"agent run commit view returned nil board", "", nilViewErr)
+		return nil, final, err
+	}
+	if historyErr := materializeHistory(r.ctx, view.LastBoard); historyErr != nil {
+		final, err := fin.fail(res, "commit_view_failed",
+			"agent run commit view materialize failed",
+			"agent: materialize commit view", historyErr)
+		return nil, final, err
+	}
+	projected := *res
+	// The commit projection is a self-contained board produced by
+	// the provider: there is no seed boundary to exclude, so start
+	// from the beginning of its MainChannel.
+	materializeResult(&projected, view.LastBoard, r.rc.artifactChannels, 0)
+	return &projected, nil, nil
+}
+
+// runFinalizer ends a run the one way every failure path must end it:
+// uncommitted, with the reason recorded, the observers told the run is
+// over, and the infrastructure failure logged.
+type runFinalizer struct {
+	ctx context.Context
+	id  Identity
+	obs Observer
+}
+
+// fail marks res uncommitted for reason, records msg, notifies the
+// observers, and logs err. wrap, when set, wraps err for the caller with
+// the phase that failed.
+func (f runFinalizer) fail(
+	res *Result,
+	reason string,
+	msg string,
+	wrap string,
+	err error,
+) (*Result, error) {
+	res.Committed = false
+	res.State["finalize_reason"] = reason
+	f.end(res)
+	logRunError(f.ctx, f.id, msg, err)
+	if wrap == "" {
+		return res, err
+	}
+	return res, fmt.Errorf("%s: %w", wrap, err)
+}
+
+// end fires Observer.OnRunEnd.
+func (f runFinalizer) end(res *Result) {
+	if f.obs != nil {
+		f.obs.OnRunEnd(f.ctx, f.id, res)
+	}
+}
+
+// applyRunTimeout resolves the run-level wall clock. Unlike an engine's
+// per-Execute timeout (which restarts on every attempt), this budget spans
+// the whole call: seeder, every revise attempt, Referees and Committers.
+// The shorter of this deadline and the caller's context wins, and engines
+// that bound themselves keep their own (typically tighter) limits.
+func applyRunTimeout(
+	ctx context.Context,
+	policyTimeout string,
+	override time.Duration,
+) (context.Context, context.CancelFunc, error) {
+	runTimeout := override
+	if runTimeout == 0 && policyTimeout != "" {
+		parsed, err := time.ParseDuration(policyTimeout)
+		if err != nil {
+			return nil, nil, errdefs.Validationf(
+				"agent: policy.run_timeout %q: %v", policyTimeout, err)
 		}
 		if parsed <= 0 {
-			return nil, errdefs.Validationf(
-				"agent: policy.run_timeout %q must be a positive duration", ag.Policy.RunTimeout)
+			return nil, nil, errdefs.Validationf(
+				"agent: policy.run_timeout %q must be a positive duration", policyTimeout)
 		}
 		runTimeout = parsed
 	}
-	if runTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, runTimeout)
-		defer cancel()
+	if runTimeout <= 0 {
+		return ctx, func() {}, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, runTimeout)
+	return ctx, cancel, nil
+}
 
-	runID := req.RunID
-	// Resume MUST execute under the original run id so the engine's
-	// Resumer.CanResume sees ExecID == Run.RunID. Honour the
-	// checkpoint's ExecID over a freshly-minted id; explicit
-	// req.RunID disagreements are caller errors and surface as
-	// Engine Validation when the engine compares them.
+// resolveRunID settles the run's identity. Resume MUST execute under the
+// original run id so the engine's Resumer.CanResume sees ExecID ==
+// Run.RunID: the checkpoint's ExecID wins over a freshly-minted id, while
+// an explicit req.RunID disagreement is a caller error that surfaces as
+// Engine Validation when the engine compares them.
+func resolveRunID(req Request, rc execConfig) (string, error) {
 	if rc.resumeFrom != nil && rc.resumeFrom.ExecID != "" {
-		runID = rc.resumeFrom.ExecID
-	} else if runID == "" {
-		minted, err := mintRunID()
-		if err != nil {
-			return nil, err
-		}
-		runID = minted
+		return rc.resumeFrom.ExecID, nil
 	}
+	if req.RunID != "" {
+		return req.RunID, nil
+	}
+	minted, err := mintRunID()
+	if err != nil {
+		return "", err
+	}
+	return minted, nil
+}
 
+// buildIdentity assembles the run's identity from the call arguments, with
+// the option-supplied parent run id winning over the request's.
+func buildIdentity(agentID, runID string, req Request, rc execConfig) Identity {
 	id := Identity{
-		AgentID:        ag.ID,
+		AgentID:        agentID,
 		RunID:          runID,
 		ParentRunID:    rc.parentRunID,
 		TaskID:         req.TaskID,
@@ -142,280 +486,44 @@ func Execute(
 	if id.ParentRunID == "" {
 		id.ParentRunID = req.ParentRunID
 	}
+	return id
+}
 
-	host := rc.host
-	if host == nil {
-		host = NoopHost{}
-	}
-	// Tool allow-list: policy, not wiring. Caller-supplied
-	// ([WithToolAllowList]) wins over the agent-level claim so
-	// tests / power users can override per call. Defensive copy —
-	// the engine must see a stable snapshot for the duration of
-	// the run even if the caller mutates their slice afterwards.
+// resolveToolAllowList settles the tools the engine may call: policy, not
+// wiring. The caller-supplied value ([WithToolAllowList]) wins over the
+// agent-level claim so tests / power users can override per call. The copy
+// is defensive — the engine must see a stable snapshot for the duration of
+// the run even if the caller mutates their slice afterwards.
+func resolveToolAllowList(ag Agent, rc execConfig) []string {
 	toolAllowList := ag.Tools
 	if rc.toolAllowList != nil {
 		toolAllowList = rc.toolAllowList
 	}
-	toolAllowList = append([]string(nil), toolAllowList...)
-	obs := composeObservers(rc.hooks)
+	return append([]string(nil), toolAllowList...)
+}
 
-	runLogAttrs := func() []attribute.KeyValue {
-		attrs := []attribute.KeyValue{
-			attribute.String(telemetry.AttrAgentID, id.AgentID),
-			attribute.String(telemetry.AttrRunID, id.RunID),
-		}
-		if id.TaskID != "" {
-			attrs = append(attrs, attribute.String(telemetry.AttrTaskID, id.TaskID))
-		}
-		if id.ConversationID != "" {
-			attrs = append(attrs, attribute.String(telemetry.AttrConversationID, id.ConversationID))
-		}
-		return attrs
+// hostOrDefault falls back to the no-op host when the caller wired none.
+func hostOrDefault(host Host) Host {
+	if host == nil {
+		return NoopHost{}
 	}
-	telemetry.Info(ctx, "agent run started", runLogAttrs()...)
+	return host
+}
 
-	// Revise loop: each iteration is one Execute attempt
-	// followed by Referee chain. Loop exits when a Referee does
-	// not ask for revise OR the attempt counter reaches the
-	// configured WithMaxRevise budget. attempts is 1-indexed: 1
-	// means "first engine call". maxAttempts >= 1 always (the
-	// default 0 / 1 disable the loop entirely after the first
-	// attempt — by zeroing rc.maxRevise we keep the math uniform).
-	maxAttempts := max(rc.maxRevise, 1)
-
-	var (
-		res         *Result
-		execDecided bool // set when a non-recoverable Referee error short-circuited
-		decErr      error
-		seedLen     int
-	)
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// Re-seed board on every attempt so revise restarts see a
-		// fresh state derived from the same Request. The first
-		// attempt's seeder error is fatal (infrastructure); a seeder
-		// error on a revise attempt is also surfaced as nil result +
-		// error so callers do not silently see stale Messages.
-		board, err := seedBoard(ctx, id, &req, rc.preparers)
-		if err != nil {
-			logRunError(ctx, id, "agent run seed failed", err)
-			return nil, fmt.Errorf("agent: seed board (attempt %d): %w", attempt, err)
-		}
-		if board == nil {
-			nilBoardErr := errdefs.Validationf("agent: Preparer chain returned nil board")
-			logRunError(ctx, id, "agent run seed returned nil board", nilBoardErr)
-			return nil, nilBoardErr
-		}
-		// Messages at or before this index are seed/context, never output
-		// of this attempt. The engine's appended messages start after it.
-		seedLen = board.ChannelLen(MainChannel)
-
-		// Run is rebuilt each attempt: ResumeFrom is honoured
-		// for attempt 1 only (revise is not "resume", it is a fresh
-		// retry), and Attributes carry the attempt index so engines
-		// / hosts can correlate retries in their telemetry. RunID
-		// stays constant across attempts so observers / dashboards
-		// see one logical run with N attempts, not N separate runs.
-		attemptAttrs := make(map[string]string, len(req.Attributes)+len(rc.attributes)+1)
-		maps.Copy(attemptAttrs, req.Attributes)
-		// Explicit WithAttributes options win per key over Request
-		// attributes; the attempt index is engine-owned and always
-		// wins over both.
-		maps.Copy(attemptAttrs, rc.attributes)
-		attemptAttrs["agent.attempt"] = itoa(attempt)
-		engRun := Run{
-			Identity:      id,
-			Attributes:    attemptAttrs,
-			ToolAllowList: toolAllowList,
-		}
-		if attempt == 1 {
-			engRun.ResumeFrom = rc.resumeFrom
-		}
-
-		if obs != nil {
-			obs.OnRunStart(ctx, id, &req)
-		}
-
-		finalBoard, execErr := eng.Execute(ctx, engRun, host, board)
-		if finalBoard == nil {
-			finalBoard = board
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil && !errdefs.IsInterrupted(execErr) {
-			execErr = ctxErr
-		}
-
-		res = &Result{
-			TaskID:   req.TaskID,
-			RunID:    runID,
-			State:    map[string]any{"run_id": runID},
-			Attempts: attempt,
-		}
-		materializeResult(res, finalBoard, rc.artifactChannels, seedLen)
-
-		switch {
-		case execErr == nil:
-			res.Status = StatusCompleted
-
-		case errdefs.IsInterrupted(execErr):
-			res.Status = StatusInterrupted
-			res.Err = execErr
-			var ie InterruptedError
-			if errors.As(execErr, &ie) {
-				res.Cause = ie.Cause
-				if obs != nil {
-					obs.OnInterrupt(ctx, id, ie.Interrupt)
-				}
-			}
-
-		case errors.Is(execErr, context.Canceled),
-			errors.Is(execErr, context.DeadlineExceeded):
-			res.Status = StatusCanceled
-			res.Err = execErr
-
-		case errdefs.IsAborted(execErr):
-			res.Status = StatusAborted
-			res.Err = execErr
-
-		default:
-			res.Status = StatusFailed
-			res.Err = execErr
-		}
-
-		res.Committed = res.Status == StatusCompleted
-
-		// Non-completed outcomes short-circuit the revise loop. A
-		// canceled / aborted / interrupted / failed engine is the
-		// host's signal to stop; revising would either repeat the
-		// failure mode (no model output to revise) or fight an
-		// active cancellation. After still run on the final
-		// attempt so DiscardOutput / Reason are honoured.
-		decision := Decision{}
-		if len(rc.afters) > 0 {
-			d, derr := composeReferees(ctx, id, &req, res, rc.afters)
-			if derr != nil {
-				execDecided = true
-				decErr = derr
-				break
-			}
-			decision = d
-			if decision.AcceptOutput {
-				res.Committed = true
-			}
-			if decision.DiscardOutput {
-				res.Committed = false
-			}
-			if decision.Reason != "" {
-				res.State["finalize_reason"] = decision.Reason
-			}
-			if len(decision.State) > 0 {
-				maps.Copy(res.State, decision.State)
-			}
-		}
-
-		// Revise gate: only fires for completed attempts that have
-		// budget remaining AND a Referee asked for revision. A
-		// non-completed status NEVER triggers revise (see comment
-		// above) so a flapping engine cannot consume the entire
-		// budget against transient failures.
-		if !decision.Revise || res.Status != StatusCompleted || attempt >= maxAttempts {
-			break
-		}
-		if obs != nil {
-			obs.OnRunRevise(ctx, id, res, attempt+1)
-		}
-		attrs := append(runLogAttrs(),
-			attribute.Int("agent.attempt", attempt),
-			attribute.String(telemetry.AttrRunStatus, string(res.Status)))
-		telemetry.Warn(ctx, "agent run revised and will retry", attrs...)
+// runLogAttrs is the correlation attribute set every log line about one
+// run carries.
+func runLogAttrs(id Identity) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrAgentID, id.AgentID),
+		attribute.String(telemetry.AttrRunID, id.RunID),
 	}
-
-	if execDecided {
-		res.Committed = false
-		res.State["finalize_reason"] = "referee_failed"
-		if obs != nil {
-			obs.OnRunEnd(ctx, id, res)
-		}
-		logRunError(ctx, id, "agent run referee failed", decErr)
-		return res, decErr
+	if id.TaskID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrTaskID, id.TaskID))
 	}
-
-	if ctxErr := ctx.Err(); ctxErr != nil && res.Status != StatusInterrupted {
-		res.Status = StatusCanceled
-		res.Cause = ""
-		res.Err = ctxErr
-		res.Committed = false
+	if id.ConversationID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrConversationID, id.ConversationID))
 	}
-	// History forbids stream-backed media sources: a message that is about
-	// to become conversation history materializes each stream into the
-	// existing inline-byte parts before it is stored or handed to
-	// observers. This runs exactly once, on the final committed result —
-	// never per attempt, so a revise retry still sees the live stream.
-	if res.Committed {
-		if err := materializeHistory(ctx, res.LastBoard); err != nil {
-			res.Committed = false
-			res.State["finalize_reason"] = "history_materialize_failed"
-			if obs != nil {
-				obs.OnRunEnd(ctx, id, res)
-			}
-			logRunError(ctx, id, "agent run history materialize failed", err)
-			return res, fmt.Errorf("agent: materialize history: %w", err)
-		}
-	}
-	if res.Committed && len(rc.committers) > 0 {
-		commitRes := res
-		if rc.commitViewProvider != nil {
-			view, err := rc.commitViewProvider.CommitView(ctx, id, &req, res)
-			if err != nil {
-				res.Committed = false
-				res.State["finalize_reason"] = "commit_view_failed"
-				if obs != nil {
-					obs.OnRunEnd(ctx, id, res)
-				}
-				logRunError(ctx, id, "agent run commit view failed", err)
-				return res, fmt.Errorf("agent: provide commit view: %w", err)
-			}
-			if view.LastBoard == nil {
-				res.Committed = false
-				res.State["finalize_reason"] = "commit_view_failed"
-				if obs != nil {
-					obs.OnRunEnd(ctx, id, res)
-				}
-				logRunError(ctx, id, "agent run commit view returned nil board",
-					errdefs.Validationf("agent: CommitViewProvider returned nil board"))
-				return res, errdefs.Validationf("agent: CommitViewProvider returned nil board")
-			}
-			if err := materializeHistory(ctx, view.LastBoard); err != nil {
-				res.Committed = false
-				res.State["finalize_reason"] = "commit_view_failed"
-				if obs != nil {
-					obs.OnRunEnd(ctx, id, res)
-				}
-				logRunError(ctx, id, "agent run commit view materialize failed", err)
-				return res, fmt.Errorf("agent: materialize commit view: %w", err)
-			}
-			projected := *res
-			// The commit projection is a self-contained board produced by
-			// the provider: there is no seed boundary to exclude, so start
-			// from the beginning of its MainChannel.
-			materializeResult(&projected, view.LastBoard, rc.artifactChannels, 0)
-			commitRes = &projected
-		}
-		if err := commitResult(ctx, id, &req, commitRes, rc.committers); err != nil {
-			res.Committed = false
-			res.State["finalize_reason"] = "commit_failed"
-			if obs != nil {
-				obs.OnRunEnd(ctx, id, res)
-			}
-			logRunError(ctx, id, "agent run commit failed", err)
-			return res, fmt.Errorf("agent: commit result: %w", err)
-		}
-	}
-
-	if obs != nil {
-		obs.OnRunEnd(ctx, id, res)
-	}
-	logRunOutcome(ctx, id, res, runLogAttrs)
-
-	return res, nil
+	return attrs
 }
 
 // logRunError records an infrastructure failure that turns Execute into
@@ -438,11 +546,13 @@ func logRunError(ctx context.Context, id Identity, msg string, err error) {
 
 // logRunOutcome records the terminal status of one Execute call so the
 // agent layer is visible in logs even when the engine logs nothing.
-func logRunOutcome(ctx context.Context, id Identity, res *Result, base func() []attribute.KeyValue) {
+func logRunOutcome(ctx context.Context, id Identity, res *Result, base []attribute.KeyValue) {
 	if res == nil {
 		return
 	}
-	attrs := append(base(), attribute.String(telemetry.AttrRunStatus, string(res.Status)))
+	attrs := slices.Concat(base, []attribute.KeyValue{
+		attribute.String(telemetry.AttrRunStatus, string(res.Status)),
+	})
 	attrs = append(attrs,
 		attribute.Int("agent.attempts", res.Attempts),
 		attribute.Bool("agent.committed", res.Committed))

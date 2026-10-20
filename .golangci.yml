@@ -27,8 +27,20 @@ linters:
     - staticcheck
     - unused
     - depguard
+    - gocyclo
 
   settings:
+    gocyclo:
+      # Cyclomatic-complexity ratchet. A function should be one level of
+      # abstraction the reader can hold in one screenful; 20 is the target the
+      # Go review set for this repo, and 40 is where a function stops being
+      # reviewable at all, so 40 is the hard floor enforced here. The
+      # functions still above it are the baseline listed in
+      # linters.exclusions.rules — that list may only shrink, and winning
+      # there means lowering this number, never adding an entry.
+      #
+      min-complexity: 40
+
     depguard:
       rules:
         # core/inference/model holds the model declaration vocabulary and
@@ -42,3 +54,38 @@ linters:
           deny:
             - pkg: "github.com/GizClaw/flowcraft/core/inference"
               desc: "core/inference/model must not import the inference contract"
+
+  exclusions:
+    # gocyclo baseline: the functions still above min-complexity today. Each
+    # entry is known debt, not a pattern to copy — gocyclo reports a position
+    # rather than a symbol, so an entry exempts the whole file. Split the file
+    # and delete its entry; never add one for new code.
+    rules:
+      # Test files keep their own budget: a fixture builder, a table or a
+      # conformance suite that enumerates every entry point is long by nature,
+      # and a short test with a clear failure message beats an artificially
+      # split one.
+      - linters: [gocyclo]
+        path: "_test\\.go"
+      - linters: [gocyclo]
+        path: "agent/agenttest/checkpoint_store_suite\\.go"
+      - linters: [gocyclo]
+        path: "memory/eval/cmd/memory-eval/main\\.go"
+      - linters: [gocyclo]
+        path: "memory/retrieval/provider\\.go"
+      - linters: [gocyclo]
+        path: "memory/settings\\.go"
+      - linters: [gocyclo]
+        path: "memory/factory\\.go"
+      - linters: [gocyclo]
+        path: "memory/retrieval/fusion/fusion\\.go"
+      - linters: [gocyclo]
+        path: "openai/spec\\.go"
+      - linters: [gocyclo]
+        path: "bytedance/video\\.go"
+      - linters: [gocyclo]
+        path: "dashscope/video\\.go"
+      - linters: [gocyclo]
+        path: "dashscope/model\\.go"
+      - linters: [gocyclo]
+        path: "craft/hostmcp/hostmcp\\.go"
