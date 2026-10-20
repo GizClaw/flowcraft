@@ -39,6 +39,9 @@
 // core/workspace enforces around any backend -- traversal, the scope's two
 // directions, the prefixed view, walking, globbing, the read cap and atomic
 // publish (see workspacecontract.go).
+// With -secret-contract it dumps the ${secret:...} grammar -- what the scheme
+// emits for a path, what resolving one through a store answers, and what a
+// Secret value is on the wire (see secretcontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -153,6 +156,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-secret-contract" {
+		if err := writeSecretContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "secret contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-mitm-contract" {
 		if err := writeMITMContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "mitm contract:", err)
@@ -168,7 +178,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract | -wire-contract | -skill-contract | -skill-registry-contract] <dir> [dir...]")
+		fmt.Fprintln(os.Stderr, "usage: oracle [-error-contract | -message-contract | -event-contract | -bm25-contract | -pathsafe-contract | -filetype-contract | -net-contract | -proxy-contract | -wire-contract | -skill-contract | -skill-registry-contract | -hooks-contract | -workspace-contract | -secret-contract] <dir> [dir...]")
 		os.Exit(2)
 	}
 	var files []string

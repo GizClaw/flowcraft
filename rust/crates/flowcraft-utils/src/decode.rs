@@ -1735,7 +1735,10 @@ fn go_syntax_element(node: &Yaml<'_>) -> String {
 /// `\u2028` are escaped in both, but Go escapes `\u0085` and
 /// `\u00ad` where Rust's `is_control` does not. What decides is Go's
 /// `strconv.IsPrint`, ported below.
-fn go_quote(text: &str) -> String {
+///
+/// Public because a crate's refusals quote what the deployment wrote, and
+/// core's do it with `%q`: a secret name, a store id, a settings key.
+pub fn go_quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for ch in text.chars() {

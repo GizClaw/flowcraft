@@ -168,6 +168,39 @@ goes. Regenerating is the usual one command:
   > rust/conformance/workspace-contract.json
 ```
 
+## The secret contract
+
+`secret-contract.json` pins the `${secret:...}` grammar: what the scheme emits for
+a path, what resolving one through a store answers, and what a `Secret` value is
+on the wire. `tools/conformance-oracle -secret-contract` writes it and
+`crates/flowcraft-secret/tests/grammar_contract.rs` replays it.
+
+Every store in the file is a canned answer table (`resource.SecretStoreFunc`),
+so no row touches the process environment, a clock or the filesystem. The three
+tables exist because the grammar has three seams and they refuse in different
+sentences:
+
+| Table | What is pinned |
+| --- | --- |
+| `refs` | the scheme: `files.token` is an explicit store reference, `my.app.key` is the *whole* name in the default store, a lone dot on either side is a name, the name is trimmed and the store prefix is not, and the missing-default and empty-name refusals are different sentences about different mistakes |
+| `resolves` | use time: a found value comes back verbatim, a missing one is a refusal naming secret and store, an unknown store id is refused before any backend is asked, and a backend failure is *wrapped* into a validation sentence rather than reclassified |
+| `values` | the wire: a string is a literal, an object is a reference, `null` is the **empty literal** (`encoding/json`'s null-into-string no-op), field names fold case, a field of the wrong type gets the shape refusal while a null field is the blank-reference one, and every rendering verb answers `<secret>` |
+
+One thing is masked, and it is not a rule: core writes the wire form with
+`json.Marshal`, which HTML-escapes `<`, `>` and `&`, while `serde_json` does not.
+Both decode to the string `"<secret>"`, so the replay compares the decoded value.
+
+The Go side is checked by `tools/conformance-oracle/secretcontract_test.go`: the
+dump reproduces itself, every answer is about the path it was asked for, the
+dotted-name rule has a witness per shape, the two decode refusals stay apart and
+the catch-all quotes the document as written, and `null` stays the empty
+literal -- the row a port is most likely to "fix" into a refusal. Regenerating:
+
+```sh
+(cd tools/conformance-oracle && GOWORK=off go run . -secret-contract) \
+  > rust/conformance/secret-contract.json
+```
+
 ## The backends it measured and rejected
 
 The port did not start from a favourite. Four readings ran into the same dump

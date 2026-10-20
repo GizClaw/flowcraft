@@ -280,6 +280,22 @@ if ! cmp -s "$out/workspace-contract.json" "$conf/workspace-contract.json"; then
   exit 1
 fi
 
+echo "==> secret contract"
+# The ${secret:...} grammar: what the scheme emits for a path (a marker, not a
+# value), what resolving one through a store answers, and what a Secret value is
+# on the wire -- replayed by crates/flowcraft-secret/tests/grammar_contract.rs.
+# Every store in the file is a canned answer table, so nothing depends on the
+# process environment, a clock or a filesystem; the one mask is the escaping
+# spelling of the wire form, which is `json.Marshal`'s HTML escaping on core's
+# side and absent on the port's, and both decode to the string "<secret>".
+"$out/oracle" -secret-contract > "$out/secret-contract.json"
+if ! cmp -s "$out/secret-contract.json" "$conf/secret-contract.json"; then
+  echo "rust/conformance/secret-contract.json no longer matches core:" >&2
+  diff "$conf/secret-contract.json" "$out/secret-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -secret-contract) > rust/conformance/secret-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)

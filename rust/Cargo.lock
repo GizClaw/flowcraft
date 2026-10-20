@@ -396,6 +396,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowcraft-secret"
+version = "0.0.0"
+dependencies = [
+ "flowcraft-contract",
+ "flowcraft-utils",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "flowcraft-skill"
 version = "0.0.0"
 dependencies = [
