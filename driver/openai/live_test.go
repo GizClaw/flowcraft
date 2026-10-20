@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -438,6 +439,19 @@ func (h *liveHarness) exchanges() []liveExchange { return h.recorder.all() }
 // driver call, and a retried attempt is a transaction the endpoint refused, so
 // the exchange that answers the lane's questions is the last one: reading the
 // first would assert against an attempt that was thrown away.
+// lastExchange is last() for a call site that has to decide whether an
+// exchange exists at all: a request that never reached the surface has none,
+// and that is an answer the caller has to read rather than a fatal error.
+func (h *liveHarness) lastExchange(path string) (liveExchange, bool) {
+	exchanges := h.exchanges()
+	for index := len(exchanges) - 1; index >= 0; index-- {
+		if exchanges[index].Path == path {
+			return exchanges[index], true
+		}
+	}
+	return liveExchange{}, false
+}
+
 func (h *liveHarness) last(path string) liveExchange {
 	h.t.Helper()
 	exchanges := h.exchanges()
@@ -515,6 +529,88 @@ func (h *liveHarness) dump() {
 
 // --------------------------------------------------------------- probe lane
 
+// probeReading is what the probe's failed request says about the route.
+type probeReading int
+
+const (
+	// probeVerdict means the surface read the request and answered about the
+	// model, which is everything the probe asks.
+	probeVerdict probeReading = iota
+	// probeInconclusive means the answer was about the account or the
+	// network — a rate limit, a server error, a transport failure — so
+	// whether the route exists is still unknown.
+	probeInconclusive
+	// probeUnexpected means the request did reach the surface and the answer
+	// is neither of the above.
+	probeUnexpected
+)
+
+// readProbe classifies one failed probe request. Only the surface's own
+// verdict about the model answers the probe's question: an unpublished model
+// is refused as an invalid request, a forbidden one, or a missing model.
+// Everything else — a 429, a 408, a 5xx, and a transport failure that recorded
+// no exchange at all (status 0) — is an answer about the account or the
+// network,
+// which is why the lane reports it and skips instead of failing. Repeated runs
+// of this suite draw free-tier pushback, and a lane that treats that as a
+// defect is a lane everybody learns to re-run blindly.
+func readProbe(status int, err error) probeReading {
+	switch {
+	case status == 0,
+		status == http.StatusTooManyRequests,
+		status == http.StatusRequestTimeout,
+		status >= 500:
+		return probeInconclusive
+	case errdefs.IsValidation(err), errdefs.IsForbidden(err),
+		errdefs.IsNotFound(err):
+		return probeVerdict
+	default:
+		return probeUnexpected
+	}
+}
+
+// TestReadProbe pins the probe's reading table, which is what keeps the free
+// lane from turning an account or network answer into a defect report.
+func TestReadProbe(t *testing.T) {
+	causes := map[string]error{
+		"validation":  errdefs.Validation(errors.New("model not published")),
+		"forbidden":   errdefs.Forbidden(errors.New("beta access required")),
+		"missing":     errdefs.NotFound(errors.New("no such model")),
+		"rate limit":  errdefs.RateLimit(errors.New("slow down")),
+		"internal":    errdefs.Internal(errors.New("upstream boom")),
+		"unavailable": errdefs.NotAvailable(errors.New("dial tcp: no route")),
+	}
+	tests := []struct {
+		name   string
+		status int
+		err    error
+		want   probeReading
+	}{
+		// The surface's verdicts about the model: the route is reachable and
+		// the refusal is permanent.
+		{"invalid request", http.StatusBadRequest, causes["validation"], probeVerdict},
+		{"forbidden", http.StatusForbidden, causes["forbidden"], probeVerdict},
+		{"missing model", http.StatusNotFound, causes["missing"], probeVerdict},
+		// Answers about the account or the network: report and skip.
+		{"rate limited", http.StatusTooManyRequests, causes["rate limit"], probeInconclusive},
+		{"server error", http.StatusInternalServerError, causes["internal"], probeInconclusive},
+		{"gateway timeout", http.StatusGatewayTimeout, causes["internal"], probeInconclusive},
+		{"request timeout", http.StatusRequestTimeout, causes["unavailable"], probeInconclusive},
+		{"transport failure", 0, causes["unavailable"], probeInconclusive},
+		// Neither: the route answered something that is not a refusal about
+		// the model, so the lane has to look at it.
+		{"retryable refusal", http.StatusBadRequest, causes["internal"], probeUnexpected},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := readProbe(test.status, test.err); got != test.want {
+				t.Fatalf("readProbe(%d, %v) = %v, want %v",
+					test.status, test.err, got, test.want)
+			}
+		})
+	}
+}
+
 // TestLiveDecisionUnknownModelIsRejected is the free probe: one well-formed
 // request naming a model the surface does not publish. What the surface does
 // with it is the point — a route that exists reads the model and refuses it,
@@ -542,18 +638,31 @@ func TestLiveDecisionUnknownModelIsRejected(t *testing.T) {
 	if errdefs.IsUnauthorized(err) {
 		t.Fatalf("live lane: the key was refused: %v", err)
 	}
-	switch {
-	case errdefs.IsValidation(err):
-		// The surface read the request and refused the model: the route is
-		// reachable, and an unusable model is a permanent failure rather
-		// than a retryable one.
-	case errdefs.IsForbidden(err):
-		// A refusal about the account (beta access) rather than the request;
-		// the paying lane reports the same shape with a model it can name.
-	default:
-		t.Fatalf("live lane: unexpected failure shape: %v", err)
+	call, recorded := harness.lastExchange(liveDecisionPath)
+	status := 0
+	if recorded {
+		status = call.Status
 	}
-	call := harness.last(liveDecisionPath)
+	// The error text of a classified provider failure names the kind and the
+	// operation, not the surface's own words, so the exchange is what makes a
+	// failure here diagnosable.
+	switch readProbe(status, err) {
+	case probeInconclusive:
+		t.Skipf("live lane: probe inconclusive, HTTP %d answered %s: %v",
+			status, truncate(call.Response), err)
+	case probeVerdict:
+		// The surface read the request and refused the model: the route is
+		// reachable, and an unusable model is a permanent failure rather than
+		// a retryable one. A missing model counts as a verdict — the body
+		// check below is what separates it from a route that does not exist.
+	default:
+		t.Fatalf("live lane: unexpected failure shape: %v (HTTP %d: %s)",
+			err, status, truncate(call.Response))
+	}
+	if !recorded {
+		t.Fatalf("live lane: no exchange recorded for %s; saw %s",
+			liveDecisionPath, harness.paths())
+	}
 	if call.Method != http.MethodPost {
 		t.Errorf("live lane: %s with %s, want POST", liveDecisionPath, call.Method)
 	}
