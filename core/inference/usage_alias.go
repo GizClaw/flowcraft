@@ -57,26 +57,26 @@ type Money = usage.Money
 
 // The classifier values below travel with the types above.
 const (
-	ReasoningIncludedInOutput  = usage.ReasoningIncludedInOutput
-	ReasoningAdditional        = usage.ReasoningAdditional
-	ReasoningAccountingUnknown = usage.ReasoningAccountingUnknown
+	ReasoningIncludedInOutput  usage.ReasoningAccounting = usage.ReasoningIncludedInOutput
+	ReasoningAdditional        usage.ReasoningAccounting = usage.ReasoningAdditional
+	ReasoningAccountingUnknown usage.ReasoningAccounting = usage.ReasoningAccountingUnknown
 
-	ModalityText  = usage.ModalityText
-	ModalityImage = usage.ModalityImage
-	ModalityAudio = usage.ModalityAudio
-	ModalityVideo = usage.ModalityVideo
-	ModalityFile  = usage.ModalityFile
+	ModalityText  usage.Modality = usage.ModalityText
+	ModalityImage usage.Modality = usage.ModalityImage
+	ModalityAudio usage.Modality = usage.ModalityAudio
+	ModalityVideo usage.Modality = usage.ModalityVideo
+	ModalityFile  usage.Modality = usage.ModalityFile
 
-	CacheTTL5Minutes = usage.CacheTTL5Minutes
-	CacheTTL1Hour    = usage.CacheTTL1Hour
+	CacheTTL5Minutes usage.CacheTTL = usage.CacheTTL5Minutes
+	CacheTTL1Hour    usage.CacheTTL = usage.CacheTTL1Hour
 
-	AuxiliaryCitationTokens   = usage.AuxiliaryCitationTokens
-	AuxiliaryToolPromptTokens = usage.AuxiliaryToolPromptTokens
+	AuxiliaryCitationTokens   usage.AuxiliaryTokenKind = usage.AuxiliaryCitationTokens
+	AuxiliaryToolPromptTokens usage.AuxiliaryTokenKind = usage.AuxiliaryToolPromptTokens
 
-	ToolUsageWebSearch     = usage.ToolUsageWebSearch
-	ToolUsageWebFetch      = usage.ToolUsageWebFetch
-	ToolUsageCodeExecution = usage.ToolUsageCodeExecution
-	ToolUsageMCP           = usage.ToolUsageMCP
-	ToolUsageXSearch       = usage.ToolUsageXSearch
-	ToolUsageSearchQuery   = usage.ToolUsageSearchQuery
+	ToolUsageWebSearch     usage.ToolUsageKind = usage.ToolUsageWebSearch
+	ToolUsageWebFetch      usage.ToolUsageKind = usage.ToolUsageWebFetch
+	ToolUsageCodeExecution usage.ToolUsageKind = usage.ToolUsageCodeExecution
+	ToolUsageMCP           usage.ToolUsageKind = usage.ToolUsageMCP
+	ToolUsageXSearch       usage.ToolUsageKind = usage.ToolUsageXSearch
+	ToolUsageSearchQuery   usage.ToolUsageKind = usage.ToolUsageSearchQuery
 )
