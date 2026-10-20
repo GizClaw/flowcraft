@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/anthropic
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.8.2-0.20261020045815-e73f4141edf3
+	github.com/GizClaw/flowcraft/core v0.9.0
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 )
 

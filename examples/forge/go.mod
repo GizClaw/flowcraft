@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/examples/forge
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.8.2-0.20261020050117-f3bb9f3e651c
+	github.com/GizClaw/flowcraft/core v0.9.0
 	github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
