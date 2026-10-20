@@ -248,3 +248,36 @@ func TestRichPromptDocumentsRichSchemaFields(t *testing.T) {
 		t.Fatal("the simple strategy does not use the simple prompt")
 	}
 }
+
+// TestExtractionRequestPinsTheTemperature: extraction is the write side of the
+// measurement, so the pin has to reach the call the extractor actually sends --
+// both the schema request and the json_object retry, which is the same builder.
+func TestExtractionRequestPinsTheTemperature(t *testing.T) {
+	fake := &inferencetest.GenerateFake{Respond: jsonResponse(`{"facts":[{"text":"Alice likes tea","entities":[],"event_time":""}]}`)}
+	runtime := fake.Assembly(t)
+	model := inferencetest.DefaultFakeModel
+	pinned := 0.0
+	config := DefaultConfig()
+	config.Runtime, config.GenerateModel, config.Temperature = runtime, &model, &pinned
+	extractor, err := NewFactExtractorWithConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractor.Derive(context.Background(), rawMessageArtifact()); err != nil {
+		t.Fatal(err)
+	}
+	request := fake.LastRequest()
+	if got := request.Input.Content.Intent.Text.Temperature; got == nil || *got != 0 {
+		t.Fatalf("temperature = %v, want a pinned 0", got)
+	}
+	unpinned, err := NewFactExtractor(runtime, &model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unpinned.Derive(context.Background(), rawMessageArtifact()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.LastRequest().Input.Content.Intent.Text.Temperature; got != nil {
+		t.Fatalf("temperature = %v, want the provider default", *got)
+	}
+}

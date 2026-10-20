@@ -135,6 +135,22 @@ type ModelSettings struct {
 	Provider string `json:"provider"`
 	Name     string `json:"name"`
 	Profile  string `json:"profile,omitempty"`
+	// Temperature pins the sampling temperature of every generate call this
+	// module makes: fact extraction, summaries, and reranking. Absent leaves
+	// the provider's default, which is what a product host usually wants and
+	// what every reading taken before 2026-10-20 was measured under.
+	//
+	// A measurement host pins it because an unpinned call is a sample. Samples
+	// compound on the write side: two fresh derivations of one corpus under one
+	// revision wrote 3424 and 3090 facts, and that difference alone moved
+	// evidence recall by 1.4pp, which is larger than the effect a read-path arm
+	// is asked to show. Pinning derivations makes the fact set a function of the
+	// input instead of a draw.
+	//
+	// It changes what the extractor writes, so it is part of the derivation
+	// policy digest: turning it on re-derives the scope. The embed block takes
+	// no temperature, because an embedding is not sampled.
+	Temperature *float64 `json:"temperature,omitempty"`
 }
 
 // ScopeSettings seeds a memory partition registered during Wire.
@@ -414,6 +430,9 @@ func (settings Settings) Validate() error {
 	if err := settings.Generate.validate("generate"); err != nil {
 		return err
 	}
+	if settings.Embed.Temperature != nil {
+		return errors.New("embed.temperature is not supported: an embedding is not sampled")
+	}
 	if err := settings.Embed.validate("embed"); err != nil {
 		return err
 	}
@@ -574,6 +593,14 @@ func (settings ModelSettings) isZero() bool {
 }
 
 func (settings ModelSettings) validate(name string) error {
+	if settings.Temperature != nil {
+		if value := *settings.Temperature; math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
+			return fmt.Errorf("%s.temperature %v is outside [0,2]", name, value)
+		}
+		if settings.Provider == "" && settings.Name == "" {
+			return fmt.Errorf("%s.temperature requires provider and name", name)
+		}
+	}
 	if settings.isZero() {
 		return nil
 	}

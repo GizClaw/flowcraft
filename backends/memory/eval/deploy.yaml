@@ -134,7 +134,13 @@ resources:
       storage:
         log: {driver: workspace}
         kv: {driver: workspace}
-      generate: {provider: deepseek, name: deepseek-flash}
+      # Pin sampling on the derivation side. Every unpinned generate call is a
+      # sample, and those samples compound: two fresh derivations of this corpus
+      # under one revision wrote 3424 and 3090 facts, and that difference alone
+      # moved evidence recall by 1.4pp -- larger than the effect a read-path arm
+      # is asked to show. It is part of the derivation policy digest, so a
+      # workspace derived without it is derived again.
+      generate: {provider: deepseek, name: deepseek-flash, temperature: 0}
       embed: {provider: bytedance, name: doubao-embedding-vision}
       scopes:
         - {runtime_id: memories}

@@ -27,6 +27,7 @@ type Model struct {
 	ref          model.ModelRef
 	maxItems     int
 	maxItemRunes int
+	temperature  *float64
 }
 
 // New builds a model-backed item reranker.
@@ -38,6 +39,15 @@ func New(runtime Runtime, ref model.ModelRef) (*Model, error) {
 		return nil, errors.New("rerank: model provider and name are required")
 	}
 	return &Model{runtime: runtime, ref: ref, maxItems: 40, maxItemRunes: 400}, nil
+}
+
+// WithTemperature pins the rerank call's sampling. Nil leaves it to the
+// provider; a measurement host pins it, because an unpinned order is a draw.
+func (model *Model) WithTemperature(temperature *float64) *Model {
+	if model != nil {
+		model.temperature = temperature
+	}
+	return model
 }
 
 // RerankItems asks the model for the most relevant items first. Items beyond
@@ -63,7 +73,7 @@ func (model *Model) RerankItems(ctx context.Context, query string, items []corem
 		head = items[:model.maxItems]
 		tail = items[model.maxItems:]
 	}
-	response, err := model.runtime.Generate(ctx, model.ref, generateRequest(query, head, model.maxItemRunes))
+	response, err := model.runtime.Generate(ctx, model.ref, generateRequest(query, head, model.maxItemRunes, model.temperature))
 	if err != nil {
 		return nil, fmt.Errorf("rerank: generate: %w", err)
 	}
@@ -109,9 +119,10 @@ func rerankScore(position, total int) float64 {
 	return 1 - float64(position)/float64(total)
 }
 
-func generateRequest(query string, items []corememory.ContextItem, maxItemRunes int) inference.GenerateRequest {
+func generateRequest(query string, items []corememory.ContextItem, maxItemRunes int, temperature *float64) inference.GenerateRequest {
 	intent := inference.Intent{Text: &inference.TextIntent{
-		Response: &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
+		Response:    &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
+		Temperature: temperature,
 	}}
 	return inference.GenerateRequest{
 		Context: []coremessage.Message{{

@@ -309,10 +309,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 		// the extractive path inside the compactor.
 		var summarizer summaryderive.Summarizer
 		if !settings.Generate.isZero() {
-			summarizer, err = summaryderive.NewLLMSummarizer(engine, settings.Generate.ref())
-			if err != nil {
-				return nil, errdefs.Validation(fmt.Errorf("memory config: summary summarizer: %w", err))
+			modelSummarizer, summarizerErr := summaryderive.NewLLMSummarizer(engine, settings.Generate.ref())
+			if summarizerErr != nil {
+				return nil, errdefs.Validation(fmt.Errorf("memory config: summary summarizer: %w", summarizerErr))
 			}
+			summarizer = modelSummarizer.WithTemperature(settings.Generate.Temperature)
 		}
 		compactor, err = summaryderive.New(summaryderive.Config{
 			ChunkSize:         settings.Summary.ChunkSize,
@@ -387,7 +388,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 		if rerankErr != nil {
 			return nil, errdefs.Validation(fmt.Errorf("memory config: item reranker: %w", rerankErr))
 		}
-		providerConfig.ItemReranker = reranker
+		providerConfig.ItemReranker = reranker.WithTemperature(settings.Generate.Temperature)
 	}
 	if settings.Profile.Enabled {
 		providerConfig.Profiles = profiles
@@ -512,6 +513,7 @@ func buildDeriver(
 		GenerateModel:          &generateRef,
 		Facts:                  facts,
 		Quota:                  settings.Fact.Quota,
+		Temperature:            settings.Generate.Temperature,
 	}
 	if !settings.Embed.isZero() {
 		embedRef := settings.Embed.ref()

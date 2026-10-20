@@ -57,6 +57,10 @@ func main() {
 	temporalHint := flag.Bool("temporal-hint", false,
 		"append the reference harness's category-2 suffix (\"Use DATE of CONVERSATION to answer with an approximate date.\") "+
 			"to temporal questions; off by default, because it routes on the dataset's category label")
+	temperature := flag.Float64("temperature", 0,
+		"sampling temperature for answers and judgments; 0 makes a re-run agree with itself, a negative value "+
+			"leaves it to the provider (which is how every report before 2026-10-20 was measured, and why a "+
+			"configuration re-run over one library flips 6% of the graded questions)")
 	answerConcurrency := flag.Int("answer-concurrency", 4,
 		"questions processed in parallel (1 = sequential); only the schedule changes, never the prompts or the report order")
 	prepareAll := flag.Bool("prepare-all", false,
@@ -160,6 +164,11 @@ func main() {
 		Concurrency: *answerConcurrency,
 	}
 	var usage []usageRole
+	if *answerStage && *temperature < 0 {
+		fmt.Fprintln(os.Stderr,
+			"warning: -temperature is provider-default: answers and judgments are sampled, so a re-run of this "+
+				"configuration will not reproduce these numbers")
+	}
 	if *answerStage {
 		if deployment.Inference == nil {
 			must(fmt.Errorf("answering requires -deploy: an inference assembly must be wired"))
@@ -170,7 +179,8 @@ func main() {
 		must(err)
 		answerer = answerer.WithMaxContextRunes(*answerContextRunes).
 			WithAnswerStyle(evalanswer.AnswerStyle(*answerStyle)).
-			WithTemporalHint(*temporalHint)
+			WithTemporalHint(*temporalHint).
+			WithTemperature(temperatureSetting(*temperature))
 		options.Answerer = answerer
 		usage = append(usage, usageRole{role: "answer", counts: answerer})
 		if *judgeProvider == "" {
@@ -184,7 +194,7 @@ func main() {
 				ID: model.ModelID{Provider: *judgeProvider, Name: *judgeModel},
 			})
 			must(err)
-			return judge.WithJudgeStyle(style)
+			return judge.WithJudgeStyle(style).WithTemperature(temperatureSetting(*temperature))
 		}
 		switch *judgeStyle {
 		case "none":
@@ -287,13 +297,18 @@ func main() {
 			// -recent-items flag: a deploy document sets recent.max_items
 			// itself, so recording the flag would name a value no run used
 			// (and make two runs that differ only in that setting agree).
-			"recent_items":         strconv.Itoa(deployment.Recent.MaxItems),
-			"recent_tokens":        strconv.Itoa(deployment.Recent.MaxTokens),
-			"judge_style":          *judgeStyle,
-			"answer_model":         *answerProvider + "/" + *answerModel,
-			"answer_prompt":        answerPromptVersion(*answerStyle),
-			"answer_style":         *answerStyle,
-			"temporal_hint":        strconv.FormatBool(*temporalHint),
+			"recent_items":  strconv.Itoa(deployment.Recent.MaxItems),
+			"recent_tokens": strconv.Itoa(deployment.Recent.MaxTokens),
+			"judge_style":   *judgeStyle,
+			"answer_model":  *answerProvider + "/" + *answerModel,
+			"answer_prompt": answerPromptVersion(*answerStyle),
+			"answer_style":  *answerStyle,
+			"temporal_hint": strconv.FormatBool(*temporalHint),
+			// Whether the answer and judge calls pinned their sampling. The
+			// provider's default is a draw: one configuration re-run over one
+			// library flipped 93 of 1540 graded questions, so two reports that
+			// differ here are not comparable at sub-pp resolution.
+			"temperature":          temperatureFingerprint(*temperature),
 			"answer_context_runes": strconv.Itoa(*answerContextRunes),
 			"judge_model":          judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel),
 			// Whether the loader wrote each session's date into its turns'
@@ -607,6 +622,25 @@ func answerPromptVersion(style string) string {
 		return evalanswer.AnswerEvidencePromptVersion
 	}
 	return evalanswer.AnswerPromptVersion
+}
+
+// temperatureSetting renders the -temperature flag as the pointer the answer
+// model takes: a negative value means "leave it to the provider".
+func temperatureSetting(value float64) *float64 {
+	if value < 0 {
+		return nil
+	}
+	return &value
+}
+
+// temperatureFingerprint names what the sampling was pinned to. "provider"
+// means it was not pinned at all, which is a different measurement from any
+// number.
+func temperatureFingerprint(value float64) string {
+	if value < 0 {
+		return "provider"
+	}
+	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 // judgeFingerprint names the grading model, spelling out the inheritance when no

@@ -146,6 +146,16 @@ runner while `RunOnce` stays available. Decay, consolidation, and forgetting
 are host-owned maintenance jobs: the module keeps the canonical log and
 derived views correct, and hosts schedule whatever hygiene they need.
 
+`generate.temperature` pins the sampling of every generate call the module
+makes -- fact extraction, summaries, and reranking. Absent, the provider's
+default applies, which is what a product host usually wants; a measurement host
+pins it, because an unpinned derivation is a draw. On this project's own corpus
+two fresh derivations of one revision wrote 3424 and 3090 facts, and the fact
+sets differed enough to move evidence recall by 1.4pp -- more than the effect a
+read-path arm is asked to show. The pin changes what the extractor writes, so it
+is part of the derivation policy digest and switching it re-derives the scope.
+`embed` takes no temperature: an embedding is not sampled.
+
 `derive.trigger` tunes the fast path beside the sweep, and the same
 `interval: "0"` that turns the runner off turns the trigger off with it:
 `derive.trigger.interval` alone stops the polls and leaves the sweep as the

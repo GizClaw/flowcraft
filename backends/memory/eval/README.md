@@ -380,6 +380,14 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
   questions. Off by default and recorded in the fingerprint; see
   "Reference protocol vs this harness" for what it measured.
+- `-temperature` (default `0`): the sampling temperature of **both** the answer
+  and the judge call, recorded in the fingerprint as `temperature`. A negative
+  value passes the provider's default through and prints a warning, because
+  that is how every report before 2026-10-20 was measured: at the provider
+  default one configuration re-run over one library flips 93 of 1540 graded
+  questions (see "Measurement noise"). Pinning it makes a re-run agree with
+  itself; it does not make a sampled *derivation* deterministic -- that side is
+  `generate.temperature` in the deployment (see `../README.md`).
 - `-no-date-prefix`: convert turns without the session date prefix the loader
   otherwise writes into each turn's text (`[1:00 pm on 1 May, 2023] Alice: ...`
   → `Alice: ...`); the two conversions differ in exactly this step, so running
@@ -636,6 +644,20 @@ Consequences for reading results:
   native images at +4.9pp, the latency work at 19.5× — are all far outside it)
 - if a future experiment needs sub-pp resolution, widen the candidate pool
   (3× → 5×) so the packed 30 stop sitting exactly on the ranking boundary
+
+That band describes a run that **reads an existing derivation**. Two further
+layers sat outside it before the sampling was pinned, measured over the full
+1540-question corpus by pairing every question across runs (McNemar exact):
+
+| layer | retrieval (`hit`) | strict answer | reading |
+| --- | --- | --- | --- |
+| same library, re-run | 0:1 flips | 49:44 flips, net +5 | ±0.3pp net, but 6% of questions flip ⇒ ±1.2pp on a single draw |
+| fresh derivation, same revision | 60:38 flips, net +22 = **+1.43pp** | 88:111, net −23 = −1.49pp | the fact set is a draw: 3424 vs 3090 facts ⇒ **±1.5pp floor** |
+
+`library.digest` does **not** separate the two layers: it hashes the derivation
+cursors (scope, conversation, watermark), not the facts, so four runs over three
+different fact counts can carry one digest. Sharing a library has to be proved
+by `-skip-derive`, which is how an A/B arm avoids the second row entirely.
 
 ## Live probes
 

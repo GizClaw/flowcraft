@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -287,5 +288,80 @@ func TestTriggerIntervalReachesTheRunner(t *testing.T) {
 	}
 	if polled.cancel == nil {
 		t.Fatal("a sweep with the trigger left on started no runner")
+	}
+}
+
+// TestGenerateTemperatureIsAPolicy pins the sampling pin. It has to move the
+// derivation policy digest: temperature decides what the extractor writes, so a
+// workspace derived without it cannot be reused by a deployment that pins it.
+// An untouched workspace keeps its digest, because the absent key is the
+// provider's default and therefore the policy every earlier generation was
+// derived under.
+func TestGenerateTemperatureIsAPolicy(t *testing.T) {
+	withTemperature := func(temperature *float64) Settings {
+		settings := Settings{}
+		settings.applyDefaults()
+		settings.Generate.Provider, settings.Generate.Name = "deepseek", "deepseek-flash"
+		settings.Generate.Temperature = temperature
+		return settings
+	}
+	defaultDigest, err := policyDigest(withTemperature(nil), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, unpinned := 0.0, 1.0
+	pinnedDigest, err := policyDigest(withTemperature(&pinned), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinnedDigest == defaultDigest {
+		t.Fatal("pinning the temperature must move the derivation policy digest, or a workspace derived at the provider default would be reused")
+	}
+	unpinnedDigest, err := policyDigest(withTemperature(&unpinned), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unpinnedDigest == pinnedDigest {
+		t.Fatal("0 and 1 are different samplings and must not share a policy")
+	}
+	untouched := withTemperature(nil)
+	untouched.Generate.Temperature = nil
+	if err := untouched.Validate(); err != nil {
+		t.Fatalf("a workspace that never named the key must still validate: %v", err)
+	}
+}
+
+// TestGenerateTemperatureIsValidated rejects what the module cannot mean: a
+// value outside the sampling range, a temperature with no model to spend it on
+// (an embed block samples nothing), and a non-finite value.
+func TestGenerateTemperatureIsValidated(t *testing.T) {
+	build := func(temperature float64) Settings {
+		settings := Settings{}
+		settings.applyDefaults()
+		settings.Generate.Provider, settings.Generate.Name = "deepseek", "deepseek-flash"
+		settings.Generate.Temperature = &temperature
+		return settings
+	}
+	for _, value := range []float64{-0.1, 2.1, math.Inf(1), math.NaN()} {
+		if err := build(value).Validate(); err == nil {
+			t.Fatalf("generate.temperature %v was accepted", value)
+		}
+	}
+	for _, value := range []float64{0, 0.7, 2} {
+		if err := build(value).Validate(); err != nil {
+			t.Fatalf("generate.temperature %v was rejected: %v", value, err)
+		}
+	}
+	orphan := build(0)
+	orphan.Generate.Provider, orphan.Generate.Name = "", ""
+	if err := orphan.Validate(); err == nil {
+		t.Fatal("a temperature with no generate model was accepted")
+	}
+	embedded := Settings{}
+	embedded.applyDefaults()
+	cold := 0.0
+	embedded.Embed.Provider, embedded.Embed.Name, embedded.Embed.Temperature = "openai", "text-embedding-3-small", &cold
+	if err := embedded.Validate(); err == nil {
+		t.Fatal("embed.temperature was accepted: an embedding is not sampled")
 	}
 }
