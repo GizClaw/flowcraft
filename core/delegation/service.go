@@ -106,6 +106,14 @@ type Runner interface {
 	Run(ctx context.Context, req AsyncRequest) (Response, error)
 }
 
+// SessionInitializer runs once per delegated run, after the subagent's
+// session identity is minted and before the turn starts or resumes. It is
+// the seam for per-session state the application owns — sandbox mode,
+// think level, model hint — which core deliberately does not model.
+// Returning an error fails the delegation: a policy that could not be
+// applied must not silently fall back to a wider default.
+type SessionInitializer func(ctx context.Context, key session.Key, req AsyncRequest) error
+
 // Option configures a local Service.
 type Option func(*serviceConfig) error
 
@@ -117,6 +125,7 @@ type serviceConfig struct {
 	streamEscrowTTL      time.Duration
 	workerHost           agent.Host
 	sessionProvider      SessionProvider
+	sessionInitializer   SessionInitializer
 	streamResolver       StreamTargetResolver
 	streamExporter       StreamTargetExporter
 	deferWorkers         bool
@@ -264,6 +273,24 @@ func WithSessionProvider(provider SessionProvider) Option {
 	}
 }
 
+// WithSessionInitializer registers a per-run hook that stamps
+// application-owned session state onto the subagent's freshly minted
+// session, before its turn starts or resumes. It runs on the session path
+// only: without a bound session manager the delegated run has no session
+// identity to initialize (see [LocalService.runAtLegacy]).
+//
+// A hook error fails the delegation rather than degrading to a default, so
+// a policy that could not be applied never runs under a wider one.
+func WithSessionInitializer(initializer SessionInitializer) Option {
+	return func(config *serviceConfig) error {
+		if initializer == nil {
+			return errdefs.Validationf("local delegation: session initializer is nil")
+		}
+		config.sessionInitializer = initializer
+		return nil
+	}
+}
+
 // WithDeferredWorkers defers asynchronous worker startup until Start. This is
 // useful when a lifecycle owner must finish binding all dependencies before
 // background work begins.
@@ -311,6 +338,9 @@ type LocalService struct {
 	// sessionProvider is the identity policy for subagent sessions. It is
 	// immutable after construction.
 	sessionProvider SessionProvider
+	// sessionInitializer stamps application-owned session state onto each
+	// delegated session. Immutable after construction.
+	sessionInitializer SessionInitializer
 	// sessionManager is bound by the runtime through ManagerBinder before
 	// the service serves traffic; writes are serialized by stateMu.
 	sessionManager *session.Manager
@@ -365,6 +395,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 		maxDepth:             config.maxDepth,
 		timeout:              config.timeout,
 		sessionProvider:      config.sessionProvider,
+		sessionInitializer:   config.sessionInitializer,
 		slots:                make(chan struct{}, config.maxConcurrency),
 		idempotencyRetention: config.idempotencyRetention,
 		asyncRetention:       asyncRetention,
@@ -691,7 +722,8 @@ func sameRequest(left, right Request) bool {
 		left.Target == right.Target &&
 		left.Input == right.Input &&
 		left.IdempotencyKey == right.IdempotencyKey &&
-		maps.Equal(left.Metadata, right.Metadata)
+		maps.Equal(left.Metadata, right.Metadata) &&
+		maps.Equal(left.Attributes, right.Attributes)
 }
 
 func idempotencyConflict(key string) error {
@@ -933,6 +965,17 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		}
 	}()
 
+	// App-owned session state (e.g. the sandbox mode) has to land on the
+	// session before it starts or resumes: a run that begins without its
+	// policy would execute under the store's wider default. A failing
+	// initializer therefore fails the delegation instead of degrading.
+	if s.sessionInitializer != nil {
+		if err := s.sessionInitializer(execCtx, key, req); err != nil {
+			return Response{}, fmt.Errorf(
+				"local delegation: initialize session %q: %w", key.ContextID, err)
+		}
+	}
+
 	opts := s.delegationStartOptions(execCtx, persistent)
 	parentRunID, callID := lineageFromContext(execCtx)
 	if req.ParentRunID != "" {
@@ -946,7 +989,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
 		Inputs:      metadataInputs(req),
 		ParentRunID: parentRunID,
-		Attributes:  lineageAttributes(callID),
+		Attributes:  mergeRunAttributes(lineageAttributes(callID), req.Request.Attributes),
 	}
 
 	// Resume path: a persistent session retried with the identical
@@ -1040,7 +1083,7 @@ func (s *LocalService) runAtLegacy(
 	agentRequest := agent.Request{
 		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
 		ParentRunID: parentRunID,
-		Attributes:  lineageAttributes(callID),
+		Attributes:  mergeRunAttributes(lineageAttributes(callID), req.Request.Attributes),
 	}
 	if hasKey {
 		agentRequest.ContextID = key.ContextID
@@ -1481,12 +1524,15 @@ func inheritedSinkSpecs(specs []session.SinkSpec) []session.SinkSpec {
 }
 
 // sameDelegationRequest reports whether two delegation requests are
-// identical for resume purposes: the same user message and the same
-// metadata inputs. ContextID and RunID are session plumbing stamped by
-// the service and are ignored.
+// identical for resume purposes: the same user message, the same metadata
+// inputs, and the same caller-declared attributes. ContextID and RunID are
+// session plumbing stamped by the service and are ignored, as are the
+// lineage attributes it derives from the caller's ambient context — a
+// retry is a new tool call, and must still replay the parked run.
 func sameDelegationRequest(a, b agent.Request) bool {
 	return a.Message.Role == b.Message.Role &&
 		a.Message.Content.Text() == b.Message.Content.Text() &&
+		maps.Equal(withoutLineageAttributes(a.Attributes), withoutLineageAttributes(b.Attributes)) &&
 		reflect.DeepEqual(a.Inputs, b.Inputs)
 }
 
@@ -1606,6 +1652,7 @@ func normalizeResponse(id string, response Response) (Response, error) {
 
 func cloneRequest(req Request) Request {
 	req.Metadata = cloneMetadata(req.Metadata)
+	req.Attributes = maps.Clone(req.Attributes)
 	return req
 }
 

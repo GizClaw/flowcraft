@@ -288,12 +288,25 @@ func newSessionPathService(
 	managerOptions ...session.ManagerOption,
 ) (*LocalService, *deploy.Result) {
 	t.Helper()
+	return newSessionPathServiceWithOptions(t, engine, provider, nil, managerOptions...)
+}
+
+// newSessionPathServiceWithOptions is newSessionPathService with
+// app-injected service options (e.g. WithSessionInitializer).
+func newSessionPathServiceWithOptions(
+	t *testing.T,
+	engine agent.Engine,
+	provider SessionProvider,
+	serviceOptions []Option,
+	managerOptions ...session.ManagerOption,
+) (*LocalService, *deploy.Result) {
+	t.Helper()
 	result := buildResult(t, delegationWithRunEnd(engine))
 	directory := NewDirectory()
 	if err := directory.Bind(result); err != nil {
 		t.Fatal(err)
 	}
-	options := []Option{}
+	options := append([]Option(nil), serviceOptions...)
 	if provider != nil {
 		options = append(options, WithSessionProvider(provider))
 	}
