@@ -2,7 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"maps"
+
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ---------- Observer (read-only lifecycle) ----------
@@ -138,35 +143,41 @@ type multiObserver []Observer
 
 func (m multiObserver) OnRunStart(ctx context.Context, id Identity, req *Request) {
 	for _, o := range m {
-		safeRun(func() { o.OnRunStart(ctx, id, req) })
+		safeRun(ctx, func() { o.OnRunStart(ctx, id, req) })
 	}
 }
 
 func (m multiObserver) OnInterrupt(ctx context.Context, id Identity, intr Interrupt) {
 	for _, o := range m {
-		safeRun(func() { o.OnInterrupt(ctx, id, intr) })
+		safeRun(ctx, func() { o.OnInterrupt(ctx, id, intr) })
 	}
 }
 
 func (m multiObserver) OnRunRevise(ctx context.Context, id Identity, prev *Result, next int) {
 	for _, o := range m {
-		safeRun(func() { o.OnRunRevise(ctx, id, prev, next) })
+		safeRun(ctx, func() { o.OnRunRevise(ctx, id, prev, next) })
 	}
 }
 
 func (m multiObserver) OnRunEnd(ctx context.Context, id Identity, res *Result) {
 	for _, o := range m {
-		safeRun(func() { o.OnRunEnd(ctx, id, res) })
+		safeRun(ctx, func() { o.OnRunEnd(ctx, id, res) })
 	}
 }
 
 // safeRun invokes f, recovering from panics so a misbehaving observer
-// cannot crash Run. The panic is intentionally dropped: observers are
-// advisory, and there is no Run-level error channel to surface it on.
-// In production we expect observability hooks to log internally before
-// panicking.
-func safeRun(f func()) {
-	defer func() { _ = recover() }()
+// cannot crash Run. The panic is not surfaced as an error — observers are
+// advisory and there is no Run-level error channel for them — but it is
+// never dropped either: it becomes a warning on the run's context, so a
+// broken hook shows up in the logs instead of silently changing what the
+// caller sees.
+func safeRun(ctx context.Context, f func()) {
+	defer func() {
+		if rv := recover(); rv != nil {
+			telemetry.Warn(ctx, "agent observer panicked",
+				attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+		}
+	}()
 	f()
 }
 

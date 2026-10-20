@@ -178,12 +178,32 @@ func (s *queuedSink) markDetachedLocked(err error) sinkDetach {
 func (s *queuedSink) completeDetach(cleanup sinkDetach, err error) {
 	s.session.changeActivity(activitySink, -1)
 	close(s.done)
-	if cleanup.callback != nil {
-		go func() {
-			defer func() { _ = recover() }()
-			cleanup.callback(err)
-		}()
+	if cleanup.callback == nil {
+		return
 	}
+	attrs := []attribute.KeyValue{
+		attribute.String("runtime.session.sink", string(s.spec.ID)),
+	}
+	if s.session != nil {
+		attrs = append(attrs,
+			attribute.String(telemetry.AttrAgentID, s.session.key.AgentID),
+			attribute.String(telemetry.AttrConversationID, s.session.key.ContextID))
+	}
+	// The callback runs on its own goroutine so a slow OnDetach cannot hold
+	// the sink's teardown. A panic here has no caller to return to, so it is
+	// recovered — but never silently: the operator gets the same record a
+	// panicking tool gets from the Recover middleware.
+	go func() {
+		defer func() {
+			if rv := recover(); rv != nil {
+				telemetry.Warn(context.Background(),
+					"runtime session: sink detach callback panicked",
+					append(attrs,
+						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))...)
+			}
+		}()
+		cleanup.callback(err)
+	}()
 }
 
 func (s *queuedSink) wait() {
