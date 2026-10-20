@@ -14,11 +14,18 @@ large it may be, and how it survives the trip into a request:
 | Normalization | `core/media/imageutil` | EXIF orientation, alpha flattening, bounded JPEG re-encoding |
 | Board adaptation | `core/media/hook` | the `media.attachments` prepare hook |
 
-`core/media` is the payload layer: `core/message/media` keeps the
-vocabulary (sources, parts, streams), and `core/media` holds the
-handling around it. Nothing in core wires the hook or the normalization
-entry points yet — they are the contract hosts consume, and the desktop
-application registers `media.attachments` in place of its own hook.
+`core/message/media` keeps the vocabulary (sources, parts, streams); the
+handling around it is split across the three packages above. A payload's path
+into a request therefore reads `message.Part` → `media/hook` →
+`media/imageutil`, with `filetype` answering what the bytes are along the way.
+
+Nothing in core wires the hook or the normalization entry points: they are the
+contract hosts consume. The desktop application registers `media.attachments`
+in place of its own hook and calls `imageutil` when it persists attachments,
+and the model-facing tools that read and render images (`view_image`,
+`generate_image`) follow in their own change. Until then these packages are
+pinned by their own tests — including the cross-package wiring tests in
+`imageutil/budget_test.go` — rather than by in-repo callers.
 
 ## The `media.attachments` prepare hook
 
@@ -140,7 +147,8 @@ predictable prompt bytes:
   EXIF data, marker fill bytes — it reports "needs a transform" rather
   than guessing.
 
-Budgets:
+Budgets. Three bounds apply, and each is owned where it is enforced — which is
+why the same payload can pass one and fail another:
 
 | Constant | Value | Bounds |
 | --- | --- | --- |
