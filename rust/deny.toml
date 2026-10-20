@@ -39,6 +39,15 @@ allow = [
 ]
 confidence-threshold = 0.93
 
+# `cap-std` is the port's handle-based pin for the workspace root, and only its
+# Windows half reaches `winx`, a crate of Windows bindings whose license carries
+# the LLVM exception. It is an exception rather than a line in `allow` so that
+# the exception names one crate and dies with it: nothing else in the tree may
+# arrive under this license without a diff here.
+[[licenses.exceptions]]
+allow = ["Apache-2.0 WITH LLVM-exception"]
+name = "winx"
+
 [licenses.private]
 # Workspace members are unpublished (version 0.0.0) and carry the workspace's
 # own license; only the crates we pull in need checking here.
