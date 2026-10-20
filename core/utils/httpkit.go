@@ -1,8 +1,3 @@
-// This file carries the HTTP conveniences provider clients use: a tuned
-// connection-pooling transport, a bounded retry RoundTripper for transient
-// failures, and an option-driven client builder hardening HTTP/1.1 and
-// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
-// dependency was dropped during the core migration).
 package utils
 
 import (
@@ -22,6 +17,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// This file carries the HTTP conveniences provider clients use: a tuned
+// connection-pooling transport, a bounded retry RoundTripper for transient
+// failures, and an option-driven client builder hardening HTTP/1.1 and
+// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
+// dependency was dropped during the core migration).
 
 // Protocol selects the transport family built by [NewRoundTripper].
 type Protocol int

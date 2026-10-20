@@ -43,6 +43,32 @@ goroutine cannot observe a panic raised in one the constructor or the call
 spawned, so any goroutine that a library starts has to recover its own panics
 and report them through the runtime's error path.
 
+## Package names and package docs
+
+A package is named for the job it does, so `go doc` reads as a list of
+capabilities rather than as a list of drawers: no `utils`, `common`, `helpers`
+or `base` at the top of a tree. Small shared helpers live under an existing
+tree (`core/utils/…`), each named for what it does; a package that would need a
+vague name to cover its contents is two packages.
+
+Every package with exported symbols carries a package comment with five parts,
+in this order: one sentence saying what it is (and is not), its roles and
+contracts, the invariants a reader cannot see in the signatures (ordering,
+lifetime, context ownership, concurrency), its boundary (what lives elsewhere),
+and one link to the matching `docs/guides/` page. Keep it short: a package
+comment is a contract, not a manual.
+
+Three things do not belong in a package comment:
+
+- a list of the package's files — it drifts the moment a file is renamed, and
+  `go doc` plus a directory listing already answer it;
+- a restatement of the exported API, which `go doc` derives;
+- configuration examples, which belong in `docs/guides/`.
+
+The split between the two: the package comment tells a person writing code
+against it what the contract is; the guide tells a person deploying it how to
+configure it. Cross-reference with one line; never copy.
+
 ## Modules and dependency order
 
 The independently versioned library modules are `core`, `craft`, `driver`, and

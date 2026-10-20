@@ -1,4 +1,3 @@
-// Custom graph node types as deployment resources.
 package resource
 
 import (
@@ -12,6 +11,8 @@ import (
 	scriptnode "github.com/GizClaw/flowcraft/core/graph/nodes/script"
 	res "github.com/GizClaw/flowcraft/core/resource"
 )
+
+// Custom graph node types as deployment resources.
 
 // NodeTypeKind is the deployment resource kind of a custom graph node
 // type. Factory values implement [coregraph.NodeTypeRegistrar]; the

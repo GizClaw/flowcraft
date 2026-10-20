@@ -39,15 +39,14 @@
 // this package resolves the dependency DAG, checks it, and constructs
 // resources in topological order.
 //
-// Files:
+// Structure, by job rather than by file:
 //
-//   - types.go    — Resources / Resource / Deps / Ref / Kind
-//   - dag.go      — dependency-graph validation and topological order
-//   - spec.go     — Factory[T] / Entry / Register / Spec / Input
-//   - dep.go      — Requirement / Dep[T]: the typed dependency handle
-//   - settings.go — strict settings decoding
-//   - expand.go   — scalar settings reference expansion (env, base, home)
-//   - source.go   — Source: inline / {file:} / {embed:} settings subtrees
-//   - loader.go   — Loader: base dir, embed FS, confinement, size caps
-//   - registry.go — kind/impl registry
+//   - the serializable vocabulary (Resources, Resource, Deps, Ref, Kind);
+//   - the factory contract and the typed dependency handle (Factory[T],
+//     Entry, Register, Spec, Input, Requirement, Dep[T]);
+//   - the settings pipeline: strict decoding, ${...} expansion,
+//     inline/file/embed subtrees, and the loader that bounds and confines
+//     them;
+//   - the kind/impl registry, reference resolution, and the dependency graph
+//     validation that produces construction order.
 package resource
