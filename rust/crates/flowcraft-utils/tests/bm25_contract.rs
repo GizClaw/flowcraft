@@ -224,7 +224,12 @@ fn compare_hits(where_: &str, got: &[Match], row: &Value, failures: &mut Vec<Str
             }
         };
         let delta = (hit.score - want_score).abs();
-        let tolerance = want_score.abs() * 1e-12;
+        // The dump pins twelve significant digits, and the port is allowed the
+        // rest: `math.Log` is per-architecture on the Go side and libm's own on
+        // this one, so both sides sit an ULP away from the printed number. Ten
+        // times the quantum keeps a last-bit difference out of the verdict while
+        // still catching any change to the arithmetic itself.
+        let tolerance = want_score.abs() * 1e-11;
         if delta > tolerance {
             failures.push(format!(
                 "{where_}: {} scored {} , core {} (delta {delta:e})",

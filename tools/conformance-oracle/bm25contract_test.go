@@ -105,17 +105,18 @@ func TestBM25ExactBeatsPrefix(t *testing.T) {
 func TestBM25ScoresAreFiniteAndPositive(t *testing.T) {
 	for _, row := range decodeBM25(t).Searches {
 		for _, hit := range row.Results {
-			bits, err := strconv.ParseUint(hit.Score, 10, 64)
+			score, err := strconv.ParseFloat(hit.Score, 64)
 			if err != nil {
-				t.Fatalf("%s: score_bits %q: %v", hit.ID, hit.Score, err)
+				t.Fatalf("%s: score %q: %v", hit.ID, hit.Score, err)
 			}
-			score := math.Float64frombits(bits)
 			if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
 				t.Fatalf("%s: score %v is not a positive finite number", hit.ID, score)
 			}
-			// score and score_bits have to describe the same number.
-			if printed, err := strconv.ParseFloat(hit.ScoreText, 64); err != nil || printed != score {
-				t.Fatalf("%s: score %q and bits %q disagree", hit.ID, hit.ScoreText, hit.Score)
+			// The dump carries twelve significant digits and no more: the
+			// thirteenth is libm's, not core's. See pinnedScore.
+			if again := strconv.FormatFloat(score, 'g', 12, 64); again != hit.Score {
+				t.Fatalf("%s: score %q is not twelve significant digits of %v (it would print %q)",
+					hit.ID, hit.Score, score, again)
 			}
 		}
 	}

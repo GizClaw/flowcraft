@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"math"
 	"strconv"
 
 	"github.com/GizClaw/flowcraft/core/utils/bm25"
@@ -22,9 +21,12 @@ import (
 //     set. The `scripts` rows do that by tokenizing the character twice over:
 //     two adjacent CJK characters become three tokens (a bigram and two
 //     singles), two adjacent letters become one word.
-//   - the score's arithmetic. `score_bits` is math.Float64bits, so the dump
-//     says exactly which double core produced; a ranking difference between the
-//     two sides is then a number, not a vibe.
+//   - the score's arithmetic. The dump prints each score to twelve significant
+//     digits: enough to pin the formula, the k1/b weighting and the idf, and
+//     short of the last bit, which is not core's to fix. Go's `math.Log` is a
+//     per-architecture routine (amd64 carries its own assembly), so the same
+//     corpus scores one ULP apart on arm64 and amd64; a bit pattern here would
+//     fail the gate on whichever host did not write the file.
 //
 // Which documents are indexed, what the query is, and the options, all travel
 // with the row: the port builds the input rather than reading core's answers.
@@ -63,9 +65,8 @@ type docRow struct {
 }
 
 type hitRow struct {
-	ID        string `json:"id"`
-	Score     string `json:"score_bits"`
-	ScoreText string `json:"score"`
+	ID    string `json:"id"`
+	Score string `json:"score"`
 }
 
 // searchRow is one call into Search (or SearchTerms, in term_searches).
@@ -207,23 +208,23 @@ func hits(results []bm25.Result) []hitRow {
 	rows := make([]hitRow, 0, len(results))
 	for _, result := range results {
 		rows = append(rows, hitRow{
-			ID:        result.ID,
-			Score:     formatBits(result.Score),
-			ScoreText: shortestFloat(result.Score),
+			ID:    result.ID,
+			Score: pinnedScore(result.Score),
 		})
 	}
 	return rows
 }
 
-// formatBits writes the double's bit pattern: the dump says exactly which
-// number core produced, without depending on either side's float printing.
-func formatBits(value float64) string {
-	return strconv.FormatUint(math.Float64bits(value), 10)
-}
-
-// shortestFloat is the same number the way a reader expects to see it.
-func shortestFloat(value float64) string {
-	return strconv.FormatFloat(value, 'g', -1, 64)
+// pinnedScore prints a score to twelve significant digits.
+//
+// The last bit of a score is not portable: idf goes through `math.Log`, which
+// Go implements twice (once in assembly for amd64, once in Go for everything
+// else), so the two architectures disagree there and the dump has to compare
+// byte for byte on both. Twelve digits still pin the arithmetic -- a change to
+// the idf, to k1 or b, or to the length normalisation moves the fourth or fifth
+// digit, not the thirteenth.
+func pinnedScore(value float64) string {
+	return strconv.FormatFloat(value, 'g', 12, 64)
 }
 
 func tokensOrEmpty(tokens []string) []string {
