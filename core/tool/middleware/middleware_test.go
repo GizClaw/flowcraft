@@ -305,6 +305,13 @@ func TestAudit_RecordsEveryCall(t *testing.T) {
 // selfTimingTool declares SelfTimeout and sleeps past any deadline the
 // middleware might impose, so a wrapped call is distinguishable from an
 // exempt one by whether it completes.
+//
+// A tool that is expected to be cut short sleeps far longer than any test
+// budget would tolerate: a bounded call returns as soon as ctx.Done() fires,
+// so the long sleep costs nothing, while a short one raced the deadline.
+// Windows timer granularity is ~15.6ms, so a 1ms deadline and a 20ms sleep
+// land in the same tick and the select picks either — which is how
+// TestTimeoutWithCatalog_SelfTimeoutExempt flaked on the windows lane.
 type selfTimingTool struct {
 	name        string
 	selfTimeout bool
@@ -331,7 +338,7 @@ func (s selfTimingTool) Execute(ctx context.Context, _ string) (message.Content,
 func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
 	registry := catalogWith(
 		selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond},
-		selfTimingTool{name: "wrapped", selfTimeout: false, sleep: 20 * time.Millisecond},
+		selfTimingTool{name: "wrapped", selfTimeout: false, sleep: time.Second},
 	)
 
 	executor := tool.NewExecutor(registry,
@@ -356,7 +363,7 @@ func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
 // policy and wins.
 func TestTimeoutWithCatalog_PerToolOverridesSelfTimeout(t *testing.T) {
 	registry := catalogWith(
-		selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond},
+		selfTimingTool{name: "self", selfTimeout: true, sleep: time.Second},
 	)
 
 	executor := tool.NewExecutor(registry, TimeoutWithCatalog(
@@ -373,7 +380,7 @@ func TestTimeoutWithCatalog_PerToolOverridesSelfTimeout(t *testing.T) {
 // original behaviour of wrapping everything.
 func TestTimeout_IgnoresSelfTimeoutWithoutCatalog(t *testing.T) {
 	registry := catalogWith(
-		selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond},
+		selfTimingTool{name: "self", selfTimeout: true, sleep: time.Second},
 	)
 
 	executor := tool.NewExecutor(registry, Timeout(time.Millisecond, nil))
