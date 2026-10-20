@@ -340,7 +340,7 @@ func (m *Manager) definition() (craft.Definition, string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return craft.Definition{}, "", errdefs.Validationf(
-			"craft manager: read definition: %v", err)
+			"craft manager: read definition: %w", err)
 	}
 	def, err := craft.ParseDefinition(raw)
 	if err != nil {

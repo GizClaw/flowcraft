@@ -28,7 +28,7 @@ type CompiledCondition struct {
 func compileCondition(raw string) (*CompiledCondition, error) {
 	program, err := expr.Compile(raw, expr.AsBool())
 	if err != nil {
-		return nil, errdefs.Validationf("invalid condition expression %q: %v", raw, err)
+		return nil, errdefs.Validationf("invalid condition expression %q: %w", raw, err)
 	}
 	return &CompiledCondition{Raw: raw, program: program}, nil
 }
@@ -42,7 +42,7 @@ func (c *CompiledCondition) Evaluate(board *agent.Board) (bool, error) {
 func (c *CompiledCondition) evaluate(env map[string]any) (bool, error) {
 	out, err := expr.Run(c.program, env)
 	if err != nil {
-		return false, errdefs.Validationf("condition %q evaluation failed: %v", c.Raw, err)
+		return false, errdefs.Validationf("condition %q evaluation failed: %w", c.Raw, err)
 	}
 	result, ok := out.(bool)
 	if !ok {

@@ -43,14 +43,14 @@ func ParseSource(raw json.RawMessage) (Source, error) {
 		var text string
 		if err := json.Unmarshal(trimmed, &text); err != nil {
 			return Source{}, errdefs.Validationf(
-				"resource source: invalid string: %v", err)
+				"resource source: invalid string: %w", err)
 		}
 		return Source{Inline: []byte(text)}, nil
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &object); err != nil {
 		return Source{}, errdefs.Validationf(
-			"resource source: invalid JSON: %v", err)
+			"resource source: invalid JSON: %w", err)
 	}
 	if object == nil {
 		return Source{}, errdefs.Validationf(
@@ -65,7 +65,7 @@ func ParseSource(raw json.RawMessage) (Source, error) {
 			var path string
 			if err := json.Unmarshal(fileRaw, &path); err != nil {
 				return Source{}, errdefs.Validationf(
-					"resource source: file reference must be a string: %v", err)
+					"resource source: file reference must be a string: %w", err)
 			}
 			if path == "" {
 				return Source{}, errdefs.Validationf(
@@ -77,7 +77,7 @@ func ParseSource(raw json.RawMessage) (Source, error) {
 			var name string
 			if err := json.Unmarshal(embedRaw, &name); err != nil {
 				return Source{}, errdefs.Validationf(
-					"resource source: embed reference must be a string: %v", err)
+					"resource source: embed reference must be a string: %w", err)
 			}
 			if name == "" {
 				return Source{}, errdefs.Validationf(

@@ -77,7 +77,7 @@ func (AssemblyFactory) New(ctx context.Context, in resource.Input) (*Assembly, e
 	settings, err := resource.DecodeTyped[AssemblySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"tool: decode assembly settings: %v", err)
+			"tool: decode assembly settings: %w", err)
 	}
 
 	sources, err := depToolSources.GetAll(in)

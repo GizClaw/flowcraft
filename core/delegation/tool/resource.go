@@ -38,7 +38,7 @@ func (sourceFactory) Spec() res.Spec {
 func (sourceFactory) New(ctx context.Context, in res.Input) (*source, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
-			"delegation tool resource: decode settings: %v", err)
+			"delegation tool resource: decode settings: %w", err)
 	}
 	directory, err := depDirectory.Get(in)
 	if err != nil {

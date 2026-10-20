@@ -60,12 +60,12 @@ func (r *resourceTool) list(ctx context.Context, session *mcpsdk.ClientSession) 
 	if err != nil {
 		r.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
-			"mcp: server %q: list resources: %v", r.server.name, err)
+			"mcp: server %q: list resources: %w", r.server.name, err)
 	}
 	raw, err := json.Marshal(renderResourceList(res))
 	if err != nil {
 		return message.Content{}, errdefs.Internalf(
-			"mcp: server %q: encode resource list: %v", r.server.name, err)
+			"mcp: server %q: encode resource list: %w", r.server.name, err)
 	}
 	// The list is a JSON array, which has no data-part form, so the
 	// answer stays text.
@@ -78,7 +78,7 @@ func (r *resourceTool) read(ctx context.Context, session *mcpsdk.ClientSession, 
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return message.Content{}, errdefs.Validationf(
-			"mcp: %s: parse arguments: %v", readResourceToolName, err)
+			"mcp: %s: parse arguments: %w", readResourceToolName, err)
 	}
 	if strings.TrimSpace(args.URI) == "" {
 		return message.Content{}, errdefs.Validationf(
@@ -88,7 +88,7 @@ func (r *resourceTool) read(ctx context.Context, session *mcpsdk.ClientSession, 
 	if err != nil {
 		r.server.noteCallFailure(session, err)
 		return message.Content{}, errdefs.NotAvailablef(
-			"mcp: server %q: read resource %q: %v", r.server.name, args.URI, err)
+			"mcp: server %q: read resource %q: %w", r.server.name, args.URI, err)
 	}
 	parts := make([]message.Part, 0, len(res.Contents))
 	for _, content := range res.Contents {

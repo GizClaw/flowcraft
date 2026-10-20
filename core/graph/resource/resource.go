@@ -122,14 +122,14 @@ func (Factory) Spec() res.Spec {
 func (Factory) New(ctx context.Context, in res.Input) (*coregraph.Graph, error) {
 	settings, err := res.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
-		return nil, errdefs.Validationf("graph engine: decode settings: %v", err)
+		return nil, errdefs.Validationf("graph engine: decode settings: %w", err)
 	}
 	if len(settings.Graph) == 0 {
 		return nil, errdefs.Validationf("graph engine: settings.graph is required")
 	}
 	src, err := res.ParseSource(settings.Graph)
 	if err != nil {
-		return nil, errdefs.Validationf("graph engine: settings.graph: %v", err)
+		return nil, errdefs.Validationf("graph engine: settings.graph: %w", err)
 	}
 	deps, err := decodeDependencies(in)
 	if err != nil {
@@ -259,7 +259,7 @@ func loadDefinition(
 	}
 	definition, err := utils.Decode[coregraph.GraphDefinition](data)
 	if err != nil {
-		return nil, errdefs.Validationf("graph engine: decode definition: %v", err)
+		return nil, errdefs.Validationf("graph engine: decode definition: %w", err)
 	}
 	if err := materializeConfigFileRefs(ctx, in, &definition, customFileFields); err != nil {
 		return nil, err
@@ -309,7 +309,7 @@ func materializeConfigFileRefs(
 		var configFields map[string]json.RawMessage
 		if err := json.Unmarshal(node.Config, &configFields); err != nil {
 			return errdefs.Validationf(
-				"graph engine: node %q config: %v", node.ID, err)
+				"graph engine: node %q config: %w", node.ID, err)
 		}
 		changed := false
 		refFields := configFileFields(node.Type)
@@ -327,7 +327,7 @@ func materializeConfigFileRefs(
 			src, err := res.ParseSource(raw)
 			if err != nil {
 				return errdefs.Validationf(
-					"graph engine: node %q config.%s: %v", node.ID, field, err)
+					"graph engine: node %q config.%s: %w", node.ID, field, err)
 			}
 			if !src.IsRef() {
 				continue
@@ -340,7 +340,7 @@ func materializeConfigFileRefs(
 			content, err := json.Marshal(string(data))
 			if err != nil {
 				return errdefs.Internalf(
-					"graph engine: node %q config.%s: %v", node.ID, field, err)
+					"graph engine: node %q config.%s: %w", node.ID, field, err)
 			}
 			configFields[field] = content
 			changed = true
@@ -349,7 +349,7 @@ func materializeConfigFileRefs(
 			merged, err := json.Marshal(configFields)
 			if err != nil {
 				return errdefs.Internalf(
-					"graph engine: node %q config: %v", node.ID, err)
+					"graph engine: node %q config: %w", node.ID, err)
 			}
 			node.Config = merged
 		}
@@ -530,7 +530,7 @@ func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &fields); err != nil {
 			return false, nil, false, errdefs.Validationf(
-				"inference config is not a JSON object: %v", err)
+				"inference config is not a JSON object: %w", err)
 		}
 	}
 	if model, ok := fields["model"]; ok && !bytes.Equal(bytes.TrimSpace(model), []byte("null")) {
@@ -541,7 +541,7 @@ func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools
 	if rawAll, ok := fields["all_tools"]; ok {
 		if err := json.Unmarshal(rawAll, &allTools); err != nil {
 			return false, nil, false, errdefs.Validationf(
-				"inference config all_tools must be a boolean: %v", err)
+				"inference config all_tools must be a boolean: %w", err)
 		}
 	}
 	if !hasTools {

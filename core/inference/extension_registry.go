@@ -27,7 +27,7 @@ func ExtensionDecoderFor[T Extension](factory func() T) ExtensionDecoder {
 		dec := json.NewDecoder(bytes.NewReader(fields))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(ext); err != nil {
-			return nil, errdefs.Validationf("extension fields: %v", err)
+			return nil, errdefs.Validationf("extension fields: %w", err)
 		}
 		return ext, nil
 	}

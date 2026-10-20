@@ -241,7 +241,7 @@ func (t *Turn) Steer(msg message.Message) error {
 		return errdefs.Validationf("runtime session: nil Turn")
 	}
 	if err := msg.Validate(); err != nil {
-		return errdefs.Validationf("runtime session: steer: %v", err)
+		return errdefs.Validationf("runtime session: steer: %w", err)
 	}
 	// Validation, encoding and the size check run before the lock: none
 	// of them can succeed later, and a submission that can never be
@@ -250,7 +250,7 @@ func (t *Turn) Steer(msg message.Message) error {
 	// oversized and addressed to a closed turn — the payload error.
 	encoded, err := json.Marshal(msg)
 	if err != nil {
-		return errdefs.Validationf("runtime session: steer: message is not JSON-encodable: %v", err)
+		return errdefs.Validationf("runtime session: steer: message is not JSON-encodable: %w", err)
 	}
 	if len(encoded) > maxSteerMessageBytes {
 		return fmt.Errorf("%w: %d bytes exceed %d",

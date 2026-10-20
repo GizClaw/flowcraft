@@ -68,7 +68,7 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (message.Conten
 	}
 	var args searchArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return message.Content{}, errdefs.Validationf("tool: %s: parse arguments: %v", ToolName, err)
+		return message.Content{}, errdefs.Validationf("tool: %s: parse arguments: %w", ToolName, err)
 	}
 	if strings.TrimSpace(args.Query) == "" {
 		return message.Content{}, errdefs.Validationf("tool: %s: query is required", ToolName)

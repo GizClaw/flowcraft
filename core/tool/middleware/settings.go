@@ -129,7 +129,7 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		d, err := time.ParseDuration(s.Timeout.Default)
 		if err != nil {
 			return nil, errdefs.Validationf(
-				"tool middleware: timeout.default: %v", err)
+				"tool middleware: timeout.default: %w", err)
 		}
 		mws = append(mws, Timeout(d, nil))
 	}

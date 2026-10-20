@@ -33,7 +33,7 @@ func (d Document) Validate() error {
 			return errdefs.Validationf("deployment document: agent name is empty")
 		}
 		if err := definition.Validate(); err != nil {
-			return errdefs.Validationf("deployment document: agents[%q]: %v", name, err)
+			return errdefs.Validationf("deployment document: agents[%q]: %w", name, err)
 		}
 	}
 	return nil

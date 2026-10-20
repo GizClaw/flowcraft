@@ -70,12 +70,12 @@ func extractZipWithin(zipPath string, limits zipLimits) (string, func(), error) 
 	// every environment: every entry passes through zipTarget below, and
 	// that gate is stricter than the flag.
 	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
-		return "", nil, errdefs.Validationf("plugin install: open zip: %v", err)
+		return "", nil, errdefs.Validationf("plugin install: open zip: %w", err)
 	}
 	root, err := os.MkdirTemp("", "craft-plugin-*")
 	if err != nil {
 		_ = archive.Close()
-		return "", nil, errdefs.Validationf("plugin install: temp dir: %v", err)
+		return "", nil, errdefs.Validationf("plugin install: temp dir: %w", err)
 	}
 	cleanup := func() {
 		_ = archive.Close()
@@ -121,7 +121,7 @@ func extractEntry(
 		// spellings are honored.
 		if err := os.MkdirAll(target, 0o700); err != nil {
 			return 0, errdefs.Validationf(
-				"plugin install: zip entry %q: %v", entry.Name, err)
+				"plugin install: zip entry %q: %w", entry.Name, err)
 		}
 		return 0, nil
 	case !mode.IsRegular():
@@ -141,18 +141,18 @@ func extractEntry(
 	source, err := entry.Open()
 	if err != nil {
 		return 0, errdefs.Validationf(
-			"plugin install: open zip entry %q: %v", entry.Name, err)
+			"plugin install: open zip entry %q: %w", entry.Name, err)
 	}
 	defer func() { _ = source.Close() }()
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return 0, errdefs.Validationf(
-			"plugin install: zip entry %q: %v", entry.Name, err)
+			"plugin install: zip entry %q: %w", entry.Name, err)
 	}
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
 		pluginFileMode(mode))
 	if err != nil {
 		return 0, errdefs.Validationf(
-			"plugin install: zip entry %q: %v", entry.Name, err)
+			"plugin install: zip entry %q: %w", entry.Name, err)
 	}
 	written, copyErr := io.Copy(file, source)
 	closeErr := file.Close()
@@ -161,11 +161,11 @@ func extractEntry(
 		// here as zip.ErrFormat: the archive reader stops it, this is
 		// just the report.
 		return 0, errdefs.Validationf(
-			"plugin install: unpack zip entry %q: %v", entry.Name, copyErr)
+			"plugin install: unpack zip entry %q: %w", entry.Name, copyErr)
 	}
 	if closeErr != nil {
 		return 0, errdefs.Validationf(
-			"plugin install: zip entry %q: %v", entry.Name, closeErr)
+			"plugin install: zip entry %q: %w", entry.Name, closeErr)
 	}
 	return written, nil
 }
@@ -212,7 +212,7 @@ func packageRoot(root string) (string, error) {
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return "", errdefs.Validationf("plugin install: read zip: %v", err)
+		return "", errdefs.Validationf("plugin install: read zip: %w", err)
 	}
 	var candidates []string
 	for _, entry := range entries {

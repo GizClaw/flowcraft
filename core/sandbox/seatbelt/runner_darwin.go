@@ -60,7 +60,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		binary = resolved
 	} else if _, err := exec.LookPath(binary); err != nil {
 		return nil, errdefs.NotAvailablef(
-			"seatbelt: binary %q not executable: %v", binary, err,
+			"seatbelt: binary %q not executable: %w", binary, err,
 		)
 	}
 
@@ -228,7 +228,7 @@ func (r *Runner) spawnProcess(
 			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
-			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
+			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %w", err)
 		}
 		addr, ok := proxy.Addr().(*net.TCPAddr)
 		if !ok {
@@ -249,7 +249,7 @@ func (r *Runner) spawnProcess(
 		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
 		if err != nil {
 			closeProxy(ctx, proxy)
-			return nil, errdefs.Internalf("seatbelt: write CA bundle: %v", err)
+			return nil, errdefs.Internalf("seatbelt: write CA bundle: %w", err)
 		}
 		if spec.Opts.Env.Inject == nil {
 			spec.Opts.Env.Inject = make(map[string]string)
@@ -371,11 +371,11 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 func resolveRoot(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", errdefs.Validationf("seatbelt: resolve path %q: %v", path, err)
+		return "", errdefs.Validationf("seatbelt: resolve path %q: %w", path, err)
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", errdefs.Validationf("seatbelt: path %q must exist: %v", path, err)
+		return "", errdefs.Validationf("seatbelt: path %q must exist: %w", path, err)
 	}
 	return real, nil
 }

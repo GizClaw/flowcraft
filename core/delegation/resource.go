@@ -177,7 +177,7 @@ func (directoryFactory) Spec() res.Spec {
 func (directoryFactory) New(ctx context.Context, in res.Input) (*LocalDirectory, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
-			"delegation directory resource: decode settings: %v", err)
+			"delegation directory resource: decode settings: %w", err)
 	}
 	return NewDirectory(), nil
 }
@@ -210,7 +210,7 @@ func (randomSessionProviderFactory) Spec() res.Spec {
 func (randomSessionProviderFactory) New(ctx context.Context, in res.Input) (RandomSessionProvider, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return RandomSessionProvider{}, errdefs.Validationf(
-			"delegation session provider resource: decode settings: %v", err)
+			"delegation session provider resource: decode settings: %w", err)
 	}
 	return RandomSessionProvider{}, nil
 }

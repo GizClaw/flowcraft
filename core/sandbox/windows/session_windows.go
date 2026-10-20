@@ -784,7 +784,7 @@ func (l *outputLog) wakeReadersLocked() {
 func classifyStartError(path string, err error) error {
 	if errors.Is(err, xwin.ERROR_PRIVILEGE_NOT_HELD) {
 		return errdefs.NotAvailablef(
-			"windows: start %s: write confinement needs the host to hold SE_INCREASE_QUOTA_NAME (run elevated or as a service): %v",
+			"windows: start %s: write confinement needs the host to hold SE_INCREASE_QUOTA_NAME (run elevated or as a service): %w",
 			path, err)
 	}
 	return errdefs.Internal(fmt.Errorf("windows: start %s: %w", path, err))

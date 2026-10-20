@@ -22,7 +22,7 @@ func ResolveMany(root string, paths []string) ([]string, error) {
 		}
 		value, err := Resolve(root, p)
 		if err != nil {
-			return nil, errdefs.Validationf("path[%d] %q: %v", i, p, err)
+			return nil, errdefs.Validationf("path[%d] %q: %w", i, p, err)
 		}
 		resolved[i] = value
 	}
@@ -45,12 +45,12 @@ func Resolve(root, p string) (string, error) {
 	realRoot, err := EvalExistingPrefix(cleanRoot)
 	if err != nil {
 		return "", errdefs.Validationf(
-			"resolve workspace root %q: %v", cleanRoot, err)
+			"resolve workspace root %q: %w", cleanRoot, err)
 	}
 	realValue, err := EvalExistingPrefix(value)
 	if err != nil {
 		return "", errdefs.Validationf(
-			"resolve relative path %q: %v", p, err)
+			"resolve relative path %q: %w", p, err)
 	}
 	if !pathsafe.Within(realRoot, realValue) {
 		return "", errdefs.Validationf(

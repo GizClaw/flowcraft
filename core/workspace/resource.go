@@ -50,7 +50,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (Workspace, error) {
 	}
 	local, err := NewLocalWorkspace(settings.Root)
 	if err != nil {
-		return nil, errdefs.Validationf("workspace: %v", err)
+		return nil, errdefs.Validationf("workspace: %w", err)
 	}
 	var value Workspace = local
 	if settings.Scoped != nil && settings.Scoped.Enabled {

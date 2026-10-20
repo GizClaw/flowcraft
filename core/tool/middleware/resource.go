@@ -43,7 +43,7 @@ func (AssemblyFactory) New(ctx context.Context, in resource.Input) (*tool.Assemb
 	settings, err := resource.DecodeTyped[AssemblySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"tool middleware: decode assembly settings: %v", err)
+			"tool middleware: decode assembly settings: %w", err)
 	}
 
 	sources, err := depToolSources.GetAll(in)

@@ -35,7 +35,7 @@ func partsFromScript(raw any, field string) ([]message.Part, error) {
 		return nil, err
 	}
 	if err := content.Validate(); err != nil {
-		return nil, errdefs.Validationf("%s: %v", field, err)
+		return nil, errdefs.Validationf("%s: %w", field, err)
 	}
 	return content.Parts, nil
 }
@@ -48,13 +48,13 @@ func partsToScript(parts []message.Part) ([]any, error) {
 	}
 	buf, err := json.Marshal(message.Content{Parts: parts})
 	if err != nil {
-		return nil, errdefs.Internalf("parts are not JSON-encodable: %v", err)
+		return nil, errdefs.Internalf("parts are not JSON-encodable: %w", err)
 	}
 	var wire struct {
 		Parts []any `json:"parts"`
 	}
 	if err := json.Unmarshal(buf, &wire); err != nil {
-		return nil, errdefs.Internalf("parts projection: %v", err)
+		return nil, errdefs.Internalf("parts projection: %w", err)
 	}
 	return wire.Parts, nil
 }
@@ -70,7 +70,7 @@ func messageFromScript(raw any, field string) (message.Message, error) {
 		return msg, err
 	}
 	if err := msg.Validate(); err != nil {
-		return msg, errdefs.Validationf("%s: %v", field, err)
+		return msg, errdefs.Validationf("%s: %w", field, err)
 	}
 	return msg, nil
 }
@@ -120,11 +120,11 @@ func appendMessagesFromScript(raw any, field string) ([]message.Message, error) 
 func messageToScript(m message.Message, field string) (map[string]any, error) {
 	buf, err := json.Marshal(m)
 	if err != nil {
-		return nil, errdefs.Internalf("%s: message is not JSON-encodable: %v", field, err)
+		return nil, errdefs.Internalf("%s: message is not JSON-encodable: %w", field, err)
 	}
 	var mm map[string]any
 	if err := json.Unmarshal(buf, &mm); err != nil {
-		return nil, errdefs.Internalf("%s: %v", field, err)
+		return nil, errdefs.Internalf("%s: %w", field, err)
 	}
 	return mm, nil
 }
@@ -153,12 +153,12 @@ func messagesToScript(msgs []message.Message) ([]any, error) {
 func decodeStrictJSON(raw any, target any, field string) error {
 	buf, err := json.Marshal(raw)
 	if err != nil {
-		return errdefs.Validationf("%s: value is not JSON-encodable: %v", field, err)
+		return errdefs.Validationf("%s: value is not JSON-encodable: %w", field, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(buf))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {
-		return errdefs.Validationf("%s: %v", field, err)
+		return errdefs.Validationf("%s: %w", field, err)
 	}
 	return nil
 }
@@ -170,11 +170,11 @@ func decodeStrictJSON(raw any, target any, field string) error {
 func toScriptJSON(v any, field string) (any, error) {
 	buf, err := json.Marshal(v)
 	if err != nil {
-		return nil, errdefs.Internalf("%s: value is not JSON-encodable: %v", field, err)
+		return nil, errdefs.Internalf("%s: value is not JSON-encodable: %w", field, err)
 	}
 	var out any
 	if err := json.Unmarshal(buf, &out); err != nil {
-		return nil, errdefs.Internalf("%s: projection: %v", field, err)
+		return nil, errdefs.Internalf("%s: projection: %w", field, err)
 	}
 	return out, nil
 }

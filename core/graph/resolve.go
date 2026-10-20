@@ -45,21 +45,21 @@ func resolveConfig(raw json.RawMessage, board *agent.Board) (json.RawMessage, er
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		return nil, errdefs.Validationf("node config is not valid JSON: %v", err)
+		return nil, errdefs.Validationf("node config is not valid JSON: %w", err)
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
 		if err == nil {
 			return nil, errdefs.Validationf("node config has trailing data after the JSON value")
 		}
-		return nil, errdefs.Validationf("node config is not valid JSON: %v", err)
+		return nil, errdefs.Validationf("node config is not valid JSON: %w", err)
 	}
 	resolved, err := board.Resolve(v)
 	if err != nil {
-		return nil, errdefs.Validationf("node config: %v", err)
+		return nil, errdefs.Validationf("node config: %w", err)
 	}
 	out, err := json.Marshal(resolved)
 	if err != nil {
-		return nil, errdefs.Internalf("failed to re-encode resolved node config: %v", err)
+		return nil, errdefs.Internalf("failed to re-encode resolved node config: %w", err)
 	}
 	return out, nil
 }

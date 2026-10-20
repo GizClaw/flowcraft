@@ -122,7 +122,7 @@ func (s *Store) UpdateFrom(
 	}
 	info, err := installer.Check(ctx, strings.TrimSpace(entry.Manifest.Update.URL))
 	if err != nil {
-		return Summary{}, errdefs.NotAvailablef("plugin update: check %s: %v", id, err)
+		return Summary{}, errdefs.NotAvailablef("plugin update: check %s: %w", id, err)
 	}
 	if err := info.validate(); err != nil {
 		return Summary{}, err
@@ -137,7 +137,7 @@ func (s *Store) UpdateFrom(
 		defer cleanup()
 	}
 	if err != nil {
-		return Summary{}, errdefs.NotAvailablef("plugin update: fetch %s: %v", id, err)
+		return Summary{}, errdefs.NotAvailablef("plugin update: fetch %s: %w", id, err)
 	}
 	if err := verifyChecksum(zipPath, info.Checksum); err != nil {
 		return Summary{}, err
@@ -208,7 +208,7 @@ func (info UpdateInfo) validate() error {
 		return err
 	}
 	if err := checkRemoteURL(info.DownloadURL); err != nil {
-		return errdefs.Validationf("plugin update: download_url %v", err)
+		return errdefs.Validationf("plugin update: download_url %w", err)
 	}
 	return nil
 }
@@ -267,13 +267,13 @@ func verifyChecksum(path, checksum string) error {
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return errdefs.Validationf("plugin update: open package: %v", err)
+		return errdefs.Validationf("plugin update: open package: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 	hash := sha256.New()
 	written, err := io.Copy(hash, io.LimitReader(file, MaxZipBytes+1))
 	if err != nil {
-		return errdefs.Validationf("plugin update: read package: %v", err)
+		return errdefs.Validationf("plugin update: read package: %w", err)
 	}
 	if written > MaxZipBytes {
 		return errdefs.Validationf(

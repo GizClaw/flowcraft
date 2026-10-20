@@ -145,7 +145,7 @@ type winSource struct {
 func openSource() (Source, error) {
 	port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 0)
 	if err != nil {
-		return nil, errdefs.NotAvailablef("sandbox/journal: CreateIoCompletionPort: %v", err)
+		return nil, errdefs.NotAvailablef("sandbox/journal: CreateIoCompletionPort: %w", err)
 	}
 	return &winSource{
 		port:   port,

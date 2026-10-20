@@ -105,7 +105,7 @@ func (r *Runtime) RegisterAgent(
 	}
 	if err := def.Validate(); err != nil {
 		return nil, errdefs.Validationf(
-			"runtime: register agent %q: %v", name, err)
+			"runtime: register agent %q: %w", name, err)
 	}
 
 	options := registerOptions{}

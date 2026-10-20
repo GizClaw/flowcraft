@@ -220,7 +220,7 @@ func (m Manifest) Validate(root string) error {
 	// not a root was handed in.
 	if m.Update != nil {
 		if err := checkRemoteURL(m.Update.URL); err != nil {
-			return errdefs.Validationf("plugin %s: update.url %v", m.ID, err)
+			return errdefs.Validationf("plugin %s: update.url %w", m.ID, err)
 		}
 	}
 	if root == "" {
@@ -349,7 +349,7 @@ func carriesSeparator(value string) bool {
 
 func checkRelativePath(id, field string, index int, rel, root string) error {
 	if _, err := checkPath(id, field, rel, root); err != nil {
-		return errdefs.Validationf("%v (index %d)", err, index)
+		return errdefs.Validationf("%w (index %d)", err, index)
 	}
 	return nil
 }
@@ -393,12 +393,12 @@ func statPluginPath(id, field, rel, root string) (string, os.FileInfo, error) {
 	}
 	path, err := ResolvePath(root, rel)
 	if err != nil {
-		return "", nil, errdefs.Validationf("plugin %s: %s: %v", id, field, err)
+		return "", nil, errdefs.Validationf("plugin %s: %s: %w", id, field, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", nil, errdefs.Validationf(
-			"plugin %s: %s %q: %v", id, field, rel, err)
+			"plugin %s: %s %q: %w", id, field, rel, err)
 	}
 	return filepath.Clean(path), info, nil
 }

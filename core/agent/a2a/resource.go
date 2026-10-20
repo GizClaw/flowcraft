@@ -52,7 +52,7 @@ func (*Factory) Capabilities() agent.Capabilities {
 func (f *Factory) New(ctx context.Context, in resource.Input) (*Engine, error) {
 	parsed, err := resource.DecodeTyped[settings](ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
-		return nil, errdefs.Validationf("a2a: decode settings: %v", err)
+		return nil, errdefs.Validationf("a2a: decode settings: %w", err)
 	}
 	card, err := f.resolveCard(ctx, parsed)
 	if err != nil {
@@ -185,7 +185,7 @@ func (f *Factory) resolveCard(ctx context.Context, s settings) (*a2aprotocol.Age
 	case len(s.Card) > 0:
 		var card a2aprotocol.AgentCard
 		if err := json.Unmarshal(s.Card, &card); err != nil {
-			return nil, errdefs.Validationf("a2a: inline card: %v", err)
+			return nil, errdefs.Validationf("a2a: inline card: %w", err)
 		}
 		if len(card.SupportedInterfaces) == 0 {
 			return nil, errdefs.Validationf("a2a: inline card declares no supported interfaces")
@@ -229,7 +229,7 @@ func parseDuration(raw string, def time.Duration) (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		return 0, errdefs.Validationf("a2a: invalid duration %q: %v", raw, err)
+		return 0, errdefs.Validationf("a2a: invalid duration %q: %w", raw, err)
 	}
 	if d <= 0 {
 		return 0, errdefs.Validationf("a2a: duration %q must be positive", raw)

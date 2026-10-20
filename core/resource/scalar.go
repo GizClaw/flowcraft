@@ -25,7 +25,7 @@ func (v *Int) UnmarshalJSON(data []byte) error {
 		n, err := strconv.Atoi(s)
 		if err != nil {
 			return errdefs.Validationf(
-				"resource settings: int: %q: %v", s, err)
+				"resource settings: int: %q: %w", s, err)
 		}
 		*v = Int(n)
 		return nil
@@ -52,7 +52,7 @@ func (v *Bool) UnmarshalJSON(data []byte) error {
 		b, err := strconv.ParseBool(s)
 		if err != nil {
 			return errdefs.Validationf(
-				"resource settings: bool: %q: %v", s, err)
+				"resource settings: bool: %q: %w", s, err)
 		}
 		*v = Bool(b)
 		return nil
@@ -79,7 +79,7 @@ func (v *Float64) UnmarshalJSON(data []byte) error {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
 			return errdefs.Validationf(
-				"resource settings: float: %q: %v", s, err)
+				"resource settings: float: %q: %w", s, err)
 		}
 		*v = Float64(f)
 		return nil
@@ -107,7 +107,7 @@ func (v *Int64) UnmarshalJSON(data []byte) error {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return errdefs.Validationf(
-				"resource settings: int64: %q: %v", s, err)
+				"resource settings: int64: %q: %w", s, err)
 		}
 		*v = Int64(n)
 		return nil

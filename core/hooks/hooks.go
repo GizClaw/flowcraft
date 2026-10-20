@@ -164,7 +164,7 @@ func (m *Manager) loadFile(
 	}
 	var cfg configFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return errdefs.Validationf("hooks: parse %s: %v", path, err)
+		return errdefs.Validationf("hooks: parse %s: %w", path, err)
 	}
 	for _, event := range sortedKeys(cfg.Hooks) {
 		if !knownEvent(event) {
@@ -176,7 +176,7 @@ func (m *Manager) loadFile(
 			entry, err := newGroupEntry(group, dir, trusted)
 			if err != nil {
 				return errdefs.Validationf(
-					"hooks: %s: %s[%d]: %v", path, event, i, err)
+					"hooks: %s: %s[%d]: %w", path, event, i, err)
 			}
 			if entry != nil {
 				m.groups[event] = append(m.groups[event], *entry)

@@ -99,7 +99,7 @@ func DecodeConfig[C any](raw json.RawMessage) (C, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return cfg, errdefs.Validationf("invalid node config: %v", err)
+		return cfg, errdefs.Validationf("invalid node config: %w", err)
 	}
 	return cfg, nil
 }
@@ -195,7 +195,7 @@ func (r Role) resolve(typeName string, raw json.RawMessage) (rr resolvedRole, pr
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &fields); err != nil {
 				return rr, false, errdefs.Validationf(
-					"node type %q: config is not a JSON object: %v", typeName, err)
+					"node type %q: config is not a JSON object: %w", typeName, err)
 			}
 		}
 		v, ok := fields[r.ConfigKey]
@@ -209,7 +209,7 @@ func (r Role) resolve(typeName string, raw json.RawMessage) (rr resolvedRole, pr
 		}
 		if err := json.Unmarshal(v, &key); err != nil {
 			return rr, false, errdefs.Validationf(
-				"node type %q: role key field %q must be a string: %v",
+				"node type %q: role key field %q must be a string: %w",
 				typeName, r.ConfigKey, err)
 		}
 		if ContainsRef(key) {

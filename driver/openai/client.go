@@ -62,7 +62,7 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 		resolved, err := m.apiKey.Resolve(ctx, m.resolver)
 		if err != nil {
 			return nil, errdefs.Validationf(
-				"openai profile: resolve api_key: %v", err)
+				"openai profile: resolve api_key: %w", err)
 		}
 		apiKey = strings.TrimSpace(resolved)
 		if apiKey == "" {

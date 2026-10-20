@@ -502,7 +502,7 @@ func openSource() (Source, error) {
 	raiseDescriptorLimit()
 	kq, err := unix.Kqueue()
 	if err != nil {
-		return nil, errdefs.NotAvailablef("sandbox/journal: kqueue: %v", err)
+		return nil, errdefs.NotAvailablef("sandbox/journal: kqueue: %w", err)
 	}
 	unix.CloseOnExec(kq)
 	return &kqueueSource{

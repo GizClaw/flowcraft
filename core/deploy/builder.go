@@ -157,7 +157,7 @@ func (p *Plan) buildSecretStores(
 		}
 		value, err := p.buildResource(ctx, name, values, resolver, nil)
 		if err != nil {
-			return nil, "", errdefs.Validationf("deploy: resource %q: %v", name, err)
+			return nil, "", errdefs.Validationf("deploy: resource %q: %w", name, err)
 		}
 		store, ok := value.(resource.SecretStore)
 		if !ok {
@@ -278,7 +278,7 @@ func (b *Builder) Wire(ctx context.Context, result *Result, doc Document) error 
 		if w, ok := value.(resource.Wireable); ok {
 			if err := w.Wire(ctx); err != nil {
 				return errdefs.Validationf(
-					"deploy: wire resource %q: %v", name, err)
+					"deploy: wire resource %q: %w", name, err)
 			}
 		}
 	}
@@ -299,7 +299,7 @@ func (b *Builder) bindDeployment(result *Result) error {
 		if binder, ok := value.(Binder); ok {
 			if err := binder.BindDeployment(result); err != nil {
 				return errdefs.Validationf(
-					"deploy: bind deployment resource %q: %v", name, err)
+					"deploy: bind deployment resource %q: %w", name, err)
 			}
 			continue
 		}
@@ -393,11 +393,11 @@ func BindAgent(
 		return nil, err
 	}
 	if err := checkDeps(engineEntry.Spec(), def.Engine.Deps, producer); err != nil {
-		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
+		return nil, errdefs.Validationf("deploy: agent %q engine: %w", name, err)
 	}
 	engineDeps, err := resolveDeps(result.values, result.externals, def.Engine.Deps)
 	if err != nil {
-		return nil, errdefs.Validationf("deploy: agent %q: %v", name, err)
+		return nil, errdefs.Validationf("deploy: agent %q: %w", name, err)
 	}
 
 	var constructed []io.Closer
@@ -409,12 +409,12 @@ func BindAgent(
 	engineSettings, err := expandSettings(ctx, resolver, loader, def.Engine.Settings)
 	if err != nil {
 		return fail(errdefs.Validationf(
-			"deploy: agent %q engine: %v", name, err))
+			"deploy: agent %q engine: %w", name, err))
 	}
 	engineValue, err := engineEntry.Build(ctx,
 		resource.NewInput(engineSettings, engineDeps, loader, secrets))
 	if err != nil {
-		return fail(errdefs.Validationf("deploy: agent %q engine: %v", name, err))
+		return fail(errdefs.Validationf("deploy: agent %q engine: %w", name, err))
 	}
 	engine, ok := engineValue.(agent.Engine)
 	if !ok {
@@ -503,20 +503,20 @@ func buildHookList[T any](
 			return fail(err)
 		}
 		if err := checkDeps(hookEntry.Spec(), entry.Deps, producer); err != nil {
-			return fail(errdefs.Validationf("%s: %v", where, err))
+			return fail(errdefs.Validationf("%s: %w", where, err))
 		}
 		deps, err := resolveDeps(result.values, result.externals, entry.Deps)
 		if err != nil {
-			return fail(errdefs.Validationf("%s: %v", where, err))
+			return fail(errdefs.Validationf("%s: %w", where, err))
 		}
 		hookSettings, err := expandSettings(ctx, resolver, loader, entry.Settings)
 		if err != nil {
-			return fail(errdefs.Validationf("%s: %v", where, err))
+			return fail(errdefs.Validationf("%s: %w", where, err))
 		}
 		value, err := hookEntry.Build(ctx,
 			resource.NewInput(hookSettings, deps, loader, secrets))
 		if err != nil {
-			return fail(errdefs.Validationf("%s: %v", where, err))
+			return fail(errdefs.Validationf("%s: %w", where, err))
 		}
 		constructed = appendCloser(constructed, value)
 		typed, ok := value.(T)
@@ -526,7 +526,7 @@ func buildHookList[T any](
 		}
 		if w, ok := value.(resource.Wireable); ok {
 			if err := w.Wire(ctx); err != nil {
-				return fail(errdefs.Validationf("%s: wire: %v", where, err))
+				return fail(errdefs.Validationf("%s: wire: %w", where, err))
 			}
 		}
 		values = append(values, typed)

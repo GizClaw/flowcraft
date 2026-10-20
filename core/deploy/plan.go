@@ -108,7 +108,7 @@ func (b *Builder) Plan(doc Document) (*Plan, error) {
 		res := doc.Resources[name]
 		entry := plan.entries[name]
 		if err := checkDeps(entry.Spec(), res.Deps, plan.producerType); err != nil {
-			errs = append(errs, errdefs.Validationf("resources[%q]: %v", name, err))
+			errs = append(errs, errdefs.Validationf("resources[%q]: %w", name, err))
 		}
 		// A secret store is a socket the assembly itself requires: Build has to
 		// use the value as a resource.SecretStore to assemble the ${secret:…}
@@ -183,7 +183,7 @@ func (p *Plan) checkAgents() []error {
 			errs = append(errs, err)
 		}
 		if err := checkDeps(entry.Spec(), def.Engine.Deps, p.producerType); err != nil {
-			errs = append(errs, errdefs.Validationf("agents[%q].engine: %v", name, err))
+			errs = append(errs, errdefs.Validationf("agents[%q].engine: %w", name, err))
 		}
 		for _, slot := range hookSlots(def) {
 			for i, hook := range slot.entries {
@@ -198,7 +198,7 @@ func (p *Plan) checkAgents() []error {
 					errs = append(errs, err)
 				}
 				if err := checkDeps(entry.Spec(), hook.Deps, p.producerType); err != nil {
-					errs = append(errs, errdefs.Validationf("%s: %v", where, err))
+					errs = append(errs, errdefs.Validationf("%s: %w", where, err))
 				}
 			}
 		}
@@ -265,7 +265,7 @@ func (p *Plan) Build(ctx context.Context) (*Result, error) {
 		value, err := p.buildResource(ctx, name, values, resolver, secrets)
 		if err != nil {
 			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+			return nil, errdefs.Validationf("deploy: resource %q: %w", name, err)
 		}
 		values[name] = value
 	}
@@ -310,11 +310,11 @@ func checkDeps(
 		supplied[req.Name]++
 		got, err := resolve(deps[key])
 		if err != nil {
-			errs = append(errs, errdefs.Validationf("dep %q: %v", key, err))
+			errs = append(errs, errdefs.Validationf("dep %q: %w", key, err))
 			continue
 		}
 		if err := acceptType(req, got); err != nil {
-			errs = append(errs, errdefs.Validationf("dep %q: %v", key, err))
+			errs = append(errs, errdefs.Validationf("dep %q: %w", key, err))
 		}
 	}
 	for _, req := range spec.Deps {

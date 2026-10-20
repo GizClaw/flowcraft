@@ -100,7 +100,7 @@ type linuxSource struct {
 func openSource() (Source, error) {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
-		return nil, errdefs.NotAvailablef("sandbox/journal: inotify_init1: %v", err)
+		return nil, errdefs.NotAvailablef("sandbox/journal: inotify_init1: %w", err)
 	}
 	return &linuxSource{
 		fd:      fd,

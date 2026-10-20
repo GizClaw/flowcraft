@@ -93,7 +93,7 @@ func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *r
 func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
 	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
 	if err != nil {
-		return nil, errdefs.Validationf("bytedance profile: resolve api_key: %v", err)
+		return nil, errdefs.Validationf("bytedance profile: resolve api_key: %w", err)
 	}
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {

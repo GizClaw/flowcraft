@@ -200,7 +200,7 @@ func (s *Source) CallTool(
 	if err != nil {
 		srv.noteCallFailure(session, err)
 		return nil, errdefs.NotAvailablef(
-			"mcp: server %q: call tool %q: %v", serverName, toolName, err)
+			"mcp: server %q: call tool %q: %w", serverName, toolName, err)
 	}
 	text := strings.TrimSpace(resultContent(res).Text())
 	if res != nil && res.IsError {
@@ -713,7 +713,7 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 	}
 	res, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return errdefs.NotAvailablef("mcp: server %q: list tools: %v", srv.name, err)
+		return errdefs.NotAvailablef("mcp: server %q: list tools: %w", srv.name, err)
 	}
 
 	next := projectTools(srv, res.Tools, srv.resources)

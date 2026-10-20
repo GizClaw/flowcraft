@@ -58,7 +58,7 @@ func (o *Observer) Wire(_ context.Context) error {
 		ctx, kanban.PatternAll(), event.WithBufferSize(observerBuffer))
 	if err != nil {
 		cancel()
-		return errdefs.Validationf("hooks observer: subscribe: %v", err)
+		return errdefs.Validationf("hooks observer: subscribe: %w", err)
 	}
 	o.cancel, o.sub = cancel, sub
 	go o.loop(ctx, sub.C())
