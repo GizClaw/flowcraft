@@ -312,11 +312,11 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		if attempt > 0 {
 			// Linear backoff between attempts; the wait stays
 			// interruptible so a cancelled run never sleeps out its
-			// remaining budget.
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
-			}
+			// remaining budget. The wait only releases the timer early
+			// — the cancellation check below is what decides, because a
+			// timer that wins a race against an already-cancelled
+			// context must not start another attempt.
+			waitForRetry(ctx, time.Duration(attempt)*500*time.Millisecond)
 			if ctx.Err() != nil {
 				invokeErr = ctx.Err()
 				break
@@ -798,4 +798,18 @@ func channelLengths(board *agent.Board, roles []resolvedRole) map[string]int {
 		}
 	}
 	return lengths
+}
+
+// waitForRetry waits for delay or until ctx is done, releasing the timer either
+// way: time.After would keep it alive until it fired, and a retry loop allocates
+// one per attempt. It reports nothing on purpose — the caller's own ctx check
+// decides whether to continue, so a "which arm won" answer would be a second,
+// conflicting authority.
+func waitForRetry(ctx context.Context, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }

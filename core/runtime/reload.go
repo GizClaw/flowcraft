@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -109,7 +111,7 @@ type ReloadResult struct {
 	// runtime had no generation to replace.
 	PreviousID uint64
 	// ReboundAgents names the dynamic agents re-bound against the new
-	// generation, sorted by name.
+	// generation, sorted by name; nil when the document declares none.
 	ReboundAgents []string
 	// DrainedAgents names the deployed agents the new document removed,
 	// whose sessions were drained, sorted by name.
@@ -450,7 +452,7 @@ func (a *reloadAttempt) rebindAgents() error {
 	a.entries = a.r.registry.Entries()
 	a.rebound = make(map[string]*agent.Agent, len(a.entries))
 	a.newEntries = make(map[string]dynamicAgentEntry, len(a.entries))
-	for _, name := range sortedKeys(a.entries) {
+	for _, name := range slices.Sorted(maps.Keys(a.entries)) {
 		if err := a.rebindAgent(name); err != nil {
 			a.closeRebound()
 			return err
@@ -655,7 +657,7 @@ func (a *reloadAttempt) retainInputs() {
 // closeRebound closes the agents this attempt bound, so a failed reload never
 // leaks live instances.
 func (a *reloadAttempt) closeRebound() {
-	for _, name := range sortedKeys(a.rebound) {
+	for _, name := range slices.Sorted(maps.Keys(a.rebound)) {
 		if err := a.rebound[name].Close(); err != nil {
 			telemetry.WarnErr(a.ctx, "runtime reload: close rebound agent after abort", err,
 				attribute.String(telemetry.AttrAgentID, name),
@@ -666,7 +668,7 @@ func (a *reloadAttempt) closeRebound() {
 
 // committed reports the swap that took effect.
 func (a *reloadAttempt) committed() *ReloadResult {
-	reboundNames := sortedKeys(a.newEntries)
+	reboundNames := slices.Sorted(maps.Keys(a.newEntries))
 	sort.Strings(a.drained)
 	a.r.publishLifecycleEvent(a.ctx, SubjectRuntimeRebuildCompleted(),
 		RuntimeRebuildEvent{
@@ -719,13 +721,4 @@ func (a *reloadAttempt) abort(err error) error {
 		attribute.Int64("runtime.generation.id", int64(a.newGenID)),
 		attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	return err
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

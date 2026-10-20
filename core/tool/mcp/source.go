@@ -829,12 +829,17 @@ func (s *Source) retryLoop(srv *server) {
 	// the first failure.
 	backoff := time.Duration(0)
 	for {
+		// The timer is released on both arms: a reconnect loop that waits
+		// on time.After keeps the timer alive for the whole backoff even
+		// when the source closes first.
+		timer := time.NewTimer(backoff)
 		select {
 		case <-s.baseCtx.Done():
+			timer.Stop()
 			srv.markReady(errdefs.NotAvailablef("mcp: source is closed"))
 			s.clearRetrying(srv.name)
 			return
-		case <-time.After(backoff):
+		case <-timer.C:
 		}
 
 		attemptCtx, cancel := context.WithTimeout(s.baseCtx, s.connectTimeout)

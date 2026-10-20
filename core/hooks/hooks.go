@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -166,7 +167,9 @@ func (m *Manager) loadFile(
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return errdefs.Validationf("hooks: parse %s: %w", path, err)
 	}
-	for _, event := range sortedKeys(cfg.Hooks) {
+	// Sorted so loading reports the first error in file order rather than in
+	// map order.
+	for _, event := range slices.Sorted(maps.Keys(cfg.Hooks)) {
 		if !knownEvent(event) {
 			return errdefs.Validationf(
 				"hooks: %s: unknown event %q; known events are %s",
@@ -218,15 +221,6 @@ func newGroupEntry(
 
 // sortedKeys returns a map's string keys in sorted order, so loading
 // reports the first error in file order instead of map order.
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // knownEvent reports whether event is part of the frozen vocabulary.
 func knownEvent(event string) bool {
 	for _, name := range eventNames {

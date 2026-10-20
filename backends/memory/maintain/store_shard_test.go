@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -233,7 +235,7 @@ func TestSaveConversationsMatchesAWholeSave(t *testing.T) {
 	if err := incremental.Save(ctx, Plan{Scope: scope}); err != nil {
 		t.Fatal(err)
 	}
-	for _, conversation := range sortedKeys(conversations) {
+	for _, conversation := range slices.Sorted(maps.Keys(conversations)) {
 		plan, err := Detect(scope, map[string][]factview.Fact{conversation: conversations[conversation]}, now)
 		if err != nil {
 			t.Fatal(err)

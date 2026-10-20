@@ -569,7 +569,7 @@ func (extractor *FactExtractor) associate(ctx context.Context, input component.A
 				links[output[candidateIndex].ID] = struct{}{}
 			}
 		}
-		output[index].Metadata["linked_memory_ids"] = encodeStrings(sortedKeys(links))
+		output[index].Metadata["linked_memory_ids"] = encodeStrings(slices.Sorted(maps.Keys(links)))
 	}
 	return extractor.addEmbeddingLinks(ctx, scope, conversationID, ok, existing, output)
 }
@@ -642,7 +642,7 @@ func (extractor *FactExtractor) addEmbeddingLinks(
 				}
 			}
 			delete(links, output[outputIndex].ID)
-			output[outputIndex].Metadata["linked_memory_ids"] = encodeStrings(sortedKeys(links))
+			output[outputIndex].Metadata["linked_memory_ids"] = encodeStrings(slices.Sorted(maps.Keys(links)))
 			continue
 		}
 		if addressed && extractor.config.LinkVectorSearcher != nil {
@@ -697,7 +697,7 @@ func (extractor *FactExtractor) addEmbeddingLinks(
 			links[item.id] = struct{}{}
 		}
 		delete(links, output[outputIndex].ID)
-		output[outputIndex].Metadata["linked_memory_ids"] = encodeStrings(sortedKeys(links))
+		output[outputIndex].Metadata["linked_memory_ids"] = encodeStrings(slices.Sorted(maps.Keys(links)))
 	}
 	return nil
 }
@@ -809,6 +809,11 @@ func sourceLess(left, right corememory.SourceRef) bool {
 }
 
 func encodeStrings(values []string) string {
+	// Metadata carries these as JSON arrays; a nil slice would marshal to
+	// null and change the stored shape for the empty case.
+	if values == nil {
+		values = []string{}
+	}
 	data, _ := json.Marshal(values)
 	return string(data)
 }
@@ -843,15 +848,6 @@ func withinFiveMinutes(left, right time.Time) bool {
 		delta = -delta
 	}
 	return delta <= 5*time.Minute
-}
-
-func sortedKeys(values map[string]struct{}) []string {
-	result := make([]string, 0, len(values))
-	for value := range values {
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func supports(operations []model.Operation, wanted model.Operation) bool {

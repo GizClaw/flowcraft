@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -181,7 +182,11 @@ func (store *Store) Save(ctx context.Context, plan Plan) error {
 			return err
 		}
 	}
-	for _, conversation := range sortedKeys(grouped) {
+	// Sorted so a save writes its buckets in one order whatever order the
+	// plan's findings arrived in.
+	// Sorted so a save writes its buckets in one order whatever order the
+	// plan's findings arrived in.
+	for _, conversation := range slices.Sorted(maps.Keys(grouped)) {
 		if err := store.writeBucket(ctx, plan.Scope, conversation, grouped[conversation]); err != nil {
 			return err
 		}
@@ -237,7 +242,7 @@ func (store *Store) SaveConversations(
 		return fmt.Errorf("maintain: overlay written by %q, this store serves %q", control.ProducerVersion, expected)
 	}
 	total := control.Entries
-	for _, conversation := range sortedKeys(named) {
+	for _, conversation := range slices.Sorted(maps.Keys(named)) {
 		stored, err := store.readBucket(ctx, plan.Scope, conversation)
 		if err != nil {
 			return err
@@ -321,7 +326,7 @@ func (store *Store) ScoreOverlayFor(
 		return map[string]float64{}, nil
 	}
 	scores := map[string]float64{}
-	for _, conversation := range sortedKeys(named) {
+	for _, conversation := range slices.Sorted(maps.Keys(named)) {
 		bucket, err := store.readBucket(ctx, scope, conversation)
 		if err != nil {
 			return nil, err
@@ -815,7 +820,7 @@ func (service *Service) run(
 		// Every named conversation is replaced, including the ones the pass
 		// found nothing in: a conversation judged as fresh is exactly the
 		// state that has to drop the factors an earlier pass wrote for it.
-		err = service.Store.SaveConversations(ctx, plan, sortedKeys(judged))
+		err = service.Store.SaveConversations(ctx, plan, slices.Sorted(maps.Keys(judged)))
 	}
 	if err != nil {
 		return empty, err
@@ -909,15 +914,6 @@ const defaultSupersedeFactor = 0.5
 // sortedKeys returns the keys of a map in ascending order, so a save writes
 // its buckets -- and the entries inside them -- in one order whatever order
 // the plan's findings arrived in.
-func sortedKeys[Value any](values map[string]Value) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // normalizeConversations turns a caller's conversation list into the set a
 // save or a scoped read works in: trimmed, deduplicated, and never empty. A
 // read with candidates of its own names a conversation per candidate, so

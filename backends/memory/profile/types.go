@@ -223,12 +223,6 @@ func entriesTokens(entries []Entry) int {
 	return total
 }
 
-func sortedStrings(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	return result
-}
-
 func validateClasses(classes []Class) error {
 	seen := make(map[string]struct{}, len(classes))
 	for index, class := range classes {
