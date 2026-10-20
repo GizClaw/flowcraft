@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.9.0
+	github.com/GizClaw/flowcraft/core v0.9.1-0.20261020100346-8df888c56ddb
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/openai/openai-go/v3 v3.77.0
 	github.com/volcengine/volcengine-go-sdk v1.2.52

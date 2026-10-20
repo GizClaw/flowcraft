@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/examples/forge
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.9.0
+	github.com/GizClaw/flowcraft/core v0.9.1-0.20261020100346-8df888c56ddb
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -13,7 +13,7 @@ require (
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
-	github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e
+	github.com/GizClaw/flowcraft/driver v0.0.0-20261020100346-8df888c56ddb
 	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
