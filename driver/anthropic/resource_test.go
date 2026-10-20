@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -23,14 +22,11 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	if provider.ID != "anthropic" || len(provider.Models) == 0 {
 		t.Fatalf("provider = %+v", provider)
 	}

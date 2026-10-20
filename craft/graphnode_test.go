@@ -61,7 +61,7 @@ func (c nodeEngineCapability) Register(registry *resource.Registry) error {
 	if err := event.Register(registry); err != nil {
 		return err
 	}
-	return registry.Register(nodeEngineFactory(c))
+	return resource.Register(registry, nodeEngineFactory(c))
 }
 
 type nodeEngineFactory struct{ seen *engineDeps }
@@ -70,15 +70,20 @@ func (nodeEngineFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "agent.Engine",
 		Impl: "test",
-		Deps: []resource.DepSpec{{
-			Name: "node_type", Type: "graph.NodeTypeRegistrar", Many: true,
-		}},
+		Deps: []resource.Requirement{resource.OptionalMany[any]("node_type").Spec()},
 	}
 }
 
 func (f nodeEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
 	if f.seen != nil {
-		f.seen.record(in.Deps)
+		// Record the dependency keys the document used, which is what the
+		// test asserts on; the typed handle is the only reader now.
+		values, _ := resource.RequireMany[any]("node_type").GetAllNamed(in)
+		deps := make(map[string]any, len(values))
+		for _, value := range values {
+			deps[value.Name] = value.Value
+		}
+		f.seen.record(deps)
 	}
 	return agent.EngineFunc(func(
 		_ context.Context,

@@ -91,7 +91,7 @@ func (d Dep[T]) Get(in Input) (T, error) {
 		return zero, errdefs.NotFoundf(
 			"resource: dep %q is missing (%s)", d.requirement.Name, d.requirement.Type)
 	}
-	return d.narrow(raw)
+	return d.narrow(d.requirement.Name, raw)
 }
 
 // TryGet is [Dep.Get] for an optional dependency: absent is reported by
@@ -101,7 +101,7 @@ func (d Dep[T]) TryGet(in Input) (value T, ok bool, err error) {
 	if !present {
 		return value, false, nil
 	}
-	value, err = d.narrow(raw)
+	value, err = d.narrow(d.requirement.Name, raw)
 	if err != nil {
 		return value, false, err
 	}
@@ -124,7 +124,7 @@ func (d Dep[T]) GetAll(in Input) ([]T, error) {
 	values := make([]T, 0, len(keys))
 	for _, key := range keys {
 		raw, _ := in.dep(key)
-		value, err := d.narrow(raw)
+		value, err := d.narrow(key, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +154,7 @@ func (d Dep[T]) GetAllNamed(in Input) ([]Named[T], error) {
 	values := make([]Named[T], 0, len(keys))
 	for _, key := range keys {
 		raw, _ := in.dep(key)
-		value, err := d.narrow(raw)
+		value, err := d.narrow(key, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -167,16 +167,24 @@ func (d Dep[T]) GetAllNamed(in Input) ([]Named[T], error) {
 // reached through a Dep[T] whose [Requirement] the plan already checked
 // against the producer's build type, so a failure here means a broken
 // invariant rather than a document error.
-func (d Dep[T]) narrow(raw any) (T, error) {
+//
+// key is the document key the value came from, which for a Many dep is the
+// specific "name.suffix" rather than the requirement name: a diagnostic has
+// to point at the dep the author wrote.
+func (d Dep[T]) narrow(key string, raw any) (T, error) {
 	var zero T
-	if raw == nil || ptr.IsNil(raw) {
+	if raw == nil {
 		return zero, errdefs.Validationf(
-			"resource: dep %q is nil, want %s", d.requirement.Name, d.requirement.Type)
+			"resource: dep %q is nil, want %s", key, d.requirement.Type)
+	}
+	if ptr.IsNil(raw) {
+		return zero, errdefs.Validationf(
+			"resource: dep %q is a typed nil (%T), want %s", key, raw, d.requirement.Type)
 	}
 	value, ok := raw.(T)
 	if !ok {
 		return zero, errdefs.Validationf(
-			"resource: dep %q is %T, want %s", d.requirement.Name, raw, d.requirement.Type)
+			"resource: dep %q is %T, want %s", key, raw, d.requirement.Type)
 	}
 	return value, nil
 }

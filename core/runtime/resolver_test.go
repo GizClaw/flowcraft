@@ -137,9 +137,9 @@ func resolverCaptureDoc(t *testing.T, settings string) deploy.Document {
 func newCaptureRegistry(t *testing.T, records *captureRecorder) *resource.Registry {
 	t.Helper()
 	reg := resource.NewRegistry()
-	reg.MustRegister(resolverCaptureFactory{records: records})
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, resolverCaptureFactory{records: records})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
 	return reg
 }
 
@@ -210,8 +210,8 @@ func TestBuildExpandsCustomScheme(t *testing.T) {
 func TestBuildExpandsEngineSettings(t *testing.T) {
 	records := &captureRecorder{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(resolverCaptureEngineFactory{records: records})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, resolverCaptureEngineFactory{records: records})
 
 	doc := reloadDoc(t, `  bot:
     card: {name: Bot}

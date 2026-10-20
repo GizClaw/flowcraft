@@ -23,14 +23,11 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	if provider.ID != "bytedance" || len(provider.Models) == 0 {
 		t.Fatalf("provider = %+v", provider)
 	}
@@ -72,7 +69,7 @@ func TestProviderCarriesExtensionDecoders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoders := map[string]inference.ExtensionDecoder{}
 	for id, decoder := range provider.ExtensionDecoders {
 		decoders["bytedance/"+id] = decoder
@@ -129,7 +126,7 @@ func TestProviderCarriesExtensionDecoders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	decoder := value.(inference.ProviderDefinition).ExtensionDecoders[extensionGenerate]
+	decoder := value.ExtensionDecoders[extensionGenerate]
 	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
 		Provider: "bd-prod",
 		ID:       extensionGenerate,

@@ -74,13 +74,11 @@ func countingBridgeAssembly(t *testing.T, opens *atomic.Int64) (*inference.Assem
 			},
 		}},
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider.counted": definition},
-	})
+	value, err := inference.Factory{}.New(context.Background(), resource.NewTestInput(map[string]any{"provider.counted": definition}))
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
 	}
-	return value.(*inference.Assembly), map[string]any{
+	return value, map[string]any{
 		"id": map[string]any{"provider": "counted", "name": "model-1"},
 	}
 }

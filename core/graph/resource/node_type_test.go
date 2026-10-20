@@ -27,18 +27,11 @@ func (s scriptRuntimeStub) Exec(ctx context.Context, name, source string, env *a
 
 func buildScriptNodeType(t *testing.T, settings string, deps map[string]any) coregraph.NodeTypeRegistrar {
 	t.Helper()
-	value, err := (graphresource.ScriptNodeTypeFactory{}).New(context.Background(), resource.Input{
-		Settings: []byte(settings),
-		Deps:     deps,
-	})
+	value, err := (graphresource.ScriptNodeTypeFactory{}).New(context.Background(), resource.NewInput([]byte(settings), deps, nil, nil))
 	if err != nil {
 		t.Fatalf("ScriptNodeTypeFactory.New: %v", err)
 	}
-	registrar, ok := value.(coregraph.NodeTypeRegistrar)
-	if !ok {
-		t.Fatalf("ScriptNodeTypeFactory.New returned %T, want graph.NodeTypeRegistrar", value)
-	}
-	return registrar
+	return value
 }
 
 func customNodeDefinition(t *testing.T, nodeType string, config any) []byte {
@@ -63,17 +56,11 @@ func customNodeDefinition(t *testing.T, nodeType string, config any) []byte {
 
 func buildCustomEngine(t *testing.T, def []byte, deps map[string]any) *coregraph.Graph {
 	t.Helper()
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps:     deps,
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), deps, nil, nil))
 	if err != nil {
 		t.Fatalf("engine New: %v", err)
 	}
-	engine, ok := value.(*coregraph.Graph)
-	if !ok {
-		t.Fatalf("engine New returned %T, want *coregraph.Graph", value)
-	}
+	engine := value
 	return engine
 }
 
@@ -193,10 +180,7 @@ func TestCustomNodeConfigKeyRoles(t *testing.T) {
 
 func TestEngineRejectsNonRegistrarNodeTypeDep(t *testing.T) {
 	def := customNodeDefinition(t, "whatever", map[string]any{})
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps:     map[string]any{"node_type": "not a registrar"},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{"node_type": "not a registrar"}, nil, nil))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("New = %v, want Validation for non-registrar node_type dep", err)
 	}
@@ -209,10 +193,7 @@ func (*nilRegistrar) Register(*coregraph.Registry) error { return nil }
 func TestEngineRejectsTypedNilNodeTypeDep(t *testing.T) {
 	def := customNodeDefinition(t, "whatever", map[string]any{})
 	var registrar *nilRegistrar // typed nil
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps:     map[string]any{"node_type": registrar},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{"node_type": registrar}, nil, nil))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("New = %v, want Validation for typed-nil node_type dep", err)
 	}
@@ -225,13 +206,10 @@ func TestEngineRejectsDuplicateMount(t *testing.T) {
 	registrar := buildScriptNodeType(t, `{"type": "dup", "source": "s"}`, map[string]any{"script_runtime": rt})
 
 	def := customNodeDefinition(t, "dup", map[string]any{})
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"node_type.a": registrar,
-			"node_type.b": registrar,
-		},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"node_type.a": registrar,
+		"node_type.b": registrar,
+	}, nil, nil))
 	if err == nil || !errdefs.IsConflict(err) {
 		t.Fatalf("New = %v, want Conflict for duplicate mount", err)
 	}
@@ -248,13 +226,10 @@ func TestEngineRejectsDuplicateCustomNodeType(t *testing.T) {
 	second := buildScriptNodeType(t, `{"type": "dup", "source": "s2"}`, map[string]any{"script_runtime": rt})
 
 	def := customNodeDefinition(t, "dup", map[string]any{})
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"node_type.a": first,
-			"node_type.b": second,
-		},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"node_type.a": first,
+		"node_type.b": second,
+	}, nil, nil))
 	if err == nil || !errdefs.IsConflict(err) {
 		t.Fatalf("New = %v, want Conflict for duplicate custom type", err)
 	}
@@ -304,17 +279,13 @@ func TestEngineMountsGoBackedNodeTypeWithFileRefs(t *testing.T) {
 		"prompt":     map[string]any{"file": "prompt.txt"},
 		"output_key": "out",
 	})
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps:     map[string]any{"node_type.go_echo": registrar},
-		Loader:   loader,
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{"node_type.go_echo": registrar}, loader, nil))
 	if err != nil {
 		t.Fatalf("engine New: %v", err)
 	}
 
 	board := agent.NewBoard()
-	if err := runCustomEngine(t, value.(*coregraph.Graph), board); err != nil {
+	if err := runCustomEngine(t, value, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if got.Prompt != "hello from file" {
@@ -339,10 +310,7 @@ func TestScriptNodeTypeFactoryValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := (graphresource.ScriptNodeTypeFactory{}).New(context.Background(), resource.Input{
-				Settings: []byte(tc.settings),
-				Deps:     map[string]any{"script_runtime": rt},
-			})
+			_, err := (graphresource.ScriptNodeTypeFactory{}).New(context.Background(), resource.NewInput([]byte(tc.settings), map[string]any{"script_runtime": rt}, nil, nil))
 			if err == nil || !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation", err)
 			}

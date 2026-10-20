@@ -25,9 +25,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal root: %v", err)
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": ` + string(root) + `}`),
-	})
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"root": `+string(root)+`}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -43,7 +41,7 @@ func TestFactoryRequiresRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("workspace.Workspace", "local")
-	if _, err := factory.New(context.Background(), resource.Input{}); err == nil {
+	if _, err := factory.Build(context.Background(), resource.NewTestInput(nil)); err == nil {
 		t.Fatal("New unexpectedly accepted missing root")
 	}
 }
@@ -58,10 +56,8 @@ func TestFactoryScopedDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal root: %v", err)
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": ` + string(root) + `,
-			"scoped": {"enabled": false, "deny_read": ["secret/**"]}}`),
-	})
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"root": `+string(root)+`,
+			"scoped": {"enabled": false, "deny_read": ["secret/**"]}}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -81,10 +77,8 @@ func TestFactoryScopedEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal root: %v", err)
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": ` + string(root) + `,
-			"scoped": {"enabled": true, "allow_write": ["public/**"]}}`),
-	})
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"root": `+string(root)+`,
+			"scoped": {"enabled": true, "allow_write": ["public/**"]}}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -109,10 +103,7 @@ func TestFactoryRelativeRootUsesLoaderBaseDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("workspace.Workspace", "local")
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "./ws"}`),
-		Loader:   resource.NewLoader(resource.WithBaseDir(base)),
-	})
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"root": "./ws"}`), nil, resource.NewLoader(resource.WithBaseDir(base)), nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -163,9 +154,7 @@ func TestFactoryExpandsSettingsRefs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Expand: %v", err)
 			}
-			value, err := factory.New(context.Background(), resource.Input{
-				Settings: expanded,
-			})
+			value, err := factory.Build(context.Background(), resource.NewInput(expanded, nil, nil, nil))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}

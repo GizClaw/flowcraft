@@ -99,8 +99,8 @@ func buildLifecycleApp(
 	t.Helper()
 	bus := event.NewMemoryBus()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: engine})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: engine})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: bus,
 	})
@@ -385,16 +385,16 @@ func TestRuntimeAgentRemoveTimeoutUnset(t *testing.T) {
 func TestRuntimeRegisterAgentToolAssembly(t *testing.T) {
 	got := make(chan []string, 1)
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: catalogEngine(t, got)})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: catalogEngine(t, got)})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: event.NewMemoryBus(),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
 		value: buildTestAssembly(t, "research_tool"),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "test"},
 		value: buildTestAssembly(t, "assist_tool"),
 	})

@@ -70,15 +70,12 @@ func newTestAssemblyOn(t *testing.T, ws workspace.Workspace, settings string, op
 	factoryOptions := append([]Option{WithClock(func() time.Time { return testNow })}, options...)
 	value, err := NewFactory(factoryOptions...).New(
 		context.Background(),
-		resource.Input{Settings: []byte(settings), Deps: map[string]any{"workspace": ws}},
+		resource.NewInput([]byte(settings), map[string]any{"workspace": ws}, nil, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(*Assembly)
-	if !ok {
-		t.Fatalf("factory returned %T, want *Assembly", value)
-	}
+	assembly := value
 	if err := assembly.Wire(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -137,15 +134,12 @@ func TestAssemblyCloseBeforeWireIsFinal(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Close() })
 	value, err := NewFactory(WithClock(func() time.Time { return testNow })).New(
 		context.Background(),
-		resource.Input{Settings: []byte(testSettings), Deps: map[string]any{"workspace": ws}},
+		resource.NewInput([]byte(testSettings), map[string]any{"workspace": ws}, nil, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(*Assembly)
-	if !ok {
-		t.Fatalf("factory returned %T, want *Assembly", value)
-	}
+	assembly := value
 	if err := assembly.Close(); err != nil {
 		t.Fatalf("first close: %v", err)
 	}
@@ -185,28 +179,22 @@ func TestFactorySpecAndRegister(t *testing.T) {
 func TestHookFactoriesBindAssembly(t *testing.T) {
 	assembly, _ := newTestAssembly(t, "")
 	ctx := context.Background()
-	preparer, err := hook.ContextPreparer{}.New(ctx, resource.Input{
-		Settings: []byte(`{
+	preparer, err := hook.ContextPreparer{}.New(ctx, resource.NewInput([]byte(`{
 			"query": {"literal": "hello"},
 			"scope": {"runtime_id": "memories", "user_id": "u1"},
 			"conversation_id": "conv-1",
 			"output": "memory_items"
-		}`),
-		Deps: map[string]any{"memory": assembly},
-	})
+		}`), map[string]any{"memory": assembly}, nil, nil))
 	if err != nil {
 		t.Fatalf("context hook: %v", err)
 	}
 	if _, ok := preparer.(agent.PreparerFunc); !ok {
 		t.Fatalf("context hook returned %T, want agent.PreparerFunc", preparer)
 	}
-	committer, err := hook.TurnCommitter{}.New(ctx, resource.Input{
-		Settings: []byte(`{
+	committer, err := hook.TurnCommitter{}.New(ctx, resource.NewInput([]byte(`{
 			"scope": {"runtime_id": "memories", "user_id": "u1"},
 			"conversation_id": "conv-1"
-		}`),
-		Deps: map[string]any{"memory": assembly},
-	})
+		}`), map[string]any{"memory": assembly}, nil, nil))
 	if err != nil {
 		t.Fatalf("turn hook: %v", err)
 	}
@@ -221,13 +209,10 @@ func TestHookFactoriesBindAssembly(t *testing.T) {
 func TestHookFactoriesDriveRealAssembly(t *testing.T) {
 	assembly, _ := newTestAssembly(t, "")
 	ctx := context.Background()
-	committerFactory, err := hook.TurnCommitter{}.New(ctx, resource.Input{
-		Settings: []byte(`{
+	committerFactory, err := hook.TurnCommitter{}.New(ctx, resource.NewInput([]byte(`{
 			"scope": {"runtime_id": "memories", "user_id": "u1"},
 			"conversation_id": "conv-1"
-		}`),
-		Deps: map[string]any{"memory": assembly},
-	})
+		}`), map[string]any{"memory": assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,15 +245,12 @@ func TestHookFactoriesDriveRealAssembly(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("records = %d, want 1 after replay", len(records))
 	}
-	preparerFactory, err := hook.ContextPreparer{}.New(ctx, resource.Input{
-		Settings: []byte(`{
+	preparerFactory, err := hook.ContextPreparer{}.New(ctx, resource.NewInput([]byte(`{
 			"query": {"literal": "hello"},
 			"scope": {"runtime_id": "memories", "user_id": "u1"},
 			"conversation_id": "conv-1",
 			"output": "memory_items"
-		}`),
-		Deps: map[string]any{"memory": assembly},
-	})
+		}`), map[string]any{"memory": assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,10 +627,8 @@ func TestFactoryRejectsInvalidSettings(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = ws.Close() })
-			_, err = NewFactory().New(context.Background(), resource.Input{
-				Settings: []byte(settings),
-				Deps:     map[string]any{"workspace": ws},
-			})
+			_, err = NewFactory().New(context.Background(), resource.NewInput(
+				[]byte(settings), map[string]any{"workspace": ws}, nil, nil))
 			if err == nil {
 				t.Fatal("expected a settings error")
 			}
@@ -665,17 +645,13 @@ func TestFactoryDefaultsStorageToWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ws.Close() })
-	value, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: []byte(`{"scopes":[{"runtime_id":"memories"}],"interval":"0"}`),
-		Deps:     map[string]any{"workspace": ws},
-	})
+	value, err := NewFactory().New(context.Background(), resource.NewInput(
+		[]byte(`{"scopes":[{"runtime_id":"memories"}],"interval":"0"}`),
+		map[string]any{"workspace": ws}, nil, nil))
 	if err != nil {
 		t.Fatalf("default storage rejected: %v", err)
 	}
-	assembly, ok := value.(*Assembly)
-	if !ok {
-		t.Fatalf("factory returned %T", value)
-	}
+	assembly := value
 	if err := assembly.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -944,14 +920,11 @@ func TestVectorLaneCalibrationRecall(t *testing.T) {
 	value, err := NewFactory(
 		WithClock(func() time.Time { return testNow }),
 		WithDeriver(fakeDeriver{}),
-	).New(context.Background(), resource.Input{
-		Settings: []byte(settings),
-		Deps:     map[string]any{"workspace": ws, "inference": engine},
-	})
+	).New(context.Background(), resource.NewInput([]byte(settings), map[string]any{"workspace": ws, "inference": engine}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly := value.(*Assembly)
+	assembly := value
 	if err := assembly.Wire(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1049,14 +1022,11 @@ func TestSQLiteStorageDrivers(t *testing.T) {
 		value, err := NewFactory(
 			WithClock(func() time.Time { return testNow }),
 			WithDeriver(fakeDeriver{}),
-		).New(context.Background(), resource.Input{
-			Settings: []byte(settings),
-			Deps:     map[string]any{"workspace": ws},
-		})
+		).New(context.Background(), resource.NewInput([]byte(settings), map[string]any{"workspace": ws}, nil, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
-		assembly := value.(*Assembly)
+		assembly := value
 		if err := assembly.Wire(context.Background()); err != nil {
 			t.Fatal(err)
 		}

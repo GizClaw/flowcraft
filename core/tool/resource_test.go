@@ -2,6 +2,7 @@ package tool_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -20,16 +21,14 @@ func TestRegistryFactory(t *testing.T) {
 	}
 	spec := factory.Spec()
 	if len(spec.Deps) != 1 || spec.Deps[0].Name != "tool" ||
-		spec.Deps[0].Type != "tool.Source" || !spec.Deps[0].Many {
+		spec.Deps[0].Type != reflect.TypeFor[tool.Source]() || !spec.Deps[0].Many {
 		t.Fatalf("spec deps = %+v, want Many tool.Source dep", spec.Deps)
 	}
 
-	value, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{
-			"tool":    source{tools: []tool.Tool{funcTool("a", "1")}},
-			"tool.bb": source{tools: []tool.Tool{funcTool("b", "2")}},
-		},
-	})
+	value, err := factory.Build(context.Background(), resource.NewTestInput(map[string]any{
+		"tool":    source{tools: []tool.Tool{funcTool("a", "1")}},
+		"tool.bb": source{tools: []tool.Tool{funcTool("b", "2")}},
+	}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -43,16 +42,14 @@ func TestRegistryFactory(t *testing.T) {
 }
 
 func TestRegistryFactoryRequiresSources(t *testing.T) {
-	_, err := (tool.RegistryFactory{}).New(context.Background(), resource.Input{})
+	_, err := (tool.RegistryFactory{}).New(context.Background(), resource.NewTestInput(nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New without sources = %v, want Validation", err)
 	}
 }
 
 func TestRegistryFactoryRejectsWrongDepType(t *testing.T) {
-	_, err := (tool.RegistryFactory{}).New(context.Background(), resource.Input{
-		Deps: map[string]any{"tool": "not a source"},
-	})
+	_, err := (tool.RegistryFactory{}).New(context.Background(), resource.NewTestInput(map[string]any{"tool": "not a source"}))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New with wrong dep = %v, want Validation", err)
 	}
@@ -67,14 +64,11 @@ func TestAssemblyFactoryWithDynamic(t *testing.T) {
 	if !ok {
 		t.Fatal("tool.Assembly/memory factory not registered")
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{
 			"dynamic": {"default": "deferred", "exposures": {"search": "always"}}
-		}`),
-		Deps: map[string]any{
-			"tool": source{tools: []tool.Tool{funcTool("search", "x")}},
-		},
-	})
+		}`), map[string]any{
+		"tool": source{tools: []tool.Tool{funcTool("search", "x")}},
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -90,19 +84,16 @@ func TestAssemblyFactoryWithDynamic(t *testing.T) {
 }
 
 func TestAssemblyFactoryRejectsMiddlewaresSettings(t *testing.T) {
-	_, err := (tool.AssemblyFactory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"middlewares": {"recover": {"enabled": true}}}`),
-		Deps: map[string]any{
-			"tool": source{tools: []tool.Tool{funcTool("a", "1")}},
-		},
-	})
+	_, err := (tool.AssemblyFactory{}).New(context.Background(), resource.NewInput([]byte(`{"middlewares": {"recover": {"enabled": true}}}`), map[string]any{
+		"tool": source{tools: []tool.Tool{funcTool("a", "1")}},
+	}, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("memory assembly with middlewares = %v, want Validation", err)
 	}
 }
 
 func TestAssemblyFactoryRequiresSources(t *testing.T) {
-	_, err := (tool.AssemblyFactory{}).New(context.Background(), resource.Input{})
+	_, err := (tool.AssemblyFactory{}).New(context.Background(), resource.NewTestInput(nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New without sources = %v, want Validation", err)
 	}

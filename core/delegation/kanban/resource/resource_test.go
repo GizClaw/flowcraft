@@ -3,11 +3,11 @@ package resource_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	coredelegation "github.com/GizClaw/flowcraft/core/delegation"
-	"github.com/GizClaw/flowcraft/core/delegation/kanban"
 	kanbanresource "github.com/GizClaw/flowcraft/core/delegation/kanban/resource"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -21,7 +21,7 @@ func TestMemoryFactorySpec(t *testing.T) {
 	}
 	if len(spec.Deps) != 1 ||
 		spec.Deps[0].Name != kanbanresource.EventBusDep ||
-		spec.Deps[0].Type != "event.Bus" {
+		spec.Deps[0].Type != reflect.TypeFor[event.Bus]() {
 		t.Fatalf("deps = %+v", spec.Deps)
 	}
 }
@@ -40,9 +40,7 @@ func TestMemoryFactoryRejectsInvalidSettings(t *testing.T) {
 	factory := kanbanresource.NewMemoryFactory()
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := factory.New(context.Background(), resource.Input{
-				Settings: []byte(input),
-			})
+			_, err := factory.New(context.Background(), resource.NewInput([]byte(input), nil, nil, nil))
 			if err == nil || !errdefs.IsValidation(err) {
 				t.Fatalf("New() error = %v, want validation error", err)
 			}
@@ -51,18 +49,16 @@ func TestMemoryFactoryRejectsInvalidSettings(t *testing.T) {
 }
 
 func TestMemoryFactoryAppliesSettings(t *testing.T) {
-	value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{
-		Settings: []byte(`{
+	value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewInput([]byte(`{
 			"scope_id": "jobs",
 			"max_pending": 1,
 			"max_cards": 10,
 			"card_ttl": "1ns"
-		}`),
-	})
+		}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	board := value.(*kanban.Board)
+	board := value
 	t.Cleanup(func() { _ = board.Close() })
 
 	if got := board.ScopeID(); got != "jobs" {
@@ -96,13 +92,11 @@ func TestMemoryFactoryAppliesSettings(t *testing.T) {
 }
 
 func TestMemoryFactoryAppliesMaxCards(t *testing.T) {
-	value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{
-		Settings: []byte(`{"max_cards":1}`),
-	})
+	value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewInput([]byte(`{"max_cards":1}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	board := value.(*kanban.Board)
+	board := value
 	t.Cleanup(func() { _ = board.Close() })
 
 	first, err := board.Submit(context.Background(), asyncRequest("first"))
@@ -141,13 +135,11 @@ func TestMemoryFactoryAcceptsOmittedAndZeroSettings(t *testing.T) {
 			if input != "" {
 				settings = []byte(input)
 			}
-			value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{
-				Settings: settings,
-			})
+			value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			if err := value.(*kanban.Board).Close(); err != nil {
+			if err := value.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
 		})
@@ -156,11 +148,11 @@ func TestMemoryFactoryAcceptsOmittedAndZeroSettings(t *testing.T) {
 
 func TestMemoryFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	t.Run("owned bus", func(t *testing.T) {
-		value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{})
+		value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewTestInput(nil))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		board := value.(*kanban.Board)
+		board := value
 		if err := board.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
@@ -175,13 +167,11 @@ func TestMemoryFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	t.Run("shared bus", func(t *testing.T) {
 		bus := event.NewMemoryBus()
 		t.Cleanup(func() { _ = bus.Close() })
-		value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{
-			Deps: map[string]any{kanbanresource.EventBusDep: bus},
-		})
+		value, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewTestInput(map[string]any{kanbanresource.EventBusDep: bus}))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		board := value.(*kanban.Board)
+		board := value
 		if err := board.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
@@ -191,9 +181,7 @@ func TestMemoryFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	})
 
 	t.Run("type mismatch", func(t *testing.T) {
-		_, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.Input{
-			Deps: map[string]any{kanbanresource.EventBusDep: "not a bus"},
-		})
+		_, err := kanbanresource.NewMemoryFactory().New(context.Background(), resource.NewTestInput(map[string]any{kanbanresource.EventBusDep: "not a bus"}))
 		if err == nil || !errdefs.IsValidation(err) {
 			t.Fatalf("New() error = %v, want validation error", err)
 		}

@@ -322,7 +322,7 @@ func TestConcurrentCloseReturnsSameAggregateAndResultLast(t *testing.T) {
 		MemoryBus: event.NewMemoryBus(), mu: &mu, log: &log, closeErr: busErr,
 	}
 	reg := newBaseRegistry(t, bus, &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: "test.CloseLog", Impl: "tracked"},
 		value: &closingValue{log: &log, mu: &mu},
 	})
@@ -414,7 +414,7 @@ func TestBuildWrapsDelegationServiceWhenRequested(t *testing.T) {
 		return board, nil
 	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "local"},
 		value: service,
 	})
@@ -460,7 +460,7 @@ func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
 		return board, nil
 	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "local"},
 		value: service,
 	})
@@ -482,8 +482,8 @@ func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
 
 func TestBuildBindsDelegationDirectory(t *testing.T) {
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(delegation.NewDirectoryFactory())
-	reg.MustRegister(delegation.NewServiceFactory())
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, delegation.NewServiceFactory())
 	doc := baseRuntimeDoc(t)
 	doc.Resources["delegation_directory"] = resource.Resource{
 		Kind: delegation.DirectoryKind, Impl: "local",

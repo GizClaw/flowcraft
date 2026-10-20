@@ -19,10 +19,7 @@ func TestSimToolsSourceExposesExpectedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	src, ok := value.(tool.Source)
-	if !ok {
-		t.Fatalf("New returned %T, want tool.Source", value)
-	}
+	src := tool.Source(value)
 	names := make(map[string]bool)
 	for _, definition := range src.Tools() {
 		names[definition.Definition().Name] = true

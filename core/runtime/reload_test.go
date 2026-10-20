@@ -241,8 +241,8 @@ func TestRuntimeReloadSwapsGenerationWithInFlightTurn(t *testing.T) {
 		gate: make(chan struct{}),
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(f)
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, f)
+	resource.MustRegister(reg, event.NewFactory())
 
 	doc1 := reloadDoc(t, `  bot:
     card: {name: Bot}
@@ -356,8 +356,8 @@ func TestRuntimeReloadReappliesResultHostDecorator(t *testing.T) {
 
 	engine := &markerEngineFactory{markers: make(chan int, 8)}
 	reg := resource.NewRegistry()
-	reg.MustRegister(engine)
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, engine)
+	resource.MustRegister(reg, event.NewFactory())
 
 	builder := NewBuilder(reg)
 	var calls atomic.Int64
@@ -457,8 +457,8 @@ func TestRuntimeReloadAllowsBusConfigChange(t *testing.T) {
 
 	built := make(chan event.Bus, 4)
 	reg := resource.NewRegistry()
-	reg.MustRegister(recordedBusFactory{built: built})
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, recordedBusFactory{built: built})
+	resource.MustRegister(reg, appendEngineFactory{})
 
 	doc1 := parseRuntimeDoc(t, `version: v1
 resources:
@@ -525,9 +525,9 @@ func TestRuntimeReloadAllowsCheckpointConfigChange(t *testing.T) {
 
 	backing := &sharedCheckpointBacking{cps: make(map[string]agent.Checkpoint)}
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(sharedStoreFactory{backing: backing})
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, sharedStoreFactory{backing: backing})
+	resource.MustRegister(reg, appendEngineFactory{})
 
 	doc1 := parseRuntimeDoc(t, `version: v1
 resources:
@@ -591,8 +591,8 @@ func TestRuntimeReloadSwapsAgentRemoveTimeout(t *testing.T) {
 		gate: make(chan struct{}),
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(f)
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, f)
 	doc := func(timeout string) deploy.Document {
 		return parseRuntimeDoc(t, `version: v1
 resources:
@@ -668,8 +668,8 @@ func TestRuntimeReloadRebindsDynamicAgents(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: append-engine}
@@ -707,8 +707,8 @@ func TestRuntimeReloadDrainsRemovedAgents(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc1 := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: append-engine}
@@ -751,8 +751,8 @@ func TestRuntimeReloadDrainTimeoutClearsTombstone(t *testing.T) {
 		gate: make(chan struct{}),
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(f)
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, f)
+	resource.MustRegister(reg, event.NewFactory())
 	doc1 := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: reload-engine}
@@ -809,8 +809,8 @@ func TestRuntimeReloadFailureKeepsOldGeneration(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc1 := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: append-engine}
@@ -839,9 +839,9 @@ func TestRuntimeReloadResumeRequiresDeleterStore(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(noDeleteStoreFactory{})
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, noDeleteStoreFactory{})
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc1 := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: append-engine}
@@ -881,8 +881,8 @@ func TestRuntimeReloadRejectsSharedBusFactory(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
 	reg := resource.NewRegistry()
-	reg.MustRegister(singletonBusFactory{bus: bus})
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, singletonBusFactory{bus: bus})
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc := parseRuntimeDoc(t, `version: v1
 resources:
   events: {kind: event.Bus, impl: singleton}
@@ -997,8 +997,8 @@ func TestReloadReplacesHostDecorator(t *testing.T) {
 
 	engine := &markerEngineFactory{markers: make(chan int, 8)}
 	reg := resource.NewRegistry()
-	reg.MustRegister(engine)
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, engine)
+	resource.MustRegister(reg, event.NewFactory())
 
 	doc := markerDoc(t)
 	builder := NewBuilder(reg)
@@ -1046,8 +1046,8 @@ func TestReloadReplacesResultHostDecorator(t *testing.T) {
 
 	engine := &markerEngineFactory{markers: make(chan int, 8)}
 	reg := resource.NewRegistry()
-	reg.MustRegister(engine)
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, engine)
+	resource.MustRegister(reg, event.NewFactory())
 
 	doc := markerDoc(t)
 	builder := NewBuilder(reg)
@@ -1095,11 +1095,11 @@ func TestReloadReplacesExternalsAndResolver(t *testing.T) {
 
 	records := &captureRecorder{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
-	reg.MustRegister(resolverCaptureFactory{records: records})
-	reg.MustRegister(runtimeExternalConsumerFactory{})
-	reg.MustRegister(noDeleteStoreFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
+	resource.MustRegister(reg, resolverCaptureFactory{records: records})
+	resource.MustRegister(reg, runtimeExternalConsumerFactory{})
+	resource.MustRegister(reg, noDeleteStoreFactory{})
 
 	doc := func(extraResources, runtimeSection, settings string) deploy.Document {
 		t.Helper()
@@ -1145,10 +1145,7 @@ runtime:
 
 	pools := []*runtimeExternalPool{{}, {}, {}}
 	external := func(pool *runtimeExternalPool) []ExternalResource {
-		return []ExternalResource{{
-			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-			Value:              pool,
-		}}
+		return []ExternalResource{NewExternal("db", "db.Pool", pool)}
 	}
 	builder := NewBuilder(reg)
 	if err := builder.WithExternalResource(external(pools[0])[0]); err != nil {
@@ -1185,10 +1182,7 @@ runtime:
 	// have, so an unchanged resolver would fail this reload instead of
 	// silently expanding with the old values.
 	if _, err := app.Reload(ctx, replaced,
-		WithReloadExternals(append(external(pools[1]), ExternalResource{
-			ExternalDependency: ExternalDependency{Name: "cache", Contract: "cache.Store"},
-			Value:              "cache-value",
-		})),
+		WithReloadExternals(append(external(pools[1]), NewExternal("cache", "cache.Store", "cache-value"))),
 		WithReloadResolver(ocwsResolver(map[string]string{
 			"cfg": "two", "extra": "added",
 		}))); err != nil {
@@ -1253,8 +1247,8 @@ func TestReloadOptionValidation(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(appendEngineFactory{})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, appendEngineFactory{})
 	doc := reloadDoc(t, `  bot:
     card: {name: Bot}
     engine: {kind: append-engine}
@@ -1267,10 +1261,7 @@ func TestReloadOptionValidation(t *testing.T) {
 
 	pool := &runtimeExternalPool{}
 	db := func(value any) ExternalResource {
-		return ExternalResource{
-			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-			Value:              value,
-		}
+		return NewExternal("db", "db.Pool", value)
 	}
 	cases := []struct {
 		name   string

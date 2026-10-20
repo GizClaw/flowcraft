@@ -25,7 +25,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -491,23 +490,6 @@ func mergeFileRefFields(customs []customNodeType) map[string][]string {
 		}
 	}
 	return merged
-}
-
-func optionalDep[T any](raw map[string]any, name string) (T, error) {
-	var zero T
-	value, present := raw[name]
-	if !present {
-		return zero, nil
-	}
-	typed, ok := value.(T)
-	if !ok {
-		return zero, errdefs.Validationf(
-			"graph engine: dep %q has Go type %T, want %v", name, value, reflect.TypeFor[T]())
-	}
-	if ptr.IsNil(typed) {
-		return zero, errdefs.Validationf("graph engine: dep %q is a typed nil", name)
-	}
-	return typed, nil
 }
 
 type nodeRequirements struct {

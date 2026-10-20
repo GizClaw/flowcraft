@@ -27,26 +27,20 @@ func TestAssemblyFactory(t *testing.T) {
 		t.Fatal("tool.Assembly/middleware factory not registered")
 	}
 
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{
 			"middlewares": {
 				"recover": {"enabled": true},
 				"telemetry": {"enabled": true},
 				"timeout": {"default": "5ms"}
 			},
 			"dynamic": {"default": "deferred"}
-		}`),
-		Deps: map[string]any{
-			"tool": tooltest.Source(slowTool("slow", 50*time.Millisecond)),
-		},
-	})
+		}`), map[string]any{
+		"tool": tooltest.Source(slowTool("slow", 50*time.Millisecond)),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	assembly, ok := value.(*tool.Assembly)
-	if !ok {
-		t.Fatalf("New returned %T, want *tool.Assembly", value)
-	}
+	assembly := value.(*tool.Assembly)
 	res := assembly.Execute(context.Background(),
 		message.ToolCall{ID: "c", Name: "slow", Arguments: []byte(`{}`)})
 	if !res.IsError || !strings.Contains(res.Content.Text(), "timed out") {
@@ -58,34 +52,25 @@ func TestAssemblyFactory(t *testing.T) {
 }
 
 func TestAssemblyFactoryRejectsBadTimeout(t *testing.T) {
-	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"middlewares": {"timeout": {"default": "not-a-duration"}}}`),
-		Deps: map[string]any{
-			"tool": tooltest.Source(slowTool("a", 0)),
-		},
-	})
+	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewInput([]byte(`{"middlewares": {"timeout": {"default": "not-a-duration"}}}`), map[string]any{
+		"tool": tooltest.Source(slowTool("a", 0)),
+	}, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("bad timeout = %v, want Validation", err)
 	}
 }
 
 func TestAssemblyFactoryAppliesResultLimit(t *testing.T) {
-	value, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"middlewares": {"result_limit": {"max": 40, "marker": "[cut]"}}}`),
-		Deps: map[string]any{
-			"tool": tooltest.Source(tooltest.FuncTool("long", "",
-				func(context.Context, string) (string, error) {
-					return strings.Repeat("x", 500), nil
-				})),
-		},
-	})
+	value, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewInput([]byte(`{"middlewares": {"result_limit": {"max": 40, "marker": "[cut]"}}}`), map[string]any{
+		"tool": tooltest.Source(tooltest.FuncTool("long", "",
+			func(context.Context, string) (string, error) {
+				return strings.Repeat("x", 500), nil
+			})),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	assembly, ok := value.(*tool.Assembly)
-	if !ok {
-		t.Fatalf("New returned %T, want *tool.Assembly", value)
-	}
+	assembly := value
 	res := assembly.Execute(context.Background(),
 		message.ToolCall{ID: "c", Name: "long", Arguments: []byte(`{}`)})
 	if got := len([]rune(res.Content.Text())); got != 40 {
@@ -109,22 +94,16 @@ func TestAssemblyFactoryAppliesTruncate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
-		Settings: settings,
-		Deps: map[string]any{
-			"tool": tooltest.Source(tooltest.FuncTool("long", "",
-				func(context.Context, string) (string, error) {
-					return strings.Repeat("x", 500), nil
-				})),
-		},
-	})
+	value, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewInput(settings, map[string]any{
+		"tool": tooltest.Source(tooltest.FuncTool("long", "",
+			func(context.Context, string) (string, error) {
+				return strings.Repeat("x", 500), nil
+			})),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	assembly, ok := value.(*tool.Assembly)
-	if !ok {
-		t.Fatalf("New returned %T, want *tool.Assembly", value)
-	}
+	assembly := value
 	res := assembly.Execute(context.Background(),
 		message.ToolCall{ID: "c", Name: "long", Arguments: []byte(`{}`)})
 	out := res.Content.Text()
@@ -151,12 +130,9 @@ func TestAssemblyFactoryRejectsBadResultLimit(t *testing.T) {
 		"misspelled key": `{"middlewares": {"result_limit": {"max": 100, "part_budget_byte": 1}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
-				Settings: []byte(settings),
-				Deps: map[string]any{
-					"tool": tooltest.Source(slowTool("a", 0)),
-				},
-			})
+			_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewInput([]byte(settings), map[string]any{
+				"tool": tooltest.Source(slowTool("a", 0)),
+			}, nil, nil))
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("settings %s = %v, want Validation", settings, err)
 			}
@@ -165,7 +141,7 @@ func TestAssemblyFactoryRejectsBadResultLimit(t *testing.T) {
 }
 
 func TestAssemblyFactoryRequiresSources(t *testing.T) {
-	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{})
+	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewTestInput(nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New without sources = %v, want Validation", err)
 	}

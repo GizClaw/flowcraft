@@ -173,11 +173,11 @@ func runChainDeployment(t *testing.T, doc, graph string) (string, error) {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	for _, factory := range []resource.Factory{
+	for _, factory := range []resource.Factory[any]{
 		chainToolSourceFactory{}, tokensBindingsFactory{},
 		auditBindingsFactory{}, clashBindingsFactory{},
 	} {
-		if err := registry.Register(factory); err != nil {
+		if err := resource.Register(registry, factory); err != nil {
 			t.Fatalf("register %T: %v", factory, err)
 		}
 	}

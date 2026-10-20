@@ -31,9 +31,7 @@ func (f expandRecorderFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: resource.Kind(f.kind),
 		Impl: f.impl,
-		Deps: []resource.DepSpec{{
-			Name: "secrets", Type: "secret.Store", Required: false,
-		}},
+		Deps: []resource.Requirement{depAnyOptional("secrets").Spec()},
 	}
 }
 
@@ -121,7 +119,7 @@ func TestBuilderExpandsResourceSettingsAllOpen(t *testing.T) {
 	t.Setenv("EXPAND_TEST_ROOT", "/srv/flowcraft")
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	builder := deploy.NewBuilder(reg, deploy.WithLoader(
@@ -149,7 +147,7 @@ func TestBuilderPerResourceSettingsStayIsolated(t *testing.T) {
 	t.Setenv("EXPAND_TEST_B", "value-b")
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	doc := deploy.Document{
@@ -178,8 +176,8 @@ func TestBuilderExpandsEngineAndHookSettings(t *testing.T) {
 	t.Setenv("EXPAND_TEST_HOOK", "hook-ok")
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandEngineFactory{records: &records})
-	reg.MustRegister(expandHookFactory{records: &records})
+	resource.MustRegister(reg, expandEngineFactory{records: &records})
+	resource.MustRegister(reg, expandHookFactory{records: &records})
 	doc := deploy.Document{
 		Version: "v1",
 		Agents: map[string]agent.Definition{
@@ -209,7 +207,7 @@ func TestBuilderExpandsEngineAndHookSettings(t *testing.T) {
 func TestBuilderEscapeAndCustomScheme(t *testing.T) {
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	resolver := resource.NewResolver(resource.SchemeFunc{
@@ -244,7 +242,7 @@ func TestBuilderCustomResolverKeepsBuiltinSchemes(t *testing.T) {
 	t.Setenv("EXPAND_TEST_ROOT", "/srv/flowcraft")
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	resolver := resource.NewResolver(resource.SchemeFunc{
@@ -278,7 +276,7 @@ func TestBuilderCustomResolverKeepsBuiltinSchemes(t *testing.T) {
 func TestBuilderDefersBoardReferences(t *testing.T) {
 	var records []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	doc := deploy.Document{
@@ -303,7 +301,7 @@ func TestBuilderDefersBoardReferences(t *testing.T) {
 
 func TestBuilderExpansionIsStrict(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &[]string{},
 	})
 	doc := deploy.Document{
@@ -329,7 +327,7 @@ func TestBuilderMissingEnvFailsExpansion(t *testing.T) {
 		}
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &[]string{},
 	})
 	doc := deploy.Document{
@@ -377,10 +375,10 @@ func TestBuilderSecretStoresFeedSecretScheme(t *testing.T) {
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
-	reg.MustRegister(customSecretFactory{})
+	resource.MustRegister(reg, customSecretFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -415,7 +413,7 @@ func TestBuilderSecretStoreAsDependency(t *testing.T) {
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	doc := deploy.Document{
@@ -469,7 +467,7 @@ func TestBuilderSecretReferenceWithoutDefaultStoreFails(t *testing.T) {
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &[]string{},
 	})
 	doc := deploy.Document{
@@ -503,7 +501,7 @@ func TestBuilderFileSecretStore(t *testing.T) {
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}
-	reg.MustRegister(expandRecorderFactory{
+	resource.MustRegister(reg, expandRecorderFactory{
 		kind: "expand.test", impl: "record", records: &records,
 	})
 	doc := deploy.Document{
@@ -536,8 +534,8 @@ func TestBuilderSecretSchemeInEngineAndHookSettings(t *testing.T) {
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}
-	reg.MustRegister(expandEngineFactory{records: &records})
-	reg.MustRegister(expandHookFactory{records: &records})
+	resource.MustRegister(reg, expandEngineFactory{records: &records})
+	resource.MustRegister(reg, expandHookFactory{records: &records})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -599,8 +597,8 @@ func TestBuilderSecretCacheTTL(t *testing.T) {
 		t.Helper()
 		store := &countingSecretStore{}
 		reg := resource.NewRegistry()
-		reg.MustRegister(countingSecretFactory{store: store})
-		reg.MustRegister(expandRecorderFactory{
+		resource.MustRegister(reg, countingSecretFactory{store: store})
+		resource.MustRegister(reg, expandRecorderFactory{
 			kind: "expand.test", impl: "record", records: &[]string{},
 		})
 		doc := deploy.Document{
@@ -649,8 +647,8 @@ func TestBuilderSecretCacheCapacity(t *testing.T) {
 		t.Helper()
 		store := &countingSecretStore{}
 		reg := resource.NewRegistry()
-		reg.MustRegister(countingSecretFactory{store: store})
-		reg.MustRegister(expandRecorderFactory{
+		resource.MustRegister(reg, countingSecretFactory{store: store})
+		resource.MustRegister(reg, expandRecorderFactory{
 			kind: "expand.test", impl: "record", records: &[]string{},
 		})
 		refs := []string{"count.x", "count.y", "count.x"}

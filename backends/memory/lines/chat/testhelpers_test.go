@@ -29,13 +29,9 @@ func newTestRuntime(t *testing.T, providers []inference.ProviderDefinition) *inf
 	for index, provider := range providers {
 		deps[fmt.Sprintf("provider.%d", index)] = provider
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{Deps: deps})
+	value, err := inference.Factory{}.New(context.Background(), resource.NewTestInput(deps))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(*inference.Assembly)
-	if !ok {
-		t.Fatalf("inference factory returned %T", value)
-	}
-	return assembly
+	return value
 }

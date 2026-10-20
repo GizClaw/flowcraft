@@ -73,16 +73,16 @@ func catalogEngine(t *testing.T, got chan<- []string) agent.Engine {
 func TestBuild_DynamicCatalogMapsToolsPerAgent(t *testing.T) {
 	got := make(chan []string, 2)
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: catalogEngine(t, got)})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: catalogEngine(t, got)})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: event.NewMemoryBus(),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
 		value: buildTestAssembly(t, "research_tool"),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "test"},
 		value: buildTestAssembly(t, "assist_tool"),
 	})
@@ -112,12 +112,12 @@ func TestBuild_DynamicCatalogMapsToolsPerAgent(t *testing.T) {
 func TestBuild_DynamicCatalogDefaultCoversAgents(t *testing.T) {
 	got := make(chan []string, 1)
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: catalogEngine(t, got)})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: catalogEngine(t, got)})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: event.NewMemoryBus(),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
 		value: buildTestAssembly(t, "research_tool"),
 	})
@@ -139,12 +139,12 @@ func TestBuild_DynamicCatalogDefaultCoversAgents(t *testing.T) {
 
 func TestBuild_DynamicCatalogRejectsBadMappings(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: noopEngine()})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: noopEngine()})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: event.NewMemoryBus(),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
 		value: buildTestAssembly(t, "research_tool"),
 	})
@@ -169,12 +169,12 @@ func TestBuild_DynamicCatalogRejectsBadMappings(t *testing.T) {
 
 func TestBuild_DynamicCatalogRejectsTypedNilAssembly(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: noopEngine()})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: noopEngine()})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: event.NewMemoryBus(),
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
 		value: (*tool.Assembly)(nil),
 	})

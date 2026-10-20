@@ -151,13 +151,11 @@ func assemblyWithProviders(
 		deps[name] = definition
 	}
 	factory := inference.Factory{}
-	value, err := factory.New(context.Background(), resource.Input{
-		Deps: deps,
-	})
+	value, err := factory.New(context.Background(), resource.NewTestInput(deps))
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
 	}
-	return value.(*inference.Assembly)
+	return value
 }
 
 func routeRequest() inference.GenerateRequest {
@@ -220,9 +218,7 @@ func TestRouterGenerateFallsBackAcrossPools(t *testing.T) {
 func TestFactoryBuildsRouterFromSettings(t *testing.T) {
 	assembly := newRouteAssembly(t)
 	factory := Factory{}
-	value, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{"target": assembly},
-		Settings: []byte(`{
+	value, err := factory.New(context.Background(), resource.NewInput([]byte(`{
 			"generate": [
 				{"tier": "primary", "targets": [{"model": {"id": {"provider": "bad", "name": "model-1"}}}]},
 				{"tier": "fallback", "targets": [{"model": {"id": {"provider": "good", "name": "model-1"}}}]}
@@ -234,15 +230,11 @@ func TestFactoryBuildsRouterFromSettings(t *testing.T) {
 					"fallback_on_retry_exhausted": true
 				}
 			}
-		}`),
-	})
+		}`), map[string]any{"target": assembly}, nil, nil))
 	if err != nil {
 		t.Fatalf("Factory.New: %v", err)
 	}
-	router, ok := value.(*Router)
-	if !ok {
-		t.Fatalf("Factory.New returned %T, want *Router", value)
-	}
+	router := value
 	response, _, err := router.Generate(context.Background(), routeRequest())
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -468,13 +460,11 @@ func transcriptionAssemblyWith(
 	for name, definition := range definitions {
 		deps["provider."+name] = definition
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: deps,
-	})
+	value, err := inference.Factory{}.New(context.Background(), resource.NewTestInput(deps))
 	if err != nil {
 		t.Fatalf("build transcription assembly: %v", err)
 	}
-	return value.(*inference.Assembly)
+	return value
 }
 
 // noopSleeper replaces the retry backoff sleeper so resilience tests run
@@ -617,24 +607,18 @@ func TestRouterTranscribeSessionOpens(t *testing.T) {
 func TestFactoryBuildsRouterWithTranscription(t *testing.T) {
 	assembly := newTranscriptionRouteAssembly(t)
 	factory := Factory{}
-	value, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{"target": assembly},
-		Settings: []byte(`{
+	value, err := factory.New(context.Background(), resource.NewInput([]byte(`{
 			"transcription": [
 				{"tier": "primary", "targets": [{"model": {"id": {"provider": "good", "name": "model-1"}}}]}
 			],
 			"retry": {
 				"transcription": {"max_attempts": 1}
 			}
-		}`),
-	})
+		}`), map[string]any{"target": assembly}, nil, nil))
 	if err != nil {
 		t.Fatalf("Factory.New: %v", err)
 	}
-	router, ok := value.(*Router)
-	if !ok {
-		t.Fatalf("Factory.New returned %T, want *Router", value)
-	}
+	router := value
 	response, _, err := router.Transcribe(
 		context.Background(),
 		routeTranscriptionRequest(),

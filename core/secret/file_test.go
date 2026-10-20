@@ -30,14 +30,12 @@ func TestFileStoreReadsSecretFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal base: %v", err)
 	}
-	value, err := fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"base": ` + string(base) + `, "id": "files", "default": true}`),
-	})
+	value, err := fileFactory{}.New(context.Background(), resource.NewInput([]byte(`{"base": `+string(base)+`, "id": "files", "default": true}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	store := value.(resource.SecretStore)
-	if m, ok := value.(resource.SecretStoreID); !ok || m.SecretStoreID() != "files" {
+	store := resource.SecretStore(value)
+	if m := resource.SecretStoreID(value); m.SecretStoreID() != "files" {
 		t.Fatalf("SecretStoreID = %v, want files", m)
 	}
 	if !store.DefaultSecretStore() {
@@ -55,13 +53,11 @@ func TestFileStoreMissingAndEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal base: %v", err)
 	}
-	value, err := fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"base": ` + string(base) + `}`),
-	})
+	value, err := fileFactory{}.New(context.Background(), resource.NewInput([]byte(`{"base": `+string(base)+`}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	store := value.(resource.SecretStore)
+	store := resource.SecretStore(value)
 	if _, found, err := store.Lookup(context.Background(), "missing"); err != nil || found {
 		t.Fatalf("missing Lookup = (%v, %v), want not found", found, err)
 	}
@@ -71,15 +67,11 @@ func TestFileStoreMissingAndEscape(t *testing.T) {
 }
 
 func TestFileStoreValidation(t *testing.T) {
-	_, err := fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"default": true}`),
-	})
+	_, err := fileFactory{}.New(context.Background(), resource.NewInput([]byte(`{"default": true}`), nil, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("missing base error = %v, want validation", err)
 	}
-	_, err = fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"base": "/tmp", "bogus": 1}`),
-	})
+	_, err = fileFactory{}.New(context.Background(), resource.NewInput([]byte(`{"base": "/tmp", "bogus": 1}`), nil, nil, nil))
 	if err == nil {
 		t.Fatal("New accepted unknown settings field")
 	}

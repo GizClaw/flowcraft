@@ -35,7 +35,7 @@ func (f testEngineFactory) New(context.Context, resource.Input) (any, error) {
 func buildResult(t *testing.T, engine agent.Engine) *deploy.Result {
 	t.Helper()
 	reg := resource.NewRegistry()
-	if err := reg.Register(testEngineFactory{engine: engine}); err != nil {
+	if err := resource.Register(reg, testEngineFactory{engine: engine}); err != nil {
 		t.Fatal(err)
 	}
 	doc := deploy.Document{
@@ -135,8 +135,8 @@ func TestDirectoryBindListGetLookup(t *testing.T) {
 
 func TestLocalDirectoryBindDeployment(t *testing.T) {
 	directory := NewDirectory()
-	if err := directory.BindDeployment("not a deployment"); !errdefs.IsValidation(err) {
-		t.Fatalf("BindDeployment(wrong type) error = %v, want validation", err)
+	if err := directory.BindDeployment(nil); !errdefs.IsValidation(err) {
+		t.Fatalf("BindDeployment(nil view) error = %v, want validation", err)
 	}
 	result := buildResult(t, completedEngine("ok"))
 	if err := directory.BindDeployment(result); err != nil {

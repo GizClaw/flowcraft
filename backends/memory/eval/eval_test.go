@@ -133,14 +133,11 @@ func TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot(t *testing.T) {
 	  "interval": "0"
 	}`
 	value, err := flowcraftmemory.NewFactory(flowcraftmemory.WithDeriver(fakeDeriver{})).New(
-		ctx, resource.Input{Settings: []byte(settings), Deps: map[string]any{"workspace": ws}})
+		ctx, resource.NewInput([]byte(settings), map[string]any{"workspace": ws}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(Runner)
-	if !ok {
-		t.Fatalf("assembly does not satisfy Runner: %T", value)
-	}
+	assembly := Runner(value)
 	ran, err := Maintain(ctx, assembly, []corememory.Scope{
 		{RuntimeID: "memories"}, {RuntimeID: "memories"}, {RuntimeID: "other"},
 	})
@@ -169,17 +166,12 @@ func TestRunAgainstAssembly(t *testing.T) {
 	  "interval": "0"
 	}`
 	value, err := flowcraftmemory.NewFactory(flowcraftmemory.WithDeriver(fakeDeriver{})).New(
-		context.Background(), resource.Input{
-			Settings: []byte(settings),
-			Deps:     map[string]any{"workspace": ws},
-		})
+		context.Background(), resource.NewInput([]byte(settings),
+			map[string]any{"workspace": ws}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(Runner)
-	if !ok {
-		t.Fatalf("assembly does not satisfy Runner: %T", value)
-	}
+	assembly := Runner(value)
 	scenario := Scenario{
 		Name: "assembly-smoke", Scope: Scope{RuntimeID: "memories"}, ConversationID: "conv-1",
 		Turns: []Turn{{IdempotencyKey: "t1", Messages: []coremessage.Message{{

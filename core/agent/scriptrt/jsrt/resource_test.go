@@ -36,16 +36,11 @@ func TestDeployFactoryBuildsDefaultAndConfiguredRuntime(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, err := NewDeployFactory().New(context.Background(), resource.Input{
-				Settings: settingsJSON(t, tt.settings),
-			})
+			value, err := NewDeployFactory().New(context.Background(), resource.NewInput(settingsJSON(t, tt.settings), nil, nil, nil))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			rt, ok := value.(*Runtime)
-			if !ok {
-				t.Fatalf("New returned %T, want *jsrt.Runtime", value)
-			}
+			rt := value
 			if tt.configured {
 				if rt.poolSize != 1 || rt.maxCallStackSize != 64 ||
 					rt.maxExecTime != 50*time.Millisecond {
@@ -76,9 +71,7 @@ func TestDeployFactoryRejectsInvalidSettings(t *testing.T) {
 	}
 	for _, settings := range tests {
 		t.Run(settings, func(t *testing.T) {
-			if _, err := NewDeployFactory().New(context.Background(), resource.Input{
-				Settings: settingsJSON(t, settings),
-			}); err == nil {
+			if _, err := NewDeployFactory().New(context.Background(), resource.NewInput(settingsJSON(t, settings), nil, nil, nil)); err == nil {
 				t.Fatal("New accepted invalid settings")
 			}
 		})
@@ -86,9 +79,7 @@ func TestDeployFactoryRejectsInvalidSettings(t *testing.T) {
 }
 
 func TestDeployFactoryAcceptsZeroExecTime(t *testing.T) {
-	_, err := NewDeployFactory().New(context.Background(), resource.Input{
-		Settings: settingsJSON(t, `{"max_exec_time":"0s"}`),
-	})
+	_, err := NewDeployFactory().New(context.Background(), resource.NewInput(settingsJSON(t, `{"max_exec_time":"0s"}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New rejected zero max_exec_time: %v", err)
 	}

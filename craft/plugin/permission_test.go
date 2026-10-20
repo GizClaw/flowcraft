@@ -252,10 +252,7 @@ func TestPluginHookSourceRunsAndDrops(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runner factory: %v", err)
 		}
-		manager, ok := value.(*hooks.Manager)
-		if !ok {
-			t.Fatalf("runner factory returned %T", value)
-		}
+		manager := value
 		return manager
 	}
 

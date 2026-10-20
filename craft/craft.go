@@ -939,6 +939,7 @@ func toRuntimeExternals(
 				Contract: external.Contract,
 			},
 			Value: external.Value,
+			Type:  external.Type,
 		})
 	}
 	return out

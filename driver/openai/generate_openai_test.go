@@ -300,11 +300,11 @@ func TestEscapedEnvSecretSurvivesFactoryDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	var impl *inference.ModelImplementation
 	for i := range provider.Models {
 		if provider.Models[i].Descriptor.ID.Name == "gpt-5.6-sol" {

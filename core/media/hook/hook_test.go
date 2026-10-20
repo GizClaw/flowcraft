@@ -346,7 +346,7 @@ func TestNormalizePartsHonoursCancellation(t *testing.T) {
 		t.Fatalf("normalizeParts error = %v, want context.Canceled", err)
 	}
 
-	value, err := prepareFactory{}.New(context.Background(), resource.Input{})
+	value, err := prepareFactory{}.New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestNormalizePartsHonoursCancellation(t *testing.T) {
 		Role:    message.RoleUser,
 		Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
 	})
-	if _, err := value.(agent.Preparer).Before(ctx,
+	if _, err := value.Before(ctx,
 		agent.Identity{RunID: "r1"}, &agent.Request{TaskID: "t1"}, board); err == nil {
 		t.Fatal("Before ignored a cancelled context")
 	}
@@ -436,22 +436,17 @@ func TestRegisterAddsTheFactory(t *testing.T) {
 }
 
 func TestPrepareFactoryNew(t *testing.T) {
-	value, err := prepareFactory{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	value, err := prepareFactory{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 work_dir: /ws
 passthrough_kinds: [video]
 audio_marker: "A "
 image_marker: "I "
 max_inline_bytes: 4096
-`),
-	})
+`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	preparer, ok := value.(agent.Preparer)
-	if !ok {
-		t.Fatalf("New returned %T, want an agent.Preparer", value)
-	}
+	preparer := value
 	if _, err := preparer.Before(context.Background(), agent.Identity{RunID: "r1"},
 		&agent.Request{TaskID: "t1"}, nil); err == nil {
 		t.Fatal("Before accepted a nil board")
@@ -463,9 +458,7 @@ max_inline_bytes: 4096
 		"unknown field":            `{"nope": 1}`,
 		"wrong field type":         `{"work_dir": 3}`,
 	} {
-		if _, err := (prepareFactory{}).New(context.Background(), resource.Input{
-			Settings: settingsNode(t, settings),
-		}); err == nil {
+		if _, err := (prepareFactory{}).New(context.Background(), resource.NewInput(settingsNode(t, settings), nil, nil, nil)); err == nil {
 			t.Errorf("%s: New accepted the settings", name)
 		}
 	}
@@ -478,13 +471,11 @@ func TestPreparerNormalizesTheBoard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := prepareFactory{}.New(context.Background(), resource.Input{
-		Settings: settings,
-	})
+	value, err := prepareFactory{}.New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := value.(agent.Preparer)
+	preparer := value
 
 	turn := message.Message{Role: message.RoleUser, Content: message.Content{
 		Parts: []message.Part{

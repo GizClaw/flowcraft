@@ -79,7 +79,7 @@ func runBindingsDeployment(t *testing.T, doc string) string {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	if err := registry.Register(echoSourceFactory{}); err != nil {
+	if err := resource.Register(registry, echoSourceFactory{}); err != nil {
 		t.Fatalf("register echo source: %v", err)
 	}
 
@@ -187,12 +187,15 @@ func (tokensBindingsFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: bindings.ResourceKind,
 		Impl: "tokens",
-		Deps: []resource.DepSpec{{Name: "base", Type: bindings.ResourceKind}},
+		Deps: []resource.Requirement{resource.Optional[any]("base").Spec()},
 	}
 }
 
 func (tokensBindingsFactory) New(_ context.Context, in resource.Input) (any, error) {
-	base, ok := in.Dep("base")
+	base, ok, err := resource.Optional[any]("base").TryGet(in)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return bindings.Provider(tokensProvider{}), nil
 	}
@@ -239,10 +242,10 @@ func TestDeployDocumentHostBindingsComposeWithStandard(t *testing.T) {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	if err := registry.Register(echoSourceFactory{}); err != nil {
+	if err := resource.Register(registry, echoSourceFactory{}); err != nil {
 		t.Fatalf("register echo source: %v", err)
 	}
-	if err := registry.Register(tokensBindingsFactory{}); err != nil {
+	if err := resource.Register(registry, tokensBindingsFactory{}); err != nil {
 		t.Fatalf("register tokens bindings: %v", err)
 	}
 

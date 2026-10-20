@@ -27,14 +27,11 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	if provider.ID != "openai" || len(provider.Profiles) != 1 ||
 		len(provider.Models) != len(fixtureNames) {
 		t.Fatalf("provider = %+v", provider)
@@ -76,14 +73,11 @@ func TestResourceDecisionOpenerServesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	var declared *inference.ModelImplementation
 	for index := range provider.Models {
 		if provider.Models[index].Descriptor.ID.Name == "gpt-6-luna" {
@@ -177,7 +171,7 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoder, ok := provider.ExtensionDecoders[extensionGenerate]
 	if !ok {
 		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionGenerate)
@@ -216,7 +210,7 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	decoder = value.(inference.ProviderDefinition).ExtensionDecoders[extensionGenerate]
+	decoder = value.ExtensionDecoders[extensionGenerate]
 	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
 		Provider: "oa-prod",
 		ID:       extensionGenerate,

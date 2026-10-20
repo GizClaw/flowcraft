@@ -66,17 +66,11 @@ func newVectorAssemblyOn(t *testing.T, ws workspace.Workspace) *Assembly {
 	value, err := NewFactory(
 		WithClock(func() time.Time { return testNow }),
 		WithDeriver(fakeDeriver{}),
-	).New(context.Background(), resource.Input{
-		Settings: []byte(vectorAssemblySettings()),
-		Deps:     map[string]any{"workspace": ws, "inference": fake.Assembly(t)},
-	})
+	).New(context.Background(), resource.NewInput([]byte(vectorAssemblySettings()), map[string]any{"workspace": ws, "inference": fake.Assembly(t)}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(*Assembly)
-	if !ok {
-		t.Fatalf("factory returned %T, want *Assembly", value)
-	}
+	assembly := value
 	if err := assembly.Wire(context.Background()); err != nil {
 		t.Fatal(err)
 	}

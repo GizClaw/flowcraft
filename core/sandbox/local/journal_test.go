@@ -205,7 +205,7 @@ func TestJournalSettingsBuild(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			value, err := factory.New(ctx, resource.Input{Settings: settings(tc.body)})
+			value, err := factory.Build(ctx, resource.NewInput(settings(tc.body), nil, nil, nil))
 			if tc.want(err) {
 				return
 			}

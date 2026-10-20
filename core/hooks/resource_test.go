@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,16 +36,11 @@ func TestRunnerFactoryBuildsLoadedManager(t *testing.T) {
 	path := writeHooks(t, `{
 		"hooks": {"PreToolUse": [{"hooks": [{"command": "`+appendHook(out)+`"}]}]}
 	}`)
-	value, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: settingsFor(t, path),
-	})
+	value, err := NewFactory().New(context.Background(), resource.NewInput(settingsFor(t, path), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	manager, ok := value.(*Manager)
-	if !ok {
-		t.Fatalf("factory returned %T, want *hooks.Manager", value)
-	}
+	manager := value
 	if manager.Path() != path {
 		t.Fatalf("manager path = %q, want %q", manager.Path(), path)
 	}
@@ -55,9 +51,7 @@ func TestRunnerFactoryBuildsLoadedManager(t *testing.T) {
 func TestRunnerFactoryRequiresPath(t *testing.T) {
 	t.Parallel()
 	for _, settings := range []string{`{}`, `{"path": "  "}`} {
-		_, err := NewFactory().New(context.Background(), resource.Input{
-			Settings: []byte(settings),
-		})
+		_, err := NewFactory().New(context.Background(), resource.NewInput([]byte(settings), nil, nil, nil))
 		if err == nil {
 			t.Fatalf("settings %s: a missing path must fail the build", settings)
 		}
@@ -66,9 +60,7 @@ func TestRunnerFactoryRequiresPath(t *testing.T) {
 
 func TestRunnerFactoryRejectsUnknownSettings(t *testing.T) {
 	t.Parallel()
-	_, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: []byte(`{"path": "/tmp/hooks.json", "matcher": "^x$"}`),
-	})
+	_, err := NewFactory().New(context.Background(), resource.NewInput([]byte(`{"path": "/tmp/hooks.json", "matcher": "^x$"}`), nil, nil, nil))
 	if err == nil {
 		t.Fatal("an unknown settings field must fail the build")
 	}
@@ -76,13 +68,11 @@ func TestRunnerFactoryRejectsUnknownSettings(t *testing.T) {
 
 func TestRunnerFactoryAllowsMissingFile(t *testing.T) {
 	t.Parallel()
-	value, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: settingsFor(t, filepath.Join(t.TempDir(), "absent.json")),
-	})
+	value, err := NewFactory().New(context.Background(), resource.NewInput(settingsFor(t, filepath.Join(t.TempDir(), "absent.json")), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if manager := value.(*Manager); !manager.Empty() {
+	if manager := value; !manager.Empty() {
 		t.Fatal("a missing hooks.json must yield an empty manager, not an error")
 	}
 }
@@ -103,14 +93,12 @@ func TestRunnerFactoryWiresSourceProvider(t *testing.T) {
 	}}}
 	value, err := NewFactory(WithSources(provider)).New(
 		context.Background(),
-		resource.Input{
-			Settings: settingsFor(t, filepath.Join(t.TempDir(), "absent.json")),
-		},
+		resource.NewInput(settingsFor(t, filepath.Join(t.TempDir(), "absent.json")), nil, nil, nil),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	manager := value.(*Manager)
+	manager := value
 	manager.Fire(context.Background(), EventPreToolUse, map[string]any{
 		"tool":       "exec_command",
 		"tool_input": map[string]any{"command": "secret"},
@@ -131,35 +119,29 @@ func TestRunnerFactoryReadsSourceDep(t *testing.T) {
 	}`), 0o600); err != nil {
 		t.Fatalf("write plugin hooks.json: %v", err)
 	}
-	factory := NewFactory(WithSourceDep("plugins", "craft.PluginHost"))
+	factory := NewFactory(WithSourceDep[SourceProvider]("plugins"))
 	deps := factory.Spec().Deps
 	if len(deps) != 1 || deps[0].Name != "plugins" ||
-		deps[0].Type != "craft.PluginHost" || deps[0].Required {
+		deps[0].Type != reflect.TypeFor[SourceProvider]() || deps[0].Required {
 		t.Fatalf("Spec deps = %+v, want the optional plugins dep", deps)
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: settingsFor(t, filepath.Join(t.TempDir(), "absent.json")),
-		Deps: map[string]any{"plugins": staticProvider{sources: []ExtraSource{{
-			Path: filepath.Join(pluginDir, "hooks.json"),
-			Dir:  pluginDir,
-		}}}},
-	})
+	value, err := factory.New(context.Background(), resource.NewInput(settingsFor(t, filepath.Join(t.TempDir(), "absent.json")), map[string]any{"plugins": staticProvider{sources: []ExtraSource{{
+		Path: filepath.Join(pluginDir, "hooks.json"),
+		Dir:  pluginDir,
+	}}}}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	manager := value.(*Manager)
+	manager := value
 	manager.Fire(context.Background(), EventPreToolUse, map[string]any{"tool": "x"})
 	waitForContent(t, out)
 }
 
 func TestRunnerFactoryRejectsWrongSourceDep(t *testing.T) {
 	t.Parallel()
-	_, err := NewFactory(WithSourceDep("plugins", "craft.PluginHost")).New(
+	_, err := NewFactory(WithSourceDep[SourceProvider]("plugins")).New(
 		context.Background(),
-		resource.Input{
-			Settings: settingsFor(t, filepath.Join(t.TempDir(), "absent.json")),
-			Deps:     map[string]any{"plugins": "not a provider"},
-		},
+		resource.NewInput(settingsFor(t, filepath.Join(t.TempDir(), "absent.json")), map[string]any{"plugins": "not a provider"}, nil, nil),
 	)
 	if err == nil {
 		t.Fatal("a dep that is not a SourceProvider must fail the build")
@@ -186,7 +168,7 @@ func TestObserverFactorySpec(t *testing.T) {
 	if spec.Kind != ObserverResourceKind || spec.Impl != ImplLocal {
 		t.Fatalf("Spec = %+v, want %s/%s", spec, ObserverResourceKind, ImplLocal)
 	}
-	want := map[string]string{EventBusDep: "event.Bus", RunnerDep: ResourceKind}
+	want := map[string]reflect.Type{EventBusDep: reflect.TypeFor[event.Bus](), RunnerDep: reflect.TypeFor[*Manager]()}
 	if len(spec.Deps) != len(want) {
 		t.Fatalf("Spec deps = %+v, want %v", spec.Deps, want)
 	}
@@ -216,13 +198,11 @@ func TestRegisterRegistersBothKinds(t *testing.T) {
 func TestRegisterRejectsAnIncompleteSourceDep(t *testing.T) {
 	t.Parallel()
 	registry := resource.NewRegistry()
-	// A half-declared dependency is caught by spec validation at
-	// registration, not silently left to build time.
-	if err := Register(registry, WithSourceDep("", "craft.PluginHost")); err == nil {
+	// The contract comes from the type parameter now, so the only way a
+	// source dep can be half-declared is an empty name — caught by spec
+	// validation at registration, not silently left to build time.
+	if err := Register(registry, WithSourceDep[SourceProvider]("")); err == nil {
 		t.Fatal("an empty source dep name must fail registration")
-	}
-	if err := Register(registry, WithSourceDep("plugins", "")); err == nil {
-		t.Fatal("an empty source dep contract must fail registration")
 	}
 }
 
@@ -232,16 +212,11 @@ func TestObserverFactoryForwardsTransitions(t *testing.T) {
 	manager, start, _ := startsAndStops(t)
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
-	value, err := observerFactory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{EventBusDep: bus, RunnerDep: manager},
-	})
+	value, err := observerFactory{}.New(context.Background(), resource.NewTestInput(map[string]any{EventBusDep: bus, RunnerDep: manager}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	observer, ok := value.(*Observer)
-	if !ok {
-		t.Fatalf("factory returned %T, want *hooks.Observer", value)
-	}
+	observer := value
 	if err := observer.Wire(context.Background()); err != nil {
 		t.Fatalf("Wire: %v", err)
 	}
@@ -276,7 +251,7 @@ func TestObserverFactoryValidatesDeps(t *testing.T) {
 		},
 	} {
 		if _, err := (observerFactory{}).New(
-			context.Background(), resource.Input{Deps: deps},
+			context.Background(), resource.NewTestInput(deps),
 		); err == nil {
 			t.Fatalf("%s: New must fail", name)
 		}

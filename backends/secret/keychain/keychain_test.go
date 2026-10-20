@@ -146,10 +146,7 @@ func TestFactoryNewDecodesSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	store, ok := value.(Store)
-	if !ok {
-		t.Fatalf("New returned %T, want keychain.Store", value)
-	}
+	store := value
 	if !store.DefaultSecretStore() || store.SecretStoreID() != "keychain" {
 		t.Fatalf("decoded flags = (%v, %q)", store.DefaultSecretStore(), store.SecretStoreID())
 	}
@@ -368,7 +365,7 @@ func TestSecretResolverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := f.New(ctx, resource.Input{Settings: raw})
+	value, err := f.Build(ctx, resource.NewInput(raw, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

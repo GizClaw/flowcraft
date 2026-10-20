@@ -18,9 +18,9 @@ func TestRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("event.Bus/memory factory not registered")
 	}
-	value, err := factory.New(context.Background(), resource.Input{})
+	value, err := factory.Build(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
 	if _, ok := value.(*event.MemoryBus); !ok {
 		t.Fatalf("New returned %T, want *event.MemoryBus", value)
@@ -33,9 +33,7 @@ func TestRegisterRejectsSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("event.Bus", "memory")
-	if _, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"bogus": 1}`),
-	}); err == nil {
+	if _, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"bogus": 1}`), nil, nil, nil)); err == nil {
 		t.Fatal("New unexpectedly accepted unknown settings")
 	}
 }
@@ -46,9 +44,7 @@ func TestFactoryAppliesRouteCacheSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("event.Bus", "memory")
-	if _, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"route_cache_size": 0}`),
-	}); err != nil {
+	if _, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"route_cache_size": 0}`), nil, nil, nil)); err != nil {
 		t.Fatalf("New with route_cache_size: %v", err)
 	}
 }
@@ -65,7 +61,7 @@ func (*recordingObserver) OnDrop(event.SubscriptionID, event.Envelope, event.Dro
 func TestFactoryInjectsObserver(t *testing.T) {
 	obs := &recordingObserver{}
 	factory := event.NewFactory(event.WithObserver(obs))
-	value, err := factory.New(context.Background(), resource.Input{})
+	value, err := factory.New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

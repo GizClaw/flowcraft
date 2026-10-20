@@ -23,14 +23,11 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	if provider.ID != "minimax" || len(provider.Models) == 0 {
 		t.Fatalf("provider = %+v", provider)
 	}
@@ -56,7 +53,7 @@ func TestProviderCarriesMusicOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoder, ok := provider.ExtensionDecoders[extensionMusic]
 	if !ok {
 		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionMusic)
@@ -87,7 +84,7 @@ func TestProviderCarriesMusicOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	decoder = value.(inference.ProviderDefinition).ExtensionDecoders[extensionMusic]
+	decoder = value.ExtensionDecoders[extensionMusic]
 	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
 		Provider: "mm-prod",
 		ID:       extensionMusic,
@@ -112,7 +109,7 @@ func TestProviderCarriesImageOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoder, ok := provider.ExtensionDecoders[extensionImage]
 	if !ok {
 		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionImage)
@@ -144,7 +141,7 @@ func TestProviderCarriesVideoOptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoder, ok := provider.ExtensionDecoders[extensionVideo]
 	if !ok {
 		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionVideo)
@@ -181,7 +178,7 @@ func TestProviderCarriesContextIROptionsDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	decoder, ok := provider.ExtensionDecoders[extensionContextIR]
 	if !ok {
 		t.Fatalf("ExtensionDecoders = %#v, want %q",
