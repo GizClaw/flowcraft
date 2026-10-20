@@ -10,12 +10,8 @@ github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0/go.mod h1:Y33Q
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/GizClaw/flowcraft/core v0.9.0 h1:1tbciOOPUFfzt3JcmvAuROiAZLoOSleMorPcwzgm5hE=
 github.com/GizClaw/flowcraft/core v0.9.0/go.mod h1:1OusrPubTBEkB4l71jM0xlkvjfN5kxUOKtZ2qy8a7W8=
-github.com/GizClaw/flowcraft/driver/anthropic v0.3.5-0.20261020050117-f3bb9f3e651c h1:+6K/GVfoTICe1hxtcl55aNqFuEXUbt7e8ddX3fpwXE4=
-github.com/GizClaw/flowcraft/driver/anthropic v0.3.5-0.20261020050117-f3bb9f3e651c/go.mod h1:SFj9XPlmPT5n4dRWKrxSojMbMD3JQwesR/Z2eColBeo=
-github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c h1:GW8cOcgccCMdTniN8k4xnz51REg9PBgk9bLvWYHbyls=
-github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c/go.mod h1:AZ+NFdUDsx8us0cNEVUgcmUN3E6QCoYC1HI417GUYWs=
-github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c h1:+Ko+JT2/BqXW3qhhSuB/asRNzLptqJntJP4fIAaxGNE=
-github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c/go.mod h1:ZwviWekYotKIEuvebw2cgNcJ9Gvt9U9PVj4K7LSRcs8=
+github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e h1:aNpeE44tSq1NX8Z0yRsYRruodHGJE1bevYQNpux0Eig=
+github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e/go.mod h1:JNRVKr/kmAxYYOJJFzquxw3RvBP7Nyq1MMcMStrMqnk=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=
 github.com/Masterminds/semver/v3 v3.2.1/go.mod h1:qvl/7zhW3nngYb5+80sSMF+FG2BjYrf8m9wsX0PNOMQ=
 github.com/anthropics/anthropic-sdk-go v1.61.0 h1:JRTnm1tPqn5xo1xd1zfrcFDlcoWXVMvV1K68YmhpZKw=

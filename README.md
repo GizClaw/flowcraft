@@ -33,7 +33,7 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   package, update in place with a rollback snapshot, and uninstall with
   the data they own; a remote update source is validated here and fetched
   by the application (`plugin.Installer`).
-- **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
+- **`driver`** — Provider adapters built on `core`, one module: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance,
   MiniMax, DashScope (Alibaba Cloud Model Studio's native surfaces: text
   generation, embeddings, speech synthesis, file transcription, and the Wan
@@ -115,7 +115,7 @@ by step.
 
 ### Embed FlowCraft in a Go service
 
-Use `core` directly and add `driver/*` or `backends/*` for provider
+Use `core` directly and add `driver` or `backends/*` for provider
 adapters and platform backends.
 Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
 `core/runtime`, and drive turns through `core/runtime/session`:
@@ -221,7 +221,7 @@ without becoming dependencies of the core.
              ┌─────────────┬─────────────┐
              ▼                           ▼
       ┌─────────────┐             ┌─────────────────┐
-      │ driver/*    │             │ app-registered  │
+      │ driver      │             │ app-registered  │
       │  inference  │             │ memory          │
       │ providers   │             │ implementations │
       │             │             │                 │
@@ -241,7 +241,7 @@ without becoming dependencies of the core.
 `agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
 import graph or tool packages. `core/graph` builds on those contracts and
 returns an `agent.Engine`. Memory contracts live in core, while
-app-registered implementations and adapters (`driver/*`, `backends/*`) stay outside
+app-registered implementations and adapters (`driver`, `backends/*`) stay outside
 the core and depend on it, never the reverse.
 
 `craft` is the optional assembly layer above that picture — it owns the
@@ -268,7 +268,7 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
 | [`craft`](craft/)                                     | Application assembly: craft.yaml, capabilities, plugin host, host primitives, manager     | Versioned Go module  |
-| [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
+| [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go module  |
 | [`backends`](backends/)                               | SQLite checkpoints and the long-term memory backend (sandbox and keychain backends live in `core/`) | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`examples/anvil`](examples/anvil/)                   | Minimal `craft` host application (keyed runtimes, plugins, reload)                       | Examples             |
@@ -289,7 +289,7 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
   across restarts.
 - `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
 
-### Unified inference runtime (`core/inference` + `driver/*`)
+### Unified inference runtime (`core/inference` + `driver`)
 
 - One runtime for Generate / Embed / Decision / Transcription (Realtime
   reserved), with exact `ModelRef` addressing and compile-time capability
@@ -421,7 +421,7 @@ Reference material:
 
 ## Status
 
-The active project surface is `core`, `craft`, `driver/*`, `backends/*`, and the
+The active project surface is `core`, `craft`, `driver`, `backends/*`, and the
 forge demo. `core` and `craft` are the two release-managed modules and both
 remain pre-1.0; `craft` is still an unreleased module in the workspace (its
 first tag ships with its first changeset), and the current `craft` surface is
@@ -447,7 +447,7 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `core`, `craft`,
-`driver/*`, `backends/*`, `examples/forge`, and `examples/anvil`; release
+`driver`, `backends/*`, `examples/forge`, and `examples/anvil`; release
 tooling in `tools/releasegate` builds standalone with `GOWORK=off`.
 
 ## Contributing

@@ -131,7 +131,7 @@ runs inside a Craft: it wraps an inline `deploy` with `ui`, `plugins` and
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
 requires exactly `github.com/GizClaw/flowcraft/core v0.4.10`; the schema
-cards in this skill document that release (no `driver/*` or `backends/*`
+cards in this skill document that release (no `driver` or `backends/*`
 modules are required, since the validator never constructs factories).
 When FlowCraft releases a new version, bump the pin and reconcile the
 cards in the same change. Custom kinds are structurally valid by design;

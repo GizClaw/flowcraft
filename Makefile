@@ -6,7 +6,11 @@ SHELL := /bin/bash
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
 BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod backends/*/*/go.mod))
-DRIVER_MODULES := $(patsubst %/go.mod,%,$(wildcard driver/*/go.mod))
+# The provider adapters share one module: `driver` provides every
+# `driver/<name>` package, so a new provider is a package, not a module.
+# Spelled out rather than globbed — a wildcard that stops matching a
+# consolidated module silently drops it from every target below.
+DRIVER_MODULES := driver
 
 MODULES_WORK := core craft $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge examples/anvil
 
