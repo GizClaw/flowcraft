@@ -31,7 +31,7 @@ type factory struct{}
 
 // NewFactory returns a deployment resource factory for the windows
 // backend.
-func NewFactory() resource.Factory { return factory{} }
+func NewFactory() resource.Factory[sandbox.Runner] { return factory{} }
 
 // Spec implements resource.Factory.
 func (factory) Spec() resource.Spec {
@@ -39,7 +39,7 @@ func (factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (factory) New(ctx context.Context, in resource.Input) (sandbox.Runner, error) {
 	s, err := resource.DecodeTyped[settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("decode windows settings: %v", err)
@@ -78,5 +78,5 @@ func (factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the windows factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }

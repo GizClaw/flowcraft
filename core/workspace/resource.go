@@ -35,7 +35,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (Factory) New(ctx context.Context, in resource.Input) (Workspace, error) {
 	base := in.Loader.BaseDir()
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
@@ -71,5 +71,5 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the local workspace factory to the registry.
 func Register(r *resource.Registry) error {
-	return r.Register(Factory{})
+	return resource.Register(r, Factory{})
 }

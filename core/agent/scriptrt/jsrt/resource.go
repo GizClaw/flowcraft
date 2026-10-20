@@ -31,7 +31,7 @@ type deployFactory struct{}
 
 // NewDeployFactory returns a deployment factory for JavaScript script
 // runtimes.
-func NewDeployFactory() resource.Factory {
+func NewDeployFactory() resource.Factory[*Runtime] {
 	return deployFactory{}
 }
 
@@ -39,7 +39,7 @@ func (deployFactory) Spec() resource.Spec {
 	return resource.Spec{Kind: ResourceKind, Impl: "js"}
 }
 
-func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (deployFactory) New(ctx context.Context, in resource.Input) (*Runtime, error) {
 	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
@@ -78,5 +78,5 @@ func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the JavaScript script runtime resource factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(deployFactory{})
+	return resource.Register(r, deployFactory{})
 }

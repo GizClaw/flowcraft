@@ -36,7 +36,7 @@ type factory struct {
 
 // NewFactory returns a deployment resource factory for [Store]. Options
 // are applied to every store the factory opens.
-func NewFactory(opts ...Option) resource.Factory {
+func NewFactory(opts ...Option) resource.Factory[*Store] {
 	return factory{opts: append([]Option(nil), opts...)}
 }
 
@@ -46,7 +46,7 @@ func (factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f factory) New(ctx context.Context, in resource.Input) (*Store, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
@@ -65,5 +65,5 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the sqlite checkpoint store factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }

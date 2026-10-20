@@ -36,7 +36,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (Factory) New(ctx context.Context, in resource.Input) (*Runner, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, err
@@ -78,7 +78,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the local runner factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(Factory{})
+	return resource.Register(r, Factory{})
 }
 
 var _ sandbox.Runner = (*Runner)(nil)

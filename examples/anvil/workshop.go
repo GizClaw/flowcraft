@@ -44,7 +44,7 @@ func (*workshop) Register(registry *resource.Registry) error {
 	if err := tool.Register(registry); err != nil {
 		return err
 	}
-	return registry.Register(notesFactory{})
+	return resource.Register(registry, notesFactory{})
 }
 
 // RegisterServices implements craft.ServiceRegistrar, the named-service
@@ -142,19 +142,19 @@ type notesSettings struct {
 // two runtimes end up with two independent notes files.
 type notesFactory struct{}
 
+// depRuntime is the injected craft.runtime external: the typed handle names
+// the contract once, and the plan checks it against the injected value.
+var depRuntime = resource.Require[craft.RuntimeContext](runtimeDep)
+
 func (notesFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: notesKind,
 		Impl: notesImpl,
-		Deps: []resource.DepSpec{{
-			Name:     runtimeDep,
-			Type:     craft.RuntimeContextContract,
-			Required: true,
-		}},
+		Deps: []resource.Requirement{depRuntime.Spec()},
 	}
 }
 
-func (notesFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (notesFactory) New(ctx context.Context, in resource.Input) (*notesSource, error) {
 	settings, err := resource.DecodeTyped[notesSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("workshop: decode notes settings: %w", err)
@@ -163,13 +163,9 @@ func (notesFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	if file == "" {
 		return nil, errors.New("workshop: notes.path is required")
 	}
-	value, ok := in.Dep(runtimeDep)
-	if !ok {
-		return nil, errors.New("workshop: the craft.runtime external is missing")
-	}
-	runtimeContext, ok := value.(craft.RuntimeContext)
-	if !ok {
-		return nil, fmt.Errorf("workshop: craft.runtime is %T", value)
+	runtimeContext, err := depRuntime.Get(in)
+	if err != nil {
+		return nil, fmt.Errorf("workshop: craft.runtime: %w", err)
 	}
 	return &notesSource{key: runtimeContext.Key, file: file}, nil
 }

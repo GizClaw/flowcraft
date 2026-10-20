@@ -136,7 +136,7 @@ func New(def Definition, opts Options) (*Craft, error) {
 		caps = append(caps, capability)
 	}
 	if opts.Plugins != nil {
-		if err := registry.Register(pluginNodeFactory{host: opts.Plugins}); err != nil {
+		if err := resource.Register(registry, pluginNodeFactory{host: opts.Plugins}); err != nil {
 			return nil, fmt.Errorf("craft: register plugin node type: %w", err)
 		}
 	}

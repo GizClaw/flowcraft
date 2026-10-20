@@ -8,6 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
+// depTarget is the assembly this router selects models from.
+var depTarget = resource.Require[*inference.Assembly]("target")
+
 // Factory builds an inference.Router resource from a target Assembly
 // dep and the full route policy settings.
 type Factory struct{}
@@ -17,23 +20,15 @@ func (Factory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "inference.Router",
 		Impl: "unified",
-		Deps: []resource.DepSpec{{
-			Name: "target", Type: "inference.Assembly", Required: true,
-		}},
+		Deps: []resource.Requirement{depTarget.Spec()},
 	}
 }
 
 // New implements resource.Factory.
-func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
-	dep, ok := in.Dep("target")
-	if !ok {
-		return nil, errdefs.Validationf(
-			"inference router: target dep missing")
-	}
-	target, ok := dep.(*inference.Assembly)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"inference router: target dep is not an *inference.Assembly")
+func (Factory) New(ctx context.Context, in resource.Input) (*Router, error) {
+	target, err := depTarget.Get(in)
+	if err != nil {
+		return nil, err
 	}
 	policy, err := resource.DecodeTyped[Policy](ctx, in.Settings)
 	if err != nil {
@@ -55,5 +50,5 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the router factory to the registry.
 func Register(r *resource.Registry) error {
-	return r.Register(Factory{})
+	return resource.Register(r, Factory{})
 }

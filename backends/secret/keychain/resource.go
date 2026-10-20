@@ -17,7 +17,7 @@ const ResourceImpl = "keychain"
 type factory struct{}
 
 // NewFactory returns a deployment resource factory for [Store].
-func NewFactory() resource.Factory { return factory{} }
+func NewFactory() resource.Factory[Store] { return factory{} }
 
 // Spec implements resource.Factory.
 func (factory) Spec() resource.Spec {
@@ -25,15 +25,15 @@ func (factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (factory) New(ctx context.Context, in resource.Input) (Store, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
-		return nil, errdefs.Validationf(
+		return Store{}, errdefs.Validationf(
 			"secret keychain config: decode settings: %w", err)
 	}
 	store, err := NewStore(settings.Dir)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	store.id = settings.ID
 	store.def = settings.Default
@@ -42,5 +42,5 @@ func (factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the secret.Store/keychain factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }

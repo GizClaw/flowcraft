@@ -10,6 +10,10 @@ import (
 // RegistryKind is the deployment resource kind of a tool registry.
 const RegistryKind = "tool.Registry"
 
+// depToolSources is the tool source set an assembly or registry is built
+// from: every dep key equal to "tool" or starting with "tool.".
+var depToolSources = resource.RequireMany[Source]("tool")
+
 // RegistryFactory builds a memory registry from its many tool.Source
 // deps. The dep order (DepsMany's sorted key order) is the explicit
 // source order used by ConflictOverwrite.
@@ -20,37 +24,25 @@ func (RegistryFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: RegistryKind,
 		Impl: "memory",
-		Deps: []resource.DepSpec{{
-			Name: "tool", Type: "tool.Source", Required: true, Many: true,
-		}},
+		Deps: []resource.Requirement{depToolSources.Spec()},
 	}
 }
 
 // New implements resource.Factory.
-func (RegistryFactory) New(_ context.Context, in resource.Input) (any, error) {
-	values := in.DepsMany("tool")
-	sources := make([]Source, 0, len(values))
-	for _, value := range values {
-		src, ok := value.(Source)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"tool: registry dep is %T, want tool.Source", value)
-		}
-		sources = append(sources, src)
-	}
-	if len(sources) == 0 {
-		return nil, errdefs.Validationf(
-			"tool: registry requires at least one tool source")
+func (RegistryFactory) New(_ context.Context, in resource.Input) (*Registry, error) {
+	sources, err := depToolSources.GetAll(in)
+	if err != nil {
+		return nil, err
 	}
 	return NewRegistry(sources)
 }
 
 // Register adds the memory registry factory to r.
 func Register(r *resource.Registry) error {
-	if err := r.Register(RegistryFactory{}); err != nil {
+	if err := resource.Register(r, RegistryFactory{}); err != nil {
 		return err
 	}
-	return r.Register(AssemblyFactory{})
+	return resource.Register(r, AssemblyFactory{})
 }
 
 // AssemblyKind is the deployment resource kind of the standard tool
@@ -76,33 +68,21 @@ func (AssemblyFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: AssemblyKind,
 		Impl: "memory",
-		Deps: []resource.DepSpec{{
-			Name: "tool", Type: "tool.Source", Required: true, Many: true,
-		}},
+		Deps: []resource.Requirement{depToolSources.Spec()},
 	}
 }
 
 // New implements resource.Factory.
-func (AssemblyFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (AssemblyFactory) New(ctx context.Context, in resource.Input) (*Assembly, error) {
 	settings, err := resource.DecodeTyped[AssemblySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf(
 			"tool: decode assembly settings: %v", err)
 	}
 
-	values := in.DepsMany("tool")
-	sources := make([]Source, 0, len(values))
-	for _, value := range values {
-		src, ok := value.(Source)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"tool: assembly dep is %T, want tool.Source", value)
-		}
-		sources = append(sources, src)
-	}
-	if len(sources) == 0 {
-		return nil, errdefs.Validationf(
-			"tool: assembly requires at least one tool source")
+	sources, err := depToolSources.GetAll(in)
+	if err != nil {
+		return nil, err
 	}
 
 	var opts []AssemblyOption

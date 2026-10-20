@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +43,26 @@ const (
 	DepScriptBindings = "script_bindings"
 
 	defaultScriptRuntimeName = "js"
+)
+
+// Typed dependency handles: one declaration each, shared by every factory in
+// this package that accepts the dependency. The deployment plan checks the
+// producer's Go type against these, so a document cannot wire a tool registry
+// where an assembly is required.
+var (
+	depInference = res.Optional[*inference.Assembly](DepInference)
+	depRouter    = res.Optional[*route.Router](DepRouter)
+	depTools     = res.Optional[*tool.Assembly](DepTools)
+	depWorkspace = res.Optional[workspace.Workspace](DepWorkspace)
+	depSandbox   = res.Optional[sandbox.Runner](DepSandbox)
+	depNodeTypes = res.OptionalMany[coregraph.NodeTypeRegistrar](DepNodeType)
+	depBindings  = res.Optional[bindings.Provider](DepScriptBindings)
+
+	// depScriptRuntimeRequired is the same dependency as depScriptRuntime but
+	// mandatory: a script node type cannot run without a runtime, while the
+	// graph engine itself may hold no script node at all.
+	depScriptRuntimeOptional = res.Optional[agent.ScriptRuntime](DepScriptRuntime)
+	depScriptRuntimeRequired = res.Require[agent.ScriptRuntime](DepScriptRuntime)
 )
 
 // Settings is the strict settings subtree of the graph engine factory:
@@ -87,21 +106,21 @@ func (Factory) Spec() res.Spec {
 	return res.Spec{
 		Kind: "agent.Engine",
 		Impl: "graph",
-		Deps: []res.DepSpec{
-			{Name: DepInference, Type: "inference.Assembly"},
-			{Name: DepRouter, Type: "inference.Router"},
-			{Name: DepTools, Type: "tool.Assembly"},
-			{Name: DepWorkspace, Type: "workspace.Workspace"},
-			{Name: DepSandbox, Type: "sandbox.Runner"},
-			{Name: DepScriptRuntime, Type: "agent.ScriptRuntime"},
-			{Name: DepNodeType, Type: "graph.NodeTypeRegistrar", Many: true},
-			{Name: DepScriptBindings, Type: bindings.ResourceKind},
+		Deps: []res.Requirement{
+			depInference.Spec(),
+			depRouter.Spec(),
+			depTools.Spec(),
+			depWorkspace.Spec(),
+			depSandbox.Spec(),
+			depScriptRuntimeOptional.Spec(),
+			depNodeTypes.Spec(),
+			depBindings.Spec(),
 		},
 	}
 }
 
 // New implements res.Factory.
-func (Factory) New(ctx context.Context, in res.Input) (any, error) {
+func (Factory) New(ctx context.Context, in res.Input) (*coregraph.Graph, error) {
 	settings, err := res.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: decode settings: %v", err)
@@ -113,7 +132,7 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: settings.graph: %v", err)
 	}
-	deps, err := decodeDependencies(in.Deps)
+	deps, err := decodeDependencies(in)
 	if err != nil {
 		return nil, err
 	}
@@ -214,19 +233,19 @@ func logBuildWarnings(ctx context.Context, name string, warnings []coregraph.War
 
 // Register adds the graph engine factory to r.
 func Register(r *res.Registry) error {
-	if err := r.Register(Factory{}); err != nil {
+	if err := res.Register(r, Factory{}); err != nil {
 		return err
 	}
-	if err := r.Register(ScriptNodeTypeFactory{}); err != nil {
+	if err := res.Register(r, ScriptNodeTypeFactory{}); err != nil {
 		return err
 	}
-	if err := r.Register(ScriptBindingsFactory{}); err != nil {
+	if err := res.Register(r, ScriptBindingsFactory{}); err != nil {
 		return err
 	}
-	if err := r.Register(ScriptBindingsNoneFactory{}); err != nil {
+	if err := res.Register(r, ScriptBindingsNoneFactory{}); err != nil {
 		return err
 	}
-	return r.Register(ScriptBindingsChainFactory{})
+	return res.Register(r, ScriptBindingsChainFactory{})
 }
 
 func loadDefinition(
@@ -349,43 +368,32 @@ type dependencies struct {
 	bindings  bindings.Provider
 }
 
-func decodeDependencies(raw map[string]any) (dependencies, error) {
+// decodeDependencies reads the typed dependency handles this package
+// declares. Key validation (an undeclared dep, a missing required one, a
+// producer of the wrong type) is the deployment plan's job, so a document
+// error is reported once, before any factory runs.
+func decodeDependencies(in res.Input) (dependencies, error) {
 	var out dependencies
-	known := map[string]bool{
-		DepInference: true, DepRouter: true, DepTools: true,
-		DepWorkspace: true, DepSandbox: true, DepScriptRuntime: true,
-		DepScriptBindings: true,
-	}
-	for name := range raw {
-		if name == DepNodeType || strings.HasPrefix(name, DepNodeType+".") {
-			// Custom node types ride the Many dep; the engine factory
-			// collects them separately in collectNodeTypes.
-			continue
-		}
-		if !known[name] {
-			return out, errdefs.Validationf("graph engine: unknown dep %q", name)
-		}
-	}
 	var err error
-	if out.inference, err = optionalDep[*inference.Assembly](raw, DepInference); err != nil {
+	if out.inference, _, err = depInference.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.router, err = optionalDep[*route.Router](raw, DepRouter); err != nil {
+	if out.router, _, err = depRouter.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.tools, err = optionalDep[*tool.Assembly](raw, DepTools); err != nil {
+	if out.tools, _, err = depTools.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.workspace, err = optionalDep[workspace.Workspace](raw, DepWorkspace); err != nil {
+	if out.workspace, _, err = depWorkspace.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.sandbox, err = optionalDep[sandbox.Runner](raw, DepSandbox); err != nil {
+	if out.sandbox, _, err = depSandbox.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.script, err = optionalDep[agent.ScriptRuntime](raw, DepScriptRuntime); err != nil {
+	if out.script, _, err = depScriptRuntimeOptional.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.bindings, err = optionalDep[bindings.Provider](raw, DepScriptBindings); err != nil {
+	if out.bindings, _, err = depBindings.TryGet(in); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -429,38 +437,24 @@ type customNodeType struct {
 // and typed-nil registrars, and reports a node type resource that is
 // mounted under more than one dep key.
 func collectNodeTypes(in res.Input) ([]customNodeType, error) {
-	keys := make([]string, 0, len(in.Deps))
-	for key := range in.Deps {
-		if key == DepNodeType || strings.HasPrefix(key, DepNodeType+".") {
-			keys = append(keys, key)
-		}
+	values, err := depNodeTypes.GetAllNamed(in)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(keys)
 
-	out := make([]customNodeType, 0, len(keys))
+	out := make([]customNodeType, 0, len(values))
 	mounted := make(map[string]string) // registrar identity -> first dep key
-	for _, key := range keys {
-		value := in.Deps[key]
-		if value == nil {
-			return nil, errdefs.Validationf("graph engine: dep %q is nil", key)
-		}
-		registrar, ok := value.(coregraph.NodeTypeRegistrar)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"graph engine: dep %q is %T, want graph.NodeTypeRegistrar", key, value)
-		}
-		if ptr.IsNil(registrar) {
-			return nil, errdefs.Validationf("graph engine: dep %q is a typed nil", key)
-		}
-		if identity, has := registrarIdentity(value); has {
+	for _, named := range values {
+		registrar := named.Value
+		if identity, has := registrarIdentity(registrar); has {
 			if first, dup := mounted[identity]; dup {
 				return nil, errdefs.Conflictf(
 					"graph engine: node type resource mounted twice (%s and %s)",
-					first, key)
+					first, named.Name)
 			}
-			mounted[identity] = key
+			mounted[identity] = named.Name
 		}
-		out = append(out, customNodeType{registrar: registrar, value: value})
+		out = append(out, customNodeType{registrar: registrar, value: registrar})
 	}
 	return out, nil
 }

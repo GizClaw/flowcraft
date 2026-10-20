@@ -28,7 +28,7 @@ type deployFactory struct{}
 //
 // The returned runtime implements io.Closer, so an assembly result owns
 // and closes its VM pool.
-func NewDeployFactory() resource.Factory {
+func NewDeployFactory() resource.Factory[*Runtime] {
 	return deployFactory{}
 }
 
@@ -36,7 +36,7 @@ func (deployFactory) Spec() resource.Spec {
 	return resource.Spec{Kind: ResourceKind, Impl: "lua"}
 }
 
-func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (deployFactory) New(ctx context.Context, in resource.Input) (*Runtime, error) {
 	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
@@ -68,5 +68,5 @@ func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the Lua script runtime resource factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(deployFactory{})
+	return resource.Register(r, deployFactory{})
 }

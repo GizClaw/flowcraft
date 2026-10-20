@@ -68,7 +68,7 @@ func buildRuntimeFromDocument(
 	if err := bytedance.Register(reg); err != nil {
 		return nil, err
 	}
-	if err := reg.Register(simtools.NewSourceFactory(&a.toolCalls)); err != nil {
+	if err := resource.Register(reg, simtools.NewSourceFactory(&a.toolCalls)); err != nil {
 		return nil, fmt.Errorf("register sim tools: %w", err)
 	}
 

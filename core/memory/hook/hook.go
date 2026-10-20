@@ -14,7 +14,6 @@ import (
 	memoryrender "github.com/GizClaw/flowcraft/core/memory/render"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -23,14 +22,19 @@ const (
 	depName     = "memory"
 )
 
+// depAssembly is the memory assembly these hooks read: the dependency the
+// factory declares in Spec and resolves through, so a document that wires the
+// wrong resource kind fails at plan time instead of at hook build.
+var depAssembly = resource.Optional[sdkmemory.Assembly](depName)
+
 // Register adds the memory agent lifecycle hook factories to r:
 // memory.context under hook.prepare and memory.turn under
 // hook.commit.
 func Register(r *resource.Registry) error {
-	if err := r.Register(ContextPreparer{}); err != nil {
+	if err := resource.Register(r, ContextPreparer{}); err != nil {
 		return err
 	}
-	return r.Register(TurnCommitter{})
+	return resource.Register(r, TurnCommitter{})
 }
 
 type ScopeSettings struct {
@@ -94,11 +98,12 @@ func (ContextPreparer) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: resource.Kind("hook." + agent.HookSlotPreparer),
 		Impl: ContextType,
+		Deps: []resource.Requirement{depAssembly.Spec()},
 	}
 }
 
 // New implements config.Factory.
-func (ContextPreparer) New(ctx context.Context, input resource.Input) (any, error) {
+func (ContextPreparer) New(ctx context.Context, input resource.Input) (agent.Preparer, error) {
 	settings, err := resource.DecodeTyped[ContextSettings](ctx, input.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", ContextType, err))
@@ -168,11 +173,12 @@ func (TurnCommitter) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: resource.Kind("hook." + agent.HookSlotCommitter),
 		Impl: TurnType,
+		Deps: []resource.Requirement{depAssembly.Spec()},
 	}
 }
 
 // New implements config.Factory.
-func (TurnCommitter) New(ctx context.Context, input resource.Input) (any, error) {
+func (TurnCommitter) New(ctx context.Context, input resource.Input) (agent.Committer, error) {
 	settings, err := resource.DecodeTyped[TurnSettings](ctx, input.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", TurnType, err))
@@ -217,16 +223,14 @@ func (TurnCommitter) New(ctx context.Context, input resource.Input) (any, error)
 }
 
 func resolveAssembly(input resource.Input) (sdkmemory.Assembly, error) {
-	raw, ok := input.Dep(depName)
-	if !ok {
-		return nil, errdefs.NotFoundf("memory hook: dependency %q is not bound", depName)
+	assembly, ok, err := depAssembly.TryGet(input)
+	if err != nil {
+		return nil, err
 	}
-	assembly, ok := raw.(sdkmemory.Assembly)
-	if !ok || ptr.IsNil(assembly) {
-		return nil, errdefs.Validationf(
-			"memory hook: dependency %q has Go type %T, want memory.Assembly",
-			depName, raw,
-		)
+	if !ok {
+		return nil, errdefs.NotFoundf(
+			"memory hook: dependency %q is not bound; declare it under the hook's deps",
+			depName)
 	}
 	return assembly, nil
 }

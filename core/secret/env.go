@@ -28,10 +28,10 @@ func (envFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (envFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (envFactory) New(ctx context.Context, in resource.Input) (Store, error) {
 	settings, err := resource.DecodeTyped[EnvSettings](ctx, in.Settings)
 	if err != nil {
-		return nil, fmt.Errorf("secret env store: decode settings: %w", err)
+		return Store{}, fmt.Errorf("secret env store: decode settings: %w", err)
 	}
 	return Store{
 		id:  settings.ID,
@@ -45,10 +45,10 @@ func (envFactory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the built-in secret store impls to r.
 func Register(r *resource.Registry) error {
-	if err := r.Register(envFactory{}); err != nil {
+	if err := resource.Register(r, envFactory{}); err != nil {
 		return err
 	}
-	if err := r.Register(fileFactory{}); err != nil {
+	if err := resource.Register(r, fileFactory{}); err != nil {
 		return err
 	}
 	return nil

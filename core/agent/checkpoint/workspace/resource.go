@@ -6,7 +6,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -28,36 +27,28 @@ type Settings struct {
 // checkpoint.Store resource.
 type Factory struct{}
 
+// depWorkspace is the workspace this store persists under.
+var depWorkspace = resource.Require[workspace.Workspace]("workspace")
+
 // Spec implements resource.Factory.
 func (Factory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: ResourceKind,
 		Impl: "workspace",
-		Deps: []resource.DepSpec{{
-			Name:     "workspace",
-			Type:     "workspace.Workspace",
-			Required: true,
-		}},
+		Deps: []resource.Requirement{depWorkspace.Spec()},
 	}
 }
 
 // New implements resource.Factory.
-func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (Factory) New(ctx context.Context, in resource.Input) (*Store, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"workspace checkpoint: decode settings: %w", err))
 	}
-	value, ok := in.Deps["workspace"]
-	if !ok || ptr.IsNil(value) {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"workspace checkpoint: dep %q is required", "workspace"))
-	}
-	ws, ok := value.(workspace.Workspace)
-	if !ok {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"workspace checkpoint: dep %q has Go type %T, want workspace.Workspace",
-			"workspace", value))
+	ws, err := depWorkspace.Get(in)
+	if err != nil {
+		return nil, errdefs.Validation(err)
 	}
 	var options []Option
 	if settings.Prefix != "" {
@@ -69,5 +60,5 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 // Register adds the workspace-backed checkpoint store factory to the
 // registry.
 func Register(r *resource.Registry) error {
-	return r.Register(Factory{})
+	return resource.Register(r, Factory{})
 }

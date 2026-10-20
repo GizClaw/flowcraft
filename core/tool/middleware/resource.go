@@ -12,6 +12,9 @@ import (
 // assembly.
 const AssemblyImpl = "middleware"
 
+// depToolSources is the tool source set this assembly is built from.
+var depToolSources = resource.RequireMany[tool.Source]("tool")
+
 // AssemblySettings is the strict settings subtree of the
 // tool.Assembly/middleware factory: the standard middleware chain plus
 // the dynamic injection policy. The memory impl (core/tool) does not
@@ -31,33 +34,21 @@ func (AssemblyFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: tool.AssemblyKind,
 		Impl: AssemblyImpl,
-		Deps: []resource.DepSpec{{
-			Name: "tool", Type: "tool.Source", Required: true, Many: true,
-		}},
+		Deps: []resource.Requirement{depToolSources.Spec()},
 	}
 }
 
 // New implements resource.Factory.
-func (AssemblyFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (AssemblyFactory) New(ctx context.Context, in resource.Input) (*tool.Assembly, error) {
 	settings, err := resource.DecodeTyped[AssemblySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf(
 			"tool middleware: decode assembly settings: %v", err)
 	}
 
-	values := in.DepsMany("tool")
-	sources := make([]tool.Source, 0, len(values))
-	for _, value := range values {
-		src, ok := value.(tool.Source)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"tool middleware: assembly dep is %T, want tool.Source", value)
-		}
-		sources = append(sources, src)
-	}
-	if len(sources) == 0 {
-		return nil, errdefs.Validationf(
-			"tool middleware: assembly requires at least one tool source")
+	sources, err := depToolSources.GetAll(in)
+	if err != nil {
+		return nil, err
 	}
 
 	var opts []tool.AssemblyOption
@@ -76,5 +67,5 @@ func (AssemblyFactory) New(ctx context.Context, in resource.Input) (any, error) 
 
 // Register adds the middleware-enabled assembly factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(AssemblyFactory{})
+	return resource.Register(r, AssemblyFactory{})
 }
