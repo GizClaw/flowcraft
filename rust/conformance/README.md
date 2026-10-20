@@ -284,6 +284,15 @@ stale excuse fails the gate exactly like a mismatch does, and a file with
 evidence must not be listed at all: its refusal, not a run count, is what
 describes it.
 
+**It will not carry a host's answer.** Some answers come from the machine
+rather than from the code: `filetype`'s extension table is Go's builtin table
+plus whatever `/etc/mime.types` or the FreeDesktop `globs2` says, so `.ts` is
+`video/mp2t` on macOS and `text/vnd.trolltech.linguist` where Debian's
+`media-types` is installed -- and `filetype-contract.json` therefore carries no
+name-derived row. The same rule binds the port's own tests: pin the rule, not
+the table, or a macOS checkout passes and the Ubuntu lane is the one that finds
+out.
+
 **It will not let a record go missing quietly.** A probe that dies halfway
 through the corpus reports `missing-record` per file rather than passing on the
 files it did emit. The probe is also run twice and byte-compared: the Go side

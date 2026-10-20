@@ -31,8 +31,10 @@
 //! FreeDesktop `globs2` file when it exists (where the builtin entries win),
 //! otherwise `/etc/mime.types`, `/etc/apache2/mime.types`, `/etc/apache/mime.types`
 //! and `/etc/httpd/conf/mime.types` in that order (where each file overrides the
-//! one before it). On this port's macOS host that is why `.ts` is `video/mp2t`
-//! and `.flac` is `audio/x-flac` (the Apache file), while `.md` is unknown.
+//! one before it). On a macOS host that is why `.ts` is `video/mp2t` and
+//! `.flac` is `audio/x-flac` (Apache's file), while `.md` is unknown; where
+//! Debian's `media-types` is installed the same three are
+//! `text/vnd.trolltech.linguist`, `audio/flac` and `text/markdown`.
 //!
 //! The port reads the same files in the same order, so the two answer alike on
 //! the same machine -- and differently on different machines, exactly as core
@@ -603,11 +605,16 @@ mod tests {
     #[test]
     fn content_decides_and_the_name_refines() {
         let source = b"export const answer = 42;\n";
-        // The case that motivated the rule: the table maps .ts to video/mp2t,
-        // the bytes are TypeScript.
+        // The case that motivated the rule: the table maps .ts to a video type
+        // on one host and to a `text/*` one on another (Debian's
+        // `/etc/mime.types` says text/vnd.trolltech.linguist), and the bytes
+        // are TypeScript either way. Which type it is belongs to the host, so
+        // `the_host_table_answers_for_ts` is where that half is checked.
         let kind = of_data("app.ts", source);
         assert!(kind.text, "{kind:?}");
-        assert_eq!(kind.media_type, "text/plain");
+        // The refinement the rule allows, on a name every table agrees on:
+        // `.html` is `text/html` in the builtin table and in each host file.
+        assert_eq!(of_data("page.html", source).media_type, "text/html");
 
         // A video name cannot make text a video.
         let kind = of_data("clip.mp4", b"not a video at all\n");
@@ -628,7 +635,10 @@ mod tests {
         ] {
             let kind = of_data(name, text.as_bytes());
             assert!(kind.text, "{name}: {kind:?}");
-            assert_eq!(kind.media_type, "text/plain");
+            // The exact type is the host's -- `.md` is unknown on macOS and
+            // text/markdown on a Debian box -- so the family is what is
+            // pinned; the case is about "BM" and "ID3" not winning.
+            assert!(kind.media_type.starts_with("text/"), "{name}: {kind:?}");
         }
         // The pattern is real when the bytes carry it.
         let mut bmp = b"BM".to_vec();
@@ -649,10 +659,15 @@ mod tests {
         // An archive whose exact format only the name knows.
         let mut zip = b"PK\x03\x04".to_vec();
         zip.extend(std::iter::repeat_n(0u8, 24));
+        let named = name_type("report.docx");
         assert_eq!(
             of_data("report.docx", &zip).media_type,
-            name_type("report.docx"),
-            "a binary with a name the table knows takes the name's type"
+            if named.is_empty() {
+                "application/zip".to_owned()
+            } else {
+                named
+            },
+            "a binary takes the name's type where the table has one"
         );
     }
 
@@ -675,11 +690,12 @@ mod tests {
         let recording = of_data("recording.ts", &ts_packet());
         assert!(!recording.text);
         // Which binary type that is follows the table: video/mp2t where the
-        // host knows .ts, the sniffer's answer otherwise.
+        // host calls .ts a video, the sniffer's answer where it calls it text
+        // (a text type cannot describe a transport stream) or knows it not.
         let named = name_type("recording.ts");
         assert_eq!(
             recording.media_type,
-            if named.is_empty() {
+            if named.is_empty() || named.starts_with("text/") {
                 "application/octet-stream".to_owned()
             } else {
                 named
@@ -830,23 +846,42 @@ text/plain txt # a trailing comment drops the rest
         assert!(!types.contains_key(".ignored"));
     }
 
-    /// The host half of the table, measured rather than assumed: where a
-    /// `globs2` or `mime.types` file exists, both it and core know `.ts` -- the
-    /// extension the package exists for -- as `video/mp2t`.
+    /// The host half of the table, measured rather than assumed: the port
+    /// reads the files core reads, in core's order, so `.ts` is whatever *this*
+    /// host calls it -- `video/mp2t` on macOS, `text/vnd.trolltech.linguist`
+    /// where Debian's `media-types` is installed -- and not a constant. The
+    /// expectation is composed here from the host's own bytes, because a test
+    /// that hardcoded one distribution's answer would pass half the time.
     #[test]
-    fn the_host_table_still_speaks_for_ts() {
-        let globs = MIME_GLOBS
+    fn the_host_table_answers_for_ts() {
+        let mut expected: HashMap<String, String> = BUILTIN
             .iter()
-            .any(|path| std::path::Path::new(path).exists());
-        let types = TYPE_FILES
-            .iter()
-            .any(|path| std::path::Path::new(path).exists());
-        if !globs && !types {
-            // A host with no MIME database: the builtin table is all there is,
-            // and it does not know .ts.
-            assert_eq!(name_type("x.ts"), "");
-            return;
+            .map(|(ext, type_)| ((*ext).to_owned(), (*type_).to_owned()))
+            .collect();
+        let mut globs_found = false;
+        for path in MIME_GLOBS {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                merge_globs2(&text, &mut expected);
+                globs_found = true;
+                break;
+            }
         }
-        assert_eq!(name_type("x.ts"), "video/mp2t");
+        if !globs_found {
+            for path in TYPE_FILES {
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    merge_mime_types(&text, &mut expected);
+                }
+            }
+        }
+        // The builtin table does not know .ts, so a known answer can only have
+        // come from the host database -- which is the claim being made.
+        match expected.get(".ts") {
+            None => assert_eq!(name_type("x.ts"), "", "no host table names .ts"),
+            Some(host_type) => assert_eq!(
+                name_type("x.ts"),
+                *host_type,
+                "the port answers what this host's database says"
+            ),
+        }
     }
 }
