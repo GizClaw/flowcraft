@@ -85,6 +85,9 @@ retrieval, runtime orchestration, and voice. Source on
   the consolidation that folded the Azure, DeepSeek and Kimi drivers into
   `driver/openai`, moved MiniMax's Messages surface to `driver/anthropic`, and
   removed `driver/qwen`.
+- [Keychain into `core/secret`](migrations/keychain-into-core.md) — the
+  `backends/secret` module folded into `core`; the `impl: keychain`
+  deployment id is unchanged and only the Go import path moved.
 
 Older `sdk`/`sdkx` migration notes remain in `docs/migrations/` as
 historical reference and are not part of the current core migration path.
@@ -109,7 +112,7 @@ The repository is organised as independently released Go modules:
 core/            Platform module (contracts, deploy, runtime, built-in resources)
 craft/           Application assembly (craft.yaml, capabilities, plugins, host primitives)
 driver/          Provider inference adapters
-backends/        SQLite checkpoints and the memory backend (sandbox backends live in core/)
+backends/        SQLite checkpoints and the memory backend (sandbox and keychain backends live in core/)
 examples/        Reference assemblies: forge (workspace demo), anvil (craft host)
 ```
 

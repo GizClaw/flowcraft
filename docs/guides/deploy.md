@@ -107,7 +107,7 @@ resources:
   trailing newlines are stripped, and file size is capped). Other backends
   (vault, 1Password, Secret Service, ...) register their own `secret.Store`
   impls with zero core changes.
-- The `backends/secret` module ships a `keychain` impl: one encrypted 0600
+- `core/secret/keychain` ships a `keychain` impl: one encrypted 0600
   file per secret under a 0700 `dir`, sealed with AES-256-GCM under a
   machine-local 32-byte key stored beside it as `.key`. It protects against
   accidental exposure — backups, file sharing, casual reads — rather than

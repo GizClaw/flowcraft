@@ -940,11 +940,11 @@ secrets:
 default store) and `${secret:store.NAME}`. Values resolve at use time
 and are cached per store for a minute, so a missing secret fails the
 request rather than the build, and a value never appears in logs or
-error messages. `core/secret` ships `env` and `file`; `backends/secret`
-ships `keychain`, which seals one AES-256-GCM file per secret under
-`dir` (protection against backups and casual reads, not against another
-process running as the same user). Other impls (vault, 1Password, ...)
-are app-registered.
+error messages. `core/secret` ships `env` and `file`, and
+`core/secret/keychain` ships `keychain`, which seals one AES-256-GCM file
+per secret under `dir` (protection against backups and casual reads, not
+against another process running as the same user). Other impls (vault,
+1Password, ...) are app-registered.
 
 ## checkpoint store
 
