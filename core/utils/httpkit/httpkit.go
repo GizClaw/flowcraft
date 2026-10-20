@@ -1,4 +1,4 @@
-package utils
+package httpkit
 
 import (
 	"context"
@@ -36,7 +36,7 @@ const (
 	ProtocolHTTP2
 )
 
-// Config carries every knob for [NewRoundTripper] / [NewHttpClient]. Zero
+// Config carries every knob for [NewRoundTripper] / [NewHTTPClient]. Zero
 // values select the defaults below.
 type Config struct {
 	Protocol Protocol
@@ -166,9 +166,9 @@ func NewRoundTripper(options ...Option) http.RoundTripper {
 	return newRetryTransport(base, config.Retry)
 }
 
-// NewHttpClient builds an http.Client over [NewRoundTripper] with the
+// NewHTTPClient builds an http.Client over [NewRoundTripper] with the
 // configured whole-request timeout.
-func NewHttpClient(options ...Option) *http.Client {
+func NewHTTPClient(options ...Option) *http.Client {
 	config := applyOptions(options)
 	return &http.Client{
 		Transport: NewRoundTripper(options...),

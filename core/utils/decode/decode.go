@@ -1,9 +1,4 @@
-// Package utils is the shared boundary between authoring formats and
-// the JSON core protocol. It detects JSON the way Kubernetes does — the
-// first non-whitespace byte is an open brace — and treats everything
-// else as YAML, converting it to JSON before strict decoding. Core
-// protocol packages never see YAML.
-package utils
+package decode
 
 import (
 	"bytes"

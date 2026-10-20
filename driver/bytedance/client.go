@@ -9,7 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 )
@@ -117,16 +117,16 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 		}
 		timeout = parsed
 	}
-	httpOptions := []utils.Option{
-		utils.WithHTTP2(),
-		utils.WithTimeout(timeout),
-		utils.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
+	httpOptions := []httpkit.Option{
+		httpkit.WithHTTP2(),
+		httpkit.WithTimeout(timeout),
+		httpkit.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
 	}
 	if spec.HTTPRetries != nil {
 		httpOptions = append(httpOptions,
-			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
+			httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
-	httpClient := utils.NewHttpClient(httpOptions...)
+	httpClient := httpkit.NewHTTPClient(httpOptions...)
 	built.httpClient = httpClient
 	if spec.BaseURL != "" {
 		options = append(options, arkruntime.WithBaseUrl(spec.BaseURL))

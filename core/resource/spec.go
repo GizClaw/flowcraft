@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
@@ -283,5 +283,5 @@ func (in Input) ResolveSettings(ctx context.Context) ([]byte, error) {
 	}
 	// Sub-documents may be YAML; convert to JSON for strict settings
 	// decoding.
-	return utils.ToJSON(data)
+	return decode.ToJSON(data)
 }

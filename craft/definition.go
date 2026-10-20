@@ -5,7 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 	"github.com/GizClaw/flowcraft/craft/internal/version"
 )
 
@@ -65,7 +65,7 @@ type BaseLayer struct {
 
 // ParseDefinition decodes and validates one craft.yaml (YAML or JSON).
 func ParseDefinition(data []byte) (Definition, error) {
-	def, err := utils.Decode[Definition](data)
+	def, err := decode.Decode[Definition](data)
 	if err != nil {
 		return Definition{}, errdefs.Validationf("craft: parse definition: %w", err)
 	}

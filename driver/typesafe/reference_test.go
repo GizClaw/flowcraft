@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 // referenceDoc is the config skill's resource reference, which carries the
@@ -62,7 +62,7 @@ func referenceExample(t *testing.T) string {
 // reference example that drifts away from the driver is a deployment users
 // cannot load.
 func TestReferenceExampleLoads(t *testing.T) {
-	raw, err := utils.ToJSON([]byte(referenceExample(t)))
+	raw, err := decode.ToJSON([]byte(referenceExample(t)))
 	if err != nil {
 		t.Fatalf("the reference example is not a loadable document: %v", err)
 	}

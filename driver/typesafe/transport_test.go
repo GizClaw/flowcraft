@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 )
 
 // recordedCall is one wire call the fake route saw.
@@ -420,7 +420,7 @@ func TestTransportFailedExchangeIsRetryable(t *testing.T) {
 	server.Close()
 
 	cls := &clients{
-		http: utils.NewHttpClient(),
+		http: httpkit.NewHTTPClient(),
 		key:  "sk-test",
 		base: dead + "/v1",
 	}
@@ -504,7 +504,7 @@ func TestTransportKeepsAnIncompleteBodyRetryable(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	cls := &clients{
-		http: utils.NewHttpClient(),
+		http: httpkit.NewHTTPClient(),
 		key:  "sk-test",
 		base: server.URL + "/v1",
 	}

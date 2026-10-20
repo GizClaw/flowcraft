@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/secret"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
@@ -216,7 +216,7 @@ func resolveSettings(
 	}
 	// Settings sub-documents may be YAML; convert to JSON so factory
 	// DecodeSettings (strict JSON) accepts them.
-	return utils.ToJSON(data)
+	return decode.ToJSON(data)
 }
 
 // expandSettings expands inline ${scheme:ref} strings in one settings

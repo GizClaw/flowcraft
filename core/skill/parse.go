@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 	yamlv2 "gopkg.in/yaml.v2"
 	"sigs.k8s.io/yaml"
 )
@@ -91,7 +91,7 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 	var raw any
 	rawOK := yamlv2.Unmarshal(fm, &raw) == nil
 	if rawOK {
-		if unusable := utils.UnusableKeys(raw); unusable != "" {
+		if unusable := decode.UnusableKeys(raw); unusable != "" {
 			return ParseResult{}, fmt.Errorf("skill: parse frontmatter: %s", unusable)
 		}
 	}
@@ -117,7 +117,7 @@ func parseBytes(path string, data []byte) (ParseResult, error) {
 		// are one key to yaml.v2 before the conversion ever runs. The file
 		// is ambiguous all the same, so it loads with a note rather than
 		// silently carrying a mapping that means two things.
-		for _, collision := range utils.KeyCollisions(raw) {
+		for _, collision := range decode.KeyCollisions(raw) {
 			warnings = append(warnings, "frontmatter: "+collision)
 		}
 	}

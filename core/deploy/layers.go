@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 // Layer is one configuration layer. Layers are merged in ascending
@@ -96,7 +96,7 @@ func (l Layer) load(ctx context.Context) ([]byte, error) {
 }
 
 func decodeLayer(data []byte, requireVersion bool) (Document, error) {
-	doc, err := utils.Decode[Document](data)
+	doc, err := decode.Decode[Document](data)
 	if err != nil {
 		return Document{}, err
 	}

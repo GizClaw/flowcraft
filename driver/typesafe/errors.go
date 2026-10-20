@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 )
 
 // requestIDHeader is the response header the driver reads the provider's own
@@ -73,7 +73,7 @@ func classifyFailure(response *http.Response, body []byte) error {
 		classified,
 		errdefs.ParseRetryAfter(response.Header.Get("Retry-After")),
 	)
-	return errdefs.WithRetryCount(classified, utils.RetryCountOf(response))
+	return errdefs.WithRetryCount(classified, httpkit.RetryCountOf(response))
 }
 
 // readFailureBody reads a bounded slice of a rejected body.

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/tool/mcp"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -200,7 +200,7 @@ func TestSearchAndFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := &requestLog{base: utils.NewRoundTripper(utils.WithoutRetry()), host: endpoint.Host}
+	log := &requestLog{base: httpkit.NewRoundTripper(httpkit.WithoutRetry()), host: endpoint.Host}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out bytes.Buffer
@@ -361,7 +361,7 @@ func TestLiveParallel(t *testing.T) {
 	if os.Getenv("FLOWCRAFT_PARALLEL_LIVE") != "1" {
 		t.Skip("set FLOWCRAFT_PARALLEL_LIVE=1 to test the anonymous endpoint")
 	}
-	log := &requestLog{base: utils.NewRoundTripper(), host: "search.parallel.ai"}
+	log := &requestLog{base: httpkit.NewRoundTripper(), host: "search.parallel.ai"}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var out bytes.Buffer

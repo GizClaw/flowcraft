@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -92,7 +92,7 @@ func StreamableHTTP(endpoint string, headers map[string]string, client *http.Cli
 		return nil, fmt.Errorf("mcp: streamable-http transport endpoint is empty")
 	}
 	if client == nil {
-		client = &http.Client{Transport: utils.NewRoundTripper()}
+		client = &http.Client{Transport: httpkit.NewRoundTripper()}
 	}
 	if len(headers) > 0 {
 		base := http.DefaultTransport

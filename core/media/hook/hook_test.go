@@ -16,7 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 // urlSource decodes one URL-kind media source. media's exported
@@ -542,7 +542,7 @@ func TestPreparerNormalizesTheBoard(t *testing.T) {
 
 func settingsNode(t *testing.T, source string) json.RawMessage {
 	t.Helper()
-	jsonData, err := utils.ToJSON([]byte(source))
+	jsonData, err := decode.ToJSON([]byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}
