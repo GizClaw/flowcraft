@@ -1,7 +1,6 @@
 package resource
 
 import (
-	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -78,30 +77,6 @@ func (r *Registry) Lookup(kind Kind, impl string) (Entry, bool) {
 	return e, ok
 }
 
-// BuildType returns the Go type the factory for kind/impl produces.
-func (r *Registry) BuildType(kind Kind, impl string) (reflect.Type, bool) {
-	e, ok := r.Lookup(kind, impl)
-	if !ok {
-		return nil, false
-	}
-	return e.BuildType(), true
-}
-
-// BuildTypes returns every registered (Kind, Impl) with the Go type it
-// produces.
-func (r *Registry) BuildTypes() map[Key]reflect.Type {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make(map[Key]reflect.Type, len(r.entries))
-	for key, e := range r.entries {
-		out[key] = e.BuildType()
-	}
-	return out
-}
-
 // Specs returns the registered factory specs in unspecified order.
 func (r *Registry) Specs() []Spec {
 	if r == nil {
@@ -111,7 +86,9 @@ func (r *Registry) Specs() []Spec {
 	defer r.mu.RUnlock()
 	specs := make([]Spec, 0, len(r.entries))
 	for _, e := range r.entries {
-		specs = append(specs, e.Spec())
+		// Clone: a caller must not be able to mutate a registered factory's
+		// Deps slice through the copy it was handed.
+		specs = append(specs, e.Spec().Clone())
 	}
 	return specs
 }

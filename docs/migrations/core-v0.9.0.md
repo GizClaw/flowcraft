@@ -7,7 +7,7 @@ title: Migrating to core/v0.9.0
 `core/v0.9.0` replaces the stringly-typed assembly protocol with a typed one.
 A factory declares the Go type it produces, and a dependency is declared and
 read through one handle, so a document is type-checked before anything is
-constructed. There are **no compatibility shims**: `DepSpec`, `Result.Value`,
+constructed. There are **no compatibility shims**: `DepSpec`,
 `resource.DeploymentBinder` and `Input.Dep`/`DepsMany` are gone.
 
 ## Why
@@ -83,12 +83,17 @@ resource.Register(r, AssemblyFactory{})   // was r.Register(AssemblyFactory{})
 
 ## Reading built resources
 
-`Result.Value(name) (any, bool)` is gone. Name the type instead:
+Internal wiring names the type it expects:
 
 ```go
-bus, err := deploy.Resolve[event.Bus](result, cfg.EventBus)   // one value
-binders := deploy.Collect[session.ManagerBinder](result)      // every match, in build order
+bus, err := deploy.Resolve[event.Bus](result, cfg.EventBus)          // one value
+binders := deploy.CollectNamed[session.ManagerBinder](result)        // every match, with its resource name
 ```
+
+`Result.Value(name) (any, bool)` survives as the *dynamic* accessor, for
+host-level discovery where the resource name comes from configuration and no
+type is known at compile time (`runtime.Runtime.Resource`,
+`delegation/hostwrap`). Do not use it for wiring you control.
 
 ## Post-assembly binding
 
@@ -105,7 +110,8 @@ declares its own narrower interface and the view satisfies it structurally.
 ## Externals
 
 An injected value now carries its Go type, so the plan can check the consumer's
-requirement against it:
+requirement against it. Construct it with the helper — a struct literal without
+a `Type` is rejected at `Validate`:
 
 ```go
 deploy.NewExternal("db", "db.Pool", pool)      // deploy.ExternalResource
@@ -120,10 +126,10 @@ enforced contract is the injected value's type.
 Configuration errors are now reported by `Plan`, before construction, and name
 the document resource and dep:
 
-```
-resources["toolbox"].deps["tool"]: "tools" does not satisfy tool.Source
+```text
+resources["toolbox"]: dep "tool": "tools" does not satisfy tool.Source
 ```
 
-Missing required deps are `errdefs.NotFound` rather than `errdefs.Validation`
-when reported by a typed handle; the plan reports them as validation errors
-first.
+A typed handle reports a missing dep as `errdefs.NotFound` (`Get`/`TryGet`) and
+an empty required `Many` set as `errdefs.Validation` (`GetAll`); the plan
+reports both as validation errors first.

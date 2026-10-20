@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -152,21 +153,12 @@ func (r *Runtime) RegisterAgent(
 				"runtime: dynamic catalog is not configured; cannot attach tool assembly %q",
 				options.toolResource)
 		}
-		value, ok := r.result.Value(options.toolResource)
-		if !ok {
+		read, err := deploy.Resolve[*tool.Assembly](r.result, options.toolResource)
+		if err != nil {
 			closeInstance()
-			return nil, errdefs.NotFoundf(
-				"runtime: tool assembly resource %q not found",
-				options.toolResource)
+			return nil, fmt.Errorf("runtime: %w", err)
 		}
-		var typeOK bool
-		assembly, typeOK = value.(*tool.Assembly)
-		if !typeOK || assembly == nil {
-			closeInstance()
-			return nil, errdefs.Validationf(
-				"runtime: tool assembly resource %q is %T, want *tool.Assembly",
-				options.toolResource, value)
-		}
+		assembly = read
 	} else if r.liveCatalog != nil && !r.liveCatalog.hasDefault() {
 		// Mirrors the build-time rule: with a dynamic catalog every
 		// agent must have an explicit tool assembly or a default.

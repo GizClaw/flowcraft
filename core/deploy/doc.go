@@ -17,9 +17,19 @@
 //     assembled deployment to resources implementing [Binder].
 //
 // [Builder.Build] is Plan plus Build, and [Builder.Deploy] adds Wire. A caller
-// that wants a configuration preflight calls Plan directly.
+// that wants a configuration preflight calls Plan directly — it needs a
+// registry containing every kind the document names.
 //
-// The package imports only core packages: the resource protocol
-// ([resource]) and error classification ([errdefs]). It knows no
-// concrete resource kind.
+// Two opt-outs make an edge check conditional: a factory that instantiates
+// Factory[any], and a dependency declared with Requirement.Type == any. Both
+// are for test doubles and plugin hosts that forward a value they do not model;
+// such a contract is then enforced where the value is read.
+//
+// Document and DAG shape errors (a malformed entry, a cycle) are reported one
+// at a time, because the later checks need a resolved order; every dependency
+// edge is reported together.
+//
+// The package owns only two concrete resource kinds: the secret stores it
+// assembles first (so their scheme can serve every other settings subtree) and
+// nothing else. Everything kind-specific arrives through the registry.
 package deploy

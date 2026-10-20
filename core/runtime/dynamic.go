@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -49,19 +50,12 @@ func resolveDynamicCatalogAssemblies(
 	for agentID, resourceName := range cfg.Tools {
 		assembly, exists := resolved[resourceName]
 		if !exists {
-			value, ok := result.Value(resourceName)
-			if !ok {
-				return nil, errdefs.NotFoundf(
-					"runtime config dynamic_catalog.tools[%q]: resource %q not found",
-					agentID, resourceName)
+			read, err := deploy.Resolve[*tool.Assembly](result, resourceName)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"runtime config dynamic_catalog.tools[%q]: %w", agentID, err)
 			}
-			var typeOK bool
-			assembly, typeOK = value.(*tool.Assembly)
-			if !typeOK || assembly == nil {
-				return nil, errdefs.Validationf(
-					"runtime config dynamic_catalog.tools[%q]: resource %q is %T, want *tool.Assembly",
-					agentID, resourceName, value)
-			}
+			assembly = read
 			resolved[resourceName] = assembly
 		}
 		assemblies[agentID] = assembly

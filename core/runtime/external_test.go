@@ -39,18 +39,14 @@ func (runtimeExternalConsumerFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalConsumer",
 		Impl: "runtime",
-		Deps: []resource.Requirement{resource.Require[any]("db").Spec()},
+		Deps: []resource.Requirement{resource.Require[*runtimeExternalPool]("db").Spec()},
 	}
 }
 
-func (runtimeExternalConsumerFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, err := resource.Require[any]("db").Get(in)
+func (runtimeExternalConsumerFactory) New(_ context.Context, in resource.Input) (*runtimeExternalConsumer, error) {
+	pool, err := resource.Require[*runtimeExternalPool]("db").Get(in)
 	if err != nil {
 		return nil, err
-	}
-	pool, ok := value.(*runtimeExternalPool)
-	if !ok {
-		return nil, errdefs.Validationf("consumer: db dep has wrong type")
 	}
 	return &runtimeExternalConsumer{pool: pool}, nil
 }
@@ -61,11 +57,11 @@ func (runtimeExternalEngineFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalEngine",
 		Impl: "runtime",
-		Deps: []resource.Requirement{resource.Require[any]("db").Spec()},
+		Deps: []resource.Requirement{resource.Require[*runtimeExternalPool]("db").Spec()},
 	}
 }
 
-func (runtimeExternalEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
+func (runtimeExternalEngineFactory) New(_ context.Context, in resource.Input) (agent.Engine, error) {
 	if _, err := resource.Require[*runtimeExternalPool]("db").Get(in); err != nil {
 		return nil, err
 	}

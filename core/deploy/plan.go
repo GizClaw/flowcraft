@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/secret"
 )
 
 // Plan is a deployment document checked against a registry: every kind
@@ -28,6 +30,14 @@ type Plan struct {
 	order     []string
 	entries   map[string]resource.Entry
 	externals map[string]ExternalResource
+
+	// The builder's construction inputs are copied at plan time so that
+	// mutating the Builder between Plan and Build cannot change what gets
+	// built: the plan validated one configuration, and Build uses it.
+	loader              *resource.Loader
+	resolver            *resource.ReferenceResolver
+	secretCacheTTL      time.Duration
+	secretCacheCapacity int
 }
 
 // Plan validates doc against the builder's registry without constructing
@@ -64,11 +74,15 @@ func (b *Builder) Plan(doc Document) (*Plan, error) {
 	}
 
 	plan := &Plan{
-		builder:   b,
-		doc:       doc,
-		order:     order,
-		entries:   make(map[string]resource.Entry, len(doc.Resources)),
-		externals: externals,
+		builder:             b,
+		doc:                 doc,
+		order:               order,
+		entries:             make(map[string]resource.Entry, len(doc.Resources)),
+		externals:           externals,
+		loader:              b.loader,
+		resolver:            b.resolver,
+		secretCacheTTL:      b.secretCacheTTL,
+		secretCacheCapacity: b.secretCacheCapacity,
 	}
 
 	// Pass 1: resolve every factory. A missing factory makes its consumers
@@ -96,11 +110,14 @@ func (b *Builder) Plan(doc Document) (*Plan, error) {
 		if err := checkDeps(entry.Spec(), res.Deps, plan.producerType); err != nil {
 			errs = append(errs, errdefs.Validationf("resources[%q]: %v", name, err))
 		}
-		if items := entry.Spec().Items; items != nil && !plan.usesItems(name) {
-			// Informational only: a container nobody references by item is
-			// legal. No error — this branch exists to keep the intent
-			// explicit for readers of the plan.
-			_ = items
+		// A secret store is a socket the assembly itself requires: Build has to
+		// use the value as a resource.SecretStore to assemble the ${secret:…}
+		// scheme, so check that here rather than after constructing it.
+		if res.Kind == secret.ResourceKind {
+			if err := checkProduces(entry, reflect.TypeFor[resource.SecretStore](),
+				fmt.Sprintf("resources[%q]", name)); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	errs = append(errs, plan.checkAgents()...)
@@ -108,32 +125,6 @@ func (b *Builder) Plan(doc Document) (*Plan, error) {
 		return nil, errors.Join(errs...)
 	}
 	return plan, nil
-}
-
-// usesItems reports whether any dep ref in the document addresses an item of
-// the named resource.
-func (p *Plan) usesItems(name string) bool {
-	for _, res := range p.doc.Resources {
-		for _, ref := range res.Deps {
-			if ref.ResourceName() == name {
-				if _, hasItem := ref.ItemName(); hasItem {
-					return true
-				}
-			}
-		}
-	}
-	for _, def := range p.doc.Agents {
-		for _, deps := range agentDepSets(def) {
-			for _, ref := range deps {
-				if ref.ResourceName() == name {
-					if _, hasItem := ref.ItemName(); hasItem {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
 }
 
 // producerType resolves a dep ref to the Go type of the value it denotes:
@@ -215,11 +206,40 @@ func (p *Plan) checkAgents() []error {
 	return errs
 }
 
+// effectiveResolver returns the expansion resolver for the main build
+// pass: the all-open default resolver merged with the builder's
+// injected schemes, plus the ${secret:...} scheme assembled from the
+// built stores (each wrapped in a TTL cache for per-request
+// resolution). The second return is the resolver handed to factories
+// for lazy Secret.Resolve calls.
+func (p *Plan) effectiveResolver(
+	stores map[string]resource.SecretStore,
+	defaultStore string,
+) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
+	base := defaultExpansionResolver(p.loader)
+	if p.resolver != nil {
+		base = base.Merge(p.resolver)
+	}
+	if len(stores) == 0 {
+		return base, nil, nil
+	}
+	cached := make(map[string]resource.SecretStore, len(stores))
+	ttl := p.secretCacheTTL
+	if ttl == 0 {
+		ttl = defaultSecretCacheTTL
+	}
+	for id, store := range stores {
+		cached[id] = resource.NewCachingSecretStore(store, ttl,
+			resource.WithCacheCapacity(p.secretCacheCapacity))
+	}
+	secrets := resource.NewSecretResolver(cached, defaultStore)
+	return base.WithScheme(secrets.Scheme()), secrets, nil
+}
+
 // Build constructs every resource and binds every agent from the checked
 // plan. On failure, values already built are closed in reverse construction
 // order (rollback).
 func (p *Plan) Build(ctx context.Context) (*Result, error) {
-	b := p.builder
 	doc := p.doc
 	order := p.order
 	externals := p.externals
@@ -233,7 +253,7 @@ func (p *Plan) Build(ctx context.Context) (*Result, error) {
 		logCleanup(ctx, values, order)
 		return nil, err
 	}
-	resolver, secrets, err := b.effectiveResolver(stores, defaultStore)
+	resolver, secrets, err := p.effectiveResolver(stores, defaultStore)
 	if err != nil {
 		logCleanup(ctx, values, order)
 		return nil, err
@@ -308,6 +328,10 @@ func checkDeps(
 
 // acceptType reports whether a producer's Go type satisfies a requirement.
 func acceptType(req resource.Requirement, got reflect.Type) error {
+	if req.Type == nil {
+		return errdefs.Validationf(
+			"dep %q has no declared Go type; declare it with resource.Require/Optional", req.Name)
+	}
 	if got == nil {
 		return errdefs.Validationf("value has no Go type, want %s", req.Type)
 	}
@@ -363,16 +387,4 @@ func hookSlots(def agent.Definition) []hookSlot {
 		{slot: agent.HookSlotReferee, want: reflect.TypeFor[agent.Referee](), entries: def.Referees},
 		{slot: agent.HookSlotCommitter, want: reflect.TypeFor[agent.Committer](), entries: def.Commit},
 	}
-}
-
-// agentDepSets returns every dependency set an agent definition declares, so
-// the plan can scan refs exhaustively.
-func agentDepSets(def agent.Definition) []resource.Deps {
-	out := []resource.Deps{def.Engine.Deps}
-	for _, slot := range hookSlots(def) {
-		for _, hook := range slot.entries {
-			out = append(out, hook.Deps)
-		}
-	}
-	return out
 }

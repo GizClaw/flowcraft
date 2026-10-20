@@ -67,8 +67,7 @@ func (e entry[T]) BuildType() reflect.Type { return reflect.TypeFor[T]() }
 func (e entry[T]) Build(ctx context.Context, in Input) (any, error) {
 	value, err := e.factory.New(ctx, in)
 	if err != nil {
-		var zero T
-		return zero, err
+		return nil, err
 	}
 	return value, nil
 }
@@ -153,10 +152,16 @@ func (s Spec) Validate() error {
 // name for a single dep, or the "name" prefix for a [Requirement.Many] dep
 // ("provider" matches "provider.openai").
 func (s Spec) DepSpecFor(key string) (Requirement, bool) {
+	// Exact names first: a spec declaring both "tool" as a Many dep and a
+	// separate "tool.x" must resolve "tool.x" to the exact requirement, or the
+	// required dep would look absent and the edge would be checked against the
+	// wrong contract.
 	for _, dep := range s.Deps {
 		if dep.Name == key {
 			return dep, true
 		}
+	}
+	for _, dep := range s.Deps {
 		if dep.Many && strings.HasPrefix(key, dep.Name+".") {
 			return dep, true
 		}

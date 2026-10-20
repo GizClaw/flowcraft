@@ -42,8 +42,10 @@ type Requirement struct {
 //		...
 //	}
 //
-// Both halves derive from T, so a factory cannot declare one type and assert
-// another.
+// Both halves derive from the same type parameter. Use the handle you
+// contributed to Spec when reading: the declaration proves nothing about a read
+// that goes through a different handle, so keeping the two the same value is
+// what makes the contract airtight.
 type Dep[T any] struct{ requirement Requirement }
 
 // Require declares a required single dependency of type T.
@@ -86,6 +88,10 @@ func (d Dep[T]) Spec() Requirement { return d.requirement }
 // dep before the factory runs, so this is defence in depth.
 func (d Dep[T]) Get(in Input) (T, error) {
 	var zero T
+	if d.requirement.Many {
+		return zero, errdefs.Validationf(
+			"resource: dep %q is a Many handle; read it with GetAll", d.requirement.Name)
+	}
 	raw, ok := in.dep(d.requirement.Name)
 	if !ok {
 		return zero, errdefs.NotFoundf(

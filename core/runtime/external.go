@@ -14,8 +14,8 @@ import (
 type ExternalDependency struct {
 	// Name is the resource-ref name used in document deps, e.g. "db".
 	Name string `json:"name"`
-	// Contract is the expected DepSpec.Type of consuming factories,
-	// e.g. "db.Pool".
+	// Contract is the author-declared name a consumer's requirement
+	// documents, e.g. "db.Pool".
 	Contract string `json:"contract"`
 }
 

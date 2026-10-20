@@ -170,7 +170,7 @@ type appCapability struct{}
 func (appCapability) Name() string { return "app" }
 
 func (appCapability) Register(registry *resource.Registry) error {
-    registry.MustRegister(event.NewFactory())
+    resource.MustRegister(registry, event.NewFactory())
     return nil
 }
 ```

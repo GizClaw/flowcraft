@@ -15,8 +15,8 @@ const RegistryKind = "tool.Registry"
 var depToolSources = resource.RequireMany[Source]("tool")
 
 // RegistryFactory builds a memory registry from its many tool.Source
-// deps. The dep order (DepsMany's sorted key order) is the explicit
-// source order used by ConflictOverwrite.
+// deps. The dep order (GetAll's sorted key order) is the explicit source
+// order used by ConflictOverwrite.
 type RegistryFactory struct{}
 
 // Spec implements resource.Factory.

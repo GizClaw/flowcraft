@@ -69,10 +69,10 @@ func TestBuildManyDeps(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 	if len(got) != 2 {
-		t.Fatalf("DepsMany = %v, want 2 providers", got)
+		t.Fatalf("GetAll = %v, want 2 providers", got)
 	}
 	if got[0].(providerValue).name != "openai" || got[1].(providerValue).name != "qwen" {
-		t.Fatalf("DepsMany order = %v, want [openai qwen]", got)
+		t.Fatalf("GetAll order = %v, want [openai qwen]", got)
 	}
 }
 

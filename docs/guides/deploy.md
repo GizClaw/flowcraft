@@ -166,22 +166,31 @@ Top-level fields:
 `{"embed": ...}` reference. `deps` bind declared dependency names to resource
 refs. A ref is either `resource` or `resource/item`.
 
-## Build and wire
+## Plan, build and wire
 
-`Builder.Build` constructs resources in dependency order. `Builder.Wire`
-then:
+`Builder.Plan` is pure. It resolves every kind to a factory, validates the
+document's dependency keys and the DAG, and checks every dependency edge's Go
+type — a factory's build type, a container's declared item type, or an
+external's injected type must satisfy the consumer's `resource.Requirement`.
+Agent engine and hook sockets are checked the same way. Nothing is constructed,
+so a configuration error is reported (with the resource and dep named) without
+side effects; `Plan.Build` then only constructs.
+
+`Builder.Build` is Plan plus Build: resources are constructed in dependency
+order, rolling back in reverse on failure. `Builder.Wire` then:
 
 1. wires `resource.Wireable` values;
 2. builds agent engines and hooks;
-3. binds `resource.DeploymentBinder` values with the completed deployment.
+3. binds `deploy.Binder` values with the completed deployment.
 
-Use `Builder.Deploy` for the convenience of both phases.
+Use `Builder.Deploy` for the convenience of all three phases, or call `Plan`
+alone for a preflight.
 
 ```go
 reg := resource.NewRegistry()
-reg.MustRegister(event.NewFactory())
-reg.MustRegister(inference.Factory{})
-reg.MustRegister(graphresource.Factory{})
+resource.MustRegister(reg, event.NewFactory())
+resource.MustRegister(reg, inference.Factory{})
+resource.MustRegister(reg, graphresource.Factory{})
 
 builder := deploy.NewBuilder(reg)
 result, err := builder.Deploy(ctx, doc)

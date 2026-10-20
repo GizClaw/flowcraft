@@ -43,6 +43,10 @@ func (workspaceFactory) Spec() resource.Spec {
 		Kind:  "workspace.Registry",
 		Impl:  "local",
 		Items: reflect.TypeFor[*workspace](),
+		Deps: []resource.Requirement{
+			depAnyOptional("dep").Spec(),
+			depAnyOptional("tool").Spec(),
+		},
 	}
 }
 
@@ -89,7 +93,10 @@ func (sandboxFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "sandbox.Registry",
 		Impl: "local",
-		Deps: []resource.Requirement{depAny("workspace").Spec()},
+		Deps: []resource.Requirement{
+			depAny("workspace").Spec(),
+			depAnyOptional("dep").Spec(),
+		},
 	}
 }
 
@@ -121,7 +128,7 @@ func (toolFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "tool.Assembly",
 		Impl: "yaml",
-		Deps: []resource.Requirement{depAny("workspace").Spec()},
+		Deps: []resource.Requirement{resource.Optional[*workspace]("workspace").Spec()},
 	}
 }
 
@@ -211,12 +218,18 @@ func TestBuildRejectsCycle(t *testing.T) {
 	doc := buildDoc()
 	fs := doc.Resources["fs"]
 	box := doc.Resources["box"]
+	// Both factories declare "dep", so the only possible rejection is the
+	// cycle itself: an undeclared-dep error could not masquerade for it.
 	fs.Deps = resource.Deps{"dep": "box"}
 	box.Deps = resource.Deps{"dep": "fs"}
 	doc.Resources["fs"] = fs
 	doc.Resources["box"] = box
-	if _, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), doc); !errdefs.IsValidation(err) {
+	_, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), doc)
+	if !errdefs.IsValidation(err) {
 		t.Fatalf("Build cycle error = %v, want validation", err)
+	}
+	if !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("Build error = %v, want a cycle diagnostic", err)
 	}
 }
 
@@ -502,19 +515,59 @@ func TestDeployRollsBackOnWireFailure(t *testing.T) {
 	}
 }
 
+// orderValue records the order in which Close ran.
+type orderValue struct {
+	name  string
+	order *[]string
+}
+
+func (v *orderValue) Close() error {
+	*v.order = append(*v.order, v.name)
+	return nil
+}
+
+type orderFactory struct {
+	name  string
+	order *[]string
+}
+
+func (f orderFactory) Spec() resource.Spec {
+	return resource.Spec{
+		Kind: "test.Order",
+		Impl: f.name,
+		Deps: []resource.Requirement{resource.Optional[*orderValue]("a").Spec()},
+	}
+}
+
+func (f orderFactory) New(context.Context, resource.Input) (*orderValue, error) {
+	return &orderValue{name: f.name, order: f.order}, nil
+}
+
+// Close must run in reverse construction order: a dependent resource is torn
+// down before the resource it depends on.
 func TestResultCloseReversesOrder(t *testing.T) {
-	result, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), buildDoc())
+	var closes []string
+	reg := resource.NewRegistry()
+	resource.MustRegister(reg, orderFactory{name: "a", order: &closes})
+	resource.MustRegister(reg, orderFactory{name: "b", order: &closes})
+
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"a": {Kind: "test.Order", Impl: "a"},
+			"b": {Kind: "test.Order", Impl: "b", Deps: resource.Deps{"a": "a"}},
+		},
+	}
+	result, err := deploy.NewBuilder(reg).Build(context.Background(), doc)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := result.Close(); err != nil {
 		t.Fatal(err)
 	}
-	kit, _ := result.Value("kit")
-	box, _ := result.Value("box")
-	fs, _ := result.Value("fs")
-	if !kit.(*tool).closed || !box.(*sandbox).closed || !fs.(*workspaceRegistry).closed {
-		t.Fatal("not all values were closed")
+	if got, want := strings.Join(closes, ","), "b,a"; got != want {
+		t.Fatalf("close order = %q, want %q", got, want)
 	}
 }
 

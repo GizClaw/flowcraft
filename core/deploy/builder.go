@@ -189,36 +189,6 @@ func (p *Plan) buildSecretStores(
 	return stores, defaultStore, nil
 }
 
-// effectiveResolver returns the expansion resolver for the main build
-// pass: the all-open default resolver merged with the builder's
-// injected schemes, plus the ${secret:...} scheme assembled from the
-// built stores (each wrapped in a TTL cache for per-request
-// resolution). The second return is the resolver handed to factories
-// for lazy Secret.Resolve calls.
-func (b *Builder) effectiveResolver(
-	stores map[string]resource.SecretStore,
-	defaultStore string,
-) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
-	base := defaultExpansionResolver(b.loader)
-	if b.resolver != nil {
-		base = base.Merge(b.resolver)
-	}
-	if len(stores) == 0 {
-		return base, nil, nil
-	}
-	cached := make(map[string]resource.SecretStore, len(stores))
-	ttl := b.secretCacheTTL
-	if ttl == 0 {
-		ttl = defaultSecretCacheTTL
-	}
-	for id, store := range stores {
-		cached[id] = resource.NewCachingSecretStore(store, ttl,
-			resource.WithCacheCapacity(b.secretCacheCapacity))
-	}
-	secrets := resource.NewSecretResolver(cached, defaultStore)
-	return base.WithScheme(secrets.Scheme()), secrets, nil
-}
-
 // defaultSecretCacheTTL bounds how long lazy secret lookups reuse a
 // cached value before hitting the backend again.
 const defaultSecretCacheTTL = time.Minute
@@ -331,6 +301,15 @@ func (b *Builder) bindDeployment(result *Result) error {
 				return errdefs.Validationf(
 					"deploy: bind deployment resource %q: %v", name, err)
 			}
+			continue
+		}
+		// A stale implementation of the removed untyped contract would
+		// otherwise be skipped in silence: the type switch simply would not
+		// match and the resource would never be bound.
+		if _, stale := value.(interface{ BindDeployment(any) error }); stale {
+			return errdefs.Validationf(
+				"deploy: resource %q implements the removed BindDeployment(any); "+
+					"migrate it to deploy.Binder", name)
 		}
 	}
 	return nil
@@ -708,7 +687,12 @@ func (r *Result) isDetached(name string) bool {
 	return ok
 }
 
-// Value returns the built resource registered under name.
+// Value returns the built resource registered under name, or false.
+//
+// It is the dynamic accessor for host-level discovery, where the resource name
+// comes from configuration and the caller cannot name the type at compile time
+// (core/runtime.Runtime.Resource and delegation/hostwrap both need that). Core
+// wiring uses [Resolve] and [Collect], which name the type.
 func (r *Result) Value(name string) (any, bool) {
 	v, ok := r.values[name]
 	return v, ok
@@ -736,6 +720,9 @@ func (r *Result) Secrets() *resource.SecretResolver {
 
 // Names returns the sorted built resource names.
 func (r *Result) Names() []string {
+	if r == nil {
+		return nil
+	}
 	names := make([]string, 0, len(r.values))
 	for name := range r.values {
 		names = append(names, name)
@@ -746,12 +733,18 @@ func (r *Result) Names() []string {
 
 // Agent returns the assembled agent registered under name.
 func (r *Result) Agent(name string) (*agent.Agent, bool) {
+	if r == nil {
+		return nil, false
+	}
 	a, ok := r.agents[name]
 	return a, ok
 }
 
 // AgentNames returns the sorted bound agent names.
 func (r *Result) AgentNames() []string {
+	if r == nil {
+		return nil
+	}
 	names := make([]string, 0, len(r.agents))
 	for name := range r.agents {
 		names = append(names, name)
