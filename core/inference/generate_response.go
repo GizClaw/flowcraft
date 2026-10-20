@@ -174,136 +174,209 @@ func (r GenerateResponse) validateFor(request GenerateRequest) (generateResponse
 		return check, err
 	}
 	intent := request.Input.Content.Intent
+	// toolsRequested decides whether a tool-call part is a requested
+	// artifact at all, and whether the definition and choice checks run.
 	toolsRequested := intent.Text != nil && intent.Text.toolsRequested()
-	requested := make(map[message.PartKind]struct{}, 4)
-	for _, kind := range intent.OutputKinds() {
-		requested[kind] = struct{}{}
+	collected, check, err := collectGenerateParts(parts, intent, toolsRequested)
+	if err != nil {
+		return check, err
 	}
-	var text strings.Builder
-	textParts := 0
-	var images []message.ImagePart
-	var audio []message.AudioPart
-	var videos []message.VideoPart
-	var toolCalls []message.ToolCallPart
-	for _, part := range parts {
-		switch value := part.(type) {
-		case message.TextPart:
-			if _, ok := requested[message.PartText]; !ok {
-				return generateResponseCheckUnrequestedText,
-					fmt.Errorf("generate response contains unrequested text")
-			}
-			textParts++
-			text.WriteString(value.Text)
-		case message.ImagePart:
-			if _, ok := requested[message.PartImage]; !ok {
-				return generateResponseCheckUnrequestedImage,
-					fmt.Errorf("generate response contains unrequested image")
-			}
-			images = append(images, value)
-			if err := validateGenerateImage(value, *intent.Image); err != nil {
-				return generateResponseCheckImageMedia, fmt.Errorf(
-					"generate image %d: %w", len(images)-1, err,
-				)
-			}
-		case message.AudioPart:
-			if _, ok := requested[message.PartAudio]; !ok {
-				return generateResponseCheckUnrequestedAudio,
-					fmt.Errorf("generate response contains unrequested audio")
-			}
-			audio = append(audio, value)
-			if err := validateGenerateAudio(value, *intent.Audio); err != nil {
-				return generateResponseCheckAudioMedia, fmt.Errorf(
-					"generate audio %d: %w", len(audio)-1, err,
-				)
-			}
-		case message.VideoPart:
-			if _, ok := requested[message.PartVideo]; !ok {
-				return generateResponseCheckUnrequestedVideo,
-					fmt.Errorf("generate response contains unrequested video")
-			}
-			videos = append(videos, value)
-			if err := validateGenerateVideo(value); err != nil {
-				return generateResponseCheckVideoMedia, fmt.Errorf(
-					"generate video %d: %w", len(videos)-1, err,
-				)
-			}
-		case message.ToolCallPart:
-			if !toolsRequested {
-				return generateResponseCheckUnrequestedTool,
-					fmt.Errorf("generate response contains an unrequested tool call")
-			}
-			toolCalls = append(toolCalls, value)
-		case message.ReasoningPart:
-			// Reasoning is a trace of the model's own process, not a
-			// requested artifact: reasoning-capable models emit it whether
-			// or not the request set a reasoning intent, so responses may
-			// always carry it.
-		}
-	}
-	if toolsRequested {
-		definitions := make(map[string]struct{}, len(intent.Text.Tools))
-		for _, definition := range intent.Text.Tools {
-			definitions[definition.Name] = struct{}{}
-		}
-		for index, call := range toolCalls {
-			if _, ok := definitions[call.Call.Name]; !ok {
-				return generateResponseCheckUndefinedTool,
-					&undefinedToolError{Index: index, Call: call.Call}
-			}
-		}
-		if choice := intent.Text.ToolChoice; choice != nil {
-			switch choice.Kind {
-			case ToolChoiceNone:
-				if len(toolCalls) != 0 {
-					return generateResponseCheckToolChoice,
-						fmt.Errorf("tool choice none forbids tool calls")
-				}
-			case ToolChoiceRequired:
-				if len(toolCalls) == 0 && r.FinishReason == FinishCompleted {
-					return generateResponseCheckToolChoice,
-						fmt.Errorf("required tool choice produced no tool call")
-				}
-			case ToolChoiceNamed:
-				for _, call := range toolCalls {
-					if call.Call.Name != choice.Name {
-						return generateResponseCheckToolChoice, fmt.Errorf(
-							"named tool choice %s produced tool %s",
-							quoteToken(choice.Name),
-							quoteToken(call.Call.Name),
-						)
-					}
-				}
-				if len(toolCalls) == 0 && r.FinishReason == FinishCompleted {
-					return generateResponseCheckToolChoice,
-						fmt.Errorf("named tool choice produced no tool call")
-				}
-			}
-		}
+	if check, err := validateGenerateToolCalls(
+		intent.Text, toolsRequested, collected.toolCalls, r.FinishReason,
+	); err != nil {
+		return check, err
 	}
 	if r.FinishReason != FinishCompleted {
 		return "", nil
 	}
+	return validateCompletedGenerate(intent, collected)
+}
+
+// generateParts is one response's parts classified against the request:
+// text accumulated for the format check, media kept for the per-part and
+// count checks, tool calls kept for the definition and tool-choice checks.
+type generateParts struct {
+	text      strings.Builder
+	textParts int
+	images    []message.ImagePart
+	audio     []message.AudioPart
+	videos    []message.VideoPart
+	toolCalls []message.ToolCallPart
+}
+
+// collectGenerateParts walks the response parts once and rejects any part
+// kind the request did not ask for, first bad part in source order winning.
+// Each media part is validated against its modality's intent as it is
+// collected. Reasoning parts pass unconditionally: they are a trace of the
+// model's own process, not a requested artifact, so reasoning-capable
+// models may always emit them.
+func collectGenerateParts(
+	parts []message.Part,
+	intent Intent,
+	toolsRequested bool,
+) (generateParts, generateResponseCheck, error) {
+	var collected generateParts
+	requested := make(map[message.PartKind]struct{}, 4)
+	for _, kind := range intent.OutputKinds() {
+		requested[kind] = struct{}{}
+	}
+	for _, part := range parts {
+		switch value := part.(type) {
+		case message.TextPart:
+			if _, ok := requested[message.PartText]; !ok {
+				return collected, generateResponseCheckUnrequestedText,
+					fmt.Errorf("generate response contains unrequested text")
+			}
+			collected.textParts++
+			collected.text.WriteString(value.Text)
+		case message.ImagePart:
+			if _, ok := requested[message.PartImage]; !ok {
+				return collected, generateResponseCheckUnrequestedImage,
+					fmt.Errorf("generate response contains unrequested image")
+			}
+			collected.images = append(collected.images, value)
+			if err := validateGenerateImage(value, *intent.Image); err != nil {
+				return collected, generateResponseCheckImageMedia, fmt.Errorf(
+					"generate image %d: %w", len(collected.images)-1, err,
+				)
+			}
+		case message.AudioPart:
+			if _, ok := requested[message.PartAudio]; !ok {
+				return collected, generateResponseCheckUnrequestedAudio,
+					fmt.Errorf("generate response contains unrequested audio")
+			}
+			collected.audio = append(collected.audio, value)
+			if err := validateGenerateAudio(value, *intent.Audio); err != nil {
+				return collected, generateResponseCheckAudioMedia, fmt.Errorf(
+					"generate audio %d: %w", len(collected.audio)-1, err,
+				)
+			}
+		case message.VideoPart:
+			if _, ok := requested[message.PartVideo]; !ok {
+				return collected, generateResponseCheckUnrequestedVideo,
+					fmt.Errorf("generate response contains unrequested video")
+			}
+			collected.videos = append(collected.videos, value)
+			if err := validateGenerateVideo(value); err != nil {
+				return collected, generateResponseCheckVideoMedia, fmt.Errorf(
+					"generate video %d: %w", len(collected.videos)-1, err,
+				)
+			}
+		case message.ToolCallPart:
+			if !toolsRequested {
+				return collected, generateResponseCheckUnrequestedTool,
+					fmt.Errorf("generate response contains an unrequested tool call")
+			}
+			collected.toolCalls = append(collected.toolCalls, value)
+		case message.ReasoningPart:
+		}
+	}
+	return collected, "", nil
+}
+
+// validateGenerateToolCalls checks the declared definitions and the
+// tool-choice strategy against the calls the model actually produced. It
+// is a no-op when the request asked for no tool calling at all.
+func validateGenerateToolCalls(
+	text *TextIntent,
+	toolsRequested bool,
+	calls []message.ToolCallPart,
+	finishReason FinishReason,
+) (generateResponseCheck, error) {
+	if !toolsRequested {
+		return "", nil
+	}
+	definitions := make(map[string]struct{}, len(text.Tools))
+	for _, definition := range text.Tools {
+		definitions[definition.Name] = struct{}{}
+	}
+	for index, call := range calls {
+		if _, ok := definitions[call.Call.Name]; !ok {
+			return generateResponseCheckUndefinedTool,
+				&undefinedToolError{Index: index, Call: call.Call}
+		}
+	}
+	return validateGenerateToolChoice(text.ToolChoice, calls, finishReason)
+}
+
+// validateGenerateToolChoice enforces the request's selection rule on the
+// produced calls: none forbids them, required and named demand one unless
+// the model stopped for a non-completion reason (in which case the
+// finish-reason checks own the failure).
+func validateGenerateToolChoice(
+	choice *ToolChoice,
+	calls []message.ToolCallPart,
+	finishReason FinishReason,
+) (generateResponseCheck, error) {
+	if choice == nil {
+		return "", nil
+	}
+	switch choice.Kind {
+	case ToolChoiceNone:
+		if len(calls) != 0 {
+			return generateResponseCheckToolChoice,
+				fmt.Errorf("tool choice none forbids tool calls")
+		}
+	case ToolChoiceRequired:
+		if len(calls) == 0 && finishReason == FinishCompleted {
+			return generateResponseCheckToolChoice,
+				fmt.Errorf("required tool choice produced no tool call")
+		}
+	case ToolChoiceNamed:
+		for _, call := range calls {
+			if call.Call.Name != choice.Name {
+				return generateResponseCheckToolChoice, fmt.Errorf(
+					"named tool choice %s produced tool %s",
+					quoteToken(choice.Name),
+					quoteToken(call.Call.Name),
+				)
+			}
+		}
+		if len(calls) == 0 && finishReason == FinishCompleted {
+			return generateResponseCheckToolChoice,
+				fmt.Errorf("named tool choice produced no tool call")
+		}
+	}
+	return "", nil
+}
+
+// validateCompletedGenerate checks the artifacts a completed response owes
+// the request: text where text was asked for, and the declared counts for
+// every requested media modality. A response that stopped for any other
+// reason is not held to these promises.
+func validateCompletedGenerate(
+	intent Intent,
+	collected generateParts,
+) (generateResponseCheck, error) {
 	if intent.Text != nil {
-		if textParts == 0 {
+		if collected.textParts == 0 {
 			return generateResponseCheckNoText,
 				fmt.Errorf("completed generate response contains no requested text")
 		}
-		if err := validateGenerateText(text.String(), intent.Text.Response); err != nil {
+		if err := validateGenerateText(
+			collected.text.String(), intent.Text.Response,
+		); err != nil {
 			return generateResponseCheckText, err
 		}
 	}
 	if intent.Image != nil {
-		if err := validateGenerateCount("image", len(images), intent.Image.Count); err != nil {
+		if err := validateGenerateCount(
+			"image", len(collected.images), intent.Image.Count,
+		); err != nil {
 			return generateResponseCheckImageCount, err
 		}
 	}
 	if intent.Audio != nil {
-		if err := validateGenerateCount("audio", len(audio), intent.Audio.Count); err != nil {
+		if err := validateGenerateCount(
+			"audio", len(collected.audio), intent.Audio.Count,
+		); err != nil {
 			return generateResponseCheckAudioCount, err
 		}
 	}
 	if intent.Video != nil {
-		if err := validateGenerateCount("video", len(videos), nil); err != nil {
+		if err := validateGenerateCount(
+			"video", len(collected.videos), nil,
+		); err != nil {
 			return generateResponseCheckVideoCount, err
 		}
 	}

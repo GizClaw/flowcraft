@@ -356,6 +356,42 @@ type attemptPlan[Req any, Result any] struct {
 	completed bool
 }
 
+// attemptAction is what one attempt tells the retry loop to do next.
+type attemptAction int
+
+const (
+	// attemptContinue keeps working the current target: the preflight
+	// passed, or a failed attempt is eligible for a retry.
+	attemptContinue attemptAction = iota
+	// attemptServed ends the route: an attempt completed, or handed the
+	// opened stream/session back to the caller.
+	attemptServed
+	// attemptFallback moves the loop to the fallback policy's next target.
+	attemptFallback
+	// attemptStop ends the route with the attempt's error.
+	attemptStop
+)
+
+// routeLoop is one runAttempts call: the trace it is building, the target
+// it is attempting, and the retry budget it has spent. The loop is three
+// steps — pass over a circuit-open target, work the current one under the
+// retry policy, and switch targets — so each step is a method and the loop
+// reads as that sequence.
+type routeLoop[Req any, Result any] struct {
+	r         *Router
+	ctx       context.Context
+	plan      attemptPlan[Req, Result]
+	policy    RetryPolicy
+	trace     Trace
+	target    model.ModelRef
+	trigger   AttemptTrigger
+	key       circuitKey
+	seen      map[model.ModelRef]struct{}
+	skipPhase AttemptPhase
+	lastErr   error
+	total     int
+}
+
 // runAttempts runs one operation across fallback targets with per-target
 // retry/backoff and the circuit breaker, and reports every observable route
 // fact in the returned trace. It is the single attempt engine: a stream or
@@ -374,215 +410,313 @@ func runAttempts[Req any, Result any](
 	if err != nil {
 		return zero, Trace{}, err
 	}
-	trace := Trace{Decision: decision}
-	target := decision.Selected
-	trigger := AttemptTriggerSelection
-	seen := map[model.ModelRef]struct{}{target: {}}
-	policy := r.retry.policyFor(plan.operation).effective()
-	// A skipped attempt is reported in the phase that would have run: the
-	// preflight when the operation has one, the work itself otherwise.
-	skipPhase := plan.phase
-	if plan.prepare != nil {
-		skipPhase = AttemptPhasePreflight
+	loop := &routeLoop[Req, Result]{
+		r:       r,
+		plan:    plan,
+		policy:  r.retry.policyFor(plan.operation).effective(),
+		trace:   Trace{Decision: decision},
+		target:  decision.Selected,
+		trigger: AttemptTriggerSelection,
+		seen:    map[model.ModelRef]struct{}{decision.Selected: {}},
+		// A skipped attempt is reported in the phase that would have run:
+		// the preflight when the operation has one, the work itself
+		// otherwise.
+		skipPhase: plan.phase,
 	}
+	if plan.prepare != nil {
+		loop.skipPhase = AttemptPhasePreflight
+	}
+	loop.ctx = ctx
 	// A fallback policy that dismisses a candidate (capability skip) reports
 	// it through this sink, in the phase the skipped attempt would have run,
 	// so the trace explains why a target was passed over.
 	if plan.fallbackNext != nil {
-		ctx = withPolicySkipRecorder(ctx, func(target model.ModelRef, reason string) {
-			trace.Attempts = append(trace.Attempts, Attempt{
-				Target: target, Phase: skipPhase, Trigger: AttemptTriggerFallback,
+		loop.ctx = withPolicySkipRecorder(ctx, func(target model.ModelRef, reason string) {
+			loop.trace.Attempts = append(loop.trace.Attempts, Attempt{
+				Target: target, Phase: loop.skipPhase, Trigger: AttemptTriggerFallback,
 				Outcome: AttemptOutcomeSkipped, SkipReason: reason,
 			})
 		})
 	}
-	var lastErr error
-	totalAttempts := 0
-	for {
-		breakerAllowed := false
-		var key circuitKey
-		if r.breaker != nil {
-			key = circuitKey{operation: plan.operation, model: target}
-			gate := r.breaker.begin(ctx, key)
-			breakerAllowed = gate.allowed
-			if !breakerAllowed {
-				skipped := Attempt{
-					Target: target, Phase: skipPhase, Trigger: trigger,
-					Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
-				}
-				trace.Attempts = append(trace.Attempts, skipped)
-				logRouteAttempt(telemetry.Warn, ctx, plan.operation,
-					"inference route: target circuit open, skipping",
-					skipped, model.ModelRef{}, nil)
-				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, plan.operation, plan.snapshot, plan.clone,
-					skipped,
-					&trace, seen, plan.fallbackNext, true, false, skipPhase,
-				)
-				if fallbackErr != nil {
-					return zero, trace, fallbackErr
-				}
-				if !ok {
-					if lastErr != nil {
-						return zero, trace, lastErr
-					}
-					return zero, trace, NewError(
-						CircuitOpen,
-						plan.operation,
-						errors.New("all route targets are circuit-open"),
-					)
-				}
-				target, trigger = next, AttemptTriggerFallback
-				continue
-			}
-		}
+	return loop.run()
+}
 
-		attemptNumber := 0
-		var backoffMillis int64
-		for {
-			if policy.MaxTotalAttempts > 0 &&
-				totalAttempts >= policy.MaxTotalAttempts {
-				if lastErr != nil {
-					return zero, trace, lastErr
-				}
-				return zero, trace, errors.New("retry total attempt budget exhausted")
-			}
-			attemptNumber++
-			totalAttempts++
-			attemptTrigger := trigger
-			if attemptNumber > 1 {
-				attemptTrigger = AttemptTriggerRetry
-			}
-			if attemptNumber > 1 {
-				delay := retryDelay(policy.Backoff, attemptNumber-1, lastErr)
-				if err := r.sleeper(ctx, delay); err != nil {
-					return zero, trace, err
-				}
-				backoffMillis = delay.Milliseconds()
-			}
-			var prepared *inference.Prepared[Result]
-			if plan.prepare != nil {
-				prepared, err = plan.prepare(ctx, target, plan.snapshot)
-				if err != nil {
-					attempt := failedAttempt(
-						target, AttemptPhasePreflight, attemptTrigger, err)
-					attempt.Number = attemptNumber
-					attempt.BackoffMillis = backoffMillis
-					if r.breaker != nil {
-						attempt.CircuitTransition = r.breaker.finish(
-							ctx, key, err, false,
-						)
-					}
-					trace.Attempts = append(trace.Attempts, attempt)
-					if policy.MaxTotalAttempts > 0 &&
-						totalAttempts >= policy.MaxTotalAttempts {
-						return zero, trace, err
-					}
-					// A preflight failure is a local compiler rejection: it
-					// is deterministic, so it is never retried on the same
-					// target (retryEligible refuses the preflight phase). It
-					// either falls back to another target or stops here.
-					if fallbackEligible(attempt) {
-						next, ok, fallbackErr := nextFallbackTarget(r,
-							ctx, plan.operation, plan.snapshot, plan.clone,
-							attempt, &trace, seen, plan.fallbackNext, false, false, skipPhase,
-						)
-						if fallbackErr != nil {
-							return zero, trace, fallbackErr
-						}
-						if !ok {
-							return zero, trace, err
-						}
-						logRouteAttempt(telemetry.Warn, ctx, plan.operation,
-							"inference route: falling back to another target",
-							attempt, next, err)
-						target, trigger = next, AttemptTriggerFallback
-						break
-					}
-					allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
-					next, ok, fallbackErr := nextFallbackTarget(r,
-						ctx, plan.operation, plan.snapshot, plan.clone,
-						attempt, &trace, seen, plan.fallbackNext, false, allowTransient, skipPhase,
-					)
-					if fallbackErr != nil {
-						return zero, trace, fallbackErr
-					}
-					if !ok {
-						return zero, trace, err
-					}
-					logRouteAttempt(telemetry.Warn, ctx, plan.operation,
-						"inference route: falling back after retries exhausted",
-						attempt, next, err)
-					target, trigger = next, AttemptTriggerFallback
-					break
-				}
-				trace.Attempts = append(trace.Attempts, Attempt{
-					Target: target, Phase: AttemptPhasePreflight, Trigger: trigger,
-					Outcome: AttemptOutcomeSucceeded, Number: attemptNumber,
-				})
-			}
-			result, metadata, err := plan.work(ctx, target, plan.snapshot, prepared)
-			if err != nil {
-				attempt := failedAttempt(target, plan.phase, attemptTrigger, err)
-				attempt.Number = attemptNumber
-				attempt.BackoffMillis = backoffMillis
-				if r.breaker != nil {
-					attempt.CircuitTransition = r.breaker.finish(
-						ctx, key, err, attempt.Transient,
-					)
-				}
-				trace.Attempts = append(trace.Attempts, attempt)
-				if policy.MaxTotalAttempts > 0 &&
-					totalAttempts >= policy.MaxTotalAttempts {
-					return zero, trace, err
-				}
-				if retryEligible(ctx, &policy, retryDecision(
-					plan.operation, plan.phase, attemptTrigger, err, attemptNumber,
-				)) {
-					logRouteAttempt(telemetry.Debug, ctx, plan.operation,
-						"inference route: attempt failed, will retry",
-						attempt, model.ModelRef{}, err)
-					lastErr = err
-					continue
-				}
-				allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
-				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, plan.operation, plan.snapshot, plan.clone,
-					attempt, &trace, seen, plan.fallbackNext, false, allowTransient, skipPhase,
-				)
-				if fallbackErr != nil {
-					return zero, trace, fallbackErr
-				}
-				if !ok {
-					return zero, trace, err
-				}
-				logRouteAttempt(telemetry.Warn, ctx, plan.operation,
-					"inference route: falling back after retries exhausted",
-					attempt, next, err)
-				target, trigger = next, AttemptTriggerFallback
-				break
-			}
-			transition := ""
-			if r.breaker != nil {
-				transition = r.breaker.finish(ctx, key, nil, false)
-			}
-			trace.Attempts = append(trace.Attempts, Attempt{
-				Target: target, Phase: plan.phase, Trigger: attemptTrigger,
-				Outcome: plan.outcome, Number: attemptNumber,
-				CircuitTransition: transition,
-			})
-			trace.Executed = target
-			if plan.completed &&
-				(metadata.Operation != plan.operation || metadata.Model != target.ID) {
-				return zero, trace, NewError(
-					SelectorContractViolation,
-					plan.operation,
-					errors.New("inference response does not match selected route"),
-				)
-			}
-			return result, trace, nil
+// run drives the target loop until an attempt is served or the route ends.
+func (l *routeLoop[Req, Result]) run() (Result, Trace, error) {
+	for {
+		skip, err := l.skipCircuitOpen()
+		if err != nil {
+			return l.done(err)
+		}
+		if skip {
+			continue
+		}
+		result, _, served, err := l.attemptTarget()
+		if err != nil {
+			return l.done(err)
+		}
+		if served {
+			return result, l.trace, nil
 		}
 	}
+}
+
+// done is the terminal (zero result, trace, err) triple every stop path
+// returns.
+func (l *routeLoop[Req, Result]) done(err error) (Result, Trace, error) {
+	var zero Result
+	return zero, l.trace, err
+}
+
+// skipCircuitOpen reports the current target as a skipped attempt when its
+// circuit is open and moves the loop to the fallback policy's next target
+// (skip=true). An error means the route must stop: either the fallback
+// machinery failed, or the last attempt error stands, or every target is
+// circuit-open.
+func (l *routeLoop[Req, Result]) skipCircuitOpen() (skip bool, err error) {
+	if l.r.breaker == nil {
+		return false, nil
+	}
+	l.key = circuitKey{operation: l.plan.operation, model: l.target}
+	gate := l.r.breaker.begin(l.ctx, l.key)
+	if gate.allowed {
+		return false, nil
+	}
+	skipped := Attempt{
+		Target: l.target, Phase: l.skipPhase, Trigger: l.trigger,
+		Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
+	}
+	l.trace.Attempts = append(l.trace.Attempts, skipped)
+	logRouteAttempt(telemetry.Warn, l.ctx, l.plan.operation,
+		"inference route: target circuit open, skipping",
+		skipped, model.ModelRef{}, nil)
+	moved, err := l.fallBack(skipped, true, false, "", nil)
+	if err != nil {
+		return false, err
+	}
+	if moved {
+		return true, nil
+	}
+	if l.lastErr != nil {
+		return false, l.lastErr
+	}
+	return false, NewError(
+		CircuitOpen,
+		l.plan.operation,
+		errors.New("all route targets are circuit-open"),
+	)
+}
+
+// budgetSpent reports whether the policy's total-attempt budget is spent.
+// It spans every target: a fallback does not reset it.
+func (l *routeLoop[Req, Result]) budgetSpent() bool {
+	return l.policy.MaxTotalAttempts > 0 && l.total >= l.policy.MaxTotalAttempts
+}
+
+// fallBack asks the operation's fallback policy for the next target and, on
+// success, moves the loop to it and announces the move with msg. moved is
+// false when the policy has no target left, which leaves the caller to stop
+// on its own error. An empty msg logs nothing: the circuit-open skip already
+// logged itself.
+func (l *routeLoop[Req, Result]) fallBack(
+	attempt Attempt,
+	skipEligibility bool,
+	allowTransient bool,
+	msg string,
+	cause error,
+) (moved bool, err error) {
+	next, ok, fallbackErr := nextFallbackTarget(l.r,
+		l.ctx, l.plan.operation, l.plan.snapshot, l.plan.clone,
+		attempt, &l.trace, l.seen, l.plan.fallbackNext,
+		skipEligibility, allowTransient, l.skipPhase,
+	)
+	if fallbackErr != nil {
+		return false, fallbackErr
+	}
+	if !ok {
+		return false, nil
+	}
+	if msg != "" {
+		logRouteAttempt(telemetry.Warn, l.ctx, l.plan.operation, msg, attempt, next, cause)
+	}
+	l.target, l.trigger = next, AttemptTriggerFallback
+	return true, nil
+}
+
+// recordFailure books one failed attempt into the trace: the phase and
+// trigger it ran in, the per-target attempt and backoff indexes, and the
+// circuit transition the failure caused.
+//
+// A preflight rejection never counts as a transient breaker failure: it is a
+// deterministic local compile error, so it must not nudge the circuit toward
+// opening. The work attempt's own transient classification decides.
+func (l *routeLoop[Req, Result]) recordFailure(
+	phase AttemptPhase,
+	trigger AttemptTrigger,
+	attemptNumber int,
+	backoffMillis int64,
+	err error,
+) Attempt {
+	attempt := failedAttempt(l.target, phase, trigger, err)
+	attempt.Number = attemptNumber
+	attempt.BackoffMillis = backoffMillis
+	if l.r.breaker != nil {
+		transient := attempt.Transient && phase != AttemptPhasePreflight
+		attempt.CircuitTransition = l.r.breaker.finish(l.ctx, l.key, err, transient)
+	}
+	l.trace.Attempts = append(l.trace.Attempts, attempt)
+	return attempt
+}
+
+// attemptTarget applies the retry policy to the current target: it repeats
+// the attempt, with the policy's backoff, until the action ends the route or
+// moves it to another target.
+func (l *routeLoop[Req, Result]) attemptTarget() (Result, inference.Metadata, bool, error) {
+	var zero Result
+	var empty inference.Metadata
+	attemptNumber := 0
+	var backoffMillis int64
+	for {
+		if l.budgetSpent() {
+			if l.lastErr != nil {
+				return zero, empty, false, l.lastErr
+			}
+			return zero, empty, false,
+				errors.New("retry total attempt budget exhausted")
+		}
+		attemptNumber++
+		l.total++
+		trigger := l.trigger
+		if attemptNumber > 1 {
+			trigger = AttemptTriggerRetry
+			delay := retryDelay(l.policy.Backoff, attemptNumber-1, l.lastErr)
+			if err := l.r.sleeper(l.ctx, delay); err != nil {
+				return zero, empty, false, err
+			}
+			backoffMillis = delay.Milliseconds()
+		}
+		prepared, action, err := l.preflight(trigger, attemptNumber, backoffMillis)
+		if action != attemptContinue {
+			return zero, empty, false, err
+		}
+		result, metadata, action, err := l.work(
+			prepared, trigger, attemptNumber, backoffMillis,
+		)
+		switch action {
+		case attemptServed:
+			return result, metadata, true, nil
+		case attemptContinue:
+			continue
+		case attemptFallback:
+			return zero, empty, false, nil
+		default:
+			return zero, empty, false, err
+		}
+	}
+}
+
+// preflight compiles the request for the current target when the operation
+// has a preflight stage. A failure here is a local compiler rejection: it is
+// deterministic, so it is never retried on the same target (retryEligible
+// refuses the preflight phase) — it either falls back to another target or
+// stops the route.
+func (l *routeLoop[Req, Result]) preflight(
+	trigger AttemptTrigger,
+	attemptNumber int,
+	backoffMillis int64,
+) (*inference.Prepared[Result], attemptAction, error) {
+	if l.plan.prepare == nil {
+		return nil, attemptContinue, nil
+	}
+	prepared, err := l.plan.prepare(l.ctx, l.target, l.plan.snapshot)
+	if err != nil {
+		attempt := l.recordFailure(
+			AttemptPhasePreflight, trigger, attemptNumber, backoffMillis, err,
+		)
+		if l.budgetSpent() {
+			return nil, attemptStop, err
+		}
+		msg := "inference route: falling back after retries exhausted"
+		allowTransient := l.policy.FallbackOnRetryExhausted && attempt.Transient
+		if fallbackEligible(attempt) {
+			msg = "inference route: falling back to another target"
+			allowTransient = false
+		}
+		moved, fallbackErr := l.fallBack(attempt, false, allowTransient, msg, err)
+		if fallbackErr != nil {
+			return nil, attemptStop, fallbackErr
+		}
+		if !moved {
+			return nil, attemptStop, err
+		}
+		return nil, attemptFallback, nil
+	}
+	// The preflight itself is not an attempt: it is reported under the
+	// trigger the work would have run with.
+	l.trace.Attempts = append(l.trace.Attempts, Attempt{
+		Target: l.target, Phase: AttemptPhasePreflight, Trigger: l.trigger,
+		Outcome: AttemptOutcomeSucceeded, Number: attemptNumber,
+	})
+	return prepared, attemptContinue, nil
+}
+
+// work runs one attempt and decides what its outcome means: served (or
+// handed the opened resource back), retried, fallen back, or stopped.
+func (l *routeLoop[Req, Result]) work(
+	prepared *inference.Prepared[Result],
+	trigger AttemptTrigger,
+	attemptNumber int,
+	backoffMillis int64,
+) (Result, inference.Metadata, attemptAction, error) {
+	var zero Result
+	var empty inference.Metadata
+	result, metadata, err := l.plan.work(l.ctx, l.target, l.plan.snapshot, prepared)
+	if err != nil {
+		attempt := l.recordFailure(
+			l.plan.phase, trigger, attemptNumber, backoffMillis, err,
+		)
+		if l.budgetSpent() {
+			return zero, empty, attemptStop, err
+		}
+		if retryEligible(l.ctx, &l.policy, retryDecision(
+			l.plan.operation, l.plan.phase, trigger, err, attemptNumber,
+		)) {
+			logRouteAttempt(telemetry.Debug, l.ctx, l.plan.operation,
+				"inference route: attempt failed, will retry",
+				attempt, model.ModelRef{}, err)
+			l.lastErr = err
+			return zero, empty, attemptContinue, nil
+		}
+		moved, fallbackErr := l.fallBack(attempt, false,
+			l.policy.FallbackOnRetryExhausted && attempt.Transient,
+			"inference route: falling back after retries exhausted", err)
+		if fallbackErr != nil {
+			return zero, empty, attemptStop, fallbackErr
+		}
+		if !moved {
+			return zero, empty, attemptStop, err
+		}
+		return zero, empty, attemptFallback, nil
+	}
+	transition := ""
+	if l.r.breaker != nil {
+		transition = l.r.breaker.finish(l.ctx, l.key, nil, false)
+	}
+	l.trace.Attempts = append(l.trace.Attempts, Attempt{
+		Target: l.target, Phase: l.plan.phase, Trigger: trigger,
+		Outcome: l.plan.outcome, Number: attemptNumber,
+		CircuitTransition: transition,
+	})
+	l.trace.Executed = l.target
+	if l.plan.completed &&
+		(metadata.Operation != l.plan.operation || metadata.Model != l.target.ID) {
+		return zero, empty, attemptStop, NewError(
+			SelectorContractViolation,
+			l.plan.operation,
+			errors.New("inference response does not match selected route"),
+		)
+	}
+	return result, metadata, attemptServed, nil
 }
 
 // nextFallbackTarget asks the operation's fallback policy for another target

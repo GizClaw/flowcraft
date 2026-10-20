@@ -193,286 +193,365 @@ func (r *Runtime) Reload(
 	telemetry.Info(ctx, "runtime reload started",
 		attribute.Int64("runtime.generation.id", int64(newGenID)),
 		attribute.Int64("runtime.generation.previous", int64(previousID)))
-	fail := func(err error) (*ReloadResult, error) {
-		r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildFailed(),
-			RuntimeRebuildEvent{GenerationID: newGenID, Error: err.Error()})
-		telemetry.Error(ctx, "runtime reload failed",
-			attribute.Int64("runtime.generation.id", int64(newGenID)),
-			attribute.String(telemetry.AttrErrorMessage, err.Error()))
-		return nil, err
-	}
-	if err := doc.Validate(); err != nil {
-		return fail(fmt.Errorf(
-			"runtime reload validate deployment: %w", err))
-	}
-	cfg, err := DecodeConfig(ctx, doc)
-	if err != nil {
-		return fail(err)
-	}
+	return (&reloadAttempt{
+		r:        r,
+		ctx:      ctx,
+		doc:      doc,
+		override: override,
+		newGenID: newGenID,
+		previous: previousID,
+	}).run()
+}
 
-	// Build the new deployment result transactionally. The generation's
-	// externals, resolver and host decorations are the retained ones
-	// unless this reload replaces them.
-	injected := r.externalResources
-	if override.replaceExternals {
-		injected = override.externals
+// reloadAttempt is one Reload call: the generation ids it was allocated, the
+// inputs it builds from, and the partial deployment an abort must unwind.
+// Each phase of the reload is a method that either takes the attempt one step
+// further or returns the error the caller sees, so the failure paths sit at
+// the top of run() instead of being interleaved with the happy path.
+type reloadAttempt struct {
+	r        *Runtime
+	ctx      context.Context
+	doc      deploy.Document
+	override *reloadOptions
+	newGenID uint64
+	previous uint64
+
+	// Settled by prepare: the build-time inputs this generation starts
+	// from, after the reload's options replaced what they cover.
+	cfg                 Config
+	injected            map[string]ExternalResource
+	resolver            *resource.ReferenceResolver
+	hostDecorator       HostFactoryDecorator
+	resultHostDecorator ResultHostFactoryDecorator
+	effective           []ExternalResource
+
+	// Settled by build, bind, resolveValues and resolveCatalog: the new
+	// deployment and the values the new generation serves.
+	result      *deploy.Result
+	bus         event.Bus
+	checkpoints agent.CheckpointStore
+	hostFactory session.HostFactory
+	catalog     *catalogRegistry
+
+	// Settled by rebindAgents and drainRemovedAgents: what the commit
+	// installs and what the completed event reports.
+	entries        map[string]dynamicAgentEntry
+	rebound        map[string]*agent.Agent
+	newEntries     map[string]dynamicAgentEntry
+	drainAttempted []string
+	drained        []string
+}
+
+// run executes the reload one phase at a time. Nothing is visible to
+// callers until commit swaps the live generation; every earlier failure
+// aborts the attempt instead.
+func (a *reloadAttempt) run() (*ReloadResult, error) {
+	// Until the deployment exists there is nothing to unwind; afterwards an
+	// abort also closes what the attempt built.
+	if err := a.prepare(); err != nil {
+		return nil, a.reject(err)
 	}
-	resolver := r.resolver
-	if override.replaceResolver {
-		resolver = override.resolver
+	if err := a.build(); err != nil {
+		return nil, a.reject(err)
 	}
-	hostDecorator := r.hostDecorator
-	if override.replaceHost {
-		hostDecorator = override.hostDecorator
+	if err := a.bind(); err != nil {
+		return nil, a.abort(err)
 	}
-	resultHostDecorator := r.resultHostDecorator
-	if override.replaceResult {
-		resultHostDecorator = override.resultDecorator
+	if err := a.resolveValues(); err != nil {
+		return nil, a.abort(err)
 	}
-	effective, err := effectiveExternalResources(
-		cfg.ExternalDeps, injected, true)
+	if err := a.resolveHostFactory(); err != nil {
+		return nil, a.abort(err)
+	}
+	if err := a.resolveCatalog(); err != nil {
+		return nil, a.abort(err)
+	}
+	if err := a.rebindAgents(); err != nil {
+		return nil, a.abort(err)
+	}
+	if err := a.drainRemovedAgents(); err != nil {
+		return nil, a.abort(err)
+	}
+	if err := a.commit(); err != nil {
+		return nil, a.abort(err)
+	}
+	return a.committed(), nil
+}
+
+// prepare validates the document and settles the build-time inputs this
+// generation starts from: the retained ones, minus whatever the reload's
+// options replace.
+func (a *reloadAttempt) prepare() error {
+	if err := a.doc.Validate(); err != nil {
+		return fmt.Errorf("runtime reload validate deployment: %w", err)
+	}
+	cfg, err := DecodeConfig(a.ctx, a.doc)
 	if err != nil {
-		return fail(err)
+		return err
 	}
+	a.cfg = cfg
+	// The generation's externals, resolver and host decorations are the
+	// retained ones unless this reload replaces them.
+	a.injected = a.r.externalResources
+	if a.override.replaceExternals {
+		a.injected = a.override.externals
+	}
+	a.resolver = a.r.resolver
+	if a.override.replaceResolver {
+		a.resolver = a.override.resolver
+	}
+	a.hostDecorator = a.r.hostDecorator
+	if a.override.replaceHost {
+		a.hostDecorator = a.override.hostDecorator
+	}
+	a.resultHostDecorator = a.r.resultHostDecorator
+	if a.override.replaceResult {
+		a.resultHostDecorator = a.override.resultDecorator
+	}
+	effective, err := effectiveExternalResources(a.cfg.ExternalDeps, a.injected, true)
+	if err != nil {
+		return err
+	}
+	a.effective = effective
+	return nil
+}
+
+// build constructs the new deployment result transactionally.
+func (a *reloadAttempt) build() error {
 	var deployOptions []deploy.BuilderOption
-	if len(effective) > 0 {
-		deployValues := make([]deploy.ExternalResource, 0, len(effective))
-		for _, ext := range effective {
+	if len(a.effective) > 0 {
+		deployValues := make([]deploy.ExternalResource, 0, len(a.effective))
+		for _, ext := range a.effective {
 			deployValues = append(deployValues, toDeployExternalResource(ext))
 		}
 		deployOptions = append(deployOptions, deploy.WithExternalResources(deployValues))
 	}
-	if r.loader != nil {
-		deployOptions = append(deployOptions, deploy.WithLoader(r.loader))
+	if a.r.loader != nil {
+		deployOptions = append(deployOptions, deploy.WithLoader(a.r.loader))
 	}
-	if resolver != nil {
-		deployOptions = append(deployOptions, deploy.WithResolver(resolver))
+	if a.resolver != nil {
+		deployOptions = append(deployOptions, deploy.WithResolver(a.resolver))
 	}
-	deployBuilder := deploy.NewBuilder(r.resources, deployOptions...)
-	newResult, err := deployBuilder.Deploy(ctx, doc)
+	result, err := deploy.NewBuilder(a.r.resources, deployOptions...).Deploy(a.ctx, a.doc)
 	if err != nil {
-		return fail(fmt.Errorf("runtime reload build deployment: %w", err))
+		return fmt.Errorf("runtime reload build deployment: %w", err)
 	}
-	// drainAttempted collects every agent this Reload attempt tried to
-	// remove, so an abort can clear their tombstones and leave the old
-	// generation fully serving.
-	var drainAttempted []string
-	abort := func(err error) error {
-		for _, name := range drainAttempted {
-			r.manager.ReopenAgent(name)
-		}
-		if cerr := newResult.Close(); cerr != nil {
-			telemetry.WarnErr(ctx, "runtime reload: close partial deployment after abort", cerr,
-				attribute.Int64("runtime.generation.id", int64(newGenID)))
-		}
-		r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildFailed(),
-			RuntimeRebuildEvent{GenerationID: newGenID, Error: err.Error()})
-		telemetry.Error(ctx, "runtime reload aborted",
-			attribute.Int64("runtime.generation.id", int64(newGenID)),
-			attribute.String(telemetry.AttrErrorMessage, err.Error()))
+	a.result = result
+	return nil
+}
+
+// bind hands the runtime's session manager to the new generation's consumers
+// (e.g. the delegation service) and rebinds the target sources. Binding runs
+// before the swap so a failure aborts the reload without touching the live
+// generation; each generation's service instance binds exactly once.
+func (a *reloadAttempt) bind() error {
+	if err := bindSessionManagers(a.r.manager, a.result); err != nil {
 		return err
 	}
+	return bindTargetSources(a.r.registry, a.result)
+}
 
-	// Hand the runtime's session manager to the new generation's
-	// consumers (e.g. the delegation service). Binding runs before the
-	// swap so a failure aborts the reload without touching the live
-	// generation; each generation's service instance binds exactly once.
-	if err := bindSessionManagers(r.manager, newResult); err != nil {
-		return nil, abort(err)
-	}
-	if err := bindTargetSources(r.registry, newResult); err != nil {
-		return nil, abort(err)
-	}
-
-	// Resolve the new generation's system resources and validate the
-	// resume contract. The bus and checkpoint store may change
-	// configuration (or implementation) freely: each generation owns
-	// its own values, the router subscribes to every live generation's
-	// bus, and turns resolve their store from their epoch. Continuity
-	// of durable session state across a store change is the host's
-	// responsibility (same backing storage or migration).
-	newBus, err := resolveValue[event.Bus](
-		newResult, cfg.EventBus, "event_bus")
+// resolveValues resolves the new generation's system resources and validates
+// the resume contract. The bus and checkpoint store may change configuration
+// (or implementation) freely: each generation owns its own values, the router
+// subscribes to every live generation's bus, and turns resolve their store
+// from their epoch. Continuity of durable session state across a store change
+// is the host's responsibility (same backing storage or migration).
+func (a *reloadAttempt) resolveValues() error {
+	bus, err := resolveValue[event.Bus](a.result, a.cfg.EventBus, "event_bus")
 	if err != nil {
-		return nil, abort(err)
+		return err
 	}
-	var newCheckpoints agent.CheckpointStore
-	if cfg.CheckpointStore != "" {
-		newCheckpoints, err = resolveValue[agent.CheckpointStore](
-			newResult, cfg.CheckpointStore, "checkpoint_store")
-		if err != nil {
-			return nil, abort(err)
+	if a.cfg.CheckpointStore != "" {
+		checkpoints, resolveErr := resolveValue[agent.CheckpointStore](
+			a.result, a.cfg.CheckpointStore, "checkpoint_store")
+		if resolveErr != nil {
+			return resolveErr
 		}
+		a.checkpoints = checkpoints
 	}
-	if cfg.Sessions.Resume {
-		if newCheckpoints == nil {
-			return nil, abort(errdefs.Validationf(
-				"runtime reload: sessions.resume requires checkpoint_store"))
+	if a.cfg.Sessions.Resume {
+		if a.checkpoints == nil {
+			return errdefs.Validationf(
+				"runtime reload: sessions.resume requires checkpoint_store")
 		}
-		if _, ok := newCheckpoints.(agent.CheckpointDeleter); !ok {
-			return nil, abort(errdefs.Validationf(
+		if _, ok := a.checkpoints.(agent.CheckpointDeleter); !ok {
+			return errdefs.Validationf(
 				"runtime reload: sessions.resume requires a checkpoint store " +
-					"that implements CheckpointDeleter"))
+					"that implements CheckpointDeleter")
 		}
 	}
-	// Each generation must own its bus: reject a reload whose bus
-	// factory returned the current generation's bus (a shared
-	// singleton), detaching it from the new result so the abort path
-	// cannot close a bus the old generation still routes on.
-	if newBus == r.bus {
-		newResult.Detach(cfg.EventBus)
-		return nil, abort(errdefs.Conflictf(
+	// Each generation must own its bus: reject a reload whose bus factory
+	// returned the current generation's bus (a shared singleton), detaching
+	// it from the new result so the abort path cannot close a bus the old
+	// generation still routes on.
+	if bus == a.r.bus {
+		a.result.Detach(a.cfg.EventBus)
+		return errdefs.Conflictf(
 			"runtime reload: event_bus factory returned the current " +
-				"generation's bus; each generation must own its bus"))
+				"generation's bus; each generation must own its bus")
 	}
+	a.bus = bus
+	return nil
+}
 
-	// Rebuild the host factory with this generation's decoration policy.
-	baseHostFactory, err := newBaseHostFactory(newBus, newCheckpoints)
+// resolveHostFactory rebuilds the host factory with this generation's
+// decoration policy.
+func (a *reloadAttempt) resolveHostFactory() error {
+	baseHostFactory, err := newBaseHostFactory(a.bus, a.checkpoints)
 	if err != nil {
-		return nil, abort(err)
+		return err
 	}
 	hostFactory := session.HostFactory(baseHostFactory)
-	if hostDecorator != nil {
-		hostFactory, err = hostDecorator(baseHostFactory)
+	if a.hostDecorator != nil {
+		hostFactory, err = a.hostDecorator(baseHostFactory)
 		if err != nil {
-			return nil, abort(fmt.Errorf(
-				"runtime reload decorate host factory: %w", err))
+			return fmt.Errorf("runtime reload decorate host factory: %w", err)
 		}
 		if ptr.IsNil(hostFactory) {
-			return nil, abort(errdefs.Internalf(
-				"runtime reload host factory decorator returned nil"))
+			return errdefs.Internalf(
+				"runtime reload host factory decorator returned nil")
 		}
 	}
-	if resultHostDecorator != nil {
-		hostFactory, err = resultHostDecorator(newResult, hostFactory)
+	if a.resultHostDecorator != nil {
+		hostFactory, err = a.resultHostDecorator(a.result, hostFactory)
 		if err != nil {
-			return nil, abort(fmt.Errorf(
-				"runtime reload decorate host factory with deployment: %w", err))
+			return fmt.Errorf(
+				"runtime reload decorate host factory with deployment: %w", err)
 		}
 		if ptr.IsNil(hostFactory) {
-			return nil, abort(errdefs.Internalf(
-				"runtime reload result host factory decorator returned nil"))
+			return errdefs.Internalf(
+				"runtime reload result host factory decorator returned nil")
 		}
 	}
+	a.hostFactory = hostFactory
+	return nil
+}
 
-	// Resolve the new generation's dynamic tool catalog.
-	var newCatalog *catalogRegistry
-	if cfg.DynamicCatalog != nil {
-		assemblies, resolveErr := resolveDynamicCatalogAssemblies(
-			doc, newResult, cfg.DynamicCatalog)
+// resolveCatalog resolves the new generation's dynamic tool catalog. A
+// document without one leaves the generation without a catalog, which
+// rebindAgents rejects for any agent that declares a tool assembly.
+func (a *reloadAttempt) resolveCatalog() error {
+	if a.cfg.DynamicCatalog == nil {
+		return nil
+	}
+	assemblies, err := resolveDynamicCatalogAssemblies(
+		a.doc, a.result, a.cfg.DynamicCatalog)
+	if err != nil {
+		return err
+	}
+	a.catalog = newCatalogRegistry(assemblies)
+	return nil
+}
+
+// rebindAgents re-binds every dynamic agent against the new generation. Any
+// failure closes the partially bound instances and aborts.
+func (a *reloadAttempt) rebindAgents() error {
+	a.entries = a.r.registry.Entries()
+	a.rebound = make(map[string]*agent.Agent, len(a.entries))
+	a.newEntries = make(map[string]dynamicAgentEntry, len(a.entries))
+	for _, name := range sortedKeys(a.entries) {
+		if err := a.rebindAgent(name); err != nil {
+			a.closeRebound()
+			return err
+		}
+	}
+	return nil
+}
+
+// rebindAgent binds one dynamic agent to the new generation and records it
+// for the commit.
+func (a *reloadAttempt) rebindAgent(name string) error {
+	entry := a.entries[name]
+	instance, err := deploy.BindAgent(
+		a.ctx, a.r.resources, a.result, a.r.loader,
+		a.result.Resolver(), a.result.Secrets(), name, entry.definition)
+	if err != nil {
+		return fmt.Errorf("runtime reload: re-bind agent %q: %w", name, err)
+	}
+	a.rebound[name] = instance
+	if entry.toolAssembly != "" {
+		if a.catalog == nil {
+			return errdefs.Validationf(
+				"runtime reload: agent %q has tool assembly %q but "+
+					"the new document has no dynamic_catalog",
+				name, entry.toolAssembly)
+		}
+		assembly, resolveErr := deploy.Resolve[*tool.Assembly](a.result, entry.toolAssembly)
 		if resolveErr != nil {
-			return nil, abort(resolveErr)
+			return fmt.Errorf("runtime reload: agent %q: %w", name, resolveErr)
 		}
-		newCatalog = newCatalogRegistry(assemblies)
+		a.catalog.Set(name, assembly)
+	} else if a.catalog != nil && !a.catalog.hasDefault() {
+		return errdefs.Validationf(
+			"runtime reload: dynamic catalog has no default; "+
+				"agent %q needs WithToolAssembly", name)
 	}
+	a.newEntries[name] = dynamicAgentEntry{
+		instance:     instance,
+		definition:   entry.definition,
+		toolAssembly: entry.toolAssembly,
+	}
+	return nil
+}
 
-	// Re-bind every dynamic agent against the new generation. Any
-	// failure closes the partially bound instances and aborts.
-	entries := r.registry.Entries()
-	rebound := make(map[string]*agent.Agent, len(entries))
-	newEntries := make(map[string]dynamicAgentEntry, len(entries))
-	closeRebound := func() {
-		for _, name := range sortedKeys(rebound) {
-			if cerr := rebound[name].Close(); cerr != nil {
-				telemetry.WarnErr(ctx, "runtime reload: close rebound agent after abort", cerr,
-					attribute.String(telemetry.AttrAgentID, name),
-					attribute.Int64("runtime.generation.id", int64(newGenID)))
-			}
-		}
-	}
-	for _, name := range sortedKeys(entries) {
-		entry := entries[name]
-		instance, bindErr := deploy.BindAgent(
-			ctx, r.resources, newResult, r.loader,
-			newResult.Resolver(), newResult.Secrets(), name, entry.definition)
-		if bindErr != nil {
-			closeRebound()
-			return nil, abort(fmt.Errorf(
-				"runtime reload: re-bind agent %q: %w", name, bindErr))
-		}
-		rebound[name] = instance
-		if entry.toolAssembly != "" {
-			if newCatalog == nil {
-				closeRebound()
-				return nil, abort(errdefs.Validationf(
-					"runtime reload: agent %q has tool assembly %q but "+
-						"the new document has no dynamic_catalog",
-					name, entry.toolAssembly))
-			}
-			assembly, resolveErr := deploy.Resolve[*tool.Assembly](newResult, entry.toolAssembly)
-			if resolveErr != nil {
-				closeRebound()
-				return nil, abort(fmt.Errorf(
-					"runtime reload: agent %q: %w", name, resolveErr))
-			}
-			newCatalog.Set(name, assembly)
-		} else if newCatalog != nil && !newCatalog.hasDefault() {
-			closeRebound()
-			return nil, abort(errdefs.Validationf(
-				"runtime reload: dynamic catalog has no default; "+
-					"agent %q needs WithToolAssembly", name))
-		}
-		newEntries[name] = dynamicAgentEntry{
-			instance:     instance,
-			definition:   entry.definition,
-			toolAssembly: entry.toolAssembly,
-		}
-	}
-
-	// Drain sessions of deployed agents the new document removes, then
-	// clear tombstones for agents that remain (or are re-added).
-	var drained []string
-	for _, name := range r.result.AgentNames() {
-		if _, still := doc.Agents[name]; still {
+// drainRemovedAgents drains the sessions of deployed agents the new document
+// removes, clears tombstones for the agents that remain (or are re-added),
+// and applies the new session tunables.
+func (a *reloadAttempt) drainRemovedAgents() error {
+	for _, name := range a.r.result.AgentNames() {
+		if _, still := a.doc.Agents[name]; still {
 			continue
 		}
-		drainAttempted = append(drainAttempted, name)
-		if err := r.manager.RemoveAgent(ctx, name); err != nil {
-			closeRebound()
-			return nil, abort(fmt.Errorf(
-				"runtime reload: drain removed agent %q: %w", name, err))
+		a.drainAttempted = append(a.drainAttempted, name)
+		if err := a.r.manager.RemoveAgent(a.ctx, name); err != nil {
+			a.closeRebound()
+			return fmt.Errorf("runtime reload: drain removed agent %q: %w", name, err)
 		}
-		drained = append(drained, name)
+		a.drained = append(a.drained, name)
 	}
-	for name := range doc.Agents {
-		r.manager.ReopenAgent(name)
+	for name := range a.doc.Agents {
+		a.r.manager.ReopenAgent(name)
 	}
-
-	// Apply the new session tunables.
-	if err := r.manager.UpdateTunables(session.Tunables{
-		IdleTimeout:         cfg.Sessions.IdleTimeout,
-		SinkBuffer:          cfg.Sessions.SinkBuffer,
-		SpeculativeEvents:   cfg.Sessions.SpeculativeBufferEvents,
-		SpeculativeBytes:    cfg.Sessions.SpeculativeBufferBytes,
-		DeliveryConcurrency: cfg.Sessions.DeliveryConcurrency,
-		MaxSessions:         cfg.Sessions.MaxSessions,
+	if err := a.r.manager.UpdateTunables(session.Tunables{
+		IdleTimeout:         a.cfg.Sessions.IdleTimeout,
+		SinkBuffer:          a.cfg.Sessions.SinkBuffer,
+		SpeculativeEvents:   a.cfg.Sessions.SpeculativeBufferEvents,
+		SpeculativeBytes:    a.cfg.Sessions.SpeculativeBufferBytes,
+		DeliveryConcurrency: a.cfg.Sessions.DeliveryConcurrency,
+		MaxSessions:         a.cfg.Sessions.MaxSessions,
 	}); err != nil {
-		closeRebound()
-		return nil, abort(err)
+		a.closeRebound()
+		return err
 	}
+	return nil
+}
 
-	// Freeze the retiring generation, swap the live view, and commit.
-	oldGen := r.current.Load()
+// commit freezes the retiring generation, swaps the live view, and makes the
+// new generation current. Every rollback it needs on failure is applied
+// before it returns, so the caller only has to abort.
+func (a *reloadAttempt) commit() error {
+	oldGen := a.r.current.Load()
 	if oldGen != nil {
-		adopted := dynamicInstances(entries)
+		adopted := dynamicInstances(a.entries)
 		oldGen.freeze(adopted)
 		freezeTargetViews(oldGen.result, adopted)
 	}
 	newGen := &Generation{
-		id:          newGenID,
-		doc:         doc,
-		registry:    r.registry,
-		result:      newResult,
-		bus:         newBus,
-		hostFactory: hostFactory,
+		id:          a.newGenID,
+		doc:         a.doc,
+		registry:    a.r.registry,
+		result:      a.result,
+		bus:         a.bus,
+		hostFactory: a.hostFactory,
 		resolver: generationResolver{
-			registry: r.registry,
-			result:   newResult,
+			registry: a.r.registry,
+			result:   a.result,
 		},
-		catalog:            newCatalog,
-		agentRemoveTimeout: cfg.Agents.RemoveTimeout,
+		catalog:            a.catalog,
+		agentRemoveTimeout: a.cfg.Agents.RemoveTimeout,
 	}
-	r.registry.Replace(newEntries, newResult)
+	a.r.registry.Replace(a.newEntries, a.result)
 	// The live view is swapped before the epoch swap on purpose: the
 	// new generation's resolver serves dynamic agents from the live
 	// registry, so ordering it after SwapDeps would expose a window
@@ -483,101 +562,159 @@ func (r *Runtime) Reload(
 	// Route the new generation's bus through the runtime router before
 	// the swap so the first new-generation turns are streamed; the old
 	// bus is unsubscribed when its generation retires.
-	if err := r.router.AddBus(newBus); err != nil {
-		if oldGen != nil {
-			oldGen.unfreeze()
-			unfreezeTargetViews(oldGen.result)
-		}
-		// Belt and braces: AddBus is all-or-nothing, so the new bus is
-		// never attached on error; removing it here keeps the invariant
-		// even if a future router change makes AddBus partial.
-		if rerr := r.router.RemoveBus(newBus); rerr != nil {
-			telemetry.WarnErr(ctx, "runtime reload: remove unattached bus after abort", rerr,
-				attribute.Int64("runtime.generation.id", int64(newGenID)))
-		}
-		r.registry.Replace(entries, oldGen.result)
-		closeRebound()
-		return nil, abort(fmt.Errorf("runtime reload attach bus: %w", err))
+	if err := a.r.router.AddBus(a.bus); err != nil {
+		a.rollbackTo(oldGen)
+		return fmt.Errorf("runtime reload attach bus: %w", err)
 	}
 	deps := session.Deps{
 		Resolver:    newGen.resolver,
-		HostFactory: hostFactory,
-		Checkpoints: newCheckpoints,
-		Resume:      cfg.Sessions.Resume,
+		HostFactory: a.hostFactory,
+		Checkpoints: a.checkpoints,
+		Resume:      a.cfg.Sessions.Resume,
 	}
 	if newGen.catalog != nil {
 		// Assign through the concrete pointer so a nil catalog stays a
 		// nil interface instead of a typed-nil.
 		deps.CatalogProvider = newGen.catalog
 	}
-	if err := r.manager.SwapDeps(deps, func(_ uint64, _ session.Deps) {
-		if oldGen != nil && oldGen.bus != nil {
-			if rerr := r.router.RemoveBus(oldGen.bus); rerr != nil {
-				telemetry.WarnErr(ctx, "runtime reload: unsubscribe retired generation bus", rerr,
-					attribute.Int64("runtime.generation.id", int64(newGenID)))
-			}
-		}
-		if cerr := oldGen.close(); cerr != nil {
-			telemetry.WarnErr(ctx, "runtime reload: close retired generation", cerr,
-				attribute.Int64("runtime.generation.id", int64(newGenID)))
-		}
+	if err := a.r.manager.SwapDeps(deps, func(_ uint64, _ session.Deps) {
+		a.retire(oldGen)
 	}); err != nil {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
-		if oldGen != nil {
-			oldGen.unfreeze()
-			unfreezeTargetViews(oldGen.result)
-		}
-		if rerr := r.router.RemoveBus(newBus); rerr != nil {
-			telemetry.WarnErr(ctx, "runtime reload: remove new bus after swap failure", rerr,
-				attribute.Int64("runtime.generation.id", int64(newGenID)))
-		}
-		r.registry.Replace(entries, oldGen.result)
-		closeRebound()
-		return nil, abort(errdefs.Internalf(
-			"runtime reload swap: %v", err))
+		a.rollbackTo(oldGen)
+		return errdefs.Internalf("runtime reload swap: %v", err)
 	}
 
-	r.current.Store(newGen)
-	r.result = newResult
-	r.liveCatalog = newCatalog
-	r.bus = newBus
-	r.nextGenID = newGenID
-	// The swap committed, so this generation's inputs become the
-	// retained ones: a later Reload without the option builds with
-	// exactly what this generation was built with.
-	if override.replaceExternals {
-		r.externalResources = override.externals
-	}
-	if override.replaceResolver {
-		r.resolver = override.resolver
-	}
-	if override.replaceHost {
-		r.hostDecorator = override.hostDecorator
-	}
-	if override.replaceResult {
-		r.resultHostDecorator = override.resultDecorator
-	}
+	a.r.current.Store(newGen)
+	a.r.result = a.result
+	a.r.liveCatalog = a.catalog
+	a.r.bus = a.bus
+	a.r.nextGenID = a.newGenID
+	a.retainInputs()
+	return nil
+}
 
-	reboundNames := sortedKeys(newEntries)
-	sort.Strings(drained)
-	r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildCompleted(),
+// retire unsubscribes and closes the generation the swap replaced. It runs
+// inside the manager's swap callback, once no new turn can resolve the old
+// epoch.
+func (a *reloadAttempt) retire(oldGen *Generation) {
+	if oldGen != nil && oldGen.bus != nil {
+		if err := a.r.router.RemoveBus(oldGen.bus); err != nil {
+			telemetry.WarnErr(a.ctx, "runtime reload: unsubscribe retired generation bus", err,
+				attribute.Int64("runtime.generation.id", int64(a.newGenID)))
+		}
+	}
+	if err := oldGen.close(); err != nil {
+		telemetry.WarnErr(a.ctx, "runtime reload: close retired generation", err,
+			attribute.Int64("runtime.generation.id", int64(a.newGenID)))
+	}
+}
+
+// rollbackTo undoes the parts of commit that already took effect: the
+// retiring generation unfreezes and serves again, the new bus detaches (AddBus
+// is all-or-nothing, so this keeps the invariant even if a future router
+// change makes it partial), the live registry returns to the old generation's
+// entries, and the agents this attempt bound are closed.
+func (a *reloadAttempt) rollbackTo(oldGen *Generation) {
+	if oldGen != nil {
+		oldGen.unfreeze()
+		unfreezeTargetViews(oldGen.result)
+	}
+	if err := a.r.router.RemoveBus(a.bus); err != nil {
+		telemetry.WarnErr(a.ctx, "runtime reload: remove unattached bus after abort", err,
+			attribute.Int64("runtime.generation.id", int64(a.newGenID)))
+	}
+	if oldGen != nil {
+		a.r.registry.Replace(a.entries, oldGen.result)
+	}
+	a.closeRebound()
+}
+
+// retainInputs makes this generation's build-time inputs the retained ones: a
+// later Reload without the option builds with exactly what this generation was
+// built with.
+func (a *reloadAttempt) retainInputs() {
+	if a.override.replaceExternals {
+		a.r.externalResources = a.override.externals
+	}
+	if a.override.replaceResolver {
+		a.r.resolver = a.override.resolver
+	}
+	if a.override.replaceHost {
+		a.r.hostDecorator = a.override.hostDecorator
+	}
+	if a.override.replaceResult {
+		a.r.resultHostDecorator = a.override.resultDecorator
+	}
+}
+
+// closeRebound closes the agents this attempt bound, so a failed reload never
+// leaks live instances.
+func (a *reloadAttempt) closeRebound() {
+	for _, name := range sortedKeys(a.rebound) {
+		if err := a.rebound[name].Close(); err != nil {
+			telemetry.WarnErr(a.ctx, "runtime reload: close rebound agent after abort", err,
+				attribute.String(telemetry.AttrAgentID, name),
+				attribute.Int64("runtime.generation.id", int64(a.newGenID)))
+		}
+	}
+}
+
+// committed reports the swap that took effect.
+func (a *reloadAttempt) committed() *ReloadResult {
+	reboundNames := sortedKeys(a.newEntries)
+	sort.Strings(a.drained)
+	a.r.publishLifecycleEvent(a.ctx, SubjectRuntimeRebuildCompleted(),
 		RuntimeRebuildEvent{
-			GenerationID:         newGenID,
-			PreviousGenerationID: previousID,
+			GenerationID:         a.newGenID,
+			PreviousGenerationID: a.previous,
 			ReboundAgents:        reboundNames,
-			DrainedAgents:        drained,
+			DrainedAgents:        a.drained,
 		})
-	telemetry.Info(ctx, "runtime reload completed",
-		attribute.Int64("runtime.generation.id", int64(newGenID)),
-		attribute.Int64("runtime.generation.previous", int64(previousID)),
+	telemetry.Info(a.ctx, "runtime reload completed",
+		attribute.Int64("runtime.generation.id", int64(a.newGenID)),
+		attribute.Int64("runtime.generation.previous", int64(a.previous)),
 		attribute.Int("runtime.reload.rebound_agents", len(reboundNames)),
-		attribute.Int("runtime.reload.drained_agents", len(drained)))
+		attribute.Int("runtime.reload.drained_agents", len(a.drained)))
 	return &ReloadResult{
-		GenerationID:  newGenID,
-		PreviousID:    previousID,
+		GenerationID:  a.newGenID,
+		PreviousID:    a.previous,
 		ReboundAgents: reboundNames,
-		DrainedAgents: drained,
-	}, nil
+		DrainedAgents: a.drained,
+	}
+}
+
+// reject reports a failure that never produced a deployment: nothing the
+// attempt built needs unwinding.
+func (a *reloadAttempt) reject(err error) error {
+	a.r.publishLifecycleEvent(a.ctx, SubjectRuntimeRebuildFailed(),
+		RuntimeRebuildEvent{GenerationID: a.newGenID, Error: err.Error()})
+	telemetry.Error(a.ctx, "runtime reload failed",
+		attribute.Int64("runtime.generation.id", int64(a.newGenID)),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()))
+	return err
+}
+
+// abort unwinds an attempt whose deployment was already built: the agents
+// whose sessions it tried to drain reopen, the partial deployment closes, and
+// the failure is reported as an abort.
+func (a *reloadAttempt) abort(err error) error {
+	for _, name := range a.drainAttempted {
+		a.r.manager.ReopenAgent(name)
+	}
+	if a.result != nil {
+		if closeErr := a.result.Close(); closeErr != nil {
+			telemetry.WarnErr(a.ctx,
+				"runtime reload: close partial deployment after abort", closeErr,
+				attribute.Int64("runtime.generation.id", int64(a.newGenID)))
+		}
+	}
+	a.r.publishLifecycleEvent(a.ctx, SubjectRuntimeRebuildFailed(),
+		RuntimeRebuildEvent{GenerationID: a.newGenID, Error: err.Error()})
+	telemetry.Error(a.ctx, "runtime reload aborted",
+		attribute.Int64("runtime.generation.id", int64(a.newGenID)),
+		attribute.String(telemetry.AttrErrorMessage, err.Error()))
+	return err
 }
 
 func sortedKeys[V any](m map[string]V) []string {
