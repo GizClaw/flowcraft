@@ -8,8 +8,8 @@ github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0/go.mod h1:7dCRMLwisfRH3dB
 github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 h1:Nljr4q1GRA/5vCrMONS+g4u4LRHNgOXVSh3O43J2CnI=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0/go.mod h1:Y33QHnf0FfdVewFFISOGe20mkZbxX4H839o955/PoeI=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/core v0.8.2-0.20261020050117-f3bb9f3e651c h1:AhPQqQoNYEGWNh9a4vuNi9rCa6soeKKeWYw4IYiYFbk=
-github.com/GizClaw/flowcraft/core v0.8.2-0.20261020050117-f3bb9f3e651c/go.mod h1:1OusrPubTBEkB4l71jM0xlkvjfN5kxUOKtZ2qy8a7W8=
+github.com/GizClaw/flowcraft/core v0.9.0 h1:1tbciOOPUFfzt3JcmvAuROiAZLoOSleMorPcwzgm5hE=
+github.com/GizClaw/flowcraft/core v0.9.0/go.mod h1:1OusrPubTBEkB4l71jM0xlkvjfN5kxUOKtZ2qy8a7W8=
 github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c h1:GW8cOcgccCMdTniN8k4xnz51REg9PBgk9bLvWYHbyls=
 github.com/GizClaw/flowcraft/driver/bytedance v0.3.5-0.20261020050117-f3bb9f3e651c/go.mod h1:AZ+NFdUDsx8us0cNEVUgcmUN3E6QCoYC1HI417GUYWs=
 github.com/GizClaw/flowcraft/driver/openai v0.4.2-0.20261020050117-f3bb9f3e651c h1:+Ko+JT2/BqXW3qhhSuB/asRNzLptqJntJP4fIAaxGNE=
