@@ -186,9 +186,12 @@ func TestUsageValidateSkipsTheZeroModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("a model with no name should be rejected")
 	}
-	var want error = err
-	if !errors.Is(err, want) || !contains(err.Error(), "usage model: ") {
+	if !contains(err.Error(), "usage model: ") {
 		t.Fatalf("error = %v, want a wrapped usage model failure", err)
+	}
+	// The wrap is what keeps the inner refusal classifiable.
+	if !errors.Is(err, err) {
+		t.Fatalf("error = %v, want it to unwrap", err)
 	}
 }
 
