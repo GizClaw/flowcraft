@@ -43,6 +43,10 @@ type TimeoutSettings struct {
 }
 
 type ConcurrencySettings struct {
+	// Limit caps in-flight executions. It is required and must be positive
+	// when the block is present: a limit of zero or less is a document
+	// error, not "no limit" — omit the concurrency block to run without the
+	// middleware at all.
 	Limit int `json:"limit"`
 }
 
@@ -93,7 +97,7 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		}
 		limiter, err := ResultLimiter(s.ResultLimit.Max, opts...)
 		if err != nil {
-			return nil, err
+			return nil, errdefs.Validationf("tool middleware: result_limit.max: %w", err)
 		}
 		mws = append(mws, limiter)
 	} else if budget := partBudget(s.ResultPartBudgetBytes); budget > 0 {
@@ -132,7 +136,7 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 	if s.Concurrency != nil {
 		concurrency, err := Concurrency(s.Concurrency.Limit)
 		if err != nil {
-			return nil, err
+			return nil, errdefs.Validationf("tool middleware: concurrency.limit: %w", err)
 		}
 		mws = append(mws, concurrency)
 	}

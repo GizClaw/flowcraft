@@ -652,7 +652,8 @@ converts tool panics into error results, `telemetry.enabled` records an
 OpenTelemetry span plus executions/duration/error metrics and a warning
 log per call, `timeout.default` bounds each call (calls that already
 carry a deadline pass through), and `concurrency.limit` caps in-flight
-executions. `result_limit.max` caps the runes of one result's text parts
+executions (required and positive when the block is present; omit the block to
+run without the limiter). `result_limit.max` caps the runes of one result's text parts
 and `result_limit.part_budget_bytes` caps the encoded size of its non-text
 parts (images, audio, video, file references, structured data); an absent
 budget means 1 MiB and `0` lifts the cap. Parts over budget are dropped and

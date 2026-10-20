@@ -21,11 +21,12 @@ Keep changes within module boundaries.
 
 ## Panic policy
 
-Exported constructors never panic on invalid values. A value a deployment
-document or YAML file can reach — a size, a limit, a duration, a path — is
-validated and reported as an `errdefs.Validation` error, so the host can
-surface it instead of losing the process. Configurable constructors therefore
-return `(T, error)` rather than `T`.
+A value a deployment document or YAML file can reach — a size, a limit, a
+duration, a path — is validated and reported as an `errdefs.Validation` error,
+so the host can surface it instead of losing the process. Configurable
+constructors therefore return `(T, error)` rather than `T`. An unrepresentable
+argument that no document can express — an out-of-range enum, a variant the
+constructor has no branch for — is a programmer error and may still panic.
 
 Only `Must*`-prefixed helpers panic. `Must...` is the package-level
 configuration form of the same constructor: it delegates to the error-returning
