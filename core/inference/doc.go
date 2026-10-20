@@ -5,7 +5,11 @@
 //     (identity, descriptor, capabilities, limits, lifecycle, reasoning) so
 //     existing callers keep compiling. New code imports
 //     core/inference/model directly.
-//   - Shared contract: usage.go, decision.go, errors.go, extension.go,
+//   - Token/cost vocabulary: usage_alias.go re-exports
+//     core/inference/usage (Usage, its breakdowns, Money) so existing
+//     callers keep compiling. New code imports core/inference/usage
+//     directly — a host can name a usage report without the runtime.
+//   - Shared contract: decision.go, errors.go, extension.go,
 //     extension_registry.go, extension_dispatch.go, metadata.go,
 //     internal_helpers.go
 //   - Attempt compilation: ledger.go (the shared compile ledger),

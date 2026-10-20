@@ -56,6 +56,9 @@ linters:
           files:
             - "**/core/inference/model/**"
           deny:
+            # The trailing $ makes the match exact: without it depguard treats
+            # the value as a prefix and also denies the sibling leaves
+            # (core/inference/usage, core/inference/model) that depend on it.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/model must not import the inference contract"
         # inference/usage is the accounting vocabulary a host names without
@@ -66,6 +69,7 @@ linters:
           files:
             - "**/core/inference/usage/**"
           deny:
+            # Exact match, so importing the model leaf stays legal.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/usage must not import the inference contract"
 

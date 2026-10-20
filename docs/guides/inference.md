@@ -14,6 +14,12 @@ re-exports it through deprecated
 aliases (`inference.ModelRef` and friends) so existing callers keep
 compiling; new code should import `core/inference/model` directly.
 
+The token and cost vocabulary follows the same split: `inference.Usage`, its
+per-modality and cache breakdowns, and `Money` live in `core/inference/usage`,
+which depends on nothing but the model leaf. A host that reports usage can
+import it without taking on the runtime; `inference.Usage` keeps working as an
+alias, without a deprecation marker for now.
+
 ## Exact addressing
 
 Every call takes a concrete `ModelRef`:

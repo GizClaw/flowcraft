@@ -295,7 +295,7 @@ type Checkpointer interface {
 // Hosts without billing or budget enforcement return nil
 // unconditionally (see [NoopHost.ReportUsage]).
 //
-// The usage value is usage.Usage: token totals plus the Model /
+// The report is a usage.Usage: token totals plus the Model /
 // LatencyMs envelope, with cost carried by Billing.Cost (a Money with
 // explicit currency and scale) when a pricing catalog is configured.
 type UsageReporter interface {

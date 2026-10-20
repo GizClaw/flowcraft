@@ -10,6 +10,12 @@ import "github.com/GizClaw/flowcraft/core/inference/usage"
 // New code should import core/inference/usage directly: that package carries
 // the accounting vocabulary and nothing else, while this one carries the whole
 // execution contract.
+//
+// These shims are deliberately NOT marked Deprecated:, unlike the model ones.
+// staticcheck would then redden every remaining use — drivers, runtime, graph
+// nodes and the example all still spell it inference.Usage — and this change is
+// about decoupling the agent contract, not about a repo-wide rename. Drop the
+// marker in once the call sites have moved.
 
 // Usage is one call's token and cost account.
 type Usage = usage.Usage

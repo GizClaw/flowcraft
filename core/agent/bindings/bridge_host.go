@@ -192,7 +192,7 @@ func NewHostBridge(host agent.Host, source string, emitter StreamEmitter, opts .
 			},
 
 			"reportUsage": func(raw any) error {
-				usage, err := parseUsage(raw)
+				report, err := parseUsage(raw)
 				if err != nil {
 					// parseUsage rejects malformed scripts inputs; a
 					// Validation classification lets the runtime
@@ -207,7 +207,7 @@ func NewHostBridge(host agent.Host, source string, emitter StreamEmitter, opts .
 				// preserves any classification (e.g. BudgetExceeded)
 				// the host attached, so errdefs.IsBudgetExceeded
 				// still reports true on the returned error.
-				if err := host.ReportUsage(callCtx, usage); err != nil {
+				if err := host.ReportUsage(callCtx, report); err != nil {
 					return fmt.Errorf("host.reportUsage: %w", err)
 				}
 				return nil

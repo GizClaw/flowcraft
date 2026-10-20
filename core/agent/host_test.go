@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -54,7 +54,7 @@ func TestNoopHost_ReportUsageDropsAndReturnsNil(t *testing.T) {
 	// NoopHost has no budget so it MUST return nil — engines that
 	// branch on errdefs.IsBudgetExceeded never see it under noop.
 	if err := (agent.NoopHost{}).ReportUsage(context.Background(),
-		inference.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}); err != nil {
+		usage.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}); err != nil {
 		t.Errorf("NoopHost.ReportUsage must return nil; got %v", err)
 	}
 }

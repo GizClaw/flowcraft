@@ -111,7 +111,9 @@ func (b *Board) DeleteVar(key string) {
 	b.mu.Unlock()
 }
 
-// Var retrieves a board-level variable.
+// Var retrieves one board-level variable. Vars, one letter away, returns the
+// whole set; neither takes a "Get" prefix, matching the other accessors on
+// Board.
 func (b *Board) Var(key string) (any, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

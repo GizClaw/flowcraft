@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -201,7 +200,7 @@ func RecordLLMTelemetry(ctx context.Context, metadata Metadata, usage Usage, err
 	recordLLMAttrs(span, metadata, usage, err)
 }
 
-// recordInferenceUsage mirrors an usage.Usage envelope onto span as
+// recordInferenceUsage mirrors a Usage envelope onto span as
 // llm.* attributes. Zero-valued optional dimensions are omitted, so
 // spans stay slim on the common path and dashboards can rely on
 // presence rather than zero-sentinel values.
@@ -288,7 +287,7 @@ func inferenceErrorDetail(err error) string {
 // micro-unit representation the AttrLLMCostMicros attribute uses. It
 // reports ok=false when converting would overflow or a sub-micro
 // remainder floors to zero.
-func costMicros(money usage.Money) (int64, bool) {
+func costMicros(money Money) (int64, bool) {
 	if money.Scale > 18 {
 		return 0, false
 	}
