@@ -146,6 +146,11 @@ type Config struct {
 	// position. Off, the extractor sends the prompt and the schema it sent
 	// before the quota existed.
 	Quota bool
+	// Temperature pins the extraction call's sampling. Nil leaves it to the
+	// provider, which makes one commit's fact batch a draw rather than a
+	// function of the commit: a measurement host pins it so two passes over the
+	// same corpus write the same facts.
+	Temperature *float64
 }
 
 // DefaultConfig returns the bounded default simple strategy.
@@ -369,7 +374,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 }
 
 func (extractor *FactExtractor) extractionRequest(content string, schema bool) inference.GenerateRequest {
-	intent := inference.Intent{Text: &inference.TextIntent{}}
+	intent := inference.Intent{Text: &inference.TextIntent{Temperature: extractor.config.Temperature}}
 	if schema {
 		intent.Text.Response = &inference.ResponseFormat{
 			Kind: inference.ResponseJSONSchema, Name: "facts",

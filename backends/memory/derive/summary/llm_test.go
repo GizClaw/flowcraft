@@ -65,3 +65,30 @@ func TestLLMSummarizerRejectsEmptyAndPropagatesErrors(t *testing.T) {
 		t.Fatal("incomplete summarizer accepted")
 	}
 }
+
+// TestLLMSummarizerPinsTheTemperature: the summarizer leaves sampling to the
+// provider unless the deployment pins it, and a pinned value rides every
+// request. A summary is derived content, so the pin belongs on the call, not in
+// the prompt.
+func TestLLMSummarizerPinsTheTemperature(t *testing.T) {
+	runtime := &fakeGenerate{reply: "summary"}
+	summarizer, err := NewLLMSummarizer(runtime, model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := summarizer.Summarize(context.Background(), SummarizeRequest{Texts: []string{"x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.requests[0].Input.Content.Intent.Text.Temperature; got != nil {
+		t.Fatalf("temperature = %v, want the provider default", *got)
+	}
+	pinned := 0.0
+	summarizer.WithTemperature(&pinned)
+	if _, err := summarizer.Summarize(context.Background(), SummarizeRequest{Texts: []string{"x"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := runtime.requests[1].Input.Content.Intent.Text.Temperature
+	if got == nil || *got != 0 {
+		t.Fatalf("temperature = %v, want a pinned 0", got)
+	}
+}

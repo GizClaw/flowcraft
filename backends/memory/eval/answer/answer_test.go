@@ -121,3 +121,40 @@ func TestModelJudgeRejectsAmbiguousVerdicts(t *testing.T) {
 		}
 	}
 }
+
+// TestModelPinsTheTemperatureOnAnswersAndJudgments: the pin covers both calls.
+// The judge decides the score, so a run that pinned its answers and sampled its
+// verdicts would still not reproduce.
+func TestModelPinsTheTemperatureOnAnswersAndJudgments(t *testing.T) {
+	runtime := &fakeRuntime{reply: "CORRECT"}
+	model, err := New(runtime, model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	question := eval.Question{Query: "Where did Alice go?", WantContains: []string{"park"}}
+	if _, err := model.Answer(context.Background(), question, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Judge(context.Background(), question, "the park"); err != nil {
+		t.Fatal(err)
+	}
+	for index, request := range runtime.requests {
+		if got := request.Input.Content.Intent.Text.Temperature; got != nil {
+			t.Fatalf("request %d temperature = %v, want the provider default", index, *got)
+		}
+	}
+	pinned := 0.0
+	model.WithTemperature(&pinned)
+	if _, err := model.Answer(context.Background(), question, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Judge(context.Background(), question, "the park"); err != nil {
+		t.Fatal(err)
+	}
+	for index, request := range runtime.requests[2:] {
+		got := request.Input.Content.Intent.Text.Temperature
+		if got == nil || *got != 0 {
+			t.Fatalf("pinned request %d temperature = %v, want 0", index, got)
+		}
+	}
+}

@@ -21,9 +21,10 @@ type GenerateRuntime interface {
 // degrade to the extractive summary in the compactor, so a flaky model never
 // blocks derivation.
 type LLMSummarizer struct {
-	runtime  GenerateRuntime
-	ref      model.ModelRef
-	maxRunes int
+	runtime     GenerateRuntime
+	ref         model.ModelRef
+	maxRunes    int
+	temperature *float64
 }
 
 // NewLLMSummarizer builds a model-backed summarizer.
@@ -35,6 +36,16 @@ func NewLLMSummarizer(runtime GenerateRuntime, ref model.ModelRef) (*LLMSummariz
 		return nil, errors.New("summary: model provider and name are required")
 	}
 	return &LLMSummarizer{runtime: runtime, ref: ref, maxRunes: 1200}, nil
+}
+
+// WithTemperature pins the summary call's sampling. Nil leaves it to the
+// provider; a measurement host pins it so the summaries of one derivation are
+// a function of their inputs.
+func (summarizer *LLMSummarizer) WithTemperature(temperature *float64) *LLMSummarizer {
+	if summarizer != nil {
+		summarizer.temperature = temperature
+	}
+	return summarizer
 }
 
 // Summarize asks the model for one durable summary of the given texts.
@@ -57,7 +68,7 @@ func (summarizer *LLMSummarizer) Summarize(ctx context.Context, request Summariz
 	if len(texts) == 0 {
 		return "", errors.New("summary: no texts to summarize")
 	}
-	response, err := summarizer.runtime.Generate(ctx, summarizer.ref, generateRequest(request, texts))
+	response, err := summarizer.runtime.Generate(ctx, summarizer.ref, generateRequest(request, texts, summarizer.temperature))
 	if err != nil {
 		return "", fmt.Errorf("summary: generate: %w", err)
 	}
@@ -68,8 +79,8 @@ func (summarizer *LLMSummarizer) Summarize(ctx context.Context, request Summariz
 	return limitRunes(text, summarizer.maxRunes), nil
 }
 
-func generateRequest(request SummarizeRequest, texts []string) inference.GenerateRequest {
-	intent := inference.Intent{Text: &inference.TextIntent{}}
+func generateRequest(request SummarizeRequest, texts []string, temperature *float64) inference.GenerateRequest {
+	intent := inference.Intent{Text: &inference.TextIntent{Temperature: temperature}}
 	return inference.GenerateRequest{
 		Context: []coremessage.Message{{
 			Role:    coremessage.RoleSystem,

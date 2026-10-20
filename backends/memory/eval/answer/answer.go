@@ -33,6 +33,7 @@ type Model struct {
 	judgeStyle      JudgeStyle
 	answerStyle     AnswerStyle
 	temporalHint    bool
+	temperature     *float64
 	calls           atomic.Int64
 	inputTokens     atomic.Int64
 	outputTokens    atomic.Int64
@@ -95,6 +96,18 @@ func (model *Model) WithTemporalHint(enabled bool) *Model {
 	return model
 }
 
+// WithTemperature pins the sampling temperature of every call this model makes,
+// answers and judgments alike. Nil leaves it to the provider, which is what the
+// reports before 2026-10-20 were measured under: at the provider default one
+// configuration re-run over one library flips 6% of the graded questions, so a
+// reading that wants to compare two arms has to pin this first.
+func (model *Model) WithTemperature(temperature *float64) *Model {
+	if model != nil {
+		model.temperature = temperature
+	}
+	return model
+}
+
 // System returns the answering prompt this model uses, so a run can record its
 // version in the fingerprint.
 func (model *Model) System() string {
@@ -147,7 +160,7 @@ func (model *Model) Answer(ctx context.Context, question eval.Question, items []
 		// itself is everything after the "Short answer:" marker.
 		prompt += "\n\nQuotes:"
 	}
-	request := generateRequest(model.System(), prompt, nil)
+	request := generateRequest(model.System(), prompt, nil, model.temperature)
 	response, err := model.runtime.Generate(ctx, model.ref, request)
 	if err != nil {
 		return "", fmt.Errorf("memory eval answer: generate: %w", err)
@@ -204,6 +217,7 @@ func (model *Model) Judge(ctx context.Context, question eval.Question, candidate
 		model.judgeStyle.system(),
 		judgeUser(question, candidate),
 		nil,
+		model.temperature,
 	)
 	response, err := model.runtime.Generate(ctx, model.ref, request)
 	if err != nil {
@@ -226,8 +240,8 @@ func (style JudgeStyle) system() string {
 	return judgeSystem
 }
 
-func generateRequest(system, user string, response *inference.ResponseFormat) inference.GenerateRequest {
-	intent := inference.Intent{Text: &inference.TextIntent{Response: response}}
+func generateRequest(system, user string, response *inference.ResponseFormat, temperature *float64) inference.GenerateRequest {
+	intent := inference.Intent{Text: &inference.TextIntent{Response: response, Temperature: temperature}}
 	return inference.GenerateRequest{
 		Context: []coremessage.Message{{
 			Role:    coremessage.RoleSystem,
