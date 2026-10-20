@@ -111,7 +111,7 @@ type ReloadResult struct {
 	// runtime had no generation to replace.
 	PreviousID uint64
 	// ReboundAgents names the dynamic agents re-bound against the new
-	// generation, sorted by name.
+	// generation, sorted by name; nil when the document declares none.
 	ReboundAgents []string
 	// DrainedAgents names the deployed agents the new document removed,
 	// whose sessions were drained, sorted by name.

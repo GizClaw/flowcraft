@@ -167,6 +167,8 @@ func (m *Manager) loadFile(
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return errdefs.Validationf("hooks: parse %s: %w", path, err)
 	}
+	// Sorted so loading reports the first error in file order rather than in
+	// map order.
 	for _, event := range slices.Sorted(maps.Keys(cfg.Hooks)) {
 		if !knownEvent(event) {
 			return errdefs.Validationf(

@@ -802,14 +802,14 @@ func channelLengths(board *agent.Board, roles []resolvedRole) map[string]int {
 
 // waitForRetry waits for delay or until ctx is done, releasing the timer either
 // way: time.After would keep it alive until it fired, and a retry loop allocates
-// one per attempt.
-func waitForRetry(ctx context.Context, delay time.Duration) bool {
+// one per attempt. It reports nothing on purpose — the caller's own ctx check
+// decides whether to continue, so a "which arm won" answer would be a second,
+// conflicting authority.
+func waitForRetry(ctx context.Context, delay time.Duration) {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
 	case <-timer.C:
-		return true
 	}
 }

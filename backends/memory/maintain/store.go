@@ -182,6 +182,10 @@ func (store *Store) Save(ctx context.Context, plan Plan) error {
 			return err
 		}
 	}
+	// Sorted so a save writes its buckets in one order whatever order the
+	// plan's findings arrived in.
+	// Sorted so a save writes its buckets in one order whatever order the
+	// plan's findings arrived in.
 	for _, conversation := range slices.Sorted(maps.Keys(grouped)) {
 		if err := store.writeBucket(ctx, plan.Scope, conversation, grouped[conversation]); err != nil {
 			return err
