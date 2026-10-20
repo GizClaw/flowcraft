@@ -1799,3 +1799,24 @@ func TestInferenceBridge_RouteStream_TraceOnResult(t *testing.T) {
 		t.Fatalf("trace.executed = %v, want echo", trace["executed"])
 	}
 }
+
+// TestInferenceBridgeSharesOneCacheAcrossExecutions pins the cache lifetime. A
+// BindingFunc is invoked once per script execution, so a cache built inside
+// that invocation would reopen every model a script names on every run — the
+// exact work inference.BindingCache exists to avoid. One bridge must hand the
+// same cache to every execution bound from it.
+func TestInferenceBridgeSharesOneCacheAcrossExecutions(t *testing.T) {
+	bridge := newInferenceBridge((&inferencetest.GenerateFake{}).Assembly(t), nil)
+
+	first := bridge.withContext(context.Background())
+	second := bridge.withContext(context.Background())
+	if first.live != second.live {
+		t.Fatal("executions of one bridge must share one model cache")
+	}
+	if first.cfg != second.cfg {
+		t.Fatal("executions of one bridge must share the decoded options")
+	}
+	if first.ctx != second.ctx {
+		t.Fatal("each execution must carry its own context")
+	}
+}

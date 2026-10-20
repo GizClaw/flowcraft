@@ -563,7 +563,7 @@ func (a *reloadAttempt) commit() error {
 	// the swap so the first new-generation turns are streamed; the old
 	// bus is unsubscribed when its generation retires.
 	if err := a.r.router.AddBus(a.bus); err != nil {
-		a.rollbackTo(oldGen)
+		a.rollbackTo(oldGen, "runtime reload: remove unattached bus after abort")
 		return fmt.Errorf("runtime reload attach bus: %w", err)
 	}
 	deps := session.Deps{
@@ -581,7 +581,7 @@ func (a *reloadAttempt) commit() error {
 		a.retire(oldGen)
 	}); err != nil {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
-		a.rollbackTo(oldGen)
+		a.rollbackTo(oldGen, "runtime reload: remove new bus after swap failure")
 		return errdefs.Internalf("runtime reload swap: %v", err)
 	}
 
@@ -615,13 +615,17 @@ func (a *reloadAttempt) retire(oldGen *Generation) {
 // is all-or-nothing, so this keeps the invariant even if a future router
 // change makes it partial), the live registry returns to the old generation's
 // entries, and the agents this attempt bound are closed.
-func (a *reloadAttempt) rollbackTo(oldGen *Generation) {
+//
+// busRemoveMsg names the rollback site in the log line that reports a bus that
+// would not detach, so an operator can tell an AddBus failure from a swap
+// failure.
+func (a *reloadAttempt) rollbackTo(oldGen *Generation, busRemoveMsg string) {
 	if oldGen != nil {
 		oldGen.unfreeze()
 		unfreezeTargetViews(oldGen.result)
 	}
 	if err := a.r.router.RemoveBus(a.bus); err != nil {
-		telemetry.WarnErr(a.ctx, "runtime reload: remove unattached bus after abort", err,
+		telemetry.WarnErr(a.ctx, busRemoveMsg, err,
 			attribute.Int64("runtime.generation.id", int64(a.newGenID)))
 	}
 	if oldGen != nil {

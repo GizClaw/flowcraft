@@ -268,7 +268,7 @@ func decodeDynamicCatalog(wire *dynamicCatalogConfigWire) (*DynamicCatalogConfig
 // decodeExternalDeps decodes the external dependency declarations and
 // validates the list as a whole (duplicates, empty names).
 func decodeExternalDeps(wire []externalDependencyWire) ([]ExternalDependency, error) {
-	deps := make([]ExternalDependency, 0, len(wire))
+	var deps []ExternalDependency
 	for _, dep := range wire {
 		deps = append(deps, ExternalDependency{
 			Name:     strings.TrimSpace(dep.Name),
@@ -317,7 +317,8 @@ func validateExternalConflicts(cfg Config) error {
 func positiveDuration(field, value string) (time.Duration, error) {
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
-		return 0, errdefs.Validationf("runtime config: %s %q: %v", field, value, err)
+		return 0, errdefs.Validation(
+			fmt.Errorf("runtime config: %s %q: %w", field, value, err))
 	}
 	if parsed <= 0 {
 		return 0, errdefs.Validationf("runtime config: %s %q: must be positive", field, value)

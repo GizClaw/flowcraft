@@ -33,6 +33,55 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 	}
 }
 
+// inferenceBridge carries one script execution's context plus the
+// dependencies and model cache that outlive it, so the entry points can be
+// ordinary methods instead of closures nested 20 deep in one map literal: one
+// method per entry point, one table listing them all.
+type inferenceBridge struct {
+	ctx      context.Context
+	cfg      *inferenceBridgeConfig
+	assembly *inference.Assembly
+	router   *route.Router
+	// live is the bridge-lifetime assembly cache (see
+	// inference.NewBindingCache): it outlives the individual script calls that
+	// run through it.
+	live *inferenceBindings
+}
+
+// newInferenceBridge builds the value that outlives the script executions
+// bound from it: the decoded options, the wired dependencies, and the model
+// cache. Nothing per-execution lives here — a [BindingFunc] is invoked once per
+// script run, and a fresh cache per run would reopen every model a script
+// names.
+func newInferenceBridge(
+	assembly *inference.Assembly,
+	router *route.Router,
+	opts ...InferenceBridgeOption,
+) *inferenceBridge {
+	cfg := &inferenceBridgeConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	return &inferenceBridge{
+		cfg:      cfg,
+		assembly: assembly,
+		router:   router,
+		// The bridge outlives the script calls that run through it, and
+		// script arguments can name any configured model, so one cache
+		// serves the whole bridge: models a script keeps addressing stay
+		// open, one-off targets cycle out (see inference.BindingCache).
+		live: &inferenceBindings{cache: inference.NewBindingCache(assembly)},
+	}
+}
+
+// withContext returns the bridge as it serves one script execution: the struct
+// is copied, so the options, dependencies and cache stay shared while the
+// context — and everything derived from it — is per execution.
+func (b inferenceBridge) withContext(ctx context.Context) *inferenceBridge {
+	b.ctx = ctx
+	return &b
+}
+
 // NewInferenceBridge exposes LLM generation to scripts as global
 // "inference" with two entry points:
 //
@@ -154,40 +203,10 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 // attempt applies only its own provider's extensions.
 // Either entry point may be unwired (nil runtime/router); calling it
 // fails with NotAvailable.
-// inferenceBridge carries one script binding's dependencies plus the
-// context of the turn it was built for. It is created fresh on every
-// [BindingFunc] invocation, so the entry points can be ordinary methods
-// instead of closures nested 20 deep in one map literal: one method per
-// entry point, one table listing them all.
-type inferenceBridge struct {
-	ctx      context.Context
-	cfg      *inferenceBridgeConfig
-	assembly *inference.Assembly
-	router   *route.Router
-	// live is the bridge-lifetime assembly cache (see
-	// inference.NewBindingCache): it outlives the individual script calls
-	// that run through it.
-	live *inferenceBindings
-}
-
 func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts ...InferenceBridgeOption) BindingFunc {
-	cfg := &inferenceBridgeConfig{}
-	for _, o := range opts {
-		o(cfg)
-	}
+	bridge := newInferenceBridge(assembly, router, opts...)
 	return func(ctx context.Context) (string, any) {
-		bridge := &inferenceBridge{
-			ctx:      ctx,
-			cfg:      cfg,
-			assembly: assembly,
-			router:   router,
-			// The bridge outlives the script calls that run through it, and
-			// script arguments can name any configured model, so one cache
-			// serves the whole bridge: models a script keeps addressing stay
-			// open, one-off targets cycle out (see inference.BindingCache).
-			live: &inferenceBindings{cache: inference.NewBindingCache(assembly)},
-		}
-		return "inference", bridge.entries()
+		return "inference", bridge.withContext(ctx).entries()
 	}
 }
 

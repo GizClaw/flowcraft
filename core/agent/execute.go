@@ -198,10 +198,14 @@ func (r *runState) attempt(n int) (*Result, Decision, error) {
 	// of this attempt. The engine's appended messages start after it.
 	seedLen := board.ChannelLen(MainChannel)
 
+	// The engine run is assembled before the observers see the attempt:
+	// OnRunStart receives the request by pointer, and an observer that mutates
+	// it must not change the run already built for this attempt.
+	engineRun := r.engineRun(n)
 	if r.obs != nil {
 		r.obs.OnRunStart(r.ctx, r.id, r.req)
 	}
-	finalBoard, execErr := r.eng.Execute(r.ctx, r.engineRun(n), r.host, board)
+	finalBoard, execErr := r.eng.Execute(r.ctx, engineRun, r.host, board)
 	if finalBoard == nil {
 		finalBoard = board
 	}
