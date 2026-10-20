@@ -45,8 +45,8 @@ and report them through the runtime's error path.
 
 ## Modules and dependency order
 
-The independently versioned library modules are `core`, `craft`, `driver/*`,
-and `backends/*`.
+The independently versioned library modules are `core`, `craft`, `driver`, and
+`backends/*`.
 The Go workspace also includes `examples/forge` and `examples/anvil` (runnable
 local demos, not released), while `tools/releasegate` builds with `GOWORK=off`
 against pinned releases.
@@ -54,14 +54,16 @@ against pinned releases.
 Module dependency order:
 
 ```text
-core -> craft / driver/* / backends/*
+core -> craft / driver / backends/*
 ```
 
 - `core` is the platform module and depends on nothing in-tree.
 - `craft` assembles an application over `core`: the `craft.yaml` definition,
   compile-time capabilities, the MCP plugin host and host primitives, and the
   process-level manager. It is the second module the release gate manages.
-- `driver/*` provides provider inference adapters over `core`.
+- `driver` provides provider inference adapters over `core`: one module whose
+  `driver/<name>` packages are the adapters, so a new provider is a package and
+  not a module.
 - `backends/*` provides the platform-side implementations over `core` (the
   SQLite checkpoint store and the memory backend today); sandbox backends live
   in `core/sandbox`.
@@ -125,9 +127,9 @@ pin or an untidy `go.mod` fails the PR that declares the release.
 ### Modules outside the changeset flow
 
 `core` and `craft` are the only release-managed modules, and a changeset can
-never name another. Drivers and backends sit outside the changeset flow
-entirely: they release under their own `driver/<name>/vX.Y.Z` and
-`backends/<name>/vX.Y.Z` tags.
+never name another. Backends sit outside the changeset flow entirely: they
+release under their own `backends/<name>/vX.Y.Z` tags. `driver` does too, under
+its own `driver/vX.Y.Z` tags — one tag for every provider adapter.
 
 `backends/memory` and `backends/memory/eval` are workspace-only for now:
 neither is tagged, and neither will enter the changeset flow. `eval` reaches
@@ -153,10 +155,10 @@ are still missing.
 
 ## Working in the workspace
 
-- `make ci` runs `vet` + `test` across `core`, `craft`, `driver/*`,
+- `make ci` runs `vet` + `test` across `core`, `craft`, `driver`,
   `backends/*`, `examples/forge`, and `examples/anvil`.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
-- Changes to `core` contracts may break `craft`, `driver/*`, `backends/*`,
+- Changes to `core` contracts may break `craft`, `driver`, `backends/*`,
   `examples/forge`, or `examples/anvil`; `make ci` covers them in-tree.
 - The forge demo's scenarios are native deployment documents; changes to the
   assembly or runtime surface should be exercised with a demo run

@@ -85,6 +85,9 @@ retrieval, runtime orchestration, and voice. Source on
   the consolidation that folded the Azure, DeepSeek and Kimi drivers into
   `driver/openai`, moved MiniMax's Messages surface to `driver/anthropic`, and
   removed `driver/qwen`.
+- [One driver module](migrations/driver-single-module.md) — the six provider
+  modules folded into a single `driver` module; the import paths and the
+  `impl:` ids are unchanged and only the `go.mod` requirement moved.
 - [Keychain into `core/secret`](migrations/keychain-into-core.md) — the
   `backends/secret` module folded into `core`; the `impl: keychain`
   deployment id is unchanged and only the Go import path moved.
@@ -104,14 +107,14 @@ The repository is organised as independently released Go modules:
 | Delegation contracts | `core/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
 | Async delegation     | `core/delegation/kanban`                            | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
 | Application assembly | `craft`                                             | craft.yaml definitions, compile-time capabilities, the plugin host and host primitives          |
-| Adapters             | `driver/*`, `backends/*`                            | Concrete provider / protocol bindings layered on core contracts                                |
+| Adapters             | `driver`, `backends/*`                              | Concrete provider / protocol bindings layered on core contracts                                |
 
 ## Repository layout
 
 ```
 core/            Platform module (contracts, deploy, runtime, built-in resources)
 craft/           Application assembly (craft.yaml, capabilities, plugins, host primitives)
-driver/          Provider inference adapters
+driver/          Provider inference adapters (one module)
 backends/        SQLite checkpoints and the memory backend (sandbox and keychain backends live in core/)
 examples/        Reference assemblies: forge (workspace demo), anvil (craft host)
 ```

@@ -6,12 +6,7 @@ use (
 	./backends/memory/eval
 	./core
 	./craft
-	./driver/anthropic
-	./driver/bytedance
-	./driver/dashscope
-	./driver/minimax
-	./driver/openai
-	./driver/typesafe
+	./driver
 	./examples/anvil
 	./examples/forge
 )
