@@ -1,0 +1,20 @@
+[package]
+name = "flowcraft-workspace"
+description = "The port's workspace contract, mirroring core/workspace."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+flowcraft-contract = { path = "../flowcraft-contract" }
+flowcraft-utils = { path = "../flowcraft-utils" }
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

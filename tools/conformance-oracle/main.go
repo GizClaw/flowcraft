@@ -35,7 +35,10 @@
 // what hooks see of the decrypted traffic, and what the client and the target
 // each get (see mitmcontract.go). With -hooks-contract it dumps what a
 // hooks.json loads as and what firing an event does to the commands it names
-// (see hookscontract.go).
+// (see hookscontract.go). With -workspace-contract it dumps the rules
+// core/workspace enforces around any backend -- traversal, the scope's two
+// directions, the prefixed view, walking, globbing, the read cap and atomic
+// publish (see workspacecontract.go).
 //
 // Usage: oracle [-error-contract | -message-contract | -event-contract] <dir> [dir...]
 package main
@@ -139,6 +142,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-hooks-contract" {
 		if err := writeHooksContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "hooks contract:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-workspace-contract" {
+		if err := writeWorkspaceContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "workspace contract:", err)
 			os.Exit(1)
 		}
 		return

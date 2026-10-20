@@ -1,0 +1,1761 @@
+{
+  "note": [
+    "The rules core/workspace enforces around any backend: traversal, the scope's two directions, the prefixed view, walking, globbing, the read cap and atomic publish.",
+    "The medium is a map of path to bytes, implemented twice (core's oracle and the port's crate) because core ships no in-memory backend; a row asserts what the code *around* the medium answers.",
+    "Nothing is masked: the medium has no temporary directory and no clock in it, so every string here is a function of this file.",
+    "Not covered here: anything that needs a real filesystem (symlink escape, a directory handle, permission bits). That is the local backend's slice."
+  ],
+  "masked": [
+    "nothing: the medium is a map, so no path in this file depends on the run"
+  ],
+  "cases": [
+    {
+      "name": "raw-ops",
+      "why": "the medium's own answers, so the two harnesses agree before any other row leans on them: parents are implied, delete and remove_all are idempotent, rename publishes",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        },
+        {
+          "path": "b/c.txt",
+          "data": "c"
+        }
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "a.txt",
+          "ok": true,
+          "data": "a"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "b",
+              "dir": true
+            }
+          ]
+        },
+        {
+          "op": "list",
+          "path": "b",
+          "ok": true,
+          "list": [
+            {
+              "path": "c.txt"
+            }
+          ]
+        },
+        {
+          "op": "exists",
+          "path": "a.txt",
+          "ok": true,
+          "bool": true
+        },
+        {
+          "op": "exists",
+          "path": "zz",
+          "ok": true
+        },
+        {
+          "op": "stat",
+          "path": "a.txt",
+          "ok": true,
+          "data": "a.txt:1:false"
+        },
+        {
+          "op": "stat",
+          "path": "b",
+          "ok": true,
+          "data": "b:0:true"
+        },
+        {
+          "op": "write",
+          "path": "d/e.txt",
+          "arg": "e",
+          "ok": true
+        },
+        {
+          "op": "append",
+          "path": "a.txt",
+          "arg": "!",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "ok": true,
+          "data": "a!"
+        },
+        {
+          "op": "rename",
+          "path": "a.txt",
+          "arg": "f.txt",
+          "ok": true
+        },
+        {
+          "op": "delete",
+          "path": "f.txt",
+          "ok": true
+        },
+        {
+          "op": "delete",
+          "path": "f.txt",
+          "ok": true
+        },
+        {
+          "op": "remove_all",
+          "path": "b",
+          "ok": true
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "d",
+              "dir": true
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "d/e.txt",
+          "data": "e"
+        }
+      ]
+    },
+    {
+      "name": "raw-not-found",
+      "why": "a missing path is a refusal for read, stat and rename's source, and not for list, delete or remove_all",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "nope.txt",
+          "ok": false,
+          "error": "workspace: not found: nope.txt"
+        },
+        {
+          "op": "stat",
+          "path": "nope.txt",
+          "ok": false,
+          "error": "workspace: not found: nope.txt"
+        },
+        {
+          "op": "rename",
+          "path": "nope.txt",
+          "arg": "x.txt",
+          "ok": false,
+          "error": "workspace: not found: nope.txt"
+        },
+        {
+          "op": "list",
+          "path": "nope",
+          "ok": true
+        },
+        {
+          "op": "delete",
+          "path": "nope.txt",
+          "ok": true
+        },
+        {
+          "op": "remove_all",
+          "path": "nope",
+          "ok": true
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ]
+    },
+    {
+      "name": "raw-traversal",
+      "why": "an absolute path or one that climbs out is refused by the medium, and a path that merely visits a .. on its way somewhere is not",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "../x",
+          "ok": false,
+          "error": "workspace: path traversal denied: ../x"
+        },
+        {
+          "op": "write",
+          "path": "/abs",
+          "arg": "x",
+          "ok": false,
+          "error": "workspace: path traversal denied: /abs"
+        },
+        {
+          "op": "list",
+          "path": "..a",
+          "ok": false,
+          "error": "workspace: path traversal denied: ..a"
+        },
+        {
+          "op": "delete",
+          "path": "a/../../b",
+          "ok": false,
+          "error": "workspace: path traversal denied: a/../../b"
+        },
+        {
+          "op": "read",
+          "path": "./a.txt",
+          "ok": true,
+          "data": "a"
+        },
+        {
+          "op": "read",
+          "path": "b/../a.txt",
+          "ok": true,
+          "data": "a"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ]
+    },
+    {
+      "name": "raw-root",
+      "why": "the root is a directory for writes and reads, present for exists and stat, and cannot be removed by remove_all",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ],
+      "ops": [
+        {
+          "op": "remove_all",
+          "ok": false,
+          "error": "mem: refusing to remove root"
+        },
+        {
+          "op": "remove_all",
+          "path": ".",
+          "ok": false,
+          "error": "mem: refusing to remove root"
+        },
+        {
+          "op": "write",
+          "arg": "x",
+          "ok": false,
+          "error": "mem:  is a directory"
+        },
+        {
+          "op": "exists",
+          "ok": true,
+          "bool": true
+        },
+        {
+          "op": "stat",
+          "ok": true,
+          "data": "/:0:true"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        }
+      ]
+    },
+    {
+      "name": "capped-bounded",
+      "why": "a medium that can bound a read refuses an oversized file at the read layer, with the sentence that says so",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ],
+      "limited": true,
+      "ops": [
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 10,
+          "ok": true,
+          "data": "0123456789"
+        },
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 9,
+          "ok": false,
+          "error": "workspace: a.txt exceeds 9 bytes"
+        },
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 20,
+          "ok": true,
+          "data": "0123456789"
+        },
+        {
+          "op": "capped",
+          "path": "nope.txt",
+          "max": 5,
+          "ok": false,
+          "error": "workspace: not found: nope.txt"
+        },
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "ok": false,
+          "error": "workspace: read cap must be positive, got 0"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ]
+    },
+    {
+      "name": "capped-fallback",
+      "why": "a medium that cannot bound a read is read in full and then measured, and says a different sentence -- so a reader can tell which path it took",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ],
+      "ops": [
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 10,
+          "ok": true,
+          "data": "0123456789"
+        },
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 9,
+          "ok": false,
+          "error": "workspace: a.txt is 10 bytes, over the 9-byte read cap"
+        },
+        {
+          "op": "capped",
+          "path": "nope.txt",
+          "max": 5,
+          "ok": false,
+          "error": "workspace: not found: nope.txt"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ]
+    },
+    {
+      "name": "atomic-ok",
+      "why": "the temp file is .\u003cbase\u003e.tmp beside the target, it is renamed over the live path, and nothing is left behind",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "old"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        }
+      ],
+      "ops": [
+        {
+          "op": "atomic",
+          "path": "dir/a.txt",
+          "arg": "new",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "dir/a.txt",
+          "ok": true,
+          "data": "new"
+        },
+        {
+          "op": "list",
+          "path": "dir",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "b.txt"
+            }
+          ]
+        },
+        {
+          "op": "atomic",
+          "path": "a.txt",
+          "arg": "new2",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "ok": true,
+          "data": "new2"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "dir",
+              "dir": true
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "new2"
+        },
+        {
+          "path": "dir/a.txt",
+          "data": "new"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        }
+      ]
+    },
+    {
+      "name": "atomic-rename-refused",
+      "why": "a rename that fails keeps the old payload, deletes the temp file, and names both paths in the refusal",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "old"
+        }
+      ],
+      "refuse_rename": true,
+      "ops": [
+        {
+          "op": "atomic",
+          "path": "a.txt",
+          "arg": "new",
+          "ok": false,
+          "error": "workspace atomicwrite: rename .a.txt.tmp -\u003e a.txt: fixture: rename refused"
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "ok": true,
+          "data": "old"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "old"
+        }
+      ]
+    },
+    {
+      "name": "copy",
+      "why": "copy wraps the read and the write separately, so the sentence says which half failed",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "x"
+        }
+      ],
+      "ops": [
+        {
+          "op": "copy",
+          "path": "a.txt",
+          "arg": "b/c.txt",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "b/c.txt",
+          "ok": true,
+          "data": "x"
+        },
+        {
+          "op": "copy",
+          "path": "nope.txt",
+          "arg": "d.txt",
+          "ok": false,
+          "error": "workspace copy: read nope.txt: workspace: not found: nope.txt"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "x"
+        },
+        {
+          "path": "b/c.txt",
+          "data": "x"
+        }
+      ]
+    },
+    {
+      "name": "scope-read-deny",
+      "why": "read is deny-only: an unlisted path is readable, a matching one is refused, and the violation names the rule",
+      "files": [
+        {
+          "path": "secrets/key.txt",
+          "data": "s"
+        },
+        {
+          "path": "out/a.txt",
+          "data": "a"
+        }
+      ],
+      "kind": "scope",
+      "deny_read": [
+        "secrets/**"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "secrets/key.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/key.txt (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets/key.txt",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "out/a.txt",
+          "ok": true,
+          "data": "a"
+        },
+        {
+          "op": "read",
+          "path": "secrets/../secrets/key.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/../secrets/key.txt (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets/../secrets/key.txt",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "list",
+          "path": "secrets",
+          "ok": false,
+          "error": "workspace: access denied: secrets (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "exists",
+          "path": "secrets/key.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/key.txt (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets/key.txt",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "stat",
+          "path": "secrets/key.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/key.txt (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets/key.txt",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "out/a.txt",
+          "data": "a"
+        },
+        {
+          "path": "secrets/key.txt",
+          "data": "s"
+        }
+      ]
+    },
+    {
+      "name": "scope-write-allow",
+      "why": "write is allow-only: an unlisted path is refused, a matching one is not, and rename checks both ends",
+      "files": [
+        {
+          "path": "secrets/key.txt",
+          "data": "s"
+        },
+        {
+          "path": "out/a.txt",
+          "data": "a"
+        }
+      ],
+      "kind": "scope",
+      "allow_write": [
+        "out/**"
+      ],
+      "ops": [
+        {
+          "op": "write",
+          "path": "out/x.txt",
+          "arg": "x",
+          "ok": true
+        },
+        {
+          "op": "write",
+          "path": "other/y.txt",
+          "arg": "y",
+          "ok": false,
+          "error": "workspace: access denied: other/y.txt (write denied)",
+          "violations": [
+            {
+              "operation": "write",
+              "path": "other/y.txt",
+              "reason": "not in allow-write list"
+            }
+          ]
+        },
+        {
+          "op": "append",
+          "path": "out/x.txt",
+          "arg": "!",
+          "ok": true
+        },
+        {
+          "op": "delete",
+          "path": "secrets/key.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/key.txt (write denied)",
+          "violations": [
+            {
+              "operation": "write",
+              "path": "secrets/key.txt",
+              "reason": "not in allow-write list"
+            }
+          ]
+        },
+        {
+          "op": "rename",
+          "path": "out/x.txt",
+          "arg": "out/z.txt",
+          "ok": true
+        },
+        {
+          "op": "rename",
+          "path": "out/z.txt",
+          "arg": "other/z.txt",
+          "ok": false,
+          "error": "workspace: access denied: other/z.txt (write denied)",
+          "violations": [
+            {
+              "operation": "write",
+              "path": "other/z.txt",
+              "reason": "not in allow-write list"
+            }
+          ]
+        },
+        {
+          "op": "remove_all",
+          "path": "out",
+          "ok": true
+        }
+      ],
+      "final": [
+        {
+          "path": "secrets/key.txt",
+          "data": "s"
+        }
+      ]
+    },
+    {
+      "name": "scope-mandatory-first",
+      "why": "mandatory_deny is checked before the allow list in both directions, and says so in the reason",
+      "files": [
+        {
+          "path": "secrets/a.txt",
+          "data": "s"
+        },
+        {
+          "path": "ok.txt",
+          "data": "o"
+        }
+      ],
+      "kind": "scope",
+      "allow_write": [
+        "**"
+      ],
+      "mandatory_deny": [
+        "secrets/**"
+      ],
+      "ops": [
+        {
+          "op": "write",
+          "path": "secrets/a.txt",
+          "arg": "s2",
+          "ok": false,
+          "error": "workspace: access denied: secrets/a.txt (mandatory deny)",
+          "violations": [
+            {
+              "operation": "write",
+              "path": "secrets/a.txt",
+              "reason": "mandatory deny"
+            }
+          ]
+        },
+        {
+          "op": "write",
+          "path": "ok.txt",
+          "arg": "o2",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "secrets/a.txt",
+          "ok": false,
+          "error": "workspace: access denied: secrets/a.txt (mandatory deny)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "secrets/a.txt",
+              "reason": "mandatory deny"
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "ok.txt",
+          "data": "o2"
+        },
+        {
+          "path": "secrets/a.txt",
+          "data": "s"
+        }
+      ]
+    },
+    {
+      "name": "scope-pattern-forms",
+      "why": "the four forms as decisions: dir/** covers the directory itself, **/dir/** is any depth, **/name is a suffix rule that also globs the base name, and a separator-free pattern only reaches the root",
+      "files": [
+        {
+          "path": "placeholder.txt",
+          "data": "p"
+        }
+      ],
+      "kind": "scope",
+      "deny_read": [
+        "dir/**",
+        "**/cache/**",
+        "**/*.key",
+        "*.tmp"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "dir",
+          "ok": false,
+          "error": "workspace: access denied: dir (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "dir",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "dir/x",
+          "ok": false,
+          "error": "workspace: access denied: dir/x (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "dir/x",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "xdir/x",
+          "ok": false,
+          "error": "workspace: not found: xdir/x"
+        },
+        {
+          "op": "read",
+          "path": "cache",
+          "ok": false,
+          "error": "workspace: access denied: cache (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "cache",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "a/cache/b",
+          "ok": false,
+          "error": "workspace: access denied: a/cache/b (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "a/cache/b",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "a/b/c.key",
+          "ok": false,
+          "error": "workspace: access denied: a/b/c.key (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "a/b/c.key",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "top.key",
+          "ok": false,
+          "error": "workspace: access denied: top.key (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "top.key",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "a/b/c.key.bak",
+          "ok": false,
+          "error": "workspace: not found: a/b/c.key.bak"
+        },
+        {
+          "op": "read",
+          "path": "x.tmp",
+          "ok": false,
+          "error": "workspace: access denied: x.tmp (read denied)",
+          "violations": [
+            {
+              "operation": "read",
+              "path": "x.tmp",
+              "reason": "deny-read pattern matched"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "path": "d/x.tmp",
+          "ok": false,
+          "error": "workspace: not found: d/x.tmp"
+        }
+      ],
+      "final": [
+        {
+          "path": "placeholder.txt",
+          "data": "p"
+        }
+      ]
+    },
+    {
+      "name": "scope-limited",
+      "why": "a scoped view answers the bounded-read question with not-available rather than materializing the file, and the positive-cap check still comes first",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ],
+      "kind": "scope",
+      "ops": [
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "max": 10,
+          "ok": false,
+          "error": "workspace: scoped workspace cannot perform bounded reads"
+        },
+        {
+          "op": "capped",
+          "path": "a.txt",
+          "ok": false,
+          "error": "workspace: read cap must be positive, got 0"
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "ok": true,
+          "data": "0123456789"
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "0123456789"
+        }
+      ]
+    },
+    {
+      "name": "sub-prefix",
+      "why": "a prefixed view joins its prefix onto every path, and the write lands under the prefix for the parent to see",
+      "files": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "a/b/y.txt",
+          "data": "y"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "a"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "x.txt",
+          "ok": true,
+          "data": "x"
+        },
+        {
+          "op": "read",
+          "path": "b/y.txt",
+          "ok": true,
+          "data": "y"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "b",
+              "dir": true
+            },
+            {
+              "path": "x.txt"
+            }
+          ]
+        },
+        {
+          "op": "list",
+          "path": "b",
+          "ok": true,
+          "list": [
+            {
+              "path": "y.txt"
+            }
+          ]
+        },
+        {
+          "op": "write",
+          "path": "new/z.txt",
+          "arg": "z",
+          "ok": true
+        },
+        {
+          "op": "read",
+          "path": "new/z.txt",
+          "ok": true,
+          "data": "z"
+        }
+      ],
+      "final": [
+        {
+          "path": "a/b/y.txt",
+          "data": "y"
+        },
+        {
+          "path": "a/new/z.txt",
+          "data": "z"
+        },
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ]
+    },
+    {
+      "name": "sub-empty-prefix",
+      "why": "an empty prefix returns the workspace itself: the root's files are reachable without a prefix",
+      "files": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        ""
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "root.txt",
+          "ok": true,
+          "data": "r"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "a",
+              "dir": true
+            },
+            {
+              "path": "root.txt"
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ]
+    },
+    {
+      "name": "sub-nested",
+      "why": "two prefixes compose, and the second is not able to climb out of the first",
+      "files": [
+        {
+          "path": "a/b/c.txt",
+          "data": "c"
+        },
+        {
+          "path": "a/d.txt",
+          "data": "d"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "a",
+        "b"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "c.txt",
+          "ok": true,
+          "data": "c"
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "c.txt"
+            }
+          ]
+        },
+        {
+          "op": "write",
+          "path": "d.txt",
+          "arg": "d",
+          "ok": true
+        },
+        {
+          "op": "write",
+          "path": "../d.txt",
+          "arg": "escape",
+          "ok": false,
+          "error": "workspace: path traversal denied: ../d.txt"
+        }
+      ],
+      "final": [
+        {
+          "path": "a/b/c.txt",
+          "data": "c"
+        },
+        {
+          "path": "a/b/d.txt",
+          "data": "d"
+        },
+        {
+          "path": "a/d.txt",
+          "data": "d"
+        }
+      ]
+    },
+    {
+      "name": "sub-traversal",
+      "why": "the prefixed view validates the path before joining it, so a climb is refused as a climb rather than as a missing file under the prefix",
+      "files": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "a"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "../root.txt",
+          "ok": false,
+          "error": "workspace: path traversal denied: ../root.txt"
+        },
+        {
+          "op": "write",
+          "path": "/abs",
+          "arg": "x",
+          "ok": false,
+          "error": "workspace: path traversal denied: /abs"
+        },
+        {
+          "op": "list",
+          "path": "..a",
+          "ok": false,
+          "error": "workspace: path traversal denied: ..a"
+        }
+      ],
+      "final": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ]
+    },
+    {
+      "name": "sub-root",
+      "why": "removing the view's root is refused by the view, and removing a child still works",
+      "files": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        },
+        {
+          "path": "a/b/y.txt",
+          "data": "y"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "a"
+      ],
+      "ops": [
+        {
+          "op": "remove_all",
+          "ok": false,
+          "error": "workspace: refusing to remove root"
+        },
+        {
+          "op": "remove_all",
+          "path": ".",
+          "ok": false,
+          "error": "workspace: refusing to remove root"
+        },
+        {
+          "op": "remove_all",
+          "path": "b",
+          "ok": true
+        },
+        {
+          "op": "exists",
+          "path": "x.txt",
+          "ok": true,
+          "bool": true
+        },
+        {
+          "op": "exists",
+          "path": "b/y.txt",
+          "ok": true
+        }
+      ],
+      "final": [
+        {
+          "path": "a/x.txt",
+          "data": "x"
+        }
+      ]
+    },
+    {
+      "name": "sub-bad-prefix",
+      "why": "a prefix that climbs out makes a view that refuses everything with the construction's sentence, and that sentence survives being wrapped again",
+      "files": [
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "../escape"
+      ],
+      "ops": [
+        {
+          "op": "read",
+          "path": "x.txt",
+          "ok": false,
+          "error": "workspace sub: invalid prefix \"../escape\": workspace: path traversal denied: ../escape"
+        },
+        {
+          "op": "list",
+          "ok": false,
+          "error": "workspace sub: invalid prefix \"../escape\": workspace: path traversal denied: ../escape"
+        },
+        {
+          "op": "exists",
+          "path": "x.txt",
+          "ok": false,
+          "error": "workspace sub: invalid prefix \"../escape\": workspace: path traversal denied: ../escape"
+        },
+        {
+          "op": "read",
+          "path": "../x.txt",
+          "ok": false,
+          "error": "workspace sub: invalid prefix \"../escape\": workspace: path traversal denied: ../escape"
+        }
+      ],
+      "final": [
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ]
+    },
+    {
+      "name": "sub-bad-prefix-dot-name",
+      "why": "the prefix rule is lexical, not component-wise: a name that begins with two dots is refused too",
+      "files": [
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "..a"
+      ],
+      "ops": [
+        {
+          "op": "list",
+          "ok": false,
+          "error": "workspace sub: invalid prefix \"..a\": workspace: path traversal denied: ..a"
+        }
+      ],
+      "final": [
+        {
+          "path": "root.txt",
+          "data": "r"
+        }
+      ]
+    },
+    {
+      "name": "sub-limited",
+      "why": "the prefixed view bounds a read only when the medium can, and the refusal carries the joined path, which is what the medium was asked for",
+      "files": [
+        {
+          "path": "a/x.txt",
+          "data": "0123456789"
+        }
+      ],
+      "kind": "sub",
+      "prefixes": [
+        "a"
+      ],
+      "limited": true,
+      "ops": [
+        {
+          "op": "capped",
+          "path": "x.txt",
+          "max": 10,
+          "ok": true,
+          "data": "0123456789"
+        },
+        {
+          "op": "capped",
+          "path": "x.txt",
+          "max": 9,
+          "ok": false,
+          "error": "workspace: a/x.txt exceeds 9 bytes"
+        },
+        {
+          "op": "capped",
+          "path": "x.txt",
+          "ok": false,
+          "error": "workspace: read cap must be positive, got 0"
+        }
+      ],
+      "final": [
+        {
+          "path": "a/x.txt",
+          "data": "0123456789"
+        }
+      ]
+    },
+    {
+      "name": "walk-order",
+      "why": "directories are visited before their contents, in list order, and a skipped directory takes its subtree with it",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        },
+        {
+          "path": "dir/sub/c.go",
+          "data": "c"
+        },
+        {
+          "path": "dir/sub/deep/d.go",
+          "data": "d"
+        },
+        {
+          "path": "other/e.go",
+          "data": "e"
+        }
+      ],
+      "ops": [
+        {
+          "op": "walk",
+          "path": ".",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "dir",
+              "dir": true
+            },
+            {
+              "path": "dir/b.txt"
+            },
+            {
+              "path": "dir/sub",
+              "dir": true
+            },
+            {
+              "path": "dir/sub/c.go"
+            },
+            {
+              "path": "dir/sub/deep",
+              "dir": true
+            },
+            {
+              "path": "dir/sub/deep/d.go"
+            },
+            {
+              "path": "other",
+              "dir": true
+            },
+            {
+              "path": "other/e.go"
+            }
+          ]
+        },
+        {
+          "op": "walk_skip",
+          "path": ".",
+          "arg": "dir/sub",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "dir",
+              "dir": true
+            },
+            {
+              "path": "dir/b.txt"
+            },
+            {
+              "path": "other",
+              "dir": true
+            },
+            {
+              "path": "other/e.go"
+            }
+          ]
+        },
+        {
+          "op": "walk",
+          "path": "missing",
+          "ok": true
+        },
+        {
+          "op": "list",
+          "ok": true,
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "dir",
+              "dir": true
+            },
+            {
+              "path": "other",
+              "dir": true
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        },
+        {
+          "path": "dir/sub/c.go",
+          "data": "c"
+        },
+        {
+          "path": "dir/sub/deep/d.go",
+          "data": "d"
+        },
+        {
+          "path": "other/e.go",
+          "data": "e"
+        }
+      ]
+    },
+    {
+      "name": "glob-forms",
+      "why": "a star never crosses a separator, a ** segment spans zero or more of them, and only a pattern without ** can fail to compile",
+      "files": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        },
+        {
+          "path": "dir/sub/c.go",
+          "data": "c"
+        },
+        {
+          "path": "dir/sub/deep/d.go",
+          "data": "d"
+        },
+        {
+          "path": "other/e.go",
+          "data": "e"
+        }
+      ],
+      "ops": [
+        {
+          "op": "glob",
+          "path": "*.txt",
+          "ok": true,
+          "data": "*.txt",
+          "list": [
+            {
+              "path": "a.txt"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "dir/*.txt",
+          "ok": true,
+          "data": "dir/*.txt",
+          "list": [
+            {
+              "path": "dir/b.txt"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "**/*.go",
+          "ok": true,
+          "data": "**/*.go",
+          "list": [
+            {
+              "path": "dir/sub/c.go"
+            },
+            {
+              "path": "dir/sub/deep/d.go"
+            },
+            {
+              "path": "other/e.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "dir/**/*.go",
+          "ok": true,
+          "data": "dir/**/*.go",
+          "list": [
+            {
+              "path": "dir/sub/c.go"
+            },
+            {
+              "path": "dir/sub/deep/d.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "**/deep/*.go",
+          "ok": true,
+          "data": "**/deep/*.go",
+          "list": [
+            {
+              "path": "dir/sub/deep/d.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "*.go",
+          "ok": true,
+          "data": "*.go"
+        },
+        {
+          "op": "glob",
+          "path": "dir/*",
+          "ok": true,
+          "data": "dir/*",
+          "list": [
+            {
+              "path": "dir/b.txt"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "**",
+          "ok": true,
+          "data": "**",
+          "list": [
+            {
+              "path": "a.txt"
+            },
+            {
+              "path": "dir/b.txt"
+            },
+            {
+              "path": "dir/sub/c.go"
+            },
+            {
+              "path": "dir/sub/deep/d.go"
+            },
+            {
+              "path": "other/e.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "a[",
+          "ok": false,
+          "data": "a[",
+          "error": "syntax error in pattern"
+        },
+        {
+          "op": "glob",
+          "path": "**/a[",
+          "ok": true,
+          "data": "**/a["
+        }
+      ],
+      "final": [
+        {
+          "path": "a.txt",
+          "data": "a"
+        },
+        {
+          "path": "dir/b.txt",
+          "data": "b"
+        },
+        {
+          "path": "dir/sub/c.go",
+          "data": "c"
+        },
+        {
+          "path": "dir/sub/deep/d.go",
+          "data": "d"
+        },
+        {
+          "path": "other/e.go",
+          "data": "e"
+        }
+      ]
+    },
+    {
+      "name": "glob-no-doublestar-brackets",
+      "why": "a character class is one character and does not cross a separator, and the same pattern under a ** segment is matched per segment",
+      "files": [
+        {
+          "path": "a1.go",
+          "data": "1"
+        },
+        {
+          "path": "ab.go",
+          "data": "2"
+        },
+        {
+          "path": "x/a2.go",
+          "data": "3"
+        }
+      ],
+      "ops": [
+        {
+          "op": "glob",
+          "path": "[a-z][0-9].go",
+          "ok": true,
+          "data": "[a-z][0-9].go",
+          "list": [
+            {
+              "path": "a1.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "*[0-9].go",
+          "ok": true,
+          "data": "*[0-9].go",
+          "list": [
+            {
+              "path": "a1.go"
+            }
+          ]
+        },
+        {
+          "op": "glob",
+          "path": "**/[a-z][0-9].go",
+          "ok": true,
+          "data": "**/[a-z][0-9].go",
+          "list": [
+            {
+              "path": "a1.go"
+            },
+            {
+              "path": "x/a2.go"
+            }
+          ]
+        }
+      ],
+      "final": [
+        {
+          "path": "a1.go",
+          "data": "1"
+        },
+        {
+          "path": "ab.go",
+          "data": "2"
+        },
+        {
+          "path": "x/a2.go",
+          "data": "3"
+        }
+      ]
+    }
+  ]
+}

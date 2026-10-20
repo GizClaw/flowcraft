@@ -431,6 +431,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowcraft-workspace"
+version = "0.0.0"
+dependencies = [
+ "flowcraft-contract",
+ "flowcraft-utils",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

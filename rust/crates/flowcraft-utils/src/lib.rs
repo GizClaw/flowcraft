@@ -8,6 +8,7 @@ pub mod bm25;
 pub mod decode;
 pub mod filetype;
 pub mod fsatomic;
+pub mod glob;
 pub mod httpprobe;
 pub mod lock;
 pub mod net;

@@ -128,6 +128,46 @@ by translating Go's mutexes and wait groups. The bus slice pins that contract
 when it lands; the routing keys and the wire above are what every bus
 implementation underneath has to agree on.
 
+## The workspace contract
+
+`workspace-contract.json` pins the rules `core/workspace` enforces *around* any
+backend: traversal, the scope's two directions, the prefixed view, walking,
+globbing, the read cap and atomic publish.
+`tools/conformance-oracle -workspace-contract` writes it and
+`crates/flowcraft-workspace/tests/workspace_contract.rs` replays it.
+
+Core ships no in-memory backend, so the medium in every row is a map of path to
+bytes, written twice — once in the oracle, once in the port (`mem`). That is
+deliberate rather than a shortcut: a map has no temporary directory, no clock
+and no platform sorting, so a row can only fail because of the code above the
+medium, and the document needs no mask at all.
+
+| Row group | What is pinned |
+| --- | --- |
+| `raw-*` | what the medium itself answers — implicit parents, idempotent delete, rename publishing — so every other row rests on the two harnesses agreeing |
+| `scope-*` | read is deny-only, write is allow-only, `mandatory_deny` runs first in both directions, and the four pattern forms: `dir/**` covers the directory itself, `**/dir/**` reaches any depth, `**/name` is a suffix rule, and a separator-free pattern only reaches the root |
+| `sub-*` | a prefix is validated with the same `cleanPath` a path gets, two prefixes compose without the inner one climbing out of the outer, and the view's own root cannot be removed |
+| `walk-*`, `glob-*` | directories before their contents in list order, a skipped directory takes its subtree with it, a star never crosses a separator, and only a pattern without `**` can fail to compile |
+| `capped-*` | the two refusal sentences, which is what proves the port asked the *type* question ("can this backend bound a read?") instead of calling a method and hoping |
+| `atomic-*` | the temp name (`.a.txt.tmp` beside the target), named by the refusal when the rename fails, and gone afterwards |
+
+Deliberately not here: anything that needs a real filesystem (symlink escape, a
+directory handle, permission bits). That is the local backend's slice, and the
+two implementations' containment is only comparable once the port has one.
+
+The Go side is checked too, by
+`tools/conformance-oracle/workspacecontract_test.go`: that the dump reproduces
+itself, that no operation says `ok` while carrying a refusal (the port derives
+one from the other), that each of the three pattern lists has a row, that a
+violation record names a rule core has and a path the caller wrote, and that
+each of the four pattern forms still has a witness that flips when the form
+goes. Regenerating is the usual one command:
+
+```sh
+(cd tools/conformance-oracle && GOWORK=off go run . -workspace-contract) \
+  > rust/conformance/workspace-contract.json
+```
+
 ## The backends it measured and rejected
 
 The port did not start from a favourite. Four readings ran into the same dump

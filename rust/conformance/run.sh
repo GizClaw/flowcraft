@@ -261,6 +261,25 @@ if ! cmp -s "$out/skill-registry-contract.json" "$conf/skill-registry-contract.j
   exit 1
 fi
 
+echo "==> workspace contract"
+# core/workspace's rules around *any* backend: traversal, the scope's two
+# directions and the mandatory rule in front of them, the prefixed view and its
+# own root, walk order and a skipped subtree, the four glob forms, the two
+# sentences a bounded read can fail with, and the temp name atomic publish uses
+# and cleans up -- replayed by
+# crates/flowcraft-workspace/tests/workspace_contract.rs. Core ships no in-memory
+# backend, so the medium is a map of path to bytes written twice, once here and
+# once in the port. That is what makes the rows comparable: nothing in this file
+# depends on a temporary directory, a clock or platform sorting, so it masks
+# nothing and the replay compares every string.
+"$out/oracle" -workspace-contract > "$out/workspace-contract.json"
+if ! cmp -s "$out/workspace-contract.json" "$conf/workspace-contract.json"; then
+  echo "rust/conformance/workspace-contract.json no longer matches core:" >&2
+  diff "$conf/workspace-contract.json" "$out/workspace-contract.json" | head -40 >&2 || true
+  echo "regenerate: (cd tools/conformance-oracle && GOWORK=off go run . -workspace-contract) > rust/conformance/workspace-contract.json" >&2
+  exit 1
+fi
+
 echo "==> probe (Rust)"
 case "$backend" in
   norway | ng)
