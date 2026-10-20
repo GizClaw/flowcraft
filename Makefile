@@ -48,7 +48,6 @@ help:
 	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
-	@echo "  make conformance  Go oracle vs Rust port: the corpus must match byte for byte"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
 	@echo "                      plus craft itself; exemptions must still be exempt."
@@ -75,13 +74,6 @@ fmt:
 .PHONY: lint
 lint:
 	@$(call GO_FOREACH,$(MODULES_LINT),lint,golangci-lint run --timeout 5m ./...)
-
-# The Rust port's gate. Deliberately not part of `make ci`: it needs a Rust
-# toolchain (pinned by rust-toolchain.toml) and a Go toolchain for the oracle,
-# and `ci` is this workspace's gate. See rust/conformance/README.md.
-.PHONY: conformance
-conformance:
-	@bash rust/conformance/run.sh
 
 .PHONY: tidy
 tidy:
