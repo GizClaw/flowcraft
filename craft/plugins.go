@@ -62,19 +62,10 @@ func (c *Craft) pluginExternals() []deploy.ExternalResource {
 	if c.plugins == nil {
 		return nil
 	}
-	return []deploy.ExternalResource{{
-		External: deploy.External{
-			Name:     pluginToolsExternalName,
-			Contract: "tool.Source",
-		},
-		Value: c.plugins.Tools(),
-	}, {
-		External: deploy.External{
-			Name:     pluginHostExternalName,
-			Contract: PluginHostContract,
-		},
-		Value: c.plugins,
-	}}
+	return []deploy.ExternalResource{
+		deploy.NewExternal(pluginToolsExternalName, "tool.Source", c.plugins.Tools()),
+		deploy.NewExternal(pluginHostExternalName, PluginHostContract, c.plugins),
+	}
 }
 
 // mountPluginTools adds the tool.plugins dependency to the configured

@@ -21,8 +21,8 @@ func (f fakeProviderFactory) New(context.Context, resource.Input) (any, error) {
 
 func TestAssemblyCollectsProviderDeps(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(fakeProviderFactory{name: "openai"})
-	reg.MustRegister(fakeProviderFactory{name: "qwen"})
+	resource.MustRegister(reg, fakeProviderFactory{name: "openai"})
+	resource.MustRegister(reg, fakeProviderFactory{name: "qwen"})
 	if err := inference.Register(reg); err != nil {
 		t.Fatalf("inference.Register: %v", err)
 	}

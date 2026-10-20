@@ -138,7 +138,7 @@ func revisingInstance(
 ) *agent.Agent {
 	t.Helper()
 	reg := resource.NewRegistry()
-	if err := reg.Register(sessionEngineFactory{engine: withRunEnd(engine)}); err != nil {
+	if err := resource.Register(reg, sessionEngineFactory{engine: withRunEnd(engine)}); err != nil {
 		t.Fatal(err)
 	}
 	built, err := deploy.NewBuilder(reg).Deploy(context.Background(), deploy.Document{

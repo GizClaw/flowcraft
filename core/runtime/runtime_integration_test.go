@@ -87,12 +87,12 @@ func TestRuntimePublicAPIEndToEnd(t *testing.T) {
 	identities := make(chan agent.Identity, 1)
 	buses := make(chan event.Bus, 1)
 	reg := resource.NewRegistry()
-	reg.MustRegister(&integrationEngineFactory{
+	resource.MustRegister(reg, &integrationEngineFactory{
 		identities: identities,
 		delivered:  delivered,
 		buses:      buses,
 	})
-	reg.MustRegister(event.NewFactory())
+	resource.MustRegister(reg, event.NewFactory())
 
 	doc := parseRuntimeDoc(t, `version: v1
 resources:

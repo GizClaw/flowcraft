@@ -19,15 +19,43 @@ exported by a container resource (`fs/project`).
 ### Factory and Registry
 
 ```go
-type Factory interface {
+type Factory[T any] interface {
     Spec() Spec
-    New(ctx context.Context, in Input) (any, error)
+    New(ctx context.Context, in Input) (T, error)
 }
 ```
 
-Factories are registered explicitly in a `resource.Registry`. There is no
-global registry. `Input` carries the factory-owned settings subtree, resolved
-dependencies, and a `Loader` for `Source` references.
+`T` is the value's Go type. The registry keeps it alongside the factory (as the
+entry's build type), which is what lets the deployment layer check every
+dependency edge before constructing anything.
+
+A dependency is declared and read through one handle, so the contract and the
+read cannot drift:
+
+```go
+var depSources = resource.RequireMany[tool.Source]("tool")
+
+func (f assemblyFactory) Spec() resource.Spec {
+    return resource.Spec{Kind: "tool.Assembly", Impl: "memory",
+        Deps: []resource.Requirement{depSources.Spec()}}
+}
+
+func (f assemblyFactory) New(ctx context.Context, in resource.Input) (*tool.Assembly, error) {
+    sources, err := depSources.GetAll(in)   // []tool.Source
+    ...
+}
+```
+
+`Require` / `Optional` / `RequireMany` / `OptionalMany` are the declarations;
+`Get` / `TryGet` / `GetAll` / `GetAllNamed` are the reads. `Input` has no
+name-keyed accessor, so a factory cannot read a dependency it did not declare.
+A test double that deliberately models untyped wiring instantiates
+`Factory[any]`; the plan then skips that producer's type check.
+
+Factories are registered explicitly in a `resource.Registry` — with the free
+function, because Go has no generic methods. There is no global registry.
+`Input` carries the factory-owned settings subtree, resolved dependencies, and a
+`Loader` for `Source` references.
 
 ### Dependency DAG
 
@@ -45,8 +73,9 @@ and size cap; file references are confined to the base directory.
 ### Wire and deployment binding
 
 - `resource.Wireable` values attach observers/hooks after construction.
-- `resource.DeploymentBinder` values receive the fully assembled deployment
-  after agents are bound. This is the phase used by delegation directories.
+- `deploy.Binder` values receive the fully assembled deployment (a
+  `deploy.View`) after agents are bound. This is the phase used by delegation
+  directories. The interface lives in `core/deploy`, the package that calls it.
 
 ## Minimal factory
 
@@ -60,12 +89,12 @@ func (localBusFactory) Spec() resource.Spec {
 func (localBusFactory) New(
     ctx context.Context,
     in resource.Input,
-) (any, error) {
+) (event.Bus, error) {
     return event.NewMemoryBus(), nil
 }
 
 reg := resource.NewRegistry()
-reg.MustRegister(localBusFactory{})
+resource.MustRegister(reg, localBusFactory{})
 ```
 
 See [deploy.md](deploy.md) for how `deploy.Builder` consumes this protocol.

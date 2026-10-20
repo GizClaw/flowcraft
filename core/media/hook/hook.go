@@ -95,7 +95,7 @@ const (
 
 // Register adds the media.attachments prepare hook factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(prepareFactory{})
+	return resource.Register(r, prepareFactory{})
 }
 
 // Settings declares the media.attachments hook behavior.
@@ -180,7 +180,7 @@ func (s Settings) resolve() (resolvedSettings, error) {
 // prepareFactory builds the media.attachments prepare hook.
 type prepareFactory struct{}
 
-var _ resource.Factory = prepareFactory{}
+var _ resource.Factory[agent.Preparer] = prepareFactory{}
 
 // Spec implements resource.Factory.
 func (prepareFactory) Spec() resource.Spec {
@@ -191,7 +191,7 @@ func (prepareFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (prepareFactory) New(ctx context.Context, input resource.Input) (any, error) {
+func (prepareFactory) New(ctx context.Context, input resource.Input) (agent.Preparer, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, input.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(

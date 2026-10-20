@@ -71,10 +71,7 @@ func newProvider(t *testing.T, settings string) (inference.ProviderDefinition, e
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
-	}
+	provider := value
 	return provider, nil
 }
 

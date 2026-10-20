@@ -38,12 +38,12 @@ func buildDirectoryApp(t *testing.T, doc deploy.Document) *Runtime {
 	t.Helper()
 	bus := event.NewMemoryBus()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: simpleRunEngine()})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: bus,
 	})
-	reg.MustRegister(delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
 	app, err := NewBuilder(reg).Build(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -97,12 +97,12 @@ func TestRuntimeMultipleTargetViewBindersConflict(t *testing.T) {
 `)
 	bus := event.NewMemoryBus()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: simpleRunEngine()})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: bus,
 	})
-	reg.MustRegister(delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
 	app, err := NewBuilder(reg).Build(context.Background(), doc)
 	if err == nil {
 		_ = app.Close()
@@ -189,9 +189,9 @@ func TestRuntimeReloadRetiredDirectoryFrozen(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
-	reg.MustRegister(freshBusFactory{})
-	reg.MustRegister(delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, testEngineFactory{engine: simpleRunEngine()})
+	resource.MustRegister(reg, freshBusFactory{})
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
 	app, err := NewBuilder(reg).Build(ctx, directoryDoc(t, ""))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -270,9 +270,9 @@ func TestRuntimeReloadRollbackUnfreezesDirectory(t *testing.T) {
 	defer cancel()
 
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
-	reg.MustRegister(&failingBusFactory{})
-	reg.MustRegister(delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, testEngineFactory{engine: simpleRunEngine()})
+	resource.MustRegister(reg, &failingBusFactory{})
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
 	app, err := NewBuilder(reg).Build(ctx, directoryDoc(t, ""))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -323,8 +323,8 @@ func TestRuntimeReloadRollbackUnfreezesDirectory(t *testing.T) {
 func TestRuntimeDynamicAgentDelegateEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(delegation.NewDirectoryFactory())
-	reg.MustRegister(delegation.NewServiceFactory())
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, delegation.NewServiceFactory())
 	doc := baseRuntimeDoc(t)
 	doc.Resources["delegation_directory"] = resource.Resource{
 		Kind: delegation.DirectoryKind, Impl: "local",

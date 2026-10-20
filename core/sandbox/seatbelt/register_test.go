@@ -19,9 +19,7 @@ func TestRegisterAddsSeatbeltFactory(t *testing.T) {
 }
 
 func TestNewRequiresRoot(t *testing.T) {
-	if _, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{"root": ""}`),
-	}); err == nil {
+	if _, err := NewFactory().New(context.Background(), resource.NewInput(json.RawMessage(`{"root": ""}`), nil, nil, nil)); err == nil {
 		t.Fatal("New accepted missing root")
 	}
 }

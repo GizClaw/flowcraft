@@ -693,13 +693,11 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 			},
 		}},
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
-	})
+	value, err := inference.Factory{}.New(context.Background(), resource.NewTestInput(map[string]any{"provider." + ref.ID.Provider: definition}))
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
 	}
-	assembly := value.(*inference.Assembly)
+	assembly := value
 
 	response, err := assembly.Transcribe(
 		context.Background(),

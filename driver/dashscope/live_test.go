@@ -393,14 +393,11 @@ func newLiveHarness(t *testing.T, config liveConfig) *liveHarness {
 	if err != nil {
 		t.Fatalf("live harness: marshal settings: %v", err)
 	}
-	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	value, err := Factory().New(context.Background(), resource.NewInput(settings, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("live harness: build provider: %v", err)
 	}
-	definition, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("live harness: factory returned %T", value)
-	}
+	definition := value
 	harness := &liveHarness{t: t, recorder: recorder, definition: definition}
 	t.Cleanup(harness.dump)
 	return harness

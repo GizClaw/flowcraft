@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/driver/minimax
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/core v0.4.9
+require github.com/GizClaw/flowcraft/core v0.8.2-0.20261020045815-e73f4141edf3
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -26,9 +26,9 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/grpc v1.83.2 // indirect

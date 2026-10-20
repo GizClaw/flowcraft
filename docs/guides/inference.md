@@ -71,8 +71,8 @@ Provider implementations are registered by the application from provider
 driver modules:
 
 ```go
-reg.MustRegister(openai.Factory())
-reg.MustRegister(inference.Factory{})
+resource.MustRegister(reg, openai.Factory())
+resource.MustRegister(reg, inference.Factory{})
 ```
 
 The provider `spec` is layered — `endpoint` (where the API is and how the key

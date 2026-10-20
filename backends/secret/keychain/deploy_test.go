@@ -20,7 +20,7 @@ type settingsRecorderFactory struct{ records *[]string }
 func (f settingsRecorderFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "deploy.test", Impl: "record",
-		Deps: []resource.DepSpec{{Name: "secrets", Type: "secret.Store", Required: false}},
+		Deps: []resource.Requirement{resource.Optional[any]("secrets").Spec()},
 	}
 }
 
@@ -65,7 +65,7 @@ func TestBuilderKeychainSecretStore(t *testing.T) {
 	if err := Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	reg.MustRegister(settingsRecorderFactory{records: &records})
+	resource.MustRegister(reg, settingsRecorderFactory{records: &records})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{

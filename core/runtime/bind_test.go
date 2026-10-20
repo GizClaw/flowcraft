@@ -32,18 +32,18 @@ func (freshBusFactory) New(context.Context, resource.Input) (any, error) {
 
 // newBindRegistry registers the test engine, a per-generation bus, a
 // shared checkpoint store, and the given extra factories.
-func newBindRegistry(t *testing.T, extras ...resource.Factory) *resource.Registry {
+func newBindRegistry(t *testing.T, extras ...resource.Factory[any]) *resource.Registry {
 	t.Helper()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: noopEngine()})
-	reg.MustRegister(freshBusFactory{})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: noopEngine()})
+	resource.MustRegister(reg, freshBusFactory{})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testStoreKind, Impl: testStoreImpl},
 		value: &recordingCheckpointStore{},
 	})
 	for _, factory := range extras {
 		if factory != nil {
-			reg.MustRegister(factory)
+			resource.MustRegister(reg, factory)
 		}
 	}
 	return reg
@@ -178,8 +178,8 @@ func TestReloadWithoutBinderDoesNotBind(t *testing.T) {
 
 func TestBuildDelegationServiceSessionPath(t *testing.T) {
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(delegation.NewDirectoryFactory())
-	reg.MustRegister(delegation.NewServiceFactory())
+	resource.MustRegister(reg, delegation.NewDirectoryFactory())
+	resource.MustRegister(reg, delegation.NewServiceFactory())
 	doc := baseRuntimeDoc(t)
 	doc.Resources["delegation_directory"] = resource.Resource{
 		Kind: delegation.DirectoryKind, Impl: "local",

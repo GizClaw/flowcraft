@@ -99,19 +99,14 @@ func (c *Craft) compose(
 		len(c.opts.Externals)+len(opts.Externals)+1)
 	externals = append(externals, c.opts.Externals...)
 	externals = append(externals, opts.Externals...)
-	externals = append(externals, deploy.ExternalResource{
-		External: deploy.External{
-			Name:     runtimeExternalName,
-			Contract: RuntimeContextContract,
-		},
-		Value: RuntimeContext{
+	externals = append(externals, deploy.NewExternal(
+		runtimeExternalName, RuntimeContextContract, RuntimeContext{
 			Key:       key,
 			Values:    values,
 			ConfigDir: c.opts.ConfigDir,
 			DataDir:   c.opts.DataDir,
 			AppHome:   c.opts.AppHome,
-		},
-	})
+		}))
 	if pluginExternals := c.pluginExternals(); len(pluginExternals) > 0 {
 		externals = append(externals, pluginExternals...)
 		if err := c.mountPluginTools(&doc); err != nil {

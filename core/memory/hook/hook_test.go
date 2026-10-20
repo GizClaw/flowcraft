@@ -66,8 +66,7 @@ func newFakeAssembly(t *testing.T) (sdkmemory.Assembly, *contextProvider, *turnS
 
 func TestContextPreparerClonesBoardAndUsesRequest(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 query:
   current_message: true
 scope:
@@ -79,10 +78,8 @@ budget:
   max_tokens: 100
 min_score: 0.2
 output: recalled
-`),
-		Deps: map[string]any{depName: assembly},
-	})
-	preparer := preparerValue.(agent.Preparer)
+`), map[string]any{depName: assembly}, nil, nil))
+	preparer := preparerValue
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +111,7 @@ output: recalled
 
 func TestContextPreparerRendersDefaultGoTemplateToContent(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 query:
   literal: alpha
 scope:
@@ -124,13 +120,11 @@ output: recalled
 render:
   output: memory_content
   gotmpl: {}
-`),
-		Deps: map[string]any{depName: assembly},
-	})
+`), map[string]any{depName: assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := preparerValue.(agent.Preparer)
+	preparer := preparerValue
 	previous := agent.NewBoard()
 	next, err := preparer.Before(context.Background(), agent.Identity{RunID: "run"}, &agent.Request{}, previous)
 	if err != nil {
@@ -154,8 +148,7 @@ render:
 
 func TestContextPreparerRendersCustomGoTemplate(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 query:
   literal: alpha
 scope:
@@ -165,13 +158,11 @@ render:
   output: memory_content
   gotmpl:
     template: '{{ range .Items }}{{ contentText .Content }}:{{ score .Score }}{{ end }}'
-`),
-		Deps: map[string]any{depName: assembly},
-	})
+`), map[string]any{depName: assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := preparerValue.(agent.Preparer)
+	preparer := preparerValue
 	next, err := preparer.Before(context.Background(), agent.Identity{}, &agent.Request{}, agent.NewBoard())
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +206,7 @@ func TestCloneItemsOwnsMutableData(t *testing.T) {
 
 func TestContextPreparerSupportsRecentOnly(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	preparerValue, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 query:
   recent_only: true
 scope:
@@ -225,13 +215,11 @@ conversation_id: conversation
 budget:
   max_chars: 50
 output: recalled
-`),
-		Deps: map[string]any{depName: assembly},
-	})
+`), map[string]any{depName: assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := preparerValue.(agent.Preparer)
+	preparer := preparerValue
 	_, err = preparer.Before(context.Background(), agent.Identity{}, &agent.Request{}, agent.NewBoard())
 	if err != nil {
 		t.Fatal(err)
@@ -244,18 +232,15 @@ output: recalled
 
 func TestTurnCommitterUsesRunIDAndChannel(t *testing.T) {
 	assembly, _, sink := newFakeAssembly(t)
-	committerValue, err := TurnCommitter{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	committerValue, err := TurnCommitter{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 scope:
   runtime_id: memory
   user_id: tenant
-`),
-		Deps: map[string]any{depName: assembly},
-	})
+`), map[string]any{depName: assembly}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	committer := committerValue.(agent.Committer)
+	committer := committerValue
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "hello"))
 	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "world"))
@@ -299,17 +284,14 @@ scope:
 
 func TestHookValidationRejectsAmbiguousQuery(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	_, err := ContextPreparer{}.New(context.Background(), resource.Input{
-		Settings: settingsNode(t, `
+	_, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, `
 query:
   literal: alpha
   current_message: true
 scope:
   runtime_id: memory
 output: recalled
-`),
-		Deps: map[string]any{depName: assembly},
-	})
+`), map[string]any{depName: assembly}, nil, nil))
 	if err == nil {
 		t.Fatal("accepted ambiguous query")
 	}
@@ -346,9 +328,7 @@ render: {output: memory_content, arbitrary: {}}
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ContextPreparer{}.New(context.Background(), resource.Input{
-				Settings: settingsNode(t, source), Deps: map[string]any{depName: assembly},
-			})
+			_, err := ContextPreparer{}.New(context.Background(), resource.NewInput(settingsNode(t, source), map[string]any{depName: assembly}, nil, nil))
 			if err == nil || !errdefs.IsValidation(err) {
 				t.Fatalf("error = %v, want validation", err)
 			}

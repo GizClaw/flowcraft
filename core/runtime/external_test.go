@@ -39,20 +39,14 @@ func (runtimeExternalConsumerFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalConsumer",
 		Impl: "runtime",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[*runtimeExternalPool]("db").Spec()},
 	}
 }
 
-func (runtimeExternalConsumerFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("db")
-	if !ok {
-		return nil, errdefs.Validationf("consumer: db dep missing")
-	}
-	pool, ok := value.(*runtimeExternalPool)
-	if !ok {
-		return nil, errdefs.Validationf("consumer: db dep has wrong type")
+func (runtimeExternalConsumerFactory) New(_ context.Context, in resource.Input) (*runtimeExternalConsumer, error) {
+	pool, err := resource.Require[*runtimeExternalPool]("db").Get(in)
+	if err != nil {
+		return nil, err
 	}
 	return &runtimeExternalConsumer{pool: pool}, nil
 }
@@ -63,19 +57,13 @@ func (runtimeExternalEngineFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalEngine",
 		Impl: "runtime",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[*runtimeExternalPool]("db").Spec()},
 	}
 }
 
-func (runtimeExternalEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("db")
-	if !ok {
-		return nil, errdefs.Validationf("engine: db dep missing")
-	}
-	if _, ok := value.(*runtimeExternalPool); !ok {
-		return nil, errdefs.Validationf("engine: db dep has wrong type")
+func (runtimeExternalEngineFactory) New(_ context.Context, in resource.Input) (agent.Engine, error) {
+	if _, err := resource.Require[*runtimeExternalPool]("db").Get(in); err != nil {
+		return nil, err
 	}
 	return agent.EngineFunc(func(
 		ctx context.Context,
@@ -137,10 +125,10 @@ runtime:
 func newRuntimeExternalRegistry(t *testing.T) *resource.Registry {
 	t.Helper()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(runtimeExternalConsumerFactory{})
-	reg.MustRegister(runtimeExternalEngineFactory{})
+	resource.MustRegister(reg, testEngineFactory{engine: simpleRunEngine()})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, runtimeExternalConsumerFactory{})
+	resource.MustRegister(reg, runtimeExternalEngineFactory{})
 	return reg
 }
 
@@ -151,10 +139,7 @@ func buildRuntimeExternal(
 ) *Runtime {
 	t.Helper()
 	builder := NewBuilder(newRuntimeExternalRegistry(t))
-	if err := builder.WithExternalResource(ExternalResource{
-		ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-		Value:              pool,
-	}); err != nil {
+	if err := builder.WithExternalResource(NewExternal("db", "db.Pool", pool)); err != nil {
 		t.Fatalf("WithExternalResource: %v", err)
 	}
 	app, err := builder.Build(context.Background(), doc)
@@ -264,10 +249,7 @@ func TestRuntimeExternalResourceDeclarationMismatch(t *testing.T) {
 
 	t.Run("injected but not declared", func(t *testing.T) {
 		builder := NewBuilder(newRuntimeExternalRegistry(t))
-		if err := builder.WithExternalResource(ExternalResource{
-			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-			Value:              &runtimeExternalPool{},
-		}); err != nil {
+		if err := builder.WithExternalResource(NewExternal("db", "db.Pool", &runtimeExternalPool{})); err != nil {
 			t.Fatalf("WithExternalResource: %v", err)
 		}
 		_, err := builder.Build(context.Background(), runtimeExternalDoc(t, false))
@@ -410,10 +392,9 @@ func TestRuntimeExternalResourceBuilderValidation(t *testing.T) {
 
 	t.Run("plural and used builder", func(t *testing.T) {
 		builder := NewBuilder(newRuntimeExternalRegistry(t))
-		if err := builder.WithExternalResources([]ExternalResource{{
-			ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-			Value:              &runtimeExternalPool{},
-		}}); err != nil {
+		if err := builder.WithExternalResources([]ExternalResource{
+			NewExternal("db", "db.Pool", &runtimeExternalPool{}),
+		}); err != nil {
 			t.Fatalf("WithExternalResources: %v", err)
 		}
 		app, err := builder.Build(context.Background(), runtimeExternalDoc(t, true))
@@ -422,10 +403,7 @@ func TestRuntimeExternalResourceBuilderValidation(t *testing.T) {
 		}
 		defer func() { _ = app.Close() }()
 
-		if err := builder.WithExternalResource(ExternalResource{
-			ExternalDependency: ExternalDependency{Name: "other", Contract: "other.Client"},
-			Value:              &runtimeExternalPool{},
-		}); !errors.Is(err, ErrBuilderUsed) {
+		if err := builder.WithExternalResource(NewExternal("other", "other.Client", &runtimeExternalPool{})); !errors.Is(err, ErrBuilderUsed) {
 			t.Fatalf("WithExternalResource after Build error = %v, want ErrBuilderUsed", err)
 		}
 	})
@@ -433,10 +411,7 @@ func TestRuntimeExternalResourceBuilderValidation(t *testing.T) {
 	t.Run("duplicate injection", func(t *testing.T) {
 		builder := NewBuilder(newRuntimeExternalRegistry(t))
 		for range 2 {
-			if err := builder.WithExternalResource(ExternalResource{
-				ExternalDependency: ExternalDependency{Name: "db", Contract: "db.Pool"},
-				Value:              &runtimeExternalPool{},
-			}); err != nil {
+			if err := builder.WithExternalResource(NewExternal("db", "db.Pool", &runtimeExternalPool{})); err != nil {
 				t.Fatalf("WithExternalResource: %v", err)
 			}
 		}
@@ -448,10 +423,7 @@ func TestRuntimeExternalResourceBuilderValidation(t *testing.T) {
 
 	t.Run("contract mismatch", func(t *testing.T) {
 		builder := NewBuilder(newRuntimeExternalRegistry(t))
-		if err := builder.WithExternalResource(ExternalResource{
-			ExternalDependency: ExternalDependency{Name: "db", Contract: "cache.Client"},
-			Value:              &runtimeExternalPool{},
-		}); err != nil {
+		if err := builder.WithExternalResource(NewExternal("db", "cache.Client", &runtimeExternalPool{})); err != nil {
 			t.Fatalf("WithExternalResource: %v", err)
 		}
 		_, err := builder.Build(context.Background(), runtimeExternalDoc(t, true))

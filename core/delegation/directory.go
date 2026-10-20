@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
@@ -204,17 +205,16 @@ func targetFromAgent(name string, instance *agent.Agent) Target {
 	return target
 }
 
-// BindDeployment implements resource.DeploymentBinder: the directory
-// resource binds itself to the assembled deployment once agents are
-// ready. Binding is idempotent per instance (see Bind).
-func (d *LocalDirectory) BindDeployment(deployment any) error {
+// BindDeployment implements deploy.Binder: the directory resource binds
+// itself to the assembled deployment once agents are ready. Binding is
+// idempotent per instance (see Bind).
+func (d *LocalDirectory) BindDeployment(view deploy.View) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
 	}
-	view, ok := deployment.(Deployment)
-	if !ok || ptr.IsNil(deployment) {
+	if ptr.IsNil(view) {
 		return errdefs.Validationf(
-			"local delegation directory: deployment is not a read-only deployment view")
+			"local delegation directory: deployment view is nil")
 	}
 	return d.Bind(view)
 }

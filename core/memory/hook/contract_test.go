@@ -13,23 +13,20 @@ import (
 // conformance suite against the memory.context seed hook.
 func TestContextPreparer_PreparerContract(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	input := resource.Input{
-		Settings: settingsNode(t, `
+	input := resource.NewInput(settingsNode(t, `
 query:
   literal: alpha
 scope:
   runtime_id: memory
   user_id: tenant
 output: recalled
-`),
-		Deps: map[string]any{depName: assembly},
-	}
+`), map[string]any{depName: assembly}, nil, nil)
 	if _, err := (ContextPreparer{}).New(context.Background(), input); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	agenttest.PreparerSuite(t, func() agent.Preparer {
 		p, _ := (ContextPreparer{}).New(context.Background(), input)
-		return p.(agent.Preparer)
+		return p
 	})
 }
 
@@ -37,20 +34,17 @@ output: recalled
 // conformance suite against the memory.turn finalizer.
 func TestTurnCommitter_CommitterContract(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	input := resource.Input{
-		Settings: settingsNode(t, `
+	input := resource.NewInput(settingsNode(t, `
 scope:
   runtime_id: memory
   user_id: tenant
 channel: main
-`),
-		Deps: map[string]any{depName: assembly},
-	}
+`), map[string]any{depName: assembly}, nil, nil)
 	if _, err := (TurnCommitter{}).New(context.Background(), input); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	agenttest.CommitterSuite(t, func() agent.Committer {
 		c, _ := (TurnCommitter{}).New(context.Background(), input)
-		return c.(agent.Committer)
+		return c
 	})
 }

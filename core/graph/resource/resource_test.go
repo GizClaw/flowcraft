@@ -3,9 +3,11 @@ package resource_test
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/core/graph"
 	graphresource "github.com/GizClaw/flowcraft/core/graph/resource"
@@ -32,7 +34,7 @@ func TestRegister(t *testing.T) {
 	if len(spec.Deps) != 8 {
 		t.Fatalf("deps = %+v, want 8", spec.Deps)
 	}
-	var bindingsDep *resource.DepSpec
+	var bindingsDep *resource.Requirement
 	for i := range spec.Deps {
 		if spec.Deps[i].Name == "script_bindings" {
 			bindingsDep = &spec.Deps[i]
@@ -41,7 +43,7 @@ func TestRegister(t *testing.T) {
 	if bindingsDep == nil {
 		t.Fatalf("deps = %+v, want a script_bindings dep", spec.Deps)
 	}
-	if bindingsDep.Type != "agent.ScriptBindings" || bindingsDep.Many || bindingsDep.Required {
+	if bindingsDep.Type != reflect.TypeFor[bindings.Provider]() || bindingsDep.Many || bindingsDep.Required {
 		t.Fatalf("script_bindings dep = %+v, want optional single agent.ScriptBindings", *bindingsDep)
 	}
 	if _, ok := reg.Lookup("agent.ScriptBindings", "standard"); !ok {
@@ -53,7 +55,7 @@ func TestRegister(t *testing.T) {
 }
 
 func TestFactoryRequiresGraphSettings(t *testing.T) {
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewTestInput(nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New without graph = %v, want Validation", err)
 	}
@@ -68,9 +70,7 @@ func TestFactoryRequiresToolDepForToolNode(t *testing.T) {
 		},
 		"edges": []any{},
 	})
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), nil, nil, nil))
 	if !errdefs.IsNotFound(err) {
 		t.Fatalf("New without tools dep = %v, want NotFound", err)
 	}
@@ -94,17 +94,11 @@ func TestFactoryBuildsGraphEngine(t *testing.T) {
 		},
 		"edges": []any{},
 	})
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"inference": fake.Assembly(t),
-		},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"inference": fake.Assembly(t),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
-	}
-	if _, ok := value.(*coregraph.Graph); !ok {
-		t.Fatalf("New returned %T, want *coregraph.Graph", value)
 	}
 }
 
@@ -124,17 +118,11 @@ func TestFactoryMaxIterationsSemantics(t *testing.T) {
 		{"positive caps", `{"graph": ` + string(def) + `, "build": {"max_iterations": 7}}`, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-				Settings: []byte(tc.settings),
-				Deps:     map[string]any{"inference": fake.Assembly(t)},
-			})
+			value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(tc.settings), map[string]any{"inference": fake.Assembly(t)}, nil, nil))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			g, ok := value.(*coregraph.Graph)
-			if !ok {
-				t.Fatalf("New returned %T, want *coregraph.Graph", value)
-			}
+			g := value
 			if got := g.Stats().MaxIterations; got != tc.want {
 				t.Errorf("MaxIterations = %d, want %d", got, tc.want)
 			}
@@ -144,10 +132,7 @@ func TestFactoryMaxIterationsSemantics(t *testing.T) {
 
 func TestFactoryRejectsNegativeMaxIterations(t *testing.T) {
 	def := inferenceGraphWithoutBuildSettings(t)
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `, "build": {"max_iterations": -1}}`),
-		Deps:     map[string]any{"inference": (&inferencetest.GenerateFake{}).Assembly(t)},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`, "build": {"max_iterations": -1}}`), map[string]any{"inference": (&inferencetest.GenerateFake{}).Assembly(t)}, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New error = %v, want validation", err)
 	}
@@ -254,16 +239,13 @@ func TestFactoryWiresProviderCarriedInferenceExtensions(t *testing.T) {
 		"id":      map[string]any{"provider": "fake", "name": "echo"},
 		"profile": "default",
 	})
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"inference": fake.Assembly(t),
-		},
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"inference": fake.Assembly(t),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := executeTestGraph(t, value.(*coregraph.Graph)); err != nil {
+	if err := executeTestGraph(t, value); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	req := fake.LastRequest()
@@ -284,16 +266,13 @@ func TestFactoryWiresExtensionsForRouterOnlyDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route.New: %v", err)
 	}
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(graphWithExtensions(t, nil)) + `}`),
-		Deps: map[string]any{
-			"router": router,
-		},
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(graphWithExtensions(t, nil))+`}`), map[string]any{
+		"router": router,
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := executeTestGraph(t, value.(*coregraph.Graph)); err != nil {
+	if err := executeTestGraph(t, value); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(fake.LastRequest().Extensions) != 1 {
@@ -305,16 +284,13 @@ func TestFactoryRejectsExtensionsWithoutConfiguredDecoder(t *testing.T) {
 	def := graphWithExtensions(t, map[string]any{
 		"id": map[string]any{"provider": "fake", "name": "echo"},
 	})
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"inference": (&inferencetest.GenerateFake{}).Assembly(t),
-		},
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"inference": (&inferencetest.GenerateFake{}).Assembly(t),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	err = executeTestGraph(t, value.(*coregraph.Graph))
+	err = executeTestGraph(t, value)
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Execute error = %v, want Validation for unregistered extension", err)
 	}
@@ -364,16 +340,13 @@ func TestFactoryWiresResponseFormatConfig(t *testing.T) {
 		},
 		"edges": []any{},
 	})
-	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(def) + `}`),
-		Deps: map[string]any{
-			"inference": fake.Assembly(t),
-		},
-	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(def)+`}`), map[string]any{
+		"inference": fake.Assembly(t),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := executeTestGraph(t, value.(*coregraph.Graph)); err != nil {
+	if err := executeTestGraph(t, value); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	response := fake.LastRequest().Input.Content.Intent.Text.Response

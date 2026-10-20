@@ -279,7 +279,7 @@ func TestBuildResolvesFileSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(workspaceFactory{})
+	resource.MustRegister(reg, workspaceFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -316,7 +316,7 @@ func TestBuildResolvesYAMLFileSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := resource.NewRegistry()
-	reg.MustRegister(workspaceFactory{})
+	resource.MustRegister(reg, workspaceFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{

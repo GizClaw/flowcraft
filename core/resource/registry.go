@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Key is the unique (Kind, Impl) identity of a factory in a registry.
@@ -15,61 +16,79 @@ type Key struct {
 // Registry maps resource kinds (+ implementations) to factories. Each
 // resource module registers its factories explicitly; there is no
 // global state.
+//
+// A registry holds [Entry] values, so every registration carries the Go type
+// its factory returns. The assembly layer reads that type to check a whole
+// deployment before constructing anything.
 type Registry struct {
-	mu        sync.RWMutex
-	factories map[Key]Factory
+	mu      sync.RWMutex
+	entries map[Key]Entry
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{factories: make(map[Key]Factory)}
+	return &Registry{entries: make(map[Key]Entry)}
 }
 
-// Register adds a factory, validating its spec and rejecting a
-// duplicate (Kind, Impl) key.
-func (r *Registry) Register(f Factory) error {
-	if f == nil {
+// add registers one erased entry. It is reached through [Register], which is
+// the only way to obtain an Entry.
+func (r *Registry) add(e Entry) error {
+	if ptr.IsNil(e) {
 		return errdefs.Validationf("resource registry: nil factory")
 	}
-	spec := f.Spec()
+	spec := e.Spec()
 	if err := spec.Validate(); err != nil {
 		return err
 	}
-	key := Key{Kind: spec.Kind, Impl: spec.Impl}
+	key := spec.Key()
+	if e.BuildType() == nil {
+		return errdefs.Validationf(
+			"resource registry: factory %s/%s has no build type", key.Kind, key.Impl)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, dup := r.factories[key]; dup {
+	if _, dup := r.entries[key]; dup {
 		return errdefs.Conflictf(
 			"resource registry: factory %s/%s already registered",
-			spec.Kind, spec.Impl)
+			key.Kind, key.Impl)
 	}
-	r.factories[key] = f
+	r.entries[key] = e
 	return nil
 }
 
-// MustRegister registers f and panics on error.
-func (r *Registry) MustRegister(f Factory) {
-	if err := r.Register(f); err != nil {
+// MustRegister registers f and panics on error. It is for tests and for
+// packages that register a known-good factory set at init time; production
+// wiring uses [Register] and returns the error.
+func MustRegister[T any](r *Registry, f Factory[T]) {
+	if err := Register(r, f); err != nil {
 		panic(err)
 	}
 }
 
 // Lookup returns the factory for kind/impl. An empty impl matches a
 // factory registered with an empty impl.
-func (r *Registry) Lookup(kind Kind, impl string) (Factory, bool) {
+func (r *Registry) Lookup(kind Kind, impl string) (Entry, bool) {
+	if r == nil {
+		return nil, false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	f, ok := r.factories[Key{Kind: kind, Impl: impl}]
-	return f, ok
+	e, ok := r.entries[Key{Kind: kind, Impl: impl}]
+	return e, ok
 }
 
 // Specs returns the registered factory specs in unspecified order.
 func (r *Registry) Specs() []Spec {
+	if r == nil {
+		return nil
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	specs := make([]Spec, 0, len(r.factories))
-	for _, f := range r.factories {
-		specs = append(specs, f.Spec())
+	specs := make([]Spec, 0, len(r.entries))
+	for _, e := range r.entries {
+		// Clone: a caller must not be able to mutate a registered factory's
+		// Deps slice through the copy it was handed.
+		specs = append(specs, e.Spec().Clone())
 	}
 	return specs
 }

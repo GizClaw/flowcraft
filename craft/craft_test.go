@@ -28,7 +28,7 @@ func (testCapability) Register(registry *resource.Registry) error {
 	if err := event.Register(registry); err != nil {
 		return err
 	}
-	return registry.Register(runtimeContextFactory{})
+	return resource.Register(registry, runtimeContextFactory{})
 }
 
 type runtimeContextFactory struct{}
@@ -36,9 +36,7 @@ type runtimeContextFactory struct{}
 func (runtimeContextFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.RuntimeContext",
-		Deps: []resource.DepSpec{{
-			Name: "runtime", Type: RuntimeContextContract, Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[RuntimeContext]("runtime").Spec()},
 	}
 }
 
@@ -46,7 +44,7 @@ func (runtimeContextFactory) New(
 	_ context.Context,
 	in resource.Input,
 ) (any, error) {
-	value, _ := in.Dep("runtime")
+	value, _, _ := resource.Require[RuntimeContext]("runtime").TryGet(in)
 	return value, nil
 }
 
@@ -326,7 +324,7 @@ func (externalCapability) Register(registry *resource.Registry) error {
 	if err := event.Register(registry); err != nil {
 		return err
 	}
-	return registry.Register(externalFactory{})
+	return resource.Register(registry, externalFactory{})
 }
 
 type externalFactory struct{}
@@ -334,9 +332,7 @@ type externalFactory struct{}
 func (externalFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.External",
-		Deps: []resource.DepSpec{{
-			Name: "value", Type: "test.Value", Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[any]("value").Spec()},
 	}
 }
 
@@ -344,7 +340,7 @@ func (externalFactory) New(
 	_ context.Context,
 	in resource.Input,
 ) (any, error) {
-	value, _ := in.Dep("value")
+	value, _, _ := resource.Require[any]("value").TryGet(in)
 	return value, nil
 }
 
@@ -377,10 +373,7 @@ deploy:
 		ConfigDir:    dir,
 		DataDir:      dir,
 		Capabilities: []Capability{externalCapability{}, binder},
-		Externals: []deploy.ExternalResource{{
-			External: deploy.External{Name: "app.value", Contract: "test.Value"},
-			Value:    "hello",
-		}},
+		Externals:    []deploy.ExternalResource{deploy.NewExternal("app.value", "test.Value", "hello")},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -632,7 +625,7 @@ type reloadProbeCapability struct{}
 func (reloadProbeCapability) Name() string { return "reloadprobe" }
 
 func (reloadProbeCapability) Register(registry *resource.Registry) error {
-	return registry.Register(reloadProbeFactory{})
+	return resource.Register(registry, reloadProbeFactory{})
 }
 
 // reloadProbeFactory reports both halves of the per-runtime inputs one
@@ -643,9 +636,7 @@ type reloadProbeFactory struct{}
 func (reloadProbeFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ReloadProbe",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[any]("db").Spec()},
 	}
 }
 
@@ -658,7 +649,7 @@ func (reloadProbeFactory) New(_ context.Context, in resource.Input) (any, error)
 			return nil, err
 		}
 	}
-	value, _ := in.Dep("db")
+	value, _, _ := resource.Require[any]("db").TryGet(in)
 	return reloadProbe{Value: value, Name: settings.Name}, nil
 }
 
@@ -724,12 +715,9 @@ func TestReloadRuntimeWithReplacesRuntimeInputs(t *testing.T) {
 	}}
 	options := func(name, db string) RuntimeOptions {
 		return RuntimeOptions{
-			Layers: layers,
-			Values: map[string]string{"name": name},
-			Externals: []deploy.ExternalResource{{
-				External: deploy.External{Name: "db", Contract: "db.Pool"},
-				Value:    db,
-			}},
+			Layers:    layers,
+			Values:    map[string]string{"name": name},
+			Externals: []deploy.ExternalResource{deploy.NewExternal("db", "db.Pool", db)},
 		}
 	}
 	rt, err := c.OpenRuntime(ctx, DefaultKey, options("gen1", "one"))
@@ -805,12 +793,9 @@ func TestReloadRuntimeWithRollbackRestoresInputs(t *testing.T) {
 	}}
 	options := func(name, db string) RuntimeOptions {
 		return RuntimeOptions{
-			Layers: layers,
-			Values: map[string]string{"name": name},
-			Externals: []deploy.ExternalResource{{
-				External: deploy.External{Name: "db", Contract: "db.Pool"},
-				Value:    db,
-			}},
+			Layers:    layers,
+			Values:    map[string]string{"name": name},
+			Externals: []deploy.ExternalResource{deploy.NewExternal("db", "db.Pool", db)},
 		}
 	}
 	rt, err := c.OpenRuntime(ctx, DefaultKey, options("gen1", "one"))
@@ -966,10 +951,7 @@ func TestReloadFailedWithKeepsPreviousOptions(t *testing.T) {
 		Source:   resource.Source{File: "probe.yaml"},
 		BaseDir:  dir,
 	}}
-	external := []deploy.ExternalResource{{
-		External: deploy.External{Name: "db", Contract: "db.Pool"},
-		Value:    "one",
-	}}
+	external := []deploy.ExternalResource{deploy.NewExternal("db", "db.Pool", "one")}
 	rt, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{
 		Layers:    layers,
 		Values:    map[string]string{"name": "gen1"},
@@ -985,12 +967,9 @@ func TestReloadFailedWithKeepsPreviousOptions(t *testing.T) {
 		BaseDir:  dir,
 	}}
 	result, err := c.ReloadRuntimeWith(ctx, DefaultKey, RuntimeOptions{
-		Layers: missing,
-		Values: map[string]string{"name": "gen2"},
-		Externals: []deploy.ExternalResource{{
-			External: deploy.External{Name: "db", Contract: "db.Pool"},
-			Value:    "two",
-		}},
+		Layers:    missing,
+		Values:    map[string]string{"name": "gen2"},
+		Externals: []deploy.ExternalResource{deploy.NewExternal("db", "db.Pool", "two")},
 	}, ReasonManual)
 	if err == nil {
 		t.Fatal("ReloadRuntimeWith with a missing layer file succeeded")

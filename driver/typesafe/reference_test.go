@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -91,10 +90,7 @@ func TestReferenceExampleLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the reference example does not load: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("the reference example built %T, want a provider definition", value)
-	}
+	provider := value
 	if len(provider.Models) == 0 {
 		t.Fatal("the reference example declares no models")
 	}

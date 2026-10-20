@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -85,116 +85,55 @@ func NewBuilder(registry *resource.Registry, opts ...BuilderOption) *Builder {
 // Build validates the document, resolves the resource DAG, and
 // constructs every resource in dependency order. On failure, values
 // already built are closed in reverse construction order (rollback).
+//
+// Build is [Builder.Plan] plus [Plan.Build]: a caller that wants to report
+// configuration errors before constructing anything (a preflight, a CLI
+// --check, a config validator) calls Plan directly.
 func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
-	if err := doc.Validate(); err != nil {
-		return nil, err
-	}
-	externals, err := normalizeExternalResources(b.externalResources)
+	plan, err := b.Plan(doc)
 	if err != nil {
 		return nil, err
 	}
-
-	graph := resource.NewGraph()
-	for name, res := range doc.Resources {
-		if err := graph.Add(name, res); err != nil {
-			return nil, err
-		}
-	}
-	for name := range externals {
-		if err := graph.AddExternal(name); err != nil {
-			return nil, err
-		}
-	}
-	order, err := graph.TopoOrder()
-	if err != nil {
-		return nil, err
-	}
-
-	values := make(map[string]any, len(order))
-	// Secret stores are built first: their settings never reference
-	// secrets, and once assembled they feed the ${secret:...} scheme
-	// every other resource's expansion uses.
-	stores, defaultStore, err := b.buildSecretStores(
-		ctx, doc, order, values, externals, b.resolver)
-	if err != nil {
-		logCleanup(ctx, values, order)
-		return nil, err
-	}
-	resolver, secrets, err := b.effectiveResolver(stores, defaultStore)
-	if err != nil {
-		logCleanup(ctx, values, order)
-		return nil, err
-	}
-	for _, name := range order {
-		if _, prebuilt := values[name]; prebuilt {
-			continue
-		}
-		value, err := b.buildResource(
-			ctx, name, doc.Resources[name], values, externals, resolver, secrets)
-		if err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-		}
-		values[name] = value
-	}
-
-	return &Result{
-		values:    values,
-		order:     order,
-		agents:    make(map[string]*agent.Agent, len(doc.Agents)),
-		resolver:  resolver,
-		secrets:   secrets,
-		externals: externals,
-	}, nil
+	return plan.Build(ctx)
 }
 
 // buildResource constructs one resource value: loader materialization,
 // inline reference expansion, dependency resolution, and factory
 // invocation. Values already built (secret stores, earlier deps) are
 // read from values.
-func (b *Builder) buildResource(
+//
+// Dependency declarations and their types were checked by [Builder.Plan];
+// this method only assembles the values it reads.
+func (p *Plan) buildResource(
 	ctx context.Context,
 	name string,
-	res resource.Resource,
 	values map[string]any,
-	externals map[string]ExternalResource,
 	resolver *resource.ReferenceResolver,
 	secrets *resource.SecretResolver,
 ) (any, error) {
-	factory, ok := b.registry.Lookup(res.Kind, res.Impl)
+	res := p.doc.Resources[name]
+	entry, ok := p.entries[name]
 	if !ok {
-		return nil, errdefs.Validationf(
-			"deploy: resource %q: no factory for %s/%s",
-			name, res.Kind, res.Impl)
-	}
-	if err := validateDeps(factory, res.Deps); err != nil {
-		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-	}
-	if err := validateExternalContracts(factory, res.Deps, externals); err != nil {
-		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		return nil, errdefs.Validationf("no factory for %s/%s", res.Kind, res.Impl)
 	}
 	settings := res.Settings
 	var err error
-	if b.loader != nil {
-		settings, err = resolveSettings(ctx, b.loader, settings)
+	if p.builder.loader != nil {
+		settings, err = resolveSettings(ctx, p.builder.loader, settings)
 		if err != nil {
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+			return nil, err
 		}
 	}
-	settings, err = expandSettings(ctx, resolver, b.loader, settings)
+	settings, err = expandSettings(ctx, resolver, p.builder.loader, settings)
 	if err != nil {
-		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		return nil, err
 	}
-	deps, err := resolveDeps(values, externals, res.Deps)
+	deps, err := resolveDeps(values, p.externals, res.Deps)
 	if err != nil {
-		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		return nil, err
 	}
-	return factory.New(ctx, resource.Input{
-		Settings: settings,
-		Deps:     deps,
-		Loader:   b.loader,
-		Secrets:  secrets,
-	})
+	return entry.Build(ctx,
+		resource.NewInput(settings, deps, p.builder.loader, secrets))
 }
 
 // buildSecretStores constructs every secret.Store resource ahead of the
@@ -202,24 +141,21 @@ func (b *Builder) buildResource(
 // (env/home/base only — stores cannot reference secrets), and the
 // built values are recorded in values so other resources can declare
 // them as deps.
-func (b *Builder) buildSecretStores(
+func (p *Plan) buildSecretStores(
 	ctx context.Context,
-	doc Document,
 	order []string,
 	values map[string]any,
-	externals map[string]ExternalResource,
-	resolver *resource.ReferenceResolver,
 ) (map[string]resource.SecretStore, string, error) {
+	resolver := p.builder.resolver
 	stores := make(map[string]resource.SecretStore)
 	ids := make(map[string]string)
 	defaultStore := ""
 	for _, name := range order {
-		res := doc.Resources[name]
+		res := p.doc.Resources[name]
 		if res.Kind != secret.ResourceKind {
 			continue
 		}
-		value, err := b.buildResource(
-			ctx, name, res, values, externals, resolver, nil)
+		value, err := p.buildResource(ctx, name, values, resolver, nil)
 		if err != nil {
 			return nil, "", errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
@@ -251,36 +187,6 @@ func (b *Builder) buildSecretStores(
 		stores[id] = store
 	}
 	return stores, defaultStore, nil
-}
-
-// effectiveResolver returns the expansion resolver for the main build
-// pass: the all-open default resolver merged with the builder's
-// injected schemes, plus the ${secret:...} scheme assembled from the
-// built stores (each wrapped in a TTL cache for per-request
-// resolution). The second return is the resolver handed to factories
-// for lazy Secret.Resolve calls.
-func (b *Builder) effectiveResolver(
-	stores map[string]resource.SecretStore,
-	defaultStore string,
-) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
-	base := defaultExpansionResolver(b.loader)
-	if b.resolver != nil {
-		base = base.Merge(b.resolver)
-	}
-	if len(stores) == 0 {
-		return base, nil, nil
-	}
-	cached := make(map[string]resource.SecretStore, len(stores))
-	ttl := b.secretCacheTTL
-	if ttl == 0 {
-		ttl = defaultSecretCacheTTL
-	}
-	for id, store := range stores {
-		cached[id] = resource.NewCachingSecretStore(store, ttl,
-			resource.WithCacheCapacity(b.secretCacheCapacity))
-	}
-	secrets := resource.NewSecretResolver(cached, defaultStore)
-	return base.WithScheme(secrets.Scheme()), secrets, nil
 }
 
 // defaultSecretCacheTTL bounds how long lazy secret lookups reuse a
@@ -357,10 +263,9 @@ func defaultExpansionResolver(loader *resource.Loader) *resource.ReferenceResolv
 // Wire runs the post-build wiring phase: resource values implementing
 // [resource.Wireable] attach themselves (observers to buses, hooks to
 // streams), then every agent is bound from its engine and hooks, and
-// finally values implementing [resource.DeploymentBinder] receive the
-// assembled deployment (agents included). Wire never participates in
-// the construction DAG, so observed values never depend on their
-// observers.
+// finally values implementing [Binder] receive the assembled deployment
+// (agents included). Wire never participates in the construction DAG, so
+// observed values never depend on their observers.
 func (b *Builder) Wire(ctx context.Context, result *Result, doc Document) error {
 	if result == nil {
 		return errdefs.Validationf("deploy: wire: nil result")
@@ -391,11 +296,20 @@ func (b *Builder) bindDeployment(result *Result) error {
 		if !ok {
 			continue
 		}
-		if binder, ok := value.(resource.DeploymentBinder); ok {
+		if binder, ok := value.(Binder); ok {
 			if err := binder.BindDeployment(result); err != nil {
 				return errdefs.Validationf(
 					"deploy: bind deployment resource %q: %v", name, err)
 			}
+			continue
+		}
+		// A stale implementation of the removed untyped contract would
+		// otherwise be skipped in silence: the type switch simply would not
+		// match and the resource would never be bound.
+		if _, stale := value.(interface{ BindDeployment(any) error }); stale {
+			return errdefs.Validationf(
+				"deploy: resource %q implements the removed BindDeployment(any); "+
+					"migrate it to deploy.Binder", name)
 		}
 	}
 	return nil
@@ -464,17 +378,21 @@ func BindAgent(
 		return nil, errdefs.Validationf(
 			"deploy: agent %q: resource registry is required", name)
 	}
-	engineFactory, ok := reg.Lookup(def.Engine.Kind, def.Engine.Impl)
+	engineEntry, ok := reg.Lookup(def.Engine.Kind, def.Engine.Impl)
 	if !ok {
 		return nil, errdefs.Validationf(
 			"deploy: agent %q: no factory for engine %s/%s",
 			name, def.Engine.Kind, def.Engine.Impl)
 	}
-	if err := validateDeps(engineFactory, def.Engine.Deps); err != nil {
-		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
+	// The plan checked these edges for a deployment build; BindAgent runs the
+	// same checks again for an agent assembled after the build (core/runtime
+	// dynamic registration), where no plan is in scope.
+	producer := liveProducer(result)
+	if err := checkProduces(engineEntry, reflect.TypeFor[agent.Engine](),
+		fmt.Sprintf("deploy: agent %q engine", name)); err != nil {
+		return nil, err
 	}
-	if err := validateExternalContracts(
-		engineFactory, def.Engine.Deps, result.externals); err != nil {
+	if err := checkDeps(engineEntry.Spec(), def.Engine.Deps, producer); err != nil {
 		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
 	}
 	engineDeps, err := resolveDeps(result.values, result.externals, def.Engine.Deps)
@@ -482,7 +400,7 @@ func BindAgent(
 		return nil, errdefs.Validationf("deploy: agent %q: %v", name, err)
 	}
 
-	var constructed []any
+	var constructed []io.Closer
 	fail := func(err error) (*agent.Agent, error) {
 		closeAgentParts(constructed)
 		return nil, err
@@ -493,46 +411,42 @@ func BindAgent(
 		return fail(errdefs.Validationf(
 			"deploy: agent %q engine: %v", name, err))
 	}
-	engine, err := engineFactory.New(ctx, resource.Input{
-		Settings: engineSettings,
-		Deps:     engineDeps,
-		Loader:   loader,
-		Secrets:  secrets,
-	})
+	engineValue, err := engineEntry.Build(ctx,
+		resource.NewInput(engineSettings, engineDeps, loader, secrets))
 	if err != nil {
 		return fail(errdefs.Validationf("deploy: agent %q engine: %v", name, err))
 	}
-	engineContract, ok := engine.(agent.Engine)
+	engine, ok := engineValue.(agent.Engine)
 	if !ok {
 		return fail(errdefs.Validationf(
 			"deploy: agent %q: engine factory returned %T, want agent.Engine",
-			name, engine))
+			name, engineValue))
 	}
-	constructed = append(constructed, engineContract)
+	constructed = appendCloser(constructed, engine)
 
 	prepare, err := buildHookList[agent.Preparer](
-		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		ctx, reg, result, loader, resolver, secrets, name, agent.HookSlotPreparer, def.Prepare)
 	if err != nil {
 		return fail(err)
 	}
-	constructed = appendAny(constructed, prepare)
+	constructed = appendClosers(constructed, prepare)
 
 	observe, err := buildHookList[agent.Observer](
-		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotObserver, def.Observe)
+		ctx, reg, result, loader, resolver, secrets, name, agent.HookSlotObserver, def.Observe)
 	if err != nil {
 		return fail(err)
 	}
-	constructed = appendAny(constructed, observe)
+	constructed = appendClosers(constructed, observe)
 
 	referees, err := buildHookList[agent.Referee](
-		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotReferee, def.Referees)
+		ctx, reg, result, loader, resolver, secrets, name, agent.HookSlotReferee, def.Referees)
 	if err != nil {
 		return fail(err)
 	}
-	constructed = appendAny(constructed, referees)
+	constructed = appendClosers(constructed, referees)
 
 	commit, err := buildHookList[agent.Committer](
-		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+		ctx, reg, result, loader, resolver, secrets, name, agent.HookSlotCommitter, def.Commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -546,7 +460,7 @@ func BindAgent(
 		Card:     def.Card,
 		Tools:    def.Tools,
 		Policy:   policy,
-		Engine:   engineContract,
+		Engine:   engine,
 		Prepare:  prepare,
 		Observe:  observe,
 		Referees: referees,
@@ -554,76 +468,65 @@ func BindAgent(
 	}, nil
 }
 
-// buildHookList constructs every hook in one slot, type-asserting the
-// factory values to T (agent.Preparer / Observer / Referee /
-// Committer) and wiring [resource.Wireable] values before recording them
-// on the agent. On failure every constructed hook is closed in reverse
-// order.
+// buildHookList constructs every hook in one slot, checking that the factory
+// produces T (agent.Preparer / Observer / Referee / Committer) and that its
+// dependencies are declared and type-correct, then wiring
+// [resource.Wireable] values before recording them on the agent. On failure
+// every constructed hook is closed in reverse order.
 func buildHookList[T any](
+	ctx context.Context,
 	reg *resource.Registry,
+	result *Result,
 	loader *resource.Loader,
 	resolver *resource.ReferenceResolver,
 	secrets *resource.SecretResolver,
-	result *Result,
-	ctx context.Context,
 	name, slot string,
 	entries []agent.Hook,
 ) ([]T, error) {
 	var values []T
-	var constructed []any
+	var constructed []io.Closer
 	fail := func(err error) ([]T, error) {
 		closeAgentParts(constructed)
 		return nil, err
 	}
+	want := reflect.TypeFor[T]()
+	producer := liveProducer(result)
 	for i, entry := range entries {
+		where := fmt.Sprintf("deploy: agent %q: hook %s[%d]", name, slot, i)
 		kind := resource.Kind("hook." + slot)
-		factory, ok := reg.Lookup(kind, entry.Type)
+		hookEntry, ok := reg.Lookup(kind, entry.Type)
 		if !ok {
 			return fail(errdefs.Validationf(
-				"deploy: agent %q: no factory for hook %s/%s",
-				name, kind, entry.Type))
+				"%s: no factory for %s/%s", where, kind, entry.Type))
 		}
-		if err := validateDeps(factory, entry.Deps); err != nil {
-			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
+		if err := checkProduces(hookEntry, want, where); err != nil {
+			return fail(err)
 		}
-		if err := validateExternalContracts(
-			factory, entry.Deps, result.externals); err != nil {
-			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
+		if err := checkDeps(hookEntry.Spec(), entry.Deps, producer); err != nil {
+			return fail(errdefs.Validationf("%s: %v", where, err))
 		}
 		deps, err := resolveDeps(result.values, result.externals, entry.Deps)
 		if err != nil {
-			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
+			return fail(errdefs.Validationf("%s: %v", where, err))
 		}
 		hookSettings, err := expandSettings(ctx, resolver, loader, entry.Settings)
 		if err != nil {
-			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v",
-				name, slot, i, err))
+			return fail(errdefs.Validationf("%s: %v", where, err))
 		}
-		value, err := factory.New(ctx, resource.Input{
-			Settings: hookSettings,
-			Deps:     deps,
-			Loader:   loader,
-			Secrets:  secrets,
-		})
+		value, err := hookEntry.Build(ctx,
+			resource.NewInput(hookSettings, deps, loader, secrets))
 		if err != nil {
-			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
+			return fail(errdefs.Validationf("%s: %v", where, err))
 		}
-		constructed = append(constructed, value)
+		constructed = appendCloser(constructed, value)
 		typed, ok := value.(T)
 		if !ok {
 			return fail(errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d] factory returned %T, want %T",
-				name, slot, i, value, *new(T)))
+				"%s: factory returned %T, want %s", where, value, want))
 		}
 		if w, ok := value.(resource.Wireable); ok {
 			if err := w.Wire(ctx); err != nil {
-				return fail(errdefs.Validationf(
-					"deploy: agent %q: wire hook %s[%d]: %v", name, slot, i, err))
+				return fail(errdefs.Validationf("%s: wire: %v", where, err))
 			}
 		}
 		values = append(values, typed)
@@ -631,119 +534,71 @@ func buildHookList[T any](
 	return values, nil
 }
 
-func appendAny[T any](dst []any, values []T) []any {
-	for _, value := range values {
-		dst = append(dst, value)
+// appendCloser records one constructed part for rollback. A part that is not
+// an io.Closer needs no teardown, so the rollback list stays a closure list
+// instead of a list of any.
+func appendCloser(dst []io.Closer, value any) []io.Closer {
+	if value == nil || ptr.IsNil(value) {
+		return dst
+	}
+	if closer, ok := value.(io.Closer); ok {
+		return append(dst, closer)
 	}
 	return dst
 }
 
-// closeAgentParts closes every io.Closer among values in reverse order,
-// best-effort, skipping nil and typed-nil entries.
-func closeAgentParts(values []any) {
-	for i := len(values) - 1; i >= 0; i-- {
-		value := values[i]
-		if value == nil || ptr.IsNil(value) {
-			continue
-		}
-		if closer, ok := value.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				telemetry.WarnErr(context.Background(),
-					"deploy: close agent part failed", err)
-			}
+func appendClosers[T any](dst []io.Closer, values []T) []io.Closer {
+	for _, value := range values {
+		dst = appendCloser(dst, value)
+	}
+	return dst
+}
+
+// closeAgentParts closes every constructed part in reverse order,
+// best-effort.
+func closeAgentParts(closers []io.Closer) {
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i].Close(); err != nil {
+			telemetry.WarnErr(context.Background(),
+				"deploy: close agent part failed", err)
 		}
 	}
 }
 
-// validateDeps checks document deps against the factory's declared
-// DepSpecs: every document key must match a fixed dep name or a Many
-// dep prefix, and every Required dep must be supplied.
-func validateDeps(factory resource.Factory, deps resource.Deps) error {
-	spec := factory.Spec()
-	declared := make(map[string]resource.DepSpec, len(spec.Deps))
-	for _, dep := range spec.Deps {
-		declared[dep.Name] = dep
-	}
-	for key := range deps {
-		if _, ok := declared[key]; ok {
-			continue
-		}
-		matched := false
-		for _, dep := range spec.Deps {
-			if dep.Many && strings.HasPrefix(key, dep.Name+".") {
-				matched = true
-				break
+// liveProducer resolves a dep ref to the Go type of an already-built value.
+// BindAgent uses it for agents assembled after the deployment build, where the
+// plan is no longer in scope; the type is the value's dynamic type, which is
+// exactly what a consumer's type assertion sees.
+func liveProducer(result *Result) func(resource.Ref) (reflect.Type, error) {
+	return func(ref resource.Ref) (reflect.Type, error) {
+		name := ref.ResourceName()
+		if ext, ok := result.externals[name]; ok {
+			if _, hasItem := ref.ItemName(); hasItem {
+				return nil, errdefs.Validationf(
+					"external %q does not support item references", name)
 			}
+			return ext.Type, nil
 		}
-		if !matched {
-			return errdefs.Validationf(
-				"undeclared dep %q for %s/%s", key, spec.Kind, spec.Impl)
+		value, ok := result.values[name]
+		if !ok {
+			return nil, errdefs.NotFoundf(
+				"ref %q matches no resource and no external", string(ref))
 		}
-	}
-	for _, dep := range spec.Deps {
-		if !dep.Required {
-			continue
-		}
-		if dep.Many {
-			found := false
-			for key := range deps {
-				if key == dep.Name || strings.HasPrefix(key, dep.Name+".") {
-					found = true
-					break
-				}
+		if item, hasItem := ref.ItemName(); hasItem {
+			resolver, ok := value.(resource.ItemResolver)
+			if !ok {
+				return nil, errdefs.Validationf(
+					"resource %q does not expose items (ref %q)", name, string(ref))
 			}
+			itemValue, found := resolver.ResolveItem(item)
 			if !found {
-				return errdefs.Validationf(
-					"required many dep %q missing for %s/%s",
-					dep.Name, spec.Kind, spec.Impl)
+				return nil, errdefs.Validationf(
+					"resource %q has no item %q", name, item)
 			}
-		} else if _, ok := deps[dep.Name]; !ok {
-			return errdefs.Validationf(
-				"required dep %q missing for %s/%s",
-				dep.Name, spec.Kind, spec.Impl)
+			return reflect.TypeOf(itemValue), nil
 		}
+		return reflect.TypeOf(value), nil
 	}
-	return nil
-}
-
-// validateExternalContracts checks that every dep reference pointing at
-// an external value declares a matching DepSpec.Type.
-func validateExternalContracts(
-	factory resource.Factory,
-	deps resource.Deps,
-	externals map[string]ExternalResource,
-) error {
-	if len(externals) == 0 {
-		return nil
-	}
-	spec := factory.Spec()
-	for key, ref := range deps {
-		ext, ok := externals[ref.ResourceName()]
-		if !ok {
-			continue
-		}
-		dep, ok := depSpecFor(spec, key)
-		if !ok {
-			// validateDeps reports undeclared deps; keep this helper
-			// focused on contract mismatches.
-			continue
-		}
-		if dep.Type != ext.Contract {
-			return errdefs.Validationf(
-				"dep %q external %q contract %q does not match declared type %q for %s/%s",
-				key, ext.Name, ext.Contract, dep.Type, spec.Kind, spec.Impl)
-		}
-	}
-	return nil
-}
-
-func depSpecFor(spec resource.Spec, key string) (resource.DepSpec, bool) {
-	for _, dep := range spec.Deps {
-		if dep.Name == key || (dep.Many && strings.HasPrefix(key, dep.Name+".")) {
-			return dep, true
-		}
-	}
-	return resource.DepSpec{}, false
 }
 
 // resolveDeps maps each declared dep to the built value, resolving
@@ -832,7 +687,12 @@ func (r *Result) isDetached(name string) bool {
 	return ok
 }
 
-// Value returns the built resource registered under name.
+// Value returns the built resource registered under name, or false.
+//
+// It is the dynamic accessor for host-level discovery, where the resource name
+// comes from configuration and the caller cannot name the type at compile time
+// (core/runtime.Runtime.Resource and delegation/hostwrap both need that). Core
+// wiring uses [Resolve] and [Collect], which name the type.
 func (r *Result) Value(name string) (any, bool) {
 	v, ok := r.values[name]
 	return v, ok
@@ -860,6 +720,9 @@ func (r *Result) Secrets() *resource.SecretResolver {
 
 // Names returns the sorted built resource names.
 func (r *Result) Names() []string {
+	if r == nil {
+		return nil
+	}
 	names := make([]string, 0, len(r.values))
 	for name := range r.values {
 		names = append(names, name)
@@ -870,12 +733,18 @@ func (r *Result) Names() []string {
 
 // Agent returns the assembled agent registered under name.
 func (r *Result) Agent(name string) (*agent.Agent, bool) {
+	if r == nil {
+		return nil, false
+	}
 	a, ok := r.agents[name]
 	return a, ok
 }
 
 // AgentNames returns the sorted bound agent names.
 func (r *Result) AgentNames() []string {
+	if r == nil {
+		return nil
+	}
 	names := make([]string, 0, len(r.agents))
 	for name := range r.agents {
 		names = append(names, name)

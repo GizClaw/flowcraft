@@ -21,7 +21,7 @@ const SourceImpl = "sim"
 // NewSourceFactory returns the deployment factory for the simulated
 // tool source. counter is shared across every built source and counts
 // tool executions for test statistics.
-func NewSourceFactory(counter *atomic.Int64) resource.Factory {
+func NewSourceFactory(counter *atomic.Int64) resource.Factory[*source] {
 	return sourceFactory{counter: counter}
 }
 
@@ -38,7 +38,7 @@ func (sourceFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (f sourceFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f sourceFactory) New(ctx context.Context, in resource.Input) (*source, error) {
 	if _, err := resource.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, err
 	}

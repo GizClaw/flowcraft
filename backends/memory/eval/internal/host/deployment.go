@@ -88,19 +88,13 @@ func Build(deployPath string, recentItems int) (Deployment, error) {
 		if err != nil {
 			return Deployment{}, err
 		}
-		value, ok := result.Value("memories")
-		if !ok {
-			return Deployment{}, fmt.Errorf("deploy document has no %q resource", "memories")
+		assembly, err := deploy.Resolve[*flowmemory.Assembly](result, "memories")
+		if err != nil {
+			return Deployment{}, err
 		}
-		assembly, ok := value.(*flowmemory.Assembly)
-		if !ok {
-			return Deployment{}, fmt.Errorf("resource memories is %T", value)
-		}
-		var engine *inference.Assembly
-		if raw, ok := result.Value("infer"); ok {
-			if typed, ok := raw.(*inference.Assembly); ok {
-				engine = typed
-			}
+		engine, err := deploy.Resolve[*inference.Assembly](result, "infer")
+		if err != nil {
+			engine = nil
 		}
 		return Deployment{
 			Memory: assembly, Inference: engine, Recent: assembly.RecentSettings(),
@@ -119,19 +113,14 @@ func Build(deployPath string, recentItems int) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, err
 	}
-	value, err := flowmemory.NewFactory().New(ctx, resource.Input{
+	assembly, err := flowmemory.NewFactory().New(ctx, resource.NewInput(
 		// No generate/embed models configured: the run exercises the recent,
 		// BM25, and entity lanes without an LLM.
-		Settings: []byte(fmt.Sprintf(
+		json.RawMessage(fmt.Sprintf(
 			`{"interval":"0","scopes":[{"runtime_id":"memories"}],"recent":{"max_items":%d}}`, recentItems)),
-		Deps: map[string]any{"workspace": ws},
-	})
+		map[string]any{"workspace": ws}, nil, nil))
 	if err != nil {
 		return Deployment{}, err
-	}
-	assembly, ok := value.(*flowmemory.Assembly)
-	if !ok {
-		return Deployment{}, fmt.Errorf("factory returned %T", value)
 	}
 	return Deployment{
 		Memory: assembly, Recent: assembly.RecentSettings(),

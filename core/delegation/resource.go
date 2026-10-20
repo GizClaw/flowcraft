@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -40,6 +39,13 @@ type ServiceSettings struct {
 	DeferWorkers         bool    `json:"defer_workers,omitempty"`
 }
 
+// Typed dependency handles for the delegation resources.
+var (
+	depBackend         = res.Optional[AsyncBackend](BackendDep)
+	depDirectory       = res.Require[*LocalDirectory](DirectoryDep)
+	depSessionProvider = res.Optional[SessionProvider](SessionProviderDep)
+)
+
 type serviceFactory struct {
 	options []Option
 }
@@ -50,7 +56,7 @@ type serviceFactory struct {
 // generation gets its own bound directory. Options inject app-owned
 // behavior the document cannot express (e.g. [delegation.WithWorkerHost]);
 // the declarative settings are applied after them.
-func NewServiceFactory(opts ...Option) res.Factory {
+func NewServiceFactory(opts ...Option) res.Factory[*LocalService] {
 	return &serviceFactory{
 		options: append([]Option(nil), opts...),
 	}
@@ -63,22 +69,16 @@ func (f *serviceFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: ServiceKind,
 		Impl: "local",
-		Deps: []res.DepSpec{{
-			Name: BackendDep,
-			Type: "delegation.AsyncBackend",
-		}, {
-			Name:     DirectoryDep,
-			Type:     "delegation.Directory",
-			Required: true,
-		}, {
-			Name: SessionProviderDep,
-			Type: "delegation.SessionProvider",
-		}},
+		Deps: []res.Requirement{
+			depBackend.Spec(),
+			depDirectory.Spec(),
+			depSessionProvider.Spec(),
+		},
 	}
 }
 
 // New implements res.Factory.
-func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (f *serviceFactory) New(ctx context.Context, in res.Input) (*LocalService, error) {
 	if f == nil {
 		return nil, errdefs.Validationf(
 			"delegation service resource: nil factory")
@@ -126,39 +126,17 @@ func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
 		options = append(options, WithDeferredWorkers())
 	}
 
-	var directory *LocalDirectory
-	if value, ok := in.Dep(DirectoryDep); ok {
-		dir, ok := value.(*LocalDirectory)
-		if !ok || dir == nil {
-			return nil, errdefs.Validationf(
-				"delegation service resource: dep %q is %T, want *delegation.LocalDirectory",
-				DirectoryDep, value)
-		}
-		directory = dir
+	directory, err := depDirectory.Get(in)
+	if err != nil {
+		return nil, err
 	}
-	if directory == nil {
-		return nil, errdefs.Validationf(
-			"delegation service resource: dep %q is required", DirectoryDep)
+	backend, _, err := depBackend.TryGet(in)
+	if err != nil {
+		return nil, err
 	}
-
-	var backend AsyncBackend
-	if value, ok := in.Dep(BackendDep); ok {
-		b, ok := value.(AsyncBackend)
-		if !ok || ptr.IsNil(b) {
-			return nil, errdefs.Validationf(
-				"delegation service resource: dep %q is %T, want AsyncBackend",
-				BackendDep, value)
-		}
-		backend = b
-	}
-
-	if value, ok := in.Dep(SessionProviderDep); ok {
-		provider, ok := value.(SessionProvider)
-		if !ok || ptr.IsNil(provider) {
-			return nil, errdefs.Validationf(
-				"delegation service resource: dep %q is %T, want delegation.SessionProvider",
-				SessionProviderDep, value)
-		}
+	if provider, ok, err := depSessionProvider.TryGet(in); err != nil {
+		return nil, err
+	} else if ok {
 		options = append(options, WithSessionProvider(provider))
 	}
 
@@ -182,7 +160,7 @@ type directoryFactory struct{}
 // delegation directory resource. Each deployment generation builds and
 // binds its own directory, so reloads always delegate against the current
 // generation's agents.
-func NewDirectoryFactory() res.Factory {
+func NewDirectoryFactory() res.Factory[*LocalDirectory] {
 	return directoryFactory{}
 }
 
@@ -196,7 +174,7 @@ func (directoryFactory) Spec() res.Spec {
 
 // New implements res.Factory: a directory takes no settings and starts
 // unbound; the deploy wire phase binds it to its generation's result.
-func (directoryFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (directoryFactory) New(ctx context.Context, in res.Input) (*LocalDirectory, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
 			"delegation directory resource: decode settings: %v", err)
@@ -206,7 +184,7 @@ func (directoryFactory) New(ctx context.Context, in res.Input) (any, error) {
 
 // RegisterDirectory adds the local directory resource factory to r.
 func RegisterDirectory(r *res.Registry) error {
-	return r.Register(NewDirectoryFactory())
+	return res.Register(r, NewDirectoryFactory())
 }
 
 // randomSessionProviderFactory builds the default ephemeral identity
@@ -216,7 +194,7 @@ type randomSessionProviderFactory struct{}
 // NewRandomSessionProviderFactory returns a deployment factory for the
 // default delegation session provider: every delegation mints a fresh
 // ContextID and never persists.
-func NewRandomSessionProviderFactory() res.Factory {
+func NewRandomSessionProviderFactory() res.Factory[RandomSessionProvider] {
 	return randomSessionProviderFactory{}
 }
 
@@ -229,9 +207,9 @@ func (randomSessionProviderFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (randomSessionProviderFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (randomSessionProviderFactory) New(ctx context.Context, in res.Input) (RandomSessionProvider, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
-		return nil, errdefs.Validationf(
+		return RandomSessionProvider{}, errdefs.Validationf(
 			"delegation session provider resource: decode settings: %v", err)
 	}
 	return RandomSessionProvider{}, nil
@@ -239,5 +217,5 @@ func (randomSessionProviderFactory) New(ctx context.Context, in res.Input) (any,
 
 // RegisterSessionProvider adds the random session provider factory to r.
 func RegisterSessionProvider(r *res.Registry) error {
-	return r.Register(NewRandomSessionProviderFactory())
+	return res.Register(r, NewRandomSessionProviderFactory())
 }

@@ -118,8 +118,15 @@ type factory struct {
 	options factoryOptions
 }
 
+// depWorkspace and depInference are the memory system's typed dependency
+// handles.
+var (
+	depWorkspace = resource.Require[workspace.Workspace]("workspace")
+	depInference = resource.Optional[*inference.Assembly]("inference")
+)
+
 // NewFactory returns the deployment resource factory for this module.
-func NewFactory(options ...Option) resource.Factory {
+func NewFactory(options ...Option) resource.Factory[*Assembly] {
 	value := factory{}
 	for _, option := range options {
 		if option != nil {
@@ -133,18 +140,18 @@ func NewFactory(options ...Option) resource.Factory {
 // when generate or embed models are configured.
 func (factory) Spec() resource.Spec {
 	return resource.Spec{
-		Kind:     ResourceKind,
-		Impl:     Impl,
-		ItemType: "memory.System",
-		Deps: []resource.DepSpec{
-			{Name: "workspace", Type: "workspace.Workspace", Required: true},
-			{Name: "inference", Type: "inference.Assembly"},
+		Kind:  ResourceKind,
+		Impl:  Impl,
+		Items: reflect.TypeFor[*Assembly](),
+		Deps: []resource.Requirement{
+			depWorkspace.Spec(),
+			depInference.Spec(),
 		},
 	}
 }
 
 // New implements resource.Factory.
-func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: decode settings: %w", err))
@@ -458,30 +465,21 @@ func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the memory assembly factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }
 
 func resolveWorkspace(in resource.Input) (workspace.Workspace, error) {
-	raw, ok := in.Dep("workspace")
-	if !ok {
-		return nil, errdefs.Validationf("memory config: dependency %q is required", "workspace")
-	}
-	ws, ok := raw.(workspace.Workspace)
-	if !ok || nilInterface(ws) {
-		return nil, errdefs.Validationf("memory config: dependency %q has the wrong type", "workspace")
+	ws, err := depWorkspace.Get(in)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
 	return ws, nil
 }
 
 func resolveInference(in resource.Input, settings Settings) (*inference.Assembly, error) {
-	raw, ok := in.Dep("inference")
-	var engine *inference.Assembly
-	if ok {
-		var typed bool
-		engine, typed = raw.(*inference.Assembly)
-		if !typed || engine == nil {
-			return nil, errdefs.Validationf("memory config: dependency %q has the wrong type", "inference")
-		}
+	engine, _, err := depInference.TryGet(in)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
 	if (!settings.Generate.isZero() || !settings.Embed.isZero()) && engine == nil {
 		return nil, errdefs.Validationf(
@@ -923,17 +921,4 @@ func fusionMode(settings Settings) fusion.Mode {
 		return fusion.ModeWeighted
 	}
 	return fusion.ModeRRF
-}
-
-func nilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

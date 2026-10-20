@@ -75,6 +75,9 @@ retrieval, runtime orchestration, and voice. Source on
 
 ## Migrations
 
+- [`core/v0.9.0`](migrations/core-v0.9.0.md) — the typed assembly protocol:
+  `Factory[T]`, `Dep[T]`, a pure `deploy.Plan` phase, and typed reads of built
+  resources.
 - [`core/v0.1.0`](migrations/core-v0.1.0.md) — the breaking cut from
   `sdk`/`sdkx` to the `core` platform module, provider `driver/*`
   modules, and platform-specific `backends/*`.

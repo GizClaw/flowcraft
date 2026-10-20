@@ -9,6 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
+// depAnyMany is depAny's list form.
+func depAnyMany(name string) resource.Dep[any] { return resource.RequireMany[any](name) }
+
 type providerValue struct{ name string }
 
 type providerFactory struct{ name string }
@@ -17,7 +20,7 @@ func (f providerFactory) Spec() resource.Spec {
 	return resource.Spec{Kind: "inference.Provider", Impl: f.name}
 }
 
-func (f providerFactory) New(context.Context, resource.Input) (any, error) {
+func (f providerFactory) New(context.Context, resource.Input) (providerValue, error) {
 	return providerValue(f), nil
 }
 
@@ -26,23 +29,25 @@ type assemblyFactory struct{ got *[]any }
 func (assemblyFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "inference.Assembly", Impl: "unified",
-		Deps: []resource.DepSpec{{
-			Name: "provider", Type: "inference.Provider", Required: true, Many: true,
-		}},
+		Deps: []resource.Requirement{depAnyMany("provider").Spec()},
 	}
 }
 
 func (f assemblyFactory) New(_ context.Context, in resource.Input) (any, error) {
-	*f.got = in.DepsMany("provider")
+	values, err := depAnyMany("provider").GetAll(in)
+	if err != nil {
+		return nil, err
+	}
+	*f.got = values
 	return "assembly", nil
 }
 
 func TestBuildManyDeps(t *testing.T) {
 	var got []any
 	reg := resource.NewRegistry()
-	reg.MustRegister(providerFactory{name: "openai"})
-	reg.MustRegister(providerFactory{name: "qwen"})
-	reg.MustRegister(assemblyFactory{got: &got})
+	resource.MustRegister(reg, providerFactory{name: "openai"})
+	resource.MustRegister(reg, providerFactory{name: "qwen"})
+	resource.MustRegister(reg, assemblyFactory{got: &got})
 
 	doc := deploy.Document{
 		Version: "v1",
@@ -64,17 +69,17 @@ func TestBuildManyDeps(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 	if len(got) != 2 {
-		t.Fatalf("DepsMany = %v, want 2 providers", got)
+		t.Fatalf("GetAll = %v, want 2 providers", got)
 	}
 	if got[0].(providerValue).name != "openai" || got[1].(providerValue).name != "qwen" {
-		t.Fatalf("DepsMany order = %v, want [openai qwen]", got)
+		t.Fatalf("GetAll order = %v, want [openai qwen]", got)
 	}
 }
 
 func TestBuildRejectsUndeclaredDep(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(providerFactory{name: "openai"})
-	reg.MustRegister(assemblyFactory{})
+	resource.MustRegister(reg, providerFactory{name: "openai"})
+	resource.MustRegister(reg, assemblyFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -95,7 +100,7 @@ func TestBuildRejectsUndeclaredDep(t *testing.T) {
 
 func TestBuildRejectsMissingRequiredManyDep(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(assemblyFactory{})
+	resource.MustRegister(reg, assemblyFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -109,7 +114,7 @@ func TestBuildRejectsMissingRequiredManyDep(t *testing.T) {
 
 func TestBuildRejectsMissingRequiredFixedDep(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(sandboxFactory{})
+	resource.MustRegister(reg, sandboxFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{

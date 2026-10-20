@@ -19,7 +19,7 @@ func (fakeFactory) New(context.Context, Input) (any, error) {
 func TestRegistryRegisterAndLookup(t *testing.T) {
 	r := NewRegistry()
 	f := fakeFactory{spec: Spec{Kind: "workspace.Registry", Impl: "local"}}
-	if err := r.Register(f); err != nil {
+	if err := Register(r, f); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	got, ok := r.Lookup("workspace.Registry", "local")
@@ -34,21 +34,21 @@ func TestRegistryRegisterAndLookup(t *testing.T) {
 func TestRegistryRejectsDuplicateAndInvalid(t *testing.T) {
 	r := NewRegistry()
 	f := fakeFactory{spec: Spec{Kind: "event.Bus", Impl: "memory"}}
-	if err := r.Register(f); err != nil {
+	if err := Register(r, f); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Register(f); !errdefs.IsConflict(err) {
+	if err := Register(r, f); !errdefs.IsConflict(err) {
 		t.Fatalf("duplicate Register error = %v, want conflict", err)
 	}
-	if err := r.Register(fakeFactory{spec: Spec{Impl: "x"}}); !errdefs.IsValidation(err) {
+	if err := Register(r, fakeFactory{spec: Spec{Impl: "x"}}); !errdefs.IsValidation(err) {
 		t.Fatalf("invalid spec error = %v, want validation", err)
 	}
 }
 
 func TestRegistrySpecs(t *testing.T) {
 	r := NewRegistry()
-	r.MustRegister(fakeFactory{spec: Spec{Kind: "event.Bus", Impl: "memory"}})
-	r.MustRegister(fakeFactory{spec: Spec{Kind: "tool.Assembly", Impl: "yaml"}})
+	MustRegister(r, fakeFactory{spec: Spec{Kind: "event.Bus", Impl: "memory"}})
+	MustRegister(r, fakeFactory{spec: Spec{Kind: "tool.Assembly", Impl: "yaml"}})
 	if got := len(r.Specs()); got != 2 {
 		t.Fatalf("Specs() = %d entries, want 2", got)
 	}
@@ -67,7 +67,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	// new keys concurrently. New keys are asserted after the writers
 	// finish; lookups of not-yet-registered keys are expected misses.
 	for i := 0; i < 16; i++ {
-		r.MustRegister(fakeFactory{
+		MustRegister(r, fakeFactory{
 			spec: Spec{Kind: Kind(fmt.Sprintf("base.%d", i)), Impl: "impl"},
 		})
 	}
@@ -79,7 +79,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWriter; i++ {
 				kind := Kind(fmt.Sprintf("kind.%d.%d", w, i))
-				if err := r.Register(fakeFactory{
+				if err := Register(r, fakeFactory{
 					spec: Spec{Kind: kind, Impl: "impl"},
 				}); err != nil {
 					t.Errorf("Register(%s): %v", kind, err)

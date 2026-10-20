@@ -10,33 +10,29 @@ import (
 )
 
 func TestServiceFactoryRequiresDirectory(t *testing.T) {
-	_, err := (delegation.NewServiceFactory()).New(context.Background(), resource.Input{})
-	if !errdefs.IsValidation(err) {
-		t.Fatalf("New without directory = %v, want Validation", err)
+	_, err := (delegation.NewServiceFactory()).New(context.Background(), resource.NewTestInput(nil))
+	// The typed handle reports a missing required dependency as NotFound; the
+	// deployment plan normally rejects it before the factory runs.
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("New without directory = %v, want NotFound", err)
 	}
 }
 
 func TestServiceFactoryAppliesSettings(t *testing.T) {
 	factory := delegation.NewServiceFactory()
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{
+	value, err := factory.New(context.Background(), resource.NewInput([]byte(`{
 			"max_concurrency": 2,
 			"max_depth": 3,
 			"timeout": "5s",
 			"idempotency_retention": "30m",
 			"defer_workers": true
-		}`),
-		Deps: map[string]any{
-			delegation.DirectoryDep: delegation.NewDirectory(),
-		},
-	})
+		}`), map[string]any{
+		delegation.DirectoryDep: delegation.NewDirectory(),
+	}, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	service, ok := value.(*delegation.LocalService)
-	if !ok {
-		t.Fatalf("New returned %T, want *delegation.LocalService", value)
-	}
+	service := value
 	if err := service.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -52,9 +48,7 @@ func TestServiceFactoryRejectsBadSettings(t *testing.T) {
 		"unknown field":        `{"unknown":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := factory.New(context.Background(), resource.Input{
-				Settings: []byte(input),
-			})
+			_, err := factory.New(context.Background(), resource.NewInput([]byte(input), nil, nil, nil))
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation", err)
 			}
@@ -64,12 +58,10 @@ func TestServiceFactoryRejectsBadSettings(t *testing.T) {
 
 func TestServiceFactoryRejectsWrongBackend(t *testing.T) {
 	factory := delegation.NewServiceFactory()
-	_, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{
-			delegation.DirectoryDep: delegation.NewDirectory(),
-			delegation.BackendDep:   "not a backend",
-		},
-	})
+	_, err := factory.New(context.Background(), resource.NewTestInput(map[string]any{
+		delegation.DirectoryDep: delegation.NewDirectory(),
+		delegation.BackendDep:   "not a backend",
+	}))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New with wrong backend = %v, want Validation", err)
 	}
@@ -77,9 +69,7 @@ func TestServiceFactoryRejectsWrongBackend(t *testing.T) {
 
 func TestServiceFactoryRejectsWrongDirectory(t *testing.T) {
 	factory := delegation.NewServiceFactory()
-	_, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{delegation.DirectoryDep: "not a directory"},
-	})
+	_, err := factory.New(context.Background(), resource.NewTestInput(map[string]any{delegation.DirectoryDep: "not a directory"}))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New with wrong directory = %v, want Validation", err)
 	}
@@ -87,16 +77,14 @@ func TestServiceFactoryRejectsWrongDirectory(t *testing.T) {
 
 func TestServiceFactoryAcceptsSessionProvider(t *testing.T) {
 	factory := delegation.NewServiceFactory()
-	value, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{
-			delegation.DirectoryDep:       delegation.NewDirectory(),
-			delegation.SessionProviderDep: delegation.RandomSessionProvider{},
-		},
-	})
+	value, err := factory.New(context.Background(), resource.NewTestInput(map[string]any{
+		delegation.DirectoryDep:       delegation.NewDirectory(),
+		delegation.SessionProviderDep: delegation.RandomSessionProvider{},
+	}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	service := value.(*delegation.LocalService)
+	service := value
 	if err := service.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -104,12 +92,10 @@ func TestServiceFactoryAcceptsSessionProvider(t *testing.T) {
 
 func TestServiceFactoryRejectsWrongSessionProvider(t *testing.T) {
 	factory := delegation.NewServiceFactory()
-	_, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{
-			delegation.DirectoryDep:       delegation.NewDirectory(),
-			delegation.SessionProviderDep: "not a provider",
-		},
-	})
+	_, err := factory.New(context.Background(), resource.NewTestInput(map[string]any{
+		delegation.DirectoryDep:       delegation.NewDirectory(),
+		delegation.SessionProviderDep: "not a provider",
+	}))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New with wrong provider = %v, want Validation", err)
 	}
@@ -117,14 +103,11 @@ func TestServiceFactoryRejectsWrongSessionProvider(t *testing.T) {
 
 func TestDirectoryFactoryBuildsUnboundDirectory(t *testing.T) {
 	factory := delegation.NewDirectoryFactory()
-	value, err := factory.New(context.Background(), resource.Input{})
+	value, err := factory.New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	directory, ok := value.(*delegation.LocalDirectory)
-	if !ok {
-		t.Fatalf("New returned %T, want *delegation.LocalDirectory", value)
-	}
+	directory := value
 	if _, err := directory.List(context.Background()); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("unbound directory List error = %v, want not available", err)
 	}
@@ -132,14 +115,11 @@ func TestDirectoryFactoryBuildsUnboundDirectory(t *testing.T) {
 
 func TestRandomSessionProviderFactory(t *testing.T) {
 	factory := delegation.NewRandomSessionProviderFactory()
-	value, err := factory.New(context.Background(), resource.Input{})
+	value, err := factory.New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(delegation.SessionProvider)
-	if !ok {
-		t.Fatalf("New returned %T, want delegation.SessionProvider", value)
-	}
+	provider := value
 	if provider.Persistent() {
 		t.Fatal("random provider must not be persistent")
 	}

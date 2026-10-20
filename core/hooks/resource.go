@@ -54,9 +54,20 @@ type Settings struct {
 type FactoryOption func(*factoryConfig)
 
 type factoryConfig struct {
-	provider       SourceProvider
-	sourceDep      string
-	sourceContract string
+	provider  SourceProvider
+	sourceDep string
+	// source is the erased typed handle for the document dependency that
+	// carries extra sources. It is built by [WithSourceDep] from the
+	// provider's own Go type, so the spec and the read cannot disagree.
+	source *sourceBinding
+}
+
+// sourceBinding is one [resource.Dep] handle erased for storage in a
+// non-generic config: the declaration it contributes to the spec, plus the
+// typed read.
+type sourceBinding struct {
+	spec resource.Requirement
+	read func(resource.Input) (SourceProvider, bool, error)
 }
 
 // WithSources wires a provider — normally the plugin host — whose
@@ -67,26 +78,36 @@ func WithSources(provider SourceProvider) FactoryOption {
 }
 
 // WithSourceDep declares the document dependency that carries extra
-// sources: name is the dependency key, contract the DepSpec.Type it is
-// validated against. A craft host passes ("plugins",
-// "craft.PluginHost") for its plugin host external:
+// sources. name is the dependency key; T is the Go type the dependency must
+// produce, so the declared contract comes from the type parameter instead of a
+// hand-written string. A craft host passes its own host type:
 //
 //	deps:
 //	  plugins: craft.pluginhost
 //
-// The dependency is optional and its value must implement
-// [SourceProvider], so a deployment without a plugin host simply has
-// one fewer hook source.
-func WithSourceDep(name, contract string) FactoryOption {
+// The dependency is optional and T must implement [SourceProvider], so a
+// deployment without a plugin host simply has one fewer hook source.
+func WithSourceDep[T SourceProvider](name string) FactoryOption {
+	name = strings.TrimSpace(name)
+	dep := resource.Optional[T](name)
 	return func(cfg *factoryConfig) {
-		cfg.sourceDep = strings.TrimSpace(name)
-		cfg.sourceContract = strings.TrimSpace(contract)
+		cfg.sourceDep = name
+		cfg.source = &sourceBinding{
+			spec: dep.Spec(),
+			read: func(in resource.Input) (SourceProvider, bool, error) {
+				value, ok, err := dep.TryGet(in)
+				if err != nil || !ok {
+					return nil, ok, err
+				}
+				return SourceProvider(value), true, nil
+			},
+		}
 	}
 }
 
 // NewFactory returns the deployment factory of a command hook runner.
 // Its value is a *[Manager].
-func NewFactory(options ...FactoryOption) resource.Factory {
+func NewFactory(options ...FactoryOption) resource.Factory[*Manager] {
 	cfg := factoryConfig{}
 	for _, option := range options {
 		if option != nil {
@@ -101,18 +122,15 @@ type runnerFactory struct{ cfg factoryConfig }
 // Spec implements resource.Factory.
 func (f runnerFactory) Spec() resource.Spec {
 	spec := resource.Spec{Kind: ResourceKind, Impl: ImplLocal}
-	if f.cfg.sourceDep != "" || f.cfg.sourceContract != "" {
-		spec.Deps = []resource.DepSpec{{
-			Name: f.cfg.sourceDep,
-			Type: f.cfg.sourceContract,
-		}}
+	if f.cfg.source != nil {
+		spec.Deps = []resource.Requirement{f.cfg.source.spec}
 	}
 	return spec
 }
 
 // New implements resource.Factory. A missing hooks.json is not an
 // error: a host that installs no hooks of its own still starts.
-func (f runnerFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f runnerFactory) New(ctx context.Context, in resource.Input) (*Manager, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("hooks: decode settings: %w", err))
@@ -137,18 +155,21 @@ func (f runnerFactory) sources(in resource.Input) ([]ExtraSource, error) {
 	if f.cfg.sourceDep == "" {
 		return sources, nil
 	}
-	value, ok := in.Dep(f.cfg.sourceDep)
+	provider, ok, err := f.cfg.source.read(in)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return sources, nil
 	}
-	provider, ok := value.(SourceProvider)
-	if !ok || ptr.IsNil(provider) {
-		return nil, errdefs.Validationf(
-			"hooks: dep %q is %T, want hooks.SourceProvider",
-			f.cfg.sourceDep, value)
-	}
 	return append(sources, provider.HookSources()...), nil
 }
+
+// depEventBus and depRunner are the observer's typed dependency handles.
+var (
+	depEventBus = resource.Require[event.Bus](EventBusDep)
+	depRunner   = resource.Require[*Manager](RunnerDep)
+)
 
 // observerFactory builds the subagent observer.
 type observerFactory struct{}
@@ -158,35 +179,23 @@ func (observerFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: ObserverResourceKind,
 		Impl: ImplLocal,
-		Deps: []resource.DepSpec{
-			{Name: EventBusDep, Type: "event.Bus", Required: true},
-			{Name: RunnerDep, Type: ResourceKind, Required: true},
+		Deps: []resource.Requirement{
+			depEventBus.Spec(),
+			depRunner.Spec(),
 		},
 	}
 }
 
 // New implements resource.Factory. The observer subscribes in
 // [Observer.Wire], which the assembly calls once every resource exists.
-func (observerFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep(EventBusDep)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"hooks observer: dep %q is required", EventBusDep)
+func (observerFactory) New(_ context.Context, in resource.Input) (*Observer, error) {
+	bus, err := depEventBus.Get(in)
+	if err != nil {
+		return nil, err
 	}
-	bus, ok := value.(event.Bus)
-	if !ok || ptr.IsNil(bus) {
-		return nil, errdefs.Validationf(
-			"hooks observer: dep %q is %T, want event.Bus", EventBusDep, value)
-	}
-	value, ok = in.Dep(RunnerDep)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"hooks observer: dep %q is required", RunnerDep)
-	}
-	runner, ok := value.(*Manager)
-	if !ok || runner == nil {
-		return nil, errdefs.Validationf(
-			"hooks observer: dep %q is %T, want *hooks.Manager", RunnerDep, value)
+	runner, err := depRunner.Get(in)
+	if err != nil {
+		return nil, err
 	}
 	return NewObserver(runner, bus)
 }
@@ -194,8 +203,8 @@ func (observerFactory) New(_ context.Context, in resource.Input) (any, error) {
 // Register adds the runner factory and the subagent observer factory to
 // r. options configure the runner; the observer has no options.
 func Register(r *resource.Registry, options ...FactoryOption) error {
-	if err := r.Register(NewFactory(options...)); err != nil {
+	if err := resource.Register(r, NewFactory(options...)); err != nil {
 		return err
 	}
-	return r.Register(observerFactory{})
+	return resource.Register(r, observerFactory{})
 }

@@ -41,7 +41,7 @@ type ProfileSettings struct {
 type deployFactory struct{}
 
 // Factory returns the Anthropic provider deployment factory.
-func Factory() resource.Factory { return deployFactory{} }
+func Factory() resource.Factory[inference.ProviderDefinition] { return deployFactory{} }
 
 // Spec implements resource.Factory.
 func (deployFactory) Spec() resource.Spec {
@@ -49,20 +49,20 @@ func (deployFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (deployFactory) New(ctx context.Context, in resource.Input) (inference.ProviderDefinition, error) {
 	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic provider: decode settings: %w", err)
+		return inference.ProviderDefinition{}, fmt.Errorf("anthropic provider: decode settings: %w", err)
 	}
 	if settings.ID == "" {
-		return nil, fmt.Errorf("anthropic provider: settings.id is required")
+		return inference.ProviderDefinition{}, fmt.Errorf("anthropic provider: settings.id is required")
 	}
 	return buildProvider(ctx, settings, in.Secrets)
 }
 
 // Register adds the Anthropic provider factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(deployFactory{})
+	return resource.Register(r, deployFactory{})
 }
 
 func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {

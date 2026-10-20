@@ -34,13 +34,13 @@ func (fileFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (fileFactory) New(ctx context.Context, in resource.Input) (any, error) {
+func (fileFactory) New(ctx context.Context, in resource.Input) (Store, error) {
 	settings, err := resource.DecodeTyped[FileSettings](ctx, in.Settings)
 	if err != nil {
-		return nil, fmt.Errorf("secret file store: decode settings: %w", err)
+		return Store{}, fmt.Errorf("secret file store: decode settings: %w", err)
 	}
 	if strings.TrimSpace(settings.Base) == "" {
-		return nil, errdefs.Validationf("secret file store: settings.base is required")
+		return Store{}, errdefs.Validationf("secret file store: settings.base is required")
 	}
 	loader := resource.NewLoader(resource.WithBaseDir(settings.Base))
 	return Store{

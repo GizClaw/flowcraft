@@ -27,7 +27,7 @@ func (p *externalPool) Wire(context.Context) error {
 	return nil
 }
 
-func (p *externalPool) BindDeployment(any) error {
+func (p *externalPool) BindDeployment(View) error {
 	p.binds++
 	return nil
 }
@@ -42,41 +42,38 @@ func (c *externalConsumer) Close() error {
 	return nil
 }
 
+// depPool is the typed dependency every double in this file reads: the
+// caller-injected pool. The requirement is the only place the contract is
+// written, and the plan checks the injected value's Go type against it.
+var depPool = resource.Require[*externalPool]("db")
+
 type externalConsumerFactory struct{}
 
 func (externalConsumerFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalConsumer",
 		Impl: "local",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{depPool.Spec()},
 	}
 }
 
-func (externalConsumerFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("db")
-	if !ok {
-		return nil, errdefs.Validationf("consumer: db dep missing")
-	}
-	pool, ok := value.(*externalPool)
-	if !ok {
-		return nil, errdefs.Validationf("consumer: db dep has wrong type")
+func (externalConsumerFactory) New(_ context.Context, in resource.Input) (*externalConsumer, error) {
+	pool, err := depPool.Get(in)
+	if err != nil {
+		return nil, err
 	}
 	return &externalConsumer{pool: pool}, nil
 }
 
-type externalFailingFactory struct {
-	consumerType string
-}
+// externalFailingFactory builds nothing: it exists so a deployment can fail
+// after another resource is already built, which is what exercises rollback.
+type externalFailingFactory struct{}
 
-func (f externalFailingFactory) Spec() resource.Spec {
+func (externalFailingFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "test.ExternalFail",
 		Impl: "local",
-		Deps: []resource.DepSpec{{
-			Name: "consumer", Type: f.consumerType, Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Require[*externalConsumer]("consumer").Spec()},
 	}
 }
 
@@ -90,19 +87,13 @@ func (externalAgentEngineFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "engine.test",
 		Impl: "external",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{depPool.Spec()},
 	}
 }
 
-func (externalAgentEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("db")
-	if !ok {
-		return nil, errdefs.Validationf("engine: db dep missing")
-	}
-	if _, ok := value.(*externalPool); !ok {
-		return nil, errdefs.Validationf("engine: db dep has wrong type")
+func (externalAgentEngineFactory) New(_ context.Context, in resource.Input) (agent.Engine, error) {
+	if _, err := depPool.Get(in); err != nil {
+		return nil, err
 	}
 	return agent.EngineFunc(func(
 		context.Context, agent.Run, agent.Host, *agent.Board,
@@ -122,20 +113,14 @@ func (externalObserverHookFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "hook.observe",
 		Impl: "external",
-		Deps: []resource.DepSpec{{
-			Name: "db", Type: "db.Pool", Required: true,
-		}},
+		Deps: []resource.Requirement{depPool.Spec()},
 	}
 }
 
-func (externalObserverHookFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("db")
-	if !ok {
-		return nil, errdefs.Validationf("hook: db dep missing")
-	}
-	pool, ok := value.(*externalPool)
-	if !ok {
-		return nil, errdefs.Validationf("hook: db dep has wrong type")
+func (externalObserverHookFactory) New(_ context.Context, in resource.Input) (agent.Observer, error) {
+	pool, err := depPool.Get(in)
+	if err != nil {
+		return nil, err
 	}
 	return &externalObserverHook{pool: pool}, nil
 }
@@ -156,13 +141,10 @@ func externalDoc() Document {
 func TestExternalResourceResolvesAsDependencyAndStaysUnmanaged(t *testing.T) {
 	pool := &externalPool{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(externalConsumerFactory{})
+	resource.MustRegister(reg, externalConsumerFactory{})
 	builder := NewBuilder(
 		reg,
-		WithExternalResources([]ExternalResource{{
-			External: External{Name: "db", Contract: "db.Pool"},
-			Value:    pool,
-		}}),
+		WithExternalResources([]ExternalResource{NewExternal("db", "db.Pool", pool)}),
 	)
 
 	result, err := builder.Deploy(context.Background(), externalDoc())
@@ -206,19 +188,19 @@ func TestExternalResourceResolvesAsDependencyAndStaysUnmanaged(t *testing.T) {
 	}
 }
 
+// The contract is the Go type now, so a mismatch is an injected value that
+// does not satisfy the consumer's requirement — reported by Plan, before the
+// consumer factory runs.
 func TestExternalResourceContractMismatch(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(externalConsumerFactory{})
+	resource.MustRegister(reg, externalConsumerFactory{})
 	_, err := NewBuilder(
 		reg,
-		WithExternalResources([]ExternalResource{{
-			External: External{Name: "db", Contract: "db.Other"},
-			Value:    &externalPool{},
-		}}),
+		WithExternalResources([]ExternalResource{NewExternal("db", "db.Other", "not a pool")}),
 	).Build(context.Background(), externalDoc())
 	if !errdefs.IsValidation(err) ||
-		!strings.Contains(err.Error(), "does not match declared type") {
-		t.Fatalf("Build error = %v, want contract mismatch", err)
+		!strings.Contains(err.Error(), "does not satisfy") {
+		t.Fatalf("Build error = %v, want a Go type mismatch", err)
 	}
 }
 
@@ -228,13 +210,10 @@ func TestExternalResourceRejectsItemRef(t *testing.T) {
 	consumer.Deps = resource.Deps{"db": "db/item"}
 	doc.Resources["consumer"] = consumer
 	reg := resource.NewRegistry()
-	reg.MustRegister(externalConsumerFactory{})
+	resource.MustRegister(reg, externalConsumerFactory{})
 	_, err := NewBuilder(
 		reg,
-		WithExternalResources([]ExternalResource{{
-			External: External{Name: "db", Contract: "db.Pool"},
-			Value:    &externalPool{},
-		}}),
+		WithExternalResources([]ExternalResource{NewExternal("db", "db.Pool", &externalPool{})}),
 	).Build(context.Background(), doc)
 	if !errdefs.IsValidation(err) ||
 		!strings.Contains(err.Error(), "does not support item references") {
@@ -245,8 +224,8 @@ func TestExternalResourceRejectsItemRef(t *testing.T) {
 func TestExternalResourceNotClosedOnRollback(t *testing.T) {
 	pool := &externalPool{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(externalConsumerFactory{})
-	reg.MustRegister(externalFailingFactory{consumerType: "test.ExternalConsumer"})
+	resource.MustRegister(reg, externalConsumerFactory{})
+	resource.MustRegister(reg, externalFailingFactory{})
 	doc := externalDoc()
 	doc.Resources["z-fail"] = resource.Resource{
 		Kind: "test.ExternalFail",
@@ -255,10 +234,7 @@ func TestExternalResourceNotClosedOnRollback(t *testing.T) {
 	}
 	_, err := NewBuilder(
 		reg,
-		WithExternalResources([]ExternalResource{{
-			External: External{Name: "db", Contract: "db.Pool"},
-			Value:    pool,
-		}}),
+		WithExternalResources([]ExternalResource{NewExternal("db", "db.Pool", pool)}),
 	).Build(context.Background(), doc)
 	if err == nil {
 		t.Fatal("Build unexpectedly succeeded")
@@ -271,8 +247,8 @@ func TestExternalResourceNotClosedOnRollback(t *testing.T) {
 func TestExternalResourceResolvesForAgentEngineAndHook(t *testing.T) {
 	pool := &externalPool{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(externalAgentEngineFactory{})
-	reg.MustRegister(externalObserverHookFactory{})
+	resource.MustRegister(reg, externalAgentEngineFactory{})
+	resource.MustRegister(reg, externalObserverHookFactory{})
 	doc := Document{
 		Version: "v1",
 		Agents: map[string]agent.Definition{
@@ -292,10 +268,7 @@ func TestExternalResourceResolvesForAgentEngineAndHook(t *testing.T) {
 	}
 	result, err := NewBuilder(
 		reg,
-		WithExternalResources([]ExternalResource{{
-			External: External{Name: "db", Contract: "db.Pool"},
-			Value:    pool,
-		}}),
+		WithExternalResources([]ExternalResource{NewExternal("db", "db.Pool", pool)}),
 	).Deploy(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -358,8 +331,8 @@ func TestExternalResourceValidation(t *testing.T) {
 
 	t.Run("duplicate", func(t *testing.T) {
 		_, err := normalizeExternalResources([]ExternalResource{
-			{External: External{Name: "db", Contract: "db.Pool"}, Value: &externalPool{}},
-			{External: External{Name: "db", Contract: "db.Pool"}, Value: &externalPool{}},
+			NewExternal("db", "db.Pool", &externalPool{}),
+			NewExternal("db", "db.Pool", &externalPool{}),
 		})
 		if !errdefs.IsConflict(err) {
 			t.Fatalf("normalize duplicate error = %v, want conflict", err)

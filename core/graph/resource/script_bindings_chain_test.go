@@ -74,14 +74,11 @@ func (s plainStub) Bind(bindings.Invocation) ([]bindings.Binding, error) {
 func buildChain(t *testing.T, deps map[string]any) bindings.Provider {
 	t.Helper()
 	value, err := (graphresource.ScriptBindingsChainFactory{}).New(
-		context.Background(), resource.Input{Deps: deps})
+		context.Background(), resource.NewTestInput(deps))
 	if err != nil {
 		t.Fatalf("chain New: %v", err)
 	}
-	provider, ok := value.(bindings.Provider)
-	if !ok {
-		t.Fatalf("chain New returned %T, want bindings.Provider", value)
-	}
+	provider := value
 	return provider
 }
 
@@ -269,7 +266,7 @@ func TestScriptBindingsChainRejectsNoDeps(t *testing.T) {
 	for name, deps := range map[string]map[string]any{"nil deps": nil, "empty deps": {}} {
 		t.Run(name, func(t *testing.T) {
 			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
-				context.Background(), resource.Input{Deps: deps})
+				context.Background(), resource.NewTestInput(deps))
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation for a chain that composes nothing", err)
 			}
@@ -286,14 +283,14 @@ func TestScriptBindingsChainRejectsBadDeps(t *testing.T) {
 		want string
 	}{
 		"plain nil":      {map[string]any{"base": nil}, `dep "base" is nil`},
-		"non provider":   {map[string]any{"unit.a": "nope"}, `dep "unit.a" is string, want a bindings.Provider`},
+		"non provider":   {map[string]any{"unit.a": "nope"}, `dep "unit.a" is string, want bindings.Provider`},
 		"typed nil":      {map[string]any{"unit.a": (*chainStub)(nil)}, `dep "unit.a" is a typed nil`},
 		"typed nil base": {map[string]any{"base": (*chainStub)(nil)}, `dep "base" is a typed nil`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
-				context.Background(), resource.Input{Deps: tc.deps})
+				context.Background(), resource.NewTestInput(tc.deps))
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation", err)
 			}
@@ -357,9 +354,7 @@ func TestScriptBindingsChainMinimalShapes(t *testing.T) {
 
 func TestScriptBindingsChainRejectsSameProviderUnderTwoKeys(t *testing.T) {
 	stub := &chainStub{name: "shared", ord: []bindings.Binding{{Name: "x", Value: "1"}}}
-	_, err := (graphresource.ScriptBindingsChainFactory{}).New(context.Background(), resource.Input{
-		Deps: map[string]any{"unit.a": stub, "unit.b": stub},
-	})
+	_, err := (graphresource.ScriptBindingsChainFactory{}).New(context.Background(), resource.NewTestInput(map[string]any{"unit.a": stub, "unit.b": stub}))
 	if !errdefs.IsConflict(err) {
 		t.Fatalf("New = %v, want Conflict", err)
 	}
@@ -375,14 +370,11 @@ func TestScriptBindingsChainKeepsIndependentFunctionProviders(t *testing.T) {
 	// share a code pointer under reflection: treating functions as
 	// identity-bearing would reject these legal documents.
 	none := func() bindings.Provider {
-		value, err := (graphresource.ScriptBindingsNoneFactory{}).New(context.Background(), resource.Input{})
+		value, err := (graphresource.ScriptBindingsNoneFactory{}).New(context.Background(), resource.NewTestInput(nil))
 		if err != nil {
 			t.Fatalf("none New: %v", err)
 		}
-		provider, ok := value.(bindings.Provider)
-		if !ok {
-			t.Fatalf("none New returned %T, want bindings.Provider", value)
-		}
+		provider := value
 		return provider
 	}
 	same := func(bindings.Invocation) ([]bindings.Binding, error) { return nil, nil }
@@ -513,7 +505,7 @@ func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := (graphresource.ScriptBindingsChainFactory{}).New(
-				context.Background(), resource.Input{Settings: []byte(settings)})
+				context.Background(), resource.NewInput([]byte(settings), nil, nil, nil))
 			if !errdefs.IsValidation(err) {
 				t.Fatalf("New = %v, want Validation for a settings key the chain does not define", err)
 			}
@@ -523,7 +515,7 @@ func TestScriptBindingsChainSettingsAreStrict(t *testing.T) {
 	// A dep, since a chain with none is itself a build error.
 	if _, err := (graphresource.ScriptBindingsChainFactory{}).New(
 		context.Background(),
-		resource.Input{Deps: map[string]any{"unit.a": &chainStub{name: "a"}}}); err != nil {
+		resource.NewTestInput(map[string]any{"unit.a": &chainStub{name: "a"}})); err != nil {
 		t.Fatalf("empty settings: %v", err)
 	}
 }
@@ -539,9 +531,9 @@ func TestScriptBindingsChainSpec(t *testing.T) {
 	if spec.Kind != bindings.ResourceKind || spec.Impl != graphresource.ChainImpl {
 		t.Fatalf("spec = %s/%s, want %s/%s", spec.Kind, spec.Impl, bindings.ResourceKind, graphresource.ChainImpl)
 	}
-	want := []resource.DepSpec{
-		{Name: "base", Type: bindings.ResourceKind},
-		{Name: "unit", Type: bindings.ResourceKind, Many: true},
+	want := []resource.Requirement{
+		resource.Optional[bindings.Provider]("base").Spec(),
+		resource.OptionalMany[bindings.Provider]("unit").Spec(),
 	}
 	if !reflect.DeepEqual(spec.Deps, want) {
 		t.Fatalf("deps = %+v, want %+v", spec.Deps, want)

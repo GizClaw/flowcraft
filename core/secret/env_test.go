@@ -19,16 +19,11 @@ func TestEnvFactoryRegisters(t *testing.T) {
 
 func TestEnvStoreLooksUpEnvironment(t *testing.T) {
 	t.Setenv("SECRET_TEST_TOKEN", "tok-123")
-	value, err := envFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"default": true}`),
-	})
+	value, err := envFactory{}.New(context.Background(), resource.NewInput([]byte(`{"default": true}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	store, ok := value.(resource.SecretStore)
-	if !ok {
-		t.Fatalf("value = %T, want resource.SecretStore", value)
-	}
+	store := resource.SecretStore(value)
 	if !store.DefaultSecretStore() {
 		t.Fatal("DefaultSecretStore = false, want true")
 	}
@@ -42,13 +37,8 @@ func TestEnvStoreLooksUpEnvironment(t *testing.T) {
 }
 
 func TestEnvStoreStrictDecode(t *testing.T) {
-	value, err := envFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"default": true, "bogus": 1}`),
-	})
+	_, err := envFactory{}.New(context.Background(), resource.NewInput([]byte(`{"default": true, "bogus": 1}`), nil, nil, nil))
 	if err == nil {
 		t.Fatal("New accepted unknown settings field")
-	}
-	if value != nil {
-		t.Fatalf("New returned %v despite error", value)
 	}
 }

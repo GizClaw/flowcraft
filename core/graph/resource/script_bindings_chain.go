@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+)
+
+// chainBase and chainUnits are the chain's typed dependency handles: one
+// optional base surface and any number of unit surfaces.
+var (
+	chainBase  = res.Optional[bindings.Provider](chainBaseDep)
+	chainUnits = res.OptionalMany[bindings.Provider](chainUnitDep)
 )
 
 // ChainImpl is the impl name of the provider that composes several
@@ -64,15 +69,15 @@ func (ScriptBindingsChainFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: bindings.ResourceKind,
 		Impl: ChainImpl,
-		Deps: []res.DepSpec{
-			{Name: chainBaseDep, Type: bindings.ResourceKind},
-			{Name: chainUnitDep, Type: bindings.ResourceKind, Many: true},
+		Deps: []res.Requirement{
+			chainBase.Spec(),
+			chainUnits.Spec(),
 		},
 	}
 }
 
 // New implements res.Factory.
-func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (bindings.Provider, error) {
 	if _, err := res.DecodeTyped[ScriptBindingsChainSettings](ctx, in.Settings); err != nil {
 		return nil, err
 	}
@@ -103,29 +108,26 @@ func (ScriptBindingsChainFactory) New(ctx context.Context, in res.Input) (any, e
 // the build cannot identify is caught by the merge's duplicate-name
 // check at execution time instead, which names both dep keys.
 func chainParts(in res.Input) ([]bindings.Part, error) {
-	keys := make([]string, 0, len(in.Deps))
-	for key := range in.Deps {
-		if key == chainBaseDep || key == chainUnitDep || strings.HasPrefix(key, chainUnitDep+".") {
-			keys = append(keys, key)
-		}
+	base, hasBase, err := chainBase.TryGet(in)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(keys)
+	units, err := chainUnits.GetAllNamed(in)
+	if err != nil {
+		return nil, err
+	}
+	named := make([]res.Named[bindings.Provider], 0, len(units)+1)
+	if hasBase {
+		named = append(named, res.Named[bindings.Provider]{Name: chainBaseDep, Value: base})
+	}
+	named = append(named, units...)
+	sort.Slice(named, func(i, j int) bool { return named[i].Name < named[j].Name })
 
-	out := make([]bindings.Part, 0, len(keys))
+	out := make([]bindings.Part, 0, len(named))
 	mounted := make(map[string]string) // provider identity -> dep key
-	for _, key := range keys {
-		value := in.Deps[key]
-		if value == nil {
-			return nil, errdefs.Validationf("script bindings: dep %q is nil", key)
-		}
-		surface, ok := value.(bindings.Provider)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"script bindings: dep %q is %T, want a bindings.Provider", key, value)
-		}
-		if ptr.IsNil(surface) {
-			return nil, errdefs.Validationf("script bindings: dep %q is a typed nil", key)
-		}
+	for _, entry := range named {
+		key, surface := entry.Name, entry.Value
+		value := any(surface)
 		if identity, has := chainProviderIdentity(value); has {
 			if first, dup := mounted[identity]; dup {
 				return nil, errdefs.Conflictf(

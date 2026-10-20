@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -371,26 +370,17 @@ func bindSessionManagers(manager *session.Manager, result *deploy.Result) error 
 		return errdefs.Internalf(
 			"runtime: bind session managers requires a manager and result")
 	}
-	var bound string
-	for _, name := range result.Names() {
-		value, ok := result.Value(name)
-		if !ok {
-			continue
-		}
-		binder, ok := value.(session.ManagerBinder)
-		if !ok {
-			continue
-		}
-		if bound != "" {
-			return errdefs.Conflictf(
-				"runtime: multiple session manager binders (%s and %s)",
-				bound, name)
-		}
-		if err := binder.BindSessionManager(manager); err != nil {
+	binders := deploy.CollectNamed[session.ManagerBinder](result)
+	if len(binders) > 1 {
+		return errdefs.Conflictf(
+			"runtime: multiple session manager binders (%s and %s)",
+			binders[0].Name, binders[1].Name)
+	}
+	for _, bound := range binders {
+		if err := bound.Value.BindSessionManager(manager); err != nil {
 			return fmt.Errorf(
-				"runtime: bind session manager to %q: %w", name, err)
+				"runtime: bind session manager to %q: %w", bound.Name, err)
 		}
-		bound = name
 	}
 	return nil
 }
@@ -405,26 +395,17 @@ func bindTargetSources(registry *AgentRegistry, result *deploy.Result) error {
 		return errdefs.Internalf(
 			"runtime: bind target sources requires a registry and result")
 	}
-	var bound string
-	for _, name := range result.Names() {
-		value, ok := result.Value(name)
-		if !ok {
-			continue
-		}
-		binder, ok := value.(delegation.TargetViewBinder)
-		if !ok {
-			continue
-		}
-		if bound != "" {
-			return errdefs.Conflictf(
-				"runtime: multiple delegation target view binders (%s and %s)",
-				bound, name)
-		}
-		if err := binder.BindTargetSource(registry); err != nil {
+	binders := deploy.CollectNamed[delegation.TargetViewBinder](result)
+	if len(binders) > 1 {
+		return errdefs.Conflictf(
+			"runtime: multiple delegation target view binders (%s and %s)",
+			binders[0].Name, binders[1].Name)
+	}
+	for _, bound := range binders {
+		if err := bound.Value.BindTargetSource(registry); err != nil {
 			return fmt.Errorf(
-				"runtime: bind delegation target source to %q: %w", name, err)
+				"runtime: bind delegation target source to %q: %w", bound.Name, err)
 		}
-		bound = name
 	}
 	return nil
 }
@@ -440,14 +421,8 @@ func freezeTargetViews(result *deploy.Result, instances map[string]*agent.Agent)
 	if result == nil {
 		return
 	}
-	for _, name := range result.Names() {
-		value, ok := result.Value(name)
-		if !ok {
-			continue
-		}
-		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
-			freezer.FreezeTargets(instances)
-		}
+	for _, freezer := range deploy.Collect[delegation.TargetViewFreezer](result) {
+		freezer.FreezeTargets(instances)
 	}
 }
 
@@ -459,31 +434,20 @@ func unfreezeTargetViews(result *deploy.Result) {
 	if result == nil {
 		return
 	}
-	for _, name := range result.Names() {
-		value, ok := result.Value(name)
-		if !ok {
-			continue
-		}
-		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
-			freezer.UnfreezeTargets()
-		}
+	for _, freezer := range deploy.Collect[delegation.TargetViewFreezer](result) {
+		freezer.UnfreezeTargets()
 	}
 }
 
+// resolveValue reads one configured resource as T, adding the config field that
+// named it to the error. The check itself lives in deploy.Resolve, so there is
+// one typed read implementation in the module.
 func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {
-	var zero T
-	value, ok := result.Value(name)
-	if !ok {
-		return zero, errdefs.NotFoundf(
-			"runtime config: %s resource %q not found", field, name)
+	value, err := deploy.Resolve[T](result, name)
+	if err != nil {
+		return value, fmt.Errorf("runtime config: %s: %w", field, err)
 	}
-	typed, ok := value.(T)
-	if !ok || ptr.IsNil(typed) {
-		return zero, errdefs.Validationf(
-			"runtime config: %s resource %q is %T, want %v",
-			field, name, value, reflect.TypeFor[T]())
-	}
-	return typed, nil
+	return value, nil
 }
 
 // logBuildCleanup records a best-effort teardown error on a failed Build

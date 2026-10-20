@@ -7,7 +7,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // SourceImpl is the tool.Source impl name for the delegation tools.
@@ -19,7 +18,10 @@ type sourceFactory struct{}
 // delegate + delegation_status pair. The directory is resolved from the
 // deploy dependency, so every deployment generation's tools see that
 // generation's targets at call time.
-func NewSourceFactory() res.Factory {
+// depDirectory is the delegation directory the tools read at call time.
+var depDirectory = res.Require[sdkdelegation.Directory](sdkdelegation.DirectoryDep)
+
+func NewSourceFactory() res.Factory[*source] {
 	return &sourceFactory{}
 }
 
@@ -28,30 +30,19 @@ func (sourceFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: "tool.Source",
 		Impl: SourceImpl,
-		Deps: []res.DepSpec{{
-			Name:     sdkdelegation.DirectoryDep,
-			Type:     "delegation.Directory",
-			Required: true,
-		}},
+		Deps: []res.Requirement{depDirectory.Spec()},
 	}
 }
 
 // New implements res.Factory: the source takes no settings.
-func (sourceFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (sourceFactory) New(ctx context.Context, in res.Input) (*source, error) {
 	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
 			"delegation tool resource: decode settings: %v", err)
 	}
-	value, ok := in.Dep(sdkdelegation.DirectoryDep)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"delegation tool resource: dep %q is required", sdkdelegation.DirectoryDep)
-	}
-	directory, ok := value.(sdkdelegation.Directory)
-	if !ok || ptr.IsNil(directory) {
-		return nil, errdefs.Validationf(
-			"delegation tool resource: dep %q is %T, want delegation.Directory",
-			sdkdelegation.DirectoryDep, value)
+	directory, err := depDirectory.Get(in)
+	if err != nil {
+		return nil, err
 	}
 	return &source{directory: directory}, nil
 }

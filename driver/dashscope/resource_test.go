@@ -97,10 +97,7 @@ func TestFactoryBuildsProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory.New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("factory returned %T", value)
-	}
+	provider := value
 	if provider.ID != "dashscope" {
 		t.Errorf("provider id = %q", provider.ID)
 	}
@@ -140,7 +137,7 @@ func TestFactoryModelOpenerServesWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory.New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	video := declaredModel(t, provider, "wan2.2-t2v-plus")
 
 	// The video model aliases its wire token, so the compiled payload has to
@@ -288,7 +285,7 @@ func TestFactoryUndeclaredProfileRejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory.New: %v", err)
 	}
-	provider := value.(inference.ProviderDefinition)
+	provider := value
 	_, err = provider.Models[0].Openers.Generate(
 		context.Background(),
 		model.ModelRef{ID: provider.Models[0].Descriptor.ID, Profile: "singapore"},
@@ -472,10 +469,7 @@ func TestFactoryWiresTextFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory.New: %v", err)
 	}
-	provider, ok := value.(inference.ProviderDefinition)
-	if !ok {
-		t.Fatalf("factory returned %T", value)
-	}
+	provider := value
 	for _, name := range []string{
 		extensionImage, extensionVideo, extensionGenerate, extensionEmbed,
 		extensionTranscribe,

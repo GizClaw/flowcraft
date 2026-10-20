@@ -80,13 +80,11 @@ func countingAssembly(
 			},
 		}},
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider.counted": definition},
-	})
+	value, err := inference.Factory{}.New(context.Background(), resource.NewTestInput(map[string]any{"provider.counted": definition}))
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
 	}
-	return value.(*inference.Assembly), ref
+	return value, ref
 }
 
 // TestInferenceNode_ReusesBoundModelAcrossTurns pins the host side of the

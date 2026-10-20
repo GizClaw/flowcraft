@@ -92,23 +92,23 @@ func (ScriptBindingsFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: bindings.ResourceKind,
 		Impl: scriptnode.StandardImpl,
-		Deps: []res.DepSpec{
-			{Name: DepTools, Type: "tool.Assembly"},
-			{Name: DepInference, Type: "inference.Assembly"},
-			{Name: DepRouter, Type: "inference.Router"},
-			{Name: DepWorkspace, Type: "workspace.Workspace"},
-			{Name: DepSandbox, Type: "sandbox.Runner"},
+		Deps: []res.Requirement{
+			depTools.Spec(),
+			depInference.Spec(),
+			depRouter.Spec(),
+			depWorkspace.Spec(),
+			depSandbox.Spec(),
 		},
 	}
 }
 
 // New implements res.Factory.
-func (ScriptBindingsFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (ScriptBindingsFactory) New(ctx context.Context, in res.Input) (bindings.Provider, error) {
 	settings, err := res.DecodeTyped[ScriptBindingsSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, err
 	}
-	deps, err := decodeDependencies(in.Deps)
+	deps, err := decodeDependencies(in)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (ScriptBindingsNoneFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (ScriptBindingsNoneFactory) New(context.Context, res.Input) (any, error) {
+func (ScriptBindingsNoneFactory) New(context.Context, res.Input) (bindings.Provider, error) {
 	return bindings.ProviderFunc(func(bindings.Invocation) ([]bindings.Binding, error) {
 		return nil, nil
 	}), nil

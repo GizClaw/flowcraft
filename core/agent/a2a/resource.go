@@ -49,7 +49,7 @@ func (*Factory) Capabilities() agent.Capabilities {
 }
 
 // New implements resource.Factory.
-func (f *Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f *Factory) New(ctx context.Context, in resource.Input) (*Engine, error) {
 	parsed, err := resource.DecodeTyped[settings](ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
 		return nil, errdefs.Validationf("a2a: decode settings: %v", err)
@@ -98,7 +98,7 @@ func (f *Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the A2A engine factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }
 
 // settings is the strictly-decoded engine settings subtree.
@@ -257,4 +257,4 @@ func parseTransports(raw []string) ([]a2aprotocol.TransportProtocol, error) {
 	return out, nil
 }
 
-var _ resource.Factory = (*Factory)(nil)
+var _ resource.Factory[*Engine] = (*Factory)(nil)

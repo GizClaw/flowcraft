@@ -134,9 +134,7 @@ func TestRegisterReadOnlyRootSettings(t *testing.T) {
 		{name: "readonly_root true", settings: `{"root": "` + root + `", "readonly_root": true}`, wantRO: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := NewFactory().New(context.Background(), resource.Input{
-				Settings: json.RawMessage(tc.settings),
-			})
+			got, err := NewFactory().New(context.Background(), resource.NewInput(json.RawMessage(tc.settings), nil, nil, nil))
 			if err != nil {
 				t.Fatalf("NewFactory().New: %v", err)
 			}

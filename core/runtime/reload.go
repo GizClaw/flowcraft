@@ -399,19 +399,11 @@ func (r *Runtime) Reload(
 						"the new document has no dynamic_catalog",
 					name, entry.toolAssembly))
 			}
-			value, ok := newResult.Value(entry.toolAssembly)
-			if !ok {
+			assembly, resolveErr := deploy.Resolve[*tool.Assembly](newResult, entry.toolAssembly)
+			if resolveErr != nil {
 				closeRebound()
-				return nil, abort(errdefs.NotFoundf(
-					"runtime reload: tool assembly resource %q for agent %q not found",
-					entry.toolAssembly, name))
-			}
-			assembly, typeOK := value.(*tool.Assembly)
-			if !typeOK || assembly == nil {
-				closeRebound()
-				return nil, abort(errdefs.Validationf(
-					"runtime reload: tool assembly resource %q for agent %q is %T, want *tool.Assembly",
-					entry.toolAssembly, name, value))
+				return nil, abort(fmt.Errorf(
+					"runtime reload: agent %q: %w", name, resolveErr))
 			}
 			newCatalog.Set(name, assembly)
 		} else if newCatalog != nil && !newCatalog.hasDefault() {

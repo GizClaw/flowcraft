@@ -59,19 +59,19 @@ func (ScriptNodeTypeFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: NodeTypeKind,
 		Impl: "script",
-		Deps: []res.DepSpec{
-			{Name: DepScriptRuntime, Type: "agent.ScriptRuntime", Required: true},
-			{Name: DepTools, Type: "tool.Assembly"},
-			{Name: DepInference, Type: "inference.Assembly"},
-			{Name: DepRouter, Type: "inference.Router"},
-			{Name: DepWorkspace, Type: "workspace.Workspace"},
-			{Name: DepSandbox, Type: "sandbox.Runner"},
+		Deps: []res.Requirement{
+			depScriptRuntimeRequired.Spec(),
+			depTools.Spec(),
+			depInference.Spec(),
+			depRouter.Spec(),
+			depWorkspace.Spec(),
+			depSandbox.Spec(),
 		},
 	}
 }
 
 // New implements res.Factory.
-func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (*scriptNodeType, error) {
 	settings, err := res.DecodeTyped[ScriptNodeTypeSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("graph node type: decode settings: %v", err)
@@ -97,7 +97,7 @@ func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (any, error)
 			"graph node type %q: settings.source is empty", settings.Type)
 	}
 
-	deps, err := decodeDependencies(in.Deps)
+	deps, err := decodeDependencies(in)
 	if err != nil {
 		return nil, err
 	}

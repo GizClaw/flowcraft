@@ -32,7 +32,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f Factory) New(ctx context.Context, in resource.Input) (Bus, error) {
 	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, err
@@ -46,5 +46,5 @@ func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the memory bus factory to the registry.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }

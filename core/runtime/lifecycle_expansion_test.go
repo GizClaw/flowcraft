@@ -46,8 +46,8 @@ func (f *captureEngineFactory) captured() string {
 func TestDynamicAgentExpandsLikeDeployment(t *testing.T) {
 	factory := &captureEngineFactory{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(factory)
-	reg.MustRegister(freshBusFactory{})
+	resource.MustRegister(reg, factory)
+	resource.MustRegister(reg, freshBusFactory{})
 	if err := secret.Register(reg); err != nil {
 		t.Fatalf("secret.Register: %v", err)
 	}

@@ -97,13 +97,12 @@ func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 			},
 		}},
 	}
-	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
-	})
+	assembly, err := inference.Factory{}.New(context.Background(), resource.NewInput(nil,
+		map[string]any{"provider." + ref.ID.Provider: definition}, nil, nil))
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
 	}
-	return value.(*inference.Assembly)
+	return assembly
 }
 
 // Requests returns the cloned requests that reached the compiler, in

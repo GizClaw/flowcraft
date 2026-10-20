@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,7 +37,17 @@ func (w *workspaceRegistry) Close() error {
 type workspaceFactory struct{ fail error }
 
 func (workspaceFactory) Spec() resource.Spec {
-	return resource.Spec{Kind: "workspace.Registry", Impl: "local"}
+	// The registry exposes "*workspace" items, so a "fs/ws1" dep ref is
+	// checked against that type at plan time.
+	return resource.Spec{
+		Kind:  "workspace.Registry",
+		Impl:  "local",
+		Items: reflect.TypeFor[*workspace](),
+		Deps: []resource.Requirement{
+			depAnyOptional("dep").Spec(),
+			depAnyOptional("tool").Spec(),
+		},
+	}
 }
 
 func (f workspaceFactory) New(_ context.Context, in resource.Input) (any, error) {
@@ -67,26 +78,36 @@ func (s *sandbox) Close() error {
 	return nil
 }
 
+// depAny reads a dynamically named dependency in this file's doubles. They
+// model wiring (order, rollback, item refs), not contracts, so their
+// requirements are the empty interface: the deployment plan skips the type
+// check for a Factory[any] producer and this handle narrows nothing.
+func depAny(name string) resource.Dep[any] { return resource.Require[any](name) }
+
+// depAnyOptional is depAny for a dependency the double treats as optional.
+func depAnyOptional(name string) resource.Dep[any] { return resource.Optional[any](name) }
+
 type sandboxFactory struct{}
 
 func (sandboxFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "sandbox.Registry",
 		Impl: "local",
-		Deps: []resource.DepSpec{{
-			Name: "workspace", Type: "workspace.Registry", Required: true,
-		}},
+		Deps: []resource.Requirement{
+			depAny("workspace").Spec(),
+			depAnyOptional("dep").Spec(),
+		},
 	}
 }
 
 func (sandboxFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("workspace")
-	if !ok {
-		return nil, errdefs.Validationf("sandbox: workspace dep missing")
+	value, err := depAny("workspace").Get(in)
+	if err != nil {
+		return nil, err
 	}
 	ws, ok := value.(*workspaceRegistry)
 	if !ok {
-		return nil, errdefs.Validationf("sandbox: workspace dep has wrong type")
+		return nil, errdefs.Validationf("sandbox: workspace dep is %T", value)
 	}
 	return &sandbox{ws: ws}, nil
 }
@@ -107,20 +128,18 @@ func (toolFactory) Spec() resource.Spec {
 	return resource.Spec{
 		Kind: "tool.Assembly",
 		Impl: "yaml",
-		Deps: []resource.DepSpec{{
-			Name: "workspace", Type: "workspace.Workspace", Required: true,
-		}},
+		Deps: []resource.Requirement{resource.Optional[*workspace]("workspace").Spec()},
 	}
 }
 
 func (toolFactory) New(_ context.Context, in resource.Input) (any, error) {
-	value, ok := in.Dep("workspace")
-	if !ok {
-		return nil, errdefs.Validationf("tool: workspace dep missing")
+	value, err := depAny("workspace").Get(in)
+	if err != nil {
+		return nil, err
 	}
 	ws, ok := value.(*workspace)
 	if !ok {
-		return nil, errdefs.Validationf("tool: workspace dep has wrong type")
+		return nil, errdefs.Validationf("tool: workspace dep is %T", value)
 	}
 	return &tool{ws: ws}, nil
 }
@@ -150,9 +169,9 @@ func buildDoc() deploy.Document {
 
 func newRegistry() *resource.Registry {
 	reg := resource.NewRegistry()
-	reg.MustRegister(workspaceFactory{})
-	reg.MustRegister(sandboxFactory{})
-	reg.MustRegister(toolFactory{})
+	resource.MustRegister(reg, workspaceFactory{})
+	resource.MustRegister(reg, sandboxFactory{})
+	resource.MustRegister(reg, toolFactory{})
 	return reg
 }
 
@@ -163,20 +182,25 @@ func TestBuildSuccessWithItems(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 
-	fs, ok := result.Value("fs")
-	if !ok {
-		t.Fatal("fs resource missing")
+	ws, err := deploy.Resolve[*workspaceRegistry](result, "fs")
+	if err != nil {
+		t.Fatalf("resolve fs: %v", err)
 	}
-	ws := fs.(*workspaceRegistry)
 	if ws.root != "/tmp/flowcraft" {
 		t.Fatalf("fs root = %q", ws.root)
 	}
-	box, ok := result.Value("box")
-	if !ok || box.(*sandbox).ws != ws {
+	box, err := deploy.Resolve[*sandbox](result, "box")
+	if err != nil {
+		t.Fatalf("resolve box: %v", err)
+	}
+	if box.ws != ws {
 		t.Fatal("box did not receive the whole fs resource")
 	}
-	kit, ok := result.Value("kit")
-	if !ok || kit.(*tool).ws.name != "ws1" {
+	kit, err := deploy.Resolve[*tool](result, "kit")
+	if err != nil {
+		t.Fatalf("resolve kit: %v", err)
+	}
+	if kit.ws.name != "ws1" {
 		t.Fatal("kit did not receive the fs/ws1 item")
 	}
 }
@@ -194,12 +218,18 @@ func TestBuildRejectsCycle(t *testing.T) {
 	doc := buildDoc()
 	fs := doc.Resources["fs"]
 	box := doc.Resources["box"]
+	// Both factories declare "dep", so the only possible rejection is the
+	// cycle itself: an undeclared-dep error could not masquerade for it.
 	fs.Deps = resource.Deps{"dep": "box"}
 	box.Deps = resource.Deps{"dep": "fs"}
 	doc.Resources["fs"] = fs
 	doc.Resources["box"] = box
-	if _, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), doc); !errdefs.IsValidation(err) {
+	_, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), doc)
+	if !errdefs.IsValidation(err) {
 		t.Fatalf("Build cycle error = %v, want validation", err)
+	}
+	if !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("Build error = %v, want a cycle diagnostic", err)
 	}
 }
 
@@ -235,8 +265,8 @@ func (failingFactory) New(context.Context, resource.Input) (any, error) {
 func TestBuildRollsBackOnFailure(t *testing.T) {
 	var closed bool
 	reg := resource.NewRegistry()
-	reg.MustRegister(recordingFactory{closed: &closed})
-	reg.MustRegister(failingFactory{})
+	resource.MustRegister(reg, recordingFactory{closed: &closed})
+	resource.MustRegister(reg, failingFactory{})
 
 	doc := deploy.Document{
 		Version: "v1",
@@ -319,9 +349,9 @@ func (f hookFactory) New(context.Context, resource.Input) (any, error) {
 func TestDeployBuildsAgentsAndWires(t *testing.T) {
 	var order []string
 	reg := resource.NewRegistry()
-	reg.MustRegister(observerFactory{order: &order})
-	reg.MustRegister(engineFactory{})
-	reg.MustRegister(hookFactory{order: &order})
+	resource.MustRegister(reg, observerFactory{order: &order})
+	resource.MustRegister(reg, engineFactory{})
+	resource.MustRegister(reg, hookFactory{order: &order})
 
 	doc := deploy.Document{
 		Version: "v1",
@@ -363,16 +393,15 @@ type deploymentBinderRecorder struct {
 	fail     error
 }
 
-func (b *deploymentBinderRecorder) BindDeployment(deployment any) error {
+func (b *deploymentBinderRecorder) BindDeployment(view deploy.View) error {
 	if b.fail != nil {
 		return b.fail
 	}
-	result, ok := deployment.(*deploy.Result)
-	if !ok {
-		return errors.New("deployment binder: unexpected deployment type")
+	if view == nil {
+		return errors.New("deployment binder: nil view")
 	}
 	b.bound = true
-	b.agentIDs = append([]string(nil), result.AgentNames()...)
+	b.agentIDs = append([]string(nil), view.AgentNames()...)
 	return nil
 }
 
@@ -391,8 +420,8 @@ func (f binderFactory) New(context.Context, resource.Input) (any, error) {
 func TestDeployBindsDeploymentAfterAgents(t *testing.T) {
 	recorder := &deploymentBinderRecorder{}
 	reg := resource.NewRegistry()
-	reg.MustRegister(engineFactory{})
-	reg.MustRegister(binderFactory{recorder: recorder})
+	resource.MustRegister(reg, engineFactory{})
+	resource.MustRegister(reg, binderFactory{recorder: recorder})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -420,8 +449,8 @@ func TestDeployBindsDeploymentAfterAgents(t *testing.T) {
 func TestDeployBindFailureRollsBack(t *testing.T) {
 	recorder := &deploymentBinderRecorder{fail: errors.New("bind failed")}
 	reg := resource.NewRegistry()
-	reg.MustRegister(engineFactory{})
-	reg.MustRegister(binderFactory{recorder: recorder})
+	resource.MustRegister(reg, engineFactory{})
+	resource.MustRegister(reg, binderFactory{recorder: recorder})
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{
@@ -442,7 +471,7 @@ func TestDeployBindFailureRollsBack(t *testing.T) {
 
 func TestDeployRejectsUnknownHook(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(engineFactory{})
+	resource.MustRegister(reg, engineFactory{})
 	doc := deploy.Document{
 		Version: "v1",
 		Agents: map[string]agent.Definition{
@@ -461,9 +490,9 @@ func TestDeployRejectsUnknownHook(t *testing.T) {
 func TestDeployRollsBackOnWireFailure(t *testing.T) {
 	var closed bool
 	reg := resource.NewRegistry()
-	reg.MustRegister(recordingFactory{closed: &closed})
-	reg.MustRegister(engineFactory{})
-	reg.MustRegister(hookFactory{fail: errors.New("boom")})
+	resource.MustRegister(reg, recordingFactory{closed: &closed})
+	resource.MustRegister(reg, engineFactory{})
+	resource.MustRegister(reg, hookFactory{fail: errors.New("boom")})
 
 	doc := deploy.Document{
 		Version: "v1",
@@ -486,19 +515,59 @@ func TestDeployRollsBackOnWireFailure(t *testing.T) {
 	}
 }
 
+// orderValue records the order in which Close ran.
+type orderValue struct {
+	name  string
+	order *[]string
+}
+
+func (v *orderValue) Close() error {
+	*v.order = append(*v.order, v.name)
+	return nil
+}
+
+type orderFactory struct {
+	name  string
+	order *[]string
+}
+
+func (f orderFactory) Spec() resource.Spec {
+	return resource.Spec{
+		Kind: "test.Order",
+		Impl: f.name,
+		Deps: []resource.Requirement{resource.Optional[*orderValue]("a").Spec()},
+	}
+}
+
+func (f orderFactory) New(context.Context, resource.Input) (*orderValue, error) {
+	return &orderValue{name: f.name, order: f.order}, nil
+}
+
+// Close must run in reverse construction order: a dependent resource is torn
+// down before the resource it depends on.
 func TestResultCloseReversesOrder(t *testing.T) {
-	result, err := deploy.NewBuilder(newRegistry()).Build(context.Background(), buildDoc())
+	var closes []string
+	reg := resource.NewRegistry()
+	resource.MustRegister(reg, orderFactory{name: "a", order: &closes})
+	resource.MustRegister(reg, orderFactory{name: "b", order: &closes})
+
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"a": {Kind: "test.Order", Impl: "a"},
+			"b": {Kind: "test.Order", Impl: "b", Deps: resource.Deps{"a": "a"}},
+		},
+	}
+	result, err := deploy.NewBuilder(reg).Build(context.Background(), doc)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := result.Close(); err != nil {
 		t.Fatal(err)
 	}
-	kit, _ := result.Value("kit")
-	box, _ := result.Value("box")
-	fs, _ := result.Value("fs")
-	if !kit.(*tool).closed || !box.(*sandbox).closed || !fs.(*workspaceRegistry).closed {
-		t.Fatal("not all values were closed")
+	if got, want := strings.Join(closes, ","), "b,a"; got != want {
+		t.Fatalf("close order = %q, want %q", got, want)
 	}
 }
 
@@ -560,7 +629,7 @@ func (f *sequenceHookFactory) New(context.Context, resource.Input) (any, error) 
 
 func TestBindAgentDoesNotMutateResult(t *testing.T) {
 	reg := resource.NewRegistry()
-	reg.MustRegister(engineFactory{})
+	resource.MustRegister(reg, engineFactory{})
 
 	result, err := deploy.NewBuilder(reg).Build(context.Background(), deploy.Document{Version: "v1"})
 	if err != nil {
@@ -587,8 +656,8 @@ func TestBindAgentRollsBackOnHookFailure(t *testing.T) {
 	reg := resource.NewRegistry()
 	engine := &closableAgentEngine{}
 	hook := &closableHook{}
-	reg.MustRegister(closableEngineFactory{value: engine})
-	reg.MustRegister(&sequenceHookFactory{value: hook, failOn: 2})
+	resource.MustRegister(reg, closableEngineFactory{value: engine})
+	resource.MustRegister(reg, &sequenceHookFactory{value: hook, failOn: 2})
 
 	result, err := deploy.NewBuilder(reg).Build(context.Background(), deploy.Document{Version: "v1"})
 	if err != nil {
@@ -616,8 +685,8 @@ func TestResultCloseClosesAgents(t *testing.T) {
 	reg := resource.NewRegistry()
 	engine := &closableAgentEngine{}
 	hook := &closableHook{}
-	reg.MustRegister(closableEngineFactory{value: engine})
-	reg.MustRegister(&sequenceHookFactory{value: hook})
+	resource.MustRegister(reg, closableEngineFactory{value: engine})
+	resource.MustRegister(reg, &sequenceHookFactory{value: hook})
 
 	doc := deploy.Document{
 		Version: "v1",

@@ -97,13 +97,13 @@ func newBaseRegistry(
 ) *resource.Registry {
 	t.Helper()
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: engine})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: engine})
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
 		value: bus,
 	})
 	if store != nil {
-		reg.MustRegister(testResourceFactory{
+		resource.MustRegister(reg, testResourceFactory{
 			spec:  resource.Spec{Kind: testStoreKind, Impl: testStoreImpl},
 			value: store,
 		})

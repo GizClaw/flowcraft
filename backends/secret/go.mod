@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/backends/secret
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/core v0.5.1
+require github.com/GizClaw/flowcraft/core v0.8.2-0.20261020045815-e73f4141edf3
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

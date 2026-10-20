@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	res "github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -44,13 +43,17 @@ type memoryFactory struct {
 	options []kanban.Option
 }
 
+// depEventBus is the optional event bus the board publishes card
+// transitions on.
+var depEventBus = res.Optional[event.Bus](EventBusDep)
+
 // NewMemoryFactory returns a deployment factory for in-memory kanban
 // delegation backends.
 //
 // Options inject application-owned behavior that the document cannot
 // represent, such as a validator. Declarative settings and the optional
 // event_bus dependency are applied after these options.
-func NewMemoryFactory(options ...kanban.Option) res.Factory {
+func NewMemoryFactory(options ...kanban.Option) res.Factory[*kanban.Board] {
 	return memoryFactory{
 		options: slices.Clone(options),
 	}
@@ -61,15 +64,12 @@ func (memoryFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: ResourceKind,
 		Impl: "kanban-memory",
-		Deps: []res.DepSpec{{
-			Name: EventBusDep,
-			Type: "event.Bus",
-		}},
+		Deps: []res.Requirement{depEventBus.Spec()},
 	}
 }
 
 // New implements res.Factory.
-func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
+func (f memoryFactory) New(ctx context.Context, in res.Input) (*kanban.Board, error) {
 	settings, err := res.DecodeTyped[MemorySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
@@ -112,13 +112,9 @@ func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
 		options = append(options, kanban.WithCardTTL(cardTTL))
 	}
 
-	if value, ok := in.Dep(EventBusDep); ok {
-		bus, ok := value.(event.Bus)
-		if !ok || ptr.IsNil(bus) {
-			return nil, errdefs.Validationf(
-				"delegation kanban resource: dep %q is %T, want event.Bus",
-				EventBusDep, value)
-		}
+	if bus, ok, err := depEventBus.TryGet(in); err != nil {
+		return nil, err
+	} else if ok {
 		options = append(options, kanban.WithBus(bus))
 	}
 	return kanban.New(scopeID, options...), nil
@@ -126,5 +122,5 @@ func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
 
 // Register adds the kanban-memory backend factory to r.
 func Register(r *res.Registry) error {
-	return r.Register(NewMemoryFactory())
+	return res.Register(r, NewMemoryFactory())
 }

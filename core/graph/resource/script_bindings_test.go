@@ -49,24 +49,18 @@ func TestEngineMountsScriptBindings(t *testing.T) {
 }
 
 func TestEngineRejectsNonProviderScriptBindings(t *testing.T) {
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
-		Settings: []byte(`{"graph": ` + string(customNodeDefinition(t, "script", map[string]any{"runtime": "js", "source": "x"})) + `}`),
-		Deps:     map[string]any{"script_runtime": scriptRuntimeStub{}, "script_bindings": "not a provider"},
-	})
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(customNodeDefinition(t, "script", map[string]any{"runtime": "js", "source": "x"}))+`}`), map[string]any{"script_runtime": scriptRuntimeStub{}, "script_bindings": "not a provider"}, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New = %v, want Validation for a non-provider script_bindings dep", err)
 	}
 }
 
 func TestStandardScriptBindingsResource(t *testing.T) {
-	value, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.Input{})
+	value, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	provider, ok := value.(bindings.Provider)
-	if !ok {
-		t.Fatalf("New returned %T, want bindings.Provider", value)
-	}
+	provider := value
 
 	env, err := bindings.Assemble(bindings.Invocation{
 		Context: context.Background(),
@@ -105,10 +99,7 @@ func newToolAssembly(t *testing.T) *tool.Assembly {
 // factory and assembles one environment from it.
 func assembleStandard(t *testing.T, settings string, deps map[string]any) *agent.ScriptEnv {
 	t.Helper()
-	value, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.Input{
-		Settings: []byte(settings),
-		Deps:     deps,
-	})
+	value, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.NewInput([]byte(settings), deps, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -118,7 +109,7 @@ func assembleStandard(t *testing.T, settings string, deps map[string]any) *agent
 		Host:    agent.NoopHost{},
 		RunInfo: agent.RunInfo{Identity: agent.Identity{AgentID: "a", RunID: "run-1"}},
 		Runtime: scriptRuntimeStub{},
-	}, nil, value.(bindings.Provider))
+	}, nil, value)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -163,10 +154,7 @@ func TestStandardScriptBindingsPolicyValidation(t *testing.T) {
 		"empty policy list item": {`{"tools":{"allow":[""]}}`, map[string]any{"tools": newToolAssembly(t)}},
 	}
 	for name, tc := range cases {
-		_, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.Input{
-			Settings: []byte(tc.settings),
-			Deps:     tc.deps,
-		})
+		_, err := (graphresource.ScriptBindingsFactory{}).New(context.Background(), resource.NewInput([]byte(tc.settings), tc.deps, nil, nil))
 		if !errdefs.IsValidation(err) {
 			t.Fatalf("%s: New = %v, want Validation", name, err)
 		}
@@ -205,7 +193,7 @@ func TestStandardScriptBindingsFSCap(t *testing.T) {
 }
 
 func TestScriptBindingsNoneBindsNothing(t *testing.T) {
-	value, err := (graphresource.ScriptBindingsNoneFactory{}).New(context.Background(), resource.Input{})
+	value, err := (graphresource.ScriptBindingsNoneFactory{}).New(context.Background(), resource.NewTestInput(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -214,7 +202,7 @@ func TestScriptBindingsNoneBindsNothing(t *testing.T) {
 		Board:   agent.NewBoard(),
 		Host:    agent.NoopHost{},
 		Runtime: scriptRuntimeStub{},
-	}, nil, value.(bindings.Provider))
+	}, nil, value)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}

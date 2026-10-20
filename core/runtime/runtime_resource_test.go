@@ -19,7 +19,7 @@ type testDB struct {
 func TestRuntimeResourceReturnsBuiltValue(t *testing.T) {
 	db := &testDB{name: "pool-a"}
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testDBResourceKind, Impl: "a"},
 		value: db,
 	})
@@ -53,13 +53,13 @@ func TestRuntimeResourceFollowsReloadGeneration(t *testing.T) {
 	dbA := &testDB{name: "pool-a"}
 	dbB := &testDB{name: "pool-b"}
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: noopEngine()})
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: noopEngine()})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testDBResourceKind, Impl: "a"},
 		value: dbA,
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testDBResourceKind, Impl: "b"},
 		value: dbB,
 	})
@@ -109,13 +109,13 @@ func TestRuntimeResourceConcurrentReload(t *testing.T) {
 	dbA := &testDB{name: "pool-a"}
 	dbB := &testDB{name: "pool-b"}
 	reg := resource.NewRegistry()
-	reg.MustRegister(testEngineFactory{engine: noopEngine()})
-	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testEngineFactory{engine: noopEngine()})
+	resource.MustRegister(reg, event.NewFactory())
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testDBResourceKind, Impl: "a"},
 		value: dbA,
 	})
-	reg.MustRegister(testResourceFactory{
+	resource.MustRegister(reg, testResourceFactory{
 		spec:  resource.Spec{Kind: testDBResourceKind, Impl: "b"},
 		value: dbB,
 	})

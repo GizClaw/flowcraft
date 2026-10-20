@@ -80,10 +80,10 @@ func (c agentsetCapability) Register(registry *resource.Registry) error {
 	if err := event.Register(registry); err != nil {
 		return err
 	}
-	if err := registry.Register(agentsetAssemblyFactory{}); err != nil {
+	if err := resource.Register(registry, agentsetAssemblyFactory{}); err != nil {
 		return err
 	}
-	return registry.Register(agentsetEngineFactory(c))
+	return resource.Register(registry, agentsetEngineFactory(c))
 }
 
 // agentsetAssemblyFactory provides the tool assembly a dynamic

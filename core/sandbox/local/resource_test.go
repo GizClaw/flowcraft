@@ -22,9 +22,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal root: %v", err)
 	}
-	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": ` + string(root) + `}`),
-	})
+	value, err := factory.Build(context.Background(), resource.NewInput([]byte(`{"root": `+string(root)+`}`), nil, nil, nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -39,7 +37,7 @@ func TestFactoryRequiresRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup(local.ResourceKind, local.BackendName)
-	if _, err := factory.New(context.Background(), resource.Input{}); err == nil {
+	if _, err := factory.Build(context.Background(), resource.NewTestInput(nil)); err == nil {
 		t.Fatal("New unexpectedly accepted missing root")
 	}
 }

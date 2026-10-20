@@ -32,13 +32,9 @@ func TestFactoryFailsWhenTheJournalCannotStart(t *testing.T) {
 	}
 	t.Cleanup(func() { newJournalEngine = previous })
 
-	value, err := Factory{}.New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{"root": ` + string(quoted) + `, "journal": {}}`),
-	})
+	value, err := Factory{}.New(context.Background(), resource.NewInput(json.RawMessage(`{"root": `+string(quoted)+`, "journal": {}}`), nil, nil, nil))
 	if err == nil {
-		if runner, ok := value.(*Runner); ok {
-			_ = runner.Close()
-		}
+		_ = value.Close()
 		t.Fatal("the factory returned a runner although the journal could not start")
 	}
 	if !strings.Contains(err.Error(), "watch instances exhausted") {

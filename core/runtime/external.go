@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"reflect"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -13,8 +14,8 @@ import (
 type ExternalDependency struct {
 	// Name is the resource-ref name used in document deps, e.g. "db".
 	Name string `json:"name"`
-	// Contract is the expected DepSpec.Type of consuming factories,
-	// e.g. "db.Pool".
+	// Contract is the author-declared name a consumer's requirement
+	// documents, e.g. "db.Pool".
 	Contract string `json:"contract"`
 }
 
@@ -35,9 +36,25 @@ func (d ExternalDependency) Validate() error {
 
 // ExternalResource pairs one external dependency declaration with the
 // caller-owned value that satisfies it.
+//
+// Type is the value's Go type, recorded at injection time: it is what the
+// deployment plan checks a consuming factory's requirement against, so a
+// mismatched injection is a startup error rather than a factory panic.
 type ExternalResource struct {
 	ExternalDependency
 	Value any
+	Type  reflect.Type
+}
+
+// NewExternal records one caller-owned dependency together with its Go type.
+// Injection sites use this constructor so a value can never enter the builder
+// without a type to check.
+func NewExternal(name, contract string, value any) ExternalResource {
+	return ExternalResource{
+		ExternalDependency: ExternalDependency{Name: name, Contract: contract},
+		Value:              value,
+		Type:               reflect.TypeOf(value),
+	}
 }
 
 // Validate checks the declaration and rejects nil values.
@@ -49,6 +66,11 @@ func (e ExternalResource) Validate() error {
 		return errdefs.Validationf(
 			"runtime external_deps: %q value is required", e.Name)
 	}
+	if e.Type == nil {
+		return errdefs.Validationf(
+			"runtime external_deps: %q was injected without a Go type; "+
+				"use runtime.NewExternal", e.Name)
+	}
 	return nil
 }
 
@@ -59,6 +81,7 @@ func toDeployExternalResource(e ExternalResource) deploy.ExternalResource {
 			Contract: strings.TrimSpace(e.Contract),
 		},
 		Value: e.Value,
+		Type:  e.Type,
 	}
 }
 

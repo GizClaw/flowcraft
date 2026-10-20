@@ -26,19 +26,14 @@ func TestFactoryJournalSettingsTakeEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := NewFactory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{"root": ` + string(quoted) + `, "journal": {"max_watch_set": 512, "exclude": ["dist"]}}`),
-	})
+	value, err := NewFactory().New(context.Background(), resource.NewInput(json.RawMessage(`{"root": `+string(quoted)+`, "journal": {"max_watch_set": 512, "exclude": ["dist"]}}`), nil, nil, nil))
 	if err != nil {
 		if errdefs.IsNotAvailable(err) {
 			t.Skipf("bwrap is not usable here: %v", err)
 		}
 		t.Fatalf("build: %v", err)
 	}
-	runner, ok := value.(sandbox.Runner)
-	if !ok {
-		t.Fatalf("factory returned %T, want a sandbox.Runner", value)
-	}
+	runner := value
 	t.Cleanup(func() { _ = runner.Close() })
 
 	caps := runner.Capabilities().Journal
@@ -69,9 +64,7 @@ func TestFactoryJournalSettings(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return resource.Input{
-			Settings: json.RawMessage(`{"root": ` + string(quoted) + `, "journal": ` + body + `}`),
-		}
+		return resource.NewInput(json.RawMessage(`{"root": `+string(quoted)+`, "journal": `+body+`}`), nil, nil, nil)
 	}
 
 	cases := []struct {

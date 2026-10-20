@@ -54,17 +54,11 @@ func TestVectorLaneStatsWireTheLane(t *testing.T) {
 	value, err := NewFactory(
 		WithClock(func() time.Time { return testNow }),
 		WithDeriver(fakeDeriver{}),
-	).New(context.Background(), resource.Input{
-		Settings: []byte(settings),
-		Deps:     map[string]any{"workspace": ws, "inference": engine},
-	})
+	).New(context.Background(), resource.NewInput([]byte(settings), map[string]any{"workspace": ws, "inference": engine}, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, ok := value.(*Assembly)
-	if !ok {
-		t.Fatalf("factory returned %T, want *Assembly", value)
-	}
+	assembly := value
 	if err := assembly.Wire(context.Background()); err != nil {
 		t.Fatal(err)
 	}

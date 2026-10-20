@@ -340,7 +340,7 @@ func (f streamExportEngineFactory) New(context.Context, resource.Input) (any, er
 func buildStreamExportDeployment(t *testing.T, engine agent.Engine) *deploy.Result {
 	t.Helper()
 	reg := resource.NewRegistry()
-	if err := reg.Register(streamExportEngineFactory{engine: engine}); err != nil {
+	if err := resource.Register(reg, streamExportEngineFactory{engine: engine}); err != nil {
 		t.Fatal(err)
 	}
 	doc := deploy.Document{

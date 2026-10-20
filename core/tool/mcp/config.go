@@ -83,7 +83,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f Factory) New(ctx context.Context, in resource.Input) (*Source, error) {
 	parsed, err := ParseSpec(ctx, in.Settings)
 	if err != nil {
 		return nil, err
@@ -116,7 +116,7 @@ func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the MCP tool source factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(NewFactory())
+	return resource.Register(r, NewFactory())
 }
 
 // ParseSpec strictly decodes an MCP source spec.
