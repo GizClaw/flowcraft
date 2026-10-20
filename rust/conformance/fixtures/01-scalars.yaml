@@ -1,9 +1,0 @@
-str: hello
-quoted: "hello world"
-single: 'it''s ok'
-int: 42
-neg: -7
-float: 3.5
-bt: true
-bf: false
-nl: null

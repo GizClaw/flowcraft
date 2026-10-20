@@ -1,7 +1,0 @@
-base: &b
-  x: 1
-  y: 2
-use: *b
-list:
-  - &i item
-  - *i
