@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 // inspectDocument reads metadata out of the native documents without
@@ -60,7 +60,7 @@ func requireProviderCredential(workspaceDir string) error {
 // utils converts the document at the boundary, and the result is a
 // plain string map.
 func decodeSpeakers(raw []byte) (map[string]string, error) {
-	jsonData, err := utils.ToJSON(raw)
+	jsonData, err := decode.ToJSON(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -84,11 +84,11 @@ type inferenceCredentials struct {
 
 // decodeInferenceCredentials converts the YAML authoring document to
 // JSON and decodes only the secret references the preflight needs.
-// json.Unmarshal (not utils.Decode) is used on purpose: version, id,
+// json.Unmarshal (not decode.Decode) is used on purpose: version, id,
 // driver, and provider-specific fields are valid in inference.yaml but
 // irrelevant here, and the preflight should stay best-effort.
 func decodeInferenceCredentials(raw []byte) (inferenceCredentials, error) {
-	jsonData, err := utils.ToJSON(raw)
+	jsonData, err := decode.ToJSON(raw)
 	if err != nil {
 		return inferenceCredentials{}, err
 	}

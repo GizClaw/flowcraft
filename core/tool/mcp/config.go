@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -229,7 +229,7 @@ func (s ServerSpec) transport(client *http.Client) (mcpsdk.Transport, error) {
 				return nil, errdefs.Validationf(
 					"mcp: server %q: http_timeout: %w", s.Name, err)
 			}
-			client = utils.NewHttpClient(utils.WithTimeout(timeout))
+			client = httpkit.NewHTTPClient(httpkit.WithTimeout(timeout))
 		}
 		return StreamableHTTP(s.URL, s.Headers, client)
 	default:

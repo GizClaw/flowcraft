@@ -2,15 +2,13 @@
 // Envelopes, plus an in-memory implementation suitable for single-process
 // fan-out.
 //
-// File layout:
-//
-//	bus.go         — Bus / Subscription / SubOption interface contract
-//	                 plus NoopBus. This is the stable surface; everything
-//	                 else in the package implements or supports it.
-//	memory.go      — MemoryBus, the in-process Bus implementation.
-//	envelope.go    — Envelope value type and well-known headers.
-//	subject.go     — Subject / Pattern routing keys.
-//	observer.go    — Observer instrumentation hook + BackpressurePolicy.
+// Layout is described by job rather than by file: the Bus / Subscription /
+// SubOption contract is the stable surface (with NoopBus for a host that
+// routes nowhere); the in-memory implementation is one of several possible
+// buses; the router fans envelopes from buses to attachments and back;
+// Envelope, Subject and Trace carry the routing vocabulary; the observer and
+// the telemetry seam are the instrumentation points; and a resource adapter
+// wires a bus into a deployment.
 package event
 
 import (

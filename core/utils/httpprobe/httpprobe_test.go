@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
@@ -319,7 +319,7 @@ func TestWrappedDefaultTransportDoesNotBreakHTTPKit(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	http.DefaultTransport = New(preserve)
-	transport := utils.NewRoundTripper(utils.WithoutRetry())
+	transport := httpkit.NewRoundTripper(httpkit.WithoutRetry())
 	resp, err := (&http.Client{Transport: transport}).Get(server.URL)
 	if err != nil {
 		t.Fatalf("round trip through the fallback transport: %v", err)

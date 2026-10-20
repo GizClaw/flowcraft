@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 )
 
 const testServerName = "example.com"

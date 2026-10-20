@@ -64,7 +64,7 @@
 //
 // Both modes run the child under a profile that denies all network
 // except one loopback port, which a host-side enforcement proxy
-// (core/utils/net) listens on. The proxy evaluates the
+// (core/utils/netpolicy) listens on. The proxy evaluates the
 // allow-list (NetAllowList) or forwards to the configured upstream
 // (NetProxy); it resolves hostnames on the host, so the child needs no
 // resolver route. The child env is forced onto the proxy loopback

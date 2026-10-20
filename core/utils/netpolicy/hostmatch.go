@@ -1,9 +1,4 @@
-// Host-pattern compilation: domains, wildcards, IP literals, and CIDR
-// prefixes are compiled into a pure matching set. The net-rule matcher
-// and the MITM host selector share this interpretation so that
-// "example.com", "*.example.com", "1.2.3.4", and "10.0.0.0/8" behave
-// identically wherever a policy is evaluated.
-package net
+package netpolicy
 
 import (
 	"fmt"
@@ -12,6 +7,12 @@ import (
 
 	"golang.org/x/net/idna"
 )
+
+// Host-pattern compilation: domains, wildcards, IP literals, and CIDR
+// prefixes are compiled into a pure matching set. The net-rule matcher
+// and the MITM host selector share this interpretation so that
+// "example.com", "*.example.com", "1.2.3.4", and "10.0.0.0/8" behave
+// identically wherever a policy is evaluated.
 
 // Pattern is one compiled host pattern.
 //

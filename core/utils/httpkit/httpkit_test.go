@@ -1,4 +1,4 @@
-package utils
+package httpkit
 
 import (
 	"crypto/tls"
@@ -68,7 +68,7 @@ func TestProtocolSelection(t *testing.T) {
 		{name: "http1", proto: 1, opts: []Option{WithHTTP1()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			client := NewHttpClient(append(test.opts, WithTLSClientConfig(tlsConfig))...)
+			client := NewHTTPClient(append(test.opts, WithTLSClientConfig(tlsConfig))...)
 			resp, err := client.Get(server.URL)
 			if err != nil {
 				t.Fatalf("GET: %v", err)

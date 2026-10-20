@@ -24,7 +24,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -257,7 +257,7 @@ func loadDefinition(
 	if err != nil {
 		return nil, err
 	}
-	definition, err := utils.Decode[coregraph.GraphDefinition](data)
+	definition, err := decode.Decode[coregraph.GraphDefinition](data)
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: decode definition: %w", err)
 	}

@@ -16,7 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message/media"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 )
 
 // mediaClient speaks to MiniMax's media APIs (t2a, video, image) — plain
@@ -29,16 +29,16 @@ type mediaClient struct {
 }
 
 func newMediaClient(key, base string, spec Spec) *mediaClient {
-	options := []utils.Option{
-		utils.WithTimeout(10 * time.Minute),
-		utils.WithResponseHeaderTimeout(5 * time.Minute),
+	options := []httpkit.Option{
+		httpkit.WithTimeout(10 * time.Minute),
+		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
 	}
 	if spec.HTTPRetries != nil {
 		options = append(options,
-			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
+			httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	return &mediaClient{
-		http: utils.NewHttpClient(options...),
+		http: httpkit.NewHTTPClient(options...),
 		key:  key,
 		base: strings.TrimRight(base, "/"),
 	}
@@ -93,7 +93,7 @@ func (c *mediaClient) request(
 				classified,
 				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
 			),
-			utils.RetryCountOf(resp),
+			httpkit.RetryCountOf(resp),
 		)
 	}
 	return resp, nil

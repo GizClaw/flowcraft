@@ -10,7 +10,7 @@
 //
 // When invoked as the bridge, the process listens on the netns
 // loopback, forwards every accepted connection over a unix socket to
-// the host-side enforcement proxy (core/utils/net,
+// the host-side enforcement proxy (core/utils/netpolicy,
 // whose socket path is bind-mounted into the sandbox), injects the
 // proxy environment (HTTP(S)_PROXY / ALL_PROXY -> 127.0.0.1:<port>,
 // NO_PROXY stripped) so proxy-aware clients use the single enforced

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 )
 
 // DefaultMaxBodyBytes caps buffered bodies when

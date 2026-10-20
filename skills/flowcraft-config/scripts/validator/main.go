@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/runtime"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 const (
@@ -86,7 +86,7 @@ func validateDeploy(data []byte) error {
 }
 
 func validateGraph(data []byte) error {
-	jsonData, err := utils.ToJSON(data)
+	jsonData, err := decode.ToJSON(data)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func validateGraph(data []byte) error {
 }
 
 func validateGeneric(kind string, data []byte) error {
-	jsonData, err := utils.ToJSON(data)
+	jsonData, err := decode.ToJSON(data)
 	if err != nil {
 		return err
 	}

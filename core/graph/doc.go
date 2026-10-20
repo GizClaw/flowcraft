@@ -12,7 +12,7 @@
 //     kernel never interprets them. Declarative authoring enters
 //     through an engine's settings in core/deploy or a graph file;
 //     core/graph/config converts YAML authoring sugar to JSON with
-//     core/utils. This kernel deliberately carries no YAML
+//     core/utils/decode. This kernel deliberately carries no YAML
 //     dependency.
 //  2. Registration — node behaviour is supplied per type name via
 //     [RegisterType], which binds a typed config decoder and a handler

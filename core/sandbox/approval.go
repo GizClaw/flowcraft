@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 

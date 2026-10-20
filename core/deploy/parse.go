@@ -1,6 +1,6 @@
 package deploy
 
-import "github.com/GizClaw/flowcraft/core/utils"
+import "github.com/GizClaw/flowcraft/core/utils/decode"
 
 // Parse decodes one deployment document from YAML or JSON into a
 // [Document]. It applies the shared strict semantics of core/utils:
@@ -10,7 +10,7 @@ import "github.com/GizClaw/flowcraft/core/utils"
 // Parse validates the document semantically (version, resources,
 // agents).
 func Parse(data []byte) (Document, error) {
-	doc, err := utils.Decode[Document](data)
+	doc, err := decode.Decode[Document](data)
 	if err != nil {
 		return Document{}, err
 	}

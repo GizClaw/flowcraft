@@ -61,7 +61,7 @@
 // default route) and force every proxy-aware client through a trusted
 // gate: the bridge listens on the netns loopback and forwards each
 // connection over a unix socket to a host-side enforcement proxy
-// (core/utils/net) that evaluates the allow-list or
+// (core/utils/netpolicy) that evaluates the allow-list or
 // forwards to the configured upstream. The bridge injects
 // HTTP(S)_PROXY -> http://loopback:port and ALL_PROXY ->
 // socks5://loopback:port and strips NO_PROXY. The proxy listener

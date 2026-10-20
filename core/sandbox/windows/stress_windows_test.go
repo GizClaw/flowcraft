@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 )
 
 // runEcho asserts one-shot exec of `cmd /c echo token` completed with

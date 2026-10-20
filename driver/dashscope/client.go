@@ -13,7 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 )
 
 // The protocol headers the platform switches behaviour on. async is
@@ -124,15 +124,15 @@ type mediaClient struct {
 }
 
 func newMediaClient(key, base, workspace string, spec Spec) *mediaClient {
-	options := []utils.Option{
-		utils.WithTimeout(10 * time.Minute),
-		utils.WithResponseHeaderTimeout(5 * time.Minute),
+	options := []httpkit.Option{
+		httpkit.WithTimeout(10 * time.Minute),
+		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, utils.WithRetryAttempts(int(*spec.HTTPRetries)))
+		options = append(options, httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	return &mediaClient{
-		http:      utils.NewHttpClient(options...),
+		http:      httpkit.NewHTTPClient(options...),
 		key:       key,
 		base:      strings.TrimRight(base, "/"),
 		workspace: workspace,
@@ -206,7 +206,7 @@ func (c *mediaClient) request(
 				failure,
 				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
 			),
-			utils.RetryCountOf(resp),
+			httpkit.RetryCountOf(resp),
 		)
 	}
 	return resp, nil

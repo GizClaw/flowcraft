@@ -9,7 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 )
 
 // The two headers the transport owns. endpoint.headers refuses them for the
@@ -89,16 +89,16 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 	// The httpkit client owns the hardened transport, its protocol and
 	// pooling defaults, and the retry transport that stamps the attempt count
 	// the error path reads back.
-	options := make([]utils.Option, 0, 1)
+	options := make([]httpkit.Option, 0, 1)
 	if spec.HTTPRetries != nil {
-		options = append(options, utils.WithRetryAttempts(int(*spec.HTTPRetries)))
+		options = append(options, httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	headers := make(map[string]string, len(spec.Endpoint.Headers))
 	for name, value := range spec.Endpoint.Headers {
 		headers[name] = value
 	}
 	return &clients{
-		http:    utils.NewHttpClient(options...),
+		http:    httpkit.NewHTTPClient(options...),
 		key:     apiKey,
 		base:    spec.baseURL(),
 		headers: headers,

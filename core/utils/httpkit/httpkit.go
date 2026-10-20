@@ -1,9 +1,4 @@
-// This file carries the HTTP conveniences provider clients use: a tuned
-// connection-pooling transport, a bounded retry RoundTripper for transient
-// failures, and an option-driven client builder hardening HTTP/1.1 and
-// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
-// dependency was dropped during the core migration).
-package utils
+package httpkit
 
 import (
 	"context"
@@ -23,6 +18,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// This file carries the HTTP conveniences provider clients use: a tuned
+// connection-pooling transport, a bounded retry RoundTripper for transient
+// failures, and an option-driven client builder hardening HTTP/1.1 and
+// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
+// dependency was dropped during the core migration).
+
 // Protocol selects the transport family built by [NewRoundTripper].
 type Protocol int
 
@@ -35,7 +36,7 @@ const (
 	ProtocolHTTP2
 )
 
-// Config carries every knob for [NewRoundTripper] / [NewHttpClient]. Zero
+// Config carries every knob for [NewRoundTripper] / [NewHTTPClient]. Zero
 // values select the defaults below.
 type Config struct {
 	Protocol Protocol
@@ -165,9 +166,9 @@ func NewRoundTripper(options ...Option) http.RoundTripper {
 	return newRetryTransport(base, config.Retry)
 }
 
-// NewHttpClient builds an http.Client over [NewRoundTripper] with the
+// NewHTTPClient builds an http.Client over [NewRoundTripper] with the
 // configured whole-request timeout.
-func NewHttpClient(options ...Option) *http.Client {
+func NewHTTPClient(options ...Option) *http.Client {
 	config := applyOptions(options)
 	return &http.Client{
 		Transport: NewRoundTripper(options...),

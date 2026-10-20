@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
@@ -100,7 +100,7 @@ func testCmd(args []string) error {
 // YAML authoring form to JSON at the boundary; json.Unmarshal keeps the
 // decode permissive so test files may carry extra fields.
 func parseTestFile(data []byte) (testFile, error) {
-	jsonData, err := utils.ToJSON(data)
+	jsonData, err := decode.ToJSON(data)
 	if err != nil {
 		return testFile{}, err
 	}

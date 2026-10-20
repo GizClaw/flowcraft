@@ -12,7 +12,7 @@ import (
 	sdkmemory "github.com/GizClaw/flowcraft/core/memory"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 type contextProvider struct {
@@ -338,7 +338,7 @@ render: {output: memory_content, arbitrary: {}}
 
 func settingsNode(t *testing.T, source string) json.RawMessage {
 	t.Helper()
-	jsonData, err := utils.ToJSON([]byte(source))
+	jsonData, err := decode.ToJSON([]byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}

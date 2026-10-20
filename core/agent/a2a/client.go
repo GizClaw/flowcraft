@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 	a2aprotocol "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	a2av0 "github.com/a2aproject/a2a-go/v2/a2acompat/a2av0"
@@ -16,7 +16,7 @@ import (
 // ClientOptions configures how the official A2A client is assembled.
 type ClientOptions struct {
 	// HTTPClient is used by the JSON-RPC transports. Defaults to
-	// utils.NewHttpClient() when nil.
+	// httpkit.NewHTTPClient() when nil.
 	HTTPClient *http.Client
 
 	// GRPCDialOptions are applied when the gRPC transports establish a
@@ -43,7 +43,7 @@ type ClientOptions struct {
 func newClient(ctx context.Context, card *a2aprotocol.AgentCard, opts ClientOptions) (*a2aclient.Client, error) {
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = utils.NewHttpClient()
+		httpClient = httpkit.NewHTTPClient()
 	}
 	factoryOpts := []a2aclient.FactoryOption{
 		a2aclient.WithDefaultsDisabled(),

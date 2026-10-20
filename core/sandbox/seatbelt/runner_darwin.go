@@ -18,8 +18,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/telemetry"
-	corenet "github.com/GizClaw/flowcraft/core/utils/net"
-	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
+	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
+	"github.com/GizClaw/flowcraft/core/utils/netpolicy/mitm"
 	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
 )
 
