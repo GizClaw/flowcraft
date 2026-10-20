@@ -117,15 +117,14 @@ func WithBus(bus event.Bus) Option {
 	}
 }
 
-// New constructs an in-memory delegation backend.
-func New(scopeID string, options ...Option) *Board {
-	ctx, cancel := context.WithCancel(context.Background())
+// New constructs an in-memory delegation backend. Invalid option values are
+// reported as errdefs.Validation errors rather than panics; a rejected board
+// starts no goroutine and returns a nil board.
+func New(scopeID string, options ...Option) (*Board, error) {
 	board := &Board{
 		scopeID:              scopeID,
 		bus:                  event.NewMemoryBus(),
 		ownsBus:              true,
-		ctx:                  ctx,
-		cancel:               cancel,
 		index:                make(map[string]*Card),
 		idempotency:          make(map[string]*retainedOperation),
 		tombstones:           make(map[string]*retainedOperation),
@@ -140,12 +139,17 @@ func New(scopeID string, options ...Option) *Board {
 		}
 	}
 	if board.idempotencyRetention <= 0 {
-		panic("delegation kanban: idempotency retention must be positive")
+		return nil, errdefs.Validationf(
+			"delegation kanban: idempotency retention must be positive, got %s",
+			board.idempotencyRetention)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	board.ctx = ctx
+	board.cancel = cancel
 	board.metrics = newMetrics(ctx)
 	board.janitor.Add(1)
 	go board.runJanitor()
-	return board
+	return board, nil
 }
 
 // ScopeID returns the backend instance identifier used by events.

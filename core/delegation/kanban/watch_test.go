@@ -77,7 +77,10 @@ func TestWatchClosesOnContextAndBoardClose(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			board := kanban.New("watch-close")
+			board, err := kanban.New("watch-close")
+			if err != nil {
+				t.Fatalf("kanban.New: %v", err)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			watch := board.Watch(ctx, kanban.Filter{})
 			test.close(board, cancel)

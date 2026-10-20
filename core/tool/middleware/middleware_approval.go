@@ -31,7 +31,8 @@ func (f ApproverFunc) Approve(ctx context.Context, call message.ToolCall) error 
 //
 // Place it inside (after) Recover so a misbehaving Approver panic
 // still becomes a result, and before Timeout so approval wait time
-// does not consume the tool's execution budget.
+// does not consume the tool's execution budget. approver must be
+// non-nil.
 func Approval(approver Approver, tools ...string) tool.Middleware {
 	if approver == nil {
 		panic("middleware.Approval: approver is nil")

@@ -16,7 +16,10 @@ import (
 // newTestBoard returns a delegation board publishing onto bus.
 func newTestBoard(t *testing.T, bus event.Bus) *kanban.Board {
 	t.Helper()
-	board := kanban.New("test-scope", kanban.WithBus(bus))
+	board, err := kanban.New("test-scope", kanban.WithBus(bus))
+	if err != nil {
+		t.Fatalf("kanban.New: %v", err)
+	}
 	t.Cleanup(func() { _ = board.Close() })
 	return board
 }

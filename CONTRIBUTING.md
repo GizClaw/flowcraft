@@ -19,6 +19,29 @@ messages use Conventional Commits with a module scope, e.g.
 `feat(driver/openai): add qwen provider` or `fix(core): harden streaming`.
 Keep changes within module boundaries.
 
+## Panic policy
+
+Exported constructors never panic on invalid values. A value a deployment
+document or YAML file can reach — a size, a limit, a duration, a path — is
+validated and reported as an `errdefs.Validation` error, so the host can
+surface it instead of losing the process. Configurable constructors therefore
+return `(T, error)` rather than `T`.
+
+Only `Must*`-prefixed helpers panic. `Must...` is the package-level
+configuration form of the same constructor: it delegates to the error-returning
+form and panics with that error, for call sites where the value is a compile-
+time constant and a rejection is a programmer error.
+
+A nil required dependency is also a programmer error and may panic, but the
+constructor's doc comment has to say so; the same holds for any other
+invariant the caller cannot satisfy from configuration. Such a panic is a bug
+report, not an error path.
+
+Panics must never cross a goroutine boundary. A recover in the calling
+goroutine cannot observe a panic raised in one the constructor or the call
+spawned, so any goroutine that a library starts has to recover its own panics
+and report them through the runtime's error path.
+
 ## Modules and dependency order
 
 The independently versioned library modules are `core`, `craft`, `driver/*`,

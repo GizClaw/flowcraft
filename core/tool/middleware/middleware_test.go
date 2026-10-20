@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -72,7 +73,7 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 			inFlight.Add(-1)
 			return "ok", nil
 		}))
-	exec := tool.NewExecutor(reg, Concurrency(2))
+	exec := tool.NewExecutor(reg, MustConcurrency(2))
 
 	calls := make([]message.ToolCall, 6)
 	for i := range calls {
@@ -97,7 +98,7 @@ func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 				return "", ctx.Err()
 			}
 		}))
-	exec := tool.NewExecutor(reg, Concurrency(1))
+	exec := tool.NewExecutor(reg, MustConcurrency(1))
 
 	first := make(chan message.ToolResult, 1)
 	go func() { first <- exec.Execute(context.Background(), call("holder")) }()
@@ -113,13 +114,25 @@ func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 	<-first
 }
 
-func TestConcurrency_InvalidLimitPanics(t *testing.T) {
+func TestConcurrency_InvalidLimitIsValidationError(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		mw, err := Concurrency(limit)
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("limit = %d: err = %v, want Validation", limit, err)
+		}
+		if mw != nil {
+			t.Fatalf("limit = %d: middleware = %v, want nil", limit, mw)
+		}
+	}
+}
+
+func TestMustConcurrency_InvalidLimitPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Error("expected panic for non-positive limit")
 		}
 	}()
-	Concurrency(0)
+	MustConcurrency(0)
 }
 
 // ---------------------------------------------------------------------------

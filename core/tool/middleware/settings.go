@@ -84,11 +84,6 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 	if s.ResultLimit != nil {
 		// Inside Recover and Telemetry, outside Timeout: the timeout's own
 		// error result has to be bounded like any other result.
-		if s.ResultLimit.Max <= 0 {
-			return nil, errdefs.Validationf(
-				"tool middleware: result_limit.max must be positive, got %d",
-				s.ResultLimit.Max)
-		}
 		opts := make([]ResultLimitOption, 0, 2)
 		if s.ResultLimit.Marker != "" {
 			opts = append(opts, WithResultMarker(s.ResultLimit.Marker))
@@ -96,12 +91,20 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		if budget := s.ResultLimit.PartBudgetBytes; budget != nil {
 			opts = append(opts, WithResultPartBudget(*budget))
 		}
-		mws = append(mws, ResultLimiter(s.ResultLimit.Max, opts...))
+		limiter, err := ResultLimiter(s.ResultLimit.Max, opts...)
+		if err != nil {
+			return nil, err
+		}
+		mws = append(mws, limiter)
 	} else if budget := partBudget(s.ResultPartBudgetBytes); budget > 0 {
 		// Text is unbounded unless the deployment asks for a rune budget, but
 		// media is bounded by default so a tool cannot hand the model an
 		// unbounded context item by returning one.
-		mws = append(mws, ResultPartLimiter(budget))
+		limiter, err := ResultPartLimiter(budget)
+		if err != nil {
+			return nil, err
+		}
+		mws = append(mws, limiter)
 	}
 	if s.Truncate != nil && s.Truncate.Enabled {
 		if s.Truncate.MaxChars <= 0 {
@@ -126,8 +129,12 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		}
 		mws = append(mws, Timeout(d, nil))
 	}
-	if s.Concurrency != nil && s.Concurrency.Limit > 0 {
-		mws = append(mws, Concurrency(s.Concurrency.Limit))
+	if s.Concurrency != nil {
+		concurrency, err := Concurrency(s.Concurrency.Limit)
+		if err != nil {
+			return nil, err
+		}
+		mws = append(mws, concurrency)
 	}
 	return mws, nil
 }

@@ -56,6 +56,8 @@ func RedactPatterns(patterns ...string) tool.Middleware {
 //	    middleware.Redact(rules...),
 //	    middleware.AuditRedacted(sink, rules...),
 //	)
+//
+// sink must be non-nil.
 func AuditRedacted(sink AuditSink, rules ...RedactRule) tool.Middleware {
 	if sink == nil {
 		panic("middleware.AuditRedacted: sink is nil")

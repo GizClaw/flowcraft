@@ -176,3 +176,171 @@ func TestFromSettings_ResultLimitWrapsTimeout(t *testing.T) {
 		t.Fatalf("content = %q, want the limited timeout message", got)
 	}
 }
+
+// TestFromSettings_HostileValues walks every Settings field with the values a
+// deployment document can reach and pins two promises at once: a value that
+// cannot be honoured is reported as an errdefs.Validation error, and no
+// constructor in the chain panics while rejecting it. Zero and negative part
+// budgets, an empty timeout and a disabled truncate stay valid: they are the
+// documented escape hatches, not misconfiguration.
+func TestFromSettings_HostileValues(t *testing.T) {
+	zero, negative := 0, -1
+	overMax := int(^uint(0) >> 1)
+	dir := t.TempDir()
+
+	tests := []struct {
+		name     string
+		settings Settings
+		wantErr  bool
+	}{
+		{"empty settings", Settings{}, false},
+		{"recover disabled", Settings{Recover: &RecoverSettings{Enabled: false}}, false},
+		{"recover enabled", Settings{Recover: &RecoverSettings{Enabled: true}}, false},
+		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: false}}, false},
+		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: true}}, false},
+		{
+			"timeout empty default",
+			Settings{Timeout: &TimeoutSettings{Default: ""}},
+			false,
+		},
+		{
+			"timeout malformed duration",
+			Settings{Timeout: &TimeoutSettings{Default: "soon"}},
+			true,
+		},
+		{
+			"timeout overflowing duration",
+			Settings{Timeout: &TimeoutSettings{Default: "1000000000000h"}},
+			true,
+		},
+		{
+			"timeout negative duration",
+			Settings{Timeout: &TimeoutSettings{Default: "-5s"}},
+			false,
+		},
+		{
+			"concurrency zero limit",
+			Settings{Concurrency: &ConcurrencySettings{Limit: 0}},
+			true,
+		},
+		{
+			"concurrency negative limit",
+			Settings{Concurrency: &ConcurrencySettings{Limit: -3}},
+			true,
+		},
+		{
+			"result_limit zero max",
+			Settings{ResultLimit: &ResultLimitSettings{Max: 0}},
+			true,
+		},
+		{
+			"result_limit negative max",
+			Settings{ResultLimit: &ResultLimitSettings{Max: -1}},
+			true,
+		},
+		{
+			"result_limit over-max max",
+			Settings{ResultLimit: &ResultLimitSettings{Max: overMax}},
+			false,
+		},
+		{
+			"result_limit empty marker",
+			Settings{ResultLimit: &ResultLimitSettings{Max: 10, Marker: ""}},
+			false,
+		},
+		{
+			"result_limit zero part budget",
+			Settings{ResultLimit: &ResultLimitSettings{Max: 10, PartBudgetBytes: &zero}},
+			false,
+		},
+		{
+			"result_limit negative part budget",
+			Settings{ResultLimit: &ResultLimitSettings{Max: 10, PartBudgetBytes: &negative}},
+			false,
+		},
+		{
+			"result_limit over-max part budget",
+			Settings{ResultLimit: &ResultLimitSettings{Max: 10, PartBudgetBytes: &overMax}},
+			false,
+		},
+		{
+			"truncate disabled with hostile values",
+			Settings{Truncate: &TruncateSettings{Enabled: false, MaxChars: 0, Dir: ""}},
+			false,
+		},
+		{
+			"truncate zero max chars",
+			Settings{Truncate: &TruncateSettings{Enabled: true, MaxChars: 0, Dir: dir}},
+			true,
+		},
+		{
+			"truncate negative max chars",
+			Settings{Truncate: &TruncateSettings{Enabled: true, MaxChars: -1, Dir: dir}},
+			true,
+		},
+		{
+			"truncate empty dir",
+			Settings{Truncate: &TruncateSettings{Enabled: true, MaxChars: 10, Dir: ""}},
+			true,
+		},
+		{
+			"truncate blank dir",
+			Settings{Truncate: &TruncateSettings{Enabled: true, MaxChars: 10, Dir: "   "}},
+			true,
+		},
+		{
+			"truncate over-max max chars",
+			Settings{Truncate: &TruncateSettings{Enabled: true, MaxChars: overMax, Dir: dir}},
+			false,
+		},
+		{
+			"result_part_budget_bytes zero",
+			Settings{ResultPartBudgetBytes: &zero},
+			false,
+		},
+		{
+			"result_part_budget_bytes negative",
+			Settings{ResultPartBudgetBytes: &negative},
+			false,
+		},
+		{
+			"result_part_budget_bytes over-max",
+			Settings{ResultPartBudgetBytes: &overMax},
+			false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mws, recovered, err := fromSettingsRecovering(test.settings)
+			if recovered != nil {
+				t.Fatalf("FromSettings panicked: %v", recovered)
+			}
+			if test.wantErr {
+				if !errdefs.IsValidation(err) {
+					t.Fatalf("err = %v, want a Validation error", err)
+				}
+				if len(mws) != 0 {
+					t.Fatalf("middlewares = %d, want none on a rejected setting", len(mws))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromSettings: %v", err)
+			}
+		})
+	}
+}
+
+// fromSettingsRecovering calls FromSettings and returns an escaping panic as a
+// value, so a constructor that panics on a hostile setting fails its table row
+// instead of aborting the whole run.
+func fromSettingsRecovering(s Settings) (mws []tool.Middleware, recovered any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			recovered = r
+		}
+	}()
+	mws, err = FromSettings(s)
+	return mws, nil, err
+}

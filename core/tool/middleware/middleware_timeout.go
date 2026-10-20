@@ -37,7 +37,8 @@ func Timeout(defaultTimeout time.Duration, perTool map[string]time.Duration) too
 //
 // Metadata is read once per tool, on first sight, matching
 // [RateLimit]: chains are immutable by design, so a tool re-registered
-// with different metadata needs a new Executor.
+// with different metadata needs a new Executor. catalog must be
+// non-nil.
 func TimeoutWithCatalog(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[string]time.Duration) tool.Middleware {
 	if catalog == nil {
 		panic("middleware.TimeoutWithCatalog: catalog is nil")

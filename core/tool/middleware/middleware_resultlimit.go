@@ -2,10 +2,10 @@ package middleware
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -52,9 +52,13 @@ const DefaultResultPartBudget = 1 << 20 // 1 MiB
 // Place it inside (after) Recover and Telemetry and outside (before)
 // Audit so every downstream consumer — including audit — sees the
 // final, limited content.
-func ResultLimiter(max int, opts ...ResultLimitOption) tool.Middleware {
+//
+// A non-positive max is reported as an errdefs.Validation error;
+// [MustResultLimiter] is the panicking form.
+func ResultLimiter(max int, opts ...ResultLimitOption) (tool.Middleware, error) {
 	if max <= 0 {
-		panic(fmt.Sprintf("middleware.ResultLimiter: max must be positive, got %d", max))
+		return nil, errdefs.Validationf(
+			"middleware.ResultLimiter: max must be positive, got %d", max)
 	}
 	cfg := resultLimitConfig{marker: DefaultResultMarker, partBudget: DefaultResultPartBudget}
 	for _, opt := range opts {
@@ -69,7 +73,18 @@ func ResultLimiter(max int, opts ...ResultLimitOption) tool.Middleware {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			return limitResult(next(ctx, call), max, cfg.marker, cfg.partBudget)
 		}
+	}, nil
+}
+
+// MustResultLimiter is [ResultLimiter] for package-level configuration, where
+// a rejected limit is a programmer error: it panics instead of returning the
+// validation error.
+func MustResultLimiter(max int, opts ...ResultLimitOption) tool.Middleware {
+	limiter, err := ResultLimiter(max, opts...)
+	if err != nil {
+		panic(err)
 	}
+	return limiter
 }
 
 // ResultLimitOption configures a ResultLimiter.
@@ -99,12 +114,13 @@ func WithResultPartBudget(budget int) ResultLimitOption {
 // context, and an inline image or audio payload has no natural size. Parts
 // that do not fit the byte budget are dropped and [DefaultResultMarker] is
 // appended, so the loss stays visible to the model.
-func ResultPartLimiter(budget int, opts ...ResultLimitOption) tool.Middleware {
+//
+// A non-positive budget is reported as an errdefs.Validation error;
+// [MustResultPartLimiter] is the panicking form.
+func ResultPartLimiter(budget int, opts ...ResultLimitOption) (tool.Middleware, error) {
 	if budget <= 0 {
-		panic(fmt.Sprintf(
-			"middleware.ResultPartLimiter: budget must be positive, got %d",
-			budget,
-		))
+		return nil, errdefs.Validationf(
+			"middleware.ResultPartLimiter: budget must be positive, got %d", budget)
 	}
 	cfg := resultLimitConfig{marker: DefaultResultMarker}
 	for _, opt := range opts {
@@ -128,7 +144,18 @@ func ResultPartLimiter(budget int, opts ...ResultLimitOption) tool.Middleware {
 			)}
 			return res
 		}
+	}, nil
+}
+
+// MustResultPartLimiter is [ResultPartLimiter] for package-level
+// configuration, where a rejected budget is a programmer error: it panics
+// instead of returning the validation error.
+func MustResultPartLimiter(budget int, opts ...ResultLimitOption) tool.Middleware {
+	limiter, err := ResultPartLimiter(budget, opts...)
+	if err != nil {
+		panic(err)
 	}
+	return limiter
 }
 
 func limitResult(res message.ToolResult, max int, marker string, partBudget int) message.ToolResult {

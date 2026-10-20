@@ -34,7 +34,8 @@ func (f AuditSinkFunc) Record(ctx context.Context, rec AuditRecord) {
 
 // Audit reports every call and its outcome to sink. Call arguments
 // and result content are included verbatim — choose a sink whose
-// storage is appropriate for your data classification.
+// storage is appropriate for your data classification. sink must be
+// non-nil.
 func Audit(sink AuditSink) tool.Middleware {
 	if sink == nil {
 		panic("middleware.Audit: sink is nil")

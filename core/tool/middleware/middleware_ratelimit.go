@@ -18,7 +18,8 @@ import (
 // slot at 1/rate intervals (no bursting), waiting with ctx
 // cancellation respected. The catalog is only read once per tool, on
 // first sight; re-registering a tool with different metadata requires
-// a new Executor (chains are immutable by design).
+// a new Executor (chains are immutable by design). catalog must be
+// non-nil.
 func RateLimit(catalog tool.Catalog) tool.Middleware {
 	if catalog == nil {
 		panic("middleware.RateLimit: catalog is nil")

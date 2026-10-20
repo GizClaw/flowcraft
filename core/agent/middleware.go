@@ -39,7 +39,8 @@ type HostMiddleware func(Host) Host
 
 // ComposeHost returns base wrapped by every middleware in mws, in
 // declaration order (first = outermost). Returns base unchanged when
-// mws is empty.
+// mws is empty. A middleware that returns a nil Host is a programmer
+// error and panics.
 func ComposeHost(base Host, mws ...HostMiddleware) Host {
 	// Apply in reverse so the first slice entry ends up as the
 	// outermost wrapper. ComposeHost(base, A, B) ≡ A(B(base)) so a
