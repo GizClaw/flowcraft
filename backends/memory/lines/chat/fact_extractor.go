@@ -809,6 +809,11 @@ func sourceLess(left, right corememory.SourceRef) bool {
 }
 
 func encodeStrings(values []string) string {
+	// Metadata carries these as JSON arrays; a nil slice would marshal to
+	// null and change the stored shape for the empty case.
+	if values == nil {
+		values = []string{}
+	}
 	data, _ := json.Marshal(values)
 	return string(data)
 }
