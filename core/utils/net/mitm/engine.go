@@ -322,8 +322,13 @@ func (e *Engine) forward(req *http.Request, transport *http.Transport, serverNam
 	if err != nil {
 		return nil, err
 	}
+	// The hooks and every warn on this path observe the request's own
+	// context: the http.Server-derived request carries the client
+	// connection's deadline and span, so hook work is attributable and
+	// dies with the client instead of on a detached background context.
+	ctx := req.Context()
 	if e.hooks != nil && info != nil {
-		if err := e.hooks.OnRequest(context.Background(), info); err != nil {
+		if err := e.hooks.OnRequest(ctx, info); err != nil {
 			return nil, errBlocked
 		}
 	}
@@ -342,14 +347,14 @@ func (e *Engine) forward(req *http.Request, transport *http.Transport, serverNam
 	respInfo, err := e.inspectResponse(resp)
 	if err != nil {
 		if cerr := resp.Body.Close(); cerr != nil {
-			telemetry.WarnErr(context.Background(), "mitm: close inspected response body failed", cerr)
+			telemetry.WarnErr(ctx, "mitm: close inspected response body failed", cerr)
 		}
 		return nil, err
 	}
 	if e.hooks != nil && respInfo != nil {
-		if err := e.hooks.OnResponse(context.Background(), respInfo); err != nil {
+		if err := e.hooks.OnResponse(ctx, respInfo); err != nil {
 			if cerr := resp.Body.Close(); cerr != nil {
-				telemetry.WarnErr(context.Background(), "mitm: close response body after hook failure", cerr)
+				telemetry.WarnErr(ctx, "mitm: close response body after hook failure", cerr)
 			}
 			return nil, errBlocked
 		}

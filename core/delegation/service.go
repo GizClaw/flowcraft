@@ -876,7 +876,7 @@ func (s *LocalService) recordWorkerError(err error) {
 	if err == nil {
 		return
 	}
-	telemetry.Error(context.Background(), "local delegation: worker stopped after error",
+	telemetry.Error(s.workerCtx, "local delegation: worker stopped after error",
 		attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	s.stateMu.Lock()
 	s.workerErrs = append(s.workerErrs, err)
@@ -1585,13 +1585,15 @@ func waitTurnCancelOnDone(ctx context.Context, turn *session.Turn) (*agent.Resul
 		return result, nil
 	}
 	if isTerminalTurn(turn) {
+		// The caller's ctx is what just cancelled, so the terminal wait is
+		// built from a context that keeps its span but not its cancellation.
 		waitCtx, cancel := context.WithTimeout(
-			context.Background(), turnCancelWaitTimeout)
+			context.WithoutCancel(ctx), turnCancelWaitTimeout)
 		defer cancel()
 		return turn.Wait(waitCtx)
 	}
 	turn.Cancel()
-	waitCtx, cancel := context.WithTimeout(context.Background(), turnCancelWaitTimeout)
+	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), turnCancelWaitTimeout)
 	defer cancel()
 	result, err = turn.Wait(waitCtx)
 	if err != nil {

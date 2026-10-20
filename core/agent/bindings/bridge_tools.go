@@ -243,10 +243,10 @@ func (nilDispatcher) Execute(_ context.Context, call message.ToolCall) message.T
 	return message.NewErrorToolResult(call.ID, "tools: no dispatcher/catalog configured")
 }
 
-func (d nilDispatcher) ExecuteAll(_ context.Context, calls []message.ToolCall) []message.ToolResult {
+func (d nilDispatcher) ExecuteAll(ctx context.Context, calls []message.ToolCall) []message.ToolResult {
 	out := make([]message.ToolResult, len(calls))
 	for i, c := range calls {
-		out[i] = d.Execute(context.Background(), c)
+		out[i] = d.Execute(ctx, c)
 	}
 	return out
 }
