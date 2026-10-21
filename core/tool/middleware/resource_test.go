@@ -51,6 +51,41 @@ func TestAssemblyFactory(t *testing.T) {
 	}
 }
 
+// An assembly document that says nothing about middlewares still gets the
+// default chain. FromSettings installs the entries that are defaults rather
+// than opt-ins, and the non-text part budget is the one of those a caller can
+// observe: an oversized data part comes back cut, with the marker.
+func TestAssemblyFactoryInstallsDefaultsWithoutMiddlewaresBlock(t *testing.T) {
+	oversized := tool.FuncTool(message.ToolDefinition{Name: "big"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			return message.NewJSONContent([]byte(
+				`{"blob":"` + strings.Repeat("x", toolmiddleware.DefaultResultPartBudget) + `"}`))
+		})
+	assembly, err := (toolmiddleware.AssemblyFactory{}).New(
+		context.Background(),
+		resource.NewInput([]byte(`{}`), map[string]any{
+			"tool": tooltest.Source(oversized),
+		}, nil, nil),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res := assembly.Execute(context.Background(),
+		message.ToolCall{ID: "c", Name: "big", Arguments: []byte(`{}`)})
+	if res.IsError {
+		t.Fatalf("Execute: %+v", res)
+	}
+	parts := res.Content.Parts
+	// The one part is over budget, so it is dropped and the marker takes its
+	// place: the assertion is that the default budget was in the chain.
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want the marker standing in for the dropped part", len(parts))
+	}
+	if marker, ok := parts[0].(message.TextPart); !ok || marker.Text != toolmiddleware.DefaultResultMarker {
+		t.Fatalf("part 0 = %#v, want the truncation marker", parts[0])
+	}
+}
+
 func TestAssemblyFactoryRejectsBadTimeout(t *testing.T) {
 	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.NewInput([]byte(`{"middlewares": {"timeout": {"default": "not-a-duration"}}}`), map[string]any{
 		"tool": tooltest.Source(slowTool("a", 0)),
