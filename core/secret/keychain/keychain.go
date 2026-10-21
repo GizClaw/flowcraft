@@ -178,7 +178,11 @@ var storeBackends = struct {
 // backend: EvalSymlinks settles symlinks, but not the case-insensitive
 // volumes and bind mounts where two strings name one directory, and two
 // backends over one directory is exactly the lost-index-entry bug the
-// shared backend exists to prevent.
+// shared backend exists to prevent. The comparison stats both paths now
+// rather than remembering an identity: an inode number only names a
+// directory while the path is live, and a directory removed and recreated
+// under a busy temporary one would otherwise match the store that used to
+// own the number.
 //
 // A directory that already has a backend has its key re-read, not ignored:
 // the key file on disk is the source of truth, so a store that was reset,
@@ -192,8 +196,12 @@ func sharedBackend(dir string, info os.FileInfo, key []byte) *fileBackend {
 		backend.setKey(key)
 		return backend
 	}
-	for _, backend := range storeBackends.byDirPath {
-		if backend.dirInfo == nil || !os.SameFile(backend.dirInfo, info) {
+	for known, backend := range storeBackends.byDirPath {
+		if known == dir {
+			continue
+		}
+		current, err := os.Stat(known)
+		if err != nil || !os.SameFile(current, info) {
 			continue
 		}
 		// Remember the spelling too, so the next open through it is a map
@@ -202,7 +210,7 @@ func sharedBackend(dir string, info os.FileInfo, key []byte) *fileBackend {
 		backend.setKey(key)
 		return backend
 	}
-	backend := &fileBackend{dir: dir, dirInfo: info, key: key}
+	backend := &fileBackend{dir: dir, key: key}
 	storeBackends.byDirPath[dir] = backend
 	return backend
 }
@@ -331,11 +339,6 @@ func (m *Manager) DeletePrefix(ctx context.Context, prefix string) error {
 // management is an app-side, single-writer surface.
 type fileBackend struct {
 	dir string
-
-	// dirInfo is the directory's identity, recorded when it was opened: it
-	// is what tells a second spelling of the same directory from a second
-	// directory (see sharedBackend).
-	dirInfo os.FileInfo
 
 	// keyMu guards key, which is replaced when the directory is reopened
 	// after its key file changed (see sharedBackend). An operation holds it

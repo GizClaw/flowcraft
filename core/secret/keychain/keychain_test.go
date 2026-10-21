@@ -334,6 +334,38 @@ func TestNewStoreSharesOneBackendAcrossCaseSpellings(t *testing.T) {
 	}
 }
 
+// A removed directory gives up its store: a temporary filesystem that hands
+// the freed inode number to the next directory must not hand the old store
+// over with it, or the new store writes into a path that does not exist.
+func TestNewStoreDoesNotInheritARemovedDirectory(t *testing.T) {
+	gone := t.TempDir()
+	stale, err := NewStore(gone)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	fresh := t.TempDir()
+	store, err := NewStore(fresh)
+	if err != nil {
+		t.Fatalf("NewStore(fresh): %v", err)
+	}
+	if store.backend == stale.backend {
+		t.Fatal("a store opened over a removed directory was handed to a new one")
+	}
+	want, err := filepath.EvalSymlinks(fresh)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if got := store.backend.(*fileBackend).dir; got != want {
+		t.Fatalf("new store is rooted at %q, want %q", got, want)
+	}
+	if err := store.Set(context.Background(), "acct", "value"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+}
+
 func TestManagerSetGetDelete(t *testing.T) {
 	m := NewManager(t.TempDir())
 	if !m.Available() {
