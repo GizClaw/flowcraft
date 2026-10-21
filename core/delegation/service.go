@@ -1070,7 +1070,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 			return Response{}, err
 		}
 	}
-	s.notifyRunStarted(execCtx, workID, turn)
+	s.notifyRunStarted(execCtx, workID, req.Request.Target, turn)
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
 	if err != nil {
@@ -1460,8 +1460,12 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 // ref is absent whenever a delegation inherits no sink. Sync
 // delegations and the manager-less path carry no work id: their run id
 // arrives with the terminal response metadata instead.
-// Best-effort: failures are logged, never fatal.
-func (s *LocalService) notifyRunStarted(ctx context.Context, workID string, turn *session.Turn) {
+// Best-effort: failures are logged, never fatal. A failure names the
+// target too, because a delegation id on its own does not say which
+// subagent was meant to run it.
+func (s *LocalService) notifyRunStarted(
+	ctx context.Context, workID, target string, turn *session.Turn,
+) {
 	if workID == "" || turn == nil {
 		return
 	}
@@ -1471,7 +1475,8 @@ func (s *LocalService) notifyRunStarted(ctx context.Context, workID string, turn
 	}
 	if err := notifier.NoteRunID(ctx, workID, turn.RunID()); err != nil {
 		telemetry.WarnErr(ctx, "local delegation: note run id failed", err,
-			attribute.String("delegation.id", workID))
+			attribute.String(telemetry.AttrDelegationID, workID),
+			attribute.String(telemetry.AttrDelegationTarget, target))
 	}
 }
 
@@ -1564,7 +1569,7 @@ func responseFromTurn(result *agent.Result, contextID string) Response {
 	if response.Metadata == nil {
 		response.Metadata = make(map[string]string, 1)
 	}
-	response.Metadata["delegation.session_id"] = contextID
+	response.Metadata[SessionIDMetadataKey] = contextID
 	return response
 }
 

@@ -160,6 +160,14 @@ const (
 
 	// ----- Delegation -----
 
+	// AttrDelegationID identifies one delegation work item: the id
+	// Submit returns and Work.ID, Response.ID and delegation_status
+	// all carry. It is neither AttrRunID (the subagent turn that
+	// executes the work) nor a stream escrow ref — a delegation that
+	// inherits no sink has no ref, and a ref names a delivery
+	// attachment rather than the work item it belongs to.
+	AttrDelegationID = "delegation.id"
+
 	// AttrDelegationTarget is the delegation target id as requested by
 	// the caller (delegation.Request.Target). It can differ from
 	// AttrAgentID when the directory normalizes the target to a
