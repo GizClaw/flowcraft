@@ -78,7 +78,8 @@ plugins:                    # optional
   node_targets: [assistant] # agents that receive plugin node types
 
 host_tools:                 # optional
-  disable: [browser.open]   # primitives never exposed, as resource.op
+  # resource.op ids your catalog defines; an unknown id fails craft.New
+  disable: [secret.delete]
 
 deploy:                     # either an inline deployment document ...
   version: v1
@@ -522,14 +523,17 @@ rollback above.
 | `skills:provide` | the `skills` list |
 | `hooks:provide` | the `hooks` list |
 | `nodes:provide` | the `nodes` section |
-| `secrets:auth` | `secret.get` / `secret.set` / `secret.delete` |
-| `inference:write` | `inference.upsert` / `inference.remove` |
-| `telemetry:export` | `telemetry.configure` / `telemetry.disable` |
-| `sessions:import` | `session.import` / `session.imported_sources` |
-| `host:open_url` | `browser.open` |
-| `events:emit` | `events.emit` |
 | `ui:webview` | the UI bundle (the shell gates it) |
 | `storage:kv` | the plugin KV store (the shell binds it) |
+
+Those six are craft's own: each pairs with a gate and a drop rule below.
+Grants for host primitives are not in this table, because craft defines no
+primitive — the application declares them by passing `plugin.Options.Grants`
+to the store (anvil, for instance, requires `secrets:auth` for
+`secret.get`/`secret.set`/`secret.delete` and `events:emit` for
+`events.emit`), and `Manifest.Validate` accepts them alongside these.
+`pluginserver.Grants(primitives)` derives the whole set from a catalog when
+an application would rather not restate it.
 
 An unknown permission is rejected, not ignored. The gate is **fail-closed
 at contribution time**: a plugin that declares a gated section without

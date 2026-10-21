@@ -130,14 +130,13 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
 | `nodes:provide` | `nodes` section |
 | `ui:webview` | UI bundle (shell gate; craft serves the bundle and lists the grant in `ui.Registry` entries) |
 | `storage:kv` | plugin KV (shell binds; `Host.KV` is the host accessor) |
-| `secrets:auth` | `secret.get` / `secret.set` / `secret.delete` |
-| `inference:write` | `inference.upsert` / `inference.remove` |
-| `telemetry:export` | `telemetry.configure` / `telemetry.disable` |
-| `sessions:import` | `session.import` / `session.imported_sources` |
-| `host:open_url` | `browser.open` |
-| `events:emit` | `events.emit` |
 
-An unknown permission is rejected (`plugin <id>: unknown permission`).
+Those six are the ones craft defines. A grant for a host primitive is
+declared by the application (`plugin.Options.Grants`), not by this table:
+anvil requires `secrets:auth` for `secret.get`/`secret.set`/`secret.delete`
+and `events:emit` for `events.emit`, and `pluginserver.Grants(primitives)`
+derives the set from a catalog. `Manifest.Validate` accepts both kinds. An
+unknown permission is rejected (`plugin <id>: unknown permission`).
 
 ### Drop rules (fail closed)
 
@@ -305,7 +304,7 @@ an `op`.
 | `plugin update: <id> V: approve grants: ...` | an `UpdateApprover` refused the expansion |
 | `plugin update: Installer is required` | `UpdateFrom` with no installer |
 | `plugin <id>: tools are ignored without the tools:provide permission` | direct call to a tool of a plugin without the grant |
-| `plugin host: primitive "browser.open" already registered` | duplicate primitive id |
+| `plugin host: primitive "secret.get" already registered` | two capabilities contribute the same `resource.op` |
 | `plugin host: cannot disable "x": it is not a host primitive` | `host_tools.disable` entry names nothing in the catalog |
 | `plugin host: host.about cannot be disabled: it reports the primitive set` | `host_tools.disable` names `host.about` |
 | `craft manager: craft.yaml not found` | definition not located |

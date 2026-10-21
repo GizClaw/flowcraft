@@ -42,22 +42,18 @@ service Plugin {
 // envelope never moves. The mirror of that: a host answers a primitive it
 // does not serve with a NotFound, so a plugin must ask before it assumes.
 //
-//   resource   op                grant              params           -> result
-//   host       about             -                  {}               -> catalog
-//   secret     get               secrets:auth       {name}           -> {value}
-//   secret     set               secrets:auth       {name, value}    -> {}
-//   secret     delete            secrets:auth       {name}           -> {}
-//   workspace  current           -                  {}               -> workspace
-//   browser    open              host:open_url      {url}            -> {}
-//   inference  upsert            inference:write    {profile}        -> {id}
-//   inference  remove            inference:write    {id}             -> {}
-//   session    import            sessions:import    {payload}        -> object
-//   session    imported_sources  sessions:import    {}               -> {sources}
-//   telemetry  configure         telemetry:export   {endpoint,
-//                                                     headers}       -> {}
-//   telemetry  disable           telemetry:export   {}               -> {}
-//   events     emit              events:emit        {subject,
-//                                                     payload}       -> {}
+// craft serves exactly one primitive itself: host.about. Every other row in
+// a catalog belongs to the application, which contributes it through a
+// capability and states its grant, params schema and handler there. Anvil's
+// catalog (examples/anvil) is one such application:
+//
+//   resource   op      grant           params          -> result
+//   host       about   -               {}              -> catalog
+//   secret     get     secrets:auth    {name}          -> {value}
+//   secret     set     secrets:auth    {name, value}   -> {}
+//   secret     delete  secrets:auth    {name}          -> {}
+//   events     emit    events:emit     {subject,
+//                                        payload}      -> {}
 service Host {
   // Call runs one primitive. resource and op name it ("secret", "get"),
   // params_json carries its arguments and result_json its answer.

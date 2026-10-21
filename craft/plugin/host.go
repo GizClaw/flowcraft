@@ -125,8 +125,8 @@ type Host struct {
 	// running".
 	lost map[string]bool
 	// stopHooks are the additive OnStopped subscriptions. They are
-	// deliberately separate from stopped above: craft's token
-	// revocation must not depend on what an application subscribes to.
+	// deliberately separate from stopped above: the host's own teardown
+	// must not depend on what an application subscribes to.
 	stopHooks   []stopHook
 	stopHookSeq uint64
 
@@ -151,8 +151,8 @@ type stopHook struct {
 //
 // The entry is kept rather than re-read, because a restart has to be
 // planned against what the process was: [Host.startEntryLocked] hands
-// the generation to the environment hook, which is where the token for
-// this process is minted, so a process and the grants it was started
+// the generation to the environment hook, which is where anything issued
+// to this process is issued, so a process and the grants it was started
 // with belong to each other by construction.
 type livePlugin struct {
 	entry      Entry
@@ -222,9 +222,8 @@ func (h *Host) SetServer(server *server.Server) {
 //
 // The injector is handed the generation of the process it is preparing:
 // it is where an application mints what that process is allowed to do
-// (craft mints the plugin's host token there), and a generation that
-// changes is what tells it the grants of the process being replaced have
-// to go with it.
+// (the environment it spawns with), and a generation that changes is what
+// tells it the grants of the process being replaced have to go with it.
 func (h *Host) SetPluginHooks(
 	env func(Entry, uint64, map[string]string) error,
 	stopped func(string),
@@ -312,8 +311,8 @@ func (h *Host) stopSubscribers() []func(string, StopReason) {
 }
 
 // notifyStopped reports a stop the host performed. The internal hook
-// runs first and unconditionally — it is what revokes the plugin's host
-// tokens — and the subscribers hear about it afterwards.
+// runs first and unconditionally — it is what releases what the process
+// was handed — and the subscribers hear about it afterwards.
 func (h *Host) notifyStopped(id string, reason StopReason) {
 	h.runStoppedHook(id)
 	for _, fn := range h.stopSubscribers() {
@@ -323,8 +322,8 @@ func (h *Host) notifyStopped(id string, reason StopReason) {
 
 // runStoppedHook runs the internal stopped hook without reporting a stop
 // to the subscribers. It is the half of a stop that is not an
-// application-facing event: the token revocation of a process the host
-// let go of, whether or not a subscriber should learn about it.
+// application-facing event: the release of what a process the host let go
+// of was handed, whether or not a subscriber should learn about it.
 func (h *Host) runStoppedHook(id string) {
 	h.mu.Lock()
 	stopped := h.stopped
@@ -337,7 +336,7 @@ func (h *Host) runStoppedHook(id string) {
 // notifyLost reports a process that stopped on its own and whose
 // reconnect gave up. Only subscribers hear about it: the host did not
 // stop the plugin — the entry keeps its state and its tools — so the
-// internal hook (and with it token revocation) does not run for the loss
+// internal hook (and with it that release) does not run for the loss
 // itself: it runs when the source is finally let go of, which is an
 // application-requested stop, a rollback, or the replacement an enable
 // opens. A loss that races the host's own close is
@@ -1128,8 +1127,8 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 		return nil, nil
 	}
 	// Every process this call starts is a new generation, minted before
-	// the environment hook runs: that hook is where the token of this
-	// process is issued, and it has to know which process it is issuing
+	// the environment hook runs: that hook is where what this process is
+	// handed is issued, and it has to know which process it is issuing
 	// for (see [Host.SetPluginHooks]).
 	h.nextGeneration++
 	generation := h.nextGeneration
@@ -1141,9 +1140,9 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if err != nil {
 		// The environment hook runs before the source is opened — it is
 		// where a process is minted for — so an open that failed can
-		// leave a token for a process that does not exist. The stopped
-		// hook is what revokes one, and it takes it back here exactly as
-		// it does for a process the host let go of.
+		// leave state behind for a process that does not exist. The
+		// stopped hook is what releases it, and it takes it back here
+		// exactly as it does for a process the host let go of.
 		h.runStoppedHook(entry.ID)
 		return nil, err
 	}
@@ -1156,7 +1155,7 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 	if h.closed {
 		h.mu.Unlock()
 		_ = source.Close()
-		// Closing the source is not what revokes the token minted for
+		// Closing the source is not what releases what was minted for
 		// it: the stopped hook is, and this process is one the host is
 		// letting go of (see [Host.runStoppedHook]).
 		h.runStoppedHook(entry.ID)
@@ -1172,7 +1171,7 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 		h.forgetSource(entry.ID, source)
 		_ = source.Close()
 		// The process this start opened is one the host is letting go
-		// of, and closing the source is not what revokes the token
+		// of, and closing the source is not what releases what was
 		// minted for it: the stopped hook is (see
 		// [Host.runStoppedHook]).
 		h.runStoppedHook(entry.ID)
@@ -1184,10 +1183,10 @@ func (h *Host) startEntryLocked(ctx context.Context, entry Entry) (Source, error
 // releaseGaveUp drops one plugin's recorded source — a process that gave
 // up on its own — and releases it before its replacement is opened: the
 // tools it still projected are removed, its resources closed, and the
-// internal stopped hook run, so the host token minted for the dead
-// process is revoked before the new source mints its own. Nothing is
-// reported: the loss was the report, and replacing a source that gave up
-// is not a stop the application asked for.
+// internal stopped hook run, so what was minted for the dead process is
+// released before the new source mints its own. Nothing is reported: the
+// loss was the report, and replacing a source that gave up is not a stop
+// the application asked for.
 func (h *Host) releaseGaveUp(ctx context.Context, id string) {
 	drainCtx, cancel := context.WithTimeout(ctx, h.drainTimeout)
 	defer cancel()
@@ -1307,9 +1306,9 @@ func (h *Host) stopEntryLocked(
 		return err
 	}
 	// The half of the stop that is not an application-facing event runs
-	// either way: the host is letting this process go, so the token
-	// minted for it is revoked whether or not this stop is the report
-	// the application hears.
+	// either way: the host is letting this process go, so what was minted
+	// for it is released whether or not this stop is the report the
+	// application hears.
 	h.runStoppedHook(id)
 	return err
 }
