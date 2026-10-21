@@ -18,6 +18,11 @@ const (
 	// CallIDMetadataKey carries the delegate tool call id that
 	// started the delegation.
 	CallIDMetadataKey = "delegation.call_id"
+	// RunIDMetadataKey carries the delegated run's own run id on every
+	// terminal response. Sync responses also expose it as Response.ID;
+	// async responses use the delegation id there, so this key is the
+	// one place a caller finds the run id in both modes.
+	RunIDMetadataKey = "delegation.run_id"
 )
 
 // Stream target kinds. The vocabulary is part of the delegation
@@ -117,9 +122,14 @@ type StreamTargetExporter func(spec session.SinkSpec) (StreamTarget, bool)
 // claimed async work item record the subagent run id as soon as the
 // run starts, so operational views can correlate a delegation id with
 // its run before the terminal response arrives.
+//
+// The key is the delegation id — the id Submit returned, the id Status
+// queries, and the id Work.ID and Response.ID carry. It is deliberately
+// not the stream escrow ref: a delegation without an inherited stream
+// has no ref at all, and a ref describes a delivery attachment rather
+// than the work item it belongs to.
 type RunIDNotifier interface {
-	// NoteRunID records runID for the work item identified by its
-	// stream escrow ref. Unknown refs are no-ops; errors are
-	// best-effort (recorded, never fail the run).
-	NoteRunID(ctx context.Context, ref, runID string) error
+	// NoteRunID records runID for the delegation id. Unknown ids are
+	// no-ops; errors are best-effort (recorded, never fail the run).
+	NoteRunID(ctx context.Context, id, runID string) error
 }

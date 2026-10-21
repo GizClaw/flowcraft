@@ -457,6 +457,12 @@ func (b *Board) Complete(
 	case delegation.StatusCanceled:
 		card.Status = StatusCanceled
 	}
+	// A worker that never reached NoteRunID still reports the run id on
+	// its terminal response, so keep the operational field in step with
+	// it: terminal card events carry the same run id the response does.
+	if runID := response.Metadata[delegation.RunIDMetadataKey]; runID != "" {
+		card.RunID = runID
+	}
 	card.Result = &Result{Response: response}
 	snapshot := b.finishTransitionLocked(card, from)
 	cancelLease := b.takeLeaseLocked(id)
@@ -468,28 +474,25 @@ func (b *Board) Complete(
 	return nil
 }
 
-// NoteRunID implements delegation.RunIDNotifier: it records the
-// subagent run id on the claimed card whose stream escrow ref matches,
-// so operational views can correlate a delegation id with its run
-// before the terminal response arrives. Unknown refs, cards not in the
-// claimed state, and repeated identical updates are no-ops; the
-// recorded run id is re-published through the ordinary claimed card
-// event.
-func (b *Board) NoteRunID(ctx context.Context, ref, runID string) error {
-	if ref == "" || runID == "" {
+// NoteRunID implements delegation.RunIDNotifier: it records the subagent
+// run id on the claimed card, so operational views can correlate a
+// delegation id with its run before the terminal response arrives. The
+// key is the card's delegation id — the id Submit returned and Work.ID
+// carries — not the stream escrow ref, which only exists when the
+// delegation inherits a sink. Unknown ids, cards not in the claimed
+// state, and repeated identical updates are no-ops; the recorded run id
+// is re-published through the ordinary claimed card event.
+func (b *Board) NoteRunID(ctx context.Context, id, runID string) error {
+	if id == "" || runID == "" {
 		return errdefs.Validationf(
-			"delegation kanban: stream ref and run id are required")
+			"delegation kanban: delegation id and run id are required")
+	}
+	if ctx == nil {
+		ctx = b.ctx
 	}
 	b.mu.Lock()
-	var card *Card
-	for _, c := range b.cards {
-		if c.Task != nil && c.Task.Request.Stream != nil &&
-			c.Task.Request.Stream.Ref == ref {
-			card = c
-			break
-		}
-	}
-	if card == nil || card.Status != StatusClaimed || card.RunID == runID {
+	card, ok := b.index[id]
+	if !ok || card.Status != StatusClaimed || card.RunID == runID {
 		b.mu.Unlock()
 		return nil
 	}

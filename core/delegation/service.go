@@ -106,6 +106,37 @@ type Runner interface {
 	Run(ctx context.Context, req AsyncRequest) (Response, error)
 }
 
+// workIDContextKey carries the delegation id of the async work item a run
+// belongs to.
+type workIDContextKey struct{}
+
+// WithWorkID declares which async work item a run belongs to: the delegation
+// id [AsyncBackend.Submit] returned, which is also Work.ID and Response.ID.
+// LocalService's own worker stamps the claimed id before running the work, so
+// a backend that implements [RunIDNotifier] learns the subagent run id as soon
+// as the turn exists.
+//
+// It exists for queue-owned workers that drive [Runner.Run] directly: Run
+// takes a request, not a work item, so the id the run has to report against is
+// not otherwise reachable. The stamp is consumed at the run boundary, so a
+// delegation started inside the subagent never reports its run id against this
+// work item.
+func WithWorkID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, workIDContextKey{}, id)
+}
+
+// workIDFromContext returns the work id stamped by [WithWorkID].
+func workIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(workIDContextKey{}).(string)
+	return id
+}
+
 // SessionInitializer runs once per delegated run, after the subagent's
 // session identity is minted and before the turn starts or resumes. It is
 // the seam for per-session state the application owns — sandbox mode,
@@ -759,7 +790,9 @@ func (s *LocalService) Get(ctx context.Context, id string) (Response, error) {
 }
 
 // Run executes a backend-neutral work item through the same depth, timeout,
-// host-propagation, and concurrency limits as a sync call.
+// host-propagation, and concurrency limits as a sync call. A queue-owned
+// worker outside this service stamps the claimed work id with [WithWorkID] so
+// the backend can record the run id as the run starts.
 func (s *LocalService) Run(ctx context.Context, req AsyncRequest) (Response, error) {
 	if err := req.Request.Validate(); err != nil {
 		return Response{}, err
@@ -822,7 +855,7 @@ func (s *LocalService) worker() {
 
 		workCtx, cancelWork := claimedWorkContext(s.workerCtx, work.Context)
 		workCtx = agent.ContextWithHost(workCtx, s.workerHost)
-		response, runErr := s.runClaimed(workCtx, work.Request)
+		response, runErr := s.runClaimed(workCtx, work)
 		if workCtx.Err() != nil {
 			response = canceledResponse(work.ID, workCtx.Err())
 			runErr = nil
@@ -883,16 +916,21 @@ func (s *LocalService) recordWorkerError(err error) {
 	s.cancelWorker()
 }
 
-func (s *LocalService) runClaimed(ctx context.Context, req AsyncRequest) (Response, error) {
+func (s *LocalService) runClaimed(ctx context.Context, work Work) (Response, error) {
 	// A claim made before Close is service-owned work. workers.Wait provides
 	// its lifecycle barrier, so it must not pass through begin after closed.
-	return s.runAt(ctx, req, false)
+	return s.runAt(WithWorkID(ctx, work.ID), work.Request, false)
 }
 
 func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bool) (Response, error) {
 	if err := s.checkDepth(req.Depth); err != nil {
 		return Response{}, err
 	}
+	// The work identity belongs to this run alone: consume the stamp so a
+	// delegation started inside the subagent cannot report its run id
+	// against this work item (see WithWorkID).
+	workID := workIDFromContext(ctx)
+	ctx = WithWorkID(ctx, "")
 	// Async work carries its stream attachment through the queue; the
 	// worker restores the caller's sinks (or a resolver target) as an
 	// inheritable policy before the session turn starts.
@@ -1030,7 +1068,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 			return Response{}, err
 		}
 	}
-	s.notifyRunStarted(execCtx, req, turn)
+	s.notifyRunStarted(execCtx, workID, turn)
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
 	if err != nil {
@@ -1400,20 +1438,24 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 
 // notifyRunStarted records the subagent run id on the async backend
 // (when it supports RunIDNotifier) as soon as the turn exists, so
-// operational views can correlate delegation ids with runs before the
-// terminal response. Best-effort: failures are logged, never fatal.
-func (s *LocalService) notifyRunStarted(ctx context.Context, req AsyncRequest, turn *session.Turn) {
-	ref := streamRefOf(req.Stream)
-	if ref == "" || turn == nil {
+// operational views can correlate a delegation id with its run before
+// the terminal response. The key is the work item's delegation id, the
+// only identity the backend and the caller share — the stream escrow
+// ref is absent whenever a delegation inherits no sink. Sync
+// delegations and the manager-less path carry no work id: their run id
+// arrives with the terminal response metadata instead.
+// Best-effort: failures are logged, never fatal.
+func (s *LocalService) notifyRunStarted(ctx context.Context, workID string, turn *session.Turn) {
+	if workID == "" || turn == nil {
 		return
 	}
 	notifier, ok := s.backend.(RunIDNotifier)
 	if !ok || ptr.IsNil(notifier) {
 		return
 	}
-	if err := notifier.NoteRunID(ctx, ref, turn.RunID()); err != nil {
+	if err := notifier.NoteRunID(ctx, workID, turn.RunID()); err != nil {
 		telemetry.WarnErr(ctx, "local delegation: note run id failed", err,
-			attribute.String(telemetry.AttrDelegationTarget, req.Request.Target))
+			attribute.String("delegation.id", workID))
 	}
 }
 
@@ -1471,6 +1513,13 @@ func responseFromAgent(result *agent.Result) Response {
 		id = newID()
 	}
 	response := Response{ID: id}
+	// The run id is the one identifier every mode can report, so it rides
+	// the metadata channel too: an async terminal response carries the
+	// delegation id in ID, and this key is what keeps the delegated run
+	// itself addressable after the fact.
+	if result.RunID != "" {
+		response.Metadata = map[string]string{RunIDMetadataKey: result.RunID}
+	}
 	switch result.Status {
 	case agent.StatusCompleted:
 		response.Status = StatusSucceeded

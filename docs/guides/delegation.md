@@ -213,6 +213,21 @@ Async delegation inherits the same way, across the queue boundary:
   `parent_run_id`, `tool_call_id`, `agent_id`) but the sink sees no
   explicit EOF; terminal state is reported through kanban card events
   and `delegation_status`.
+- **Run identity:** an async delegation is keyed by its delegation id —
+  the id `Submit` returns, carried by `Work.ID`, `Response.ID`, and the
+  `delegation_status` tool. A backend that implements
+  `delegation.RunIDNotifier` learns the subagent run id as soon as the
+  turn exists, keyed by that same id, so a live card correlates with
+  its run before completion. The key is the delegation id, never the
+  stream escrow ref: a delegation that inherits no sink has no ref, and
+  a ref describes a delivery attachment, not the work item. A
+  queue-owned worker outside the service supplies the claimed id
+  through `delegation.WithWorkID` before calling `Run`; the stamp is
+  consumed at the run boundary, so a delegation started inside the
+  subagent never reports its run id against the parent's work item.
+  Every terminal response also carries the run id under the
+  `delegation.run_id` metadata key — the one place the run id survives
+  in async mode, where `Response.ID` holds the delegation id.
 
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.
