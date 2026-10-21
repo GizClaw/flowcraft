@@ -54,28 +54,29 @@ func (*workshop) Register(registry *resource.Registry) error {
 	return resource.Register(registry, notesFactory{})
 }
 
-// HostPrimitives implements craft.HostPrimitives. The grant names are the
-// permissions a plugin manifest asks for: a plugin that declares
-// events:emit can publish, and one that does not is told by host.about
-// that the primitive is there and needs a grant it does not hold.
+// HostPrimitives implements craft.HostPrimitives. Each grant is the id of
+// the primitive it authorizes, which is the simplest vocabulary an
+// application can offer: a plugin that requires events.emit can publish,
+// and one that does not is told by host.about that the primitive is there
+// and needs a grant it does not hold.
 func (w *workshop) HostPrimitives() []pluginserver.Primitive {
 	return []pluginserver.Primitive{{
-		Resource: "events", Op: "emit", Grant: "events:emit",
+		Resource: "events", Op: "emit", Grant: "events.emit",
 		Description: "Publish one event on the craft plane for the calling plugin",
 		Params:      json.RawMessage(paramsEvent),
 		Handler:     w.emitEvent,
 	}, {
-		Resource: "secret", Op: "get", Grant: "secrets:auth",
+		Resource: "secret", Op: "get", Grant: "secret.get",
 		Description: "Read a secret from the calling plugin's namespace",
 		Params:      json.RawMessage(paramsSecretName),
 		Handler:     w.secrets.get,
 	}, {
-		Resource: "secret", Op: "set", Grant: "secrets:auth",
+		Resource: "secret", Op: "set", Grant: "secret.set",
 		Description: "Store a secret in the calling plugin's namespace",
 		Params:      json.RawMessage(paramsSecretSet),
 		Handler:     w.secrets.set,
 	}, {
-		Resource: "secret", Op: "delete", Grant: "secrets:auth",
+		Resource: "secret", Op: "delete", Grant: "secret.delete",
 		Description: "Delete a secret from the calling plugin's namespace",
 		Params:      json.RawMessage(paramsSecretName),
 		Handler:     w.secrets.del,
@@ -123,8 +124,8 @@ func (w *workshop) setEmitter(emit func(context.Context, string, string, any) er
 
 // secretStore is an in-memory store behind secret.get / secret.set /
 // secret.delete, namespaced per plugin by the identity the connection
-// carries. The hello plugin has no secrets:auth grant, so host.about
-// reports those primitives as denied for it.
+// carries. The hello plugin requires events.emit and no secret grant, so
+// host.about reports those primitives as denied for it.
 type secretStore struct {
 	mu     sync.Mutex
 	values map[string]map[string]string

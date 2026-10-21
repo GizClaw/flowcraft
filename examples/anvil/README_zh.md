@@ -42,7 +42,7 @@ go run ./examples/anvil -definition examples/anvil/craft.yaml -data examples/anv
 | 步骤 | 发生什么 | 对应的 craft 概念 |
 | --- | --- | --- |
 | definition | 解析并校验 `craft.yaml` | 定义是数据，应用是代码 |
-| plugins | 扫描插件目录，列出权限与 skill 根目录 | 插件 store；`skills:provide` |
+| plugins | 扫描插件目录，列出授权与 skill 根目录 | 插件 store；`skills.provide` |
 | start | 启动 Craft，插件进程拨号进来并声明自己的工具 | 插件宿主、插件通信协议与共享工具集 |
 | `runtime "default"` | 打开第一个 runtime（带 values），通过它的 assembly 调工具 | 按 key 的 runtime、`${craft:...}`、工具 assembly |
 | `runtime "alpha"` | 用一份 per-runtime layer 打开第二个 runtime | per-runtime layer、runtime 隔离 |
@@ -158,11 +158,13 @@ runtime 的文件来自 runtime **values**，alpha 的来自应用写出的 runt
 - `run: {command: "go", args: ["run", "./server"]}` —— 带路径的参数会相对插件根目录
   解析并被限制在其中，所以 manifest 只携带源码、由宿主在启动时编译。真实插件应发布
   编译好的二进制（或解释器 + 脚本，例如 `python3 server/main.py`）。
-- `permissions: [tools:provide, skills:provide, events:emit]` —— 没有对应权限的贡献
-  会被 fail-closed 地丢弃，权限集合就是这条连接拿到的授权。
+- `requires: [tools.provide, skills.provide, events.emit]` —— manifest 只负责申请。
+  授予由 store 决定（接缝是 `plugin.Options.Approve`，本示例全量批准），批准到的
+  grants 就是这条连接的授权；声明了却没有对应 grant 的段落会被 fail-closed 地丢弃。
 - 宿主向子进程注入 `FLOWCRAFT_PLUGIN_ID`、`FLOWCRAFT_PLUGIN_DATA_DIR` 和
-  `FLOWCRAFT_PLUGIN_WIRE`；最后一个是插件要拨号的 socket。授权就是该连接对应
-  manifest 的 permissions，所以这个插件能调 `events.emit` 而调不了 `secret.get`。
+  `FLOWCRAFT_PLUGIN_WIRE`；最后一个是插件要拨号的 socket。每条连接携带的是 store
+  为该插件批准的 grants，所以这个插件能调 `events.emit` 而调不了 `secret.get`：
+  workshop 把每个 grant 命名为它所授权原语的 id。
 - 示例故意不写 `minHostVersion`：对开发版 craft（`Version == "0.0.0"`）来说，
   任何高于 `0.0.0` 的下限都会让插件被判为无效。等你锁定正式发布的 craft 之后再设置它。
 
@@ -183,7 +185,7 @@ craft 第一次打 tag 后，去掉这个 `replace`、锁定发布版本，示�
 - **加一轮 agent 对话**：把 `flowcraft-config` skill 的
   `assets/minimal-craft` 里的部署资源（workspace、provider、inference assembly、
   graph agent）搬进来，然后在 runtime 上打开 session。
-- **加一个 graph node**：在 manifest 里声明 `nodes` 与 `nodes:provide`，并把目标
+- **加一个 graph node**：在 manifest 里声明 `nodes` 与 `nodes.provide`，并把目标
   agent 写进 `plugins.node_targets`；craft 会为每个 node 合成一个 `graph.NodeType`
   资源并接进 agent 的 engine deps。
 - **加一个 capability**：新的资源类型、`${...}` resolver、layer 或 host factory

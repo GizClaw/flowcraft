@@ -210,20 +210,20 @@ func newWireServer(t *testing.T) *server.Server {
 
 // wireManifest is the manifest of a plugin that contributes nothing but
 // what it declares over the wire.
-func wireManifest(id string, permissions ...string) string {
-	return wireManifestEnv(id, nil, permissions...)
+func wireManifest(id string, requires ...string) string {
+	return wireManifestEnv(id, nil, requires...)
 }
 
 // wireManifestEnv is wireManifest with extra environment for the helper:
 // the knobs above are how one test says what kind of plugin it wants.
-func wireManifestEnv(id string, env map[string]string, permissions ...string) string {
-	granted := make([]string, 0, len(permissions))
-	for _, permission := range permissions {
+func wireManifestEnv(id string, env map[string]string, requires ...string) string {
+	granted := make([]string, 0, len(requires))
+	for _, permission := range requires {
 		granted = append(granted, `"`+permission+`"`)
 	}
 	return `{
 		"id": "` + id + `", "version": "0.1.0",
-		"permissions": [` + strings.Join(granted, ", ") + `],
+		"requires": [` + strings.Join(granted, ", ") + `],
 		` + helperRunJSON(env) + `
 	}`
 }

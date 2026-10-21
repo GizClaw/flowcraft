@@ -69,7 +69,7 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   "name": "<string>",
   "version": "<version>",
   "minHostVersion": "<version>",
-  "permissions": ["<permission>"],
+  "requires": ["<grant>"],
   "ui": {"entry": "<path>"},
   "run": {
     "command": "<cmd>", "args": ["<arg>"],
@@ -120,36 +120,43 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   credentials or fragment. craft validates the shape and hands the URL to
   a `plugin.Installer`; it never fetches anything itself.
 
-### Permissions
+### Grants
 
-| Permission | Gates |
+The manifest's `requires` is the request; `plugin.Entry.Grants` is the
+store's answer — the required names filtered by `plugin.Options.Approve`
+(nil approves every request). Nothing grows past its request, and every
+consumer reads the answer, never the manifest.
+
+| Grant | Publishes |
 | --- | --- |
-| `tools:provide` | tools declared over the plugin wire |
-| `skills:provide` | `skills` list |
-| `hooks:provide` | `hooks` list |
-| `nodes:provide` | `nodes` section |
-| `ui:webview` | UI bundle (shell gate; craft serves the bundle and lists the grant in `ui.Registry` entries) |
-| `storage:kv` | plugin KV (shell binds; `Host.KV` is the host accessor) |
+| `tools.provide` | tools declared over the plugin wire |
+| `skills.provide` | `skills` list |
+| `hooks.provide` | `hooks` list |
+| `nodes.provide` | `nodes` section |
+| `ui.webview` | UI bundle (shell gate; craft serves the bundle and lists `requires`/`granted` in `ui.Registry` entries) |
+| `storage.kv` | plugin KV (shell binds; `Host.KV` is the host accessor) |
 
-Those six are the ones craft defines. A grant for a host primitive is
-declared by the application (`plugin.Options.Grants`), not by this table:
-anvil requires `secrets:auth` for `secret.get`/`secret.set`/`secret.delete`
-and `events:emit` for `events.emit`, and `pluginserver.Grants(primitives)`
-derives the set from a catalog. `Manifest.Validate` accepts both kinds. An
-unknown permission is rejected (`plugin <id>: unknown permission`).
+Those six are craft's, one per contribution channel, all dotted
+`resource.op`. An application adds its host primitives' grants
+(`plugin.Options.Grants`); anvil names each after the primitive it
+authorizes — `events.emit`, `secret.get`, `secret.set`, `secret.delete` —
+and `pluginserver.Grants(primitives)` derives the set from a catalog.
+`Manifest.Validate` accepts both halves through a `plugin.Vocabulary`. A
+name outside it is rejected (`plugin <id>: unknown grant`).
 
 ### Drop rules (fail closed)
 
-A gated section declared without its permission is dropped; the plugin
-still loads and enables.
+A section declared without the grant that publishes it is dropped; the
+plugin still loads and enables, and `Entry.Projection().Dropped` names the
+channel.
 
-- `tools` without `tools:provide`: the process still runs, but nothing it
+- `tools` without `tools.provide`: the process still runs, but nothing it
   declares is projected; a direct call is `Forbidden` with the missing
   grant.
-- `skills` without `skills:provide`: `SkillRoots` omits the plugin.
-- `hooks` without `hooks:provide`: `HookSources` omits the plugin.
-- `nodes` without `nodes:provide`: no node resource, no engine dep.
-- Disabling a plugin withdraws its contributions even with permissions
+- `skills` without `skills.provide`: `SkillRoots` omits the plugin.
+- `hooks` without `hooks.provide`: `HookSources` omits the plugin.
+- `nodes` without `nodes.provide`: no node resource, no engine dep.
+- Disabling a plugin withdraws its contributions even with its grants
   intact.
 
 ### Enable waits for the plugin
@@ -172,13 +179,13 @@ returns. `Host.Start` replays the enabled set without waiting.
 
 `Craft.UI()` (`craft/ui.Registry`, nil without a plugin host) is the
 whole UI surface: `Entries()` → id / name / version / entry /
-permissions / enabled + revision, `Assets(id)` → an `fs.FS` rooted at
+requires + granted / enabled + revision, `Assets(id)` → an `fs.FS` rooted at
 the directory holding `ui.entry` (confined, ≤ 10 MiB per file), and
 `craft.ui.changed` (`{revision}`, same counter as the plugin store) on
 every enable / disable / install / update / rollback. The shell reloads
 every bundle on each event: destroy the old plugin scopes, re-read
 `Entries()`, load again. Runtime registration, rendering and the
-`ui:webview` gate are the shell's, not craft's.
+`ui.webview` gate are the shell's, not craft's.
 
 ### Install / update / uninstall
 
@@ -275,7 +282,7 @@ an `op`.
 | `craft: reference ${craft:NAME} is not defined` | unknown value/root |
 | `plugin: invalid id "X"` | id outside the id pattern |
 | `plugin <id>: invalid version "X"` | bad `version`/`minHostVersion` |
-| `plugin <id>: unknown permission "x"` | permission not in the table |
+| `plugin <id>: unknown grant "x"` | name outside the vocabulary |
 | `plugin <id>: at most N skills\|hooks\|graph nodes` | over limit |
 | `plugin <id>: run.command is required` | `run` without `command` |
 | `plugin <id>: run.command "./x": ...` | path-shaped `command` missing under the plugin root, or not a regular file |
@@ -300,10 +307,10 @@ an `op`.
 | `plugin update: checksum mismatch (want sha256:..., got sha256:...)` | package did not match its digest |
 | `plugin update: package holds plugin "X", wanted "Y"` | wrong plugin in the package |
 | `plugin update: package version V does not match the announced W` | stale package under a new version |
-| `plugin update: <id> V adds permissions p; the installer does not approve update grants — ...` (`Conflict`) | update widens the grants and the `Installer` is not an `UpdateApprover` |
+| `plugin update: <id> V adds new grants p; the installer does not approve update grants — ...` (`Conflict`) | update widens the grants and the `Installer` is not an `UpdateApprover` |
 | `plugin update: <id> V: approve grants: ...` | an `UpdateApprover` refused the expansion |
 | `plugin update: Installer is required` | `UpdateFrom` with no installer |
-| `plugin <id>: tools are ignored without the tools:provide permission` | direct call to a tool of a plugin without the grant |
+| `plugin <id>: tools are ignored without the tools.provide grant` | direct call to a tool of a plugin without the grant |
 | `plugin host: primitive "secret.get" already registered` | two capabilities contribute the same `resource.op` |
 | `plugin host: cannot disable "x": it is not a host primitive` | `host_tools.disable` entry names nothing in the catalog |
 | `plugin host: host.about cannot be disabled: it reports the primitive set` | `host_tools.disable` names `host.about` |
@@ -325,7 +332,7 @@ Craft selects and configures; the host supplies everything executable:
   `host.about`; a host that declares nothing still answers it.
 - **UI rendering**: craft delivers plugin bundles (`Craft.UI()` registry,
   `Assets`, `craft.ui.changed`) plus the `ui` config; the shell loads
-  and draws them, and gates `ui:webview` / `storage:kv`.
+  and draws them, and gates `ui.webview` / `storage.kv`.
 - **Credentials**: secrets, provider keys and any `${env:...}` values.
 - **Plugin roots**: the host builds `plugin.Store` and `plugin.Host`
   (`Roots`, `StateDir`, `DataDirRoot`, `HostVersion`) and passes the host

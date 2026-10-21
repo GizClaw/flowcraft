@@ -29,11 +29,30 @@ import (
 // reports.
 const ProtocolVersion = 1
 
-// GrantSet is the set of permissions craft decided on for one plugin.
+// GrantSet is the set of grants craft decided on for one plugin: the names
+// it holds, whether they came from a manifest's request or were declined.
 type GrantSet map[string]bool
 
 // Has reports whether the grant is present.
 func (g GrantSet) Has(grant string) bool { return g[grant] }
+
+// List returns the set in name order. It is the shape a set is reported
+// in — a summary, a shell entry, a log line — where a map's order would
+// make two reports of one decision look like two decisions.
+func (g GrantSet) List() []string {
+	if len(g) == 0 {
+		// No grants is nothing to report, not an empty report: a caller
+		// that adds this to a JSON entry gets the field omitted, which is
+		// what a plugin holding no grant should look like.
+		return nil
+	}
+	out := make([]string, 0, len(g))
+	for grant := range g {
+		out = append(out, grant)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // Identity is the plugin behind one connection. There is no token: a
 // process's grants belong to the socket craft opened for it.

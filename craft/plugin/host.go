@@ -968,8 +968,10 @@ func (h *Host) isLive(id string) bool {
 	return !h.lost[id]
 }
 
-// SkillRoots returns the absolute skill directories of every enabled
-// plugin that declares skills:provide.
+// SkillRoots returns the absolute skill directories every enabled plugin
+// publishes: the ones whose projection carries skills (see
+// [Entry.Projection]), which is to say the ones this host granted the
+// skills channel to.
 //
 // The empty list of an unreadable enable state is reported rather than
 // passed off as "this host provides no skills": the state file is
@@ -988,10 +990,7 @@ func (h *Host) SkillRoots() []string {
 	}
 	var out []string
 	for _, entry := range entries {
-		if !entry.Manifest.HasPermission("skills:provide") {
-			continue
-		}
-		for _, rel := range entry.Manifest.Skills {
+		for _, rel := range entry.Projection().Skills {
 			if path, err := ResolvePath(entry.Dir, rel); err == nil {
 				out = append(out, path)
 			} else {
@@ -1005,13 +1004,13 @@ func (h *Host) SkillRoots() []string {
 	return out
 }
 
-// HookSources returns the hook files of every enabled plugin that
-// declares hooks:provide, each anchored to its plugin directory and
+// HookSources returns the hook files every enabled plugin publishes: the
+// ones its projection carries, each anchored to its plugin directory and
 // marked untrusted. Both facts matter to a runner: a plugin's hooks.json
-// expects to run inside its own directory, and it is third-party
-// content, so the runner strips the content-bearing payload fields
-// before those commands see them. Sources are ordered by path, so hook
-// execution order is stable across calls.
+// expects to run inside its own directory, and it is third-party content,
+// so the runner strips the content-bearing payload fields before those
+// commands see them. Sources are ordered by path, so hook execution order
+// is stable across calls.
 //
 // Like [Host.SkillRoots], the empty list of an unreadable enable state
 // is reported rather than passed off as "no plugin contributes hooks".
@@ -1030,10 +1029,7 @@ func (h *Host) HookSources() []hooks.ExtraSource {
 	}
 	var out []hooks.ExtraSource
 	for _, entry := range entries {
-		if !entry.Manifest.HasPermission("hooks:provide") {
-			continue
-		}
-		for _, rel := range entry.Manifest.Hooks {
+		for _, rel := range entry.Projection().Hooks {
 			if path, err := ResolvePath(entry.Dir, rel); err == nil {
 				out = append(out, hooks.ExtraSource{
 					Path: path,
@@ -1223,11 +1219,12 @@ func (h *Host) forgetSource(id string, source Source) {
 }
 
 // openSource builds the tool source of one plugin: its socket, and the
-// process that dials it. The tools:provide gate is not applied here — a
-// plugin without it still runs, because it may contribute skills or hooks,
-// and its declarations are dropped where they are projected instead (see
-// [wireSource.project]). Direct callers — plugin graph nodes — get the
-// refusal as their error rather than an empty tool result.
+// process that dials it. Whether its declarations are published is not
+// decided here — a plugin without the tools grant still runs, because it
+// may publish skills or hooks, and its declaration is dropped where it is
+// projected instead (see [wireSource.project]). Direct callers — plugin
+// graph nodes — get the refusal as their error rather than an empty tool
+// result.
 func (h *Host) openSource(
 	ctx context.Context,
 	entry Entry,

@@ -17,7 +17,7 @@ import (
 func updateManifest(id, version, url string) string {
 	return `{
 		"id": "` + id + `", "version": "` + version + `",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "true"},
 		"update": {"url": "` + url + `"}
 	}`
@@ -295,16 +295,16 @@ func TestUpdateFromRefusals(t *testing.T) {
 func updatePackageWith(
 	t *testing.T,
 	dir, id, version string,
-	permissions ...string,
+	requires ...string,
 ) (string, string) {
 	t.Helper()
-	quoted := make([]string, 0, len(permissions))
-	for _, permission := range permissions {
+	quoted := make([]string, 0, len(requires))
+	for _, permission := range requires {
 		quoted = append(quoted, `"`+permission+`"`)
 	}
 	manifest := `{
 		"id": "` + id + `", "version": "` + version + `",
-		"permissions": [` + strings.Join(quoted, ", ") + `],
+		"requires": [` + strings.Join(quoted, ", ") + `],
 		"run": {"command": "true"}
 	}`
 	path := writeZip(t, dir, zipEntry{name: "plugin.json", data: manifest})
@@ -336,7 +336,7 @@ func (a *approvalInstaller) ApproveUpdate(
 }
 
 // TestUpdateFromNeedsApprovalForExpandedGrants covers the expansion an
-// update may not slip past: a package that asks for permissions the
+// update may not slip past: a package that requires grants the
 // installed manifest did not hold. Without an approver the update is
 // refused before it is installed, an approver that objects keeps the
 // plugin as it was, and one that agrees sees what it is agreeing to.
@@ -357,10 +357,10 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 		}
 		return entry.Manifest.Version
 	}
-	// The installed plugin grants tools:provide only.
+	// The installed plugin grants tools.provide only.
 	store := updateStore(t, "0.1.0")
 	path, checksum := updatePackageWith(t, t.TempDir(), "hello", "0.2.0",
-		"tools:provide", "hooks:provide")
+		"tools.provide", "hooks.provide")
 
 	refuser := &fakeInstaller{info: newInfo(checksum), path: path}
 	_, err := store.UpdateFrom(context.Background(), "hello", refuser)
@@ -393,7 +393,7 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 	if !agreer.approved {
 		t.Fatal("the approver was never asked")
 	}
-	if !slices.Equal(agreer.approval.Permissions, []string{"hooks:provide"}) {
+	if !slices.Equal(agreer.approval.NewGrants, []string{"hooks.provide"}) {
 		t.Fatalf("approval = %+v, want the added permission only", agreer.approval)
 	}
 	if agreer.approval.ProcessAdded {
@@ -406,29 +406,29 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 func TestApprovalFor(t *testing.T) {
 	t.Parallel()
 	installed := Manifest{
-		Permissions: []string{"tools:provide"},
-		Run:         &RunSpec{Command: "true"},
+		Requires: []string{"tools.provide"},
+		Run:      &RunSpec{Command: "true"},
 	}
 	if same := approvalFor(installed, installed); !same.Empty() {
 		t.Fatalf("an unchanged manifest asks for approval: %+v", same)
 	}
 	approval := approvalFor(installed, Manifest{
-		Permissions: []string{"skills:provide", "tools:provide", "hooks:provide"},
-		Run:         &RunSpec{Command: "true"},
+		Requires: []string{"skills.provide", "tools.provide", "hooks.provide"},
+		Run:      &RunSpec{Command: "true"},
 	})
-	if !slices.Equal(approval.Permissions,
-		[]string{"hooks:provide", "skills:provide"}) {
-		t.Fatalf("approval.Permissions = %v, want the added grants in name order",
-			approval.Permissions)
+	if !slices.Equal(approval.NewGrants,
+		[]string{"hooks.provide", "skills.provide"}) {
+		t.Fatalf("approval.NewGrants = %v, want the added grants in name order",
+			approval.NewGrants)
 	}
 	if approval.ProcessAdded || approval.Empty() {
 		t.Fatalf("approval = %+v, want added grants and no added process", approval)
 	}
 	added := approvalFor(
-		Manifest{Permissions: []string{"tools:provide"}},
+		Manifest{Requires: []string{"tools.provide"}},
 		Manifest{
-			Permissions: []string{"tools:provide"},
-			Run:         &RunSpec{Command: "true"},
+			Requires: []string{"tools.provide"},
+			Run:      &RunSpec{Command: "true"},
 		},
 	)
 	if !added.ProcessAdded {
@@ -489,7 +489,7 @@ func TestUpdateURLShape(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseManifest: %v", err)
 			}
-			err = manifest.Validate("")
+			err = manifest.Validate("", NewVocabulary())
 			if testCase.want == "" {
 				if err != nil {
 					t.Fatalf("Validate(%q) = %v, want accepted", testCase.url, err)

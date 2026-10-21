@@ -21,11 +21,11 @@ func TestStoreMarksToolNamespaceCollisions(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "first", `{
 		"id": "hello.world", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	writePlugin(t, root, "second", `{
 		"id": "hello_world", "version": "0.2.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 

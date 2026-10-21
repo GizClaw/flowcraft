@@ -142,7 +142,7 @@ func startReadyHost(
 ) (*Host, *Store, *stopEvents, *hookRecorder) {
 	t.Helper()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -352,7 +352,7 @@ func TestHostStartDoesNotWait(t *testing.T) {
 		}
 	})
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	// A fresh state file enables a scanned plugin, so this is the startup
 	// path: the plugin is enabled before Start reads it.
@@ -487,7 +487,7 @@ func realPluginHost(t *testing.T, root string, opts HostOptions) *realPlugin {
 // process has been spawned, so a caller that gets nil can call them.
 func TestHostEnableWaitsForRealPlugin(t *testing.T) {
 	root := t.TempDir()
-	writePlugin(t, root, "hello", wireManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", wireManifest("hello", "tools.provide"))
 	writeHelperCommand(t, filepath.Join(root, "hello"))
 	plugin := realPluginHost(t, root, HostOptions{})
 
@@ -511,7 +511,7 @@ func TestHostEnableWaitsForRealPlugin(t *testing.T) {
 func TestHostEnableKeepsTryingAnUnreadyPlugin(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", wireManifestEnv("hello",
-		map[string]string{helperNoWire: "1"}, "tools:provide"))
+		map[string]string{helperNoWire: "1"}, "tools.provide"))
 	writeHelperCommand(t, filepath.Join(root, "hello"))
 	bound := 300 * time.Millisecond
 	plugin := realPluginHost(t, root, HostOptions{EnableTimeout: bound})
@@ -548,7 +548,7 @@ func TestHostEnableRollbackReportsARecordItCouldNotWrite(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},

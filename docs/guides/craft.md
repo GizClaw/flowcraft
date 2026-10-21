@@ -383,7 +383,7 @@ Builtin roots are read-only.
   "name": "Hello Plugin",
   "version": "0.2.0",
   "minHostVersion": "0.1.0",
-  "permissions": ["tools:provide", "skills:provide"],
+  "requires": ["tools.provide", "skills.provide"],
   "ui": {"entry": "dist/index.js"},
   "run": {"command": "python3", "args": ["server/main.py"],
           "env": {"LOG_LEVEL": "info"}},
@@ -515,45 +515,73 @@ against its checksum (≤ 256 MiB) → require the package to hold the same
 plugin at the announced version → install it under the version rule and
 rollback above.
 
-### Permissions
+### Grants
 
-| Permission | Authorizes |
+A plugin asks; the host decides. The manifest's `requires` is what the
+plugin needs to publish what it declares, and `plugin.Entry.Grants` is
+what the store approved for it: the required names filtered by
+`plugin.Options.Approve`. The two are separate values on purpose. A
+manifest is content — it arrives from whoever built the plugin — while the
+grants are this host's answer to that content, and every reader
+downstream asks the host, never the manifest, which is what keeps a plugin
+from authorizing itself with a line of JSON.
+
+| Grant | Publishes |
 | --- | --- |
-| `tools:provide` | the tools the plugin declares over its connection |
-| `skills:provide` | the `skills` list |
-| `hooks:provide` | the `hooks` list |
-| `nodes:provide` | the `nodes` section |
-| `ui:webview` | the UI bundle (the shell gates it) |
-| `storage:kv` | the plugin KV store (the shell binds it) |
+| `tools.provide` | the tools the plugin declares over its connection |
+| `skills.provide` | the `skills` list |
+| `hooks.provide` | the `hooks` list |
+| `nodes.provide` | the `nodes` section |
+| `ui.webview` | the UI bundle (the shell gates it) |
+| `storage.kv` | the plugin KV store (the shell binds it) |
 
-Those six are craft's own: each pairs with a gate and a drop rule below.
-Grants for host primitives are not in this table, because craft defines no
-primitive — the application declares them by passing `plugin.Options.Grants`
-to the store (anvil, for instance, requires `secrets:auth` for
-`secret.get`/`secret.set`/`secret.delete` and `events:emit` for
-`events.emit`), and `Manifest.Validate` accepts them alongside these.
-`pluginserver.Grants(primitives)` derives the whole set from a catalog when
-an application would rather not restate it.
+Those six are craft's own, one per contribution channel, and every name is
+a dotted `resource.op` — the shape a primitive id already has, so a host's
+vocabulary reads as one list. An application adds its host primitives'
+grants by passing them to `plugin.Options.Grants`
+(`pluginserver.Grants(primitives)` derives the set from a catalog), and a
+manifest may require them alongside craft's. Anvil names each grant after
+the primitive it authorizes — `events.emit`, `secret.get` — which is the
+smallest vocabulary an application can offer. A `requires` entry outside
+the vocabulary is rejected at install time, rather than read as a grant
+nothing will ever satisfy.
 
-An unknown permission is rejected, not ignored. The gate is **fail-closed
-at contribution time**: a plugin that declares a gated section without
-its permission still loads and enables, but the section is dropped:
+`plugin.Options.Approve` is the seam for an application that decides per
+plugin: it receives the id and the required grants and returns the subset
+it approves. Nil approves every request, because installing a plugin is
+already a decision. Nothing grows past its request — a name the policy
+returns that nobody required is ignored — and the gate stays **fail-closed
+at contribution time**: a plugin that declares a section without the grant
+that publishes it still loads and enables, and the section goes nowhere:
 
-- `tools` without `tools:provide`: the process still starts and declares
+- `tools` without `tools.provide`: the process still starts and declares
   what it likes, but none of it is projected into a tool catalog, and a
   direct caller is told the grant is missing rather than that the tool
   does not exist;
-- `skills` without `skills:provide`: `SkillRoots` omits the directories;
-- `hooks` without `hooks:provide`: `HookSources` omits the files;
-- `nodes` without `nodes:provide`: no node resource or engine dep is
+- `skills` without `skills.provide`: `SkillRoots` omits the directories;
+- `hooks` without `hooks.provide`: `HookSources` omits the files;
+- `nodes` without `nodes.provide`: no node resource or engine dep is
   synthesized;
 - `ui` and `storage` carry no gate inside craft — the shell gates the
   bundle and binds the KV, while `Host.KV` is the host accessor. The
-  registry serves the bundle and reports the grant in its entries, so
-  the shell refuses to load what the plugin did not ask for.
+  registry reports both lists per entry (`requires` and `granted`), so a
+  shell decides on the host's answer rather than the plugin's claim.
 
-Disabling a plugin withdraws its contributions even though its
-permissions are unchanged; re-enabling restores them.
+Every one of those reads goes through `plugin.Entry.Projection()`: the
+sections arrive already filtered, so a consumer publishes a field and has
+no permission left to re-check. `Projection.Dropped` names the channels a
+plugin asked for and did not get, in channel order — the record a shell
+shows when a plugin is enabled and does less than its manifest says.
+
+An update that requires new grants passes both seams, in this order:
+`plugin.UpdateApprover` decides whether the plugin may widen its request at
+all, and `plugin.Options.Approve` then decides what the new version holds.
+The first is about the package, the second about the host — neither makes
+the other redundant, and a grant the policy did not approve stays out even
+though the update was approved.
+
+Disabling a plugin withdraws its contributions even though its grants are
+unchanged; re-enabling restores them.
 
 ### UI delivery
 
@@ -568,8 +596,8 @@ assets, ok := registry.Assets(entries[0].ID)  // where to read it from
 ```
 
 `Entries()` lists every valid plugin — enabled or not — sorted by id,
-with `id`, `name`, `version`, `entry`, `permissions`, `enabled` and the
-`revision` the read started at. Invalid plugins are not enumerated:
+with `id`, `name`, `version`, `entry`, `requires`, `granted`, `enabled`
+and the `revision` the read started at. Invalid plugins are not enumerated:
 scan errors belong to the management view (`plugin.Host.List`).
 `Assets(id)` returns an `fs.FS` rooted at the directory holding the
 plugin's `ui.entry`, so `dist/index.js` is `index.js` and the chunks
@@ -600,7 +628,7 @@ each event is:
 1. destroy every plugin scope from the previous round;
 2. read `Entries()` again, and record the revision it carries;
 3. load each enabled bundle, handing the plugin's id, version and
-   permissions to the JS host.
+   granted grants to the JS host.
 
 Two asset roots, on purpose: `Assets` / `plugin.Host.AssetFS` read
 inside the bundle, bundle-relative, which is what a JS loader needs,
@@ -700,9 +728,9 @@ The node handler calls the plugin's tool over the plugin wire with
 `{"writes": {...}}` object to the board. The method never appears in the
 model's tool catalog; the node runs in the plugin subprocess and each
 call is bounded by the node `timeout` (default 30s) and the run context.
-`nodes` is gated by `nodes:provide`; the tool it calls needs
-`tools:provide`, so a node plugin usually declares both. A node backed by
-a plugin lacking `tools:provide` is still synthesized and fails at call
+`nodes` is published by `nodes.provide`; the tool it calls needs
+`tools.provide`, so a node plugin usually requires both. A node backed by
+a plugin lacking `tools.provide` is still synthesized and fails at call
 time with the missing grant rather than disappearing silently.
 
 ## The plugin wire and host primitives
@@ -720,7 +748,7 @@ Windows included.
 
 - **Identity is the connection.** There is no token to mint, pass or
   revoke: the grants of a process are the `ConnOptions.Grants` craft
-  opened its connection with, taken from the manifest permissions and
+  opened its connection with, taken from the grants the store approved and
   reported back in `HelloResponse.granted_permissions`. A process that is
   stopped, replaced or crashes takes its grants with its file descriptor.
   The socket file is `0600` inside a `0700` directory, and that file mode
@@ -976,9 +1004,9 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   field is no longer supported; craft serves the plugin socket and the
   plugin dials FLOWCRAFT_PLUGIN_WIRE ...`.
 - Plugin gate: a call to one of a plugin's tools without
-  `tools:provide` is `Forbidden` (`plugin hello: tools are ignored
-  without the tools:provide permission`); a tool the plugin never
-  declared is `NotFound` (`plugin hello: no tool named "x"`).
+  `tools.provide` is `Forbidden` (`plugin hello: tools are ignored
+  without the tools.provide grant`); a tool the plugin never declared is
+  `NotFound` (`plugin hello: no tool named "x"`).
 - Plugin wire: a foreign major is `plugin wire: version "2.0" is not
   compatible with 1; this host speaks major 1`, a mismatched identity is
   `plugin host: connection for "hello" announced itself as "other"`, a

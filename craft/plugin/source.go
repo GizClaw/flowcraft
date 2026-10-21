@@ -38,9 +38,13 @@ const callTimeout = 5 * time.Minute
 // Attach/Detach discipline, but the transport underneath is the socket craft
 // opened for this process.
 type wireSource struct {
-	conn     *server.Conn
-	id       string
-	prefix   string
+	conn   *server.Conn
+	id     string
+	prefix string
+	// declares is the entry's tools grant: this process may publish the
+	// tools it declares. A plugin without it still runs — it may publish
+	// skills, hooks or nodes — and its declaration is then read and not
+	// published.
 	declares bool
 	// stopped is called once when the process behind this source exits on
 	// its own. It is how the host learns a plugin gave up; a source the
@@ -368,8 +372,7 @@ func (s *wireSource) CallTool(
 ) (json.RawMessage, error) {
 	if !s.declares {
 		return nil, errdefs.Forbiddenf(
-			"plugin %s: tools are ignored without the tools:provide permission",
-			s.id)
+			"plugin %s: tools are ignored without the %s grant", s.id, GrantTools)
 	}
 	if !s.hasTool(toolName) {
 		return nil, errdefs.NotFoundf(
@@ -553,15 +556,12 @@ func (h *Host) wireSource(
 			"plugin host: plugin %s has a run section but no wire server is "+
 				"configured", entry.ID)
 	}
-	grants := make(server.GrantSet, len(entry.Manifest.Permissions))
-	for _, permission := range entry.Manifest.Permissions {
-		grants[permission] = true
-	}
+	projection := entry.Projection()
 	conn, err := h.server.NewConn(server.ConnOptions{
 		PluginID:   entry.ID,
 		Version:    entry.Manifest.Version,
 		Generation: generation,
-		Grants:     grants,
+		Grants:     entry.Grants,
 		Validate: func(declaration *protocol.Declaration) error {
 			return validateDeclaration(entry.ID, declaration)
 		},
@@ -572,7 +572,7 @@ func (h *Host) wireSource(
 	source := newWireSource(
 		entry.ID,
 		conn,
-		declaresTools(entry.Manifest),
+		projection.Tools,
 		func() { h.notifyLost(entry.ID) },
 	)
 	if err := source.start(ctx, entry, env, dataDir); err != nil {
@@ -580,19 +580,6 @@ func (h *Host) wireSource(
 		return nil, err
 	}
 	return source, nil
-}
-
-// declaresTools is what a source's call sites ask: this process may publish
-// the tools it declares. It is the negated gate read the other way round.
-func declaresTools(manifest Manifest) bool { return !dropsTools(manifest) }
-
-// dropsTools is the tools:provide gate. A plugin that runs without the grant
-// still starts — it may contribute skills, hooks or nodes — but none of the
-// tools it declares over the wire are projected into the registry, and a
-// direct caller is told which grant is missing rather than that the tool
-// does not exist.
-func dropsTools(manifest Manifest) bool {
-	return !manifest.HasPermission("tools:provide")
 }
 
 func errorsJoin(errs []error) error {

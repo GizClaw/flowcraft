@@ -180,7 +180,7 @@ func writeWirePlugin(
 	t *testing.T,
 	root, id, version string,
 	extraEnv map[string]string,
-	permissions ...string,
+	requires ...string,
 ) string {
 	t.Helper()
 	if os.Getenv(craftWireHelperEnv) == "1" {
@@ -190,7 +190,7 @@ func writeWirePlugin(
 	if err := os.Symlink(wireHelperExecutable(t), filepath.Join(dir, "server")); err != nil {
 		t.Fatalf("symlink helper: %v", err)
 	}
-	writeWirePluginManifest(t, dir, id, version, extraEnv, permissions)
+	writeWirePluginManifest(t, dir, id, version, extraEnv, requires)
 	return dir
 }
 
@@ -201,7 +201,7 @@ func writeWirePlugin(
 func writeInstallableWirePlugin(
 	t *testing.T,
 	root, id, version string,
-	permissions ...string,
+	requires ...string,
 ) string {
 	t.Helper()
 	executable := wireHelperExecutable(t)
@@ -213,7 +213,7 @@ func writeInstallableWirePlugin(
 	if err := os.WriteFile(filepath.Join(dir, "server"), data, 0o700); err != nil {
 		t.Fatalf("copy helper: %v", err)
 	}
-	writeWirePluginManifest(t, dir, id, version, nil, permissions)
+	writeWirePluginManifest(t, dir, id, version, nil, requires)
 	return dir
 }
 
@@ -243,7 +243,7 @@ func writeWirePluginManifest(
 	t *testing.T,
 	dir, id, version string,
 	extraEnv map[string]string,
-	permissions []string,
+	requires []string,
 ) {
 	t.Helper()
 	env := map[string]string{craftWireHelperEnv: "1"}
@@ -254,13 +254,13 @@ func writeWirePluginManifest(
 	if err != nil {
 		t.Fatalf("marshal env: %v", err)
 	}
-	quoted := make([]string, 0, len(permissions))
-	for _, permission := range permissions {
+	quoted := make([]string, 0, len(requires))
+	for _, permission := range requires {
 		quoted = append(quoted, `"`+permission+`"`)
 	}
 	manifest := `{
 		"id": "` + id + `", "version": "` + version + `",
-		"permissions": [` + strings.Join(quoted, ", ") + `],
+		"requires": [` + strings.Join(quoted, ", ") + `],
 		"nodes": [{"type": "echo", "tool": "node_echo", "timeout": "10s"}],
 		"run": {
 			"command": "./server",

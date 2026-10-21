@@ -179,8 +179,8 @@ type HelloResponse struct {
 	WireVersion string                 `protobuf:"bytes,1,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
 	SessionId   string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Generation  uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
-	// The grants craft decided on, which are the manifest's permissions
-	// narrowed by local policy. This is the only place they are stated.
+	// The grants craft decided on: the manifest's requires narrowed by the
+	// application's approval. This is the only place they are stated.
 	GrantedPermissions []string `protobuf:"bytes,4,rep,name=granted_permissions,json=grantedPermissions,proto3" json:"granted_permissions,omitempty"`
 	// Bound on one call's arguments or result, in bytes. Zero means unset.
 	MaxCallBytes  uint32 `protobuf:"varint,5,opt,name=max_call_bytes,json=maxCallBytes,proto3" json:"max_call_bytes,omitempty"`

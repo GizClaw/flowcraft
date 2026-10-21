@@ -83,7 +83,7 @@ func startHost(t *testing.T, store *Store, newSource NewSourceFunc) *Host {
 	return host
 }
 
-// TestToolsProvideGatesTheDeclaration covers the tools:provide grant,
+// TestToolsProvideGatesTheDeclaration covers the tools.provide grant,
 // whose checkpoint is projection: a plugin that runs without the
 // permission still starts — it may contribute skills or hooks — but none
 // of the tools it declares are published, and a direct caller is told
@@ -92,7 +92,7 @@ func TestToolsProvideGatesTheDeclaration(t *testing.T) {
 	root := t.TempDir()
 	const grantedID = "granted"
 	const ungrantedID = "ungranted"
-	writePlugin(t, root, grantedID, wireManifest(grantedID, "tools:provide"))
+	writePlugin(t, root, grantedID, wireManifest(grantedID, "tools.provide"))
 	writePlugin(t, root, ungrantedID, wireManifest(ungrantedID))
 	for _, dir := range []string{grantedID, ungrantedID} {
 		writeContributionTree(t, root, dir)
@@ -119,9 +119,9 @@ func TestToolsProvideGatesTheDeclaration(t *testing.T) {
 
 	_, err := host.CallTool(ctx, ungrantedID, "echo", nil)
 	if !errdefs.IsForbidden(err) {
-		t.Fatalf("CallTool without tools:provide = %v, want Forbidden", err)
+		t.Fatalf("CallTool without tools.provide = %v, want Forbidden", err)
 	}
-	if !strings.Contains(err.Error(), "tools:provide") {
+	if !strings.Contains(err.Error(), "tools.provide") {
 		t.Fatalf("CallTool error = %v, want it to name the missing permission", err)
 	}
 
@@ -145,7 +145,7 @@ func TestPluginWithoutWireStarts(t *testing.T) {
 	const id = "skills"
 	writePlugin(t, root, id, `{
 		"id": "skills", "version": "0.1.0",
-		"permissions": ["skills:provide"],
+		"requires": ["skills.provide"],
 		"skills": ["skills"]
 	}`)
 	writeContributionTree(t, root, id)

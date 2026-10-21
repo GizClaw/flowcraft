@@ -46,7 +46,7 @@ func TestTour(t *testing.T) {
 	text := out
 	for _, want := range []string{
 		"craft anvil 0.1.0 (Anvil)",
-		"hello 0.1.0  enabled=true  permissions=tools:provide, skills:provide, events:emit",
+		"hello 0.1.0  enabled=true  grants=events.emit, skills.provide, tools.provide",
 		"plugin tools published: hello__greet, hello__ping_host",
 		"event  craft.started",
 		`notes_add {"text":"buy milk"} -> added note 1 to ` +

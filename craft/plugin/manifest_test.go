@@ -25,62 +25,62 @@ func TestManifestValidatesRunPaths(t *testing.T) {
 	}{{
 		name: "path command that exists",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "./server", "args": ["-test.run=TestX"]}}`,
 		files: []string{"server"},
 	}, {
 		name: "path command that is missing",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "./server"}}`,
 		wantErr: `run.command "./server"`,
 	}, {
 		name: "path command that is a directory",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "bin/server"}}`,
 		dirs:    []string{"bin/server"},
 		wantErr: `run.command "bin/server" is a directory`,
 	}, {
 		name: "absolute command",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "/usr/bin/python3", "args": ["server.py"]}}`,
 		wantErr: "must be relative",
 	}, {
 		name: "bare command is a PATH lookup and stays unchecked",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "definitely-not-a-real-command-xyz",
 				"args": ["index.js", "--port", "0"]}}`,
 	}, {
 		name: "path argument that exists",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "python3", "args": ["server/main.py"]}}`,
 		files: []string{filepath.Join("server", "main.py")},
 	}, {
 		name: "path argument that is missing",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "python3", "args": ["server/main.py"]}}`,
 		wantErr: `run.arg "server/main.py"`,
 	}, {
 		name: "directory argument is a legitimate package path",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "go", "args": ["run", "./server"]}}`,
 		dirs: []string{"server"},
 	}, {
 		name: "flag argument carrying a path is not resolved",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "node",
 				"args": ["server.js", "--config=./missing.json"]}}`,
 	}, {
 		name: "argument that would escape the root",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["tools:provide"],
+			"requires": ["tools.provide"],
 			"run": {"command": "python3", "args": ["../../etc/passwd"]}}`,
 		wantErr: "escapes the plugin root",
 	}}
@@ -110,7 +110,7 @@ func TestManifestValidatesRunPaths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseManifest: %v", err)
 			}
-			err = manifest.Validate(dir)
+			err = manifest.Validate(dir, NewVocabulary())
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Validate = %v, want nil", err)
@@ -133,65 +133,66 @@ func TestManifestValidateWithoutRootSkipsRunPaths(t *testing.T) {
 	t.Parallel()
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "bin/missing-server"}
 	}`))
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	if err := manifest.Validate(""); err != nil {
+	if err := manifest.Validate("", NewVocabulary()); err != nil {
 		t.Fatalf("Validate(rootless) = %v, want nil", err)
 	}
 }
 
-// TestManifestPermissions pins the two halves of the vocabulary: craft's
-// own list is closed — a typo in a contribution permission has to be
-// refused rather than read as a permission nobody holds — and the
-// application's grants are accepted on top of it, which is the only way a
-// plugin can ask for one of its host's primitives.
-func TestManifestPermissions(t *testing.T) {
+// TestManifestRequires pins the two halves of the vocabulary: craft's own
+// list is closed — a typo in a contribution grant has to be refused rather
+// than read as a grant nothing will ever satisfy — and the application's
+// grants are accepted on top of it, which is the only way a plugin can ask
+// for one of its host's primitives.
+func TestManifestRequires(t *testing.T) {
 	t.Parallel()
-	manifest := func(permissions string) Manifest {
+	manifest := func(requires string) Manifest {
 		t.Helper()
 		parsed, err := ParseManifest(context.Background(), []byte(`{
 			"id": "hello", "version": "0.1.0",
-			"permissions": [`+permissions+`]
+			"requires": [`+requires+`]
 		}`))
 		if err != nil {
 			t.Fatalf("ParseManifest: %v", err)
 		}
 		return parsed
 	}
-	if err := manifest(`"skills:provide"`).Validate(""); err != nil {
-		t.Fatalf("Validate with a contribution permission = %v, want nil", err)
+	craft := NewVocabulary()
+	if err := manifest(`"skills.provide"`).Validate("", craft); err != nil {
+		t.Fatalf("Validate with a contribution grant = %v, want nil", err)
 	}
-	err := manifest(`"skills:provid"`).Validate("")
-	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "unknown permission") {
+	err := manifest(`"skills.provid"`).Validate("", craft)
+	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "unknown grant") {
 		t.Fatalf("Validate with a typo = %v, want a Validation error naming it", err)
 	}
-	granted := manifest(`"skills:provide", "notary:sign"`)
-	if err := granted.Validate(""); !errdefs.IsValidation(err) {
+	granted := manifest(`"skills.provide", "notary.sign"`)
+	if err := granted.Validate("", craft); !errdefs.IsValidation(err) {
 		t.Fatalf("Validate without the grant declared = %v, want Validation", err)
 	}
-	if err := granted.Validate("", "notary:sign"); err != nil {
+	if err := granted.Validate("", NewVocabulary("notary.sign")); err != nil {
 		t.Fatalf("Validate with the grant declared = %v, want nil", err)
 	}
 }
 
 // TestToolsProvideRequiresARunSection pins the one cross-field rule the
-// manifest keeps: tools arrive from a process, so a plugin that claims the
-// permission without one is a manifest error rather than a plugin that
+// manifest keeps: tools arrive from a process, so a plugin that requires
+// the channel without one is a manifest error rather than a plugin that
 // runs and publishes nothing.
 func TestToolsProvideRequiresARunSection(t *testing.T) {
 	t.Parallel()
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"]
+		"requires": ["tools.provide"]
 	}`))
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	err = manifest.Validate("")
+	err = manifest.Validate("", NewVocabulary())
 	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "run section") {
 		t.Fatalf("Validate = %v, want a Validation error naming the run section", err)
 	}
@@ -230,7 +231,7 @@ func TestUnrunnableCommandIsRejectedAtInspectAndInstallAndReportedByScan(t *test
 	root := t.TempDir()
 	writePlugin(t, root, "broken", `{
 		"id": "broken", "version": "0.1.0",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "bin/missing-server"}
 	}`)
 	store := newStoreOver(t, root)

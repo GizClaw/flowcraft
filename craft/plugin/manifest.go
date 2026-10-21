@@ -25,33 +25,24 @@ const (
 	maxEnvVal  = 4096
 )
 
-// Permissions craft itself defines: the contribution permissions its
-// charter pairs with a gate and a drop rule. Grants for host primitives are
-// not in this table, because craft defines no primitives — the application
-// declares those names (see [Options.Grants]) and [Manifest.Validate]
-// accepts them alongside these.
-var validPermissions = map[string]struct{}{
-	"tools:provide":  {},
-	"skills:provide": {},
-	"hooks:provide":  {},
-	"nodes:provide":  {},
-	"ui:webview":     {},
-	"storage:kv":     {},
-}
-
 // Manifest is the decoded plugin.json.
 type Manifest struct {
-	ID             string      `json:"id"`
-	Name           string      `json:"name,omitempty"`
-	Version        string      `json:"version"`
-	MinHostVersion string      `json:"minHostVersion,omitempty"`
-	Permissions    []string    `json:"permissions,omitempty"`
-	Run            *RunSpec    `json:"run,omitempty"`
-	UI             *UIManifest `json:"ui,omitempty"`
-	Update         *UpdateDecl `json:"update,omitempty"`
-	Skills         []string    `json:"skills,omitempty"`
-	Hooks          []string    `json:"hooks,omitempty"`
-	Nodes          []NodeDecl  `json:"nodes,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name,omitempty"`
+	Version        string `json:"version"`
+	MinHostVersion string `json:"minHostVersion,omitempty"`
+	// Requires is what the plugin asks the host for: the grants it needs
+	// to publish what it declares. The ask is not the answer — what a
+	// plugin holds is [Entry.Grants], computed by the store from this
+	// list and the application's approval, and every consumer of a
+	// contribution reads that decision (see [Entry.Projection]).
+	Requires []string    `json:"requires,omitempty"`
+	Run      *RunSpec    `json:"run,omitempty"`
+	UI       *UIManifest `json:"ui,omitempty"`
+	Update   *UpdateDecl `json:"update,omitempty"`
+	Skills   []string    `json:"skills,omitempty"`
+	Hooks    []string    `json:"hooks,omitempty"`
+	Nodes    []NodeDecl  `json:"nodes,omitempty"`
 
 	// Legacy features rejected with an upgrade hint.
 	Kraft json.RawMessage `json:"kraft,omitempty"`
@@ -94,16 +85,6 @@ func (m Manifest) Entry() string {
 		return ""
 	}
 	return m.UI.Entry
-}
-
-// HasPermission reports whether the manifest declares permission.
-func (m Manifest) HasPermission(permission string) bool {
-	for _, candidate := range m.Permissions {
-		if candidate == permission {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseManifest decodes and validates one plugin.json.
@@ -150,11 +131,10 @@ func refuseLegacyFields(data []byte) error {
 // Validate checks the manifest against its plugin root. Root may be
 // empty to skip filesystem checks.
 //
-// grants are the application's grant names — the ones the host primitives
-// it serves require — and are accepted on top of craft's own permissions.
-// Craft defines no primitive grants itself, so this is the only way a
-// manifest can ask for one.
-func (m Manifest) Validate(root string, grants ...string) error {
+// vocabulary is every grant name this host recognizes (see [Vocabulary]),
+// and a requires entry outside it is an error rather than a grant that is
+// quietly never satisfied.
+func (m Manifest) Validate(root string, vocabulary Vocabulary) error {
 	if err := ValidateID(m.ID); err != nil {
 		return err
 	}
@@ -177,20 +157,13 @@ func (m Manifest) Validate(root string, grants ...string) error {
 			"plugin %s: the tools field is no longer supported; "+
 				"declare them through the plugin wire instead", m.ID)
 	}
-	known := make(map[string]bool, len(validPermissions)+len(grants))
-	for permission := range validPermissions {
-		known[permission] = true
-	}
-	for _, grant := range grants {
-		known[grant] = true
-	}
-	for _, permission := range m.Permissions {
-		if !known[permission] {
+	for _, required := range m.Requires {
+		if !vocabulary.Has(Grant(required)) {
 			return errdefs.Validationf(
-				"plugin %s: unknown permission %q", m.ID, permission)
+				"plugin %s: unknown grant %q", m.ID, required)
 		}
 	}
-	if err := m.checkRunGrants(); err != nil {
+	if err := m.checkRun(); err != nil {
 		return err
 	}
 	if m.Run != nil {

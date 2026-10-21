@@ -202,7 +202,7 @@ rt, err := c.OpenRuntime(ctx, craft.DefaultKey, craft.RuntimeOptions{})
 The runtime is the same `core/runtime` one shown above; craft owns the layers,
 the plugin host, the host primitives and the reload/drain lifecycle around it.
 See [`docs/guides/craft.md`](docs/guides/craft.md) for the definition schema,
-the plugin manifest and permissions, the host-primitive protocol, and
+the plugin manifest and its grants, the host-primitive protocol, and
 `craft/manager`.
 
 ## Architecture
@@ -377,7 +377,7 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   target discovery, sync / async execution, and the session-bound
   delegation lifecycle.
 - [Craft Assembly](docs/guides/craft.md) — `craft`: the `craft.yaml`
-  definition and capability set, the plugin manifest and permissions, the
+  definition and capability set, the plugin manifest and its grants, the
   host-primitive protocol, and the process-level manager.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)

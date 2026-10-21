@@ -55,17 +55,21 @@ type Emitter interface {
 }
 
 // Entry is one plugin as the shell sees it before loading a bundle:
-// whether to load it (enabled, permissions) and where to find it. The
+// whether to load it (enabled, grants) and where to find it. The
 // revision is the one the read started at, shared by every entry of
 // that read.
 type Entry struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	Entry       string   `json:"entry,omitempty"`
-	Permissions []string `json:"permissions,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	Revision    uint64   `json:"revision"`
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Version string `json:"version,omitempty"`
+	Entry   string `json:"entry,omitempty"`
+	// Requires is what the manifest asks for and Granted what this host
+	// approved. A shell draws ui.webview from Granted: the grant is the
+	// host's decision, the requires list only the plugin's request.
+	Requires []string `json:"requires,omitempty"`
+	Granted  []string `json:"granted,omitempty"`
+	Enabled  bool     `json:"enabled"`
+	Revision uint64   `json:"revision"`
 	// Conflict names the tool namespace another plugin already
 	// publishes. The entry is listed so a shell can show it and offer to
 	// disable it; it cannot be enabled while the collision lasts, and it
@@ -120,14 +124,15 @@ func (r *Registry) Entries() ([]Entry, error) {
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, Entry{
-			ID:          entry.ID,
-			Name:        entry.Manifest.Name,
-			Version:     entry.Manifest.Version,
-			Entry:       entry.Manifest.Entry(),
-			Permissions: append([]string(nil), entry.Manifest.Permissions...),
-			Enabled:     entry.Enabled,
-			Revision:    revision,
-			Conflict:    entry.Conflict,
+			ID:       entry.ID,
+			Name:     entry.Manifest.Name,
+			Version:  entry.Manifest.Version,
+			Entry:    entry.Manifest.Entry(),
+			Requires: append([]string(nil), entry.Manifest.Requires...),
+			Granted:  entry.Grants.List(),
+			Enabled:  entry.Enabled,
+			Revision: revision,
+			Conflict: entry.Conflict,
 		})
 	}
 	return out, nil
@@ -139,7 +144,7 @@ func (r *Registry) Entries() ([]Entry, error) {
 // a host that cannot serve assets.
 //
 // The bundle is served whether or not the plugin is enabled and whether
-// or not it holds ui:webview — the entries say both, and the shell
+// or not it holds ui.webview — the entries say both, and the shell
 // decides. Reading is confined to the bundle directory (see
 // plugin.Host.AssetFS).
 func (r *Registry) Assets(id string) (fs.FS, bool) {

@@ -41,7 +41,7 @@ func TestHostOnStoppedReportsRequestedStops(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	for _, id := range []string{"hello", "quiet", "closing"} {
-		writePlugin(t, root, id, contributionManifest(id, "tools:provide"))
+		writePlugin(t, root, id, contributionManifest(id, "tools.provide"))
 		writeContributionTree(t, root, id)
 	}
 	store := newStoreOver(t, root)
@@ -139,7 +139,7 @@ func startStopPluginHost(t *testing.T, exitMS int) *stopTestPlugin {
 	if exitMS > 0 {
 		env[helperExitMS] = strconv.Itoa(exitMS)
 	}
-	manifest := wireManifestEnv("hello", env, "tools:provide")
+	manifest := wireManifestEnv("hello", env, "tools.provide")
 	if err := os.WriteFile(
 		filepath.Join(dir, "plugin.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatalf("manifest: %v", err)
@@ -300,7 +300,7 @@ func holdFirstStop(
 func TestHostOnStoppedReportsOneStopPerProcess(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
 	ctx := context.Background()
@@ -369,7 +369,7 @@ func TestHostOnStoppedReportsOneStopPerProcess(t *testing.T) {
 func TestHostOnStoppedIgnoresALossDuringTheStopsDelivery(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
 	ctx := context.Background()

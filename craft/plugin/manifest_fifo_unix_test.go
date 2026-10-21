@@ -28,13 +28,13 @@ func TestManifestRejectsNonRegularCommand(t *testing.T) {
 	}
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "bin/server"}
 	}`))
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	err = manifest.Validate(dir)
+	err = manifest.Validate(dir, NewVocabulary())
 	if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
 		t.Fatalf("Validate = %v, want a regular-file error", err)
 	}

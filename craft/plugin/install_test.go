@@ -15,7 +15,7 @@ import (
 func manifestFor(id, version string) string {
 	return `{
 		"id": "` + id + `", "version": "` + version + `",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "true"}
 	}`
 }
@@ -482,7 +482,7 @@ func TestHostUninstallRefusesBeforeStopping(t *testing.T) {
 	t.Parallel()
 	builtin := t.TempDir()
 	user := t.TempDir()
-	writePlugin(t, builtin, "hello", contributionManifest("hello", "tools:provide"))
+	writePlugin(t, builtin, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, builtin, "hello")
 	store := builtinStore(t, builtin, user)
 	factory := newSourceFactory()
@@ -537,7 +537,7 @@ func TestHostUninstallStopsBeforeRemoving(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	for _, id := range []string{"hello", "quiet"} {
-		writePlugin(t, root, id, contributionManifest(id, "tools:provide"))
+		writePlugin(t, root, id, contributionManifest(id, "tools.provide"))
 		writeContributionTree(t, root, id)
 	}
 	store := newStoreOver(t, root)

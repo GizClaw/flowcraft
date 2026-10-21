@@ -70,7 +70,7 @@ retrieval, runtime orchestration, and voice. Source on
 ### Application assembly
 
 - [Craft Assembly](guides/craft.md) — `craft`: the `craft.yaml` definition
-  and capability set, the plugin manifest and permissions, the host-primitive
+  and capability set, the plugin manifest and its grants, the host-primitive
   protocol, and the process-level manager.
 
 ## Migrations

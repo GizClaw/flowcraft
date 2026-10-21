@@ -24,7 +24,7 @@ import (
 // recording a plugin whose process never arrives.
 func TestHostEnableReportsUnrunnableCommand(t *testing.T) {
 	root := t.TempDir()
-	writePlugin(t, root, "hello", wireManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", wireManifest("hello", "tools.provide"))
 	// A regular file the manifest check accepts — it only asks for a
 	// regular file — and exec cannot run.
 	unrunnable := filepath.Join(root, "hello", "server")

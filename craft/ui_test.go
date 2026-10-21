@@ -197,7 +197,7 @@ func writeUIPlugin(t *testing.T, root, id string) {
 	}
 	manifest := `{
 		"id": "` + id + `", "name": "Hello", "version": "0.1.0",
-		"permissions": ["ui:webview"],
+		"requires": ["ui.webview"],
 		"ui": {"entry": "dist/index.js"}
 	}`
 	if err := os.WriteFile(

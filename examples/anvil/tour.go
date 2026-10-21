@@ -55,9 +55,9 @@ func (a *app) tour(ctx context.Context) error {
 		return err
 	}
 	for _, summary := range summaries {
-		a.print.line("%s %s  enabled=%v  permissions=%s",
+		a.print.line("%s %s  enabled=%v  grants=%s",
 			summary.ID, summary.Version, summary.Enabled,
-			strings.Join(summary.Permissions, ", "))
+			strings.Join(summary.Granted, ", "))
 	}
 	for _, root := range a.plugins.SkillRoots() {
 		a.print.line("skill root: %s", root)

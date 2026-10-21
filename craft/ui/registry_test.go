@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func writeTree(t *testing.T, dir, id, version string) {
 	}
 	manifest := `{
 		"id": "` + id + `", "name": "Hello", "version": "` + version + `",
-		"permissions": ["ui:webview"],
+		"requires": ["ui.webview"],
 		"ui": {"entry": "dist/index.js"}
 	}`
 	if err := os.WriteFile(
@@ -151,7 +152,8 @@ func TestRegistryEntriesAndAssets(t *testing.T) {
 	hello := entries[1]
 	if hello.Name != "Hello" || hello.Version != "0.1.0" ||
 		hello.Entry != "dist/index.js" || !hello.Enabled ||
-		len(hello.Permissions) != 1 || hello.Permissions[0] != "ui:webview" {
+		!slices.Equal(hello.Requires, []string{"ui.webview"}) ||
+		!slices.Equal(hello.Granted, []string{"ui.webview"}) {
 		t.Fatalf("hello entry = %+v", hello)
 	}
 	if hello.Revision != f.store.Revision() ||
@@ -159,7 +161,8 @@ func TestRegistryEntriesAndAssets(t *testing.T) {
 		t.Fatalf("entry revisions = %d/%d, want %d",
 			entries[0].Revision, hello.Revision, f.store.Revision())
 	}
-	if entries[0].Entry != "" || entries[0].Permissions != nil {
+	if entries[0].Entry != "" || entries[0].Requires != nil ||
+		entries[0].Granted != nil {
 		t.Fatalf("headless entry carries UI fields: %+v", entries[0])
 	}
 

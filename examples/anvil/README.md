@@ -44,7 +44,7 @@ is repeatable; everything else in there is left alone.
 | Step | What happens | The craft concept |
 | --- | --- | --- |
 | definition | `craft.yaml` is parsed and validated | definition vs. application code |
-| plugins | the plugin directory is scanned, permissions and skill roots are listed | the plugin store; `skills:provide` |
+| plugins | the plugin directory is scanned, grants and skill roots are listed | the plugin store; `skills.provide` |
 | start | the Craft starts, the plugin process dials in and declares its tools | the plugin host, the plugin wire and the shared tool set |
 | `runtime "default"` | one runtime opens with a value; tools are called through its assembly | keyed runtimes, `${craft:...}`, tool assembly |
 | `runtime "alpha"` | a second runtime opens from a per-runtime layer | per-runtime layers, runtime isolation |
@@ -129,7 +129,7 @@ hot-plugging never tears the resource registry. Both surface as
 | `tour.go` | The scripted lifecycle |
 | `events.go`, `print.go` | The craft-plane sink and the mutex-guarded printer that keeps its output readable |
 | `tour_test.go` | The same tour as a hermetic test (`go test ./…`) |
-| `plugins/hello/plugin.json` | The manifest: permissions, one skill directory, one plugin process |
+| `plugins/hello/plugin.json` | The manifest: what it requires, one skill directory, one plugin process |
 | `plugins/hello/server/main.go` | The plugin's process: `protocol.Main` plus its host-primitive calls |
 | `plugins/hello/skills/hello/SKILL.md` | The skill the host exposes through `SkillRoots()` |
 
@@ -173,13 +173,15 @@ hot-plugging never tears the resource registry. Both surface as
   is resolved against the plugin root and confined to it, so the manifest ships
   source and the host compiles it on start. A real plugin ships a compiled
   binary (or an interpreter plus a script, e.g. `python3 server/main.py`).
-- `permissions: [tools:provide, skills:provide, events:emit]` — each gated
-  contribution is dropped fail-closed without its permission, and the
-  permission set is what the connection is granted.
+- `requires: [tools.provide, skills.provide, events.emit]` — the manifest only
+  asks. The store approves (`plugin.Options.Approve` is the seam; this example
+  approves by default), and the grants it approved are what the connection is
+  opened with. A section declared without its grant is dropped fail-closed.
 - The host injects `FLOWCRAFT_PLUGIN_ID`, `FLOWCRAFT_PLUGIN_DATA_DIR` and
   `FLOWCRAFT_PLUGIN_WIRE` into the child; the last one is the socket the plugin
-  dials. The grants are the manifest permissions of that connection, which is
-  why `events.emit` works for this plugin and `secret.get` would not.
+  dials. Each connection carries the grants the store approved for that
+  plugin, which is why `events.emit` works for this one and `secret.get` would
+  not: the workshop names each grant after the primitive it authorizes.
 - `minHostVersion` is deliberately absent: against a development build of
   craft (`Version == "0.0.0"`) any floor above `0.0.0` marks the plugin
   invalid, which is the wrong lesson for an example. Set it once you pin a
@@ -204,7 +206,7 @@ repository: the plugin's `go run` needs the workspace to resolve craft.
 - **Add an agent turn**: drop in the deploy resources from the
   `flowcraft-config` skill's `assets/minimal-craft` (workspace, provider,
   inference assembly, graph agent) and open a session on the runtime.
-- **Add a graph node**: declare `nodes` plus `nodes:provide` in the manifest and
+- **Add a graph node**: declare `nodes` plus `nodes.provide` in the manifest and
   list the agent in `plugins.node_targets`; craft synthesizes one
   `graph.NodeType` resource per node and wires it into the agent's engine deps.
 - **Add a capability**: another resource kind, a `${...}` resolver, a layer, or

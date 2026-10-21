@@ -79,7 +79,7 @@ func (w *wirePluginHost) observations(t *testing.T, id string) []observation {
 func TestCraftServesHostPrimitivesOverTheWire(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools:provide", "secrets:auth")
+	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools.provide", "secrets:auth")
 	host := newWirePluginHost(t, root)
 	c := newTestCraftWith(t, pluginTestDefinition, host.host, wiringSecrets())
 	waitForPluginTool(t, host.host, "hello__node_echo")
@@ -103,7 +103,7 @@ func TestCraftServesHostPrimitivesOverTheWire(t *testing.T) {
 func TestCraftServesOnlyGrantedPrimitives(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools:provide")
+	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools.provide")
 	host := newWirePluginHost(t, root)
 	c := newTestCraftWith(t, pluginTestDefinition, host.host, wiringSecrets())
 	waitForPluginTool(t, host.host, "hello__node_echo")
@@ -139,7 +139,7 @@ func TestCraftRegrantsPerConnectionAcrossUpdateAndRollback(t *testing.T) {
 
 	source := t.TempDir()
 	wide := writeInstallableWirePlugin(
-		t, source, "hello", "0.1.0", "tools:provide", "secrets:auth")
+		t, source, "hello", "0.1.0", "tools.provide", "secrets:auth")
 	if _, err := host.host.Install(ctx, wide); err != nil {
 		t.Fatalf("Install 0.1.0: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestCraftRegrantsPerConnectionAcrossUpdateAndRollback(t *testing.T) {
 	// goes.
 	narrowed := t.TempDir()
 	narrow := writeInstallableWirePlugin(
-		t, narrowed, "hello", "0.2.0", "tools:provide")
+		t, narrowed, "hello", "0.2.0", "tools.provide")
 	summary, err := host.host.Install(ctx, narrow)
 	if err != nil || summary.Version != "0.2.0" {
 		t.Fatalf("Install = %+v, %v", summary, err)

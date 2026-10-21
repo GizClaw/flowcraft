@@ -22,7 +22,7 @@ func TestDisableWaitsForTheStartItRaced(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 
@@ -103,7 +103,7 @@ func TestHostStartBehindACloseRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -178,7 +178,7 @@ func TestHostFailedOpenRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -232,7 +232,7 @@ func TestHostSourceFactoryWithoutASourceRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -288,7 +288,7 @@ func TestHostFailedPublishRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {

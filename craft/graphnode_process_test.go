@@ -19,7 +19,7 @@ import (
 // plugin produced.
 func TestPluginNodeRunsInRealProcess(t *testing.T) {
 	root := t.TempDir()
-	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools:provide", "nodes:provide")
+	writeWirePlugin(t, root, "hello", "0.1.0", nil, "tools.provide", "nodes.provide")
 	host := newWirePluginHost(t, root).host
 	ctx := context.Background()
 	c := newTestCraft(t, nodeDefinition("bot"), host)
@@ -86,20 +86,20 @@ func waitForPluginTool(t *testing.T, host *plugin.Host, name string) {
 }
 
 // TestPluginNodeWithoutToolsGrant pins what the two grants are for. The
-// nodes section is gated by nodes:provide alone, so the node type is still
-// synthesized — but the plugin runs without tools:provide, so nothing it
+// nodes section is gated by nodes.provide alone, so the node type is still
+// synthesized — but the plugin runs without tools.provide, so nothing it
 // declares is projected, and a node backed by it fails with the missing
 // grant instead of writing nothing.
 func TestPluginNodeWithoutToolsGrant(t *testing.T) {
 	root := t.TempDir()
-	writeWirePlugin(t, root, "hello", "0.1.0", nil, "nodes:provide")
+	writeWirePlugin(t, root, "hello", "0.1.0", nil, "nodes.provide")
 	host := newWirePluginHost(t, root).host
 	ctx := context.Background()
 	c := newTestCraft(t, nodeDefinition("bot"), host)
 	waitForRunning(t, host, "hello")
 
 	if tools := host.ToolSet().Tools(); len(tools) != 0 {
-		t.Fatalf("plugin tools = %v, want none without tools:provide", tools)
+		t.Fatalf("plugin tools = %v, want none without tools.provide", tools)
 	}
 	rt, err := c.OpenRuntime(ctx, DefaultKey, RuntimeOptions{})
 	if err != nil {
@@ -123,8 +123,8 @@ func TestPluginNodeWithoutToolsGrant(t *testing.T) {
 		agent.NewBoard(),
 		nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "tools:provide") {
-		t.Fatalf("node handler = %v, want the missing tools:provide grant", err)
+	if err == nil || !strings.Contains(err.Error(), "tools.provide") {
+		t.Fatalf("node handler = %v, want the missing tools.provide grant", err)
 	}
 }
 

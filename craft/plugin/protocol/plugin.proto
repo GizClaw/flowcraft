@@ -77,8 +77,8 @@ message HelloResponse {
   string wire_version = 1;
   string session_id = 2;
   uint64 generation = 3;
-  // The grants craft decided on, which are the manifest's permissions
-  // narrowed by local policy. This is the only place they are stated.
+  // The grants craft decided on: the manifest's requires narrowed by the
+  // application's approval. This is the only place they are stated.
   repeated string granted_permissions = 4;
   // Bound on one call's arguments or result, in bytes. Zero means unset.
   uint32 max_call_bytes = 5;

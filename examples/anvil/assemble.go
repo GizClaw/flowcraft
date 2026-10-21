@@ -111,9 +111,10 @@ func newApp(opts options) (*app, error) {
 		StateDir:    filepath.Join(dataDir, "plugin-state"),
 		DataDirRoot: filepath.Join(dataDir, "plugin-data"),
 		HostVersion: craft.Version,
-		// The grants the workshop's primitives require. The store accepts
-		// a manifest permission from this list, which is how a plugin asks
-		// for one of them at all.
+		// The grants the workshop's primitives require. The store accepts a
+		// manifest's requires entries from this list, which is how a plugin
+		// asks for one of them at all; what it then holds is the store's
+		// decision, reported per plugin.
 		Grants: pluginserver.Grants(a.capability.HostPrimitives()),
 	})
 	if err != nil {

@@ -52,15 +52,16 @@ func (s *Store) inspect(source string) (Summary, Manifest, error) {
 	if err != nil {
 		return Summary{}, Manifest{}, err
 	}
-	if err := manifest.Validate(source, s.opts.Grants...); err != nil {
+	if err := manifest.Validate(source, s.vocabulary); err != nil {
 		return Summary{}, Manifest{}, err
 	}
 	return Summary{
-		ID:          manifest.ID,
-		Name:        manifest.Name,
-		Version:     manifest.Version,
-		Entry:       manifest.Entry(),
-		Permissions: append([]string(nil), manifest.Permissions...),
+		ID:       manifest.ID,
+		Name:     manifest.Name,
+		Version:  manifest.Version,
+		Entry:    manifest.Entry(),
+		Requires: append([]string(nil), manifest.Requires...),
+		Granted:  s.grants(manifest).List(),
 	}, manifest, nil
 }
 

@@ -78,11 +78,11 @@ func TestStoreScanEnableKV(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "name": "Hello", "version": "0.1.0",
-		"permissions": ["tools:provide"],
+		"requires": ["tools.provide"],
 		"run": {"command": "python3", "args": ["server.py"]}
 	}`)
 	writePlugin(t, root, "bad", `{
-		"id": "bad", "version": "0.1.0", "permissions": ["nope"]
+		"id": "bad", "version": "0.1.0", "requires": ["nope"]
 	}`)
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
@@ -141,7 +141,7 @@ func TestStoreKVFailsClosedOnABrokenFile(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["tools:provide"], "run": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	writePlugin(t, root, "quiet", `{
 		"id": "quiet", "version": "0.1.0"
@@ -189,7 +189,7 @@ func TestManifestLegacyAndRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	if err := manifest.Validate(""); err != nil {
+	if err := manifest.Validate("", NewVocabulary()); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 	if manifest.Entry() != "dist/index.js" {
@@ -205,7 +205,7 @@ func TestManifestLegacyAndRejection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseManifest: %v", err)
 			}
-			if err := decoded.Validate(""); err == nil ||
+			if err := decoded.Validate("", NewVocabulary()); err == nil ||
 				!strings.Contains(err.Error(), "no longer supported") {
 				t.Fatalf("Validate = %v, want the removed field to be refused", err)
 			}

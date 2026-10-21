@@ -2,7 +2,7 @@
   "id": "hello",
   "name": "Hello Plugin",
   "version": "0.1.0",
-  "permissions": ["tools:provide", "skills:provide", "events:emit"],
+  "requires": ["tools.provide", "skills.provide", "events.emit"],
   "skills": ["skills"],
   "run": {
     "command": "go",

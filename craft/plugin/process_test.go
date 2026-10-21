@@ -23,7 +23,7 @@ func startRealPluginHost(t *testing.T) *Host {
 	}
 	root := t.TempDir()
 	dir := filepath.Join(root, "hello")
-	writePlugin(t, root, "hello", wireManifest("hello", "tools:provide"))
+	writePlugin(t, root, "hello", wireManifest("hello", "tools.provide"))
 	writeHelperCommand(t, dir)
 	store := newStoreOver(t, root)
 	host := startHost(t, store, nil)

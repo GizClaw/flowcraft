@@ -406,7 +406,7 @@ func (c *Conn) OnDeclare(fn func(*protocol.Declaration)) func() {
 	}
 }
 
-// Grants returns the permissions craft decided on for this process.
+// Grants returns the grants craft decided on for this process.
 func (c *Conn) Grants() GrantSet {
 	grants := make(GrantSet, len(c.opts.Grants))
 	for key, value := range c.opts.Grants {

@@ -114,8 +114,9 @@ func greet(arguments []byte) ([]byte, error) {
 
 // pingHost exercises the host primitive contract from the plugin side: one
 // call that reports the host, one that publishes an event. The plugin's
-// manifest grants events:emit and not secrets:auth, which is why events.emit
-// works here and the secret.* primitives are reported as needing a grant.
+// manifest requires events.emit and no secret grant, which is why
+// events.emit works here and the secret.* primitives are reported as
+// needing a grant.
 func (h *hello) pingHost(ctx context.Context) ([]byte, error) {
 	h.mu.RLock()
 	host := h.host
