@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -271,6 +273,64 @@ func TestNewStoreAdoptsTheKeyOnDisk(t *testing.T) {
 	if err != nil || !found || got != "value" {
 		t.Fatalf("Get from a fresh backend = (%q, %v, %v), "+
 			"want the value sealed under the key the directory holds", got, found, err)
+	}
+}
+
+// A key taken from disk waits for the operations still running under the old
+// one: a Set that sealed under the previous key and published after the swap
+// would leave a file this process can no longer open, and that the next
+// process — which only knows the new key — cannot open either.
+func TestKeyReplacementWaitsForInFlightOperation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend := store.backend.(*fileBackend)
+	backend.keyMu.RLock() // stand in for an operation that pinned the key
+	reopened := make(chan struct{})
+	go func() {
+		defer close(reopened)
+		if _, openErr := NewStore(dir); openErr != nil {
+			t.Errorf("NewStore: %v", openErr)
+		}
+	}()
+	// The reopen has to be blocked here; a scheduler slow enough to not run
+	// the goroutine at all makes this assertion pass without proving
+	// anything, but it can never fail the test on a correct fix.
+	select {
+	case <-reopened:
+		t.Fatal("a reopen replaced the key while an operation held it")
+	case <-time.After(100 * time.Millisecond):
+	}
+	backend.keyMu.RUnlock()
+	select {
+	case <-reopened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reopen stayed blocked after the operation released the key")
+	}
+}
+
+// One directory, two spellings: EvalSymlinks settles symlinks, but a
+// case-insensitive volume still lets two strings name one directory, and two
+// backends over one directory is the lost-index-entry bug the shared backend
+// exists to prevent.
+func TestNewStoreSharesOneBackendAcrossCaseSpellings(t *testing.T) {
+	dir := t.TempDir()
+	other := strings.ToUpper(dir)
+	if _, err := os.Stat(other); err != nil || other == dir {
+		t.Skip("file system is case-sensitive; two spellings cannot name one directory here")
+	}
+	deployed, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	same, err := NewStore(other)
+	if err != nil {
+		t.Fatalf("NewStore(other case): %v", err)
+	}
+	if same.backend != deployed.backend {
+		t.Fatal("a case variant of the directory opened a second backend")
 	}
 }
 
