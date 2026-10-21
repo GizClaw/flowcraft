@@ -146,6 +146,12 @@ func TestManagerRemoveAgentTimeoutKeepsSessions(t *testing.T) {
 	if err := manager.RemoveAgent(ctx, "agent-a"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("RemoveAgent error = %v, want DeadlineExceeded", err)
 	}
+	// A drain that ran out of time closed nothing, and a caller reporting
+	// what a removal cost has to be able to tell that apart from a cleanup
+	// failure that happened after the sessions were gone.
+	if SessionsClosedByDrain(context.DeadlineExceeded) {
+		t.Fatal("a timed-out drain reported the sessions as closed")
+	}
 
 	// Tombstone persists: new opens still fail.
 	if _, err := manager.Open(context.Background(), Key{AgentID: "agent-a", ContextID: "c2"}); !errdefs.IsNotFound(err) {

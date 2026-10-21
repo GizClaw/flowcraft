@@ -325,6 +325,12 @@ func (a *reloadAttempt) prepare() error {
 		DeliveryConcurrency: a.cfg.Sessions.DeliveryConcurrency,
 		MaxSessions:         a.cfg.Sessions.MaxSessions,
 	}
+	// Rejected here, in the phase that only reads the document: commit applies
+	// these limits past the point it can still undo, so the value has to be
+	// known good before the attempt builds, rebinds or drains anything.
+	if err := a.tunables.Validate(); err != nil {
+		return err
+	}
 	effective, err := effectiveExternalResources(a.cfg.ExternalDeps, a.injected, true)
 	if err != nil {
 		return err
@@ -526,11 +532,17 @@ func (a *reloadAttempt) drainRemovedAgents() error {
 			continue
 		}
 		a.drainAttempted = append(a.drainAttempted, name)
-		if err := a.r.manager.RemoveAgent(a.ctx, name); err != nil {
+		err := a.r.manager.RemoveAgent(a.ctx, name)
+		// A drain that failed can still have closed the sessions: the removal
+		// drops the entries before it closes them, so only a refusal or a
+		// timed-out wait leaves conversations to come back to.
+		if err == nil || session.SessionsClosedByDrain(err) {
+			a.drained = append(a.drained, name)
+		}
+		if err != nil {
 			a.closeRebound()
 			return fmt.Errorf("runtime reload: drain removed agent %q: %w", name, err)
 		}
-		a.drained = append(a.drained, name)
 	}
 	for name := range a.doc.Agents {
 		a.r.manager.ReopenAgent(name)
@@ -588,20 +600,22 @@ func (a *reloadAttempt) commit() error {
 		// nil interface instead of a typed-nil.
 		deps.CatalogProvider = newGen.catalog
 	}
+	// The new generation's session limits go in before the irreversible step,
+	// not after it: an aborted reload must leave the serving generation under
+	// its own tunables, and a failure past the swap has no rollback left —
+	// the swap retires (and closes) what it replaces. prepare validated these
+	// values, so what remains here is a closed manager, which Close serializes
+	// on lifecycleMu just like the swap below.
+	if err := a.r.manager.UpdateTunables(a.tunables); err != nil {
+		a.rollbackTo(oldGen, "runtime reload: remove new bus after tunables failure")
+		return err
+	}
 	if err := a.r.manager.SwapDeps(deps, func(_ uint64, _ session.Deps) {
 		a.retire(oldGen)
 	}); err != nil {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
 		a.rollbackTo(oldGen, "runtime reload: remove new bus after swap failure")
 		return errdefs.Internalf("runtime reload swap: %w", err)
-	}
-	// The new generation's session limits take effect with the swap, so an
-	// aborted reload never leaves the running generation running under the
-	// document that failed. UpdateTunables validates before it applies, so a
-	// rejected value leaves the manager untouched.
-	if err := a.r.manager.UpdateTunables(a.tunables); err != nil {
-		a.rollbackTo(oldGen, "runtime reload: remove new bus after tunables failure")
-		return err
 	}
 
 	a.r.current.Store(newGen)

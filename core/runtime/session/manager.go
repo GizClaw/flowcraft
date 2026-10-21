@@ -394,6 +394,11 @@ func (m *Manager) reclaim(key Key, session *Session, generation uint64) {
 // expiry the tombstone stays in place (new opens keep failing), the
 // sessions are left intact, and no partial removal state is produced —
 // callers may retry. Repeated calls are idempotent.
+//
+// A failure that happens after the sessions are closed — a close error,
+// raised once the entries are already removed — is reported through
+// [SessionsClosedByDrain], because a caller counting what a drain cost
+// cannot tell the two shapes apart from the error alone.
 func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
 	if m == nil {
 		return nil
@@ -451,7 +456,24 @@ func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(append(errs, errSessionsClosed)...)
+}
+
+// errSessionsClosed is joined into a RemoveAgent failure raised after the
+// agent's sessions were removed and closed: the drain itself succeeded, and
+// what failed is the cleanup behind it.
+var errSessionsClosed = errors.New(
+	"runtime session: the agent's sessions were closed before this failure")
+
+// SessionsClosedByDrain reports whether a [Manager.RemoveAgent] error was
+// raised after the agent's sessions were closed. A drain that refused the
+// call, or gave up waiting, reports false and leaves the sessions intact;
+// every other failure means the conversations are gone.
+func SessionsClosedByDrain(err error) bool {
+	return errors.Is(err, errSessionsClosed)
 }
 
 // ReopenAgent clears the tombstone left by RemoveAgent, re-admitting

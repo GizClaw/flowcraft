@@ -23,23 +23,45 @@ type Tunables struct {
 	MaxSessions         int
 }
 
+// Validate checks the tunables against the bounds the With* ManagerOptions
+// enforce, without applying them. A caller that has to apply them later, past
+// a step it cannot undo, validates here instead.
+func (t Tunables) Validate() error {
+	_, err := t.resolved()
+	return err
+}
+
+// resolved folds the tunables into manager options, which is where the bounds
+// live.
+func (t Tunables) resolved() (managerOptions, error) {
+	opts := managerOptions{}
+	for _, option := range t.options() {
+		if err := option(&opts); err != nil {
+			return managerOptions{}, err
+		}
+	}
+	return opts, nil
+}
+
+func (t Tunables) options() []ManagerOption {
+	return []ManagerOption{
+		WithIdleTimeout(t.IdleTimeout),
+		WithSinkBufferSize(t.SinkBuffer),
+		WithSpeculativeBufferLimits(t.SpeculativeEvents, t.SpeculativeBytes),
+		WithDeliveryConcurrency(t.DeliveryConcurrency),
+		WithMaxSessions(t.MaxSessions),
+	}
+}
+
 // UpdateTunables validates and atomically applies new manager tunables.
 // Validation mirrors the With* ManagerOptions (positive bounds).
 func (m *Manager) UpdateTunables(t Tunables) error {
 	if m == nil {
 		return errdefs.Validationf("runtime session: manager is nil")
 	}
-	opts := managerOptions{}
-	for _, option := range []ManagerOption{
-		WithIdleTimeout(t.IdleTimeout),
-		WithSinkBufferSize(t.SinkBuffer),
-		WithSpeculativeBufferLimits(t.SpeculativeEvents, t.SpeculativeBytes),
-		WithDeliveryConcurrency(t.DeliveryConcurrency),
-		WithMaxSessions(t.MaxSessions),
-	} {
-		if err := option(&opts); err != nil {
-			return err
-		}
+	opts, err := t.resolved()
+	if err != nil {
+		return err
 	}
 
 	m.mu.Lock()
