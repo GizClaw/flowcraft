@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -29,7 +30,8 @@ func Recover() tool.Middleware {
 					telemetry.Warn(ctx, "tool panicked",
 						attribute.String(telemetry.AttrToolName, call.Name),
 						attribute.String(telemetry.AttrToolCallID, call.ID),
-						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+						attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
 					res = message.NewErrorToolResult(call.ID,
 						fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 				}

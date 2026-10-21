@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -133,6 +134,10 @@ func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 		// failure it is and the sink detaches like any other failure.
 		defer func() {
 			if rv := recover(); rv != nil {
+				telemetry.Error(ctx, "runtime session: sink OnDelta panicked",
+					attribute.String("runtime.sink.id", s.spec.ID),
+					attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+					attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
 				result <- fmt.Errorf("runtime session: sink %q OnDelta panicked: %v",
 					s.spec.ID, rv)
 			}

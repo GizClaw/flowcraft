@@ -193,7 +193,7 @@ func safeRun(ctx context.Context, id Identity, hook string, f func()) {
 				[]attribute.KeyValue{
 					attribute.String("agent.observer.hook", hook),
 					attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
-					attribute.String("code.stacktrace", string(debug.Stack())),
+					attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())),
 				},
 			)...)
 		}

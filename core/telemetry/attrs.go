@@ -195,6 +195,12 @@ const (
 	// a single canonical name makes the intent unambiguous.
 	AttrErrorMessage = "error.message"
 
+	// AttrCodeStacktrace carries the stack captured where a panic was
+	// turned into an error result. The result a caller sees says what
+	// panicked, never where, so this is the only evidence a recovered
+	// panic leaves behind.
+	AttrCodeStacktrace = "code.stacktrace"
+
 	// AttrErrorCause carries the leaf cause message of a failure, attached
 	// only when the value is redacted by construction — flowcraft-generated
 	// text (our format strings and derived scalars) plus, at most, bounded

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"sync"
 
@@ -73,7 +74,8 @@ func (e *Executor) Execute(ctx context.Context, call message.ToolCall) (res mess
 		telemetry.Warn(ctx, "tool dispatch panicked outside the recover middleware",
 			attribute.String(telemetry.AttrToolName, call.Name),
 			attribute.String(telemetry.AttrToolCallID, call.ID),
-			attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+			attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+			attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
 		res = message.NewErrorToolResult(call.ID,
 			fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 	}()
