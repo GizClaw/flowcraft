@@ -7,9 +7,100 @@ title: Migrating to core/v0.10.0
 `core/v0.10.0` is the follow-up to the v0.9.0 review. Most of it is about
 what happens *after* something has gone wrong — a panicking tool, an aborted
 reload, a credential store that lost an index entry — so a host that never
-hits those paths sees no difference. Two document entries do change meaning,
-two Go API surfaces moved, and one interface kept its shape while changing
-what it is keyed by.
+hits those paths sees no difference. The one structural break is on the graph
+side: node types are deployment resources now, so every graph engine document
+gains `node_type` deps and loses the collaborators it used to hand the engine.
+Two document entries do change meaning, two Go API surfaces moved, and one
+interface kept its shape while changing what it is keyed by.
+
+## Graph node types are resources
+
+`agent.Engine/graph` registers no node type of its own. `inference`, `tool` and
+`script` — and every custom type — are `graph.NodeType` resources mounted on the
+engine's `node_type` dep, and the collaborators they used to take from the
+engine are now their own deps. A v0.9.0 document fails twice over: the engine's
+settings reject `script_runtime_name` as an unknown field, and a graph naming
+`inference` builds against a registry nothing filled —
+`graph: node "chat": unregistered type "inference" (no node type is registered;
+a graph node type is a graph.NodeType resource wired as a node_type dep)`.
+
+Before:
+
+```yaml
+agents:
+  assistant:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        inference: infer
+        router: router
+        tools: tools
+        workspace: ws
+        script_runtime: js
+      settings:
+        graph: {file: ./graphs/assistant.yaml}
+```
+
+After:
+
+```yaml
+resources:
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps: {inference: infer, router: router, tools: tools}
+  node_tool:
+    kind: graph.NodeType
+    impl: tool
+    deps: {tools: tools}
+  node_script:
+    kind: graph.NodeType
+    impl: script
+    deps: {script_runtime.js: js, tools: tools, workspace: ws}
+
+agents:
+  assistant:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        node_type.inference: node_inference
+        node_type.tool: node_tool
+        node_type.script: node_script
+      settings:
+        graph: {file: ./graphs/assistant.json}
+```
+
+What moved:
+
+- **Dep keys.** `node_type.<suffix>` (or plain `node_type`) mounts a type; the
+  suffix is the name graphs reference, and the type's `settings.type` overrides
+  it. Mount one type per capability set — a graph with no `script` node cannot
+  run script once no script type is mounted, which is the point of the move.
+- **Script runtimes.** `script_runtime_name` is gone from the engine settings.
+  A script-running type mounts `script_runtime.<name>` deps, and a node's
+  `config.runtime` selects one by that name, so one type serves a JS node and a
+  Lua node of the same graph.
+- **Script-backed types.** `graph.NodeType/script` is now `script_inline`: the
+  source stays in the resource and `runtime` moved into its settings. The name
+  `script` is the generic impl whose source comes from each node's config.
+- **Where the checks live.** The engine never reads a node's config, so "an
+  inference node without `model` needs a `router` dep" and "this node names a
+  tool the catalog does not have" are reported by the mounted type at `Build`.
+  Same failures, now naming the node, the type, and the dep to add; a graph
+  naming a type nothing mounted reports which types exist.
+
+`script_bindings` keeps its meaning: the engine-level provider still replaces the
+surface for every script-running type, and without it each type assembles the
+standard surface from its own deps.
+
+In Go, `graph.NodeType[C]` gained an optional
+`ValidateConfig func(nodeID string, raw json.RawMessage) error` — called at
+`Build` with the config as written, `${board:*}` references unresolved — and
+`graph.TypeNameProvider` is the optional interface behind the dep-key
+diagnostics. A host or plugin that registers types through `graph.RegisterType`
+needs no change; it just has to be mounted as a `node_type` dep now.
 
 ## Panic recovery is on by default
 

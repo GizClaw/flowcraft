@@ -147,7 +147,7 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        inference: infer
+        node_type.inference: node_inference
       settings:
         graph: {file: ./graphs/assistant.yaml}
 

@@ -25,6 +25,16 @@ resources:
     deps:
       provider: provider
 
+  # Node types are resources, not engine built-ins: the graph below names
+  # "inference", so mount one. Each type declares the collaborators its
+  # nodes call.
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps:
+      inference: infer
+      workspace: ws
+
 agents:
   assistant:
     card:
@@ -34,8 +44,7 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        inference: infer
-        workspace: ws
+        node_type.inference: node_inference
       settings:
         graph: {file: ./graphs/assistant.json}
 

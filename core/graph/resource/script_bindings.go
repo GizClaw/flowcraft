@@ -21,11 +21,15 @@ import (
 //	    kind: agent.ScriptBindings
 //	    impl: standard
 //	    deps: {tools: tools, workspace: ws}
+//	  script:
+//	    kind: graph.NodeType
+//	    impl: script
+//	    deps: {script_runtime.js: js, tools: tools}
 //	agents:
 //	  assistant:
 //	    engine:
 //	      impl: graph
-//	      deps: {script_runtime: js, script_bindings: std}
+//	      deps: {node_type.script: script, script_bindings: std}
 //
 // The provider is built once and shared by every script execution of
 // every engine that references it, so per-execution state (board, node
@@ -108,7 +112,7 @@ func (ScriptBindingsFactory) New(ctx context.Context, in res.Input) (bindings.Pr
 	if err != nil {
 		return nil, err
 	}
-	deps, err := decodeDependencies(in)
+	deps, err := decodeCapabilities(in)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +154,7 @@ func (ScriptBindingsNoneFactory) New(context.Context, res.Input) (bindings.Provi
 // silently ignored setting.
 func scriptBridgeOptions(
 	settings ScriptBindingsSettings,
-	deps dependencies,
+	deps capabilities,
 ) ([]bindings.ToolBridgeOption, []bindings.FSBridgeOption, []bindings.ShellOption, error) {
 	var (
 		toolOpts  []bindings.ToolBridgeOption

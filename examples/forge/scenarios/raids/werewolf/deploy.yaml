@@ -214,6 +214,18 @@ resources:
     impl: js
     settings:
       pool_size: 4
+  # Standard node types are deployment resources, not engine built-ins: each
+  # declares the collaborators its nodes use, and the graph names the type.
+  # Mounting only what the graph uses keeps an unused capability from being
+  # reachable from any node.
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps: {inference: infer, router: router, tools: tools}
+  node_script:
+    kind: graph.NodeType
+    impl: script
+    deps: {script_runtime.js: js, tools: tools, inference: infer, router: router, workspace: ws}
 
 agents:
   assistant:
@@ -224,11 +236,8 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        inference: infer
-        router: router
-        tools: tools
-        workspace: ws
-        script_runtime: js
+        node_type.inference: node_inference
+        node_type.script: node_script
       settings:
         graph: {file: ./graphs/assistant.yaml}
         build:
