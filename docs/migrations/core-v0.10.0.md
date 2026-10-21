@@ -82,13 +82,18 @@ could enumerate.
 
 Every store opened over one directory in a process now shares one backend and
 one lock, and `NewStore` resolves its directory to an absolute path with
-symlinks resolved first, so two spellings of one directory are one store.
+symlinks resolved first. A spelling that resolves to a directory already being
+served joins that store too — compared by file identity, so the two cases of
+one name on a case-insensitive volume are one store, not two locks over one
+set of files.
 
 Opening a directory that already has a store re-reads its key file rather than
 keeping the key the process remembers: the key on disk is the source of truth,
 and a store that was reset, restored from a backup or re-keyed under a running
-process must write files the next process can open. Cross-process writers are
-still not serialized: management remains an app-side, single-writer surface.
+process must write files the next process can open. The adopted key waits for
+the operations already running under the old one, so a `Set` cannot seal under
+one key and publish after the swap. Cross-process writers are still not
+serialized: management remains an app-side, single-writer surface.
 
 ## Reload applies session limits as part of the commit
 
@@ -111,7 +116,11 @@ still counts as drained, because those conversations are gone either way.
 mirroring `OutputTokenUsage.ValidateFor`. The new argument lets the per-modality
 breakdown be checked against its total: modality tokens are a subset of the
 prompt, so their sum may under-report (drivers attribute only the non-text
-parts they are told about) but must never exceed it.
+parts they are told about) but must never exceed it. A zero total counts as
+no total: a driver that has a breakdown but no total to compare it with (an
+audio response where only the audio detail is populated) is accepted, since
+the field cannot tell "the provider reported zero" from "the provider
+reported nothing".
 
 ## Error wrapping
 

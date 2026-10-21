@@ -424,12 +424,18 @@ func (u OutputTokenUsage) ValidateFor(outputTokens int64) error {
 // breaks down. Drivers attribute only the modalities a provider names, so a
 // sum below the total means the rest went unattributed; a sum above it is a
 // contradiction, since a subset cannot hold more than the whole.
+//
+// A zero total is not a total: the count is a plain int64, so "the provider
+// reported nothing" and "the provider reported zero" are the same value, and
+// a driver that has a breakdown but no total — an audio response billed per
+// token where only the audio detail is populated — must not be failed for
+// reporting the only number it has. There is nothing to contradict.
 func validateModalityTotal(kind string, usages []ModalityTokenUsage, total int64) error {
 	var sum int64
 	for _, usage := range usages {
 		sum += usage.Tokens
 	}
-	if sum > total {
+	if total > 0 && sum > total {
 		return fmt.Errorf(
 			"%s modality tokens total %d exceeds %s tokens %d", kind, sum, kind, total)
 	}

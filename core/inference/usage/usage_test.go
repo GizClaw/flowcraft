@@ -177,7 +177,8 @@ func TestUsageValidate(t *testing.T) {
 // A modality breakdown is a subset of the total it breaks down. Under-reporting
 // is what a driver does when a provider names only some modalities (OpenAI
 // reports audio tokens, not text), so it must stay valid; over-reporting is a
-// contradiction the totals rule cannot catch on its own.
+// contradiction the totals rule cannot catch on its own. A total nobody
+// reported is not a total to be exceeded.
 func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -201,6 +202,27 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
 				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
 					{Modality: ModalityAudio, Tokens: 2},
+				}},
+			},
+			"",
+		},
+		{
+			// An audio provider that names its audio tokens and reports no
+			// prompt total: the breakdown is the only number there is, and a
+			// zero total is indistinguishable from "not reported".
+			"input breakdown without a reported total",
+			Usage{
+				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityAudio, Tokens: 100},
+				}},
+			},
+			"",
+		},
+		{
+			"output breakdown without a reported total",
+			Usage{
+				Output: OutputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityAudio, Tokens: 7},
 				}},
 			},
 			"",
