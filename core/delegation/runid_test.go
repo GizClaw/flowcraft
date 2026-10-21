@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -63,15 +64,21 @@ func (b *runIDBackend) noteIDs() []string {
 
 // newRunIDService binds a session manager and a notifying backend to the
 // same service, the shape the runtime builder assembles.
-func newRunIDService(t *testing.T, engine agent.Engine, backend AsyncBackend) *LocalService {
+func newRunIDService(
+	t *testing.T,
+	engine agent.Engine,
+	backend AsyncBackend,
+	options ...Option,
+) *LocalService {
 	t.Helper()
 	result := buildResult(t, delegationWithRunEnd(engine))
 	directory := NewDirectory()
 	if err := directory.Bind(result); err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(directory, backend,
+	options = append(options,
 		WithSessionProvider(&testSessionProvider{contextID: "runid-ctx"}))
+	service, err := NewService(directory, backend, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,5 +194,71 @@ func TestServiceSyncResponseCarriesRunIDMetadata(t *testing.T) {
 	if response.ID != response.Metadata[RunIDMetadataKey] {
 		t.Fatalf("response id = %q, want the run id %q",
 			response.ID, response.Metadata[RunIDMetadataKey])
+	}
+}
+
+// A run nobody claimed has no work item to annotate: the stamp states what
+// the worker claimed, and is never inferred from the request.
+func TestServiceRunWithoutWorkIDNotesNothing(t *testing.T) {
+	backend := newRunIDBackend()
+	service := newRunIDService(t, completedEngine("from run"), backend)
+
+	response, err := service.Run(context.Background(), AsyncRequest{
+		Request: Request{Mode: ModeAsync, Target: "writer", Input: "do it"},
+		Depth:   1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if response.Metadata[RunIDMetadataKey] == "" {
+		t.Fatalf("terminal metadata = %+v, want the run id", response.Metadata)
+	}
+	if ids := backend.noteIDs(); len(ids) != 0 {
+		t.Fatalf("noted delegation ids = %v, want none", ids)
+	}
+}
+
+// A run canceled after it started still names itself: the turn existed, so
+// the run id does too, and the terminal response is the only channel that
+// survives async mode. This pins the guarantee the guides state, not the
+// path that composes it — a turn canceled by the service reaches the
+// response through responseFromTurn.
+func TestServiceCanceledRunKeepsRunID(t *testing.T) {
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		<-ctx.Done()
+		return board, ctx.Err()
+	})
+	service := newRunIDService(t, engine, newRunIDBackend(),
+		WithTimeout(20*time.Millisecond))
+
+	response, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusCanceled {
+		t.Fatalf("status = %q, want canceled", response.Status)
+	}
+	if response.Metadata[RunIDMetadataKey] == "" {
+		t.Fatalf("canceled metadata = %+v, want the run id", response.Metadata)
+	}
+}
+
+// The lineage keys are service-owned: a request cannot smuggle a run id into
+// the metadata a status query reports.
+func TestInjectDelegationLineageDropsCallerLineage(t *testing.T) {
+	metadata := map[string]string{
+		ParentRunMetadataKey: "run-forged-parent",
+		CallIDMetadataKey:    "call-forged",
+		RunIDMetadataKey:     "run-forged",
+		"tenant":             "acme",
+	}
+	got := injectDelegationLineage(metadata, "", "")
+	if len(got) != 1 || got["tenant"] != "acme" {
+		t.Fatalf("lineage metadata = %v, want only the caller's own key", got)
 	}
 }

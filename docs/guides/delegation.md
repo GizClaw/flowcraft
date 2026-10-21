@@ -74,6 +74,26 @@ on every call, so each generation's tools see that generation's agents.
   retried delegation does not re-execute completed work.
 - A `Reload` re-binds the directory and service to the new generation,
   so in-flight delegation completes on the generation it started on.
+- **Run identity:** the delegation id — what `Submit` returns and what
+  `Work.ID`, `Response.ID`, and `delegation_status` carry — names the
+  work item; the subagent run id names the turn that executes it. A
+  backend implementing `delegation.RunIDNotifier` learns the run id as
+  soon as the turn exists, keyed by the delegation id, never by the
+  stream escrow ref: a delegation that inherits no sink has no ref, and
+  a ref describes a delivery attachment rather than work. A queue-owned
+  worker outside the service supplies the claimed id through
+  `delegation.WithWorkID` before calling `Run`; the stamp is consumed at
+  the run boundary, so a delegation started inside the subagent never
+  reports its run id against the parent's work item. An implementation
+  that keyed `NoteRunID` by an escrow ref still compiles and now no-ops
+  silently — rekey it to the delegation id.
+- **Terminal metadata:** a response whose run reported an id carries it
+  under `delegation.run_id`, beside the subagent session identity under
+  `delegation.session_id`. In async mode this is the only place the
+  delegated run stays addressable, because `Response.ID` holds the
+  delegation id — but it reports the run, it does not promise one: a
+  turn canceled before it started, or an engine that reports no run id,
+  leaves the key absent.
 
 ## Session identity and resume
 
@@ -213,21 +233,6 @@ Async delegation inherits the same way, across the queue boundary:
   `parent_run_id`, `tool_call_id`, `agent_id`) but the sink sees no
   explicit EOF; terminal state is reported through kanban card events
   and `delegation_status`.
-- **Run identity:** an async delegation is keyed by its delegation id —
-  the id `Submit` returns, carried by `Work.ID`, `Response.ID`, and the
-  `delegation_status` tool. A backend that implements
-  `delegation.RunIDNotifier` learns the subagent run id as soon as the
-  turn exists, keyed by that same id, so a live card correlates with
-  its run before completion. The key is the delegation id, never the
-  stream escrow ref: a delegation that inherits no sink has no ref, and
-  a ref describes a delivery attachment, not the work item. A
-  queue-owned worker outside the service supplies the claimed id
-  through `delegation.WithWorkID` before calling `Run`; the stamp is
-  consumed at the run boundary, so a delegation started inside the
-  subagent never reports its run id against the parent's work item.
-  Every terminal response also carries the run id under the
-  `delegation.run_id` metadata key — the one place the run id survives
-  in async mode, where `Response.ID` holds the delegation id.
 
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.

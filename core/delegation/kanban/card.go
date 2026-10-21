@@ -51,7 +51,9 @@ type Card struct {
 	// Board.NoteRunID) and, for a worker that never reported one, taken
 	// from the terminal response metadata when the card completes. The
 	// terminal Result.Response carries it under
-	// delegation.RunIDMetadataKey.
+	// delegation.RunIDMetadataKey. A suspended card keeps the id of the
+	// run it parked; Board.Resume clears it, because the next claim is a
+	// new run.
 	RunID     string            `json:"run_id,omitempty"`
 	ResumeRef string            `json:"resume_ref,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`

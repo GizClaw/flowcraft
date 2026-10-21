@@ -62,10 +62,12 @@ type AsyncRequest struct {
 	Stream *StreamRef `json:"stream,omitempty"`
 }
 
-// Work is one claimed asynchronous request. LeaseToken uniquely identifies
-// this claim generation and must be supplied to WorkSource.Complete. Context
-// optionally carries the backend-owned execution lease; canceling it must stop
-// the claimed execution.
+// Work is one claimed asynchronous request. ID is the delegation id: the same
+// value Submit returned, that AsyncBackend.Status answers to, and that the
+// terminal Response carries. LeaseToken uniquely identifies this claim
+// generation and must be supplied to WorkSource.Complete. Context optionally
+// carries the backend-owned execution lease; canceling it must stop the claimed
+// execution.
 type Work struct {
 	ID         string          `json:"id"`
 	LeaseToken string          `json:"lease_token"`
@@ -1072,7 +1074,14 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
 	if err != nil {
-		return canceledOrFailedResponse(err), nil
+		response := canceledOrFailedResponse(err)
+		// The turn existed, so the run id does too: a delegation canceled
+		// after its run started stays addressable, and the terminal
+		// response is the only channel that survives async mode.
+		if runID := turn.RunID(); runID != "" {
+			response.Metadata = map[string]string{RunIDMetadataKey: runID}
+		}
+		return response, nil
 	}
 	return responseFromTurn(result, key.ContextID), nil
 }
@@ -1202,7 +1211,14 @@ func lineageAttributes(callID string) map[string]string {
 // to an async request's portable metadata so operational views
 // surface parent run + call id without per-view plumbing. Returns the
 // (possibly newly allocated) metadata map.
+//
+// The lineage keys are ours, not the caller's: any value the caller set
+// under one is dropped before the service decides what the key holds, so
+// a request can never dress caller input up as an observation.
 func injectDelegationLineage(metadata map[string]string, parentRunID, callID string) map[string]string {
+	delete(metadata, ParentRunMetadataKey)
+	delete(metadata, CallIDMetadataKey)
+	delete(metadata, RunIDMetadataKey)
 	if parentRunID == "" && callID == "" {
 		return metadata
 	}
