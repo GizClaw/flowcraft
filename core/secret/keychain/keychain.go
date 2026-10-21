@@ -103,11 +103,22 @@ type backend interface {
 // NewStore opens the file backend rooted at dir, creating the store
 // directory (0700) and the AES key file (.key, 0600) on first use. The
 // store is sealed-only: with no usable key nothing is read or written.
+//
+// Every store opened over one directory in this process shares one
+// backend, and therefore one index lock: the deployment resource and the
+// app-side [Manager] are two handles over the same credential files, and
+// they have to serialize their accounts.json writes against each other.
 func NewStore(dir string) (Store, error) {
 	if strings.TrimSpace(dir) == "" {
 		return Store{}, errdefs.Validationf(
 			"secret keychain store: settings.dir is required")
 	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return Store{}, fmt.Errorf(
+			"secret keychain store: resolve store dir: %w", err)
+	}
+	dir = abs
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Store{}, fmt.Errorf(
 			"secret keychain store: create store dir: %w", err)
@@ -123,7 +134,31 @@ func NewStore(dir string) (Store, error) {
 	if err != nil {
 		return Store{}, err
 	}
-	return Store{backend: &fileBackend{dir: dir, key: key}}, nil
+	return Store{backend: sharedBackend(dir, key)}, nil
+}
+
+// storeBackends is the process-wide set of open stores, keyed by the
+// directory's absolute path. Two handles over one directory share a
+// backend so the index mutex it carries covers both — without this the
+// deploy resource and the Manager would each guard their own copy of
+// accounts.json, and two concurrent Sets could drop an entry. Entries
+// live for the life of the process: a store directory is a deployment
+// constant, not a per-request value.
+var storeBackends = struct {
+	mu        sync.Mutex
+	byDirPath map[string]*fileBackend
+}{byDirPath: make(map[string]*fileBackend)}
+
+// sharedBackend returns the backend for dir, opening one on first use.
+func sharedBackend(dir string, key []byte) *fileBackend {
+	storeBackends.mu.Lock()
+	defer storeBackends.mu.Unlock()
+	if backend, ok := storeBackends.byDirPath[dir]; ok {
+		return backend
+	}
+	backend := &fileBackend{dir: dir, key: key}
+	storeBackends.byDirPath[dir] = backend
+	return backend
 }
 
 // Lookup implements resource.SecretStore.
@@ -172,15 +207,19 @@ func (s Store) DeletePrefix(ctx context.Context, prefix string) error {
 }
 
 // Manager is the app-side credential handle sharing the same backend as
-// the deploy resource. It never fails to construct: an unusable
-// directory surfaces through Available and per-call errors.
+// the deploy resource: both are handles over the store directory, and
+// both serialize on the one index lock that backend carries. It never
+// fails to construct: an unusable directory surfaces through Available
+// and per-call errors.
 type Manager struct {
 	store Store
 }
 
 // NewManager returns a manager rooted at dir (the encrypted file
-// backend). An unusable directory yields an unavailable manager rather
-// than an error, so settings UIs can degrade gracefully.
+// backend). A manager over a directory a deployment already serves joins
+// that store's backend instead of opening a second one. An unusable
+// directory yields an unavailable manager rather than an error, so
+// settings UIs can degrade gracefully.
 func NewManager(dir string) *Manager {
 	store, err := NewStore(dir)
 	if err != nil {
@@ -241,8 +280,9 @@ func (m *Manager) DeletePrefix(ctx context.Context, prefix string) error {
 // concurrent Sets must not drop an entry), and an index that exists but
 // cannot be decoded is an error everywhere instead of an empty list
 // (rewriting from empty would orphan every secret it still names).
-// Writers in other processes are not serialized; management is an
-// app-side, single-writer surface.
+// mu covers every handle this process has over the directory — NewStore
+// hands out one backend per directory — but not other processes:
+// management is an app-side, single-writer surface.
 type fileBackend struct {
 	dir string
 	key []byte
@@ -445,6 +485,13 @@ func (f *fileBackend) seal(name string, value []byte) ([]byte, error) {
 // by Get before this runs. Files sealed before the name binding existed
 // carry no additional data; they are accepted so an existing store
 // keeps working, and the next Set rewrites them bound.
+//
+// The legacy branch is a transition, not a second format: until an
+// account is written again, moving its sealed file onto another account's
+// name still opens it, because there is no name in the envelope to
+// disagree with. Nothing rewrites a file on read, so a store that is
+// never updated again keeps that gap; migrating one means a Set per
+// account (a settings UI that saves unchanged values is enough).
 func (f *fileBackend) decrypt(name string, raw []byte) ([]byte, error) {
 	if len(f.key) == 0 {
 		return nil, errors.New("secret keychain store: no encryption key")

@@ -3,8 +3,10 @@ package keychain
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -171,6 +173,58 @@ func TestFactorySettingsValidation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("New accepted unknown settings field")
+	}
+}
+
+// The deployment resource and the app-side Manager are two handles over one
+// credential directory, and the index behind it is a read-modify-write. They
+// must therefore share one lock: two backends would let concurrent Sets each
+// rewrite accounts.json from their own snapshot and drop an entry.
+func TestNewStoreSharesOneBackendPerDir(t *testing.T) {
+	dir := t.TempDir()
+	deployed, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	manager := NewManager(dir)
+	if !manager.Available() {
+		t.Fatal("manager over a usable directory is unavailable")
+	}
+	if deployed.backend != manager.store.backend {
+		t.Fatal("manager opened a second backend over the same directory")
+	}
+	// A second spelling of one directory is the same store, not another one.
+	alias, err := NewStore(filepath.Join(dir, "."))
+	if err != nil {
+		t.Fatalf("NewStore(alias): %v", err)
+	}
+	if alias.backend != deployed.backend {
+		t.Fatal("a second spelling of the directory opened a second backend")
+	}
+
+	const accounts = 16
+	var wg sync.WaitGroup
+	for i := range accounts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handle := deployed
+			if i%2 == 0 {
+				handle = manager.store
+			}
+			if setErr := handle.Set(context.Background(), fmt.Sprintf("acct-%d", i), "v"); setErr != nil {
+				t.Errorf("Set(acct-%d): %v", i, setErr)
+			}
+		}()
+	}
+	wg.Wait()
+
+	indexed, err := deployed.backend.(*fileBackend).readAccounts()
+	if err != nil {
+		t.Fatalf("readAccounts: %v", err)
+	}
+	if len(indexed) != accounts {
+		t.Fatalf("index holds %d accounts, want %d: %v", len(indexed), accounts, indexed)
 	}
 }
 

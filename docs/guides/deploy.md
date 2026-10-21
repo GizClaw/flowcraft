@@ -114,7 +114,13 @@ resources:
   against another process running as the same user; a true OS credential
   store would be a different backend. Files without the seal magic are
   rejected instead of read as plaintext, and the same store backs the
-  app-side `keychain.Manager` (Get/Set/Delete for settings pages and CLIs).
+  app-side `keychain.Manager` (Get/Set/Delete for settings pages and CLIs):
+  every handle opened over one directory inside a process shares one
+  backend, so the deploy resource and the manager serialize their
+  `accounts.json` writes on the same lock. Sealed files predating the
+  account-name binding are still accepted, and they carry no name to
+  disagree with — moving one onto another account's name works until that
+  account is written again.
   Register it with `keychain.Register(reg)` and deploy it like any store:
 
   ```yaml
