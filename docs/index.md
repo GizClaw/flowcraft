@@ -75,6 +75,10 @@ retrieval, runtime orchestration, and voice. Source on
 
 ## Migrations
 
+- [`core/v0.10.0`](migrations/core-v0.10.0.md) — panic recovery is on by
+  default and enforced at the fan-out boundaries, `concurrency.limit` must be
+  positive, the keychain store is one handle per directory, and `Reload`
+  applies session limits with the swap.
 - [`core/v0.9.0`](migrations/core-v0.9.0.md) — the typed assembly protocol:
   `Factory[T]`, `Dep[T]`, a pure `deploy.Plan` phase, and typed reads of built
   resources.
