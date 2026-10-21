@@ -82,6 +82,13 @@ func (o *Observer) Close() error {
 // loop forwards card events until the subscription or the loop context
 // ends.
 func (o *Observer) loop(ctx context.Context, events <-chan event.Envelope) {
+	// started holds the cards whose start already fired. A card event is
+	// a snapshot, not a transition: the board re-publishes a claimed card
+	// whenever it learns something about the running delegation — the
+	// run id, for one — and a hook belongs to the claim, not to each fact
+	// learned afterwards. A card that leaves the claimed state re-arms,
+	// so a retried delegation starts again.
+	started := make(map[string]struct{})
 	for {
 		select {
 		case envelope, ok := <-events:
@@ -97,7 +104,16 @@ func (o *Observer) loop(ctx context.Context, events <-chan event.Envelope) {
 			}
 			name, ok := subagentEvent(card.Status)
 			if !ok {
+				delete(started, card.CardID)
 				continue
+			}
+			if name == EventSubagentStart {
+				if _, fired := started[card.CardID]; fired {
+					continue
+				}
+				started[card.CardID] = struct{}{}
+			} else {
+				delete(started, card.CardID)
 			}
 			o.runner.Fire(ctx, name, subagentPayload(card))
 		case <-ctx.Done():

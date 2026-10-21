@@ -804,6 +804,112 @@ func TestRuntimeReloadDrainTimeoutClearsTombstone(t *testing.T) {
 	}
 }
 
+// An abort cannot roll a drain back: the first agent's sessions are closed
+// before the second removal times out, and the generation that keeps serving
+// is the old one — under its own session limits, not the failed document's.
+func TestRuntimeReloadAbortAfterDrainKeepsServingGeneration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	f := &gatedEngineFactory{
+		runs: make(chan int64, 8),
+		gate: make(chan struct{}),
+	}
+	reg := resource.NewRegistry()
+	resource.MustRegister(reg, f)
+	resource.MustRegister(reg, event.NewFactory())
+	doc1 := parseRuntimeDoc(t, `version: v1
+resources:
+  events: {kind: event.Bus, impl: memory}
+agents:
+  a-idle: {card: {name: Idle}, engine: {kind: reload-engine}}
+  b-bot: {card: {name: Bot}, engine: {kind: reload-engine}}
+  z-busy: {card: {name: Busy}, engine: {kind: reload-engine}}
+runtime:
+  event_bus: events
+  sessions: {idle_timeout: 1m, sink_buffer: 8}
+`)
+	app, err := NewBuilder(reg).Build(ctx, doc1)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	idle, err := app.Sessions().Open(ctx, session.Key{
+		AgentID: "a-idle", ContextID: "ctx",
+	})
+	if err != nil {
+		t.Fatalf("Open(a-idle): %v", err)
+	}
+	t.Cleanup(func() { _ = idle.Close() })
+	// z-busy is mid-turn, so its drain cannot finish inside the reload's
+	// context — but a-idle, which the drain visits first, is gone by then.
+	lease, err := app.Sessions().Open(ctx, session.Key{
+		AgentID: "z-busy", ContextID: "ctx",
+	})
+	if err != nil {
+		t.Fatalf("Open(z-busy): %v", err)
+	}
+	t.Cleanup(func() { _ = lease.Close() })
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start(z-busy): %v", err)
+	}
+	waitForEngineRun(t, f.runs)
+
+	// The failing document removes both agents and lowers the session
+	// ceiling to one: applying that ceiling during the drain would be
+	// visible in what the surviving generation admits afterwards.
+	doc2 := parseRuntimeDoc(t, `version: v1
+resources:
+  events: {kind: event.Bus, impl: memory}
+agents:
+  b-bot: {card: {name: Bot}, engine: {kind: reload-engine}}
+runtime:
+  event_bus: events
+  sessions: {idle_timeout: 1m, sink_buffer: 8, max_sessions: 1}
+`)
+	reloadCtx, cancelReload := context.WithTimeout(
+		context.Background(), 100*time.Millisecond)
+	defer cancelReload()
+	if _, reloadErr := app.Reload(reloadCtx, doc2); !errdefs.IsTimeout(reloadErr) {
+		t.Fatalf("Reload error = %v, want deadline exceeded", reloadErr)
+	}
+	defer func() {
+		close(f.gate)
+		if _, waitErr := turn.Wait(ctx); waitErr != nil {
+			t.Errorf("in-flight turn Wait: %v", waitErr)
+		}
+	}()
+
+	// The drained agent reopened: the name is usable again, the history the
+	// drain closed is not.
+	drained, err := app.Sessions().Open(context.Background(), session.Key{
+		AgentID: "a-idle", ContextID: "ctx",
+	})
+	if err != nil {
+		t.Fatalf("Open(a-idle) after aborted reload = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = drained.Close() })
+
+	if got := app.current.Load().id; got != 1 {
+		t.Fatalf("generation id after aborted reload = %d, want 1", got)
+	}
+	// Session limits take effect with the swap, so max_sessions from the
+	// failed document never reached the manager: the old ceiling (1024) is
+	// still in force and two more sessions open fine.
+	for _, contextID := range []string{"one", "two"} {
+		opened, openErr := app.Sessions().Open(context.Background(), session.Key{
+			AgentID: "b-bot", ContextID: contextID,
+		})
+		if openErr != nil {
+			t.Fatalf("Open(b-bot/%s) after aborted reload = %v, "+
+				"want the failed document's max_sessions not applied", contextID, openErr)
+		}
+		t.Cleanup(func() { _ = opened.Close() })
+	}
+}
+
 func TestRuntimeReloadFailureKeepsOldGeneration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

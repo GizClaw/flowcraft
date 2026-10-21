@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"runtime/debug"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -39,12 +41,20 @@ import (
 //     the observer itself.
 //
 //  4. Run guarantees the call sequence: OnRunStart fires exactly
-//     once before Execute; OnInterrupt fires at most once and
+//     once, after the board is seeded and before Execute;
+//     OnInterrupt fires at most once and
 //     ONLY when the engine returned an [InterruptedError]
 //     (foreign-shape errors that merely satisfy errdefs.IsInterrupted
 //     still classify the run as interrupted but skip OnInterrupt);
 //     OnRunEnd fires exactly once after Execute returns,
 //     regardless of outcome.
+//
+//     A run that fails before it starts — the Preparer chain errored,
+//     or returned no board — calls no observer at all and returns the
+//     error: there is no OnRunStart for an OnRunEnd to pair with, so an
+//     observer is never handed a run it never saw begin. Those failures
+//     are reported by the returned error and the run log, not through
+//     the observer.
 //
 // Embed [BaseObserver] to satisfy the interface with no-op defaults
 // when only a subset of the lifecycle is interesting:
@@ -143,25 +153,25 @@ type multiObserver []Observer
 
 func (m multiObserver) OnRunStart(ctx context.Context, id Identity, req *Request) {
 	for _, o := range m {
-		safeRun(ctx, func() { o.OnRunStart(ctx, id, req) })
+		safeRun(ctx, id, "OnRunStart", func() { o.OnRunStart(ctx, id, req) })
 	}
 }
 
 func (m multiObserver) OnInterrupt(ctx context.Context, id Identity, intr Interrupt) {
 	for _, o := range m {
-		safeRun(ctx, func() { o.OnInterrupt(ctx, id, intr) })
+		safeRun(ctx, id, "OnInterrupt", func() { o.OnInterrupt(ctx, id, intr) })
 	}
 }
 
 func (m multiObserver) OnRunRevise(ctx context.Context, id Identity, prev *Result, next int) {
 	for _, o := range m {
-		safeRun(ctx, func() { o.OnRunRevise(ctx, id, prev, next) })
+		safeRun(ctx, id, "OnRunRevise", func() { o.OnRunRevise(ctx, id, prev, next) })
 	}
 }
 
 func (m multiObserver) OnRunEnd(ctx context.Context, id Identity, res *Result) {
 	for _, o := range m {
-		safeRun(ctx, func() { o.OnRunEnd(ctx, id, res) })
+		safeRun(ctx, id, "OnRunEnd", func() { o.OnRunEnd(ctx, id, res) })
 	}
 }
 
@@ -171,11 +181,21 @@ func (m multiObserver) OnRunEnd(ctx context.Context, id Identity, res *Result) {
 // never dropped either: it becomes a warning on the run's context, so a
 // broken hook shows up in the logs instead of silently changing what the
 // caller sees.
-func safeRun(ctx context.Context, f func()) {
+//
+// The warning carries the run it happened in, the hook that panicked, and
+// the stack at the recover point: an observer belongs to a host, and
+// "agent observer panicked" with no identity is a report nobody can act on.
+func safeRun(ctx context.Context, id Identity, hook string, f func()) {
 	defer func() {
 		if rv := recover(); rv != nil {
-			telemetry.Warn(ctx, "agent observer panicked",
-				attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+			telemetry.Warn(ctx, "agent observer panicked", slices.Concat(
+				runLogAttrs(id),
+				[]attribute.KeyValue{
+					attribute.String("agent.observer.hook", hook),
+					attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+					attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())),
+				},
+			)...)
 		}
 	}()
 	f()

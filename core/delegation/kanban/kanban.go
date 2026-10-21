@@ -457,6 +457,22 @@ func (b *Board) Complete(
 	case delegation.StatusCanceled:
 		card.Status = StatusCanceled
 	}
+	// A worker that never reached NoteRunID still reports the run id on
+	// its terminal response, so keep the operational field in step with
+	// it: terminal card events carry the same run id the response does.
+	// The terminal response wins a disagreement — it is the run's own
+	// record — but a disagreement means the board and the run diverged,
+	// which is worth a warning rather than a silent overwrite.
+	if runID := response.Metadata[delegation.RunIDMetadataKey]; runID != "" {
+		if card.RunID != "" && card.RunID != runID {
+			telemetry.Warn(ctx,
+				"delegation kanban: terminal run id disagrees with the noted one",
+				attribute.String("delegation.card_id", id),
+				attribute.String("delegation.noted_run_id", card.RunID),
+				attribute.String(telemetry.AttrRunID, runID))
+		}
+		card.RunID = runID
+	}
 	card.Result = &Result{Response: response}
 	snapshot := b.finishTransitionLocked(card, from)
 	cancelLease := b.takeLeaseLocked(id)
@@ -468,28 +484,25 @@ func (b *Board) Complete(
 	return nil
 }
 
-// NoteRunID implements delegation.RunIDNotifier: it records the
-// subagent run id on the claimed card whose stream escrow ref matches,
-// so operational views can correlate a delegation id with its run
-// before the terminal response arrives. Unknown refs, cards not in the
-// claimed state, and repeated identical updates are no-ops; the
-// recorded run id is re-published through the ordinary claimed card
-// event.
-func (b *Board) NoteRunID(ctx context.Context, ref, runID string) error {
-	if ref == "" || runID == "" {
+// NoteRunID implements delegation.RunIDNotifier: it records the subagent
+// run id on the claimed card, so operational views can correlate a
+// delegation id with its run before the terminal response arrives. The
+// key is the card's delegation id — the id Submit returned and Work.ID
+// carries — not the stream escrow ref, which only exists when the
+// delegation inherits a sink. Unknown ids, cards not in the claimed
+// state, and repeated identical updates are no-ops; the recorded run id
+// is re-published through the ordinary claimed card event.
+func (b *Board) NoteRunID(ctx context.Context, id, runID string) error {
+	if id == "" || runID == "" {
 		return errdefs.Validationf(
-			"delegation kanban: stream ref and run id are required")
+			"delegation kanban: delegation id and run id are required")
+	}
+	if ctx == nil {
+		ctx = b.ctx
 	}
 	b.mu.Lock()
-	var card *Card
-	for _, c := range b.cards {
-		if c.Task != nil && c.Task.Request.Stream != nil &&
-			c.Task.Request.Stream.Ref == ref {
-			card = c
-			break
-		}
-	}
-	if card == nil || card.Status != StatusClaimed || card.RunID == runID {
+	card, ok := b.index[id]
+	if !ok || card.Status != StatusClaimed || card.RunID == runID {
 		b.mu.Unlock()
 		return nil
 	}
@@ -539,6 +552,9 @@ func (b *Board) Resume(id string) (string, bool) {
 		}
 		resumeRef = card.ResumeRef
 		card.Status = StatusPending
+		// The next claim is a new run: the parked run's id names work the
+		// board will not see again.
+		card.RunID = ""
 		return true
 	})
 	return resumeRef, ok
@@ -546,14 +562,22 @@ func (b *Board) Resume(id string) (string, bool) {
 
 // Cancel terminates any non-terminal delegation.
 func (b *Board) Cancel(id, reason string) bool {
-	response := delegation.Response{
-		ID:     id,
-		Status: delegation.StatusCanceled,
-		Error:  reason,
-	}
 	return b.transition(b.ctx, id, func(card *Card) bool {
 		if card.Status.IsTerminal() {
 			return false
+		}
+		response := delegation.Response{
+			ID:     id,
+			Status: delegation.StatusCanceled,
+			Error:  reason,
+		}
+		// The cancel comes from the caller's side, but the run already
+		// reported itself: the terminal response keeps whatever run id
+		// the card had learned.
+		if card.RunID != "" {
+			response.Metadata = map[string]string{
+				delegation.RunIDMetadataKey: card.RunID,
+			}
 		}
 		card.Status = StatusCanceled
 		card.Result = &Result{Response: response}
@@ -812,6 +836,17 @@ func responseForCard(card *Card) delegation.Response {
 	response := delegation.Response{ID: card.ID, Status: status}
 	if len(card.Meta) > 0 {
 		response.Metadata = cloneMetadata(card.Meta)
+	}
+	// The run id is observed, never requested: a live card reports the one
+	// the run announced, and a caller-supplied key of the same name is
+	// dropped rather than echoed back as if the board had seen it.
+	if card.RunID != "" {
+		if response.Metadata == nil {
+			response.Metadata = make(map[string]string, 1)
+		}
+		response.Metadata[delegation.RunIDMetadataKey] = card.RunID
+	} else {
+		delete(response.Metadata, delegation.RunIDMetadataKey)
 	}
 	return response
 }

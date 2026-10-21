@@ -167,7 +167,6 @@ resources:
       tool: sim
     settings:
       middlewares:
-        recover: {enabled: true}
         telemetry: {enabled: true}
         result_limit: {max: 20000}
         truncate: {enabled: true, max_chars: 4000, dir: ${base:cache/tools}}
@@ -175,9 +174,18 @@ resources:
         concurrency: {limit: 8}
 ```
 
-Each entry is optional; absent entries are skipped. `recover` converts a
-panicking tool (or inner middleware) into an `IsError` result instead of
-crashing the caller's goroutine; `telemetry.enabled` records an
+The `middlewares` block itself is optional: an assembly document without one
+gets this chain with every entry at its default, not an empty chain. Within
+the block each entry is optional; absent entries are skipped, with two
+exceptions.
+`recover` is installed by default — a tool is foreign code (a plugin, an MCP
+server), and a panic inside it is a bug in that tool, not a reason to lose
+every session in the host — so it converts a panicking tool (or inner
+middleware) into an `IsError` result unless the document says
+`recover: {enabled: false}`; turning it off drops the attribution and the
+warning, while `tool.Executor.Execute` still turns a panic escaping the chain
+into an `IsError` result. The second exception is the default non-text
+part budget, described below. `telemetry.enabled` records an
 OpenTelemetry span, executions/duration/error metrics, and a warning log
 for each call; `timeout.default` bounds each call with a Go duration (calls
 that already carry a deadline pass through); `concurrency.limit` caps

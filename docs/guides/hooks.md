@@ -67,6 +67,12 @@ The fields above are what the platform's own producers send and what the
 matchers select on; a producer is free to add fields of its own, and a
 hook that wants new ones has to tolerate their absence in older hosts.
 
+`SubagentStart` fires once per claim, before the delegated run reports
+itself, so its `run_id` is empty: the run id belongs to `SubagentStop`,
+which carries it whenever the run reported one. A card that is claimed
+again after being released or suspended starts a new run, and a new
+`SubagentStart`.
+
 `SessionStart` / `SessionEnd` are part of the vocabulary but have no
 producer inside the platform: an application that owns a session
 lifecycle fires them, and the event names are already reserved.

@@ -110,7 +110,6 @@ func TestBoardRunningStatusCarriesMeta(t *testing.T) {
 func TestBoardNoteRunIDRecordsAndPublishesRunID(t *testing.T) {
 	board := newBoard(t)
 	req := request("worker")
-	req.Stream = &delegation.StreamRef{Ref: "escrow-1"}
 	id, err := board.Submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
@@ -123,7 +122,9 @@ func TestBoardNoteRunIDRecordsAndPublishesRunID(t *testing.T) {
 		t.Fatalf("claimed work id = %q, want %q", work.ID, id)
 	}
 
-	if err := board.NoteRunID(context.Background(), "escrow-1", "run-sub-1"); err != nil {
+	// The delegation id is the key: a delegation that inherits no stream
+	// has no escrow ref and still has to report its run.
+	if err := board.NoteRunID(context.Background(), id, "run-sub-1"); err != nil {
 		t.Fatalf("NoteRunID: %v", err)
 	}
 	card, ok := board.Card(id)
@@ -131,16 +132,194 @@ func TestBoardNoteRunIDRecordsAndPublishesRunID(t *testing.T) {
 		t.Fatalf("card RunID = %q (ok %v), want run-sub-1", card.RunID, ok)
 	}
 	// Repeated identical update is a no-op.
-	if err := board.NoteRunID(context.Background(), "escrow-1", "run-sub-1"); err != nil {
+	if err := board.NoteRunID(context.Background(), id, "run-sub-1"); err != nil {
 		t.Fatalf("repeated NoteRunID: %v", err)
 	}
-	// Unknown ref is a no-op.
+	// Unknown id is a no-op.
 	if err := board.NoteRunID(context.Background(), "missing", "run-x"); err != nil {
-		t.Fatalf("unknown ref NoteRunID: %v", err)
+		t.Fatalf("unknown id NoteRunID: %v", err)
 	}
 	// Empty inputs are validation errors.
 	if err := board.NoteRunID(context.Background(), "", "run-x"); !errdefs.IsValidation(err) {
-		t.Fatalf("empty ref error = %v, want validation", err)
+		t.Fatalf("empty id error = %v, want validation", err)
+	}
+}
+
+func TestBoardCompleteRecordsRunIDFromResponse(t *testing.T) {
+	board := newBoard(t)
+	id, err := board.Submit(context.Background(), request("worker"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	work, err := board.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	// A worker that never called NoteRunID still reports the run id on
+	// its terminal response.
+	if err := board.Complete(context.Background(), work.ID, work.LeaseToken, delegation.Response{
+		Status:   delegation.StatusSucceeded,
+		Output:   "done",
+		Metadata: map[string]string{delegation.RunIDMetadataKey: "run-terminal-1"},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	card, ok := board.Card(id)
+	if !ok || card.RunID != "run-terminal-1" {
+		t.Fatalf("card RunID = %q (ok %v), want run-terminal-1", card.RunID, ok)
+	}
+	response, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if response.Metadata[delegation.RunIDMetadataKey] != "run-terminal-1" {
+		t.Fatalf("terminal response metadata = %+v, want the run id", response.Metadata)
+	}
+}
+
+func TestBoardStatusReportsNotedRunIDWhileRunning(t *testing.T) {
+	board := newBoard(t)
+	id := submit(t, board, "worker")
+	if _, err := board.Claim(context.Background()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.NoteRunID(context.Background(), id, "run-live-1"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	// A poll-only caller learns the run id while the delegation runs, not
+	// only once it completes.
+	response, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if response.Status != delegation.StatusRunning ||
+		response.Metadata[delegation.RunIDMetadataKey] != "run-live-1" {
+		t.Fatalf("running status = %+v, want the noted run id", response)
+	}
+}
+
+func TestBoardStatusDropsCallerSuppliedRunID(t *testing.T) {
+	board := newBoard(t)
+	req := request("worker")
+	req.Request.Metadata[delegation.RunIDMetadataKey] = "run-forged"
+	id, err := board.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := board.Claim(context.Background()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	response, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if forged, ok := response.Metadata[delegation.RunIDMetadataKey]; ok {
+		t.Fatalf("status echoed the caller's run id %q", forged)
+	}
+	// Once the run reports itself, that is what the caller sees, beside
+	// whatever keys the caller legitimately supplied.
+	if err := board.NoteRunID(context.Background(), id, "run-observed"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	response, err = board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if response.Metadata[delegation.RunIDMetadataKey] != "run-observed" ||
+		response.Metadata["tenant"] != "acme" {
+		t.Fatalf("status metadata = %+v, want the observed run id", response.Metadata)
+	}
+}
+
+func TestBoardCancelKeepsNotedRunID(t *testing.T) {
+	board := newBoard(t)
+	id := submit(t, board, "worker")
+	if _, err := board.Claim(context.Background()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.NoteRunID(context.Background(), id, "run-cancel-1"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	if !board.Cancel(id, "no longer needed") {
+		t.Fatal("Cancel: card was not cancellable")
+	}
+	// The cancel comes from the caller's side, so nothing about the run is
+	// learned from it — the run id the card already had is what it keeps.
+	response, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if response.Status != delegation.StatusCanceled ||
+		response.Metadata[delegation.RunIDMetadataKey] != "run-cancel-1" {
+		t.Fatalf("canceled status = %+v, want the noted run id", response)
+	}
+}
+
+func TestBoardCompletePrefersTerminalRunID(t *testing.T) {
+	board := newBoard(t)
+	id := submit(t, board, "worker")
+	work, err := board.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.NoteRunID(context.Background(), id, "run-noted"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	// The terminal response is the run's own record, so it wins a
+	// disagreement: a stale note never outranks the run that finished.
+	if err := board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+		Status:   delegation.StatusSucceeded,
+		Output:   "done",
+		Metadata: map[string]string{delegation.RunIDMetadataKey: "run-terminal"},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	card, ok := board.Card(id)
+	if !ok || card.RunID != "run-terminal" {
+		t.Fatalf("card RunID = %q (ok %v), want run-terminal", card.RunID, ok)
+	}
+}
+
+func TestBoardKeepsRunIDInTerminalTombstone(t *testing.T) {
+	board := newBoard(t,
+		kanban.WithCardTTL(time.Millisecond),
+		kanban.WithIdempotencyRetention(100*time.Millisecond),
+	)
+	req := request("worker")
+	req.Request.IdempotencyKey = "runid-key"
+	id, err := board.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	work, err := board.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+		Status:   delegation.StatusSucceeded,
+		Output:   "done",
+		Metadata: map[string]string{delegation.RunIDMetadataKey: "run-kept-1"},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, ok := board.Card(id); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("terminal card was not evicted while board was idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Eviction drops the card but keeps the terminal response for the
+	// retention window, so the run id outlives the card it was noted on.
+	response, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status after eviction: %v", err)
+	}
+	if response.Metadata[delegation.RunIDMetadataKey] != "run-kept-1" {
+		t.Fatalf("tombstone metadata = %+v, want the run id", response.Metadata)
 	}
 }
 

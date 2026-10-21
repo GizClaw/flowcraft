@@ -49,6 +49,40 @@ func TestExecutor_Execute(t *testing.T) {
 	}
 }
 
+// Execute is the dispatch boundary, and the caller may be ExecuteAll's
+// fan-out goroutine, where a panic has no caller to return to. A broken tool
+// therefore comes back as an IsError result whether or not the deployment
+// installed the Recover middleware.
+func TestExecutor_ExecuteRecoversPanickingTool(t *testing.T) {
+	reg, err := tool.NewRegistry([]tool.Source{
+		source{tools: []tool.Tool{
+			funcTool("ok", "fine"),
+			tool.TextTool(
+				message.ToolDefinition{Name: "panics", InputSchema: []byte(`{"type":"object"}`)},
+				func(context.Context, string) (string, error) {
+					panic("tool is broken")
+				},
+			),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	exec := tool.NewExecutor(reg)
+	call := message.ToolCall{ID: "c1", Name: "panics", Arguments: []byte(`{}`)}
+
+	res := exec.Execute(context.Background(), call)
+	if !res.IsError || !strings.Contains(res.Content.Text(), "panicked") {
+		t.Fatalf("Execute result = %+v, want an IsError result mentioning the panic", res)
+	}
+
+	calls := []message.ToolCall{call, {ID: "c2", Name: "ok"}}
+	results := exec.ExecuteAll(context.Background(), calls)
+	if len(results) != 2 || !results[0].IsError || results[1].IsError {
+		t.Fatalf("ExecuteAll results = %+v, want one failed and one fine", results)
+	}
+}
+
 func TestExecutor_PreservesMultipartContent(t *testing.T) {
 	source, err := media.NewImageBytes([]byte{1, 2, 3}, "image/png")
 	if err != nil {

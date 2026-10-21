@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,50 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 )
+
+// A parallel branch runs a node handler on its own goroutine: a handler that
+// panics must fail the wave, not the process.
+func TestExecuteParallelBranchPanicFailsWave(t *testing.T) {
+	reg := NewRegistry()
+	if err := RegisterType(reg, "entry", NodeType[struct{}]{
+		Meta:    Meta{Desc: "entry"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterType(reg, "panicking-branch", NodeType[struct{}]{
+		Meta: Meta{Desc: "panics"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error {
+			panic("node is broken")
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterType(reg, "quiet-branch", NodeType[struct{}]{
+		Meta:    Meta{Desc: "succeeds"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "parallel-panic",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "entry"},
+			{ID: "b", Type: "panicking-branch"},
+			{ID: "c", Type: "quiet-branch"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: END}, {From: "c", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true}))
+
+	_, err := g.Execute(context.Background(), testRun(), agent.NoopHost{}, agent.NewBoard())
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("Execute error = %v, want the recovered branch panic", err)
+	}
+}
 
 func TestForkController_CancelRunningPropagatesCause(t *testing.T) {
 	c := newForkController([]string{"a", "b"})

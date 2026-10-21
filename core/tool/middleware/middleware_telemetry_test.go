@@ -49,10 +49,10 @@ func TestFromSettings_EnablesTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	// Telemetry plus the non-text part limiter, which FromSettings always
-	// installs unless the deployment lifts it.
-	if len(mws) != 2 {
-		t.Fatalf("middlewares = %d, want telemetry + the part limiter", len(mws))
+	// Telemetry, the default Recover, and the non-text part limiter, which
+	// FromSettings always installs unless the deployment lifts it.
+	if len(mws) != 3 {
+		t.Fatalf("middlewares = %d, want recover + telemetry + the part limiter", len(mws))
 	}
 
 	exec := tool.NewExecutor(catalogWith(echoTool("echo")), mws...)
@@ -74,10 +74,11 @@ func TestFromSettings_SkipsDisabledOrAbsentTelemetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FromSettings(%+v): %v", settings, err)
 		}
-		// The part limiter is the one entry that is not opt-in.
-		if len(mws) != 1 {
+		// Recover and the part limiter are the entries that are not
+		// opt-in.
+		if len(mws) != 2 {
 			t.Errorf(
-				"FromSettings(%+v) returned %d middlewares, want the part limiter alone",
+				"FromSettings(%+v) returned %d middlewares, want recover + the part limiter",
 				settings, len(mws))
 		}
 	}

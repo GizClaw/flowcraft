@@ -3,10 +3,14 @@ package tool
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Dispatcher is the execution contract consumers depend on: run one
@@ -31,10 +35,16 @@ type Middleware func(next Dispatch) Dispatch
 
 // Executor dispatches tool calls against a Catalog through a
 // middleware chain. The un-decorated core only looks the tool up and
-// invokes it; every cross-cutting concern — recovery, telemetry,
-// concurrency limits, timeouts, approval, audit — is middleware,
-// declared at construction. The chain is immutable afterwards, so an
-// Executor is safe for concurrent use by construction.
+// invokes it; every cross-cutting concern — telemetry, concurrency
+// limits, timeouts, approval, audit — is middleware, declared at
+// construction. The chain is immutable afterwards, so an Executor is
+// safe for concurrent use by construction.
+//
+// Recovery is the one concern that is not only middleware: [Execute]
+// recovers a panic escaping the chain, so an Executor built without the
+// Recover middleware still cannot turn a broken tool into a crashed
+// process. The middleware stays the place to decide *how* a panicking
+// tool is reported; this net only guarantees that the process survives.
 type Executor struct {
 	dispatch Dispatch
 }
@@ -51,15 +61,33 @@ func NewExecutor(catalog Catalog, mws ...Middleware) *Executor {
 }
 
 // Execute runs one call through the middleware chain. All failures —
-// unknown tool, tool error — surface as Result with IsError=true,
-// never as a Go error.
-func (e *Executor) Execute(ctx context.Context, call message.ToolCall) message.ToolResult {
-	return e.dispatch(WithCallID(ctx, call.ID), call)
+// unknown tool, tool error, panicking tool — surface as Result with
+// IsError=true, never as a Go error and never as a panic, because the
+// caller may be a fan-out goroutine with nowhere to recover.
+func (e *Executor) Execute(ctx context.Context, call message.ToolCall) (res message.ToolResult) {
+	ctx = WithCallID(ctx, call.ID)
+	defer func() {
+		rv := recover()
+		if rv == nil {
+			return
+		}
+		telemetry.Warn(ctx, "tool dispatch panicked outside the recover middleware",
+			attribute.String(telemetry.AttrToolName, call.Name),
+			attribute.String(telemetry.AttrToolCallID, call.ID),
+			attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+			attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
+		res = message.NewErrorToolResult(call.ID,
+			fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
+	}()
+	return e.dispatch(ctx, call)
 }
 
 // ExecuteAll runs every call concurrently through the chain and
 // returns results in input order. Concurrency is unbounded by
 // default; put a concurrency middleware in the chain to cap it.
+//
+// Each call runs on its own goroutine, where a panic has no caller to
+// return to — which is why [Execute] recovers instead of propagating.
 func (e *Executor) ExecuteAll(ctx context.Context, calls []message.ToolCall) []message.ToolResult {
 	results := make([]message.ToolResult, len(calls))
 	var wg sync.WaitGroup

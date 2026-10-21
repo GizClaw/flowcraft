@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -128,6 +129,19 @@ func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 	result := make(chan error, 1)
 	go func() {
 		defer func() { <-s.delivery }()
+		// OnDelta is user code on a goroutine of its own: a panic here
+		// has no caller to return to, so it is reported as the delivery
+		// failure it is and the sink detaches like any other failure.
+		defer func() {
+			if rv := recover(); rv != nil {
+				telemetry.Error(ctx, "runtime session: sink OnDelta panicked",
+					attribute.String("runtime.sink.id", s.spec.ID),
+					attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+					attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
+				result <- fmt.Errorf("runtime session: sink %q OnDelta panicked: %v",
+					s.spec.ID, rv)
+			}
+		}()
 		result <- s.spec.Sink.OnDelta(ctx, item.env, item.delta)
 	}()
 

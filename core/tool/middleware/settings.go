@@ -9,9 +9,10 @@ import (
 )
 
 // Settings declares the built-in middleware chain. Each entry is
-// optional; absent entries are skipped, with one exception: non-text
-// result parts are bounded even when ResultLimit is absent (see
-// ResultPartBudgetBytes).
+// optional; absent entries are skipped, with two exceptions: Recover is
+// installed unless the document turns it off (a panicking tool must not
+// take the process down), and non-text result parts are bounded even
+// when ResultLimit is absent (see ResultPartBudgetBytes).
 type Settings struct {
 	Recover     *RecoverSettings     `json:"recover,omitempty"`
 	Timeout     *TimeoutSettings     `json:"timeout,omitempty"`
@@ -33,7 +34,11 @@ type Settings struct {
 }
 
 type RecoverSettings struct {
-	Enabled bool `json:"enabled"`
+	// Enabled turns the middleware off. Recovery is on by default
+	// because a tool is foreign code — a plugin, an MCP server — and a
+	// panic inside it is a bug in that tool, not a reason to take every
+	// session in the host down. Only an explicit false goes without it.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type TimeoutSettings struct {
@@ -79,7 +84,7 @@ type ResultLimitSettings struct {
 // first.
 func FromSettings(s Settings) ([]tool.Middleware, error) {
 	var mws []tool.Middleware
-	if s.Recover != nil && s.Recover.Enabled {
+	if recoverEnabled(s.Recover) {
 		mws = append(mws, Recover())
 	}
 	if s.Telemetry != nil && s.Telemetry.Enabled {
@@ -141,6 +146,13 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		mws = append(mws, concurrency)
 	}
 	return mws, nil
+}
+
+// recoverEnabled resolves the Recover default: an absent block, an absent
+// enabled field, and an explicit true all mean on. A document that wants no
+// net has to say so.
+func recoverEnabled(settings *RecoverSettings) bool {
+	return settings == nil || settings.Enabled == nil || *settings.Enabled
 }
 
 // partBudget resolves the non-text byte budget: an explicit value wins, and

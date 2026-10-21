@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -15,6 +16,12 @@ import (
 // IsError result instead of crashing the caller's goroutine. Put it
 // first in the chain: without it a panic inside ExecuteAll escapes
 // the fan-out goroutine and takes the process down.
+//
+// This is the reporting half of recovery: it runs inside the chain, so
+// the panic reaches the outer middleware as an ordinary failed result.
+// [FromSettings] installs it unless the deployment turns it off, and
+// tool.Executor.Execute keeps its own net for chains built by hand —
+// without Recover a panic costs attribution, not the process.
 func Recover() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) (res message.ToolResult) {
@@ -23,7 +30,8 @@ func Recover() tool.Middleware {
 					telemetry.Warn(ctx, "tool panicked",
 						attribute.String(telemetry.AttrToolName, call.Name),
 						attribute.String(telemetry.AttrToolCallID, call.ID),
-						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
+						attribute.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)),
+						attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
 					res = message.NewErrorToolResult(call.ID,
 						fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 				}

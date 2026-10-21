@@ -137,6 +137,45 @@ func TestSubagentEventMapping(t *testing.T) {
 	}
 }
 
+func TestObserverFiresStartOncePerClaim(t *testing.T) {
+	t.Parallel()
+	requirePosixShell(t)
+	manager, start, _ := startsAndStops(t)
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+	observer, err := NewObserver(manager, bus)
+	if err != nil {
+		t.Fatalf("NewObserver: %v", err)
+	}
+	if err := observer.Wire(context.Background()); err != nil {
+		t.Fatalf("Wire: %v", err)
+	}
+	t.Cleanup(func() { _ = observer.Close() })
+
+	board := newTestBoard(t, bus)
+	id := submitCard(t, board)
+	if !board.ClaimCard(id, "researcher") {
+		t.Fatal("ClaimCard: card was not claimable")
+	}
+	first := waitForContent(t, start)
+
+	// The board re-publishes a claimed card when it learns something new
+	// about the running delegation. That is a fact about one claim, not a
+	// second start, so the hook runs once.
+	if err := board.NoteRunID(context.Background(), id, "run-sub-1"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	after, err := os.ReadFile(start)
+	if err != nil {
+		t.Fatalf("read start output: %v", err)
+	}
+	if string(after) != string(first) {
+		t.Fatalf("run-id annotation fired SubagentStart again: %q then %q",
+			first, after)
+	}
+}
+
 func TestObserverCloseStopsFiring(t *testing.T) {
 	t.Parallel()
 	manager, start, _ := startsAndStops(t)

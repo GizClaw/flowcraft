@@ -416,6 +416,16 @@ Semantics:
   agents removed by the new document have their sessions drained before
   the swap. `Reload` is serialized with `RegisterAgent` /
   `UnregisterAgent` / `Close`.
+- A drain is not reversible. It closes the removed agents' sessions as it
+  goes, so an abort later in the same reload (say, a second removed agent
+  whose drain times out) reopens the agent names but cannot bring those
+  sessions back. The failure is reported as a warning per drained agent, and
+  `drained_agents` on the `.failed` event names them.
+- The new `sessions` limits take effect with the swap, not with the drain:
+  they are validated while the document is parsed and applied in the
+  commit just before the swap, so a bad `sessions` block fails before
+  anything is drained, and a reload that aborts leaves the serving
+  generation under its own tunables.
 - Progress is published as `runtime.rebuild.started` / `.completed` /
   `.failed` events (`SubjectRuntimeRebuild*`, subscribe with
   `PatternRuntimeRebuild()`); the `RuntimeRebuildEvent` payload carries

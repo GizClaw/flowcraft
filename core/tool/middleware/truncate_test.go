@@ -492,8 +492,8 @@ func TestTruncateCacheOwnerOnly(t *testing.T) {
 func TestFromSettingsTruncate(t *testing.T) {
 	work := t.TempDir()
 	// Lifting the default non-text part budget keeps the chain to the
-	// declared entry alone (absent ResultLimit would otherwise add a
-	// ResultPartLimiter for media).
+	// declared entry plus the default Recover (absent ResultLimit would
+	// otherwise add a ResultPartLimiter for media as well).
 	zero := 0
 	mws, err := FromSettings(Settings{Truncate: &TruncateSettings{
 		Enabled:  true,
@@ -503,8 +503,8 @@ func TestFromSettingsTruncate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 1 {
-		t.Fatalf("chain has %d middleware, want 1", len(mws))
+	if len(mws) != 2 {
+		t.Fatalf("chain has %d middleware, want recover + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, strings.Repeat("y", 300))
 	if got := len([]rune(res.Content.Text())); got > 50 {
@@ -535,8 +535,8 @@ func TestFromSettingsTruncateRunsInsideResultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 2 {
-		t.Fatalf("chain has %d middleware, want 2", len(mws))
+	if len(mws) != 3 {
+		t.Fatalf("chain has %d middleware, want recover + result limit + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, full)
 	if got := len([]rune(res.Content.Text())); got > 1000 {

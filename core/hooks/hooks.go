@@ -219,8 +219,6 @@ func newGroupEntry(
 	return &groupEntry{re: re, hooks: hooks, dir: dir, trusted: trusted}, nil
 }
 
-// sortedKeys returns a map's string keys in sorted order, so loading
-// reports the first error in file order instead of map order.
 // knownEvent reports whether event is part of the frozen vocabulary.
 func knownEvent(event string) bool {
 	for _, name := range eventNames {

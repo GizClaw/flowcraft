@@ -3,9 +3,13 @@ package keychain
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -171,6 +175,194 @@ func TestFactorySettingsValidation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("New accepted unknown settings field")
+	}
+}
+
+// The deployment resource and the app-side Manager are two handles over one
+// credential directory, and the index behind it is a read-modify-write. They
+// must therefore share one lock: two backends would let concurrent Sets each
+// rewrite accounts.json from their own snapshot and drop an entry.
+func TestNewStoreSharesOneBackendPerDir(t *testing.T) {
+	dir := t.TempDir()
+	deployed, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	manager := NewManager(dir)
+	if !manager.Available() {
+		t.Fatal("manager over a usable directory is unavailable")
+	}
+	if deployed.backend != manager.store.backend {
+		t.Fatal("manager opened a second backend over the same directory")
+	}
+	// A second spelling of one directory is the same store, not another one.
+	alias, err := NewStore(dir + string(filepath.Separator) + ".")
+	if err != nil {
+		t.Fatalf("NewStore(alias): %v", err)
+	}
+	if alias.backend != deployed.backend {
+		t.Fatal("a second spelling of the directory opened a second backend")
+	}
+	// A symlink is the same directory too, not another store with another
+	// lock: the spelling a document uses is not what the store is keyed by.
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Logf("symlink unavailable, skipping that leg: %v", err)
+	} else {
+		linked, err := NewStore(link)
+		if err != nil {
+			t.Fatalf("NewStore(symlink): %v", err)
+		}
+		if linked.backend != deployed.backend {
+			t.Fatal("a symlinked spelling of the directory opened a second backend")
+		}
+	}
+
+	const accounts = 16
+	var wg sync.WaitGroup
+	for i := range accounts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handle := deployed
+			if i%2 == 0 {
+				handle = manager.store
+			}
+			if setErr := handle.Set(context.Background(), fmt.Sprintf("acct-%d", i), "v"); setErr != nil {
+				t.Errorf("Set(acct-%d): %v", i, setErr)
+			}
+		}()
+	}
+	wg.Wait()
+
+	indexed, err := deployed.backend.(*fileBackend).readAccounts()
+	if err != nil {
+		t.Fatalf("readAccounts: %v", err)
+	}
+	if len(indexed) != accounts {
+		t.Fatalf("index holds %d accounts, want %d: %v", len(indexed), accounts, indexed)
+	}
+}
+
+// The key file on disk is the source of truth. When a store is reset under a
+// running process — directory and key removed, opened again — the process
+// keeps the same backend, and that backend must seal with the key the
+// directory now holds, or the next process finds files it cannot open.
+func TestNewStoreAdoptsTheKeyOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := NewStore(dir); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, encKeyFile)); err != nil {
+		t.Fatalf("remove key file: %v", err)
+	}
+	reopened, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore after the reset: %v", err)
+	}
+	if err := reopened.Set(context.Background(), "acct", "value"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// What the next process builds: a backend over the key on disk.
+	restarted, err := loadOrCreateKey(dir)
+	if err != nil {
+		t.Fatalf("loadOrCreateKey: %v", err)
+	}
+	got, found, err := (&fileBackend{dir: dir, key: restarted}).Get(
+		context.Background(), "acct")
+	if err != nil || !found || got != "value" {
+		t.Fatalf("Get from a fresh backend = (%q, %v, %v), "+
+			"want the value sealed under the key the directory holds", got, found, err)
+	}
+}
+
+// A key taken from disk waits for the operations still running under the old
+// one: a Set that sealed under the previous key and published after the swap
+// would leave a file this process can no longer open, and that the next
+// process — which only knows the new key — cannot open either.
+func TestKeyReplacementWaitsForInFlightOperation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend := store.backend.(*fileBackend)
+	backend.keyMu.RLock() // stand in for an operation that pinned the key
+	reopened := make(chan struct{})
+	go func() {
+		defer close(reopened)
+		if _, openErr := NewStore(dir); openErr != nil {
+			t.Errorf("NewStore: %v", openErr)
+		}
+	}()
+	// The reopen has to be blocked here; a scheduler slow enough to not run
+	// the goroutine at all makes this assertion pass without proving
+	// anything, but it can never fail the test on a correct fix.
+	select {
+	case <-reopened:
+		t.Fatal("a reopen replaced the key while an operation held it")
+	case <-time.After(100 * time.Millisecond):
+	}
+	backend.keyMu.RUnlock()
+	select {
+	case <-reopened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reopen stayed blocked after the operation released the key")
+	}
+}
+
+// One directory, two spellings: EvalSymlinks settles symlinks, but a
+// case-insensitive volume still lets two strings name one directory, and two
+// backends over one directory is the lost-index-entry bug the shared backend
+// exists to prevent.
+func TestNewStoreSharesOneBackendAcrossCaseSpellings(t *testing.T) {
+	dir := t.TempDir()
+	other := strings.ToUpper(dir)
+	if _, err := os.Stat(other); err != nil || other == dir {
+		t.Skip("file system is case-sensitive; two spellings cannot name one directory here")
+	}
+	deployed, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	same, err := NewStore(other)
+	if err != nil {
+		t.Fatalf("NewStore(other case): %v", err)
+	}
+	if same.backend != deployed.backend {
+		t.Fatal("a case variant of the directory opened a second backend")
+	}
+}
+
+// A removed directory gives up its store: a temporary filesystem that hands
+// the freed inode number to the next directory must not hand the old store
+// over with it, or the new store writes into a path that does not exist.
+func TestNewStoreDoesNotInheritARemovedDirectory(t *testing.T) {
+	gone := t.TempDir()
+	stale, err := NewStore(gone)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	fresh := t.TempDir()
+	store, err := NewStore(fresh)
+	if err != nil {
+		t.Fatalf("NewStore(fresh): %v", err)
+	}
+	if store.backend == stale.backend {
+		t.Fatal("a store opened over a removed directory was handed to a new one")
+	}
+	want, err := filepath.EvalSymlinks(fresh)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if got := store.backend.(*fileBackend).dir; got != want {
+		t.Fatalf("new store is rooted at %q, want %q", got, want)
+	}
+	if err := store.Set(context.Background(), "acct", "value"); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 }
 
