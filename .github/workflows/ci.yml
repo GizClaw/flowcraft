@@ -228,16 +228,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The floor is 1.26 and the patch is pinned, not floated: govulncheck
-      # below reports the standard library of the toolchain it runs on, the
-      # Go security batch from 2026-10-08 is fixed in 1.26.9 (and 1.27.2)
-      # with no 1.25 release, and both the runner image and the setup-go
-      # manifest lag fresh releases - they still serve 1.26.8, a day later.
-      # The other lanes keep the floating minor: no verdict of theirs
-      # depends on the patch. Bump this pin when a security release lands;
-      # the scan reddening on the previous patch is the reminder.
+      # below reports the standard library of the toolchain it runs on. The
+      # 2026-10-08 batch is fixed in 1.26.9 (and 1.27.2) with no 1.25 release;
+      # GO-2026-6809 (a crypto/x509 intermediate denylist) in 1.26.10 (and
+      # 1.27.3). Both the runner image and the setup-go manifest lag fresh
+      # releases, so the pin, not the image, is what decides which stdlib the
+      # scan reads. The other lanes keep the floating minor: no verdict of
+      # theirs depends on the patch. Bump this pin when a security release
+      # lands; the scan reddening on the previous patch is the reminder.
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
