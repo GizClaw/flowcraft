@@ -325,6 +325,74 @@ func TestDelegationStatusRequiresHostAndStrictArguments(t *testing.T) {
 	}
 }
 
+// TestDelegationToolsSurfaceRunIDUnderTheDocumentedKey pins the model-facing
+// side of run identity: the service reports the subagent run id under
+// delegation.RunIDMetadataKey, and both tools hand that key to the model
+// unchanged. A rename or drop here would leave the run unaddressable in
+// async mode, where Response.ID carries the delegation id instead.
+func TestDelegationToolsSurfaceRunIDUnderTheDocumentedKey(t *testing.T) {
+	// Async delegate returns on acceptance; delegation_status is where the
+	// finished run's id shows up.
+	cases := []struct {
+		name     string
+		response sdkdelegation.Response
+		execute  func(service *fakeService) (message.Content, error)
+	}{
+		{
+			name: "delegate",
+			response: sdkdelegation.Response{
+				ID: "job-1", Status: sdkdelegation.StatusAccepted,
+				Metadata: map[string]string{sdkdelegation.RunIDMetadataKey: "run-1"},
+			},
+			execute: func(service *fakeService) (message.Content, error) {
+				return tooldelegation.NewDelegate(&fakeDirectory{}).Execute(serviceContext(service),
+					`{"mode":"async","target":"billing","input":"refund"}`)
+			},
+		},
+		{
+			name: "delegation_status",
+			response: sdkdelegation.Response{
+				ID: "job-1", Status: sdkdelegation.StatusSucceeded, Output: "done",
+				Metadata: map[string]string{sdkdelegation.RunIDMetadataKey: "run-1"},
+			},
+			execute: func(service *fakeService) (message.Content, error) {
+				return tooldelegation.NewStatus().Execute(serviceContext(service),
+					`{"delegation_id":"job-1"}`)
+			},
+		},
+	}
+	for _, tc := range cases {
+		response := tc.response
+		service := &fakeService{
+			delegate: func(sdkdelegation.Request) (sdkdelegation.Response, error) {
+				return response, nil
+			},
+			get: func(string) (sdkdelegation.Response, error) {
+				return response, nil
+			},
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := tc.execute(service)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			var got struct {
+				DelegationID string            `json:"delegation_id"`
+				Metadata     map[string]string `json:"metadata"`
+			}
+			if err := json.Unmarshal(dataJSON(t, output), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.DelegationID != "job-1" {
+				t.Fatalf("delegation_id = %q, want the delegation id, not the run id", got.DelegationID)
+			}
+			if runID := got.Metadata[sdkdelegation.RunIDMetadataKey]; runID != "run-1" {
+				t.Fatalf("metadata = %#v, want %s=run-1", got.Metadata, sdkdelegation.RunIDMetadataKey)
+			}
+		})
+	}
+}
+
 func assertTargetEnum(t *testing.T, definition message.ToolDefinition, want []string) {
 	t.Helper()
 	var schema struct {

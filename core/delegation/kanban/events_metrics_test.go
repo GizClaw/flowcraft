@@ -8,6 +8,7 @@ import (
 	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/delegation/kanban"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -144,7 +145,7 @@ func dimensionsMatch(
 	producerID, producerOK := attributes.Value(kanban.AttrKanbanProducerID)
 	targetID, targetOK := attributes.Value(kanban.AttrKanbanTargetAgentID)
 	_, cardIDPresent := attributes.Value("kanban.card.id")
-	_, delegationIDPresent := attributes.Value("delegation.id")
+	_, delegationIDPresent := attributes.Value(telemetry.AttrDelegationID)
 	return !cardIDPresent && !delegationIDPresent && producerOK && targetOK &&
 		producerID.AsString() == producer &&
 		targetID.AsString() == target

@@ -18,6 +18,10 @@ const (
 	// CallIDMetadataKey carries the delegate tool call id that
 	// started the delegation.
 	CallIDMetadataKey = "delegation.call_id"
+	// SessionIDMetadataKey carries the subagent session context id, so
+	// boards and resume tooling can reach the conversation the work
+	// ran in.
+	SessionIDMetadataKey = "delegation.session_id"
 	// RunIDMetadataKey carries the delegated run's own run id on every
 	// terminal response. Sync responses also expose it as Response.ID;
 	// async responses use the delegation id there, so this key is the

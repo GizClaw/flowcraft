@@ -32,6 +32,7 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMRequestID, "llm.request.id"},
 		{AttrLLMResponseID, "llm.response.id"},
 		{AttrConversationID, "conversation.id"},
+		{AttrDelegationID, "delegation.id"},
 		{AttrDelegationTarget, "delegation.target"},
 		{AttrDelegationMode, "delegation.mode"},
 		{AttrDelegationDepth, "delegation.depth"},
@@ -59,6 +60,7 @@ func TestAttrConstants_Unique(t *testing.T) {
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
 		AttrLLMRequestID, AttrLLMResponseID,
 		AttrConversationID, AttrErrorMessage, AttrErrorCause,
+		AttrDelegationID,
 		AttrDelegationTarget, AttrDelegationMode,
 		AttrDelegationDepth, AttrDelegationCaller,
 	}
