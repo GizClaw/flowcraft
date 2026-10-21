@@ -174,6 +174,75 @@ func TestUsageValidate(t *testing.T) {
 	}
 }
 
+// A modality breakdown is a subset of the total it breaks down. Under-reporting
+// is what a driver does when a provider names only some modalities (OpenAI
+// reports audio tokens, not text), so it must stay valid; over-reporting is a
+// contradiction the totals rule cannot catch on its own.
+func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage Usage
+		want  string
+	}{
+		{
+			"input sum equals the prompt total",
+			Usage{
+				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
+				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityText, Tokens: 8},
+					{Modality: ModalityAudio, Tokens: 2},
+				}},
+			},
+			"",
+		},
+		{
+			"input sum below the prompt total stays valid",
+			Usage{
+				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
+				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityAudio, Tokens: 2},
+				}},
+			},
+			"",
+		},
+		{
+			"input sum above the prompt total",
+			Usage{
+				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
+				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityText, Tokens: 9},
+					{Modality: ModalityAudio, Tokens: 2},
+				}},
+			},
+			"input modality tokens total 11 exceeds input tokens 10",
+		},
+		{
+			"output sum above the completion total",
+			Usage{
+				InputTokens: 1, OutputTokens: 3, TotalTokens: 4,
+				Output: OutputTokenUsage{ByModality: []ModalityTokenUsage{
+					{Modality: ModalityAudio, Tokens: 4},
+				}},
+			},
+			"output modality tokens total 4 exceeds output tokens 3",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.usage.Validate()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("Validate rejected %+v: %v", test.usage, err)
+				}
+				return
+			}
+			if err == nil || !contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to mention %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestUsageValidateSkipsTheZeroModel(t *testing.T) {
 	// A reporter that only knows token counts leaves the envelope zero, and a
 	// zero ModelRef means "not reported" rather than "invalid".

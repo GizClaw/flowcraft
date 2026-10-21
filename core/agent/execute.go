@@ -388,9 +388,11 @@ func (r *runState) commitView(res *Result, fin runFinalizer) (*Result, *Result, 
 	return &projected, nil, nil
 }
 
-// runFinalizer ends a run the one way every failure path must end it:
-// uncommitted, with the reason recorded, the observers told the run is
-// over, and the infrastructure failure logged.
+// runFinalizer ends a run the one way every failure path after the seed
+// must end it: uncommitted, with the reason recorded, the observers told
+// the run is over, and the infrastructure failure logged. A seed failure
+// is the one exception — the run never started, so no observer saw it
+// begin (see Observer).
 type runFinalizer struct {
 	ctx context.Context
 	id  Identity

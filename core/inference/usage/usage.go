@@ -18,10 +18,11 @@
 //
 // Every optional counter is a pointer, so "not reported" and "reported zero"
 // stay distinguishable end to end. Totals are inclusive prompt counts: the
-// cache buckets are disjoint subsets of Input, not additions to it. Validate is
-// the single consistency rule set (totals against their parts, modalities
-// against their total) and runs where a response is validated, not on every
-// read.
+// cache buckets are disjoint subsets of Input, not additions to it, and a
+// modality breakdown is a subset of its total as well — under-reporting means
+// the rest is unattributed, over-reporting is a contradiction. Validate is the
+// single consistency rule set (totals against their parts, modalities against
+// their total) and runs where a response is validated, not on every read.
 //
 // # Boundary
 //
@@ -326,7 +327,7 @@ func (u Usage) Validate() error {
 			return err
 		}
 	}
-	if err := u.Input.Validate(); err != nil {
+	if err := u.Input.ValidateFor(u.InputTokens); err != nil {
 		return fmt.Errorf("input token usage: %w", err)
 	}
 	if err := u.Output.ValidateFor(u.OutputTokens); err != nil {
@@ -346,7 +347,9 @@ func (u Usage) Validate() error {
 	return nil
 }
 
-func (u InputTokenUsage) Validate() error {
+// ValidateFor checks the input breakdown against the prompt total it breaks
+// down.
+func (u InputTokenUsage) ValidateFor(inputTokens int64) error {
 	if err := validateOptionalCount("cache read", u.CacheReadTokens); err != nil {
 		return err
 	}
@@ -357,6 +360,9 @@ func (u InputTokenUsage) Validate() error {
 		return err
 	}
 	if err := validateModalities(u.ByModality); err != nil {
+		return err
+	}
+	if err := validateModalityTotal("input", u.ByModality, inputTokens); err != nil {
 		return err
 	}
 	var cacheWriteTotal int64
@@ -408,7 +414,26 @@ func (u OutputTokenUsage) ValidateFor(outputTokens int64) error {
 			return fmt.Errorf("reasoning accounting is required")
 		}
 	}
-	return validateModalities(u.ByModality)
+	if err := validateModalities(u.ByModality); err != nil {
+		return err
+	}
+	return validateModalityTotal("output", u.ByModality, outputTokens)
+}
+
+// validateModalityTotal checks a per-modality breakdown against the total it
+// breaks down. Drivers attribute only the modalities a provider names, so a
+// sum below the total means the rest went unattributed; a sum above it is a
+// contradiction, since a subset cannot hold more than the whole.
+func validateModalityTotal(kind string, usages []ModalityTokenUsage, total int64) error {
+	var sum int64
+	for _, usage := range usages {
+		sum += usage.Tokens
+	}
+	if sum > total {
+		return fmt.Errorf(
+			"%s modality tokens total %d exceeds %s tokens %d", kind, sum, kind, total)
+	}
+	return nil
 }
 
 func validateModalities(usages []ModalityTokenUsage) error {

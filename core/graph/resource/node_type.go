@@ -12,14 +12,13 @@ import (
 	res "github.com/GizClaw/flowcraft/core/resource"
 )
 
-// Custom graph node types as deployment resources.
-
 // NodeTypeKind is the deployment resource kind of a custom graph node
-// type. Factory values implement [coregraph.NodeTypeRegistrar]; the
-// graph engine factory registers every "node_type" dep before Build,
-// so custom node types participate in the resource DAG like any other
-// collaborator — they can declare their own deps (runtime, workspace,
-// tools, ...), be shared across agents, and are built exactly once.
+// type: a graph node type is a deployment resource. Factory values
+// implement [coregraph.NodeTypeRegistrar]; the graph engine factory
+// registers every "node_type" dep before Build, so custom node types
+// participate in the resource DAG like any other collaborator — they can
+// declare their own deps (runtime, workspace, tools, ...), be shared
+// across agents, and are built exactly once.
 const NodeTypeKind = "graph.NodeType"
 
 // ScriptNodeTypeSettings is the strict settings subtree of the

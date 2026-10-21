@@ -67,7 +67,8 @@ func TestSafeRun_RecoversPanic(t *testing.T) {
 			t.Errorf("safeRun let panic escape: %v", r)
 		}
 	}()
-	safeRun(context.Background(), func() { panic("boom") })
+	safeRun(context.Background(), Identity{AgentID: "a", RunID: "r"}, "OnRunStart",
+		func() { panic("boom") })
 }
 
 func TestMultiObserver_OnePanic_NextStillRuns(t *testing.T) {
