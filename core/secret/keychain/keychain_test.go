@@ -194,12 +194,26 @@ func TestNewStoreSharesOneBackendPerDir(t *testing.T) {
 		t.Fatal("manager opened a second backend over the same directory")
 	}
 	// A second spelling of one directory is the same store, not another one.
-	alias, err := NewStore(filepath.Join(dir, "."))
+	alias, err := NewStore(dir + string(filepath.Separator) + ".")
 	if err != nil {
 		t.Fatalf("NewStore(alias): %v", err)
 	}
 	if alias.backend != deployed.backend {
 		t.Fatal("a second spelling of the directory opened a second backend")
+	}
+	// A symlink is the same directory too, not another store with another
+	// lock: the spelling a document uses is not what the store is keyed by.
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Logf("symlink unavailable, skipping that leg: %v", err)
+	} else {
+		linked, err := NewStore(link)
+		if err != nil {
+			t.Fatalf("NewStore(symlink): %v", err)
+		}
+		if linked.backend != deployed.backend {
+			t.Fatal("a symlinked spelling of the directory opened a second backend")
+		}
 	}
 
 	const accounts = 16
@@ -225,6 +239,38 @@ func TestNewStoreSharesOneBackendPerDir(t *testing.T) {
 	}
 	if len(indexed) != accounts {
 		t.Fatalf("index holds %d accounts, want %d: %v", len(indexed), accounts, indexed)
+	}
+}
+
+// The key file on disk is the source of truth. When a store is reset under a
+// running process — directory and key removed, opened again — the process
+// keeps the same backend, and that backend must seal with the key the
+// directory now holds, or the next process finds files it cannot open.
+func TestNewStoreAdoptsTheKeyOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := NewStore(dir); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, encKeyFile)); err != nil {
+		t.Fatalf("remove key file: %v", err)
+	}
+	reopened, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore after the reset: %v", err)
+	}
+	if err := reopened.Set(context.Background(), "acct", "value"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// What the next process builds: a backend over the key on disk.
+	restarted, err := loadOrCreateKey(dir)
+	if err != nil {
+		t.Fatalf("loadOrCreateKey: %v", err)
+	}
+	got, found, err := (&fileBackend{dir: dir, key: restarted}).Get(
+		context.Background(), "acct")
+	if err != nil || !found || got != "value" {
+		t.Fatalf("Get from a fresh backend = (%q, %v, %v), "+
+			"want the value sealed under the key the directory holds", got, found, err)
 	}
 }
 

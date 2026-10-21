@@ -118,10 +118,18 @@ func NewStore(dir string) (Store, error) {
 		return Store{}, fmt.Errorf(
 			"secret keychain store: resolve store dir: %w", err)
 	}
-	dir = abs
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return Store{}, fmt.Errorf(
 			"secret keychain store: create store dir: %w", err)
+	}
+	// The directory a store is keyed by is the one the filesystem ends up at,
+	// not the spelling the document used: a deployment that reaches it through
+	// a symlink (or through /var on a machine where that is /private/var) is
+	// otherwise a second store with a second lock over the same files.
+	dir, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return Store{}, fmt.Errorf(
+			"secret keychain store: resolve store dir: %w", err)
 	}
 	// MkdirAll is a no-op on an existing directory, so the mode is
 	// re-asserted: the store's promise is 0700, however the directory
@@ -150,10 +158,17 @@ var storeBackends = struct {
 }{byDirPath: make(map[string]*fileBackend)}
 
 // sharedBackend returns the backend for dir, opening one on first use.
+//
+// A directory that already has a backend has its key re-read, not ignored:
+// the key file on disk is the source of truth, so a store that was reset,
+// restored from a backup or re-keyed while this process was running must not
+// keep sealing with the key it remembers — the next process reads the file,
+// and would not be able to open what this one wrote.
 func sharedBackend(dir string, key []byte) *fileBackend {
 	storeBackends.mu.Lock()
 	defer storeBackends.mu.Unlock()
 	if backend, ok := storeBackends.byDirPath[dir]; ok {
+		backend.setKey(key)
 		return backend
 	}
 	backend := &fileBackend{dir: dir, key: key}
@@ -285,7 +300,13 @@ func (m *Manager) DeletePrefix(ctx context.Context, prefix string) error {
 // management is an app-side, single-writer surface.
 type fileBackend struct {
 	dir string
-	key []byte
+
+	// keyMu guards key, which is replaced when the directory is reopened
+	// after its key file changed (see sharedBackend). Readers take the key
+	// once and use that copy for the whole operation, so a seal and the
+	// index write it belongs to cannot straddle two keys.
+	keyMu sync.RWMutex
+	key   []byte
 
 	mu sync.Mutex // guards the accounts.json read-modify-write
 }
@@ -295,7 +316,21 @@ type fileBackend struct {
 const accountsFile = "accounts.json"
 
 func (f *fileBackend) Available() bool {
-	return f != nil && f.dir != "" && len(f.key) == encKeyLen
+	return f != nil && f.dir != "" && len(f.keyBytes()) == encKeyLen
+}
+
+// keyBytes returns the backend's current key.
+func (f *fileBackend) keyBytes() []byte {
+	f.keyMu.RLock()
+	defer f.keyMu.RUnlock()
+	return f.key
+}
+
+// setKey replaces the backend's key with the one the directory holds now.
+func (f *fileBackend) setKey(key []byte) {
+	f.keyMu.Lock()
+	defer f.keyMu.Unlock()
+	f.key = key
 }
 
 func (f *fileBackend) path(name string) string {
@@ -462,10 +497,11 @@ func (f *fileBackend) DeletePrefix(_ context.Context, prefix string) error {
 // handing back the wrong credential. A missing key is an error:
 // plaintext writes are never allowed.
 func (f *fileBackend) seal(name string, value []byte) ([]byte, error) {
-	if len(f.key) == 0 {
+	key := f.keyBytes()
+	if len(key) == 0 {
 		return nil, errors.New("secret keychain store: no encryption key")
 	}
-	gcm, err := newGCM(f.key)
+	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
@@ -493,11 +529,12 @@ func (f *fileBackend) seal(name string, value []byte) ([]byte, error) {
 // never updated again keeps that gap; migrating one means a Set per
 // account (a settings UI that saves unchanged values is enough).
 func (f *fileBackend) decrypt(name string, raw []byte) ([]byte, error) {
-	if len(f.key) == 0 {
+	key := f.keyBytes()
+	if len(key) == 0 {
 		return nil, errors.New("secret keychain store: no encryption key")
 	}
 	body := raw[len(encMagic):]
-	gcm, err := newGCM(f.key)
+	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
