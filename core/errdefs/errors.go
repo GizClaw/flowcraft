@@ -21,6 +21,12 @@
 // NotFoundf("fetch: %w", Timeout(err)) is still matched by IsTimeout.
 // errorlint cannot see inside these helpers, so this stays a review convention
 // rather than a lint-enforced one.
+//
+// The other blind spot is the shape that leaves the package entirely:
+// errors.New(err.Error()) rebuilds an error from its message, and nothing
+// errors.Is or errors.As could have matched survives it. That one is gated by
+// TestNoErrorRebuiltFromMessage, which reads the module's own source, and it
+// takes no second form: an error that has to be re-described keeps a %w.
 package errdefs
 
 import (

@@ -9,7 +9,15 @@
 # future additions are deliberate changes. errorlint is the one addition beyond
 # that set: error wrapping is a contract here — a caller routes on
 # errors.Is / errors.As — so a `==` comparison, a bare type assertion, or a
-# non-wrapping %v on an error is a defect rather than a style choice.
+# non-wrapping %v on an error (in fmt.Errorf) is a defect rather than a style
+# choice.
+#
+# Two wrapping shapes stay outside this file, and the comments there say so:
+# the classified constructors in core/errdefs take a format string, which
+# errorlint cannot read inside, and errors.New(err.Error()) is an ordinary
+# errors.New with a string argument. The first is a review convention
+# (core/errdefs package doc); the second is gated by
+# core/errdefs/wrap_contract_test.go, which scans the module for it.
 version: "2"
 
 run:
