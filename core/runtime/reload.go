@@ -132,6 +132,9 @@ type ReloadResult struct {
 //  5. Re-binds every dynamic agent against the new result; any failure
 //     aborts the whole reload.
 //  6. Drains sessions of deployed agents removed by the new document.
+//     A drain is not reversible: once those sessions are closed, an
+//     abort later in the reload reopens the agent name but cannot bring
+//     the sessions back. The failure event names what was lost.
 //  7. Atomically swaps the manager epoch and the runtime's current
 //     generation; the old generation retires and closes once its
 //     in-flight turns drain.
@@ -226,6 +229,10 @@ type reloadAttempt struct {
 	hostDecorator       HostFactoryDecorator
 	resultHostDecorator ResultHostFactoryDecorator
 	effective           []ExternalResource
+	// tunables is what the generation commits as the manager's session
+	// limits. It is applied by commit, not by the drain: a reload that
+	// aborts must leave the running generation's tunables alone.
+	tunables session.Tunables
 
 	// Settled by build, bind, resolveValues and resolveCatalog: the new
 	// deployment and the values the new generation serves.
@@ -309,6 +316,14 @@ func (a *reloadAttempt) prepare() error {
 	a.resultHostDecorator = a.r.resultHostDecorator
 	if a.override.replaceResult {
 		a.resultHostDecorator = a.override.resultDecorator
+	}
+	a.tunables = session.Tunables{
+		IdleTimeout:         a.cfg.Sessions.IdleTimeout,
+		SinkBuffer:          a.cfg.Sessions.SinkBuffer,
+		SpeculativeEvents:   a.cfg.Sessions.SpeculativeBufferEvents,
+		SpeculativeBytes:    a.cfg.Sessions.SpeculativeBufferBytes,
+		DeliveryConcurrency: a.cfg.Sessions.DeliveryConcurrency,
+		MaxSessions:         a.cfg.Sessions.MaxSessions,
 	}
 	effective, err := effectiveExternalResources(a.cfg.ExternalDeps, a.injected, true)
 	if err != nil {
@@ -498,8 +513,13 @@ func (a *reloadAttempt) rebindAgent(name string) error {
 }
 
 // drainRemovedAgents drains the sessions of deployed agents the new document
-// removes, clears tombstones for the agents that remain (or are re-added),
-// and applies the new session tunables.
+// removes and clears tombstones for the agents that remain (or are
+// re-added).
+//
+// Draining closes sessions, which no later phase can undo: the reload's
+// abort reopens the agent name so new sessions can open, but the history
+// the drained sessions held is gone. The new tunables are therefore not
+// applied here — see commit.
 func (a *reloadAttempt) drainRemovedAgents() error {
 	for _, name := range a.r.result.AgentNames() {
 		if _, still := a.doc.Agents[name]; still {
@@ -514,17 +534,6 @@ func (a *reloadAttempt) drainRemovedAgents() error {
 	}
 	for name := range a.doc.Agents {
 		a.r.manager.ReopenAgent(name)
-	}
-	if err := a.r.manager.UpdateTunables(session.Tunables{
-		IdleTimeout:         a.cfg.Sessions.IdleTimeout,
-		SinkBuffer:          a.cfg.Sessions.SinkBuffer,
-		SpeculativeEvents:   a.cfg.Sessions.SpeculativeBufferEvents,
-		SpeculativeBytes:    a.cfg.Sessions.SpeculativeBufferBytes,
-		DeliveryConcurrency: a.cfg.Sessions.DeliveryConcurrency,
-		MaxSessions:         a.cfg.Sessions.MaxSessions,
-	}); err != nil {
-		a.closeRebound()
-		return err
 	}
 	return nil
 }
@@ -585,6 +594,14 @@ func (a *reloadAttempt) commit() error {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
 		a.rollbackTo(oldGen, "runtime reload: remove new bus after swap failure")
 		return errdefs.Internalf("runtime reload swap: %w", err)
+	}
+	// The new generation's session limits take effect with the swap, so an
+	// aborted reload never leaves the running generation running under the
+	// document that failed. UpdateTunables validates before it applies, so a
+	// rejected value leaves the manager untouched.
+	if err := a.r.manager.UpdateTunables(a.tunables); err != nil {
+		a.rollbackTo(oldGen, "runtime reload: remove new bus after tunables failure")
+		return err
 	}
 
 	a.r.current.Store(newGen)
@@ -704,9 +721,22 @@ func (a *reloadAttempt) reject(err error) error {
 // abort unwinds an attempt whose deployment was already built: the agents
 // whose sessions it tried to drain reopen, the partial deployment closes, and
 // the failure is reported as an abort.
+//
+// Reopening an agent name is all that is left to undo. A session the drain
+// had already closed is gone — the drain is a close, not a lease — so each
+// drained agent is named in the log and in the failure event, which is the
+// only notice an operator gets that conversations were lost.
 func (a *reloadAttempt) abort(err error) error {
 	for _, name := range a.drainAttempted {
 		a.r.manager.ReopenAgent(name)
+	}
+	drained := slices.Clone(a.drained)
+	sort.Strings(drained)
+	for _, name := range drained {
+		telemetry.Warn(a.ctx,
+			"runtime reload: drained sessions are not restored by the abort",
+			attribute.String(telemetry.AttrAgentID, name),
+			attribute.Int64("runtime.generation.id", int64(a.newGenID)))
 	}
 	if a.result != nil {
 		if closeErr := a.result.Close(); closeErr != nil {
@@ -716,7 +746,11 @@ func (a *reloadAttempt) abort(err error) error {
 		}
 	}
 	a.r.publishLifecycleEvent(a.ctx, SubjectRuntimeRebuildFailed(),
-		RuntimeRebuildEvent{GenerationID: a.newGenID, Error: err.Error()})
+		RuntimeRebuildEvent{
+			GenerationID:  a.newGenID,
+			DrainedAgents: drained,
+			Error:         err.Error(),
+		})
 	telemetry.Error(a.ctx, "runtime reload aborted",
 		attribute.Int64("runtime.generation.id", int64(a.newGenID)),
 		attribute.String(telemetry.AttrErrorMessage, err.Error()))
