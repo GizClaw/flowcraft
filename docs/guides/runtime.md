@@ -422,8 +422,10 @@ Semantics:
   sessions back. The failure is reported as a warning per drained agent, and
   `drained_agents` on the `.failed` event names them.
 - The new `sessions` limits take effect with the swap, not with the drain:
-  a reload that aborts leaves the serving generation under its own
-  tunables.
+  they are validated while the document is parsed and applied in the
+  commit just before the swap, so a bad `sessions` block fails before
+  anything is drained, and a reload that aborts leaves the serving
+  generation under its own tunables.
 - Progress is published as `runtime.rebuild.started` / `.completed` /
   `.failed` events (`SubjectRuntimeRebuild*`, subscribe with
   `PatternRuntimeRebuild()`); the `RuntimeRebuildEvent` payload carries

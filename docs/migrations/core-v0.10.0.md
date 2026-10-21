@@ -28,8 +28,18 @@ tools:
 The middlewares that stay opt-in are unchanged (`telemetry`, `timeout`,
 `concurrency`, `result_limit`, `truncate`); only `recover` changed sides.
 
-In Go, `middleware.RecoverSettings.Enabled` is now `*bool`, so \"not
-mentioned\" and \"explicitly false\" are distinguishable. A literal that
+The block itself is optional too: an assembly document with no `middlewares`
+key now gets the default chain, where it used to get an empty one. So the
+recover net and the non-text part budget are in place whether the document
+mentions them or not.
+
+Opting out of `recover` turns off the reporting half, not the safety net:
+`tool.Executor.Execute` still converts a panic escaping the chain into an
+`IsError` result. A document that sets `enabled: false` loses the tool-name
+attribution, the warning and the stack — not the process's survival.
+
+In Go, `middleware.RecoverSettings.Enabled` is now `*bool`, so "not
+mentioned" and "explicitly false" are distinguishable. A literal that
 compiled before needs a pointer:
 
 ```go
@@ -71,21 +81,29 @@ their read-modify-write and drop an index entry, leaving a sealed file nothing
 could enumerate.
 
 Every store opened over one directory in a process now shares one backend and
-one lock, and `NewStore` resolves its directory to an absolute path first, so
-two spellings of one directory are one store. Cross-process writers are still
-not serialized: management remains an app-side, single-writer surface.
+one lock, and `NewStore` resolves its directory to an absolute path with
+symlinks resolved first, so two spellings of one directory are one store.
 
-## Reload applies session limits with the swap
+Opening a directory that already has a store re-reads its key file rather than
+keeping the key the process remembers: the key on disk is the source of truth,
+and a store that was reset, restored from a backup or re-keyed under a running
+process must write files the next process can open. Cross-process writers are
+still not serialized: management remains an app-side, single-writer surface.
 
-`Runtime.Reload` now applies the new `sessions` tunables after the epoch swap,
-not while draining the agents the document removed. A reload that aborts
-leaves the serving generation under its own limits.
+## Reload applies session limits as part of the commit
+
+`Runtime.Reload` now applies the new `sessions` tunables in the commit, just
+before the epoch swap, instead of while draining the agents the document
+removed. A reload that aborts leaves the serving generation under its own
+limits, and the values are validated in the phase that only reads the
+document, so a bad `sessions` block fails before anything is drained.
 
 A drain itself is still not reversible — closing those sessions is what
 draining means — so an abort after a successful drain reopens the agent names
 but not the conversations. That was always true; it is now reported: a
 warning per drained agent, and `drained_agents` on the
-`runtime.rebuild.failed` event.
+`runtime.rebuild.failed` event. A drain that fails while closing sessions
+still counts as drained, because those conversations are gone either way.
 
 ## `InputTokenUsage.ValidateFor`
 

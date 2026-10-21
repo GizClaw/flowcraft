@@ -645,11 +645,13 @@ tools:
 ```
 
 The `dynamic` subtree takes the same keys as the memory sample above
-(`budget`, `discovery`, ...). Each middleware entry is optional; absent
-entries are skipped, except that `recover` runs unless a document sets
-`enabled: false` — a panicking tool is a bug in that tool, not a reason to
-take the host down, so it converts tool panics into error results by
-default. `telemetry.enabled` records an
+(`budget`, `discovery`, ...). The `middlewares` block itself is optional —
+a document without it gets the default chain, not an empty one. Each
+middleware entry is optional; absent entries are skipped, except that
+`recover` runs unless a document sets `enabled: false` — a panicking tool
+is a bug in that tool, not a reason to take the host down, so it converts
+tool panics into error results by default; the executor still converts a
+panic escaping the chain either way. `telemetry.enabled` records an
 OpenTelemetry span plus executions/duration/error metrics and a warning
 log per call, `timeout.default` bounds each call (calls that already
 carry a deadline pass through), and `concurrency.limit` caps in-flight
