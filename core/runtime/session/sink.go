@@ -128,6 +128,15 @@ func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 	result := make(chan error, 1)
 	go func() {
 		defer func() { <-s.delivery }()
+		// OnDelta is user code on a goroutine of its own: a panic here
+		// has no caller to return to, so it is reported as the delivery
+		// failure it is and the sink detaches like any other failure.
+		defer func() {
+			if rv := recover(); rv != nil {
+				result <- fmt.Errorf("runtime session: sink %q OnDelta panicked: %v",
+					s.spec.ID, rv)
+			}
+		}()
 		result <- s.spec.Sink.OnDelta(ctx, item.env, item.delta)
 	}()
 

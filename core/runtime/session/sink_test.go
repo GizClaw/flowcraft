@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,36 @@ func TestQueuedSinkDetachEnqueueRaceCallsOnDetachOnce(t *testing.T) {
 	session.mu.Unlock()
 	if got != 0 {
 		t.Fatalf("attached sinks = %d, want 0", got)
+	}
+}
+
+// OnDelta is user code that runs on a goroutine of its own. A panic in it
+// must surface as the delivery failure it is — the sink detaches, the run
+// keeps going — instead of taking the host process down.
+func TestQueuedSinkPanickingOnDeltaDetaches(t *testing.T) {
+	session := &Session{}
+	session.changeActivity(activitySink, 1)
+	detached := make(chan error, 1)
+	sink := newQueuedSink(session, "run", SinkSpec{
+		ID: "panics",
+		Sink: agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+			panic("sink is broken")
+		}),
+		OnDetach:  func(err error) { detached <- err },
+		QueueSize: 4,
+	}, 4)
+	sink.start()
+
+	if err := sink.OnDelta(context.Background(), event.Envelope{}, agent.StreamDeltaPayload{}); err != nil {
+		t.Fatalf("OnDelta: %v", err)
+	}
+	select {
+	case err := <-detached:
+		if err == nil || !strings.Contains(err.Error(), "panicked") {
+			t.Fatalf("detach reason = %v, want the recovered panic", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sink did not detach after a panicking OnDelta")
 	}
 }
 

@@ -13,7 +13,9 @@
 //
 //	  - Recover must be outermost: it is what keeps a panicking tool from
 //	    escaping [tool.Dispatcher.ExecuteAll]'s fan-out goroutine and taking the
-//	    process down.
+//	    process down. It is the one entry [FromSettings] installs unless the
+//	    document disables it: a tool is foreign code, and its panic is not the
+//	    host's to die from.
 //	  - ResultLimit sits outside Timeout so the timeout's own error result is
 //	    bounded like any other result.
 //	  - Truncate sits inside ResultLimit: it persists the tool's full output and

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -194,8 +195,8 @@ func TestFromSettings_HostileValues(t *testing.T) {
 		wantErr  bool
 	}{
 		{"empty settings", Settings{}, false},
-		{"recover disabled", Settings{Recover: &RecoverSettings{Enabled: false}}, false},
-		{"recover enabled", Settings{Recover: &RecoverSettings{Enabled: true}}, false},
+		{"recover disabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(false)}}, false},
+		{"recover enabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(true)}}, false},
 		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: false}}, false},
 		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: true}}, false},
 		{
@@ -331,6 +332,56 @@ func TestFromSettings_HostileValues(t *testing.T) {
 		})
 	}
 }
+
+// TestFromSettings_RecoverDefaultsOn pins the one entry in the chain a
+// document has to opt out of. Recovery is the difference between a broken
+// third-party tool and a dead host process, so the zero value — an absent
+// block, an empty block, an absent enabled field — installs it, and only an
+// explicit false goes without.
+func TestFromSettings_RecoverDefaultsOn(t *testing.T) {
+	tests := []struct {
+		name        string
+		settings    Settings
+		wantHandled bool
+	}{
+		{"absent block", Settings{}, true},
+		{"empty block", Settings{Recover: &RecoverSettings{}}, true},
+		{"explicit true", Settings{Recover: &RecoverSettings{Enabled: boolPtr(true)}}, true},
+		{"explicit false", Settings{Recover: &RecoverSettings{Enabled: boolPtr(false)}}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mws, err := FromSettings(test.settings)
+			if err != nil {
+				t.Fatalf("FromSettings: %v", err)
+			}
+			// The chain is dispatched directly: Executor.Execute has a
+			// recovery net of its own, which would hide whether the
+			// settings installed the middleware.
+			escaped := panicThrough(mws)
+			if got := escaped == nil; got != test.wantHandled {
+				t.Fatalf("panic escaped = %v (%v), want handled = %v",
+					escaped, escaped, test.wantHandled)
+			}
+		})
+	}
+}
+
+// panicThrough dispatches one call through mws and reports the panic that
+// escaped, if any.
+func panicThrough(mws []tool.Middleware) (escaped any) {
+	dispatch := tool.Dispatch(func(context.Context, message.ToolCall) message.ToolResult {
+		panic("tool is broken")
+	})
+	for _, mw := range slices.Backward(mws) {
+		dispatch = mw(dispatch)
+	}
+	defer func() { escaped = recover() }()
+	dispatch(context.Background(), message.ToolCall{ID: "call", Name: "boom"})
+	return escaped
+}
+
+func boolPtr(value bool) *bool { return &value }
 
 // fromSettingsRecovering calls FromSettings and returns an escaping panic as a
 // value, so a constructor that panics on a hostile setting fails its table row

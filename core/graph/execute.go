@@ -443,6 +443,23 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// A branch runs a node handler — user script, a tool, a
+			// host callback — on a goroutine of its own, so a panic has
+			// no caller to return to. It fails the branch instead of
+			// the process; the wave-level failure path publishes the
+			// terminal this branch never reached.
+			defer func() {
+				if rv := recover(); rv != nil {
+					branchErr := fmt.Errorf(
+						"graph %q: parallel branch %q panicked: %v", g.name, id, rv)
+					results[i] = BranchResult{NodeID: id, Err: branchErr}
+					telemetry.Error(ctx, "graph parallel branch panicked",
+						attribute.String(telemetry.AttrGraphName, g.name),
+						attribute.String(telemetry.AttrRunID, info.RunID),
+						attribute.String("graph.branch.id", id),
+						attribute.String(telemetry.AttrErrorMessage, branchErr.Error()))
+				}
+			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
