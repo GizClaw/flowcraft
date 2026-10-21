@@ -158,7 +158,7 @@ func buildNodeSlot(nd NodeDefinition, reg *Registry) (*nodeSlot, error) {
 	switch {
 	case !ok && reg.fallback == nil:
 		return nil, errdefs.NotFoundf(
-			"graph: node %q: unregistered type %q (and no fallback handler)", nd.ID, nd.Type)
+			"graph: node %q: unregistered type %q%s", nd.ID, nd.Type, reg.typeNamesHint())
 	case !ok:
 		slot.fallback = reg.fallback
 	default:
@@ -166,6 +166,11 @@ func buildNodeSlot(nd NodeDefinition, reg *Registry) (*nodeSlot, error) {
 		slot.invoke = et.invoke
 		if err := checkConfigFields(nd, et); err != nil {
 			return nil, err
+		}
+		if et.validateNode != nil {
+			if err := et.validateNode(nd.ID, nd.Config); err != nil {
+				return nil, err
+			}
 		}
 		for _, r := range et.meta.Reads {
 			rr, present, err := r.resolve(nd.Type, nd.Config)

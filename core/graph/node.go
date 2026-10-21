@@ -83,6 +83,21 @@ type NodeType[C any] struct {
 	// defaults, normalisation, or validation beyond field names.
 	Decode func(json.RawMessage) (C, error)
 
+	// ValidateConfig, when set, is called once per node of this type
+	// at [Build], after the unknown-field check and before the I/O
+	// roles are resolved. It sees the node ID and the raw config with
+	// "${board:*}" references still unresolved, so it can only judge
+	// what is knowable at build time — a required field, a key that
+	// must name something the node type was wired with — and it must
+	// not evaluate references.
+	//
+	// A node type that owns a collaborator namespace (a script runtime
+	// name, a catalog tool name) uses this to fail the deployment
+	// instead of the first invocation, which is the only place that
+	// check can live once the type is supplied as a resource: the
+	// collaborators are the type's own deps, not the engine's.
+	ValidateConfig func(nodeID string, raw json.RawMessage) error
+
 	// Handler is the node's behaviour. cfg is per-invocation data —
 	// board references have already been resolved into concrete
 	// values — so handlers can stay stateless.

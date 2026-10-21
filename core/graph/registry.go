@@ -2,6 +2,7 @@ package graph
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -41,6 +42,21 @@ type NodeTypeRegistrar interface {
 	Register(*Registry) error
 }
 
+// TypeNameProvider is implemented by [NodeTypeRegistrar]s that know,
+// before Register runs, which type names they bind.
+//
+// The engine factory uses it for two diagnostics that registration
+// itself is too late and too anonymous for: two resources claiming one
+// type name are reported with both dep keys, and a graph referencing an
+// unmounted type can be told which names the mounted resources would
+// have provided. A registrar that does not implement it still works —
+// a duplicate then surfaces from [RegisterType], naming the dep key it
+// was registered from.
+type TypeNameProvider interface {
+	// NodeTypeNames returns every type name this registrar binds.
+	NodeTypeNames() []string
+}
+
 // ConfigFileRefFields is implemented by [NodeTypeRegistrar]s whose
 // node configs may carry structured source references ({"file": ...}
 // or {"embed": ...}). The graph engine factory materializes those
@@ -78,6 +94,7 @@ func RegisterType[C any](r *Registry, typeName string, nt NodeType[C]) error {
 	et := &erasedType{
 		meta:         nt.Meta,
 		configFields: configFieldNames[C](),
+		validateNode: nt.ValidateConfig,
 		decode:       func(raw json.RawMessage) (any, error) { return decode(raw) },
 		invoke: func(ec ExecutionContext, b *agent.Board, cfg any) error {
 			return nt.Handler(ec, b, cfg.(C))
@@ -122,6 +139,18 @@ func (r *Registry) TypeNames() []string {
 	return out
 }
 
+// typeNamesHint renders the "which types do exist" half of an
+// unregistered-type error. Without it a typo in a graph reads the same
+// as a node type resource that was never mounted, which are very
+// different fixes.
+func (r *Registry) typeNamesHint() string {
+	names := r.TypeNames()
+	if len(names) == 0 {
+		return " (no node type is registered; a graph node type is a graph.NodeType resource wired as a node_type dep)"
+	}
+	return fmt.Sprintf(" (registered types: %s)", strings.Join(names, ", "))
+}
+
 // erasedType is the type-erased internal form of a [NodeType]: the
 // generics exist only at registration; the kernel invokes everything
 // through this uniform shape.
@@ -130,6 +159,9 @@ type erasedType struct {
 	// configFields is the set of known JSON field names of the config
 	// struct, or nil for non-struct configs (field checks disabled).
 	configFields map[string]bool
+	// validateNode is the type's build-time config check, nil when the
+	// type declares none.
+	validateNode func(nodeID string, raw json.RawMessage) error
 	decode       func(json.RawMessage) (any, error)
 	invoke       func(ExecutionContext, *agent.Board, any) error
 }

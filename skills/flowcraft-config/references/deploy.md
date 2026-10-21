@@ -50,7 +50,7 @@ Refs have at most one slash and are validated by `core/resource`.
   engine:
     kind: agent.Engine
     impl: graph
-    deps: {inference: infer}
+    deps: {node_type.inference: node_inference}
     settings: {graph: {file: ./graphs/assistant.yaml}}
   prepare: [{type, deps, settings}]
   observe: [{type, deps, settings}]
@@ -97,15 +97,18 @@ The `hooks.*` kinds need a core release that carries `core/hooks`; on an
 older pin the strict registry lookup rejects them. `agent.ScriptBindings/chain`
 likewise needs a pin that registers it.
 
-Engine dependencies must match the graph engine's declared dep names:
-`inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`,
+The graph engine declares two dep names: `node_type` (the `graph.NodeType`
+resources the graph may reference, as `node_type` or `node_type.<suffix>`) and
 `script_bindings` (an optional `agent.ScriptBindings` resource replacing the
-script surface, or a `chain` composing several; see [graph.md](graph.md)).
+script surface, or a `chain` composing several). Everything a node calls —
+`inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime.<name>`
+— is a dep of the node *type*, not of the engine; see [graph.md](graph.md) and
+[resources.md](resources.md).
 
 ### Inference routing
 
-Declare an `inference.Router` over the assembly and wire it into the graph
-engine so inference nodes can omit `model`:
+Declare an `inference.Router` over the assembly and mount it on the inference
+node type so inference nodes can omit `model`:
 
 ```yaml
 resources:
@@ -127,6 +130,10 @@ resources:
           targets:
             - model: {id: {provider: openai, name: gpt-5.2}}
               score: {quality: 0.95}
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps: {inference: infer, router: router}
 
 agents:
   assistant:
@@ -134,7 +141,7 @@ agents:
     engine:
       kind: agent.Engine
       impl: graph
-      deps: {inference: infer, router: router}
+      deps: {node_type.inference: node_inference}
 ```
 
 Prefer routing for production deployments: the router selects per request,

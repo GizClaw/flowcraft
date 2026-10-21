@@ -75,7 +75,6 @@ The deployment-facing factory is `core/graph/resource`. Its settings subtree:
 | Key                              | Meaning                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------ |
 | `graph`                          | graph definition: literal content, `{file: ...}`, or `{embed: ...}` (required) |
-| `script_runtime_name`            | name of the `agent.ScriptRuntime` dep bound to script nodes; default `js`      |
 | `build.max_iterations`           | cap on nodes routed per `Execute`; default `100`, `0` lifts the guard          |
 | `build.timeout`                  | wall-clock bound for one `Execute` call (Go duration string, e.g. `1h`); `0` means no engine-level bound |
 | `build.run_end_publish_timeout`  | deadline for publishing terminal run events; default `5s`, must be `> 0`       |
@@ -86,13 +85,20 @@ The deployment-facing factory is `core/graph/resource`. Its settings subtree:
 | `build.parallel.max_branches`    | max total branches per wave                                                    |
 | `build.parallel.merge_strategy`  | `first_write_wins` or `last_write_wins`                                        |
 
-Engine deps are derived from the definition: an inference node needs the
-`inference` dep (explicit `model`) and/or `router` dep (no `model`), a tool
-node needs `tools`, a script node needs `script_runtime`. `workspace` and
-`sandbox` are optional and unlock the script `fs` / `shell` globals (below).
-The optional `script_bindings` dep replaces the engine-level script surface;
-see "Script bindings" below — to keep the standard surface and extend it,
-compose it with `impl: chain` of the same kind.
+The engine has two deps and no others:
+
+| Dep               | Meaning                                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `node_type`       | the `graph.NodeType` resources the graph may reference, as `node_type` or `node_type.<suffix>` (`Many`, optional) |
+| `script_bindings` | an `agent.ScriptBindings` provider replacing the script surface (optional)                                        |
+
+Every collaborator a node actually calls — the inference assembly or router,
+the tool assembly, the script runtime, the workspace, the sandbox — is a dep of
+the *node type*, not of the engine (see "Node types" below). A type that lacks
+one of them fails the build, naming the node that needed it. The optional
+`script_bindings` dep replaces the engine-level script surface; see "Script
+bindings" below — to keep the standard surface and extend it, compose it with
+`impl: chain` of the same kind.
 
 ### Budgets and timeouts
 
@@ -147,8 +153,10 @@ each one as a `graph build warning`.
 
 ## Script runtimes
 
-Script nodes run on a bound `agent.ScriptRuntime` resource named by the
-engine's `script_runtime_name` (default `js`). The core runtimes:
+Script nodes run on an `agent.ScriptRuntime` resource mounted on the node type
+that provides them, under `script_runtime.<name>`; a node's `config.runtime`
+selects one by that name, so a single type can serve a JS node and a Lua node
+of the same graph. The core runtimes:
 
 ```yaml
 resources:
@@ -173,6 +181,57 @@ cannot nest sub-scripts degrades `runtime.execScript` to a `not_available`
 signal instead of panicking (see below).
 
 ## Node types
+
+Nothing about a node type is built in. `inference`, `tool` and `script` are
+`graph.NodeType` resources like any host-provided type, mounted on the engine's
+`node_type` dep, and a graph names the types its deployment declared:
+
+```yaml
+resources:
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps: {inference: infer, router: router, tools: tools}
+  node_tool:
+    kind: graph.NodeType
+    impl: tool
+    deps: {tools: tools}
+  node_script:
+    kind: graph.NodeType
+    impl: script
+    deps: {script_runtime.js: js, tools: tools, workspace: ws}
+
+agents:
+  assistant:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        node_type.inference: node_inference
+        node_type.tool: node_tool
+        node_type.script: node_script
+      settings:
+        graph: {file: ./graphs/assistant.json}
+```
+
+The dep key's suffix names the type a graph references (`node_type.tool` mounts
+a type named `tool`); `settings.type` renames it. The engine registers no
+default, so a graph naming a type no dep provides fails `Build` rather than
+running against a collaborator the deployment never granted — a graph with no
+`script` node type cannot run script at all.
+
+The standard impls and the collaborators each one declares:
+
+| impl            | deps                                                                                                            |
+| --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `inference`     | `inference` and/or `router` (at least one), plus optional `tools`                                               |
+| `tool`          | `tools` (required)                                                                                              |
+| `script`        | `script_runtime.<name>` (at least one), plus optional `tools`, `inference`, `router`, `workspace`, `sandbox`     |
+| `script_inline` | the same as `script`, with the source fixed in the type's settings instead of in each node's config             |
+
+Changing a collaborator is then scoped: a graph that must not reach a workspace
+mounts a script type without `workspace`, and only script nodes of *that* type
+see the difference.
 
 ### `inference` — single-shot generation
 
@@ -319,15 +378,15 @@ Behavior:
 
 ### `script` — embedded script with host bindings
 
-Runs inline JS or Lua source on the bound `agent.ScriptRuntime`. Decoding is
-strict: unknown top-level config fields are errors.
+Runs inline JS or Lua source on the `agent.ScriptRuntime` the mounted type
+provides. Decoding is strict: unknown top-level config fields are errors.
 
-| Config field | Meaning                                                                                           |
-| ------------ | ------------------------------------------------------------------------------------------------- |
-| `runtime`    | name of the wired `agent.ScriptRuntime` (must equal the engine's `script_runtime_name`); required |
-| `source`     | inline script source; required (may be `{file: ...}` / `{embed: ...}`)                            |
-| `name`       | execution label for errors and runtime pooling; defaults to the node ID                           |
-| `config`     | becomes the script's `config` global; values may carry `${board:*}` references                    |
+| Config field | Meaning                                                                                             |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| `runtime`    | name of a `script_runtime.<name>` dep on the mounted type; a name the type did not mount fails `Build` |
+| `source`     | inline script source; required (may be `{file: ...}` / `{embed: ...}`)                              |
+| `name`       | execution label for errors and runtime pooling; defaults to the node ID                             |
+| `config`     | becomes the script's `config` global; values may carry `${board:*}` references                      |
 
 Each invocation assembles a fresh script environment with the standard
 bridges below, executes the source, and maps control signals to Go errors.
@@ -341,22 +400,22 @@ through `core/agent/bindings` (plus three graph-layer bridges). This is the
 *standard* surface — a deployment replaces it wholesale with an
 `agent.ScriptBindings` provider (see "Script bindings" below), and composes
 several surfaces with the `chain` impl of that kind. Its availability
-depends on the engine's deps:
+depends on the deps of the node type running the script:
 
-| Global      | Wired when                              | Provides                             |
-| ----------- | --------------------------------------- | ------------------------------------ |
-| `board`     | always                                  | read/write board vars and channels   |
-| `expr`      | always                                  | evaluate expr-lang expressions       |
-| `host`      | always                                  | publish/emit/interrupt/askUser/usage |
-| `run`       | always                                  | read-only run identity               |
-| `node`      | always                                  | current graph node identity          |
-| `tools`     | `tools` dep                             | call tools / list catalog            |
-| `inference` | `inference` and/or `router` dep         | LLM generation, routing, streaming   |
-| `stream`    | always (needs a host with an event bus) | subscribe to node stream deltas      |
-| `parallel`  | always (active during parallel waves)   | cancel sibling branches              |
-| `fs`        | `workspace` dep                         | workspace file operations            |
-| `shell`     | `sandbox` dep                           | sandboxed command execution          |
-| `runtime`   | always                                  | nested sub-script execution          |
+| Global      | Wired when                                | Provides                             |
+| ----------- | ----------------------------------------- | ------------------------------------ |
+| `board`     | always                                    | read/write board vars and channels   |
+| `expr`      | always                                    | evaluate expr-lang expressions       |
+| `host`      | always                                    | publish/emit/interrupt/askUser/usage |
+| `run`       | always                                    | read-only run identity               |
+| `node`      | always                                    | current graph node identity          |
+| `tools`     | the type has a `tools` dep                | call tools / list catalog            |
+| `inference` | the type has an `inference`/`router` dep  | LLM generation, routing, streaming   |
+| `stream`    | always (needs a host with an event bus)   | subscribe to node stream deltas      |
+| `parallel`  | always (active during parallel waves)     | cancel sibling branches              |
+| `fs`        | the type has a `workspace` dep            | workspace file operations            |
+| `shell`     | the type has a `sandbox` dep              | sandboxed command execution          |
+| `runtime`   | always                                    | nested sub-script execution          |
 
 ### Script bindings (`agent.ScriptBindings`)
 
@@ -380,22 +439,22 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        script_runtime: js
+        node_type.script: node_script   # mounted with deps: {script_runtime.js: js}
         script_bindings: std
       settings:
-        graph: {file: ./graphs/assistant.yaml}
+        graph: {file: ./graphs/assistant.json}
 ```
 
 - **Wired** — the provider serves every script execution of the graph: the
-  built-in `script` type and script-backed custom node types alike. It
-  *replaces* the standard surface rather than extending it, so a provider
-  that binds `tokens` and nothing else leaves scripts without `board`.
+  mounted `script` / `script_inline` types and script-backed custom node types
+  alike. It *replaces* the standard surface rather than extending it, so a
+  provider that binds `tokens` and nothing else leaves scripts without `board`.
 - **Not wired** — each script-running node type falls back to the standard
-  bindings over its own deps: the built-in `script` node uses the engine's
-  `tools` / `workspace` / `inference` / `sandbox` deps, a
-  `graph.NodeType/script` resource uses its own. This is the behaviour
-  deployments had before bindings became a resource, so omitting the dep
-  never breaks an existing graph.
+  bindings over its own deps: a `script` type unlocks `tools` / `inference` /
+  `fs` / `shell` from the deps it was mounted with, and so does a
+  `script_inline` or host-provided one. Omitting the dep keeps the standard
+  surface, so a deployment only mounts `script_bindings` to replace or extend
+  it.
 - **`impl: none`** — binds nothing at all: scripts still run, with an empty
   scope. The explicit way to disable the surface for a locked-down graph.
 - **`impl: chain`** — composes the kind's resources into one provider: the
@@ -477,7 +536,7 @@ resources:
 agents:
   assistant:
     engine:
-      deps: {script_runtime: js, script_bindings: panel}
+      deps: {node_type.script: node_script, script_bindings: panel}
 ```
 
 A provider is built once per deployment and shared across runs, so it reads
@@ -524,7 +583,7 @@ resources:
 agents:
   assistant:
     engine:
-      deps: {script_runtime: js, script_bindings: panel}
+      deps: {node_type.script: node_script, script_bindings: panel}
 ```
 
 - A unit binds its own globals only; a base or unit may itself be a chain, a
@@ -567,48 +626,80 @@ fallback), and a debug log named "script bindings assembled" lists the node
 identity and the global names. That is what makes "the script says `board is
 not defined`" distinguishable from a typo in the script.
 
-### Custom node types (`graph.NodeType`)
+### Declaring your own type (`graph.NodeType`)
 
-Beyond the three built-ins, node types are deployment resources. A resource of
-kind `graph.NodeType` produces a value implementing
+A resource of kind `graph.NodeType` produces a value implementing
 `graph.NodeTypeRegistrar`; the graph engine factory registers every `node_type`
 dependency into the engine's registry before `Build`, so the graph definition
-can reference the type by name.
+can reference the type by name. The standard impls take exactly that path —
+the engine fills no registry of its own.
 
-Because a custom node type is a resource, it participates in the normal
-resource DAG: it can declare its own deps (script runtime, tools, workspace,
-...), is built exactly once, and can be shared by several agents. The engine
-accepts the deps under the `node_type` name or `node_type.<suffix>` keys (the
-`Many` dep form, like `tool.*` sources).
+Because a node type is a resource, it participates in the normal resource DAG:
+it declares its own deps (script runtime, tools, workspace, ...), is built
+exactly once, and can be shared by several agents. The engine accepts the deps
+under the `node_type` name or `node_type.<suffix>` keys (the `Many` dep form,
+like `tool.*` sources). The dep suffix names the type a graph references and
+`settings.type` overrides it, so mounting two resources of one impl gives two
+independent types. The dep keys are what the diagnostics report: one resource
+mounted under two keys fails the build naming both, two resources claiming one
+type name fail it naming both keys when they implement
+`graph.TypeNameProvider` (`NodeTypeNames`) and otherwise fail in `RegisterType`
+naming the key that lost, and a graph naming an unmounted type lists the names
+the mounted resources would have provided.
 
-#### Script-backed impl (`graph.NodeType/script`)
+#### The type owns its config contract (`ValidateConfig`)
 
-The built-in script impl defines the node behaviour as an embedded script that
-runs on the bound `agent.ScriptRuntime` with exactly the same bridges as the
-built-in `script` node. The node's config in the graph definition is the
-script's `config` global (board references still resolve first), and the
-script writes/reads the board like any script node.
+The engine never looks inside a node's config, so a type that has a build-time
+opinion about it says so itself:
+
+```go
+coregraph.NodeType[MyConfig]{
+    Handler:        handler,
+    ValidateConfig: func(nodeID string, raw json.RawMessage) error { ... },
+}
+```
+
+It runs at `Build`, once per node of the type, after the unknown-field check and
+before the I/O roles resolve — so it sees the config as written, with
+`${board:*}` references still unresolved. The standard types use it for the
+checks the kernel cannot make: an inference node without `model` on a type with
+no `router`, a node naming a tool the catalog does not have, a script node
+selecting a runtime the type did not mount. Each one names the node id, the type
+and the dep to add, and each one fails the deployment rather than the node's
+first turn.
+
+#### Script-backed impl (`graph.NodeType/script_inline`)
+
+The `script_inline` impl defines the node behaviour as one embedded script that
+runs on the mounted `agent.ScriptRuntime` with exactly the same bridges as the
+`script` node type. The node's config in the graph definition is the script's
+`config` global (board references still resolve first), and the script
+writes/reads the board like any script node. The `script` impl is the same node
+behaviour with the source in each node's config instead of in the resource, so a
+deployment that wants N bespoke node types mounts N `script_inline` resources and
+a deployment that wants one type for many inline scripts mounts one `script`.
 
 | Settings field | Meaning                                                                       |
 | -------------- | ----------------------------------------------------------------------------- |
-| `type`         | the node type name graphs reference (must not collide with built-ins or other mounted types) |
+| `type`         | the node type name graphs reference; defaults to the impl name (`script_inline`), must not collide with another mounted type |
+| `runtime`      | name of a `script_runtime.<name>` dep on this type; optional with one runtime dep, required with several |
 | `source`       | handler source: inline string or `{file: ...}` / `{embed: ...}` (required)    |
 | `desc`         | optional human-readable type description                                      |
 | `reads` / `writes` | static I/O roles (`kind: var|messages`, `name` or `config_key`, `required`); enforced at Build and invocation |
 
-Deps of `graph.NodeType/script`: `script_runtime` (required), plus optional
-`tools`, `inference`, `router`, `workspace`, `sandbox` enabling the same
-globals the built-in script node unlocks (`tools`, `inference`, `fs`, `shell`).
-When the engine wires a `script_bindings` dep, that engine-level provider
-serves the custom type too — the node type's own deps are the fallback.
+Deps: `script_runtime.<name>` (at least one), plus optional `tools`,
+`inference`, `router`, `workspace`, `sandbox` enabling the same globals the
+`script` type unlocks (`tools`, `inference`, `fs`, `shell`). When the engine
+wires a `script_bindings` dep, that engine-level provider serves this type too —
+the node type's own deps are the fallback.
 
 ```yaml
 resources:
   greet:
     kind: graph.NodeType
-    impl: script
+    impl: script_inline
     deps:
-      script_runtime: js
+      script_runtime.js: js
     settings:
       type: greet
       source: board.setVar("greeting", "hi " + config.name)
@@ -646,7 +737,8 @@ The graph can then use the type like any other:
 Go-backed custom node types follow the same contract: a host or plugin
 registers a `graph.NodeType` resource factory whose value implements
 `graph.NodeTypeRegistrar` (typically by calling `graph.RegisterType` with a
-closure capturing the resource's deps). The engine wires them identically.
+closure capturing the resource's deps). The engine wires them identically —
+`RegisterType` is what the standard impls call too.
 
 ### `board`
 
@@ -1019,9 +1111,41 @@ if (last) board.setVar("summary", last.content.parts[0].text);
 host.emit("token", "done: " + run.get_run_id());
 ```
 
+The three types the definition names have to be mounted, with the collaborators
+those nodes use (see "Node types" above):
+
+```yaml
+resources:
+  node_inference:
+    kind: graph.NodeType
+    impl: inference
+    deps: {inference: infer, router: router, tools: tools}
+  node_tool:
+    kind: graph.NodeType
+    impl: tool
+    deps: {tools: tools}
+  node_script:
+    kind: graph.NodeType
+    impl: script
+    deps: {script_runtime.js: js}
+
+agents:
+  assistant:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        node_type.inference: node_inference
+        node_type.tool: node_tool
+        node_type.script: node_script
+      settings:
+        graph: {file: ./graphs/assistant.json}
+```
+
 ## Sources of truth
 
 `core/graph/definition.go`, `core/graph/graph.go`, `core/graph/execute.go`,
 `core/graph/nodes/inference.go`, `core/graph/nodes/tool.go`,
 `core/graph/nodes/script/`, `core/graph/resource/resource.go`,
+`core/graph/resource/node_types.go`, `core/graph/resource/node_type.go`,
 `core/agent/bindings/`.

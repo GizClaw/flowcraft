@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -12,23 +13,105 @@ import (
 	res "github.com/GizClaw/flowcraft/core/resource"
 )
 
-// NodeTypeKind is the deployment resource kind of a custom graph node
-// type: a graph node type is a deployment resource. Factory values
-// implement [coregraph.NodeTypeRegistrar]; the graph engine factory
-// registers every "node_type" dep before Build, so custom node types
-// participate in the resource DAG like any other collaborator — they can
-// declare their own deps (runtime, workspace, tools, ...), be shared
-// across agents, and are built exactly once.
+// NodeTypeKind is the deployment resource kind of a graph node type: a graph
+// node type is a deployment resource. Factory values implement
+// [coregraph.NodeTypeRegistrar]; the graph engine factory registers every
+// "node_type" dep before Build, so node types participate in the resource DAG
+// like any other collaborator — they declare their own deps (runtime,
+// workspace, tools, inference, ...), can be shared across agents, and are
+// built exactly once.
+//
+// There is no built-in type. Every name a graph definition uses in
+// NodeDefinition.Type is provided by a resource of this kind, including
+// "inference", "tool" and "script": the engine holds no default registry, so
+// which collaborators a type runs against is a deployment decision rather than
+// an engine-wide one. Two inference types with different assemblies, or a JS
+// and a Lua script type in one graph, are therefore an ordinary deployment.
 const NodeTypeKind = "graph.NodeType"
 
-// ScriptNodeTypeSettings is the strict settings subtree of the
-// script-backed impl.
-type ScriptNodeTypeSettings struct {
-	// Type is the node type name graphs reference in
-	// NodeDefinition.Type (e.g. "extract"). It must not collide with
-	// the built-in "inference", "tool", or "script" types or with
-	// another mounted custom type.
-	Type string `json:"type"`
+// Impl names of the node type resources this package ships. The default type
+// name of each impl is the impl name, so the common deployment names no type
+// at all.
+const (
+	// NodeTypeImplInference runs core/graph/nodes' "inference" node type
+	// (one Generate call per invocation).
+	NodeTypeImplInference = "inference"
+
+	// NodeTypeImplTool runs core/graph/nodes' "tool" node type (execute
+	// the channel tail's tool calls as one batch).
+	NodeTypeImplTool = "tool"
+
+	// NodeTypeImplScript runs the generic "script" node type: the handler
+	// source comes from each node's own config, so one type serves every
+	// script of the graph.
+	NodeTypeImplScript = "script"
+
+	// NodeTypeImplScriptInline runs a script-backed type whose handler
+	// source is fixed in the resource's settings, so each graph node of
+	// the type is one invocation of the same script with its own config.
+	NodeTypeImplScriptInline = "script_inline"
+)
+
+// builtNodeType is the value every node type impl hands the engine: one type
+// name, its behaviour, and the config fields of that type that may carry a
+// structured source reference.
+//
+// It carries the name because a resource — not the kernel — decides what a
+// graph may call a type; the kernel only sees a registry.
+type builtNodeType[C any] struct {
+	typeName      string
+	fileRefFields []string
+	node          coregraph.NodeType[C]
+}
+
+// Register implements coregraph.NodeTypeRegistrar.
+func (b *builtNodeType[C]) Register(reg *coregraph.Registry) error {
+	return coregraph.RegisterType(reg, b.typeName, b.node)
+}
+
+// NodeTypeNames implements coregraph.TypeNameProvider.
+func (b *builtNodeType[C]) NodeTypeNames() []string { return []string{b.typeName} }
+
+// FileRefFields implements coregraph.ConfigFileRefFields.
+func (b *builtNodeType[C]) FileRefFields() map[string][]string {
+	if len(b.fileRefFields) == 0 {
+		return nil
+	}
+	return map[string][]string{b.typeName: b.fileRefFields}
+}
+
+// NodeTypeSettings is the settings every standard node type impl shares.
+type NodeTypeSettings struct {
+	// Type is the name graph definitions use in NodeDefinition.Type. It
+	// defaults to the impl name, so a deployment that wants one inference
+	// type names nothing and a deployment that wants two sets it on one of
+	// them.
+	Type string `json:"type,omitempty"`
+}
+
+// typeName resolves the registered name: the configured one, else the impl's.
+func (s NodeTypeSettings) typeName(impl string) (string, error) {
+	if s.Type == "" {
+		return impl, nil
+	}
+	if strings.ContainsAny(s.Type, " \t\n") || strings.TrimSpace(s.Type) != s.Type {
+		return "", errdefs.Validationf(
+			"%s: settings.type %q must not contain whitespace", impl, s.Type)
+	}
+	return s.Type, nil
+}
+
+// ScriptInlineSettings is the strict settings subtree of the
+// script-backed impl whose handler source lives in the resource.
+type ScriptInlineSettings struct {
+	// Type is the node type name graphs reference in NodeDefinition.Type
+	// (e.g. "extract"). It must not collide with another mounted type.
+	Type string `json:"type,omitempty"`
+
+	// Runtime names the wired agent.ScriptRuntime this type executes on.
+	// Optional: with exactly one runtime dep it is selected implicitly,
+	// and with several it is required.
+	Runtime string `json:"runtime,omitempty"`
 
 	// Source is the handler source: an inline string, or a
 	// structured {"file": ...} / {"embed": ...} reference resolved
@@ -46,21 +129,23 @@ type ScriptNodeTypeSettings struct {
 	Writes []coregraph.Role `json:"writes,omitempty"`
 }
 
-// ScriptNodeTypeFactory builds a script-backed custom node type: each
-// graph node of the type runs the declared source on the wired
-// script runtime with the standard script bridges (board, expr, host,
+// ScriptInlineNodeTypeFactory builds a script-backed node type whose handler
+// source is fixed in settings: each graph node of the type runs that source on
+// the wired script runtime with the standard script bridges (board, expr, host,
 // run, tools, inference, node, stream, parallel, fs, shell, runtime).
-// The node's config is the script's "config" global, so config values
-// may carry ${board:*} references like any other node config.
-type ScriptNodeTypeFactory struct{}
+//
+// The node's config is the script's "config" global, so config values may carry
+// ${board:*} references like any other node config. Use impl "script" instead
+// when the source itself belongs to each node.
+type ScriptInlineNodeTypeFactory struct{}
 
 // Spec implements res.Factory.
-func (ScriptNodeTypeFactory) Spec() res.Spec {
+func (ScriptInlineNodeTypeFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: NodeTypeKind,
-		Impl: "script",
+		Impl: NodeTypeImplScriptInline,
 		Deps: []res.Requirement{
-			depScriptRuntimeRequired.Spec(),
+			depScriptRuntimes.Spec(),
 			depTools.Spec(),
 			depInference.Spec(),
 			depRouter.Spec(),
@@ -71,52 +156,59 @@ func (ScriptNodeTypeFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (*scriptNodeType, error) {
-	settings, err := res.DecodeTyped[ScriptNodeTypeSettings](ctx, in.Settings)
+func (ScriptInlineNodeTypeFactory) New(
+	ctx context.Context,
+	in res.Input,
+) (*builtNodeType[map[string]any], error) {
+	settings, err := res.DecodeTyped[ScriptInlineSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("graph node type: decode settings: %w", err)
 	}
-	if settings.Type == "" {
-		return nil, errdefs.Validationf("graph node type: settings.type is required")
+	typeName, err := NodeTypeSettings{Type: settings.Type}.typeName(NodeTypeImplScriptInline)
+	if err != nil {
+		return nil, err
 	}
 	if len(settings.Source) == 0 {
 		return nil, errdefs.Validationf(
-			"graph node type %q: settings.source is required", settings.Type)
+			"graph node type %q: settings.source is required", typeName)
 	}
 	src, err := res.ParseSource(settings.Source)
 	if err != nil {
 		return nil, errdefs.Validationf(
-			"graph node type %q: settings.source: %w", settings.Type, err)
+			"graph node type %q: settings.source: %w", typeName, err)
 	}
 	data, err := resolveSource(ctx, in, src)
 	if err != nil {
-		return nil, fmt.Errorf("graph node type %q: settings.source: %w", settings.Type, err)
+		return nil, fmt.Errorf("graph node type %q: settings.source: %w", typeName, err)
 	}
 	if len(data) == 0 {
 		return nil, errdefs.Validationf(
-			"graph node type %q: settings.source is empty", settings.Type)
+			"graph node type %q: settings.source is empty", typeName)
 	}
 
-	deps, err := decodeDependencies(in)
+	runtimes, err := decodeScriptRuntimes(in)
 	if err != nil {
 		return nil, err
 	}
-	if deps.script == nil {
-		return nil, errdefs.NotFoundf(
-			"graph node type %q: requires dep %q", settings.Type, DepScriptRuntime)
+	runtime, err := runtimes.pick(settings.Runtime)
+	if err != nil {
+		return nil, errdefs.Validationf("graph node type %q: %w", typeName, err)
+	}
+	caps, err := decodeCapabilities(in)
+	if err != nil {
+		return nil, err
 	}
 
 	// The node type carries its own deps as the fallback surface; an
 	// engine-level "script_bindings" provider replaces it (see
 	// scriptnode.RunScript).
-	scriptDeps := scriptNodeDeps(deps, nil)
+	scriptDeps := scriptNodeDeps(caps, nil)
 
 	desc := settings.Desc
 	if desc == "" {
 		desc = "custom script-backed node type"
 	}
 	source := string(data)
-	runtime := deps.script
 	node := coregraph.NodeType[map[string]any]{
 		Meta: coregraph.Meta{
 			Desc:   desc,
@@ -127,17 +219,5 @@ func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (*scriptNode
 			return scriptnode.RunScript(ec, board, scriptDeps, runtime, ec.NodeID, source, cfg)
 		},
 	}
-	return &scriptNodeType{typeName: settings.Type, node: node}, nil
-}
-
-// scriptNodeType is the resource-built value the graph engine factory
-// registers into its registry.
-type scriptNodeType struct {
-	typeName string
-	node     coregraph.NodeType[map[string]any]
-}
-
-// Register implements coregraph.NodeTypeRegistrar.
-func (s *scriptNodeType) Register(reg *coregraph.Registry) error {
-	return coregraph.RegisterType(reg, s.typeName, s.node)
+	return &builtNodeType[map[string]any]{typeName: typeName, node: node}, nil
 }

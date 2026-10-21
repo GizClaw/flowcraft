@@ -805,8 +805,8 @@ lua:
     max_exec_time: 30s
 ```
 
-Script runtimes are wired into a graph engine as the `script_runtime` dep
-(see [graph.md](graph.md)).
+Script runtimes are wired into a script node type as the `script_runtime.<name>`
+dep — a node's `config.runtime` selects one by name (see [graph.md](graph.md)).
 
 ## script bindings
 
@@ -968,15 +968,24 @@ cps:
 
 ## graph
 
-Graph definitions are engine settings:
+Graph definitions are engine settings; node types are mounted as `node_type`
+deps, and each type carries the collaborators its nodes call:
 
 ```yaml
+node_inference:
+  kind: graph.NodeType
+  impl: inference
+  deps: {inference: infer, router: router, tools: tools}
+
 engine:
   kind: agent.Engine
   impl: graph
+  deps:
+    node_type.inference: node_inference
   settings:
     graph: {file: ./graphs/assistant.yaml}
-    script_runtime_name: js
 ```
 
-See [graph.md](graph.md) for the JSON schema.
+`inference`, `tool` and `script` are themselves `graph.NodeType` resources —
+there is no built-in type. See [graph.md](graph.md) for the JSON schema and the
+per-impl deps.

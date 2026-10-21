@@ -130,6 +130,11 @@ resources:
   js:
     kind: agent.ScriptRuntime
     impl: js
+  script:
+    kind: graph.NodeType
+    impl: script
+    deps:
+      script_runtime.js: js
   std:
     kind: agent.ScriptBindings
     impl: standard
@@ -146,7 +151,7 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        script_runtime: js
+        node_type.script: script
         script_bindings: panel
       settings:
         graph: {file: ./graphs/main.json}
@@ -226,6 +231,12 @@ resources:
   js:
     kind: agent.ScriptRuntime
     impl: js
+  script:
+    kind: graph.NodeType
+    impl: script
+    deps:
+      script_runtime.js: js
+      tools: tools
   std:
     kind: agent.ScriptBindings
     impl: standard
@@ -252,8 +263,7 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        tools: tools
-        script_runtime: js
+        node_type.script: script
         script_bindings: panel
       settings:
         graph: {file: ./graphs/main.json}
@@ -267,6 +277,11 @@ resources:
   js:
     kind: agent.ScriptRuntime
     impl: js
+  script:
+    kind: graph.NodeType
+    impl: script
+    deps:
+      script_runtime.js: js
   left:
     kind: agent.ScriptBindings
     impl: clash
@@ -286,7 +301,7 @@ agents:
       kind: agent.Engine
       impl: graph
       deps:
-        script_runtime: js
+        node_type.script: script
         script_bindings: panel
       settings:
         graph: {file: ./graphs/main.json}

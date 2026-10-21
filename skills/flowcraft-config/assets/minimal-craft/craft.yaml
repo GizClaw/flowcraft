@@ -55,6 +55,16 @@ deploy:
     tools:
       kind: tool.Assembly
       impl: memory
+    # Node types are resources: the graph below names "inference", so the
+    # deployment mounts one. Plugin node types land here too, under
+    # node_type.<id>.<type> (craft adds them from plugins.node_targets).
+    node_inference:
+      kind: graph.NodeType
+      impl: inference
+      deps:
+        inference: infer
+        tools: tools
+        workspace: ws
   agents:
     assistant:
       card:
@@ -64,9 +74,7 @@ deploy:
         kind: agent.Engine
         impl: graph
         deps:
-          inference: infer
-          workspace: ws
-          tools: tools
+          node_type.inference: node_inference
         settings:
           graph: {file: ./graphs/assistant.json}
   runtime:

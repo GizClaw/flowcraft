@@ -37,7 +37,10 @@ func TestEngineMountsScriptBindings(t *testing.T) {
 
 	engine := buildCustomEngine(t,
 		customNodeDefinition(t, "script", map[string]any{"runtime": "js", "source": "x"}),
-		map[string]any{"script_runtime": rt, "script_bindings": provider})
+		map[string]any{
+			"node_type.script": buildScriptType(t, `{}`, map[string]any{"script_runtime.js": rt}),
+			"script_bindings":  provider,
+		})
 
 	if err := runCustomEngine(t, engine, nil); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -49,7 +52,10 @@ func TestEngineMountsScriptBindings(t *testing.T) {
 }
 
 func TestEngineRejectsNonProviderScriptBindings(t *testing.T) {
-	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(customNodeDefinition(t, "script", map[string]any{"runtime": "js", "source": "x"}))+`}`), map[string]any{"script_runtime": scriptRuntimeStub{}, "script_bindings": "not a provider"}, nil, nil))
+	_, err := (graphresource.Factory{}).New(context.Background(), resource.NewInput([]byte(`{"graph": `+string(customNodeDefinition(t, "script", map[string]any{"runtime": "js", "source": "x"}))+`}`), map[string]any{
+		"node_type.script": buildScriptType(t, `{}`, map[string]any{"script_runtime.js": scriptRuntimeStub{}}),
+		"script_bindings":  "not a provider",
+	}, nil, nil))
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New = %v, want Validation for a non-provider script_bindings dep", err)
 	}

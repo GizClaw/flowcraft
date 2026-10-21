@@ -4,11 +4,11 @@
 package resource
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,8 +16,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/core/graph"
-	"github.com/GizClaw/flowcraft/core/graph/nodes"
-	scriptnode "github.com/GizClaw/flowcraft/core/graph/nodes/script"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	res "github.com/GizClaw/flowcraft/core/resource"
@@ -30,7 +28,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// Stable dependency names used by deployment documents.
+// Stable dependency names used by deployment documents. The capability names
+// ("inference" … "script_runtime") are declared by the node type and script
+// surface resources that consume them; only the two engine deps are declared by
+// agent.Engine/graph itself.
 const (
 	DepInference      = "inference"
 	DepRouter         = "router"
@@ -40,8 +41,6 @@ const (
 	DepScriptRuntime  = "script_runtime"
 	DepNodeType       = "node_type"
 	DepScriptBindings = "script_bindings"
-
-	defaultScriptRuntimeName = "js"
 )
 
 // Typed dependency handles: one declaration each, shared by every factory in
@@ -57,21 +56,29 @@ var (
 	depNodeTypes = res.OptionalMany[coregraph.NodeTypeRegistrar](DepNodeType)
 	depBindings  = res.Optional[bindings.Provider](DepScriptBindings)
 
-	// depScriptRuntimeRequired is the same dependency as depScriptRuntime but
-	// mandatory: a script node type cannot run without a runtime, while the
-	// graph engine itself may hold no script node at all.
-	depScriptRuntimeOptional = res.Optional[agent.ScriptRuntime](DepScriptRuntime)
-	depScriptRuntimeRequired = res.Require[agent.ScriptRuntime](DepScriptRuntime)
+	// depToolsRequired is depTools as a mandatory dependency: the "tool"
+	// node type cannot exist without a dispatcher, while the other
+	// consumers of the same capability treat it as optional.
+	depToolsRequired = res.Require[*tool.Assembly](DepTools)
+
+	// depScriptRuntimes is a Many dep because a script node type selects a
+	// runtime by name in its node config: every runtime is mounted as
+	// "script_runtime.<name>", so one type serves a JS node and a Lua node
+	// of the same graph.
+	depScriptRuntimes = res.RequireMany[agent.ScriptRuntime](DepScriptRuntime)
 )
 
-// Settings is the strict settings subtree of the graph engine factory:
-// the graph definition source plus build knobs.
+// Settings is the strict settings subtree of the graph engine factory: the
+// graph definition source plus build knobs.
+//
+// Which node types the graph may name is not a setting: it is the engine's
+// "node_type" deps. The engine therefore holds no collaborator of its own and a
+// deployment cannot configure a type it did not mount.
 type Settings struct {
 	// Graph is the graph definition: literal content, {"file": ...}, or
 	// {"embed": ...}. A plain string is literal content.
-	Graph             json.RawMessage `json:"graph"`
-	ScriptRuntimeName string          `json:"script_runtime_name,omitempty"`
-	Build             BuildSettings   `json:"build,omitempty"`
+	Graph json.RawMessage `json:"graph"`
+	Build BuildSettings   `json:"build,omitempty"`
 }
 
 // BuildSettings mirrors the graph Build options as JSON.
@@ -93,25 +100,19 @@ type ParallelSettings struct {
 }
 
 // Factory builds an agent.Engine/graph: it compiles a
-// [coregraph.GraphDefinition] into a [coregraph.Graph] with the node
-// types wired from its deps.
+// [coregraph.GraphDefinition] into a [coregraph.Graph] with the node types
+// mounted as "node_type" deps.
 type Factory struct{}
 
-// Spec implements res.Factory. Every dep is optional; the requirements
-// are derived from the graph definition itself (an inference node
-// requires inference or router, a tool node requires tools, a script
-// node requires script_runtime).
+// Spec implements res.Factory. Both deps are optional and neither is a
+// collaborator: "node_type" carries every type the graph may name (the engine
+// registers no default one), "script_bindings" replaces the script surface for
+// the whole graph.
 func (Factory) Spec() res.Spec {
 	return res.Spec{
 		Kind: "agent.Engine",
 		Impl: "graph",
 		Deps: []res.Requirement{
-			depInference.Spec(),
-			depRouter.Spec(),
-			depTools.Spec(),
-			depWorkspace.Spec(),
-			depSandbox.Spec(),
-			depScriptRuntimeOptional.Spec(),
 			depNodeTypes.Spec(),
 			depBindings.Spec(),
 		},
@@ -131,10 +132,6 @@ func (Factory) New(ctx context.Context, in res.Input) (*coregraph.Graph, error) 
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: settings.graph: %w", err)
 	}
-	deps, err := decodeDependencies(in)
-	if err != nil {
-		return nil, err
-	}
 	customs, err := collectNodeTypes(in)
 	if err != nil {
 		return nil, err
@@ -143,54 +140,14 @@ func (Factory) New(ctx context.Context, in res.Input) (*coregraph.Graph, error) 
 	if err != nil {
 		return nil, err
 	}
-	required, err := scanNodeTypes(definition)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateRequiredDeps(required, deps); err != nil {
-		return nil, err
-	}
-	runtimeName := settings.ScriptRuntimeName
-	if runtimeName == "" {
-		runtimeName = defaultScriptRuntimeName
-	}
-	if err := validateScriptRuntimes(definition, runtimeName); err != nil {
-		return nil, err
-	}
 
 	registry := coregraph.NewRegistry()
-	inferenceDeps := nodes.InferenceNodeDeps{}
-	scriptDeps := scriptNodeDeps(deps, map[string]agent.ScriptRuntime{})
-	if deps.inference != nil {
-		inferenceDeps.Assembly = deps.inference
-		inferenceDeps.Extensions = deps.inference.ExtensionDecoders()
-	}
-	if deps.router != nil {
-		inferenceDeps.Router = deps.router
-		if deps.inference == nil {
-			// A router-only deployment still needs the provider-carried
-			// decoders of its target assembly.
-			inferenceDeps.Extensions = deps.router.Target().ExtensionDecoders()
-		}
-	}
-	if deps.tools != nil {
-		inferenceDeps.Catalog = deps.tools.Catalog()
-	}
-	if deps.script != nil {
-		scriptDeps.Runtimes[runtimeName] = deps.script
-	}
-	if err := nodes.RegisterInference(registry, inferenceDeps); err != nil {
-		return nil, err
-	}
-	if err := nodes.RegisterTool(registry, scriptDeps.ToolDispatcher); err != nil {
-		return nil, err
-	}
-	if err := scriptnode.Register(registry, scriptDeps); err != nil {
-		return nil, err
-	}
+	// Every type comes from a dep, and registration errors name the dep
+	// they came from: with no default type there is no "the engine's own"
+	// registration left to blame.
 	for _, custom := range customs {
 		if err := custom.registrar.Register(registry); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("graph engine: node type dep %q: %w", custom.depKey, err)
 		}
 	}
 
@@ -202,8 +159,12 @@ func (Factory) New(ctx context.Context, in res.Input) (*coregraph.Graph, error) 
 	// "script_bindings" dep serves every script execution of this
 	// graph. Without it each script-running node type falls back to the
 	// standard bindings over its own deps — the pre-provider behaviour.
-	if deps.bindings != nil {
-		options = append(options, coregraph.WithScriptBindings(deps.bindings))
+	bindingsProvider, _, err := depBindings.TryGet(in)
+	if err != nil {
+		return nil, err
+	}
+	if bindingsProvider != nil {
+		options = append(options, coregraph.WithScriptBindings(bindingsProvider))
 	}
 	built, err := coregraph.Build(definition, registry, options...)
 	if err != nil {
@@ -230,21 +191,27 @@ func logBuildWarnings(ctx context.Context, name string, warnings []coregraph.War
 	}
 }
 
-// Register adds the graph engine factory to r.
+// Register adds the graph engine factory and the node type resources this
+// package ships to r.
+//
+// A deployment that wants the standard graph names mounts the types it uses;
+// nothing is registered into a graph by default.
 func Register(r *res.Registry) error {
-	if err := res.Register(r, Factory{}); err != nil {
-		return err
+	for _, register := range []func(*res.Registry) error{
+		func(r *res.Registry) error { return res.Register(r, Factory{}) },
+		func(r *res.Registry) error { return res.Register(r, InferenceNodeTypeFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ToolNodeTypeFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ScriptNodeTypeFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ScriptInlineNodeTypeFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ScriptBindingsFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ScriptBindingsNoneFactory{}) },
+		func(r *res.Registry) error { return res.Register(r, ScriptBindingsChainFactory{}) },
+	} {
+		if err := register(r); err != nil {
+			return err
+		}
 	}
-	if err := res.Register(r, ScriptNodeTypeFactory{}); err != nil {
-		return err
-	}
-	if err := res.Register(r, ScriptBindingsFactory{}); err != nil {
-		return err
-	}
-	if err := res.Register(r, ScriptBindingsNoneFactory{}); err != nil {
-		return err
-	}
-	return res.Register(r, ScriptBindingsChainFactory{})
+	return nil
 }
 
 func loadDefinition(
@@ -280,26 +247,16 @@ func resolveSource(ctx context.Context, in res.Input, src res.Source) ([]byte, e
 	return in.Loader.Load(ctx, src)
 }
 
-// configFileFields returns the node-config field names that may carry
-// a structured {"file": ...} reference for a node type. The factory
-// materializes those references into inline values before the graph
-// kernel builds, so the kernel stays filesystem-free.
-func configFileFields(nodeType string) []string {
-	switch nodeType {
-	case "script":
-		return []string{"source"}
-	case "inference":
-		return []string{"system_prompt"}
-	default:
-		return nil
-	}
-}
-
+// materializeConfigFileRefs rewrites every node config field that a mounted node
+// type declared as a source-reference carrier (coregraph.ConfigFileRefFields)
+// into its inline content. Each type answers for its own fields, so this stays a
+// generic pass: the engine no longer knows that a "script" node has a source or
+// an "inference" node a system_prompt.
 func materializeConfigFileRefs(
 	ctx context.Context,
 	in res.Input,
 	definition *coregraph.GraphDefinition,
-	customFileFields map[string][]string,
+	fileRefFields map[string][]string,
 ) error {
 	for index := range definition.Nodes {
 		node := &definition.Nodes[index]
@@ -312,14 +269,7 @@ func materializeConfigFileRefs(
 				"graph engine: node %q config: %w", node.ID, err)
 		}
 		changed := false
-		refFields := configFileFields(node.Type)
-		refFields = append(refFields, customFileFields[node.Type]...)
-		seen := make(map[string]bool, len(refFields))
-		for _, field := range refFields {
-			if seen[field] {
-				continue
-			}
-			seen[field] = true
+		for _, field := range fileRefFields[node.Type] {
 			raw, ok := configFields[field]
 			if !ok || len(raw) == 0 || raw[0] != '{' {
 				continue
@@ -357,22 +307,25 @@ func materializeConfigFileRefs(
 	return nil
 }
 
-type dependencies struct {
+// capabilities is the optional collaborator set a script-running node type or
+// the standard script surface accepts. Each factory declares the subset it knows
+// how to use; a capability that is absent leaves the matching script global
+// unregistered, so calls on it fail closed rather than reaching an unwired
+// collaborator.
+type capabilities struct {
 	inference *inference.Assembly
 	router    *route.Router
 	tools     *tool.Assembly
 	workspace workspace.Workspace
 	sandbox   sandbox.Runner
-	script    agent.ScriptRuntime
-	bindings  bindings.Provider
 }
 
-// decodeDependencies reads the typed dependency handles this package
-// declares. Key validation (an undeclared dep, a missing required one, a
-// producer of the wrong type) is the deployment plan's job, so a document
-// error is reported once, before any factory runs.
-func decodeDependencies(in res.Input) (dependencies, error) {
-	var out dependencies
+// decodeCapabilities reads the optional collaborator handles. Key validation (an
+// undeclared dep, a missing required one, a producer of the wrong type) is the
+// deployment plan's job, so a document error is reported once, before any
+// factory runs.
+func decodeCapabilities(in res.Input) (capabilities, error) {
+	var out capabilities
 	var err error
 	if out.inference, _, err = depInference.TryGet(in); err != nil {
 		return out, err
@@ -389,52 +342,91 @@ func decodeDependencies(in res.Input) (dependencies, error) {
 	if out.sandbox, _, err = depSandbox.TryGet(in); err != nil {
 		return out, err
 	}
-	if out.script, _, err = depScriptRuntimeOptional.TryGet(in); err != nil {
-		return out, err
+	return out, nil
+}
+
+// scriptRuntimes is the script runtime set a node type was wired with, split by
+// how the dep key spelled the name a node config selects.
+type scriptRuntimes struct {
+	// named holds "script_runtime.<name>" deps, keyed by <name>.
+	named map[string]agent.ScriptRuntime
+	// bare holds a runtime mounted as "script_runtime" with no name. A
+	// fixed-source type can use it (nothing selects a name); the generic
+	// script type cannot, because its node config must name a runtime.
+	bare agent.ScriptRuntime
+}
+
+// decodeScriptRuntimes splits the "script_runtime" Many dep into named and
+// unsuffixed entries.
+func decodeScriptRuntimes(in res.Input) (scriptRuntimes, error) {
+	values, err := depScriptRuntimes.GetAllNamed(in)
+	if err != nil {
+		return scriptRuntimes{}, err
 	}
-	if out.bindings, _, err = depBindings.TryGet(in); err != nil {
-		return out, err
+	out := scriptRuntimes{named: make(map[string]agent.ScriptRuntime, len(values))}
+	for _, value := range values {
+		if value.Name == DepScriptRuntime {
+			out.bare = value.Value
+			continue
+		}
+		out.named[strings.TrimPrefix(value.Name, DepScriptRuntime+".")] = value.Value
 	}
 	return out, nil
 }
 
-// scriptNodeDeps assembles the dependency bundle shared by the
-// built-in "script" node type, script-backed custom node types and the
-// standard bindings provider. runtimes carries the script runtime(s)
-// the node type may select from; the standard bindings provider passes
-// nil because it receives the executing runtime through the
-// invocation.
-func scriptNodeDeps(
-	deps dependencies,
-	runtimes map[string]agent.ScriptRuntime,
-) scriptnode.ScriptNodeDeps {
-	out := scriptnode.ScriptNodeDeps{
-		Runtimes:      runtimes,
-		Workspace:     deps.workspace,
-		CommandRunner: deps.sandbox,
+// pick resolves the runtime a fixed-source node type executes on: the configured
+// name, or the only wired runtime.
+func (r scriptRuntimes) pick(name string) (agent.ScriptRuntime, error) {
+	if name != "" {
+		if runtime, ok := r.named[name]; ok {
+			return runtime, nil
+		}
+		return nil, fmt.Errorf("runtime %q is not wired (mounted: %s)", name, r.list())
 	}
-	if deps.inference != nil {
-		out.InferenceAssembly = deps.inference
+	if len(r.named) == 1 && r.bare == nil {
+		for _, runtime := range r.named {
+			return runtime, nil
+		}
 	}
-	if deps.router != nil {
-		out.InferenceRouter = deps.router
+	if len(r.named) == 0 && r.bare != nil {
+		return r.bare, nil
 	}
-	if deps.tools != nil {
-		out.ToolDispatcher = deps.tools
-		out.ToolCatalog = deps.tools.Catalog()
+	return nil, fmt.Errorf(
+		"several script runtimes are wired (%s); set settings.runtime to select one", r.list())
+}
+
+// list renders the wired runtimes for a diagnostic, in a stable order.
+func (r scriptRuntimes) list() string {
+	names := make([]string, 0, len(r.named)+1)
+	for name := range r.named {
+		names = append(names, name)
 	}
-	return out
+	if r.bare != nil {
+		names = append(names, DepScriptRuntime)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 type customNodeType struct {
 	registrar coregraph.NodeTypeRegistrar
-	value     any
+	// depKey is the "node_type.<suffix>" key the resource was mounted
+	// under, kept so every diagnostic can point at the document entry
+	// rather than at a Go value the author never wrote.
+	depKey string
 }
 
-// collectNodeTypes validates the engine's Many "node_type" deps and
-// returns them in deterministic (sorted key) order. It rejects plain
-// and typed-nil registrars, and reports a node type resource that is
-// mounted under more than one dep key.
+// collectNodeTypes validates the engine's Many "node_type" deps and returns them
+// in deterministic (sorted key) order, each with the dep key it came from.
+//
+// It rejects a node type resource mounted under more than one dep key, and — for
+// registrars that can report their type names up front
+// ([coregraph.TypeNameProvider]) — two resources claiming one type name, naming
+// both dep keys. A registrar that cannot report names still collides, but the
+// error then comes from RegisterType with only the dep key that lost.
 func collectNodeTypes(in res.Input) ([]customNodeType, error) {
 	values, err := depNodeTypes.GetAllNamed(in)
 	if err != nil {
@@ -442,7 +434,8 @@ func collectNodeTypes(in res.Input) ([]customNodeType, error) {
 	}
 
 	out := make([]customNodeType, 0, len(values))
-	mounted := make(map[string]string) // registrar identity -> first dep key
+	mounted := make(map[string]string)   // registrar identity -> first dep key
+	providers := make(map[string]string) // node type name -> dep key
 	for _, named := range values {
 		registrar := named.Value
 		if identity, has := registrarIdentity(registrar); has {
@@ -453,7 +446,17 @@ func collectNodeTypes(in res.Input) ([]customNodeType, error) {
 			}
 			mounted[identity] = named.Name
 		}
-		out = append(out, customNodeType{registrar: registrar, value: registrar})
+		if provider, ok := registrar.(coregraph.TypeNameProvider); ok {
+			for _, typeName := range provider.NodeTypeNames() {
+				if first, dup := providers[typeName]; dup {
+					return nil, errdefs.Conflictf(
+						"graph engine: node type %q is provided by both dep %q and dep %q",
+						typeName, first, named.Name)
+				}
+				providers[typeName] = named.Name
+			}
+		}
+		out = append(out, customNodeType{registrar: registrar, depKey: named.Name})
 	}
 	return out, nil
 }
@@ -474,14 +477,15 @@ func registrarIdentity(value any) (string, bool) {
 	}
 }
 
-// mergeFileRefFields collects, per custom node type name, the config
-// fields that may carry structured source references. Built-in types
-// are covered by configFileFields; custom registrars opt in via
-// [coregraph.ConfigFileRefFields].
+// mergeFileRefFields collects, per node type name, the config fields that may
+// carry structured source references. Every type answers for its own fields via
+// [coregraph.ConfigFileRefFields] — including the standard "inference" and
+// "script" types, which are resources like any other — so the engine keeps no
+// table of its own.
 func mergeFileRefFields(customs []customNodeType) map[string][]string {
 	merged := make(map[string][]string)
 	for _, custom := range customs {
-		fields, ok := custom.value.(coregraph.ConfigFileRefFields)
+		fields, ok := custom.registrar.(coregraph.ConfigFileRefFields)
 		if !ok {
 			continue
 		}
@@ -490,130 +494,6 @@ func mergeFileRefFields(customs []customNodeType) map[string][]string {
 		}
 	}
 	return merged
-}
-
-type nodeRequirements struct {
-	inference bool
-	tools     bool
-	script    bool
-	router    bool
-	toolNames []string
-}
-
-func scanNodeTypes(definition *coregraph.GraphDefinition) (nodeRequirements, error) {
-	var required nodeRequirements
-	for _, node := range definition.Nodes {
-		switch node.Type {
-		case "inference":
-			required.inference = true
-			modelConfigured, toolNames, toolsConfigured, err := scanInferenceConfig(node.Config)
-			if err != nil {
-				return required, fmt.Errorf(
-					"graph engine: inference node %q config: %w", node.ID, err)
-			}
-			required.router = required.router || !modelConfigured
-			if toolsConfigured {
-				required.tools = true
-				required.toolNames = append(required.toolNames, toolNames...)
-			}
-		case "tool":
-			required.tools = true
-		case "script":
-			required.script = true
-		}
-	}
-	return required, nil
-}
-
-func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools []string, toolsConfigured bool, err error) {
-	var fields map[string]json.RawMessage
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			return false, nil, false, errdefs.Validationf(
-				"inference config is not a JSON object: %w", err)
-		}
-	}
-	if model, ok := fields["model"]; ok && !bytes.Equal(bytes.TrimSpace(model), []byte("null")) {
-		modelConfigured = true
-	}
-	tools, hasTools := fields["tools"]
-	allTools := false
-	if rawAll, ok := fields["all_tools"]; ok {
-		if err := json.Unmarshal(rawAll, &allTools); err != nil {
-			return false, nil, false, errdefs.Validationf(
-				"inference config all_tools must be a boolean: %w", err)
-		}
-	}
-	if !hasTools {
-		return modelConfigured, nil, allTools, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(tools), []byte("null")) {
-		return modelConfigured, nil, allTools, nil
-	}
-	var names []string
-	if err := json.Unmarshal(tools, &names); err != nil {
-		// A board reference may replace the whole value at invocation time.
-		return modelConfigured, nil, true, nil
-	}
-	for _, name := range names {
-		if !strings.Contains(name, "${board:") {
-			staticTools = append(staticTools, name)
-		}
-	}
-	return modelConfigured, staticTools, len(names) > 0 || allTools, nil
-}
-
-func validateRequiredDeps(required nodeRequirements, deps dependencies) error {
-	switch {
-	case required.inference && deps.inference == nil && deps.router == nil:
-		return errdefs.NotFoundf(
-			"graph engine: node type inference requires dep %q or %q", DepInference, DepRouter)
-	case required.router && deps.router == nil:
-		return errdefs.NotFoundf(
-			"graph engine: inference node without model requires dep %q", DepRouter)
-	case required.tools && deps.tools == nil:
-		return errdefs.NotFoundf("graph engine: node type tool requires dep %q", DepTools)
-	case required.script && deps.script == nil:
-		return errdefs.NotFoundf(
-			"graph engine: node type script requires dep %q", DepScriptRuntime)
-	default:
-		return validateToolNames(required.toolNames, deps.tools)
-	}
-}
-
-func validateToolNames(names []string, assembly *tool.Assembly) error {
-	if len(names) == 0 || assembly == nil {
-		return nil
-	}
-	available := make(map[string]struct{})
-	for _, definition := range assembly.Catalog().Definitions() {
-		available[definition.Name] = struct{}{}
-	}
-	for _, name := range names {
-		if _, ok := available[name]; !ok {
-			return errdefs.NotFoundf(
-				"graph engine: inference node references unknown tool %q", name)
-		}
-	}
-	return nil
-}
-
-func validateScriptRuntimes(definition *coregraph.GraphDefinition, boundName string) error {
-	for _, node := range definition.Nodes {
-		if node.Type != "script" {
-			continue
-		}
-		config, err := coregraph.DecodeConfig[scriptnode.ScriptConfig](node.Config)
-		if err != nil {
-			return err
-		}
-		if config.Runtime != boundName {
-			return errdefs.Validationf(
-				"graph engine: script node %q runtime %q does not match bound runtime %q",
-				node.ID, config.Runtime, boundName)
-		}
-	}
-	return nil
 }
 
 func (b BuildSettings) options() ([]coregraph.BuildOption, error) {
