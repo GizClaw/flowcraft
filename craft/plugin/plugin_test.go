@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -77,11 +78,11 @@ func TestStoreScanEnableKV(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "name": "Hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {"command": "python3", "args": ["server.py"]}
+		"requires": ["tools.provide"],
+		"run": {"command": "python3", "args": ["server.py"]}
 	}`)
 	writePlugin(t, root, "bad", `{
-		"id": "bad", "version": "0.1.0", "permissions": ["nope"]
+		"id": "bad", "version": "0.1.0", "requires": ["nope"]
 	}`)
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
@@ -140,7 +141,7 @@ func TestStoreKVFailsClosedOnABrokenFile(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	writePlugin(t, root, "quiet", `{
 		"id": "quiet", "version": "0.1.0"
@@ -183,26 +184,32 @@ func TestManifestLegacyAndRejection(t *testing.T) {
 	t.Parallel()
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "old", "version": "0.1.0",
-		"entry": "dist/index.js",
-		"mcpServers": [{"command": "node", "args": ["server.js"]}]
+		"ui": {"entry": "dist/index.js"}
 	}`))
 	if err != nil {
-		t.Fatalf("ParseManifest legacy: %v", err)
+		t.Fatalf("ParseManifest: %v", err)
 	}
-	if err := manifest.Validate(""); err != nil {
-		t.Fatalf("Validate legacy: %v", err)
+	if err := manifest.Validate("", NewVocabulary()); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
-	if manifest.Entry() != "dist/index.js" || len(manifest.Servers()) != 1 {
-		t.Fatalf("legacy aliases not normalized: %+v", manifest)
+	if manifest.Entry() != "dist/index.js" {
+		t.Fatalf("ui entry not normalized: %+v", manifest)
 	}
-	kraft, err := ParseManifest(context.Background(), []byte(`{
-		"id": "old", "version": "0.1.0", "kraft": {"binary": "x"}
-	}`))
-	if err != nil {
-		t.Fatalf("ParseManifest kraft: %v", err)
-	}
-	if err := kraft.Validate(""); err == nil {
-		t.Fatal("kraft field was not rejected")
+	for name, raw := range map[string]string{
+		"kraft": `{"id": "old", "version": "0.1.0", "kraft": {"binary": "x"}}`,
+		"tools": `{"id": "old", "version": "0.1.0", "tools": [{"name": "echo"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			decoded, err := ParseManifest(context.Background(), []byte(raw))
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if err := decoded.Validate("", NewVocabulary()); err == nil ||
+				!strings.Contains(err.Error(), "no longer supported") {
+				t.Fatalf("Validate = %v, want the removed field to be refused", err)
+			}
+		})
 	}
 }
 

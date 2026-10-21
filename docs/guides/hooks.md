@@ -112,7 +112,7 @@ manager, err := hooks.LoadWithSources(ctx, "/etc/app/hooks.json",
 before the command sees them — `tool_input`, `tool_result`, `prompt`,
 `command`, `error`, `message`, `target` — leaving identifiers and
 status fields. A trusted source sees the payload as-is. `craft` marks
-every plugin source untrusted, which is how `hooks:provide` is honored
+every plugin source untrusted, which is how `hooks.provide` is honored
 at execution time rather than only at contribution time.
 
 ## Producers

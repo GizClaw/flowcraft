@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft/plugin"
+	pluginserver "github.com/GizClaw/flowcraft/craft/plugin/server"
 )
 
 // engineDeps records what the test engine factory was handed, so tests
@@ -96,26 +97,25 @@ func (f nodeEngineFactory) New(_ context.Context, in resource.Input) (any, error
 }
 
 // nodeHost is a PluginHost exposing one plugin that declares the echo
-// node, the given permissions, and a scriptable tool result.
+// node, the given grants, and a scriptable tool result.
 type nodeHost struct {
-	permissions []string
-	nodes       []plugin.NodeDecl
-	reply       func(pluginID, toolName string, args any) (json.RawMessage, error)
-	calls       []string
-	args        []any
+	grants []string
+	nodes  []plugin.NodeDecl
+	reply  func(pluginID, toolName string, args any) (json.RawMessage, error)
+	calls  []string
+	args   []any
 }
 
-// newNodeHost builds a plugin host whose single plugin declares
-// nodes:provide, mcp:provide plus permissions, and the default echo
-// node. A node plugin needs both grants: the node declaration is gated
-// by nodes:provide, and the tool it calls lives on the plugin's own
-// MCP server, which mcp:provide covers.
-func newNodeHost(permissions ...string) *nodeHost {
-	if len(permissions) == 0 {
-		permissions = []string{"nodes:provide", "mcp:provide"}
+// newNodeHost builds a plugin host whose single plugin holds grants and
+// declares the default echo node. A node plugin needs both channels: the
+// node declaration is published by nodes.provide, and the tool it calls
+// is published by tools.provide.
+func newNodeHost(grants ...string) *nodeHost {
+	if len(grants) == 0 {
+		grants = []string{"nodes.provide", "tools.provide"}
 	}
 	return &nodeHost{
-		permissions: permissions,
+		grants: grants,
 		nodes: []plugin.NodeDecl{{
 			Type: "echo", Tool: "node_echo", Timeout: "5s",
 		}},
@@ -133,13 +133,17 @@ func (h *nodeHost) HookSources() []hooks.ExtraSource {
 }
 
 func (h *nodeHost) Entries() ([]plugin.Entry, error) {
+	grants := make(pluginserver.GrantSet, len(h.grants))
+	for _, grant := range h.grants {
+		grants[grant] = true
+	}
 	return []plugin.Entry{{
-		ID: "hello",
+		ID:     "hello",
+		Grants: grants,
 		Manifest: plugin.Manifest{
-			ID:          "hello",
-			Version:     "0.1.0",
-			Permissions: h.permissions,
-			Nodes:       h.nodes,
+			ID:      "hello",
+			Version: "0.1.0",
+			Nodes:   h.nodes,
 		},
 	}}, nil
 }
@@ -176,8 +180,34 @@ deploy:
 `
 }
 
+// pluginTestDefinition is the smallest deployable definition a Craft
+// starts from.
+const pluginTestDefinition = `
+craft:
+  id: test
+  version: 0.1.0
+deploy:
+  version: v1
+  resources:
+    bus: {kind: event.Bus, impl: memory}
+  runtime:
+    event_bus: bus
+`
+
 // newTestCraft builds and starts a Craft over a node definition.
 func newTestCraft(t *testing.T, definition string, host PluginHost) *Craft {
+	t.Helper()
+	return newTestCraftWith(t, definition, host)
+}
+
+// newTestCraftWith is newTestCraft plus the capabilities contributing what
+// the test needs beyond the node engine, host primitives included.
+func newTestCraftWith(
+	t *testing.T,
+	definition string,
+	host PluginHost,
+	extra ...Capability,
+) *Craft {
 	t.Helper()
 	def, err := ParseDefinition([]byte(definition))
 	if err != nil {
@@ -185,7 +215,7 @@ func newTestCraft(t *testing.T, definition string, host PluginHost) *Craft {
 	}
 	c, err := New(def, Options{
 		DataDir:      t.TempDir(),
-		Capabilities: []Capability{nodeEngineCapability{}},
+		Capabilities: append([]Capability{nodeEngineCapability{}}, extra...),
 		Plugins:      host,
 	})
 	if err != nil {
@@ -289,7 +319,7 @@ func TestCraftMountsPluginNodeTypes(t *testing.T) {
 }
 
 // TestPluginNodesRequirePermission is the fail-closed half of the
-// nodes:provide grant: without it the plugin contributes nothing —
+// nodes.provide grant: without it the plugin contributes nothing —
 // no resource, no engine dependency.
 func TestPluginNodesRequirePermission(t *testing.T) {
 	t.Parallel()
@@ -297,7 +327,7 @@ func TestPluginNodesRequirePermission(t *testing.T) {
 	c, err := New(mustDefinition(t, nodeDefinition("bot")), Options{
 		DataDir:      t.TempDir(),
 		Capabilities: []Capability{nodeEngineCapability{seen: seen}},
-		Plugins:      newNodeHost("mcp:provide"),
+		Plugins:      newNodeHost("tools.provide"),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -308,7 +338,7 @@ func TestPluginNodesRequirePermission(t *testing.T) {
 		t.Fatalf("compose: %v", err)
 	}
 	if _, ok := doc.Resources["plugin.hello.node.echo"]; ok {
-		t.Fatal("node resource synthesized without nodes:provide")
+		t.Fatal("node resource synthesized without nodes.provide")
 	}
 	if dep := doc.Agents["bot"].Engine.Deps["node_type.hello.echo"]; dep != "" {
 		t.Fatalf("engine dep = %q, want none", dep)
@@ -321,7 +351,7 @@ func TestPluginNodesRequirePermission(t *testing.T) {
 		t.Fatalf("OpenRuntime: %v", err)
 	}
 	if _, ok := rt.Resource("plugin.hello.node.echo"); ok {
-		t.Fatal("node resource present in the runtime without nodes:provide")
+		t.Fatal("node resource present in the runtime without nodes.provide")
 	}
 	if names := seen.names(); len(names) != 0 {
 		t.Fatalf("engine deps = %v, want none", names)

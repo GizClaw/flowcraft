@@ -211,10 +211,10 @@ func TestAssetFSWithoutUI(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "headless", `{
 		"id": "headless", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	writePlugin(t, root, "broken", `{
-		"id": "broken", "version": "0.1.0", "permissions": ["nope"]
+		"id": "broken", "version": "0.1.0", "requires": ["nope"]
 	}`)
 	host := newAssetHost(t, root)
 	for _, id := range []string{"headless", "broken", "absent"} {

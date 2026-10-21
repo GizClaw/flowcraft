@@ -16,10 +16,10 @@ and the presentation; craft owns the application.
   delivery, plugin roots and mount points, `host_tools` configuration, and
   either an inline `deploy` document or a list of `base_layers`.
 - **Capabilities** — compile-time Go extensions passed to `craft.New` as
-  `[]craft.Capability`. They register resource factories, service
-  implementations, layers, `${...}` resolvers and host factory decorators.
+  `[]craft.Capability`. They register resource factories, host primitives,
+  layers, `${...}` resolvers and host factory decorators.
 - The **running Craft** — shared services (configuration resolution, the
-  craft event plane, the plugin host, the host primitive server) plus a
+  craft event plane, the plugin host, the plugin wire server) plus a
   map of `core/runtime.Runtime` values keyed by `craft.RuntimeKey`.
 
 A runtime is built from the composed deployment document exactly as
@@ -41,20 +41,21 @@ document, injects externals, and binds services afterwards.
 
 | | Capability | Plugin |
 | --- | --- | --- |
-| Carrier | Go code | `plugin.json` + data + optional UI bundle + optional MCP server |
+| Carrier | Go code | `plugin.json` + data + optional UI bundle + optional plugin process |
 | When | compile time (`craft.New`) | install / enable / disable |
 | Registers resource kinds | yes | **no** |
-| Typical contribution | domain resources, primitive service implementations, layers, resolvers, decorators | tools (MCP), graph nodes, skills, hooks, UI |
+| Typical contribution | domain resources, host primitives, layers, resolvers, decorators | tools declared over the plugin wire, graph nodes, skills, hooks, UI |
 | Permission model | none (trusted code) | manifest grants checked by the host |
 | Lifetime | the process | the plugin's enable state |
 
 The third input is YAML, which composes and configures but never defines
 behaviour: a definition can only select and configure a resource kind an
-already-registered factory provides, a craft built-in, or a service
-implementation. In particular, **a plugin can never register a Go
-resource kind**. The registry is frozen by `craft.New`; plugin changes
-touch only the deployment document and the shared tool set, so
-hot-plugging never tears the resource registry.
+already-registered factory provides or a craft built-in. It cannot add a
+host primitive either: those are declared in code by a capability. In
+particular, **a plugin can never register a Go resource kind**. The
+registry is frozen by `craft.New`; plugin changes touch only the
+deployment document and the shared tool set, so hot-plugging never tears
+the resource registry.
 
 ## Definition schema
 
@@ -77,9 +78,8 @@ plugins:                    # optional
   node_targets: [assistant] # agents that receive plugin node types
 
 host_tools:                 # optional
-  disable: [open_url]       # primitives never exposed
-  services:                 # named impl per primitive family
-    secrets: {impl: keyring}
+  # resource.op ids your catalog defines; an unknown id fails craft.New
+  disable: [secret.delete]
 
 deploy:                     # either an inline deployment document ...
   version: v1
@@ -165,8 +165,8 @@ document's `runtime.external_deps`.
 
 | Method | Does |
 | --- | --- |
-| `New(def, opts)` | validates the definition, registers capability factories and service impls, and (with `opts.Plugins`) the plugin node factory and the UI registry. Builds no runtime. |
-| `Start(ctx)` | starts the host primitive server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
+| `New(def, opts)` | validates the definition, registers capability factories, assembles the host primitive catalog, and (with `opts.Plugins`) the plugin node factory and the UI registry. Builds no runtime. |
+| `Start(ctx)` | starts the plugin wire server and plugin host and installs the plugin revision watcher. Idempotent. Publishes `craft.started`. |
 | `OpenRuntime(ctx, key, opts)` | composes layers, builds the runtime, runs every `RuntimeBinder`. Requires `Start`. Publishes `craft.runtime.opened`. |
 | `ReloadRuntime(ctx, key, reason)` | recomposes and calls the runtime's transactional `Reload`. Publishes `craft.reload.started` / `.completed` / `.failed`; reports no generation — `ReloadRuntimeWith` is the entry point that returns one. |
 | `ReloadRuntimeWith(ctx, key, opts, reason)` | `ReloadRuntime` with fresh `RuntimeOptions`: the next generation is composed and built with them, and once it is serving and bound they are what the key keeps. Returns that generation's `*runtime.ReloadResult`; a failed reload returns none, and its error names the generation serving instead. |
@@ -340,24 +340,25 @@ Registration order is preserved.
 | Interface | Hook | When it runs |
 | --- | --- | --- |
 | `Registrar` | `Register(*resource.Registry) error` | once in `New`, before anything is built |
-| `ServiceRegistrar` | `RegisterServices(*hostmcp.ServiceRegistry) error` | once in `New`, after every `Register` |
 | `Layers` | `Layers() []deploy.Layer` | on every composition, after definition layers |
 | `Schemes` | `Resolver() *resource.ReferenceResolver` | merged into the `${craft:...}` resolver |
 | `HostDecorators` | `HostFactoryDecorators()` | when each runtime is built; reused by reload |
 | `ResultHostDecorators` | `ResultHostFactoryDecorators()` | when each runtime is built; reused by reload |
-| `HostServices` | `HostServiceSet() hostmcp.Services` | once in `New`, merged into the primitive services |
+| `HostPrimitives` | `HostPrimitives() []pluginserver.Primitive` | once in `New`, merged into the host catalog, capabilities in registration order |
 | `RuntimeBinder` | `BindRuntime(ctx, key, rt) error` | after every successful build *and* reload |
 
 Capabilities are trusted compile-time code, so their errors fail the
 build rather than degrade: a nil capability, an empty or duplicate name,
-or an error from `Register`, `RegisterServices` or `BindRuntime` aborts
+or an error from `Register` or `BindRuntime` aborts
 `New` (or `OpenRuntime` for `BindRuntime`). Optional interfaces that are
 absent are simply not called — there is no partial-handling path.
 
-Host primitive services are resolved in this precedence: capability
-`HostServices` (later capabilities override earlier fields), then
-`Options.HostServices` (direct fields override), then
-`host_tools.services.<family>.impl` bindings.
+`HostPrimitives` is the whole extension point for the plugin wire: craft
+contributes no primitives, so what a plugin may call back is exactly what
+the application declares, each primitive carrying its own grant name and
+handler. Two capabilities contributing the same `resource.op` fail `New`
+rather than silently shadowing each other, and `host_tools.disable` is
+checked against the contributed set plus `host.about`.
 
 ## Plugins
 
@@ -366,7 +367,7 @@ A plugin is a directory the host scans:
 ```text
 <root>/<id>/plugin.json   # required, < 1 MiB
 <root>/<id>/dist/...      # ui.entry target (optional)
-<root>/<id>/server/...    # MCP server files (optional, any language)
+<root>/<id>/server/...    # the plugin process's own files (optional, any language)
 <root>/<id>/skills/...    # optional
 <root>/<id>/hooks/...     # optional
 ```
@@ -382,10 +383,10 @@ Builtin roots are read-only.
   "name": "Hello Plugin",
   "version": "0.2.0",
   "minHostVersion": "0.1.0",
-  "permissions": ["mcp:provide", "skills:provide"],
+  "requires": ["tools.provide", "skills.provide"],
   "ui": {"entry": "dist/index.js"},
-  "mcp": {"command": "python3", "args": ["server/main.py"],
-          "env": {"LOG_LEVEL": "info"}, "required": false},
+  "run": {"command": "python3", "args": ["server/main.py"],
+          "env": {"LOG_LEVEL": "info"}},
   "skills": ["skills"],
   "hooks": ["hooks/on_start.json"],
   "nodes": [{"type": "echo", "tool": "node_echo", "timeout": "30s"}]
@@ -393,13 +394,21 @@ Builtin roots are read-only.
 ```
 
 `id` must match `^[a-z0-9][a-z0-9._-]{0,63}$`. Limits: skills ≤ 32,
-hooks ≤ 16, MCP servers ≤ 16, nodes ≤ 64; `mcp.env` ≤ 32 entries (key ≤
-128, value ≤ 4 KiB); paths ≤ 256 chars and confined to the plugin root.
-`mcp.transport` is `stdio` (default, needs `command`) or `http` (needs
-`url`); a path-bearing `command`/`args` is resolved against and confined
-to the plugin root, while a bare command goes through `PATH`. The legacy
-`mcpServers` and top-level `entry` aliases are accepted; the removed
-`kraft` and `tools` fields are rejected with an upgrade hint.
+hooks ≤ 16, nodes ≤ 64; `run.env` ≤ 32 entries (key ≤ 128, value ≤
+4 KiB); paths ≤ 256 chars and confined to the plugin root.
+
+`run` is how craft starts the plugin process: `command` is required, and
+a path-bearing `command`/`args` is resolved against and confined to the
+plugin root (the command must exist and be a regular file), while a bare
+command goes through `PATH`. There is **no transport field**: craft
+listens on one unix socket per plugin process and states it in
+`FLOWCRAFT_PLUGIN_WIRE`, alongside `FLOWCRAFT_PLUGIN_ID` and
+`FLOWCRAFT_PLUGIN_DATA_DIR` (the manifest cannot override the three).
+The plugin dials that socket; a plugin without a `run` section declares
+no process and publishes nothing. The removed `mcp` and `mcpServers`
+sections and the `kraft` and `tools` fields are rejected with an
+upgrade hint — a plugin still declaring an MCP server would otherwise
+install, run and publish nothing.
 
 ### Install, update, uninstall
 
@@ -506,40 +515,73 @@ against its checksum (≤ 256 MiB) → require the package to hold the same
 plugin at the announced version → install it under the version rule and
 rollback above.
 
-### Permissions
+### Grants
 
-| Permission | Authorizes |
+A plugin asks; the host decides. The manifest's `requires` is what the
+plugin needs to publish what it declares, and `plugin.Entry.Grants` is
+what the store approved for it: the required names filtered by
+`plugin.Options.Approve`. The two are separate values on purpose. A
+manifest is content — it arrives from whoever built the plugin — while the
+grants are this host's answer to that content, and every reader
+downstream asks the host, never the manifest, which is what keeps a plugin
+from authorizing itself with a line of JSON.
+
+| Grant | Publishes |
 | --- | --- |
-| `mcp:provide` | the `mcp` server section |
-| `skills:provide` | the `skills` list |
-| `hooks:provide` | the `hooks` list |
-| `nodes:provide` | the `nodes` section |
-| `secrets:auth` | `secret_get` / `secret_set` / `secret_delete` |
-| `inference:write` | `inference_upsert` / `inference_remove` |
-| `telemetry:export` | `telemetry_configure` / `telemetry_disable` |
-| `sessions:import` | `session_import` / `session_imported_sources` |
-| `host:open_url` | `open_url` |
-| `events:emit` | `emit_event` |
-| `ui:webview` | the UI bundle (the shell gates it) |
-| `storage:kv` | the plugin KV store (the shell binds it) |
+| `tools.provide` | the tools the plugin declares over its connection |
+| `skills.provide` | the `skills` list |
+| `hooks.provide` | the `hooks` list |
+| `nodes.provide` | the `nodes` section |
+| `ui.webview` | the UI bundle (the shell gates it) |
+| `storage.kv` | the plugin KV store (the shell binds it) |
 
-An unknown permission is rejected, not ignored. The gate is **fail-closed
-at contribution time**: a plugin that declares a gated section without
-its permission still loads and enables, but the section is dropped:
+Those six are craft's own, one per contribution channel, and every name is
+a dotted `resource.op` — the shape a primitive id already has, so a host's
+vocabulary reads as one list. An application adds its host primitives'
+grants by passing them to `plugin.Options.Grants`
+(`pluginserver.Grants(primitives)` derives the set from a catalog), and a
+manifest may require them alongside craft's. Anvil names each grant after
+the primitive it authorizes — `events.emit`, `secret.get` — which is the
+smallest vocabulary an application can offer. A `requires` entry outside
+the vocabulary is rejected at install time, rather than read as a grant
+nothing will ever satisfy.
 
-- `mcp` without `mcp:provide`: no child process starts, no host token is
-  minted, and a node bound to it fails with the missing grant;
-- `skills` without `skills:provide`: `SkillRoots` omits the directories;
-- `hooks` without `hooks:provide`: `HookSources` omits the files;
-- `nodes` without `nodes:provide`: no node resource or engine dep is
+`plugin.Options.Approve` is the seam for an application that decides per
+plugin: it receives the id and the required grants and returns the subset
+it approves. Nil approves every request, because installing a plugin is
+already a decision. Nothing grows past its request — a name the policy
+returns that nobody required is ignored — and the gate stays **fail-closed
+at contribution time**: a plugin that declares a section without the grant
+that publishes it still loads and enables, and the section goes nowhere:
+
+- `tools` without `tools.provide`: the process still starts and declares
+  what it likes, but none of it is projected into a tool catalog, and a
+  direct caller is told the grant is missing rather than that the tool
+  does not exist;
+- `skills` without `skills.provide`: `SkillRoots` omits the directories;
+- `hooks` without `hooks.provide`: `HookSources` omits the files;
+- `nodes` without `nodes.provide`: no node resource or engine dep is
   synthesized;
 - `ui` and `storage` carry no gate inside craft — the shell gates the
   bundle and binds the KV, while `Host.KV` is the host accessor. The
-  registry serves the bundle and reports the grant in its entries, so
-  the shell refuses to load what the plugin did not ask for.
+  registry reports both lists per entry (`requires` and `granted`), so a
+  shell decides on the host's answer rather than the plugin's claim.
 
-Disabling a plugin withdraws its contributions even though its
-permissions are unchanged; re-enabling restores them.
+Every one of those reads goes through `plugin.Entry.Projection()`: the
+sections arrive already filtered, so a consumer publishes a field and has
+no permission left to re-check. `Projection.Dropped` names the channels a
+plugin asked for and did not get, in channel order — the record a shell
+shows when a plugin is enabled and does less than its manifest says.
+
+An update that requires new grants passes both seams, in this order:
+`plugin.UpdateApprover` decides whether the plugin may widen its request at
+all, and `plugin.Options.Approve` then decides what the new version holds.
+The first is about the package, the second about the host — neither makes
+the other redundant, and a grant the policy did not approve stays out even
+though the update was approved.
+
+Disabling a plugin withdraws its contributions even though its grants are
+unchanged; re-enabling restores them.
 
 ### UI delivery
 
@@ -554,8 +596,8 @@ assets, ok := registry.Assets(entries[0].ID)  // where to read it from
 ```
 
 `Entries()` lists every valid plugin — enabled or not — sorted by id,
-with `id`, `name`, `version`, `entry`, `permissions`, `enabled` and the
-`revision` the read started at. Invalid plugins are not enumerated:
+with `id`, `name`, `version`, `entry`, `requires`, `granted`, `enabled`
+and the `revision` the read started at. Invalid plugins are not enumerated:
 scan errors belong to the management view (`plugin.Host.List`).
 `Assets(id)` returns an `fs.FS` rooted at the directory holding the
 plugin's `ui.entry`, so `dist/index.js` is `index.js` and the chunks
@@ -586,7 +628,7 @@ each event is:
 1. destroy every plugin scope from the previous round;
 2. read `Entries()` again, and record the revision it carries;
 3. load each enabled bundle, handing the plugin's id, version and
-   permissions to the JS host.
+   granted grants to the JS host.
 
 Two asset roots, on purpose: `Assets` / `plugin.Host.AssetFS` read
 inside the bundle, bundle-relative, which is what a JS loader needs,
@@ -627,43 +669,41 @@ the source closes.
 `plugin.StopRequested` for a stop the application asked for (disable,
 uninstall, close), `plugin.StopRolledBack` for an enable the host undid
 because the plugin could not come up, and `plugin.StopFailed` when a
-plugin's MCP server died on its own and the reconnect could not start
-the command again. A `StopFailed` loss leaves the entry alone — enabled,
+plugin's process died on its own — it exited, or its connection ended
+without the host asking. A `StopFailed` loss leaves the entry alone — enabled,
 with its tools still projected — so the application decides whether to
 disable or uninstall the plugin, and knows why its tool calls are
 failing in the meantime. Re-enabling is the other answer, and it is a
 start: the source that gave up is retired and a fresh one opened and
 waited for, and an enable that fails again reports the failure and
-leaves the record disabled. Transient losses that reconnect in place are
-not reported, so a self-healing plugin does not flap the observer; nor
-is a loss that races the host's own close, or one the enable in flight
-rolled back on, where the rollback is the report. A loss that arrives
-while an enable is waiting is held for that call: if the enable stands,
-the loss is reported once the call ends, so a plugin is never recorded
-enabled with a server that gave up and nothing said about it. A loss that
+leaves the record disabled. There is no reconnection to hide a dead
+process, so every loss is reported as it happens: no stop is invented
+for a plugin whose wire merely went quiet, and a loss that races the
+host's own close, or one the enable in flight rolled back on, is not
+reported — the rollback is the report. A loss that arrives while an
+enable is waiting is held for that call: if the enable stands, the loss
+is reported once the call ends, so a plugin is never recorded enabled
+with a process that gave up and nothing said about it. A loss that
 arrives while the host is stopping that same process is one event with
 that stop, reported once, as whichever side recorded it first — the stop
 the application asked for, or the loss that got there first — while the
-host's own half runs either way: the process leaves the live set, and
-the token minted for it is revoked.
+host's own half runs either way: the process leaves the live set.
 
 Enabling is an answer rather than a spawn: `plugin.Host.SetEnabled`
-waits for the plugin's MCP servers, bounded by
+waits for the plugin to say `Ready` on its connection, bounded by
 `HostOptions.EnableTimeout` (`plugin.DefaultEnableTimeout`, 10s; a
 negative value keeps the old spawn-and-return behavior). An enable whose
-command is gone, not executable, or refused by the peer reports that
-failure and is rolled back — the process is stopped, the entry is left
-disabled, and `OnStopped` says `StopRolledBack` — instead of recording an
-enabled plugin with no process. A server that is merely not there yet (a
-remote endpoint that is down, a child that keeps dying during startup)
-is not a failure of enable: the wait gives up at the timeout, the entry
-is recorded enabled, and the source keeps reconnecting. A plugin whose
-enable is in flight is what narrates its own failure, so the failure the
-rollback answers is not reported a second time through `OnStopped`.
-The wait covers every server the manifest declares: `mcp.required` marks
-a server the plugin cannot run without for the MCP layer's own
-reporting, and says nothing about the enable — a plugin whose declared
-server cannot start is refused whichever way that flag is set.
+command is gone, not executable, or refused by the peer — and one whose
+`Hello` states a wire version craft cannot speak, whose identity does not
+match the connection, or whose `Declare` craft refuses — reports that
+failure and is rolled back: the process is stopped, the entry is left
+disabled, and `OnStopped` says `StopRolledBack`, instead of recording an
+enabled plugin with no process. A plugin that is merely not there yet (a
+process still starting, one that has not dialed the socket) is not a
+failure of enable: the wait gives up at the timeout and the entry is
+recorded enabled. A plugin whose enable is in flight is what narrates
+its own failure, so the failure the rollback answers is not reported a
+second time through `OnStopped`.
 `Host.Start` does not wait: it replays what a previous session recorded,
 and an application's startup must not depend on a plugin's process.
 
@@ -676,74 +716,119 @@ is not running.
 ## Plugin graph nodes
 
 Each manifest `nodes` entry becomes an executable graph node: craft
-synthesizes a `graph.NodeType` / `mcp` deployment resource whose settings
+synthesizes a `graph.NodeType` / `plugin` deployment resource whose settings
 carry `type` (namespaced `<plugin-id>.<node-type>`), `plugin`, `tool` and
 an optional `timeout`. When `plugins.node_targets` is set, every named
 agent receives an engine dependency `node_type.<id>.<type>` pointing at
 that resource, and each target must exist
 (`craft: plugins.node_targets agent "X" not found`).
 
-The node handler calls the plugin's MCP tool with
+The node handler calls the plugin's tool over the plugin wire with
 `{node: {id, type, graph}, config}` and applies the returned
 `{"writes": {...}}` object to the board. The method never appears in the
 model's tool catalog; the node runs in the plugin subprocess and each
 call is bounded by the node `timeout` (default 30s) and the run context.
-`nodes` is gated by `nodes:provide`; the tool it calls needs
-`mcp:provide`, so a node plugin usually declares both. A node backed by a
-plugin lacking `mcp:provide` is still synthesized and fails at call time
-with the missing grant rather than disappearing silently.
+`nodes` is published by `nodes.provide`; the tool it calls needs
+`tools.provide`, so a node plugin usually requires both. A node backed by
+a plugin lacking `tools.provide` is still synthesized and fails at call
+time with the missing grant rather than disappearing silently.
 
-## hostmcp: host primitives
+## The plugin wire and host primitives
 
-`craft/hostmcp` is a local MCP server that exposes host primitives to
-plugins as tools. It transports over streamable HTTP bound to `127.0.0.1`
-on an ephemeral port at `/mcp`, started by `Craft.Start` and stopped last
-by `Craft.Close`.
+`craft/plugin/protocol` is the wire both halves speak and
+`craft/plugin/server` is craft's half. craft is always the server: for
+each plugin process it listens on one unix socket under
+`server.RuntimeDir()` (a short per-user directory created `0700`, the
+socket named with twelve hex characters so the path stays inside
+`sun_path`) and serves a single `grpc.Server` carrying two services —
+`flowcraft.plugin.v1.Plugin` (craft → plugin: the process's handshake and
+its calls) and `flowcraft.plugin.v1.Host` (plugin → craft: the
+primitives). Transport is h2c over that socket, on every platform,
+Windows included.
 
-- **Authentication.** Each plugin gets its own bearer token, minted when
-  its source is created and revoked on disable, update or close. The
-  token is passed as `Authorization: Bearer` and injected into the plugin
-  process as `CRAFT_PLUGIN_TOKEN`, alongside `CRAFT_HOST_MCP_URL`. A
-  missing or unknown token is `401`; a non-loopback `Host` header or any
-  request carrying an `Origin` is `403` (DNS-rebinding defense); a token
-  over its rate limit (default 20 requests/second) is `429`.
-- **Scoping.** A token maps to `{pluginID, grants}` where grants are the
-  manifest permissions. A tool whose grant the caller lacks is not
-  exposed to that caller; calls dispatch as identity → grant → execute →
-  audit.
-- **Registry and handshake.** `Registry.Register` requires a name and a
-  handler and rejects duplicates. `host_about` (protocol version 1) is
-  always registered and reports the exposed primitives, the disabled
-  ones, and the caller's missing grants; call it at startup and fail fast
-  when a needed primitive is absent.
-- **Services.** The v1 set is backed by `hostmcp.Services`; each nil
-  field removes its primitives from the exposed set (fail closed).
-- **Audit.** Every call yields one `AuditEvent{plugin_id, tool, outcome,
-  duration}` with no payloads, forwarded to telemetry as `hostmcp call
+- **Identity is the connection.** There is no token to mint, pass or
+  revoke: the grants of a process are the `ConnOptions.Grants` craft
+  opened its connection with, taken from the grants the store approved and
+  reported back in `HelloResponse.granted_permissions`. A process that is
+  stopped, replaced or crashes takes its grants with its file descriptor.
+  The socket file is `0600` inside a `0700` directory, and that file mode
+  is the boundary — which is why a plugin child process must run as the
+  same user craft runs as.
+- **Handshake.** `Hello{wire_version, plugin_id, plugin_version,
+  max_concurrent_calls, capabilities}` → `HelloResponse{wire_version,
+  session_id, generation, granted_permissions, max_call_bytes}`. The wire
+  version is `major.minor`, the major is the compatibility boundary
+  (craft answers the lower minor of the two), and a mismatch is a
+  `Validation` error: terminal, so an enable rolls back instead of
+  waiting out a process that can never be ready. A `plugin_id` that does
+  not match the connection is refused the same way.
+- **Declaration, not registration.** After `Hello` the plugin opens
+  `max_concurrent_calls` bidi `Call` streams, then sends `Declare` with
+  one full snapshot of what it contributes (tools: name, description and
+  a JSON input schema), then `Ready`. A declaration whose revision is not
+  newer than the one craft holds is refused, and so is one `Validate`
+  refuses: the snapshot model makes a stale declaration a bug in the
+  plugin rather than a state to merge. `Call` goes the other way: craft
+  writes a `CallRequest` (tool name and JSON arguments) and the plugin
+  answers with `CallResult` (JSON bytes) or a `CallError` carrying the
+  error class, retryability and any structured details, correlated by
+  `call_id`.
+- **One entry for every primitive.** `Host` has a single RPC,
+  `Call(HostCallRequest{resource, op, params_json})` →
+  `HostCallResponse{result_json}`: the wire does not grow a method per
+  primitive, so a host and a plugin built from different revisions still
+  agree on the transport and discover the difference in the catalog.
+  `Registry.Register` requires a resource, an op and a handler and
+  rejects duplicates; the primitive id is `resource.op`.
+  `host.about` (protocol version 1) is always registered and reports the
+  primitives this connection may call — id, grant, description and params
+  schema — plus the ones it may not and why; call it at startup and fail
+  fast when a needed primitive is absent. The set is assembled by
+  `Catalog` from the primitives the application's capabilities
+  contribute, so a host that contributes none still answers.
+- **Limits and audit.** One connection may make 20 primitive calls per
+  second (`ServerOptions.RateLimit`); past that the call fails with a
+  rate-limit class. One call's arguments or result are bounded by
+  `ServerOptions.MaxCallBytes` (8 MiB by default), advertised in `Hello`.
+  Every call yields one `AuditEvent{plugin_id, tool, outcome, duration}`
+  with no payloads, forwarded to telemetry as `plugin host call
   plugin=... tool=... outcome=...`.
+- **Drain.** A stop sends `Drain` on the open streams; the plugin answers
+  `drained` once it has nothing in flight, and the connection is closed
+  either way when `HostOptions.DrainTimeout` runs out.
 
 ### v1 primitives
 
-| Tool | Grant | Backed by |
-| --- | --- | --- |
-| `host_about` | — | always available |
-| `secret_get` / `secret_set` / `secret_delete` | `secrets:auth` | `SecretService` |
-| `workspace_current` | — | `ContextService` |
-| `open_url` | `host:open_url` | `BrowserService` |
-| `inference_upsert` / `inference_remove` | `inference:write` | `InferenceService` |
-| `session_import` / `session_imported_sources` | `sessions:import` | `SessionService` |
-| `telemetry_configure` / `telemetry_disable` | `telemetry:export` | `TelemetryService` |
-| `emit_event` | `events:emit` | `EventService` |
+The catalog is grouped by resource; `op` selects the operation. Params
+are the JSON object in `params_json`, results the JSON object in
+`result_json`; the params schema each primitive publishes is
+documentation, and the handler still refuses a missing or mistyped
+parameter by name.
 
-`host_tools.disable` names primitives that are never exposed (reported
-`disabled` in `host_about`); naming `host_about` itself fails `craft.New`,
-because it is how a plugin learns the primitive set and carrying the
-disabled ones is its answer. `host_tools.services.<family>.impl` selects a
-named implementation registered by a capability through
-`ServiceRegistrar`. The families are `secrets`, `workspace`, `browser`,
-`inference`, `sessions`, `telemetry` and `events`, each bound to its
-interface. A missing impl, an unknown family, or an impl of the wrong
-type fails `craft.New`.
+There is one built-in primitive, and it is the one a plugin needs to ask
+anything at all:
+
+| Resource.op | Grant | Contributed by |
+| --- | --- | --- |
+| `host.about` | — | craft, always available |
+
+Everything else comes from the application: each capability implementing
+`HostPrimitives` returns `[]pluginserver.Primitive`, and each entry names
+its `Resource`, `Op`, `Grant`, `Description`, params schema and handler.
+A primitive with no grant is callable by every plugin; a granted one is
+listed by `host.about` under the connection's `Grants` and denied with
+`no_grant` for a plugin whose manifest did not ask for it. A convention
+the examples follow, not something craft enforces: name the grant after
+the permission (`events.emit` ← `events:emit`), so a manifest and
+`host.about` read the same way.
+
+`host_tools.disable` names primitives that are never exposed, as
+`resource.op` (reported `disabled` in `host.about`). Naming a primitive
+that the application does not contribute fails `craft.New` — an entry
+that matches nothing would read as "off" while every plugin still saw the
+primitive — and so does naming `host.about` itself, because it is how a
+plugin learns the primitive set and carrying the disabled ones is its
+answer.
 
 ## craft/manager
 
@@ -903,9 +988,10 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
 - Capabilities: `craft: duplicate capability "app"`, `craft:
   capability[0] is nil`, `craft: capability[0] has an empty name`,
   `craft: capability app register: ...`.
-- Service bindings: `craft: host_tools.services.secrets impl "x" is not
-  registered`, `craft: host_tools.services has unknown family "x"`,
-  `craft: service secrets.x is *T, want SecretService`.
+- Host catalog: `plugin host: cannot disable "x": it is not a host
+  primitive`, `plugin host: host.about cannot be disabled: it reports the
+  primitive set`, and `plugin host: primitive "x" already registered`
+  (two capabilities contributing the same `resource.op`).
 - Lifecycle: `craft: not started` (`ErrNotStarted`), `craft: runtime
   already exists` (`ErrRuntimeExists`), `craft: runtime not found`
   (`ErrRuntimeNotFound`), `craft: runtime key is required`.
@@ -914,11 +1000,20 @@ func New[T any](spec Spec[T]) (*Pool[T], error)
   are validated against the composed document.
 - Plugin manifest: `plugin hello: unknown permission "x"`, `plugin:
   invalid id "X"`, `plugin hello: the kraft field is no longer supported;
-  ...`, `plugin hello: mcp and mcpServers are mutually exclusive`.
-- Plugin gate: a call to a plugin whose `mcp` section was dropped is
-  `Forbidden` (`the mcp section is ignored without the mcp:provide
-  permission`); a plugin with no server answers `NotFound` (`not
-  configured`).
+  ...`, `plugin hello: run.command is required`, and `plugin: the mcp
+  field is no longer supported; craft serves the plugin socket and the
+  plugin dials FLOWCRAFT_PLUGIN_WIRE ...`.
+- Plugin gate: a call to one of a plugin's tools without
+  `tools.provide` is `Forbidden` (`plugin hello: tools are ignored
+  without the tools.provide grant`); a tool the plugin never declared is
+  `NotFound` (`plugin hello: no tool named "x"`).
+- Plugin wire: a foreign major is `plugin wire: version "2.0" is not
+  compatible with 1; this host speaks major 1`, a mismatched identity is
+  `plugin host: connection for "hello" announced itself as "other"`, a
+  `Ready` with no stream is `plugin hello: Ready arrived with no Call
+  stream open`, a stale snapshot is `plugin hello: declaration revision 1
+  is not newer than 1`, and calling a plugin with no process is `plugin
+  host: plugin "hello" is not running`.
 - Install: `plugin install: hello version 0.1.0 is not newer than 0.2.0`;
   rollback without a snapshot is `plugin install: no rollback snapshot
   for "hello"`. A package that is not a single plugin is `plugin

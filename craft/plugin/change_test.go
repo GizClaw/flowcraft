@@ -42,6 +42,7 @@ func newVersionFactory() *versionFactory {
 func (f *versionFactory) new(
 	_ context.Context,
 	entry Entry,
+	_ uint64,
 	_ map[string]string,
 	_ string,
 ) (Source, error) {

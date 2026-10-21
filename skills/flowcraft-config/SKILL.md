@@ -1,6 +1,6 @@
 ---
 name: flowcraft-config
-description: "Author, validate, and troubleshoot complete FlowCraft configuration: deployment documents (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring), craft.yaml application definitions, and plugin.json manifests. Use when writing or reviewing FlowCraft configs, assembling an agent deployment on top of a Craft, adding runtime/session settings, building graph definitions, defining plugins and their permissions, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment or craft template."
+description: "Author, validate, and troubleshoot complete FlowCraft configuration: deployment documents (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring), craft.yaml application definitions, and plugin.json manifests. Use when writing or reviewing FlowCraft configs, assembling an agent deployment on top of a Craft, adding runtime/session settings, building graph definitions, defining plugins and their grants, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment or craft template."
 ---
 
 # FlowCraft Config Authoring
@@ -108,10 +108,12 @@ builds the deployment with its own factory registry.
   are mutually exclusive and one is required, `craft.id` and
   `craft.version` are required, and `min_host_version` is a compatibility
   floor checked against the host (`craft.Version`).
-- A plugin's gated sections are fail-closed: `mcp` / `skills` / `hooks` /
-  `nodes` declared without `mcp:provide` / `skills:provide` /
-  `hooks:provide` / `nodes:provide` are dropped, and an unknown permission
-  is rejected rather than ignored.
+- A plugin asks and the host decides: the manifest's `requires` names
+  grants (`tools.provide` / `skills.provide` / `hooks.provide` /
+  `nodes.provide` / `ui.webview` / `storage.kv`, plus whatever the
+  application's primitives declare), `Options.Approve` may narrow the set,
+  and a section whose grant was not granted is dropped. An unknown grant is
+  rejected rather than ignored.
 - `plugins.tool_registry` and `plugins.node_targets` are mounting points
   resolved against the composed document — the named resource or agent
   must exist — and a plugin can never register a resource kind.
@@ -155,4 +157,4 @@ the craft module. A craft definition is checked by the host with
 - [pitfalls.md](references/pitfalls.md) — known drift points and the
   error → cause map.
 - [craft.md](references/craft.md) — craft.yaml and plugin.json schemas,
-  permissions and drop rules, host_tools bindings, hostmcp primitives.
+  grants and drop rules, host_tools bindings, host primitives.

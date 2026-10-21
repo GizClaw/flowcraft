@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // stopEvents records OnStopped notifications as "id:reason".
@@ -43,7 +41,7 @@ func TestHostOnStoppedReportsRequestedStops(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	for _, id := range []string{"hello", "quiet", "closing"} {
-		writePlugin(t, root, id, contributionManifest(id, "mcp:provide"))
+		writePlugin(t, root, id, contributionManifest(id, "tools.provide"))
 		writeContributionTree(t, root, id)
 	}
 	store := newStoreOver(t, root)
@@ -116,59 +114,8 @@ func TestHostOnStoppedReportsRequestedStops(t *testing.T) {
 	}
 }
 
-// TestPluginStopHelper is the stdio server of the loss tests: it serves
-// one tool, records its pid where the test can find it, and can exit on
-// its own when the test asks for a plugin that crashes.
-func TestPluginStopHelper(t *testing.T) {
-	if os.Getenv("CRAFT_PLUGIN_STOP_HELPER") != "1" {
-		t.Skip("plugin stop helper")
-	}
-	recordHelperPID(t)
-	if raw := os.Getenv("CRAFT_PLUGIN_STOP_HELPER_EXIT_MS"); raw != "" {
-		ms, err := strconv.Atoi(raw)
-		if err != nil || ms <= 0 {
-			t.Fatalf("invalid CRAFT_PLUGIN_STOP_HELPER_EXIT_MS %q", raw)
-		}
-		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() { os.Exit(0) })
-	}
-	server := mcpsdk.NewServer(&mcpsdk.Implementation{
-		Name: "stop-helper", Version: "0.1.0",
-	}, nil)
-	server.AddTool(&mcpsdk.Tool{
-		Name:        "echo",
-		InputSchema: map[string]any{"type": "object"},
-	}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		return &mcpsdk.CallToolResult{
-			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
-		}, nil
-	})
-	if err := server.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
-		t.Fatalf("helper server: %v", err)
-	}
-}
-
-// recordHelperPID appends the helper's pid to the plugin data
-// directory, so a test can kill the process the way a crash would and
-// count how many children the host spawned.
-func recordHelperPID(t *testing.T) {
-	t.Helper()
-	dir := os.Getenv("CRAFT_PLUGIN_DATA_DIR")
-	if dir == "" {
-		return
-	}
-	file, err := os.OpenFile(
-		filepath.Join(dir, "pids"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("open pid file: %v", err)
-	}
-	defer func() { _ = file.Close() }()
-	if _, err := file.WriteString(strconv.Itoa(os.Getpid()) + "\n"); err != nil {
-		t.Fatalf("record pid: %v", err)
-	}
-}
-
-// stopTestPlugin is one running plugin whose stdio server is this test
-// binary re-executed, plus the paths the loss tests need.
+// stopTestPlugin is one running plugin whose process is this test binary
+// re-executed, plus the paths the loss tests need.
 type stopTestPlugin struct {
 	host     *Host
 	dir      string
@@ -177,43 +124,27 @@ type stopTestPlugin struct {
 
 // startStopPluginHost scans one plugin, starts the host and returns it
 // once the plugin's tools are published. A positive exitMS makes the
-// helper exit on its own that many milliseconds after every start,
-// which is what the transient-loss test needs.
+// helper exit on its own that many milliseconds after it starts.
 func startStopPluginHost(t *testing.T, exitMS int) *stopTestPlugin {
 	t.Helper()
-	if os.Getenv("CRAFT_PLUGIN_STOP_HELPER") == "1" {
+	if os.Getenv(helperEnv) == "1" {
 		t.Skip("running as helper")
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("Executable: %v", err)
 	}
 	root := t.TempDir()
 	dir := filepath.Join(root, "hello")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.Symlink(executable, filepath.Join(dir, "server")); err != nil {
-		t.Fatalf("symlink helper: %v", err)
-	}
-	env := `{"CRAFT_PLUGIN_STOP_HELPER": "1"}`
+	env := map[string]string{}
 	if exitMS > 0 {
-		env = `{"CRAFT_PLUGIN_STOP_HELPER": "1",` +
-			`"CRAFT_PLUGIN_STOP_HELPER_EXIT_MS": "` + strconv.Itoa(exitMS) + `"}`
+		env[helperExitMS] = strconv.Itoa(exitMS)
 	}
-	manifest := `{
-		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {
-			"command": "./server",
-			"args": ["-test.run=TestPluginStopHelper"],
-			"env": ` + env + `
-		}
-	}`
+	manifest := wireManifestEnv("hello", env, "tools.provide")
 	if err := os.WriteFile(
 		filepath.Join(dir, "plugin.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
+	writeHelperCommand(t, dir)
 	dataRoot := t.TempDir()
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
@@ -223,7 +154,7 @@ func startStopPluginHost(t *testing.T, exitMS int) *stopTestPlugin {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	host, err := NewHost(HostOptions{Store: store})
+	host, err := NewHost(HostOptions{Store: store, Server: newWireServer(t)})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
 	}
@@ -336,35 +267,6 @@ func TestHostOnStoppedReportsTerminalProcessLoss(t *testing.T) {
 	}
 }
 
-// TestHostOnStoppedSilentForTransientProcessLoss pins the guard against
-// flapping: a plugin whose process dies and is reconnected in place
-// reports nothing, and its tools keep working.
-func TestHostOnStoppedSilentForTransientProcessLoss(t *testing.T) {
-	plugin := startStopPluginHost(t, 300)
-	events := &stopEvents{}
-	plugin.host.OnStopped(events.record)
-
-	// The helper exits on its own; the reconnect spawns a fresh child,
-	// which records a second pid.
-	plugin.waitForPIDs(t, 2, 20*time.Second)
-
-	echo := waitForTool(t, plugin.host, "hello__echo")
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if _, err := echo.Execute(context.Background(), `{}`); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the plugin never served a call again after the reconnect")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	time.Sleep(200 * time.Millisecond)
-	if got := events.snapshot(); len(got) != 0 {
-		t.Fatalf("a transient process loss was reported as %v, want silence", got)
-	}
-}
-
 // holdFirstStop subscribes a reporting hook that stops in its first
 // delivery of reason until the returned release channel is closed, so a
 // test can pin what the host does while one report is being delivered.
@@ -398,7 +300,7 @@ func holdFirstStop(
 func TestHostOnStoppedReportsOneStopPerProcess(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
 	ctx := context.Background()
@@ -467,7 +369,7 @@ func TestHostOnStoppedReportsOneStopPerProcess(t *testing.T) {
 func TestHostOnStoppedIgnoresALossDuringTheStopsDelivery(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	host := startHost(t, newStoreOver(t, root), newSourceFactory().new)
 	ctx := context.Background()

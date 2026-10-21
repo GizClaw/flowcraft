@@ -43,16 +43,14 @@ type Plugins struct {
 	NodeTargets  []string `json:"node_targets,omitempty"`
 }
 
-// HostTools configures the built-in host primitive set.
+// HostTools configures the host primitives the application contributes.
 type HostTools struct {
-	Disable  []string                  `json:"disable,omitempty"`
-	Services map[string]ServiceBinding `json:"services,omitempty"`
-}
-
-// ServiceBinding selects a named implementation for one primitive
-// family.
-type ServiceBinding struct {
-	Impl string `json:"impl"`
+	// Disable names primitives to leave unexposed, in the "resource.op"
+	// form host.about reports ("secrets.get"). Naming a primitive the
+	// application does not contribute fails craft.New: an entry that
+	// matches nothing would read as "off" while every plugin still sees
+	// the primitive.
+	Disable []string `json:"disable,omitempty"`
 }
 
 // BaseLayer is one definition-level layer.

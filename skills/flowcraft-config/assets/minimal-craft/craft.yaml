@@ -22,14 +22,12 @@ plugins:
   node_targets: [assistant] # agents that receive plugin node types
 
 host_tools:
-  # Primitives that must never reach a plugin. A disabled primitive is
-  # not exposed and host_about reports it.
-  disable: [open_url]
-  # Select named impls registered by a capability's ServiceRegistrar,
-  # e.g.:
-  #   services:
-  #     secrets: {impl: keyring}
-  # The impl must be registered or craft.New fails.
+  # Primitives that must never reach a plugin. craft ships none: a
+  # capability contributes them in code (HostPrimitives), and each entry
+  # here names one as resource.op. A disabled primitive is not exposed and
+  # host.about reports it; a name that matches no contributed primitive
+  # fails craft.New.
+  # disable: [secret.delete]
 
 deploy:
   version: v1

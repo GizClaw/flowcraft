@@ -26,13 +26,13 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
 - **`craft`** — Application assembly on top of `core`: the `craft.yaml`
-  definition, compile-time capabilities, the MCP plugin host (plugin processes
-  as MCP servers, host primitives as MCP tools for plugins), tools / graph
-  nodes / skills / hooks / UI contributed by plugins, and the process-level
-  `craft/manager` lifecycle. Plugins install from a directory or a zip
-  package, update in place with a rollback snapshot, and uninstall with
-  the data they own; a remote update source is validated here and fetched
-  by the application (`plugin.Installer`).
+  definition, compile-time capabilities, the plugin host (plugin processes
+  speaking craft's plugin wire, host primitives served back over the same
+  connection), tools / graph nodes / skills / hooks / UI contributed by
+  plugins, and the process-level `craft/manager` lifecycle. Plugins install
+  from a directory or a zip package, update in place with a rollback
+  snapshot, and uninstall with the data they own; a remote update source is
+  validated here and fetched by the application (`plugin.Installer`).
 - **`driver`** — Provider adapters built on `core`, one module: OpenAI (serving the
   whole OpenAI wire family), Anthropic (the Messages family), ByteDance,
   MiniMax, DashScope (Alibaba Cloud Model Studio's native surfaces: text
@@ -202,7 +202,7 @@ rt, err := c.OpenRuntime(ctx, craft.DefaultKey, craft.RuntimeOptions{})
 The runtime is the same `core/runtime` one shown above; craft owns the layers,
 the plugin host, the host primitives and the reload/drain lifecycle around it.
 See [`docs/guides/craft.md`](docs/guides/craft.md) for the definition schema,
-the plugin manifest and permissions, the host-primitive protocol, and
+the plugin manifest and its grants, the host-primitive protocol, and
 `craft/manager`.
 
 ## Architecture
@@ -303,15 +303,16 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
 ### Application assembly and plugins (`craft`)
 
 - Two extension axes with a hard boundary: **capabilities** are Go code
-  registered at compile time (resource factories, host-primitive services,
-  layers, resolvers, host decorators, runtime binding), while **plugins** carry
-  no Go code and contribute their manifest, data, UI bundle, skills, hooks, MCP
+  registered at compile time (resource factories, host primitives, layers,
+  resolvers, host decorators, runtime binding), while **plugins** carry
+  no Go code and contribute their manifest, data, UI bundle, skills, hooks,
   tools and graph nodes. A plugin can never register a resource kind; a
   declaration that arrives without its permission is dropped fail-closed.
-- **MCP on both sides**: each plugin process is an MCP server whose tools reach
-  agents through the shared tool set, and `craft/hostmcp` exposes the host
-  primitives as MCP tools — behind a per-plugin bearer token — for the plugin to
-  call back into the host.
+- **One connection, both directions**: craft serves one unix socket per plugin
+  process (`craft/plugin/server`, gRPC over UDS, `craft/plugin/protocol` on
+  both ends). The plugin declares its tools over it — they reach agents through
+  the shared tool set — and calls the host primitives back over it. The
+  connection is the identity: there is no token to mint, pass or revoke.
 - **Layered configuration**: definition layers, craft-level layers and
   per-runtime layers merge into one `deploy.Document` per runtime key, with the
   `${craft:...}` scheme feeding craft-wide and per-runtime values.
@@ -376,7 +377,7 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   target discovery, sync / async execution, and the session-bound
   delegation lifecycle.
 - [Craft Assembly](docs/guides/craft.md) — `craft`: the `craft.yaml`
-  definition and capability set, the plugin manifest and permissions, the
+  definition and capability set, the plugin manifest and its grants, the
   host-primitive protocol, and the process-level manager.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)
@@ -425,8 +426,9 @@ The active project surface is `core`, `craft`, `driver`, `backends/*`, and the
 forge demo. `core` and `craft` are the two release-managed modules and both
 remain pre-1.0; `craft` is still an unreleased module in the workspace (its
 first tag ships with its first changeset), and the current `craft` surface is
-the definition, capabilities, the plugin host with the v1 host primitives, and
-`craft/manager` — the plugin install/update surface and the shell's UI
+the definition, capabilities, the plugin host and the v1 host-primitive
+protocol the application feeds, and `craft/manager` — the plugin
+install/update surface and the shell's UI
 rendering live outside it. Durable execution contracts (checkpoints,
 interrupt/resume, scheduling), OTel instrumentation, and retrieval end-to-end
 coverage are maintained in-tree; checkpoint persistence is host-provided

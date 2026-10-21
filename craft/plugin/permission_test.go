@@ -13,33 +13,44 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
-// contributionManifest gated declares every gated contribution; the
-// permissions list is the variable under test.
-func contributionManifest(id string, permissions ...string) string {
-	granted := ""
-	for i, permission := range permissions {
+// contributionManifest declares every contribution; the requires list is
+// the variable under test.
+//
+// The run section appears only when tools.provide is granted, because
+// that is the one channel whose contribution arrives over a wire: a
+// plugin that claims it without a process is a manifest error, and the
+// tests that only exercise the manifest gate have no process to start.
+func contributionManifest(id string, requires ...string) string {
+	listed := ""
+	run := ""
+	for i, grant := range requires {
 		if i > 0 {
-			granted += ", "
+			listed += ", "
 		}
-		granted += `"` + permission + `"`
+		listed += `"` + grant + `"`
+		if grant == "tools.provide" {
+			run = `, ` + helperRunJSON(nil)
+		}
 	}
 	return `{
 		"id": "` + id + `", "version": "0.1.0",
-		"permissions": [` + granted + `],
+		"requires": [` + listed + `],
 		"skills": ["skills"],
 		"hooks": ["hooks/on_start.json"],
-		"nodes": [{"type": "echo", "tool": "node_echo"}],
-		"mcp": {"command": "python3", "args": ["server.py"]}
+		"nodes": [{"type": "echo", "tool": "node_echo"}]` + run + `
 	}`
 }
 
 // writeContributionTree lays out the skill and hook files a manifest
-// declares.
+// declares, plus the command its run section names: a regular file is
+// all a manifest check asks for, and a test that means to start a real
+// process replaces it with the helper binary.
 func writeContributionTree(t *testing.T, root, dir string) {
 	t.Helper()
 	for _, rel := range []string{
 		filepath.Join("skills", "echo", "SKILL.md"),
 		filepath.Join("hooks", "on_start.json"),
+		"server",
 	} {
 		path := filepath.Join(root, dir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -52,15 +63,15 @@ func writeContributionTree(t *testing.T, root, dir string) {
 }
 
 // TestContributionsRequirePermission covers the fail-closed half of the
-// grant table: a plugin that declares a contribution without the
-// matching permission still loads, but contributes nothing.
+// grant model: a plugin that declares a contribution without the grant
+// that publishes it still loads, and contributes nothing.
 func TestContributionsRequirePermission(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	const grantedID = "granted"
 	const ungrantedID = "ungranted"
 	writePlugin(t, root, grantedID, contributionManifest(
-		grantedID, "skills:provide", "hooks:provide", "nodes:provide", "mcp:provide"))
+		grantedID, "skills.provide", "hooks.provide", "nodes.provide"))
 	writePlugin(t, root, ungrantedID, contributionManifest(ungrantedID))
 	for _, dir := range []string{grantedID, ungrantedID} {
 		writeContributionTree(t, root, dir)
@@ -99,8 +110,9 @@ func TestContributionsRequirePermission(t *testing.T) {
 		t.Fatalf("HookSources = %v, want %v", sources, wantHooks)
 	}
 
-	// Node contributions follow the same gate: the ungranted plugin's
-	// declarations are visible to no one.
+	// Node contributions follow the same rule: the ungranted plugin's
+	// declarations are published to no one, and its projection says which
+	// channels it asked for and did not get.
 	entries, err := host.Entries()
 	if err != nil {
 		t.Fatalf("Entries: %v", err)
@@ -109,9 +121,20 @@ func TestContributionsRequirePermission(t *testing.T) {
 		t.Fatalf("Entries = %d, want both plugins", len(entries))
 	}
 	for _, entry := range entries {
-		want := entry.ID == grantedID
-		if got := entry.Manifest.HasPermission("nodes:provide"); got != want {
-			t.Fatalf("plugin %s nodes:provide = %v, want %v", entry.ID, got, want)
+		projection := entry.Projection()
+		if entry.ID == grantedID {
+			if len(projection.Nodes) != 1 || len(projection.Dropped) != 0 {
+				t.Fatalf("granted projection = %+v, want its node and no drop",
+					projection)
+			}
+			continue
+		}
+		if len(projection.Nodes) != 0 || len(projection.Skills) != 0 ||
+			len(projection.Hooks) != 0 || projection.Tools {
+			t.Fatalf("ungranted projection = %+v, want nothing", projection)
+		}
+		if want := []string{"skills", "hooks", "nodes"}; !slices.Equal(projection.Dropped, want) {
+			t.Fatalf("ungranted drops = %v, want %v", projection.Dropped, want)
 		}
 	}
 }
@@ -127,7 +150,7 @@ func TestContributionListsReportAnUnreadableState(t *testing.T) {
 	root := t.TempDir()
 	const id = "hello"
 	writePlugin(t, root, id, contributionManifest(
-		id, "skills:provide", "hooks:provide"))
+		id, "skills.provide", "hooks.provide"))
 	writeContributionTree(t, root, id)
 	stateDir := t.TempDir()
 	store, err := NewStore(Options{
@@ -171,13 +194,13 @@ func TestContributionListsReportAnUnreadableState(t *testing.T) {
 
 // TestDisabledPluginContributesNothing covers the other fail-closed
 // half: disabling a plugin withdraws its skills and hooks even though
-// its permissions still authorize them.
+// its grants are intact.
 func TestDisabledPluginContributesNothing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	const id = "hello"
 	writePlugin(t, root, id, contributionManifest(
-		id, "skills:provide", "hooks:provide"))
+		id, "skills.provide", "hooks.provide"))
 	writeContributionTree(t, root, id)
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
@@ -211,7 +234,7 @@ func TestPluginHookSourceRunsAndDrops(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	const id = "hello"
-	writePlugin(t, root, id, contributionManifest(id, "hooks:provide"))
+	writePlugin(t, root, id, contributionManifest(id, "hooks.provide"))
 	writeContributionTree(t, root, id)
 	pluginDir := filepath.Join(root, id)
 	const hookFile = "fired.out"

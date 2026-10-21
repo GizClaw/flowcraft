@@ -22,7 +22,7 @@ func TestDisableWaitsForTheStartItRaced(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 
@@ -34,6 +34,7 @@ func TestDisableWaitsForTheStartItRaced(t *testing.T) {
 	factory := func(
 		_ context.Context,
 		_ Entry,
+		_ uint64,
 		_ map[string]string,
 		_ string,
 	) (Source, error) {
@@ -102,7 +103,7 @@ func TestHostStartBehindACloseRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -115,6 +116,7 @@ func TestHostStartBehindACloseRevokesWhatItMinted(t *testing.T) {
 	factory := func(
 		_ context.Context,
 		_ Entry,
+		_ uint64,
 		_ map[string]string,
 		_ string,
 	) (Source, error) {
@@ -176,7 +178,7 @@ func TestHostFailedOpenRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -185,7 +187,7 @@ func TestHostFailedOpenRevokesWhatItMinted(t *testing.T) {
 	host, err := NewHost(HostOptions{
 		Store: store,
 		NewSource: func(
-			context.Context, Entry, map[string]string, string,
+			context.Context, Entry, uint64, map[string]string, string,
 		) (Source, error) {
 			return nil, errors.New("plugin hello: spawn: no such command")
 		},
@@ -230,7 +232,7 @@ func TestHostSourceFactoryWithoutASourceRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -239,7 +241,7 @@ func TestHostSourceFactoryWithoutASourceRevokesWhatItMinted(t *testing.T) {
 	host, err := NewHost(HostOptions{
 		Store: store,
 		NewSource: func(
-			context.Context, Entry, map[string]string, string,
+			context.Context, Entry, uint64, map[string]string, string,
 		) (Source, error) {
 			return nil, nil
 		},
@@ -286,7 +288,7 @@ func TestHostFailedPublishRevokesWhatItMinted(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", `{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"requires": ["tools.provide"], "run": {"command": "true"}
 	}`)
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -295,7 +297,7 @@ func TestHostFailedPublishRevokesWhatItMinted(t *testing.T) {
 	host, err := NewHost(HostOptions{
 		Store: store,
 		NewSource: func(
-			context.Context, Entry, map[string]string, string,
+			context.Context, Entry, uint64, map[string]string, string,
 		) (Source, error) {
 			return &fakeSource{
 				tools: []tool.Tool{fakeTool{name: "hello__echo"}},

@@ -19,19 +19,12 @@ plugins:
   tool_registry: tools
 
 host_tools:
-  services:
-    # Selects one named implementation per primitive family. "workshop"
-    # is registered by the example capability; an unknown implementation
-    # makes craft.New fail.
-    events: {impl: workshop}
-    # A family with no service removes its primitives entirely: the host
-    # reports them as denied with reason no_service. A plugin only calls
-    # what its own permissions grant, so secret_* stays out of reach for
-    # the hello plugin either way — host_about says which is which.
-    secrets: {impl: workshop}
-  # Primitives to never expose even though a service backs them, as a
-  # host-side policy (host_about reports them with reason disabled):
-  # disable: [open_url]
+  # Primitives to never expose, as a host-side policy: the wire drops them
+  # and host.about reports them with reason disabled. Each entry is
+  # resource.op, and an entry that names no primitive the application
+  # contributes fails craft.New. The primitives themselves are the
+  # workshop capability's (see workshop.go), not craft's:
+  # disable: [secret.delete]
 
 deploy:
   version: v1

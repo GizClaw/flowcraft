@@ -14,9 +14,9 @@ tour is local and deterministic, so it doubles as an integration test.
 
 ## Quickstart
 
-Prerequisite: Go 1.26+. The plugin's MCP server is a Go program that the
-manifest starts with `go run`, so the **first** run compiles it (a few
-seconds, then it is cached).
+Prerequisite: Go 1.26+. The plugin process is a Go program that the manifest
+starts with `go run`, so the **first** run compiles it (a few seconds, then it
+is cached).
 
 ```bash
 cd examples/anvil
@@ -44,8 +44,8 @@ is repeatable; everything else in there is left alone.
 | Step | What happens | The craft concept |
 | --- | --- | --- |
 | definition | `craft.yaml` is parsed and validated | definition vs. application code |
-| plugins | the plugin directory is scanned, permissions and skill roots are listed | the plugin store; `skills:provide` |
-| start | the Craft starts, the plugin's MCP server comes up, its tools are published | the plugin host and the shared tool set |
+| plugins | the plugin directory is scanned, grants and skill roots are listed | the plugin store; `skills.provide` |
+| start | the Craft starts, the plugin process dials in and declares its tools | the plugin host, the plugin wire and the shared tool set |
 | `runtime "default"` | one runtime opens with a value; tools are called through its assembly | keyed runtimes, `${craft:...}`, tool assembly |
 | `runtime "alpha"` | a second runtime opens from a per-runtime layer | per-runtime layers, runtime isolation |
 | reload `"alpha"` | the layer file is rewritten and the runtime reloaded | transactional reload |
@@ -63,7 +63,7 @@ The interesting excerpts:
    notes_list {} -> 1 note in /data/notes-default.txt: buy milk
    hello__greet {"name":"anvil"} -> Hello, anvil! (from the hello plugin)
    event  plugin.hello.ping  {"from":"hello"}
-   hello__ping_host {} -> host protocol 1 (host version 0.0.0): 5 primitives exposed, 2 callable by this plugin [emit_event, host_about]; needs a grant for [secret_delete, secret_get, secret_set]; 8 unconfigured (no_service)
+   hello__ping_host {} -> host protocol 1 (host version 0.0.0): 2 primitives callable by this plugin [events.emit, host.about]; needs a grant for [secret.delete, secret.get, secret.set]
 ```
 
 (Absolute paths are elided to `/data/` here and below.)
@@ -73,13 +73,20 @@ Three things happened in that block:
 1. `notes_add` and `notes_list` are tools the **capability** registered as the
    resource kind `workshop.Notes`; they act on the file the runtime's
    `${craft:notes}` value points at.
-2. `hello__greet` is a tool the **plugin** contributes: its own MCP server
-   declared `greet`, and craft prefixed it with the plugin id.
+2. `hello__greet` is a tool the **plugin** contributes: it declared `greet`
+   over the plugin wire, and craft prefixed it with the plugin id.
 3. `hello__ping_host` is the plugin calling **host primitives** back over the
-   host MCP endpoint (`host_about` and `emit_event`); the event it emits
-   arrives on the craft plane as `plugin.hello.ping`, and `host_about` reports
-   which primitives the host exposes, which ones this plugin may call, and why
-   the rest are out of reach (`no_grant`, `no_service`, `disabled`).
+   same connection (`host.about` and `events.emit` — every primitive travels
+   through the one `Host.Call` with a `resource` and an `op`); the event it
+   emits arrives on the craft plane as `plugin.hello.ping`, and `host.about`
+   reports which primitives this plugin may call and why the rest are out of
+   reach (`no_grant` for a permission the manifest does not ask for,
+   `disabled` for one the definition switched off).
+
+   Craft ships no primitives. The four in that catalog are the `workshop`
+   capability's (`workshop.go`), which is the whole extension point: a host
+   offers what its application declares, and a host that declares nothing
+   still answers `host.about`.
 
 ```text
 == runtime "alpha"
@@ -116,24 +123,24 @@ hot-plugging never tears the resource registry. Both surface as
 
 | Path | Role |
 | --- | --- |
-| `craft.yaml` | The definition: metadata, plugin roots, `host_tools` bindings, one inline `deploy` document |
-| `workshop.go` | The one compile-time capability: the `workshop.Notes` resource kind (a tool source), the events and secrets service implementations |
+| `craft.yaml` | The definition: metadata, plugin roots, the `host_tools` policy, one inline `deploy` document |
+| `workshop.go` | The one compile-time capability: the `workshop.Notes` resource kind (a tool source) and the host primitives a plugin may call back |
 | `assemble.go` | The host wiring: paths → plugin store → plugin host → `craft.New` → event sink; plus the tour's helpers |
 | `tour.go` | The scripted lifecycle |
 | `events.go`, `print.go` | The craft-plane sink and the mutex-guarded printer that keeps its output readable |
 | `tour_test.go` | The same tour as a hermetic test (`go test ./…`) |
-| `plugins/hello/plugin.json` | The manifest: permissions, one skill directory, one MCP server |
-| `plugins/hello/server/main.go` | The plugin's stdio MCP server (go-sdk) and its host-primitive client |
+| `plugins/hello/plugin.json` | The manifest: what it requires, one skill directory, one plugin process |
+| `plugins/hello/server/main.go` | The plugin's process: `protocol.Main` plus its host-primitive calls |
 | `plugins/hello/skills/hello/SKILL.md` | The skill the host exposes through `SkillRoots()` |
 
 ## What to copy into your own application
 
 1. **The definition is data; capabilities are code.** `craft.yaml` can only
-   name a resource kind, a built-in, or a service implementation an
-   already-registered factory provides — `craft.New` fails otherwise, and the
-   registry is frozen afterwards. `anvil` registers exactly three factory sets
-   (`event.Bus`, `tool.Assembly`, `workshop.Notes`) and two named service
-   implementations (`events`, `secrets`).
+   name a resource kind or a built-in an already-registered factory provides —
+   `craft.New` fails otherwise, and the registry is frozen afterwards. `anvil`
+   registers exactly three factory sets (`event.Bus`, `tool.Assembly`,
+   `workshop.Notes`) and four host primitives (`events.emit` and the three
+   `secret.*` ones).
 2. **Paths are the application's.** The definition declares
    `plugins.roots: [plugins]`; `assemble.go` resolves it against the directory
    holding `craft.yaml` and decides where plugin state lives (anvil keeps it
@@ -142,8 +149,8 @@ hot-plugging never tears the resource registry. Both surface as
    `${craft:...}` (the default runtime's notes file); layers override whole
    subtrees for one key (alpha's). A missing value fails the build with
    `craft: reference ${craft:notes} is not defined`.
-4. **Plugin tools arrive asynchronously.** `craft.Start` returns before the
-   plugin's MCP server has answered its handshake, so an application waits for
+4. **Plugin tools arrive asynchronously.** `craft.Start` replays what the
+   store recorded and does not wait for a process, so an application waits for
    readiness (`waitForPluginTool`) before it builds a runtime that should carry
    those tools; a live runtime picks up later changes through the shared tool
    set.
@@ -152,25 +159,29 @@ hot-plugging never tears the resource registry. Both surface as
    namespace) and waits for `craft.reload.completed` when it triggers one.
 6. **Read the runtime's resources again after a reload.** A reload swaps in a
    new generation, and `rt.Resource("tools")` returns the new assembly.
-7. **A plugin server exits 0 when the host closes its stdin.** That is the
-   stdio shutdown the MCP spec prescribes; the plugin host reports a non-zero
-   exit as a failed stop. `plugins/hello/server/main.go` shows the check.
+7. **A plugin process ends when its connection does.** `protocol.Main` returns
+   once the host drains and closes the socket, and the process exits 0; a
+   process that leaves earlier is a loss the host reports through
+   `plugin.Host.OnStopped`. `plugins/hello/server/main.go` is that whole
+   process.
 
 ## The plugin
 
-`plugins/hello` is a complete plugin: a manifest, a skill and an MCP server.
+`plugins/hello` is a complete plugin: a manifest, a skill and a plugin process.
 
-- `mcp: {command: "go", args: ["run", "./server"]}` — a path-bearing argument is
-  resolved against the plugin root and confined to it, so the manifest ships
+- `run: {command: "go", args: ["run", "./server"]}` — a path-bearing argument
+  is resolved against the plugin root and confined to it, so the manifest ships
   source and the host compiles it on start. A real plugin ships a compiled
   binary (or an interpreter plus a script, e.g. `python3 server/main.py`).
-- `permissions: [mcp:provide, skills:provide, events:emit]` — each gated
-  contribution is dropped fail-closed without its permission, and the
-  permission set is what scopes the bearer token the plugin receives.
-- The host injects `CRAFT_PLUGIN_ID`, `CRAFT_PLUGIN_DATA_DIR`,
-  `CRAFT_HOST_MCP_URL` and `CRAFT_PLUGIN_TOKEN` into the child. The token is
-  minted per plugin from its declared permissions; that is why `emit_event`
-  works for this plugin and `secret_get` would not.
+- `requires: [tools.provide, skills.provide, events.emit]` — the manifest only
+  asks. The store approves (`plugin.Options.Approve` is the seam; this example
+  approves by default), and the grants it approved are what the connection is
+  opened with. A section declared without its grant is dropped fail-closed.
+- The host injects `FLOWCRAFT_PLUGIN_ID`, `FLOWCRAFT_PLUGIN_DATA_DIR` and
+  `FLOWCRAFT_PLUGIN_WIRE` into the child; the last one is the socket the plugin
+  dials. Each connection carries the grants the store approved for that
+  plugin, which is why `events.emit` works for this one and `secret.get` would
+  not: the workshop names each grant after the primitive it authorizes.
 - `minHostVersion` is deliberately absent: against a development build of
   craft (`Version == "0.0.0"`) any floor above `0.0.0` marks the plugin
   invalid, which is the wrong lesson for an example. Set it once you pin a
@@ -195,7 +206,7 @@ repository: the plugin's `go run` needs the workspace to resolve craft.
 - **Add an agent turn**: drop in the deploy resources from the
   `flowcraft-config` skill's `assets/minimal-craft` (workspace, provider,
   inference assembly, graph agent) and open a session on the runtime.
-- **Add a graph node**: declare `nodes` plus `nodes:provide` in the manifest and
+- **Add a graph node**: declare `nodes` plus `nodes.provide` in the manifest and
   list the agent in `plugins.node_targets`; craft synthesizes one
   `graph.NodeType` resource per node and wires it into the agent's engine deps.
 - **Add a capability**: another resource kind, a `${...}` resolver, a layer, or

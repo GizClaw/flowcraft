@@ -14,7 +14,7 @@ func TestHostListShowsWhatEntriesHides(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "hello", manifestFor("hello", "0.1.0"))
 	writePlugin(t, root, "bad", `{
-		"id": "bad", "version": "0.1.0", "permissions": ["nope"]
+		"id": "bad", "version": "0.1.0", "requires": ["nope"]
 	}`)
 	host := newAssetHost(t, root)
 

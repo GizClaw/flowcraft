@@ -45,9 +45,9 @@ var (
 //     above MaxAssetBytes is ErrAssetTooLarge — checked when the file is
 //     opened and again while it is read.
 //
-// ui:webview is deliberately not consulted here: craft delivers assets
-// and lifecycle, and the shell gates the bundle. The permission travels
-// with the ui.Registry entries.
+// ui.webview is deliberately not consulted here: craft delivers assets
+// and lifecycle, and the shell gates the bundle. The grant travels with
+// the ui.Registry entries, next to the requires list that asked for it.
 func (h *Host) AssetFS(id string) (fs.FS, bool) {
 	root, ok := h.store.bundleRoot(id)
 	if !ok {

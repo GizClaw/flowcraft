@@ -15,21 +15,28 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft"
-	"github.com/GizClaw/flowcraft/craft/hostmcp"
+	pluginserver "github.com/GizClaw/flowcraft/craft/plugin/server"
 )
 
 // workshop is anvil's one compile-time capability. It registers what
 // craft.yaml references and nothing else: the registry is frozen by
 // craft.New, so a capability decides what the definition is allowed to
 // name, and a plugin can never add to it.
+//
+// It is also the application's half of the plugin wire. Craft ships no
+// primitives, so the two a plugin may call — events.emit and the secret
+// ones — are declared here, next to the behavior behind them.
 type workshop struct {
-	mu   sync.Mutex
-	emit func(ctx context.Context, pluginID, subject string, payload any) error
+	mu      sync.Mutex
+	emit    func(ctx context.Context, pluginID, subject string, payload any) error
+	secrets *secretStore
 }
 
-var _ hostmcp.EventService = (*workshop)(nil)
+var _ craft.HostPrimitives = (*workshop)(nil)
 
-func newWorkshop() *workshop { return &workshop{} }
+func newWorkshop() *workshop {
+	return &workshop{secrets: newSecretStore()}
+}
 
 // Name implements craft.Capability.
 func (*workshop) Name() string { return "workshop" }
@@ -47,26 +54,64 @@ func (*workshop) Register(registry *resource.Registry) error {
 	return resource.Register(registry, notesFactory{})
 }
 
-// RegisterServices implements craft.ServiceRegistrar, the named-service
-// half of host_tools.services. craft.yaml selects this implementation
-// with `services: {events: {impl: workshop}, secrets: {impl: workshop}}`.
-func (w *workshop) RegisterServices(services *hostmcp.ServiceRegistry) error {
-	if err := services.Register("events", "workshop", w); err != nil {
-		return err
-	}
-	return services.Register("secrets", "workshop", newSecretStore())
+// HostPrimitives implements craft.HostPrimitives. Each grant is the id of
+// the primitive it authorizes, which is the simplest vocabulary an
+// application can offer: a plugin that requires events.emit can publish,
+// and one that does not is told by host.about that the primitive is there
+// and needs a grant it does not hold.
+func (w *workshop) HostPrimitives() []pluginserver.Primitive {
+	return []pluginserver.Primitive{{
+		Resource: "events", Op: "emit", Grant: "events.emit",
+		Description: "Publish one event on the craft plane for the calling plugin",
+		Params:      json.RawMessage(paramsEvent),
+		Handler:     w.emitEvent,
+	}, {
+		Resource: "secret", Op: "get", Grant: "secret.get",
+		Description: "Read a secret from the calling plugin's namespace",
+		Params:      json.RawMessage(paramsSecretName),
+		Handler:     w.secrets.get,
+	}, {
+		Resource: "secret", Op: "set", Grant: "secret.set",
+		Description: "Store a secret in the calling plugin's namespace",
+		Params:      json.RawMessage(paramsSecretSet),
+		Handler:     w.secrets.set,
+	}, {
+		Resource: "secret", Op: "delete", Grant: "secret.delete",
+		Description: "Delete a secret from the calling plugin's namespace",
+		Params:      json.RawMessage(paramsSecretName),
+		Handler:     w.secrets.del,
+	}}
 }
 
-// Emit implements hostmcp.EventService, the behavior behind the
-// emit_event primitive.
-func (w *workshop) Emit(ctx context.Context, pluginID, subject string, payload any) error {
+// The params schemas host.about publishes for the workshop's primitives.
+// They are documentation, not enforcement: each handler still refuses a
+// missing parameter by name.
+const (
+	paramsEvent = `{"type":"object","properties":{` +
+		`"subject":{"type":"string"},"payload":{}},"required":["subject"]}`
+	paramsSecretName = `{"type":"object","properties":{` +
+		`"name":{"type":"string"}},"required":["name"]}`
+	paramsSecretSet = `{"type":"object","properties":{` +
+		`"name":{"type":"string"},"value":{"type":"string"}},` +
+		`"required":["name","value"]}`
+)
+
+// emitEvent is the behavior behind events.emit.
+func (w *workshop) emitEvent(ctx context.Context, call pluginserver.Call) (any, error) {
+	subject, err := call.String("subject")
+	if err != nil {
+		return nil, err
+	}
 	w.mu.Lock()
 	emit := w.emit
 	w.mu.Unlock()
 	if emit == nil {
-		return errors.New("workshop: no emitter is wired")
+		return nil, errors.New("workshop: no emitter is wired")
 	}
-	return emit(ctx, pluginID, subject, payload)
+	if err := emit(ctx, call.Identity.PluginID, subject, call.Params["payload"]); err != nil {
+		return nil, err
+	}
+	return map[string]any{}, nil
 }
 
 // setEmitter wires the primitive to the craft plane; the application
@@ -77,47 +122,63 @@ func (w *workshop) setEmitter(emit func(context.Context, string, string, any) er
 	w.emit = emit
 }
 
-// secretStore is the example's Secrets implementation: an in-memory
-// store behind secret_get / secret_set / secret_delete, namespaced per
-// plugin by the identity the host authenticates. It is the behavior the
-// primitive family is bound to; the hello plugin has no secrets:auth
-// grant, so host_about reports those primitives as denied for it.
+// secretStore is an in-memory store behind secret.get / secret.set /
+// secret.delete, namespaced per plugin by the identity the connection
+// carries. The hello plugin requires events.emit and no secret grant, so
+// host.about reports those primitives as denied for it.
 type secretStore struct {
 	mu     sync.Mutex
 	values map[string]map[string]string
 }
 
-var _ hostmcp.SecretService = (*secretStore)(nil)
-
 func newSecretStore() *secretStore {
 	return &secretStore{values: map[string]map[string]string{}}
 }
 
-func (s *secretStore) Get(_ context.Context, pluginID, name string) (string, error) {
+func (s *secretStore) get(_ context.Context, call pluginserver.Call) (any, error) {
+	name, err := call.String("name")
+	if err != nil {
+		return nil, err
+	}
+	pluginID := call.Identity.PluginID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, ok := s.values[pluginID][name]
 	if !ok {
-		return "", fmt.Errorf("workshop: secret %q is not set for %s", name, pluginID)
+		return nil, fmt.Errorf(
+			"workshop: secret %q is not set for %s", name, pluginID)
 	}
-	return value, nil
+	return map[string]any{"value": value}, nil
 }
 
-func (s *secretStore) Set(_ context.Context, pluginID, name, value string) error {
+func (s *secretStore) set(_ context.Context, call pluginserver.Call) (any, error) {
+	name, err := call.String("name")
+	if err != nil {
+		return nil, err
+	}
+	value, err := call.Text("value")
+	if err != nil {
+		return nil, err
+	}
+	pluginID := call.Identity.PluginID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.values[pluginID] == nil {
 		s.values[pluginID] = map[string]string{}
 	}
 	s.values[pluginID][name] = value
-	return nil
+	return map[string]any{}, nil
 }
 
-func (s *secretStore) Delete(_ context.Context, pluginID, name string) error {
+func (s *secretStore) del(_ context.Context, call pluginserver.Call) (any, error) {
+	name, err := call.String("name")
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.values[pluginID], name)
-	return nil
+	delete(s.values[call.Identity.PluginID], name)
+	return map[string]any{}, nil
 }
 
 const (

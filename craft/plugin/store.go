@@ -14,6 +14,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/craft/internal/version"
+	"github.com/GizClaw/flowcraft/craft/plugin/server"
 )
 
 // Root is one directory scanned for plugin subdirectories. Builtin
@@ -36,6 +37,25 @@ type Options struct {
 	// HostVersion is reported to plugins and checked against
 	// minHostVersion when non-empty.
 	HostVersion string
+	// Grants are the grant names the host's primitives require, the
+	// application's half of the grant vocabulary. A manifest may require
+	// one of them in addition to craft's own channels; without the
+	// declaration here the same name is refused as unknown, which is what
+	// keeps a typo from reading as a grant nothing will ever ask for.
+	//
+	// server.Registry.Grants reports what a primitive set needs.
+	Grants []string
+	// Approve decides what one plugin is granted: it is handed the id and
+	// the grants the manifest requires, and returns the subset this host
+	// approves. A name it returns that the manifest did not require is
+	// ignored — a grant nobody asked for is a grant nobody tested — and a
+	// section whose grant is not approved is dropped rather than
+	// published (see [Entry.Projection]).
+	//
+	// Nil approves every request, because installing a plugin is already
+	// a decision. This is the seam for an application that decides per
+	// plugin instead: a curated feed, a signed package, a consent screen.
+	Approve func(id string, requires []string) []string
 }
 
 // Entry is one scanned plugin.
@@ -43,8 +63,13 @@ type Entry struct {
 	ID       string
 	Dir      string
 	Manifest Manifest
-	Enabled  bool
-	Builtin  bool
+	// Grants is what this host decided the plugin holds: the manifest's
+	// requires, filtered by [Options.Approve]. It is the decision every
+	// consumer acts on (see [Entry.Projection]) — the manifest only ever
+	// holds the request.
+	Grants  server.GrantSet
+	Enabled bool
+	Builtin bool
 	// ShadowsBuiltin reports a user plugin overriding a builtin id.
 	ShadowsBuiltin bool
 	BuiltinVersion string
@@ -63,11 +88,15 @@ type Entry struct {
 
 // Summary is the UI-facing view of one plugin.
 type Summary struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name,omitempty"`
-	Version        string   `json:"version,omitempty"`
-	Entry          string   `json:"entry,omitempty"`
-	Permissions    []string `json:"permissions,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Version string `json:"version,omitempty"`
+	Entry   string `json:"entry,omitempty"`
+	// Requires is what the manifest asks for and Granted what this host
+	// approved. They differ when [Options.Approve] refused part of a
+	// request, which is exactly the case the two lists are for.
+	Requires       []string `json:"requires,omitempty"`
+	Granted        []string `json:"granted,omitempty"`
 	Enabled        bool     `json:"enabled"`
 	Builtin        bool     `json:"builtin,omitempty"`
 	ShadowsBuiltin bool     `json:"shadows_builtin,omitempty"`
@@ -83,6 +112,10 @@ type Summary struct {
 // and publishes a revision on every mutation.
 type Store struct {
 	opts Options
+	// vocabulary is every grant name a manifest may require: craft's
+	// channels and the application's grants, so a scanned manifest is
+	// checked against the same list installs are.
+	vocabulary Vocabulary
 
 	mu       sync.Mutex
 	revision uint64
@@ -108,9 +141,10 @@ func NewStore(opts Options) (*Store, error) {
 			"plugin store: create data dir: %w", err)
 	}
 	return &Store{
-		opts: opts,
-		subs: make(map[uint64]func()),
-		kv:   make(map[string]*KV),
+		opts:       opts,
+		vocabulary: NewVocabulary(opts.Grants...),
+		subs:       make(map[uint64]func()),
+		kv:         make(map[string]*KV),
 	}, nil
 }
 
@@ -172,8 +206,9 @@ func (s *Store) List() ([]Summary, error) {
 			summary.Name = entry.Manifest.Name
 			summary.Version = entry.Manifest.Version
 			summary.Entry = entry.Manifest.Entry()
-			summary.Permissions = append(
-				[]string(nil), entry.Manifest.Permissions...)
+			summary.Requires = append(
+				[]string(nil), entry.Manifest.Requires...)
+			summary.Granted = entry.Grants.List()
 		}
 		out = append(out, summary)
 	}
@@ -377,7 +412,7 @@ func (s *Store) scan() ([]Entry, error) {
 }
 
 // markToolNamespaceCollisions names the collision of every valid plugin
-// whose MCP tool namespace another plugin already claimed. Two ids can
+// whose tool namespace another plugin already claimed. Two ids can
 // collapse into one namespace — ToolPrefix rewrites anything outside
 // [a-z0-9_-], and an id may contain "." — and a second plugin publishing
 // the same tool name loses the registry's duplicate race silently: the
@@ -392,15 +427,14 @@ func markToolNamespaceCollisions(entries []Entry) {
 		if entry.Error != "" {
 			continue
 		}
-		for _, namespace := range ToolNamespaces(entry.ID, entry.Manifest.Servers()) {
-			if first, taken := owner[namespace]; taken {
-				entries[i].Conflict = fmt.Sprintf(
-					"the tool namespace %q collides with plugin %q",
-					namespace, first)
-				break
-			}
-			owner[namespace] = entry.ID
+		namespace := ToolPrefix(entry.ID)
+		if first, taken := owner[namespace]; taken {
+			entries[i].Conflict = fmt.Sprintf(
+				"the tool namespace %q collides with plugin %q",
+				namespace, first)
+			continue
 		}
+		owner[namespace] = entry.ID
 	}
 }
 
@@ -425,10 +459,35 @@ func (s *Store) loadEntry(dir string, builtin bool) Entry {
 		entry.Error = "requires host version >= " + manifest.MinHostVersion
 		return entry
 	}
-	if err := manifest.Validate(dir); err != nil {
+	if err := manifest.Validate(dir, s.vocabulary); err != nil {
 		entry.Error = err.Error()
+		return entry
 	}
+	entry.Grants = s.grants(manifest)
 	return entry
+}
+
+// grants is what this host decides one plugin holds: the names its manifest
+// requires, filtered by [Options.Approve]. Nothing is added that the
+// manifest did not ask for — an approved request is the only way to hold a
+// grant — so a policy cannot quietly widen what a plugin may do either.
+func (s *Store) grants(manifest Manifest) server.GrantSet {
+	requires := manifest.Requires
+	if len(requires) == 0 {
+		return nil
+	}
+	approved := requires
+	if s.opts.Approve != nil {
+		approved = s.opts.Approve(manifest.ID, append([]string(nil), requires...))
+	}
+	out := make(server.GrantSet, len(approved))
+	for _, grant := range approved {
+		if !manifest.requires(Grant(grant)) {
+			continue
+		}
+		out[grant] = true
+	}
+	return out
 }
 
 func (s *Store) statePath() string {

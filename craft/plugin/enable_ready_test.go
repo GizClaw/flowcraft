@@ -33,6 +33,7 @@ func newReadyFactory(wait func(ctx context.Context, timeout time.Duration) error
 func (f *readyFactory) new(
 	_ context.Context,
 	entry Entry,
+	_ uint64,
 	_ map[string]string,
 	_ string,
 ) (Source, error) {
@@ -141,7 +142,7 @@ func startReadyHost(
 ) (*Host, *Store, *stopEvents, *hookRecorder) {
 	t.Helper()
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	store := newStoreOver(t, root)
 	if err := store.SetEnabled("hello", false); err != nil {
@@ -209,8 +210,8 @@ func TestHostEnableWaitsForReady(t *testing.T) {
 func TestHostEnableRollsBackUnrunnablePlugin(t *testing.T) {
 	t.Parallel()
 	factory := newReadyFactory(func(context.Context, time.Duration) error {
-		return errdefs.Validationf("plugin hello: mcp: server hello: " +
-			"cannot start command: fork/exec ./server: permission denied")
+		return errdefs.Validationf("plugin hello: the process cannot be " +
+			"started: fork/exec ./server: permission denied")
 	})
 	host, store, events, hook := startReadyHost(t, HostOptions{}, factory)
 	ctx := context.Background()
@@ -219,7 +220,7 @@ func TestHostEnableRollsBackUnrunnablePlugin(t *testing.T) {
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("enable = %v, want the source's terminal failure", err)
 	}
-	if !strings.Contains(err.Error(), "cannot start command") {
+	if !strings.Contains(err.Error(), "cannot be started") {
 		t.Fatalf("enable error = %v, want the cause the source reported", err)
 	}
 	if enabled(t, store, "hello") {
@@ -255,7 +256,7 @@ func TestHostEnableRollsBackUnrunnablePlugin(t *testing.T) {
 func TestHostEnableKeepsTryingUnreadyPlugin(t *testing.T) {
 	t.Parallel()
 	factory := newReadyFactory(func(context.Context, time.Duration) error {
-		return errdefs.NotAvailablef("mcp: server %q: unreachable: connection refused", "hello")
+		return errdefs.NotAvailablef("plugin %q: not dialed yet", "hello")
 	})
 	host, store, events, hook := startReadyHost(t, HostOptions{}, factory)
 
@@ -351,7 +352,7 @@ func TestHostStartDoesNotWait(t *testing.T) {
 		}
 	})
 	root := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	// A fresh state file enables a scanned plugin, so this is the startup
 	// path: the plugin is enabled before Start reads it.
@@ -467,6 +468,9 @@ func realPluginHost(t *testing.T, root string, opts HostOptions) *realPlugin {
 		t.Fatalf("disable before start: %v", err)
 	}
 	opts.Store = store
+	if opts.Server == nil {
+		opts.Server = newWireServer(t)
+	}
 	host, err := NewHost(opts)
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -478,43 +482,12 @@ func realPluginHost(t *testing.T, root string, opts HostOptions) *realPlugin {
 	return &realPlugin{host: host, store: store, dataRoot: dataRoot}
 }
 
-// helperManifest is a manifest whose stdio server is this test binary
-// re-executed as the stop helper: one echo tool, and a command that is
-// there and executable.
-func helperManifest() string {
-	return `{
-		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {
-			"command": "./server",
-			"args": ["-test.run=TestPluginStopHelper"],
-			"env": {"CRAFT_PLUGIN_STOP_HELPER": "1"}
-		}
-	}`
-}
-
-// writeHelperCommand links this test binary into the plugin directory as
-// its server.
-func writeHelperCommand(t *testing.T, dir string) {
-	t.Helper()
-	if os.Getenv("CRAFT_PLUGIN_STOP_HELPER") == "1" {
-		t.Skip("running as helper")
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("Executable: %v", err)
-	}
-	if err := os.Symlink(executable, filepath.Join(dir, "server")); err != nil {
-		t.Fatalf("symlink helper: %v", err)
-	}
-}
-
 // TestHostEnableWaitsForRealPlugin covers the promise end to end: the
 // enable returns once the plugin's tools are published, not once its
 // process has been spawned, so a caller that gets nil can call them.
 func TestHostEnableWaitsForRealPlugin(t *testing.T) {
 	root := t.TempDir()
-	writePlugin(t, root, "hello", helperManifest())
+	writePlugin(t, root, "hello", wireManifest("hello", "tools.provide"))
 	writeHelperCommand(t, filepath.Join(root, "hello"))
 	plugin := realPluginHost(t, root, HostOptions{})
 
@@ -529,25 +502,25 @@ func TestHostEnableWaitsForRealPlugin(t *testing.T) {
 	}
 }
 
-// TestHostEnableKeepsTryingUnreachableServer covers the real retrying
-// class end to end: a remote server that is down is not a failure of
-// enable, so the plugin is recorded enabled with its source still
-// reconnecting, and the application is not told the plugin stopped.
-func TestHostEnableKeepsTryingUnreachableServer(t *testing.T) {
+// TestHostEnableKeepsTryingAnUnreadyPlugin covers the real retrying
+// class end to end: a process that comes up but never finishes the wire
+// handshake is not a failure of enable, so the plugin is recorded enabled
+// with its connection still open, and the application is not told the
+// plugin stopped. Waiting can tell "not yet" from "never", and only the
+// second one undoes an enable.
+func TestHostEnableKeepsTryingAnUnreadyPlugin(t *testing.T) {
 	root := t.TempDir()
-	writePlugin(t, root, "hello", `{
-		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {"transport": "http", "url": "http://127.0.0.1:1/mcp"}
-	}`)
-	bound := 200 * time.Millisecond
+	writePlugin(t, root, "hello", wireManifestEnv("hello",
+		map[string]string{helperNoWire: "1"}, "tools.provide"))
+	writeHelperCommand(t, filepath.Join(root, "hello"))
+	bound := 300 * time.Millisecond
 	plugin := realPluginHost(t, root, HostOptions{EnableTimeout: bound})
 	events := &stopEvents{}
 	plugin.host.OnStopped(events.record)
 
 	start := time.Now()
 	if err := plugin.host.SetEnabled(context.Background(), "hello", true); err != nil {
-		t.Fatalf("enable of an unreachable server: %v", err)
+		t.Fatalf("enable of a plugin that has not dialed yet: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed < bound {
 		t.Fatalf("enable returned in %s, before the bound it was given", elapsed)
@@ -556,10 +529,10 @@ func TestHostEnableKeepsTryingUnreachableServer(t *testing.T) {
 		t.Fatal("the entry was not recorded enabled")
 	}
 	if !running(plugin.host, "hello") {
-		t.Fatal("the source was dropped instead of left reconnecting")
+		t.Fatal("the source was dropped instead of left waiting")
 	}
 	if got := events.snapshot(); len(got) != 0 {
-		t.Fatalf("an unreachable server was reported as stopped: %v", got)
+		t.Fatalf("a plugin that is not up yet was reported as stopped: %v", got)
 	}
 }
 
@@ -575,7 +548,7 @@ func TestHostEnableRollbackReportsARecordItCouldNotWrite(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
-	writePlugin(t, root, "hello", contributionManifest("hello", "mcp:provide"))
+	writePlugin(t, root, "hello", contributionManifest("hello", "tools.provide"))
 	writeContributionTree(t, root, "hello")
 	store, err := NewStore(Options{
 		Roots:       []Root{{Path: root}},
@@ -587,7 +560,7 @@ func TestHostEnableRollbackReportsARecordItCouldNotWrite(t *testing.T) {
 	}
 	factory := newReadyFactory(func(context.Context, time.Duration) error {
 		return errdefs.Validationf(
-			"plugin hello: mcp: server hello: cannot start command: " +
+			"plugin hello: the process cannot be started: " +
 				"fork/exec ./server: no such file or directory")
 	})
 	host, err := NewHost(HostOptions{Store: store, NewSource: factory.new})
@@ -609,7 +582,7 @@ func TestHostEnableRollbackReportsARecordItCouldNotWrite(t *testing.T) {
 	if err == nil {
 		t.Fatal("enable of a plugin that cannot come up reported success")
 	}
-	if !strings.Contains(err.Error(), "cannot start command") {
+	if !strings.Contains(err.Error(), "cannot be started") {
 		t.Fatalf("enable error = %v, want the source's terminal failure", err)
 	}
 	if !strings.Contains(err.Error(), "recording it disabled") {
