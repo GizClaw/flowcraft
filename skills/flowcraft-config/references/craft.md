@@ -27,9 +27,7 @@ plugins:                    # optional
   tool_registry: <resource> # optional, resource that gets plugin tools
   node_targets: [<agent>]   # optional, agents that get plugin nodes
 host_tools:                 # optional
-  disable: [<primitive>]    # optional, primitives never exposed
-  services:                 # optional, named impl per family
-    <family>: {impl: <name>}
+  disable: [resource.op]    # optional, primitives never exposed
 deploy: <deploy document>   # inline; XOR base_layers
 base_layers:                # XOR deploy
   - name: <string>          # optional, defaults base-<i>
@@ -56,9 +54,9 @@ Notes:
   configures `plugin.Store` roots from `builtin`/`roots`.
 - `ui` describes the host application's own frontend. It is not the
   plugin UI channel.
-- `host_tools.services.<family>.impl` must name an impl registered by a
-  capability; otherwise `craft.New` fails. The families are `secrets`,
-  `workspace`, `browser`, `inference`, `sessions`, `telemetry`, `events`.
+- `host_tools.disable` names primitives the capabilities contribute; an
+  entry that names anything else, or names `host.about`, fails
+  `craft.New`.
 
 ## plugin.json manifest card
 
@@ -73,12 +71,9 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   "minHostVersion": "<version>",
   "permissions": ["<permission>"],
   "ui": {"entry": "<path>"},
-  "mcp": {
-    "name": "<string>", "transport": "stdio|http",
+  "run": {
     "command": "<cmd>", "args": ["<arg>"],
-    "env": {"<key>": "<value>"},
-    "url": "<url>", "headers": {"<k>": "<v>"},
-    "required": false
+    "env": {"<key>": "<value>"}
   },
   "skills": ["<path>"],
   "hooks": ["<path>"],
@@ -97,29 +92,30 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
   host pinned to a commit resolves that commit's pseudo-version, so a
   floor above the last release is refused there too, whether it is
   declared by the plugin or by the definition.
-- Legacy aliases: `entry` (⇒ `ui.entry`), `mcpServers` (⇒ `mcp`; the two
-  are mutually exclusive). `kraft` and `tools` are rejected with an
-  upgrade hint.
-- Limits: skills ≤ 32, hooks ≤ 16, MCP servers ≤ 16, nodes ≤ 64;
-  `mcp.env` ≤ 32 entries, key ≤ 128, value ≤ 4 KiB; paths ≤ 256 and
+- `mcp` and `mcpServers` are rejected with an upgrade hint, and so are
+  `kraft` and `tools`: craft serves the plugin socket now, so a plugin
+  declares a `run` section and speaks the wire instead of naming a
+  server.
+- Limits: skills ≤ 32, hooks ≤ 16, nodes ≤ 64;
+  `run.env` ≤ 32 entries, key ≤ 128, value ≤ 4 KiB; paths ≤ 256 and
   confined to the plugin root; UI asset ≤ 10 MiB.
-- `mcp.transport`: `stdio` (default; needs `command`) or `http` (needs
-  `url`). `command`/`args` carrying a path separator are resolved against
-  the plugin root and must exist there — the same resolution the host
+- `run.command` is required; `command`/`args` carrying a path separator
+  are resolved against the plugin root and must exist there — the same
+  resolution the host
   performs when it spawns, so a manifest that installs is one the host
   can start. A path-shaped `command` must be a regular file — exec
   cannot run a directory or anything else — while a path-shaped argument
   only has to exist, because an argument may name a directory on purpose
   (`go run ./server`). Bare names go through `PATH` and are not checked,
-  and an argument starting with `-` is never resolved. `mcp` and
-  `mcpServers` in the same manifest is rejected.
-- Tool names are namespaced per server: one server publishes under the
-  plugin's namespace, several publish under the plugin's plus the
-  server's `name` (or its position, when unnamed). Two of a plugin's own
-  servers collapsing into one namespace is rejected, and so is a plugin
-  whose namespace an installed plugin already holds — the second one is
-  listed with an error instead of silently losing every tool it
-  publishes.
+  and an argument starting with `-` is never resolved. There is no
+  transport field: craft listens on one unix socket per process and
+  states it in `FLOWCRAFT_PLUGIN_WIRE` (`FLOWCRAFT_PLUGIN_ID` and
+  `FLOWCRAFT_PLUGIN_DATA_DIR` come with it, and the manifest cannot
+  override the three).
+- Tool names are namespaced per plugin: everything it declares over the
+  connection publishes under the plugin's namespace. A plugin whose
+  namespace an installed plugin already holds is listed with an error
+  instead of silently losing every tool it publishes.
 - `update.url`: optional, ≤ 2048 bytes, absolute `http(s)` URL without
   credentials or fragment. craft validates the shape and hands the URL to
   a `plugin.Installer`; it never fetches anything itself.
@@ -128,18 +124,18 @@ Decoded by `plugin.ParseManifest`, validated by `Manifest.Validate(root)`
 
 | Permission | Gates |
 | --- | --- |
-| `mcp:provide` | `mcp` server section |
+| `tools:provide` | tools declared over the plugin wire |
 | `skills:provide` | `skills` list |
 | `hooks:provide` | `hooks` list |
 | `nodes:provide` | `nodes` section |
 | `ui:webview` | UI bundle (shell gate; craft serves the bundle and lists the grant in `ui.Registry` entries) |
 | `storage:kv` | plugin KV (shell binds; `Host.KV` is the host accessor) |
-| `secrets:auth` | `secret_get` / `secret_set` / `secret_delete` |
-| `inference:write` | `inference_upsert` / `inference_remove` |
-| `telemetry:export` | `telemetry_configure` / `telemetry_disable` |
-| `sessions:import` | `session_import` / `session_imported_sources` |
-| `host:open_url` | `open_url` |
-| `events:emit` | `emit_event` |
+| `secrets:auth` | `secret.get` / `secret.set` / `secret.delete` |
+| `inference:write` | `inference.upsert` / `inference.remove` |
+| `telemetry:export` | `telemetry.configure` / `telemetry.disable` |
+| `sessions:import` | `session.import` / `session.imported_sources` |
+| `host:open_url` | `browser.open` |
+| `events:emit` | `events.emit` |
 
 An unknown permission is rejected (`plugin <id>: unknown permission`).
 
@@ -148,8 +144,9 @@ An unknown permission is rejected (`plugin <id>: unknown permission`).
 A gated section declared without its permission is dropped; the plugin
 still loads and enables.
 
-- `mcp` without `mcp:provide`: no child process, no token, no tools; a
-  node bound to it is `Forbidden` with the missing grant.
+- `tools` without `tools:provide`: the process still runs, but nothing it
+  declares is projected; a direct call is `Forbidden` with the missing
+  grant.
 - `skills` without `skills:provide`: `SkillRoots` omits the plugin.
 - `hooks` without `hooks:provide`: `HookSources` omits the plugin.
 - `nodes` without `nodes:provide`: no node resource, no engine dep.
@@ -158,18 +155,19 @@ still loads and enables.
 
 ### Enable waits for the plugin
 
-`Host.SetEnabled(ctx, id, true)` waits for the plugin's MCP servers,
-bounded by `HostOptions.EnableTimeout` (`DefaultEnableTimeout`, 10s; a
-negative value spawns and returns). A plugin whose command is gone or not
-executable — files can change under an installed plugin — or whose peer
-refuses the connection comes back as that error, with the process stopped
-and the entry left disabled (`StopRolledBack`). A server that is not
-there yet is not a failure: the entry is recorded enabled and the source
-keeps reconnecting, and a loss that turns out to be terminal is reported
-as `StopFailed`. Enabling a plugin that was reported `StopFailed` starts
-it again — the source that gave up is replaced — and a loss that lands
-while an enable waits is reported once that call returns. `Host.Start`
-replays the enabled set without waiting.
+`Host.SetEnabled(ctx, id, true)` waits for the plugin to say `Ready` on
+its connection, bounded by `HostOptions.EnableTimeout`
+(`DefaultEnableTimeout`, 10s; a negative value spawns and returns). A
+plugin whose command is gone or not executable — files can change under
+an installed plugin — whose `Hello` states a major craft cannot speak,
+whose identity does not match the connection, or whose `Declare` craft
+refuses comes back as that error, with the process stopped and the entry
+left disabled (`StopRolledBack`). A process that is merely not there yet
+is not a failure: the entry is recorded enabled, and an exit on its own is
+reported as `StopFailed`. Enabling a plugin that was reported
+`StopFailed` starts it again — the source that gave up is replaced — and
+a loss that lands while an enable waits is reported once that call
+returns. `Host.Start` replays the enabled set without waiting.
 
 ### UI delivery
 
@@ -222,7 +220,7 @@ application's, behind the `Installer` seam.
 ```text
 <root>/<id>/plugin.json     # required
 <root>/<id>/dist/...        # ui.entry target (optional)
-<root>/<id>/server/...      # MCP server files (optional, any language)
+<root>/<id>/server/...      # the plugin process's own files (optional, any language)
 <root>/<id>/skills/...      # optional
 <root>/<id>/hooks/...       # optional
 ```
@@ -231,37 +229,26 @@ Directories starting with `.` or `_` are skipped. Later roots shadow
 earlier ones with the same id; user roots shadow builtin ids
 (`ShadowsBuiltin` + recorded builtin version).
 
-## host_tools service bindings and disable list
+## host_tools disable list
 
 ```yaml
 host_tools:
-  disable: [open_url]
-  services:
-    secrets:   {impl: keyring}
-    workspace: {impl: dynamic}
-    browser:   {impl: desktop}
-    inference: {impl: app}
-    sessions:  {impl: app}
-    telemetry: {impl: otlp}
-    events:    {impl: app}
+  disable: [secret.get]
 ```
 
-Each `impl` names a registration from a capability's
-`RegisterServices(*hostmcp.ServiceRegistry)`, keyed by `family.name`. The
-family's service interface is fixed:
+The primitives a plugin may call back are not configured in the definition:
+craft ships none, and a capability declares them in code by implementing
+`HostPrimitives() []pluginserver.Primitive`. Each primitive carries its
+`resource.op`, its grant name (empty means every plugin may call it), its
+description, its params schema and its handler. `host.about` is added by
+craft and is the catalog a connection sees.
 
-| Family | Interface | Primitives |
-| --- | --- | --- |
-| `secrets` | `SecretService` | `secret_get`, `secret_set`, `secret_delete` |
-| `workspace` | `ContextService` | `workspace_current` |
-| `browser` | `BrowserService` | `open_url` |
-| `inference` | `InferenceService` | `inference_upsert`, `inference_remove` |
-| `sessions` | `SessionService` | `session_import`, `session_imported_sources` |
-| `telemetry` | `TelemetryService` | `telemetry_configure`, `telemetry_disable` |
-| `events` | `EventService` | `emit_event` |
-
-A nil service removes its primitives from the exposed set (fail closed);
-`disable` reports them as `disabled` in `host_about`.
+`disable` therefore only takes primitives away from that contributed set.
+It reports them as `disabled` in `host.about`, takes the same
+`resource.op` form, and an entry that names a primitive the application
+does not contribute (or names `host.about`) fails `craft.New`. Every
+primitive is called through the one `Host.Call` RPC with a `resource` and
+an `op`.
 
 ## Error → cause
 
@@ -276,9 +263,9 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `craft: requires host version >= X, running Y` | release host below floor |
 | `craft: duplicate capability "x"` | two capabilities share a `Name()` |
 | `craft: capability app register: ...` | `Registrar.Register` failed |
-| `craft: host_tools.services.secrets impl "x" is not registered` | no `ServiceRegistrar` registered `secrets.x` |
-| `craft: host_tools.services has unknown family "x"` | typo in the family key |
-| `craft: service secrets.x is *T, want SecretService` | impl type mismatch |
+| `plugin host: cannot disable "x": it is not a host primitive` | `host_tools.disable` names a primitive no capability contributes |
+| `plugin host: host.about cannot be disabled: it reports the primitive set` | `disable` names `host.about` |
+| `plugin host: primitive "x" already registered` | two capabilities contribute the same `resource.op` |
 | `craft: not started` (`ErrNotStarted`) | `OpenRuntime` before `Start` |
 | `craft: runtime already exists` (`ErrRuntimeExists`) | duplicate runtime key |
 | `craft: runtime not found` (`ErrRuntimeNotFound`) | unknown key |
@@ -290,16 +277,14 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin: invalid id "X"` | id outside the id pattern |
 | `plugin <id>: invalid version "X"` | bad `version`/`minHostVersion` |
 | `plugin <id>: unknown permission "x"` | permission not in the table |
-| `plugin <id>: at most N skills\|hooks\|MCP servers\|graph nodes` | over limit |
-| `plugin <id>: mcp server 0 requires command` | stdio without `command` |
-| `plugin <id>: mcp server 0 requires url` | http without `url` |
-| `plugin <id>: mcp server 0 command "./x": ...` | path-shaped stdio `command` missing under the plugin root, or not a runnable regular file |
-| `plugin <id>: mcp server 0 arg "./x": ...` | path-shaped stdio argument missing under the plugin root |
-| `plugin <id>: mcp and mcpServers are mutually exclusive` | both set |
+| `plugin <id>: at most N skills\|hooks\|graph nodes` | over limit |
+| `plugin <id>: run.command is required` | `run` without `command` |
+| `plugin <id>: run.command "./x": ...` | path-shaped `command` missing under the plugin root, or not a regular file |
+| `plugin <id>: run.arg "./x": ...` | path-shaped argument missing under the plugin root |
+| `plugin: the mcp field is no longer supported; ...` | legacy `mcp`/`mcpServers` section |
 | `plugin <id>: the kraft field is no longer supported; ...` | removed field |
 | `plugin: path "X" escapes the plugin root` | path outside the root |
 | `requires host version >= X` | scan gate (`Entry.Error`, no id prefix) |
-| `plugin <id>: mcp servers 0 and 1 share the tool namespace "X"` | two of the plugin's own servers collide |
 | `plugin <id>: the tool namespace "X" collides with plugin "Y"` | two installed plugins would publish the same tool names |
 | `plugin store: read\|parse <path>` | unreadable `enabled.json`; every plugin reads as disabled and the next write keeps them that way |
 | `plugin install: <id> version V is not newer than W` | downgrade/equal |
@@ -319,8 +304,10 @@ A nil service removes its primitives from the exposed set (fail closed);
 | `plugin update: <id> V adds permissions p; the installer does not approve update grants — ...` (`Conflict`) | update widens the grants and the `Installer` is not an `UpdateApprover` |
 | `plugin update: <id> V: approve grants: ...` | an `UpdateApprover` refused the expansion |
 | `plugin update: Installer is required` | `UpdateFrom` with no installer |
-| `plugin <id>: the mcp section is ignored without the mcp:provide permission` | node/direct call to a dropped `mcp` section |
-| `hostmcp: tool "x" already registered` | duplicate primitive name |
+| `plugin <id>: tools are ignored without the tools:provide permission` | direct call to a tool of a plugin without the grant |
+| `plugin host: primitive "browser.open" already registered` | duplicate primitive id |
+| `plugin host: cannot disable "x": it is not a host primitive` | `host_tools.disable` entry names nothing in the catalog |
+| `plugin host: host.about cannot be disabled: it reports the primitive set` | `host_tools.disable` names `host.about` |
 | `craft manager: craft.yaml not found` | definition not located |
 | `craft manager: another instance holds <path>` | lock held |
 | `craft manager: Lock requires Paths.DataDir or LockPath` | lock with neither a data dir nor an explicit lock path |
@@ -333,10 +320,10 @@ Craft selects and configures; the host supplies everything executable:
 
 - **Resource factories** for every kind the deploy document references,
   via `Capability.Register`. Craft registers only the plugin node factory
-  (`graph.NodeType`/`mcp`) itself.
-- **Service implementations** for the host primitives, via
-  `Options.HostServices` (direct or as a `HostServices` capability) or
-  named impls + `host_tools.services`.
+  (`graph.NodeType`/`plugin`) itself.
+- **Host primitives** for the plugin wire, via a capability implementing
+  `HostPrimitives() []pluginserver.Primitive`. Craft contributes only
+  `host.about`; a host that declares nothing still answers it.
 - **UI rendering**: craft delivers plugin bundles (`Craft.UI()` registry,
   `Assets`, `craft.ui.changed`) plus the `ui` config; the shell loads
   and draws them, and gates `ui:webview` / `storage:kv`.

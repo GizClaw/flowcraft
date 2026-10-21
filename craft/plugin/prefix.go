@@ -3,7 +3,6 @@ package plugin
 import (
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -20,7 +19,7 @@ func ValidateID(id string) error {
 }
 
 // ToolPrefix is the tool-name namespace of a plugin: [a-z0-9_-] only,
-// suffixed with the MCP prefix separator.
+// suffixed with the namespace separator.
 func ToolPrefix(id string) string {
 	var builder strings.Builder
 	for _, r := range id {
@@ -34,30 +33,6 @@ func ToolPrefix(id string) string {
 		}
 	}
 	return builder.String() + "__"
-}
-
-// ToolNamespaces returns the tool-name namespace of every MCP server of
-// one plugin, in declaration order. A single-server plugin keeps the
-// plugin namespace, ToolPrefix(id). A plugin with several servers adds
-// the server's name — or its position, when the manifest does not name
-// it — so two servers of one manifest cannot publish the same tool name:
-// the registry keeps the first registration and the second server's tool
-// would simply not exist. Manifest.Validate rejects the manifests where
-// even that is not enough (two servers with the same name).
-func ToolNamespaces(id string, servers []MCPServer) []string {
-	namespaces := make([]string, 0, len(servers))
-	for index, server := range servers {
-		namespace := ToolPrefix(id)
-		if len(servers) > 1 {
-			tag := strings.TrimSpace(server.Name)
-			if tag == "" {
-				tag = strconv.Itoa(index + 1)
-			}
-			namespace += ToolPrefix(tag)
-		}
-		namespaces = append(namespaces, namespace)
-	}
-	return namespaces
 }
 
 // ResolvePath confines rel inside root and returns the absolute path.
@@ -101,7 +76,7 @@ func ResolvePath(root, rel string) (string, error) {
 func ResolveCommand(root, command string, args []string) (string, []string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return "", nil, errdefs.Validationf("plugin: mcp.command is required")
+		return "", nil, errdefs.Validationf("plugin: run.command is required")
 	}
 	resolvedArgs := append([]string(nil), args...)
 	for i, arg := range resolvedArgs {

@@ -211,7 +211,7 @@ func TestAssetFSWithoutUI(t *testing.T) {
 	root := t.TempDir()
 	writePlugin(t, root, "headless", `{
 		"id": "headless", "version": "0.1.0",
-		"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+		"permissions": ["tools:provide"], "run": {"command": "true"}
 	}`)
 	writePlugin(t, root, "broken", `{
 		"id": "broken", "version": "0.1.0", "permissions": ["nope"]

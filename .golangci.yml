@@ -113,5 +113,3 @@ linters:
         path: "dashscope/video\\.go"
       - linters: [gocyclo]
         path: "dashscope/model\\.go"
-      - linters: [gocyclo]
-        path: "craft/hostmcp/hostmcp\\.go"

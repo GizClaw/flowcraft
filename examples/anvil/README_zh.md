@@ -13,8 +13,8 @@ English version: [README.md](README.md).
 
 ## 快速开始
 
-前置条件：Go 1.26+。插件的 MCP server 是一个 Go 程序，manifest 用 `go run`
-启动它，因此**首次**运行会先编译它（几秒钟，之后走缓存）。
+前置条件：Go 1.26+。插件进程是一个 Go 程序，manifest 用 `go run` 启动它，
+因此**首次**运行会先编译它（几秒钟，之后走缓存）。
 
 ```bash
 cd examples/anvil
@@ -43,7 +43,7 @@ go run ./examples/anvil -definition examples/anvil/craft.yaml -data examples/anv
 | --- | --- | --- |
 | definition | 解析并校验 `craft.yaml` | 定义是数据，应用是代码 |
 | plugins | 扫描插件目录，列出权限与 skill 根目录 | 插件 store；`skills:provide` |
-| start | 启动 Craft，插件的 MCP server 起来后发布工具 | 插件宿主与共享工具集 |
+| start | 启动 Craft，插件进程拨号进来并声明自己的工具 | 插件宿主、插件通信协议与共享工具集 |
 | `runtime "default"` | 打开第一个 runtime（带 values），通过它的 assembly 调工具 | 按 key 的 runtime、`${craft:...}`、工具 assembly |
 | `runtime "alpha"` | 用一份 per-runtime layer 打开第二个 runtime | per-runtime layer、runtime 隔离 |
 | reload `"alpha"` | 改写 layer 文件后重载 runtime | 事务式重载 |
@@ -61,7 +61,7 @@ go run ./examples/anvil -definition examples/anvil/craft.yaml -data examples/anv
    notes_list {} -> 1 note in /data/notes-default.txt: buy milk
    hello__greet {"name":"anvil"} -> Hello, anvil! (from the hello plugin)
    event  plugin.hello.ping  {"from":"hello"}
-   hello__ping_host {} -> host protocol 1 (host version 0.0.0): 5 primitives exposed, 2 callable by this plugin [emit_event, host_about]; needs a grant for [secret_delete, secret_get, secret_set]; 8 unconfigured (no_service)
+   hello__ping_host {} -> host protocol 1 (host version 0.0.0): 2 primitives callable by this plugin [events.emit, host.about]; needs a grant for [secret.delete, secret.get, secret.set]
 ```
 
 （上面与下文中的绝对路径都省略成了 `/data/`。）
@@ -70,12 +70,17 @@ go run ./examples/anvil -definition examples/anvil/craft.yaml -data examples/anv
 
 1. `notes_add` / `notes_list` 是 **capability** 注册的资源类型 `workshop.Notes`
    提供的工具，操作的文件来自该 runtime 的 `${craft:notes}` value。
-2. `hello__greet` 是 **插件**贡献的工具：插件自带的 MCP server 声明了 `greet`，
+2. `hello__greet` 是 **插件**贡献的工具：插件在自己的连接上声明了 `greet`，
    craft 给它加上了插件 id 前缀。
-3. `hello__ping_host` 是插件反过来调用 **host primitives**（通过 host MCP
-   端点调用 `host_about` 与 `emit_event`）；它发出的事件以 `plugin.hello.ping`
-   出现在 craft 平面上，而 `host_about` 会报告宿主暴露了哪些原语、当前插件能调用
-   哪些、其余的为什么够不着（`no_grant`、`no_service`、`disabled`）。
+3. `hello__ping_host` 是插件反过来调用 **host primitives**（在同一条连接上调
+   `host.about` 与 `events.emit`，所有原语都走同一个 `Host.Call`，用
+   `resource` 加 `op` 指定）；它发出的事件以 `plugin.hello.ping` 出现在 craft
+   平面上，而 `host.about` 会报告当前插件能调用哪些原语、其余的为什么够不着
+   （`no_grant` 表示 manifest 没申请该权限，`disabled` 表示定义里主动关掉了）。
+
+   craft 自身不提供任何原语：上面那份目录里的四个都是 `workshop` capability 声明的
+   （见 `workshop.go`），这就是全部扩展点 —— 宿主提供什么由应用决定，什么都不声明的
+   宿主照样能回答 `host.about`。
 
 ```text
 == runtime "alpha"
@@ -117,8 +122,8 @@ runtime 的文件来自 runtime **values**，alpha 的来自应用写出的 runt
 | `tour.go` | 脚本化的生命周期演示 |
 | `events.go`、`print.go` | craft 平面 sink 与带互斥锁的打印器 |
 | `tour_test.go` | 同一趟演示的测试版本（`go test ./…`） |
-| `plugins/hello/plugin.json` | manifest：权限、一个 skill 目录、一个 MCP server |
-| `plugins/hello/server/main.go` | 插件的 stdio MCP server（go-sdk）及它的 host primitive 客户端 |
+| `plugins/hello/plugin.json` | manifest：权限、一个 skill 目录、一个插件进程 |
+| `plugins/hello/server/main.go` | 插件进程本体：`protocol.Main` 及它的 host primitive 调用 |
 | `plugins/hello/skills/hello/SKILL.md` | 宿主通过 `SkillRoots()` 暴露的 skill |
 
 ## 可以照搬到你自己应用里的规则
@@ -134,30 +139,30 @@ runtime 的文件来自 runtime **values**，alpha 的来自应用写出的 runt
    取值（default runtime 的 notes 文件），layers 按 key 覆盖整棵子树（alpha 的
    notes 文件）。缺 value 会以 `craft: reference ${craft:notes} is not defined`
    构建失败。
-4. **插件工具是异步到达的。** `craft.Start` 返回时插件的 MCP server 尚未完成握手，
-   所以应用要等就绪（`waitForPluginTool`）再打开需要这些工具的 runtime；已经打开的
-   runtime 会通过共享工具集得到后续变化。
+4. **插件工具是异步到达的。** `craft.Start` 只重放 store 记录的启用状态，不等进程
+   起来，所以应用要等就绪（`waitForPluginTool`）再打开需要这些工具的 runtime；已经
+   打开的 runtime 会通过共享工具集得到后续变化。
 5. **等 craft 平面的事件，而不是 sleep。** 重载效果落在 craft 自己的 goroutine 上；
    演示订阅了 `craft.>`（外加插件命名空间），并在触发重载后等
    `craft.reload.completed`。
 6. **重载后要重新读取 runtime 的资源。** 重载会换入新一代 generation，
    `rt.Resource("tools")` 返回的是新的 assembly。
-7. **宿主关闭 stdin 时，插件进程应以 0 退出。** 这是 MCP stdio 约定的关闭方式；
-   非零退出会被插件宿主报告为 stop 失败。`plugins/hello/server/main.go` 里有这段
-   判断。
+7. **连接结束，插件进程就该结束。** 宿主 drain 并关闭 socket 后 `protocol.Main`
+   返回，进程以 0 退出；更早退出的进程属于“自行消失”，宿主会通过
+   `plugin.Host.OnStopped` 上报。`plugins/hello/server/main.go` 就是整个进程。
 
 ## 插件
 
-`plugins/hello` 是一个完整的插件：manifest、skill 和一个 MCP server。
+`plugins/hello` 是一个完整的插件：manifest、skill 和一个插件进程。
 
-- `mcp: {command: "go", args: ["run", "./server"]}` —— 带路径的参数的会相对插件根目录
+- `run: {command: "go", args: ["run", "./server"]}` —— 带路径的参数会相对插件根目录
   解析并被限制在其中，所以 manifest 只携带源码、由宿主在启动时编译。真实插件应发布
   编译好的二进制（或解释器 + 脚本，例如 `python3 server/main.py`）。
-- `permissions: [mcp:provide, skills:provide, events:emit]` —— 没有对应权限的贡献
-  会被 fail-closed 地丢弃，权限集合同时决定宿主发给插件的 bearer token 的范围。
-- 宿主向子进程注入 `CRAFT_PLUGIN_ID`、`CRAFT_PLUGIN_DATA_DIR`、
-  `CRAFT_HOST_MCP_URL` 和 `CRAFT_PLUGIN_TOKEN`。token 按插件声明的权限签发，所以
-  这个插件能调 `emit_event` 而调不了 `secret_get`。
+- `permissions: [tools:provide, skills:provide, events:emit]` —— 没有对应权限的贡献
+  会被 fail-closed 地丢弃，权限集合就是这条连接拿到的授权。
+- 宿主向子进程注入 `FLOWCRAFT_PLUGIN_ID`、`FLOWCRAFT_PLUGIN_DATA_DIR` 和
+  `FLOWCRAFT_PLUGIN_WIRE`；最后一个是插件要拨号的 socket。授权就是该连接对应
+  manifest 的 permissions，所以这个插件能调 `events.emit` 而调不了 `secret.get`。
 - 示例故意不写 `minHostVersion`：对开发版 craft（`Version == "0.0.0"`）来说，
   任何高于 `0.0.0` 的下限都会让插件被判为无效。等你锁定正式发布的 craft 之后再设置它。
 

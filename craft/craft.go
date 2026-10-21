@@ -15,7 +15,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/utils/ptr"
-	"github.com/GizClaw/flowcraft/craft/hostmcp"
 	"github.com/GizClaw/flowcraft/craft/ui"
 )
 
@@ -32,7 +31,7 @@ type Craft struct {
 	router           *event.Router
 	plugins          PluginHost
 	uiRegistry       *ui.Registry
-	hostMCP          *hostMCPState
+	hostWire         *hostWire
 	watchCancel      context.CancelFunc
 	unsubscribe      func()
 
@@ -163,65 +162,22 @@ func New(def Definition, opts Options) (*Craft, error) {
 			return nil, fmt.Errorf("craft: ui registry: %w", err)
 		}
 		c.uiRegistry = uiRegistry
-	}
-	named := hostmcp.NewServiceRegistry()
-	for _, capability := range caps {
-		registrar, ok := capability.(ServiceRegistrar)
-		if !ok {
-			continue
+		// The wire serves every plugin this craft hosts, so it is built
+		// from the application's primitives as soon as there is a host at
+		// all: a craft that contributes none still answers host.about, and
+		// a plugin that cannot ask is a plugin that cannot start.
+		var disabled []string
+		if def.HostTools != nil {
+			disabled = append(disabled, def.HostTools.Disable...)
 		}
-		if err := registrar.RegisterServices(named); err != nil {
-			_ = c.router.Close()
-			_ = c.bus.Close()
-			return nil, fmt.Errorf(
-				"craft: capability %s services: %w", capability.Name(), err)
-		}
-	}
-	services := hostServiceSet(caps)
-	direct := opts.HostServices
-	if direct.Secrets != nil {
-		services.Secrets = direct.Secrets
-	}
-	if direct.Context != nil {
-		services.Context = direct.Context
-	}
-	if direct.Browser != nil {
-		services.Browser = direct.Browser
-	}
-	if direct.Inference != nil {
-		services.Inference = direct.Inference
-	}
-	if direct.Sessions != nil {
-		services.Sessions = direct.Sessions
-	}
-	if direct.Telemetry != nil {
-		services.Telemetry = direct.Telemetry
-	}
-	if direct.Events != nil {
-		services.Events = direct.Events
-	}
-	var disabled []string
-	if def.HostTools != nil {
-		disabled = append(disabled, def.HostTools.Disable...)
-		if err := applyServiceBindings(
-			def.HostTools.Services, named, &services); err != nil {
-			_ = c.router.Close()
-			_ = c.bus.Close()
-			return nil, err
-		}
-	}
-	if services.Secrets != nil || services.Context != nil ||
-		services.Browser != nil || services.Inference != nil ||
-		services.Sessions != nil || services.Telemetry != nil ||
-		services.Events != nil {
-		hostMCP, err := newHostMCP(services, disabled, Version)
+		hostWire, err := newHostWire(hostPrimitiveSet(caps), disabled, Version)
 		if err != nil {
 			_ = c.router.Close()
 			_ = c.bus.Close()
 			return nil, err
 		}
-		c.hostMCP = hostMCP
-		c.installPluginHooks()
+		c.hostWire = hostWire
+		c.installHostWire()
 	}
 	layers, err := c.composeDefinitionLayers()
 	if err != nil {
@@ -234,8 +190,8 @@ func New(def Definition, opts Options) (*Craft, error) {
 }
 
 // Start starts the shared services. It is idempotent, and a failure
-// leaves it retryable: nothing is marked started until the host MCP
-// endpoint and the plugin host are both up.
+// leaves it retryable: nothing is marked started until the plugin wire
+// server and the plugin host are both up.
 func (c *Craft) Start(ctx context.Context) error {
 	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("craft: Start context is required")
@@ -252,12 +208,9 @@ func (c *Craft) Start(ctx context.Context) error {
 		return nil
 	}
 	c.mu.Unlock()
-	if err := c.startHostMCP(); err != nil {
-		if c.isClosed() {
-			return ErrCraftClosed
-		}
-		return err
-	}
+	// The wire server needs no start of its own: a plugin's socket is
+	// opened with its process (see [plugin.Host]), so there is no
+	// endpoint to bring up before the processes spawn.
 	if c.plugins != nil {
 		if err := c.plugins.Start(ctx); err != nil {
 			if c.isClosed() {
@@ -795,8 +748,8 @@ func (c *Craft) Close() error {
 			errs = append(errs, fmt.Errorf("craft: close plugins: %w", err))
 		}
 	}
-	if err := c.closeHostMCP(); err != nil {
-		errs = append(errs, fmt.Errorf("craft: close host MCP: %w", err))
+	if err := c.closeHostWire(); err != nil {
+		errs = append(errs, fmt.Errorf("craft: close the plugin wire server: %w", err))
 	}
 	return errors.Join(errs...)
 }

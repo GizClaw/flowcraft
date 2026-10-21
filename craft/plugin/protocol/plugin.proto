@@ -1,0 +1,197 @@
+// Copyright (c) the FlowCraft authors. All rights reserved.
+//
+// This file is the wire contract between craft and a plugin process. It is
+// the only file in the repository that both halves are generated from.
+
+syntax = "proto3";
+
+package flowcraft.plugin.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/craft/plugin/protocol;protocol";
+
+// Plugin is served by craft on the plugin's own unix socket. Every method
+// here is called by the plugin: the plugin is a gRPC client that dials the
+// socket craft handed it, and the connection is the plugin's identity.
+//
+// There is no craft-to-plugin method, and deliberately so: craft serves the
+// only socket, so everything craft asks of a plugin travels the other way,
+// as events on the Call stream the plugin opened (see CallEvent.drain).
+service Plugin {
+  // Hello is the first call on a connection. craft answers with the grants
+  // it decided on and the generation this process belongs to.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  // Declare replaces the plugin's whole contribution with one snapshot.
+  rpc Declare(DeclareRequest) returns (DeclareResponse);
+  // Ready says the declaration is in effect: calls may begin.
+  rpc Ready(ReadyRequest) returns (ReadyResponse);
+  // Call is the reverse direction: the plugin opens max_concurrent_calls of
+  // these and craft writes invocations into them. Liveness needs no method
+  // of its own — a process that is gone takes its streams with it, and a
+  // Drain is an event on this stream for the same reason.
+  rpc Call(stream CallEvent) returns (stream CallEvent);
+}
+
+// Host is served by craft on the same socket, and is how a plugin reaches
+// the host primitives it was granted.
+//
+// One method, and that is the design: a primitive is a resource and an op,
+// its arguments and its answer are JSON, and which primitives exist is a
+// catalog the host answers at runtime (host.about) rather than a shape baked
+// into this file. Adding a primitive is a change on the craft side alone,
+// and a plugin built against an older host keeps working because the
+// envelope never moves. The mirror of that: a host answers a primitive it
+// does not serve with a NotFound, so a plugin must ask before it assumes.
+//
+//   resource   op                grant              params           -> result
+//   host       about             -                  {}               -> catalog
+//   secret     get               secrets:auth       {name}           -> {value}
+//   secret     set               secrets:auth       {name, value}    -> {}
+//   secret     delete            secrets:auth       {name}           -> {}
+//   workspace  current           -                  {}               -> workspace
+//   browser    open              host:open_url      {url}            -> {}
+//   inference  upsert            inference:write    {profile}        -> {id}
+//   inference  remove            inference:write    {id}             -> {}
+//   session    import            sessions:import    {payload}        -> object
+//   session    imported_sources  sessions:import    {}               -> {sources}
+//   telemetry  configure         telemetry:export   {endpoint,
+//                                                     headers}       -> {}
+//   telemetry  disable           telemetry:export   {}               -> {}
+//   events     emit              events:emit        {subject,
+//                                                     payload}       -> {}
+service Host {
+  // Call runs one primitive. resource and op name it ("secret", "get"),
+  // params_json carries its arguments and result_json its answer.
+  rpc Call(HostCallRequest) returns (HostCallResponse);
+}
+
+// The wire version is major.minor. A different major is refused outright;
+// a higher minor is accepted, because only additive change is allowed in
+// one major.
+message HelloRequest {
+  string wire_version = 1;
+  string plugin_id = 2;
+  string plugin_version = 3;
+  // How many Call streams this process will open, and therefore the most
+  // invocations craft may run at once. Zero means unset.
+  uint32 max_concurrent_calls = 4;
+  repeated string capabilities = 5;
+}
+
+message HelloResponse {
+  string wire_version = 1;
+  string session_id = 2;
+  uint64 generation = 3;
+  // The grants craft decided on, which are the manifest's permissions
+  // narrowed by local policy. This is the only place they are stated.
+  repeated string granted_permissions = 4;
+  // Bound on one call's arguments or result, in bytes. Zero means unset.
+  uint32 max_call_bytes = 5;
+}
+
+message DeclareRequest {
+  uint64 revision = 1;
+  Declaration declaration = 2;
+}
+
+message DeclareResponse {
+  uint64 revision = 1;
+}
+
+message Declaration {
+  repeated ToolDecl tools = 1;
+}
+
+message ToolDecl {
+  // The plugin's own name for the tool. craft publishes it under the
+  // plugin's namespace, which the plugin never has to know about.
+  string name = 1;
+  string description = 2;
+  bytes input_schema = 3;
+}
+
+message ReadyRequest {
+  uint64 revision = 1;
+}
+
+message ReadyResponse {}
+
+// Drain asks the plugin to stop accepting new calls and finish the ones in
+// flight. It travels the plugin's own Call stream because craft is the only
+// side that serves a socket.
+message DrainRequest {
+  int64 timeout_millis = 1;
+}
+
+// Drained acknowledges a Drain, once the calls that were in flight ended.
+message Drained {}
+
+message CallEvent {
+  oneof event {
+    CallRequest request = 1;
+    Progress progress = 2;
+    CallResult result = 3;
+    CallError error = 4;
+    DrainRequest drain = 5;
+    Drained drained = 6;
+  }
+}
+
+message CallRequest {
+  string call_id = 1;
+  string tool = 2;
+  // JSON, not proto fields: a plugin's tool schemas are only known at
+  // runtime, so the payload stays opaque to the envelope.
+  bytes arguments_json = 3;
+  int64 timeout_millis = 4;
+  string parent_span = 5;
+}
+
+message Progress {
+  string call_id = 1;
+  string message = 2;
+}
+
+message CallResult {
+  string call_id = 1;
+  bytes result_json = 2;
+}
+
+message CallError {
+  enum Kind {
+    UNKNOWN = 0;
+    INVALID_ARGUMENT = 1;
+    FAILED_PRECONDITION = 2;
+    NOT_FOUND = 3;
+    TIMEOUT = 4;
+    RESOURCE_EXHAUSTED = 5;
+    PERMISSION_DENIED = 6;
+    UNAVAILABLE = 7;
+    INTERNAL = 8;
+  }
+  Kind kind = 1;
+  string message = 2;
+  bytes details_json = 3;
+  // Whether retrying may succeed. The plugin knows; craft cannot infer it.
+  bool retryable = 4;
+  string call_id = 5;
+}
+
+message HostCallRequest {
+  // resource is the primitive family: host, secret, workspace, browser,
+  // inference, session, telemetry, events.
+  string resource = 1;
+  // op is the verb inside the family: about, get, set, delete, current,
+  // open, upsert, remove, import, imported_sources, configure, disable,
+  // emit.
+  string op = 2;
+  // params_json is the JSON object of arguments the table above lists for
+  // this primitive. It stays opaque to the envelope: the host decodes it,
+  // and a host that does not serve the primitive never looks at it.
+  bytes params_json = 3;
+}
+
+message HostCallResponse {
+  // result_json is the JSON answer the table above lists for this
+  // primitive, or the catalog for host.about.
+  bytes result_json = 1;
+}

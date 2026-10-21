@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// Source is one plugin's tool contributor: a mcp.Source in production,
+// Source is one plugin's tool contributor: a [*wireSource] in production,
 // a fake in tests. A source may also implement [Readiness], which is
 // what lets an enable wait for the plugin instead of only spawning it.
 type Source interface {

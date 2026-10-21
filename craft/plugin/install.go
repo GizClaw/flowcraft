@@ -52,7 +52,7 @@ func (s *Store) inspect(source string) (Summary, Manifest, error) {
 	if err != nil {
 		return Summary{}, Manifest{}, err
 	}
-	if err := manifest.Validate(source); err != nil {
+	if err := manifest.Validate(source, s.opts.Grants...); err != nil {
 		return Summary{}, Manifest{}, err
 	}
 	return Summary{
@@ -322,8 +322,8 @@ func (s *Store) bump() {
 }
 
 // pluginFileMode is the mode a plugin file is written with: 0600, or
-// 0700 when the source is executable. A plugin may ship a compiled MCP
-// server, and dropping the executable bit would install a package whose
+// 0700 when the source is executable. A plugin may ship a compiled server
+// binary, and dropping the executable bit would install a package whose
 // own command cannot start; everything else stays closed, because a
 // plugin tree is user-installed content that no one else needs to read.
 func pluginFileMode(mode fs.FileMode) fs.FileMode {

@@ -176,8 +176,34 @@ deploy:
 `
 }
 
+// pluginTestDefinition is the smallest deployable definition a Craft
+// starts from.
+const pluginTestDefinition = `
+craft:
+  id: test
+  version: 0.1.0
+deploy:
+  version: v1
+  resources:
+    bus: {kind: event.Bus, impl: memory}
+  runtime:
+    event_bus: bus
+`
+
 // newTestCraft builds and starts a Craft over a node definition.
 func newTestCraft(t *testing.T, definition string, host PluginHost) *Craft {
+	t.Helper()
+	return newTestCraftWith(t, definition, host)
+}
+
+// newTestCraftWith is newTestCraft plus the capabilities contributing what
+// the test needs beyond the node engine, host primitives included.
+func newTestCraftWith(
+	t *testing.T,
+	definition string,
+	host PluginHost,
+	extra ...Capability,
+) *Craft {
 	t.Helper()
 	def, err := ParseDefinition([]byte(definition))
 	if err != nil {
@@ -185,7 +211,7 @@ func newTestCraft(t *testing.T, definition string, host PluginHost) *Craft {
 	}
 	c, err := New(def, Options{
 		DataDir:      t.TempDir(),
-		Capabilities: []Capability{nodeEngineCapability{}},
+		Capabilities: append([]Capability{nodeEngineCapability{}}, extra...),
 		Plugins:      host,
 	})
 	if err != nil {

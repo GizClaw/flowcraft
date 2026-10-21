@@ -36,6 +36,14 @@ type Options struct {
 	// HostVersion is reported to plugins and checked against
 	// minHostVersion when non-empty.
 	HostVersion string
+	// Grants are the grant names the host's primitives require, the
+	// application's half of the permission vocabulary. A manifest may ask
+	// for one of them in addition to craft's own permissions; without the
+	// declaration here the same permission is refused as unknown, which
+	// is what keeps a typo from reading as a grant nobody holds.
+	//
+	// server.Registry.Grants reports what a primitive set needs.
+	Grants []string
 }
 
 // Entry is one scanned plugin.
@@ -377,7 +385,7 @@ func (s *Store) scan() ([]Entry, error) {
 }
 
 // markToolNamespaceCollisions names the collision of every valid plugin
-// whose MCP tool namespace another plugin already claimed. Two ids can
+// whose tool namespace another plugin already claimed. Two ids can
 // collapse into one namespace — ToolPrefix rewrites anything outside
 // [a-z0-9_-], and an id may contain "." — and a second plugin publishing
 // the same tool name loses the registry's duplicate race silently: the
@@ -392,15 +400,14 @@ func markToolNamespaceCollisions(entries []Entry) {
 		if entry.Error != "" {
 			continue
 		}
-		for _, namespace := range ToolNamespaces(entry.ID, entry.Manifest.Servers()) {
-			if first, taken := owner[namespace]; taken {
-				entries[i].Conflict = fmt.Sprintf(
-					"the tool namespace %q collides with plugin %q",
-					namespace, first)
-				break
-			}
-			owner[namespace] = entry.ID
+		namespace := ToolPrefix(entry.ID)
+		if first, taken := owner[namespace]; taken {
+			entries[i].Conflict = fmt.Sprintf(
+				"the tool namespace %q collides with plugin %q",
+				namespace, first)
+			continue
 		}
+		owner[namespace] = entry.ID
 	}
 }
 
@@ -425,7 +432,7 @@ func (s *Store) loadEntry(dir string, builtin bool) Entry {
 		entry.Error = "requires host version >= " + manifest.MinHostVersion
 		return entry
 	}
-	if err := manifest.Validate(dir); err != nil {
+	if err := manifest.Validate(dir, s.opts.Grants...); err != nil {
 		entry.Error = err.Error()
 	}
 	return entry

@@ -20,6 +20,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/craft"
 	"github.com/GizClaw/flowcraft/craft/plugin"
+	pluginserver "github.com/GizClaw/flowcraft/craft/plugin/server"
 )
 
 // options are the inputs of one anvil run.
@@ -103,12 +104,17 @@ func newApp(opts options) (*app, error) {
 		print:      newPrinter(opts.out),
 	}
 	a.events = newEventLog(a.print)
+	a.capability = newWorkshop()
 
 	store, err := plugin.NewStore(plugin.Options{
 		Roots:       a.pluginRoots(),
 		StateDir:    filepath.Join(dataDir, "plugin-state"),
 		DataDirRoot: filepath.Join(dataDir, "plugin-data"),
 		HostVersion: craft.Version,
+		// The grants the workshop's primitives require. The store accepts
+		// a manifest permission from this list, which is how a plugin asks
+		// for one of them at all.
+		Grants: pluginserver.Grants(a.capability.HostPrimitives()),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open plugin store: %w", err)
@@ -119,7 +125,6 @@ func newApp(opts options) (*app, error) {
 	}
 	a.plugins = host
 
-	a.capability = newWorkshop()
 	c, err := craft.New(def, craft.Options{
 		ConfigDir:     dataDir,
 		DataDir:       dataDir,
@@ -132,7 +137,7 @@ func newApp(opts options) (*app, error) {
 	}
 	a.craft = c
 
-	// The emit_event primitive publishes on the craft plane, namespaced
+	// The events.emit primitive publishes on the craft plane, namespaced
 	// by the calling plugin. The emitter can only be wired once the
 	// Craft exists, which is necessarily after craft.New.
 	a.capability.setEmitter(

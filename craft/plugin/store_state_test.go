@@ -18,7 +18,7 @@ func stateStore(t *testing.T) (*Store, string) {
 	for _, id := range []string{"alpha", "beta"} {
 		writePlugin(t, root, id, `{
 			"id": "`+id+`", "version": "0.1.0",
-			"permissions": ["mcp:provide"], "mcp": {"command": "true"}
+			"permissions": ["tools:provide"], "run": {"command": "true"}
 		}`)
 	}
 	store, err := NewStore(Options{

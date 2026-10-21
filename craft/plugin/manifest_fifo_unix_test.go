@@ -28,8 +28,8 @@ func TestManifestRejectsNonRegularCommand(t *testing.T) {
 	}
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {"command": "bin/server"}
+		"permissions": ["tools:provide"],
+		"run": {"command": "bin/server"}
 	}`))
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)

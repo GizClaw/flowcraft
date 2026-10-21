@@ -23,8 +23,9 @@ plugins:
 
 host_tools:
   # Primitives that must never reach a plugin. A disabled primitive is
-  # not exposed and host_about reports it.
-  disable: [open_url]
+  # not exposed and host.about reports it. Each entry is resource.op; a
+  # name that matches no primitive fails craft.New.
+  disable: [browser.open]
   # Select named impls registered by a capability's ServiceRegistrar,
   # e.g.:
   #   services:

@@ -46,7 +46,7 @@ func TestTour(t *testing.T) {
 	text := out
 	for _, want := range []string{
 		"craft anvil 0.1.0 (Anvil)",
-		"hello 0.1.0  enabled=true  permissions=mcp:provide, skills:provide, events:emit",
+		"hello 0.1.0  enabled=true  permissions=tools:provide, skills:provide, events:emit",
 		"plugin tools published: hello__greet, hello__ping_host",
 		"event  craft.started",
 		`notes_add {"text":"buy milk"} -> added note 1 to ` +
@@ -54,7 +54,8 @@ func TestTour(t *testing.T) {
 		"notes_add  \"Append one line to the default runtime's notes file.\"",
 		`hello__greet {"name":"anvil"} -> Hello, anvil!`,
 		"event  plugin.hello.ping",
-		"needs a grant for [secret_delete, secret_get, secret_set]",
+		"2 primitives callable by this plugin [events.emit, host.about]",
+		"needs a grant for [secret.delete, secret.get, secret.set]",
 		"no notes yet in " + filepath.Join(dataDir, "notes-alpha.txt"),
 		"event  craft.reload.completed  {\"key\":\"alpha\",\"reason\":\"manual\"}",
 		"no notes yet in " + round2,

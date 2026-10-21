@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	// pluginTool and hostTool are the hello plugin's two MCP tools.
-	// craft prefixes plugin tools with the plugin id, so the server's
-	// own names are greet and ping_host.
+	// pluginTool and hostTool are the hello plugin's two tools. craft
+	// prefixes plugin tools with the plugin id, so the names the plugin
+	// declares are greet and ping_host.
 	pluginTool = "hello__greet"
 	hostTool   = "hello__ping_host"
 
@@ -68,7 +68,7 @@ func (a *app) tour(ctx context.Context) error {
 		return err
 	}
 	a.print.line("plugin host revision %d", a.plugins.Revision())
-	a.print.line("waiting for %s (the plugin's MCP server is a Go program; the first run compiles it)",
+	a.print.line("waiting for %s (the plugin process is a Go program; the first run compiles it)",
 		pluginTool)
 	if err := a.waitForPluginTool(ctx, pluginTool, a.opts.pluginTimeout); err != nil {
 		return err
@@ -215,6 +215,6 @@ func (a *app) tour(ctx context.Context) error {
 	a.print.step("read next")
 	a.print.line("docs/guides/craft.md — the definition schema, lifecycle and errors")
 	a.print.line("skills/flowcraft-config — craft.yaml and plugin.json reference cards")
-	a.print.line("craft/hostmcp — the v1 host primitive set, the plugin's other half")
+	a.print.line("craft/plugin/protocol — the plugin wire: what a process dials and what it may ask for")
 	return nil
 }

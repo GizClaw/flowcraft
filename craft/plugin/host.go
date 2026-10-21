@@ -6,33 +6,36 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/hooks"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/mcp"
-	"go.opentelemetry.io/otel/attribute"
+	"github.com/GizClaw/flowcraft/craft/plugin/server"
 )
 
 // NewSourceFunc builds one plugin's tool source. Tests inject fakes;
-// production uses the MCP source factory.
+// production uses the wire source factory, which spawns the plugin process
+// and waits for it to dial the socket craft opened for it.
+//
+// The generation is the process this source is being opened for. It is
+// minted before the environment hook runs, so a source and the grants its
+// process was started with belong to each other by construction.
 type NewSourceFunc func(
 	ctx context.Context,
 	entry Entry,
+	generation uint64,
 	env map[string]string,
 	dataDir string,
 ) (Source, error)
 
 // DefaultEnableTimeout bounds the readiness wait of an enable: how long
-// [Host.SetEnabled] waits for a plugin's MCP servers before it stops
-// waiting and records the plugin as enabled with the source still
-// reconnecting in the background.
+// [Host.SetEnabled] waits for a plugin to say Ready on its connection
+// before it stops waiting and records the plugin as enabled anyway.
 const DefaultEnableTimeout = 10 * time.Second
 
 // DefaultDrainTimeout bounds how long a stop waits for one plugin's
@@ -45,7 +48,13 @@ const DefaultDrainTimeout = 30 * time.Second
 
 // HostOptions configures a plugin Host.
 type HostOptions struct {
-	Store        *Store
+	Store *Store
+	// Server is the craft half of the plugin wire: the primitive set every
+	// plugin is served and the listener each process's socket comes from.
+	// A host without one can still be given a NewSource of its own, which is
+	// how tests replace the transport; enabling a plugin with neither is an
+	// error rather than a plugin that silently publishes nothing.
+	Server       *server.Server
 	NewSource    NewSourceFunc
 	Env          map[string]string
 	DrainTimeout time.Duration
@@ -60,6 +69,7 @@ type HostOptions struct {
 // shared by every runtime of a Craft.
 type Host struct {
 	store         *Store
+	server        *server.Server
 	newSource     NewSourceFunc
 	env           map[string]string
 	drainTimeout  time.Duration
@@ -81,9 +91,9 @@ type Host struct {
 	// record is the application's to change.
 	live map[string]livePlugin
 	// nextGeneration numbers the processes this host starts. Everything
-	// derived from a process — the host token minted for it, the SDK
-	// server cached for its MCP grants — is keyed by its generation, so
-	// nothing derived from a dead process outlives it.
+	// derived from a process — the connection opened for it and the grants
+	// it is served with — is keyed by its generation, so nothing derived
+	// from a dead process outlives it.
 	nextGeneration uint64
 	// entryLocks serializes start and stop for one plugin id, so an
 	// enable racing a disable (or a start racing Close) cannot leave the
@@ -169,6 +179,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 	}
 	host := &Host{
 		store:         opts.Store,
+		server:        opts.Server,
 		newSource:     opts.NewSource,
 		env:           env,
 		drainTimeout:  drain,
@@ -182,13 +193,26 @@ func NewHost(opts HostOptions) (*Host, error) {
 		lost:          make(map[string]bool),
 	}
 	if host.newSource == nil {
-		host.newSource = host.mcpSource
+		host.newSource = host.wireSource
 	}
 	return host, nil
 }
 
 // Store returns the underlying store.
 func (h *Host) Store() *Store { return h.store }
+
+// SetServer installs the wire server that opens a socket per plugin
+// process. It must be called before Start: a start replays the enabled
+// plugins, and each of those needs its socket to exist by the time its
+// process spawns.
+func (h *Host) SetServer(server *server.Server) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.started {
+		return
+	}
+	h.server = server
+}
 
 // SetPluginHooks installs the per-plugin env injector and the
 // stopped-plugin callback. It must be called before Start. An
@@ -219,12 +243,10 @@ const (
 	// plugin, uninstalling it, or closing the host.
 	StopRequested StopReason = "requested"
 
-	// StopFailed is a process the host did not stop: the plugin's MCP
-	// server is gone and the background reconnect gave up on it,
-	// because the command cannot be started at all (missing, not
-	// executable) or because the server rejects the connection. The
-	// entry keeps its state — enabled, with its tools still projected
-	// — and the application decides what the loss means.
+	// StopFailed is a process the host did not stop: it exited on its own,
+	// or its connection ended without a stop from the host. The entry
+	// keeps its state — enabled, with its tools still projected — and the
+	// application decides what the loss means.
 	StopFailed StopReason = "failed"
 
 	// StopRolledBack is a stop that undid an enable: the host stopped a
@@ -247,11 +269,11 @@ const (
 //
 // Multiple subscriptions are allowed and the returned function
 // unsubscribes this one; calling it more than once is safe. Stops
-// happen whether or not anyone subscribed — craft's own wiring (token
-// revocation) is independent of these subscriptions. A callback runs on
-// the goroutine that stopped the plugin (or, for StopFailed, on the MCP
-// retry goroutine), so it should return promptly and must not call back
-// into the host for the same plugin: that stop already holds the
+// happen whether or not anyone subscribed — craft's own wiring is
+// independent of these subscriptions. A callback runs on the goroutine
+// that stopped the plugin (or, for StopFailed, on the one that noticed
+// the process is gone), so it should return promptly and must not call
+// back into the host for the same plugin: that stop already holds the
 // plugin's entry lock.
 func (h *Host) OnStopped(fn func(id string, reason StopReason)) func() {
 	if fn == nil {
@@ -428,7 +450,7 @@ func (h *Host) ToolSet() *ToolSet { return h.tools }
 // Entries returns every valid scanned plugin.
 func (h *Host) Entries() ([]Entry, error) { return h.store.Entries() }
 
-// CallTool invokes one tool on a running plugin's primary MCP server.
+// CallTool invokes one tool over a running plugin's connection.
 func (h *Host) CallTool(
 	ctx context.Context,
 	pluginID, toolName string,
@@ -502,19 +524,18 @@ func (h *Host) Start(ctx context.Context) error {
 
 // SetEnabled starts or stops one plugin and bumps the store revision.
 //
-// Starting waits for the plugin's MCP servers to come up, bounded by
+// Starting waits for the plugin to come up, bounded by
 // [HostOptions.EnableTimeout], so an enable reports a plugin that cannot
-// come up at all — a command that is gone or not executable, a peer that
-// refuses the connection — instead of recording an enable whose process
-// never arrives. Such an enable is rolled back: the process is stopped
-// and the entry is left disabled. An entry a previous session had
-// recorded as enabled loses that record along with the process, because
-// a record that says enabled about a plugin with no process is the
-// disagreement this wait exists to prevent. A server that is merely not
-// there yet (a remote endpoint that is down, a child that keeps dying
-// during startup) is not a failure of enable: the wait gives up at the
-// timeout, the entry is recorded enabled, and the source keeps
-// reconnecting in the background.
+// come up at all — a command that is gone or not executable, a wire
+// version craft cannot speak, a declaration craft refuses — instead of
+// recording an enable whose process never arrives. Such an enable is
+// rolled back: the process is stopped and the entry is left disabled. An
+// entry a previous session had recorded as enabled loses that record
+// along with the process, because a record that says enabled about a
+// plugin with no process is the disagreement this wait exists to prevent.
+// A plugin that is merely not there yet — a process still starting, one
+// that has not dialed the socket — is not a failure of enable: the wait
+// gives up at the timeout and the entry is recorded enabled.
 //
 // Enabling a plugin that is still running starts nothing, and enabling
 // one whose source gave up is a start: the process behind that source is
@@ -1202,12 +1223,12 @@ func (h *Host) forgetSource(id string, source Source) {
 	h.mu.Unlock()
 }
 
-// openSource builds the tool source of one plugin. The mcp section is
-// honored only when the manifest declares mcp:provide: without the
-// grant the whole section is ignored, so no child process is started
-// and no host token is minted for it. Direct callers — plugin graph
-// nodes — get the refusal as their error instead of a missing-server
-// error that would hide the cause.
+// openSource builds the tool source of one plugin: its socket, and the
+// process that dials it. The tools:provide gate is not applied here — a
+// plugin without it still runs, because it may contribute skills or hooks,
+// and its declarations are dropped where they are projected instead (see
+// [wireSource.project]). Direct callers — plugin graph nodes — get the
+// refusal as their error rather than an empty tool result.
 func (h *Host) openSource(
 	ctx context.Context,
 	entry Entry,
@@ -1216,10 +1237,6 @@ func (h *Host) openSource(
 	dataDir, err := h.store.DataDir(entry.ID)
 	if err != nil {
 		return nil, err
-	}
-	if len(entry.Manifest.Servers()) > 0 &&
-		!entry.Manifest.HasPermission("mcp:provide") {
-		return refusedSource{id: entry.ID}, nil
 	}
 	h.mu.Lock()
 	env := make(map[string]string, len(h.env)+2)
@@ -1233,41 +1250,20 @@ func (h *Host) openSource(
 			return nil, err
 		}
 	}
-	source, err := h.newSource(ctx, entry, env, dataDir)
+	source, err := h.newSource(ctx, entry, generation, env, dataDir)
 	if err != nil {
 		return nil, err
 	}
 	if source == nil {
 		// A factory that reports success and hands back nothing is a
 		// bug in the application's seam rather than a plugin that
-		// publishes nothing ([refusedSource] is that), and every caller
+		// publishes nothing ([staticSource] is that), and every caller
 		// below takes the source's Close for granted.
 		return nil, errdefs.Internal(fmt.Errorf(
 			"plugin host: plugin %s: the source factory returned no source",
 			entry.ID))
 	}
 	return source, nil
-}
-
-// refusedSource stands in for a plugin whose mcp section was ignored
-// for lack of the mcp:provide grant. It publishes nothing, and a
-// plugin node bound to it fails with the missing grant rather than
-// with an empty tool result.
-type refusedSource struct{ id string }
-
-func (r refusedSource) Tools() []tool.Tool         { return nil }
-func (r refusedSource) LazyTools() []tool.LazyTool { return nil }
-func (r refusedSource) Attach(tool.Registrar)      {}
-func (r refusedSource) Close() error               { return nil }
-
-func (r refusedSource) CallTool(
-	context.Context,
-	string,
-	any,
-) (json.RawMessage, error) {
-	return nil, errdefs.Forbiddenf(
-		"plugin %s: the mcp section is ignored without the mcp:provide permission",
-		r.id)
 }
 
 func (h *Host) stopEntry(ctx context.Context, id string) error {
@@ -1316,152 +1312,4 @@ func (h *Host) stopEntryLocked(
 	// the application hears.
 	h.runStoppedHook(id)
 	return err
-}
-
-// mcpSource is the production source factory: one MCP source per
-// plugin, with one server entry per declared MCP server.
-func (h *Host) mcpSource(
-	ctx context.Context,
-	entry Entry,
-	env map[string]string,
-	dataDir string,
-) (Source, error) {
-	source := mcp.NewSource()
-	servers := entry.Manifest.Servers()
-	namespaces := ToolNamespaces(entry.ID, servers)
-	names := make([]string, 0, len(servers))
-	for i, server := range servers {
-		name := entry.ID
-		if i > 0 {
-			name = fmt.Sprintf("%s-%d", entry.ID, i+1)
-		}
-		names = append(names, name)
-		transport, err := buildTransport(entry, server, env, dataDir)
-		if err != nil {
-			_ = source.Close()
-			return nil, err
-		}
-		options := []mcp.ServerOption{
-			mcp.WithPrefix(namespaces[i]),
-			// The server name and the failure itself are already in
-			// the MCP telemetry; the host only needs to know that the
-			// entry lost a process it cannot get back.
-			mcp.WithServerLost(func(string, error) { h.notifyLost(entry.ID) }),
-		}
-		if server.Required {
-			// The manifest declaring a server required is the plugin
-			// telling the host what it cannot run without, and core
-			// documents the flag as "a host that cannot start without
-			// this server marks it required and then awaits readiness" —
-			// which is what an enable does. Dropping the declaration here
-			// would make the manifest say one thing and the mcp layer
-			// report another.
-			options = append(options, mcp.WithRequired())
-		}
-		if err := source.AddServer(ctx, name, transport, options...); err != nil {
-			_ = source.Close()
-			return nil, err
-		}
-	}
-	return &mcpChild{source: source, server: entry.ID, servers: names}, nil
-}
-
-// mcpChild adapts one mcp.Source to the plugin Source contract and
-// exposes direct tool calls against the plugin's primary server. It
-// forwards both halves of the tool attach protocol to the inner
-// source, so a registry that builds from the adapter also lets go of
-// it when that registry closes.
-type mcpChild struct {
-	source *mcp.Source
-	// server is the plugin's primary server: the one direct calls — a
-	// plugin graph node, [Host.CallTool] — address.
-	server string
-	// servers are all of them, in manifest order, for the readiness
-	// wait.
-	servers []string
-}
-
-var (
-	_ tool.RegistryAttacher = (*mcpChild)(nil)
-	_ tool.RegistryDetacher = (*mcpChild)(nil)
-	_ Readiness             = (*mcpChild)(nil)
-)
-
-func (c *mcpChild) Tools() []tool.Tool         { return c.source.Tools() }
-func (c *mcpChild) LazyTools() []tool.LazyTool { return c.source.LazyTools() }
-func (c *mcpChild) Attach(r tool.Registrar)    { c.source.Attach(r) }
-func (c *mcpChild) Detach(r tool.Registrar)    { c.source.Detach(r) }
-func (c *mcpChild) Close() error               { return c.source.Close() }
-
-func (c *mcpChild) CallTool(
-	ctx context.Context,
-	toolName string,
-	args any,
-) (json.RawMessage, error) {
-	return c.source.CallTool(ctx, c.server, toolName, args)
-}
-
-// WaitReady implements [Readiness]: the plugin is up when every server it
-// declares is up, because a declared server that cannot start at all is
-// the same break the manifest check refuses at install, and an enable that
-// reported success with half the plugin missing would be the disagreement
-// this wait exists to prevent. A terminal failure returns at once — the
-// servers after it do not change the answer — while the rest share the
-// caller's bound, so a plugin with several servers that are not up yet is
-// not waited on once per server.
-func (c *mcpChild) WaitReady(ctx context.Context, timeout time.Duration) error {
-	var errs []error
-	for _, name := range c.servers {
-		err := c.source.WaitReady(ctx, name, timeout)
-		if err == nil {
-			continue
-		}
-		if errdefs.IsValidation(err) {
-			return fmt.Errorf("plugin %s: %w", c.server, err)
-		}
-		errs = append(errs, err)
-	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("plugin %s: %w", c.server, err)
-	}
-	return nil
-}
-
-func buildTransport(
-	entry Entry,
-	server MCPServer,
-	hostEnv map[string]string,
-	dataDir string,
-) (mcpsdk.Transport, error) {
-	transport := strings.TrimSpace(server.Transport)
-	if transport == "" {
-		if server.URL != "" {
-			transport = "http"
-		} else {
-			transport = "stdio"
-		}
-	}
-	switch transport {
-	case "stdio":
-		command, args, err := ResolveCommand(
-			entry.Dir, server.Command, server.Args)
-		if err != nil {
-			return nil, err
-		}
-		env := make(map[string]string, len(server.Env)+len(hostEnv)+2)
-		for key, value := range server.Env {
-			env[key] = value
-		}
-		for key, value := range hostEnv {
-			env[key] = value
-		}
-		env["CRAFT_PLUGIN_ID"] = entry.ID
-		env["CRAFT_PLUGIN_DATA_DIR"] = dataDir
-		return mcp.Stdio(command, args, env)
-	case "http":
-		return mcp.StreamableHTTP(server.URL, server.Headers, nil)
-	default:
-		return nil, errdefs.Validationf(
-			"plugin %s: unknown mcp transport %q", entry.ID, transport)
-	}
 }

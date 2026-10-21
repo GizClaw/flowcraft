@@ -7,7 +7,7 @@ import "sort"
 // happens when the declaration arrives without that permission, and
 // why a permission might have no gate in this module.
 type CharterRow struct {
-	// Kind names the contribution ("skills", "hooks", "mcp", "nodes",
+	// Kind names the contribution ("tools", "skills", "hooks", "nodes",
 	// "ui").
 	Kind string
 	// ManifestField is the Go field name on Manifest.
@@ -33,10 +33,14 @@ type CharterRow struct {
 // charter_source_test audits the gates behind it.
 var Charter = []CharterRow{
 	{
-		Kind: "mcp", ManifestField: "MCP", Permission: "mcp:provide",
-		DropRule: "the mcp section is dropped: no child process starts, " +
-			"no host token is minted, and a plugin node bound to it " +
-			"fails with the missing grant",
+		// The tools a plugin contributes are declared over the wire,
+		// not in a manifest section, so the row pairs the permission
+		// with the one field that has to be there for a declaration
+		// to arrive at all: the process craft spawns.
+		Kind: "tools", ManifestField: "Run", Permission: "tools:provide",
+		DropRule: "the declaration is accepted but not projected: the " +
+			"process still starts and every other contribution still " +
+			"loads, while none of the tools it names are published",
 	},
 	{
 		Kind: "skills", ManifestField: "Skills",

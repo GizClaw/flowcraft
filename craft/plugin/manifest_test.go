@@ -10,11 +10,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-// TestManifestValidatesMCPPaths covers the stdio half of Validate's
-// filesystem section: a manifest that installs must be one the plugin
-// host can spawn, and the check mirrors ResolveCommand so that install
-// and spawn cannot disagree about which files must exist.
-func TestManifestValidatesMCPPaths(t *testing.T) {
+// TestManifestValidatesRunPaths covers the filesystem half of Validate: a
+// manifest that installs must be one the plugin host can spawn, and the
+// check mirrors ResolveCommand so that install and spawn cannot disagree
+// about which files must exist.
+func TestManifestValidatesRunPaths(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
@@ -25,74 +25,64 @@ func TestManifestValidatesMCPPaths(t *testing.T) {
 	}{{
 		name: "path command that exists",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "./server", "args": ["-test.run=TestX"]}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "./server", "args": ["-test.run=TestX"]}}`,
 		files: []string{"server"},
 	}, {
 		name: "path command that is missing",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "./server"}}`,
-		wantErr: `mcp server 0 command "./server"`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "./server"}}`,
+		wantErr: `run.command "./server"`,
 	}, {
 		name: "path command that is a directory",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "bin/server"}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "bin/server"}}`,
 		dirs:    []string{"bin/server"},
-		wantErr: `mcp server 0 command "bin/server" is a directory`,
+		wantErr: `run.command "bin/server" is a directory`,
 	}, {
 		name: "absolute command",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "/usr/bin/python3", "args": ["server.py"]}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "/usr/bin/python3", "args": ["server.py"]}}`,
 		wantErr: "must be relative",
 	}, {
 		name: "bare command is a PATH lookup and stays unchecked",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "definitely-not-a-real-command-xyz",
+			"permissions": ["tools:provide"],
+			"run": {"command": "definitely-not-a-real-command-xyz",
 				"args": ["index.js", "--port", "0"]}}`,
 	}, {
 		name: "path argument that exists",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "python3", "args": ["server/main.py"]}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "python3", "args": ["server/main.py"]}}`,
 		files: []string{filepath.Join("server", "main.py")},
 	}, {
 		name: "path argument that is missing",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "python3", "args": ["server/main.py"]}}`,
-		wantErr: `mcp server 0 arg "server/main.py"`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "python3", "args": ["server/main.py"]}}`,
+		wantErr: `run.arg "server/main.py"`,
 	}, {
 		name: "directory argument is a legitimate package path",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "go", "args": ["run", "./server"]}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "go", "args": ["run", "./server"]}}`,
 		dirs: []string{"server"},
 	}, {
 		name: "flag argument carrying a path is not resolved",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "node", "args": ["server.js", "--config=./missing.json"]}}`,
-	}, {
-		name: "legacy mcpServers are checked the same way",
-		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcpServers": [{"command": "bin/missing-server"}]}`,
-		wantErr: `mcp server 0 command "bin/missing-server"`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "node",
+				"args": ["server.js", "--config=./missing.json"]}}`,
 	}, {
 		name: "argument that would escape the root",
 		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"command": "python3", "args": ["../../etc/passwd"]}}`,
+			"permissions": ["tools:provide"],
+			"run": {"command": "python3", "args": ["../../etc/passwd"]}}`,
 		wantErr: "escapes the plugin root",
-	}, {
-		name: "http transport is not a filesystem question",
-		manifest: `{"id": "hello", "version": "0.1.0",
-			"permissions": ["mcp:provide"],
-			"mcp": {"transport": "http", "url": "https://mcp.example.com/mcp"}}`,
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,20 +127,97 @@ func TestManifestValidatesMCPPaths(t *testing.T) {
 	}
 }
 
-// TestManifestValidateWithoutRootSkipsMCPPaths pins the documented
-// escape hatch: an empty root still means "no filesystem checks".
-func TestManifestValidateWithoutRootSkipsMCPPaths(t *testing.T) {
+// TestManifestValidateWithoutRootSkipsRunPaths pins the documented escape
+// hatch: an empty root still means "no filesystem checks".
+func TestManifestValidateWithoutRootSkipsRunPaths(t *testing.T) {
 	t.Parallel()
 	manifest, err := ParseManifest(context.Background(), []byte(`{
 		"id": "hello", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {"command": "bin/missing-server"}
+		"permissions": ["tools:provide"],
+		"run": {"command": "bin/missing-server"}
 	}`))
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
 	if err := manifest.Validate(""); err != nil {
 		t.Fatalf("Validate(rootless) = %v, want nil", err)
+	}
+}
+
+// TestManifestPermissions pins the two halves of the vocabulary: craft's
+// own list is closed — a typo in a contribution permission has to be
+// refused rather than read as a permission nobody holds — and the
+// application's grants are accepted on top of it, which is the only way a
+// plugin can ask for one of its host's primitives.
+func TestManifestPermissions(t *testing.T) {
+	t.Parallel()
+	manifest := func(permissions string) Manifest {
+		t.Helper()
+		parsed, err := ParseManifest(context.Background(), []byte(`{
+			"id": "hello", "version": "0.1.0",
+			"permissions": [`+permissions+`]
+		}`))
+		if err != nil {
+			t.Fatalf("ParseManifest: %v", err)
+		}
+		return parsed
+	}
+	if err := manifest(`"skills:provide"`).Validate(""); err != nil {
+		t.Fatalf("Validate with a contribution permission = %v, want nil", err)
+	}
+	err := manifest(`"skills:provid"`).Validate("")
+	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "unknown permission") {
+		t.Fatalf("Validate with a typo = %v, want a Validation error naming it", err)
+	}
+	granted := manifest(`"skills:provide", "notary:sign"`)
+	if err := granted.Validate(""); !errdefs.IsValidation(err) {
+		t.Fatalf("Validate without the grant declared = %v, want Validation", err)
+	}
+	if err := granted.Validate("", "notary:sign"); err != nil {
+		t.Fatalf("Validate with the grant declared = %v, want nil", err)
+	}
+}
+
+// TestToolsProvideRequiresARunSection pins the one cross-field rule the
+// manifest keeps: tools arrive from a process, so a plugin that claims the
+// permission without one is a manifest error rather than a plugin that
+// runs and publishes nothing.
+func TestToolsProvideRequiresARunSection(t *testing.T) {
+	t.Parallel()
+	manifest, err := ParseManifest(context.Background(), []byte(`{
+		"id": "hello", "version": "0.1.0",
+		"permissions": ["tools:provide"]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	err = manifest.Validate("")
+	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "run section") {
+		t.Fatalf("Validate = %v, want a Validation error naming the run section", err)
+	}
+}
+
+// TestRemovedManifestFieldsAreNamed covers the fields the wire redesign
+// deleted. They are refused with what replaced them: a decoder that only
+// said "unknown field" would leave the operator of a still-MCP plugin with
+// an installed plugin that publishes nothing and no hint as to why.
+func TestRemovedManifestFieldsAreNamed(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"mcp":        `{"id": "old", "version": "0.1.0", "mcp": {"command": "node"}}`,
+		"mcpServers": `{"id": "old", "version": "0.1.0", "mcpServers": [{"command": "node"}]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ParseManifest(context.Background(), []byte(raw))
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("ParseManifest = %v, want Validation", err)
+			}
+			if !strings.Contains(err.Error(), "FLOWCRAFT_PLUGIN_WIRE") {
+				t.Fatalf("ParseManifest error = %v, want it to name the wire", err)
+			}
+		})
 	}
 }
 
@@ -163,8 +230,8 @@ func TestUnrunnableCommandIsRejectedAtInspectAndInstallAndReportedByScan(t *test
 	root := t.TempDir()
 	writePlugin(t, root, "broken", `{
 		"id": "broken", "version": "0.1.0",
-		"permissions": ["mcp:provide"],
-		"mcp": {"command": "bin/missing-server"}
+		"permissions": ["tools:provide"],
+		"run": {"command": "bin/missing-server"}
 	}`)
 	store := newStoreOver(t, root)
 	ctx := context.Background()
@@ -174,7 +241,7 @@ func TestUnrunnableCommandIsRejectedAtInspectAndInstallAndReportedByScan(t *test
 	}
 	_, err := store.Install(ctx, filepath.Join(root, "broken"))
 	if !errdefs.IsValidation(err) ||
-		!strings.Contains(err.Error(), `mcp server 0 command "bin/missing-server"`) {
+		!strings.Contains(err.Error(), `run.command "bin/missing-server"`) {
 		t.Fatalf("Install = %v, want Validation naming the missing command", err)
 	}
 
@@ -188,7 +255,7 @@ func TestUnrunnableCommandIsRejectedAtInspectAndInstallAndReportedByScan(t *test
 			continue
 		}
 		found = true
-		if !strings.Contains(summary.Error, "mcp server 0 command") {
+		if !strings.Contains(summary.Error, "run.command") {
 			t.Fatalf("scanned entry error = %q, want it to name the missing command",
 				summary.Error)
 		}

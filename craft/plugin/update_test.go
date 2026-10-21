@@ -17,8 +17,8 @@ import (
 func updateManifest(id, version, url string) string {
 	return `{
 		"id": "` + id + `", "version": "` + version + `",
-		"permissions": ["mcp:provide"],
-		"mcp": {"command": "true"},
+		"permissions": ["tools:provide"],
+		"run": {"command": "true"},
 		"update": {"url": "` + url + `"}
 	}`
 }
@@ -305,7 +305,7 @@ func updatePackageWith(
 	manifest := `{
 		"id": "` + id + `", "version": "` + version + `",
 		"permissions": [` + strings.Join(quoted, ", ") + `],
-		"mcp": {"command": "true"}
+		"run": {"command": "true"}
 	}`
 	path := writeZip(t, dir, zipEntry{name: "plugin.json", data: manifest})
 	data, err := os.ReadFile(path)
@@ -357,10 +357,10 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 		}
 		return entry.Manifest.Version
 	}
-	// The installed plugin grants mcp:provide only.
+	// The installed plugin grants tools:provide only.
 	store := updateStore(t, "0.1.0")
 	path, checksum := updatePackageWith(t, t.TempDir(), "hello", "0.2.0",
-		"mcp:provide", "events:emit")
+		"tools:provide", "hooks:provide")
 
 	refuser := &fakeInstaller{info: newInfo(checksum), path: path}
 	_, err := store.UpdateFrom(context.Background(), "hello", refuser)
@@ -393,11 +393,11 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 	if !agreer.approved {
 		t.Fatal("the approver was never asked")
 	}
-	if !slices.Equal(agreer.approval.Permissions, []string{"events:emit"}) {
+	if !slices.Equal(agreer.approval.Permissions, []string{"hooks:provide"}) {
 		t.Fatalf("approval = %+v, want the added permission only", agreer.approval)
 	}
-	if agreer.approval.ServerAdded {
-		t.Fatalf("approval = %+v, want no added server", agreer.approval)
+	if agreer.approval.ProcessAdded {
+		t.Fatalf("approval = %+v, want no added process", agreer.approval)
 	}
 }
 
@@ -406,38 +406,36 @@ func TestUpdateFromNeedsApprovalForExpandedGrants(t *testing.T) {
 func TestApprovalFor(t *testing.T) {
 	t.Parallel()
 	installed := Manifest{
-		Permissions:      []string{"mcp:provide"},
-		LegacyMCPServers: []MCPServer{{Name: "primary", Command: "true"}},
+		Permissions: []string{"tools:provide"},
+		Run:         &RunSpec{Command: "true"},
 	}
 	if same := approvalFor(installed, installed); !same.Empty() {
 		t.Fatalf("an unchanged manifest asks for approval: %+v", same)
 	}
 	approval := approvalFor(installed, Manifest{
-		Permissions: []string{"skills:provide", "mcp:provide", "events:emit"},
-		LegacyMCPServers: []MCPServer{
-			{Name: "primary", Command: "true"},
-		},
+		Permissions: []string{"skills:provide", "tools:provide", "hooks:provide"},
+		Run:         &RunSpec{Command: "true"},
 	})
 	if !slices.Equal(approval.Permissions,
-		[]string{"events:emit", "skills:provide"}) {
+		[]string{"hooks:provide", "skills:provide"}) {
 		t.Fatalf("approval.Permissions = %v, want the added grants in name order",
 			approval.Permissions)
 	}
-	if approval.ServerAdded || approval.Empty() {
-		t.Fatalf("approval = %+v, want added grants and no added server", approval)
+	if approval.ProcessAdded || approval.Empty() {
+		t.Fatalf("approval = %+v, want added grants and no added process", approval)
 	}
 	added := approvalFor(
-		Manifest{Permissions: []string{"mcp:provide"}},
+		Manifest{Permissions: []string{"tools:provide"}},
 		Manifest{
-			Permissions: []string{"mcp:provide"},
-			MCP:         &MCPServer{Name: "primary", Command: "true"},
+			Permissions: []string{"tools:provide"},
+			Run:         &RunSpec{Command: "true"},
 		},
 	)
-	if !added.ServerAdded {
-		t.Fatalf("approval = %+v, want an added MCP server", added)
+	if !added.ProcessAdded {
+		t.Fatalf("approval = %+v, want an added plugin process", added)
 	}
-	if added.String() != "an MCP server" {
-		t.Fatalf("approval.String() = %q, want it to name the server",
+	if added.String() != "a plugin process" {
+		t.Fatalf("approval.String() = %q, want it to name the process",
 			added.String())
 	}
 }

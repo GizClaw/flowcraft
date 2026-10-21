@@ -106,7 +106,7 @@ func (c *Craft) mountPluginTools(doc *deploy.Document) error {
 	return nil
 }
 
-// mountPluginNodes synthesizes one graph.NodeType/mcp resource per
+// mountPluginNodes synthesizes one graph.NodeType/plugin resource per
 // plugin-declared node and wires node_type deps into the target agents.
 func (c *Craft) mountPluginNodes(doc *deploy.Document) error {
 	if c == nil || c.plugins == nil || doc == nil || c.def.Plugins == nil {
@@ -128,10 +128,10 @@ func (c *Craft) mountPluginNodes(doc *deploy.Document) error {
 	}
 	for _, entry := range entries {
 		// The nodes section is gated by nodes:provide alone. The
-		// mcp:provide grant is checked where the plugin's server is
-		// opened, so a node backed by a plugin that lacks it is still
-		// synthesized and fails at call time with the missing grant
-		// instead of silently disappearing here.
+		// tools:provide grant is checked where the plugin's declaration
+		// is projected, so a node backed by a plugin that lacks it is
+		// still synthesized and fails at call time with the missing
+		// grant instead of silently disappearing here.
 		//
 		// A plugin another plugin's tool namespace collides with is
 		// skipped: it cannot be started, so a node over it would be a

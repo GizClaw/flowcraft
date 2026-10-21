@@ -108,8 +108,8 @@ builds the deployment with its own factory registry.
   are mutually exclusive and one is required, `craft.id` and
   `craft.version` are required, and `min_host_version` is a compatibility
   floor checked against the host (`craft.Version`).
-- A plugin's gated sections are fail-closed: `mcp` / `skills` / `hooks` /
-  `nodes` declared without `mcp:provide` / `skills:provide` /
+- A plugin's gated sections are fail-closed: `tools` / `skills` / `hooks` /
+  `nodes` declared without `tools:provide` / `skills:provide` /
   `hooks:provide` / `nodes:provide` are dropped, and an unknown permission
   is rejected rather than ignored.
 - `plugins.tool_registry` and `plugins.node_targets` are mounting points
@@ -155,4 +155,4 @@ the craft module. A craft definition is checked by the host with
 - [pitfalls.md](references/pitfalls.md) — known drift points and the
   error → cause map.
 - [craft.md](references/craft.md) — craft.yaml and plugin.json schemas,
-  permissions and drop rules, host_tools bindings, hostmcp primitives.
+  permissions and drop rules, host_tools bindings, host primitives.

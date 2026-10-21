@@ -12,18 +12,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/craft/hostmcp"
 	"github.com/GizClaw/flowcraft/craft/plugin"
 )
 
 // declarationTables are the charter tables themselves: they name
 // permissions as data instead of gating on them. The audit skips their
 // literals — the tables are cross-checked by TestCharterMatchesManifest,
-// TestCharterMatchesStandard and TestPermissionCharterCoverage — but it
-// still fails when a gate appears inside one, so nothing hides behind
-// the skip.
+// TestPermissionCharterCoverage — but it still fails when a gate appears
+// inside one, so nothing hides behind the skip.
 var declarationTables = []string{
-	filepath.Join("hostmcp", "charter.go"),
 	filepath.Join("plugin", "charter.go"),
 	filepath.Join("plugin", "manifest.go"),
 }
@@ -33,8 +30,8 @@ var declarationTables = []string{
 // surface. Every unexempted row names at least one, and the audit fails
 // when a named test is gone, so a row cannot ship without a probe.
 var charterProbes = map[string][]string{
+	"tools":  {"TestToolsProvideGatesTheDeclaration"},
 	"hooks":  {"TestContributionsRequirePermission"},
-	"mcp":    {"TestMCPSectionRequiresPermission", "TestPluginNodeWithoutMCPGrant"},
 	"nodes":  {"TestPluginNodesRequirePermission"},
 	"skills": {"TestContributionsRequirePermission"},
 }
@@ -50,8 +47,6 @@ type charterScan struct {
 	// dynamic holds HasPermission calls whose argument is not a bare
 	// literal: the audit cannot tell which permission they cover.
 	dynamic []string
-	// grants maps a Grant field literal to its sites.
-	grants map[string][]string
 	// strays holds permission literals that are neither gates nor grant
 	// declarations.
 	strays []string
@@ -77,9 +72,8 @@ func scanCharterSources(t *testing.T) *charterScan {
 		permissions[permission] = true
 	}
 	scan := &charterScan{
-		gated:  map[string][]string{},
-		grants: map[string][]string{},
-		tests:  map[string]string{},
+		gated: map[string][]string{},
+		tests: map[string]string{},
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
@@ -166,29 +160,6 @@ func (s *charterScan) file(
 		}
 		if literal, isGate := gates[call.Pos()]; isGate {
 			s.gated[literal] = append(s.gated[literal], at(call.Pos()))
-		}
-		return true
-	})
-	ast.Inspect(tree, func(node ast.Node) bool {
-		field, ok := node.(*ast.KeyValueExpr)
-		if !ok {
-			return true
-		}
-		key, ok := field.Key.(*ast.Ident)
-		if !ok || key.Name != "Grant" {
-			return true
-		}
-		value, ok := field.Value.(*ast.BasicLit)
-		if !ok || value.Kind != token.STRING {
-			return true
-		}
-		text, err := strconv.Unquote(value.Value)
-		if err != nil {
-			return true
-		}
-		allowed[value.Pos()] = true
-		if !table {
-			s.grants[text] = append(s.grants[text], at(field.Pos()))
 		}
 		return true
 	})
@@ -305,32 +276,6 @@ func TestCharterProbeCoverage(t *testing.T) {
 	for kind := range charterProbes {
 		if !kinds[kind] {
 			t.Errorf("charterProbes names unknown charter row %q", kind)
-		}
-	}
-}
-
-// TestPrimitiveGrantsChartered audits the primitive half of the table:
-// the Grant literals of the registered tools and the hostmcp.Charter
-// grants must be the same set, so a tool cannot ship a grant no row
-// declares and a row cannot outlive its tool.
-func TestPrimitiveGrantsChartered(t *testing.T) {
-	t.Parallel()
-	scan := scanCharterSources(t)
-	declared := map[string]bool{}
-	for _, row := range hostmcp.Charter {
-		if row.Grant != "" {
-			declared[row.Grant] = true
-		}
-	}
-	for grant, sites := range scan.grants {
-		if !declared[grant] {
-			t.Errorf("registered grant %q at %v has no hostmcp.Charter row",
-				grant, sites)
-		}
-	}
-	for grant := range declared {
-		if len(scan.grants[grant]) == 0 {
-			t.Errorf("hostmcp.Charter grant %q is registered nowhere", grant)
 		}
 	}
 }

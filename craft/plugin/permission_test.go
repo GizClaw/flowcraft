@@ -13,33 +13,44 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
-// contributionManifest gated declares every gated contribution; the
+// contributionManifest declares every gated contribution; the
 // permissions list is the variable under test.
+//
+// The run section appears only when tools:provide is granted, because
+// that is the one permission whose contribution arrives over a wire: a
+// plugin that claims it without a process is a manifest error, and the
+// tests that only exercise the manifest gate have no process to start.
 func contributionManifest(id string, permissions ...string) string {
 	granted := ""
+	run := ""
 	for i, permission := range permissions {
 		if i > 0 {
 			granted += ", "
 		}
 		granted += `"` + permission + `"`
+		if permission == "tools:provide" {
+			run = `, ` + helperRunJSON(nil)
+		}
 	}
 	return `{
 		"id": "` + id + `", "version": "0.1.0",
 		"permissions": [` + granted + `],
 		"skills": ["skills"],
 		"hooks": ["hooks/on_start.json"],
-		"nodes": [{"type": "echo", "tool": "node_echo"}],
-		"mcp": {"command": "python3", "args": ["server.py"]}
+		"nodes": [{"type": "echo", "tool": "node_echo"}]` + run + `
 	}`
 }
 
 // writeContributionTree lays out the skill and hook files a manifest
-// declares.
+// declares, plus the command its run section names: a regular file is
+// all a manifest check asks for, and a test that means to start a real
+// process replaces it with the helper binary.
 func writeContributionTree(t *testing.T, root, dir string) {
 	t.Helper()
 	for _, rel := range []string{
 		filepath.Join("skills", "echo", "SKILL.md"),
 		filepath.Join("hooks", "on_start.json"),
+		"server",
 	} {
 		path := filepath.Join(root, dir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -60,7 +71,7 @@ func TestContributionsRequirePermission(t *testing.T) {
 	const grantedID = "granted"
 	const ungrantedID = "ungranted"
 	writePlugin(t, root, grantedID, contributionManifest(
-		grantedID, "skills:provide", "hooks:provide", "nodes:provide", "mcp:provide"))
+		grantedID, "skills:provide", "hooks:provide", "nodes:provide"))
 	writePlugin(t, root, ungrantedID, contributionManifest(ungrantedID))
 	for _, dir := range []string{grantedID, ungrantedID} {
 		writeContributionTree(t, root, dir)

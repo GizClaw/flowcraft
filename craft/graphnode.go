@@ -13,7 +13,7 @@ import (
 
 const (
 	pluginNodeTypeKind = "graph.NodeType"
-	pluginNodeTypeImpl = "mcp"
+	pluginNodeTypeImpl = "plugin"
 )
 
 // pluginNodeSettings is the strict settings of one synthesized node
@@ -26,8 +26,8 @@ type pluginNodeSettings struct {
 }
 
 // pluginNodeFactory builds graph node types whose handler calls a
-// plugin-provided MCP tool (the plugin may be written in any language,
-// Python included).
+// plugin-provided tool over the plugin wire (the plugin may be written in
+// any language, Python included).
 type pluginNodeFactory struct {
 	host PluginHost
 }

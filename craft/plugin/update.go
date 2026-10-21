@@ -51,8 +51,8 @@ type Installer interface {
 
 // UpdateApproval describes what an update would add on top of the
 // installed plugin: the permissions the incoming manifest requests that
-// the installed one did not, and whether it starts declaring an MCP
-// server where the installed one declared none. The update source is the
+// the installed one did not, and whether it starts running a plugin process
+// where the installed one ran none. The update source is the
 // same source that served the version check, so nothing here verifies
 // that the package is the same plugin asking for the same things; these
 // are the parts a user would have to agree to, so craft asks before the
@@ -60,14 +60,16 @@ type Installer interface {
 type UpdateApproval struct {
 	// Permissions are the grants the update adds, in name order.
 	Permissions []string
-	// ServerAdded reports an update that starts shipping an MCP server.
-	ServerAdded bool
+	// ProcessAdded reports an update that starts running a plugin process
+	// where the installed version declared none: a plugin that only had a
+	// UI or static assets starts shipping code craft will execute.
+	ProcessAdded bool
 }
 
 // Empty reports whether the update asks for nothing the installed
 // manifest did not already have.
 func (a UpdateApproval) Empty() bool {
-	return len(a.Permissions) == 0 && !a.ServerAdded
+	return len(a.Permissions) == 0 && !a.ProcessAdded
 }
 
 // String renders an approval for an error message.
@@ -76,15 +78,16 @@ func (a UpdateApproval) String() string {
 	if len(a.Permissions) > 0 {
 		parts = append(parts, "permissions "+strings.Join(a.Permissions, ", "))
 	}
-	if a.ServerAdded {
-		parts = append(parts, "an MCP server")
+	if a.ProcessAdded {
+		parts = append(parts, "a plugin process")
 	}
 	return strings.Join(parts, " and ")
 }
 
 // UpdateApprover is optionally implemented by an Installer that decides
 // grants for the application. An update that requests new permissions or
-// starts an MCP server is approved through it and refused when there is
+// starts running a process where the installed version declared none is
+// approved through it and refused when there is
 // no approver: craft never approves a grant expansion on its own. A nil
 // return approves; any error is reported to the caller and installs
 // nothing. An update that asks for nothing new is not routed here at all.
@@ -101,7 +104,7 @@ type UpdateApprover interface {
 // every install obeys (strictly newer than what is installed) and the
 // package must hold the plugin that was asked for, so an endpoint
 // cannot turn an update into a different plugin. An update that would
-// add permissions, or that starts declaring an MCP server, needs the
+// add permissions, or that starts declaring a run section, needs the
 // installer's approval (see UpdateApprover) before anything is
 // installed.
 func (s *Store) UpdateFrom(
@@ -191,8 +194,7 @@ func approvalFor(installed, incoming Manifest) UpdateApproval {
 		approval.Permissions = append(approval.Permissions, permission)
 	}
 	sort.Strings(approval.Permissions)
-	approval.ServerAdded = len(incoming.Servers()) > 0 &&
-		len(installed.Servers()) == 0
+	approval.ProcessAdded = incoming.Run != nil && installed.Run == nil
 	return approval
 }
 

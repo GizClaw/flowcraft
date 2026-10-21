@@ -6,7 +6,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime"
-	"github.com/GizClaw/flowcraft/craft/hostmcp"
 )
 
 // Options configures one Craft instance.
@@ -38,11 +37,6 @@ type Options struct {
 	// tool set and host into every runtime and reloads open runtimes on
 	// plugin changes.
 	Plugins PluginHost
-
-	// HostServices supplies the behavior of the built-in host
-	// primitives. Capabilities implementing HostServices are merged on
-	// top of this value.
-	HostServices hostmcp.Services
 
 	// Externals are application-level values injected into every
 	// runtime and declared automatically in runtime.external_deps.
