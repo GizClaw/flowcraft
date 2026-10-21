@@ -8,7 +8,8 @@ title: Migrating to core/v0.10.0
 what happens *after* something has gone wrong — a panicking tool, an aborted
 reload, a credential store that lost an index entry — so a host that never
 hits those paths sees no difference. Two document entries do change meaning,
-and two Go API surfaces moved.
+two Go API surfaces moved, and one interface kept its shape while changing
+what it is keyed by.
 
 ## Panic recovery is on by default
 
@@ -109,6 +110,36 @@ but not the conversations. That was always true; it is now reported: a
 warning per drained agent, and `drained_agents` on the
 `runtime.rebuild.failed` event. A drain that fails while closing sessions
 still counts as drained, because those conversations are gone either way.
+
+## Delegation run ids are keyed by the delegation id
+
+`delegation.RunIDNotifier` lets an async backend learn the subagent's run id as
+soon as the turn exists — before there is a terminal response, and before
+`delegation_status` has anything to report. It was keyed by the stream escrow
+ref, which a delegation only has when it inherits a sink: a delegation that
+inherited none had its note dropped and stayed without a run id, even though
+the turn was running.
+
+`NoteRunID` now takes the delegation id — the id `Submit` returns, and the one
+`Work.ID`, `Response.ID` and `delegation_status` carry. The signature is
+unchanged, which is the trap: an implementation that still reads the argument
+as an escrow ref compiles and then no-ops silently, because every id it is
+handed is a delegation id it cannot find. `kanban.Board.NoteRunID` is the
+reference — it looks the card up by id rather than scanning for a matching
+ref.
+
+A queue-owned worker that drives `Runner.Run` directly supplies the claimed id
+through the new `delegation.WithWorkID`; the stamp is consumed at the run
+boundary, so a delegation started inside the subagent cannot report its run id
+against the parent's work item.
+
+Terminal responses carry the run id too, under `delegation.RunIDMetadataKey`
+(`delegation.run_id`), beside the session identity under
+`delegation.SessionIDMetadataKey`. Async callers need it there: `Response.ID`
+holds the delegation id, so this key is the only place the run stays
+addressable. It reports an id the run actually reported — a turn canceled
+before it started leaves the key absent — so read it as evidence, not as a
+promise.
 
 ## `InputTokenUsage.ValidateFor`
 
