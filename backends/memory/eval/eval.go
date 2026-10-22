@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,12 +78,31 @@ type Question struct {
 	// It grades recall against the dataset's own evidence instead of guessing
 	// from answer strings. Like DatasetIDs it is never forwarded to retrieval.
 	Evidence []string `json:"evidence,omitempty"`
+	// EvidenceSessions lists the dataset sessions that carry the answer, for
+	// datasets that label their gold at session granularity (LongMemEval). A
+	// session counts as recalled when any message of it was surfaced, which is
+	// the recall definition the dataset's own papers report; grading it as
+	// "every message of the session" instead would make a hit a function of how
+	// long the gold session happens to be. Evidence wins when a question carries
+	// both, because a turn is the narrower statement of what the answer needs.
+	// Never forwarded to retrieval.
+	EvidenceSessions []string `json:"evidence_sessions,omitempty"`
 	// AskedAt is the question's own timestamp when the dataset carries one.
 	// Relative-time questions ("last year") need it to resolve.
 	AskedAt string `json:"asked_at,omitempty"`
 	// Category is an optional dataset label (LoCoMo categories, for example)
 	// carried through to the report so hit rates can be sliced per category.
 	Category int `json:"category,omitempty"`
+	// CategoryLabel names Category in the dataset's own words ("multi-session",
+	// "temporal-reasoning"). Two datasets number their categories for
+	// themselves -- LongMemEval's ids start at 101 so they cannot be read as
+	// LoCoMo's -- so a report states the label next to the bucket.
+	CategoryLabel string `json:"category_label,omitempty"`
+	// Unanswerable marks a question the dataset itself declares unanswerable:
+	// its history does not hold the fact, so the graded behaviour is saying so
+	// rather than producing an answer. The judge grades it on that, and the
+	// answering stage keeps it out of retrieval either way.
+	Unanswerable bool `json:"unanswerable,omitempty"`
 }
 
 // Scenario is one scripted conversation plus its questions.
@@ -114,12 +134,22 @@ func (scope Scope) MemoryScope() corememory.Scope { return scope.memoryScope() }
 
 // QuestionResult records one graded question.
 type QuestionResult struct {
-	Query    string `json:"query"`
-	Category int    `json:"category,omitempty"`
+	Query         string `json:"query"`
+	Category      int    `json:"category,omitempty"`
+	CategoryLabel string `json:"category_label,omitempty"`
+	// Unanswerable marks a question the dataset declares unanswerable, so a
+	// stored report says which rows were graded on a refusal.
+	Unanswerable bool `json:"unanswerable,omitempty"`
 	// Hit reports full evidence coverage: every dataset turn that carries the
 	// answer was surfaced. Questions without dataset evidence fall back to
 	// expectation containment.
 	Hit bool `json:"hit"`
+	// SessionTotal and SessionFound are the dataset evidence sessions expected
+	// and surfaced, for a dataset that labels its gold by session. They are a
+	// separate unit from the turn counters below and are kept apart so the two
+	// recall figures are never added together.
+	SessionTotal int `json:"session_total,omitempty"`
+	SessionFound int `json:"session_found,omitempty"`
 	// EvidenceTotal and EvidenceFound are the dataset turns expected and
 	// surfaced for this question.
 	EvidenceTotal int `json:"evidence_total,omitempty"`
@@ -156,8 +186,12 @@ type QuestionResult struct {
 
 // CategoryStats aggregates the graded questions of one dataset category.
 type CategoryStats struct {
-	Questions int `json:"questions"`
-	Hits      int `json:"hits"`
+	// Label names the category in the dataset's own words. It is filled from
+	// the graded questions, so a report carries the meaning of the bucket it
+	// prints next to the number.
+	Label     string `json:"label,omitempty"`
+	Questions int    `json:"questions"`
+	Hits      int    `json:"hits"`
 	// Answered and AnswerHits aggregate the generative answering stage.
 	Answered   int `json:"answered,omitempty"`
 	AnswerHits int `json:"answer_hits,omitempty"`
@@ -183,6 +217,12 @@ type Report struct {
 	EvidenceRecall     float64 `json:"evidence_recall,omitempty"`
 	EvidenceRaw        int     `json:"evidence_raw,omitempty"`
 	EvidenceProvenance int     `json:"evidence_provenance,omitempty"`
+	// SessionTotal and SessionFound aggregate session-level evidence (datasets
+	// that name gold sessions instead of gold turns), and SessionRecall is
+	// their ratio.
+	SessionTotal  int     `json:"session_total,omitempty"`
+	SessionFound  int     `json:"session_found,omitempty"`
+	SessionRecall float64 `json:"session_recall,omitempty"`
 	// Answers, AnswerHits, and AnswerRate are filled when a run is configured
 	// with an Answerer: they grade a model answer generated from the recalled
 	// context instead of grading the context itself.
@@ -380,6 +420,8 @@ func Answer(ctx context.Context, runner Runner, scenario Scenario, options Optio
 		report.EvidenceFound += grade.EvidenceFound
 		report.EvidenceRaw += grade.EvidenceRaw
 		report.EvidenceProvenance += grade.EvidenceProvenance
+		report.SessionTotal += grade.SessionTotal
+		report.SessionFound += grade.SessionFound
 		if grade.Ungraded {
 			report.Questions = append(report.Questions, grade)
 			report.Ungraded++
@@ -405,6 +447,7 @@ func Answer(ctx context.Context, runner Runner, scenario Scenario, options Optio
 			}
 			if grade.Category != 0 {
 				stats := categories[grade.Category]
+				stats.Label = grade.CategoryLabel
 				if grade.AnswerGraded {
 					stats.Answered++
 					if grade.AnswerHit {
@@ -427,6 +470,7 @@ func Answer(ctx context.Context, runner Runner, scenario Scenario, options Optio
 		}
 		if grade.Category != 0 {
 			stats := categories[grade.Category]
+			stats.Label = grade.CategoryLabel
 			stats.Questions++
 			if grade.Hit {
 				stats.Hits++
@@ -448,6 +492,9 @@ func Answer(ctx context.Context, runner Runner, scenario Scenario, options Optio
 	}
 	if report.EvidenceTotal > 0 {
 		report.EvidenceRecall = float64(report.EvidenceFound) / float64(report.EvidenceTotal)
+	}
+	if report.SessionTotal > 0 {
+		report.SessionRecall = float64(report.SessionFound) / float64(report.SessionTotal)
 	}
 	if len(report.Questions) > 0 {
 		report.MeanLatency = total / time.Duration(len(report.Questions))
@@ -612,11 +659,83 @@ func newEvidenceIndex(turns []Turn) evidenceIndex {
 	return index
 }
 
+// turnsOfSession lists the dataset turn ids that belong to one session. A gold
+// session is recalled when any of them was surfaced, so grading needs the
+// session grouping even though the index itself is flat: the ids a session
+// conversion derives carry it (see LongMemEvalTurnID), and an id that carries
+// none of it -- a LoCoMo dia_id -- belongs to no session.
+func (index evidenceIndex) turnsOfSession(sessionID string) []string {
+	ids := make([]string, 0, 8)
+	for id := range index {
+		if session, ok := LongMemEvalSessionOfTurn(id); ok && session == sessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// gradeSessionEvidence scores recall against gold session ids. A session counts
+// as recalled when any message in it was surfaced -- by its own wording, or
+// through an item's provenance. Hit keeps its meaning ("every gold item was
+// recovered") at the session granularity the dataset labels, and the session
+// counters stay apart from the turn counters so the two recall figures are
+// never summed into one number.
+func gradeSessionEvidence(
+	ctx context.Context,
+	question Question,
+	items []corememory.ContextItem,
+	index evidenceIndex,
+	resolver ProvenanceResolver,
+	result QuestionResult,
+	sessions []string,
+) QuestionResult {
+	matcher := NewMatcher(resolver)
+	result.SessionTotal = len(sessions)
+	for _, sessionID := range sessions {
+		turnIDs := index.turnsOfSession(sessionID)
+		if len(turnIDs) == 0 {
+			// The conversion rendered no message for this session, so nothing
+			// could ever cover it. It stays in the denominator and is named in
+			// Missing rather than silently shrinking the question's gold.
+			result.Missing = append(result.Missing, sessionID)
+			continue
+		}
+		covered := false
+		for _, turnID := range turnIDs {
+			if matcher.Cover(ctx, items, turnID, index[turnID]).Covered() {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			result.Missing = append(result.Missing, sessionID)
+			continue
+		}
+		result.SessionFound++
+	}
+	result.Hit = result.SessionFound == result.SessionTotal
+	return result
+}
+
 // gradeQuestion scores evidence recall when the dataset names the turns that
 // carry the answer, and falls back to expectation containment otherwise.
 func gradeQuestion(ctx context.Context, question Question, items []corememory.ContextItem, index evidenceIndex, resolver ProvenanceResolver) QuestionResult {
-	result := QuestionResult{Query: question.Query, Category: question.Category}
-	if evidence := uniqueNonEmpty(question.Evidence); len(evidence) > 0 {
+	result := QuestionResult{
+		Query: question.Query, Category: question.Category,
+		CategoryLabel: question.CategoryLabel, Unanswerable: question.Unanswerable,
+	}
+	turnEvidence := uniqueNonEmpty(question.Evidence)
+	// A question that names its evidence at both granularities is graded at the
+	// narrower one: a turn is what the answer actually needs, a session is the
+	// best a dataset with coarser labels can say.
+	if len(turnEvidence) == 0 {
+		if sessions := uniqueNonEmpty(question.EvidenceSessions); len(sessions) > 0 {
+			return gradeSessionEvidence(ctx, question, items, index, resolver, result, sessions)
+		}
+	}
+	if len(turnEvidence) > 0 {
+		evidence := turnEvidence
 		result.EvidenceTotal = len(evidence)
 		matcher := NewMatcher(resolver)
 		for _, id := range evidence {

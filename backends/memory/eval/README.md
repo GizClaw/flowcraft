@@ -87,10 +87,11 @@ Full run through a deploy document with a real provider:
 go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env -samples 1
 ```
 
-Useful flags: `-samples N` (conversations), `-questions N` (per conversation),
-`-max-items` / `-max-tokens` (context budget), `-recent-items` (assembly
-`recent.max_items`), `-out report.json`, `-build-only` (verify the deployment
-document builds and wires without calling a model).
+Useful flags: `-loader` (`locomo` | `longmemeval`, see below), `-samples N`
+(conversations), `-questions N` (per conversation), `-max-items` /
+`-max-tokens` (context budget), `-recent-items` (assembly `recent.max_items`),
+`-out report.json`, `-build-only` (verify the deployment document builds and
+wires without calling a model).
 
 ## Question categories
 
@@ -107,6 +108,55 @@ Consequences to keep in mind when reading results: every rate printed here is
 conditional on categories 1–4 (for `locomo10.json` that is 1540 of 1986
 questions), and any comparison with a published LoCoMo table must say so,
 because the official protocol also scores category 5.
+
+## LongMemEval
+
+`-loader longmemeval` converts `xiaowu0162/longmemeval-cleaned`
+(`longmemeval_oracle.json`, or `longmemeval_s_cleaned.json` for the hard
+variant). Both files stay outside the repo — they are 15 MB and 277 MB, and the
+`m` variant is 2.7 GB:
+
+```bash
+go run ./cmd/memory-eval -loader longmemeval -dataset /path/to/longmemeval_oracle.json \
+  -deploy ./deploy.yaml -env-file ./.env -samples 0 -prepare-all -out lme.json
+```
+
+One instance is one scenario: `haystack_sessions` are its turns in date order,
+and its single question is the graded one. On the oracle file that is 500
+scenarios, 948 committed sessions and 10,960 messages.
+
+Four conversion decisions a report depends on:
+
+| | conversion |
+| --- | --- |
+| session date | `haystack_dates[i]` reaches every message of session `i` as the text prefix `[2023/05/30 (Tue) 23:40] …`, or as the `observed_at` metadata anchor under `-no-date-prefix -observed-at metadata`. One of the two is required: without it no relative-time question ("last year") resolves. The `dataset:` line reports `observed_at_anchored` / `observed_at_unparsed`, so coverage is a reading rather than an assumption. |
+| question date | `question_date` → `AskedAt`, rendered into the answer prompt as `The question was asked at: …`. The dataset's own string is kept verbatim: the judge compares dates loosely, and reformatting would make "approximately right" unexplainable. |
+| categories | `question_type` → 101 multi-session, 102 temporal-reasoning, 103 knowledge-update, 104 single-session-user, 105 single-session-assistant, 106 single-session-preference, 107 for a type this build does not know; the label is carried next to the number and printed by the `category` lines. The ids start above LoCoMo's on purpose: category 2 routes the reference harness's temporal suffix, so a LongMemEval question must never land on it. `-categories` accepts an id or a label. |
+| evidence | the gold is session-level (`answer_session_ids`). A gold session counts as recalled when **any** of its messages was surfaced — the definition the dataset's own papers report; requiring every message would make a hit a function of how long the gold session is. `Turn.DatasetIDs` still names every message (`<session id>#<position>`), so a recalled item is matched back to its session, and the `session recall:` line reports that separately from the turn-level `evidence recall:` one. |
+
+The judge is `-judge-style lme`, the default for this loader: the gold is a full
+clause rather than a topic phrase, and two of the six types are not fact
+questions. The style dispatches on the question's own labels —
+
+- a fact question is graded on the gold answer (contains it, is equivalent to
+  it, or states the intermediate steps; a subset is incorrect),
+- `single-session-preference` (30 of 500) on the preferences the gold states:
+  naming the same subject while ignoring the preference is incorrect,
+- the 30 `_abs` rows on the refusal. Their gold says the history does not
+  contain the answer, so returning a plausible fact is the failure being
+  measured, not a near miss.
+
+Two consequences for reading a LongMemEval report next to a LoCoMo one:
+
+- **The answer rate is not the published LongMemEval number.** That number is
+  produced by the dataset's own judge prompt and reported with session-level
+  recall; this harness answers from a recalled pack with the product policy
+  (`-answer-style long`), so it measures the same store, not the same protocol.
+- **`hit_rate` means something else here.** It is the fraction of questions
+  whose gold sessions were all recalled, not the fraction whose gold turn was.
+  Evidence granularity, conversation shape (948 committed sessions over 500
+  instances, median 23 messages each) and the judge protocol all differ, so the
+  two datasets' rates belong in two tables.
 
 ## Reference protocol vs this harness
 
@@ -285,6 +335,11 @@ the item's provenance resolves to it (a fact points at the messages it was
 derived from — the runner wires that through the message store). Results
 therefore carry both numbers: turn-level `evidence recall` and
 `questions_with_full_evidence`.
+
+A dataset that labels its gold by session instead of by turn (LongMemEval) is
+graded by the same matcher at that granularity: a gold session is recalled when
+any of its messages was surfaced, and the report carries `session recall` apart
+from the turn-level figure rather than adding the two. See *LongMemEval* below.
 
 Ingest also tags every committed message with the dataset turn it was loaded
 from (`DatasetTurnMetadataKey`), and that tag decides the match first: an item
