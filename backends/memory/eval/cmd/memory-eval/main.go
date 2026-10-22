@@ -24,6 +24,9 @@ import (
 
 func main() {
 	dataset := flag.String("dataset", "locomo10.json", "LoCoMo JSON path")
+	loaderName := flag.String("loader", "locomo",
+		"dataset loader: locomo | longmemeval. It reads -dataset and decides which conversion runs, "+
+			"which categories a report names, and which judge protocol -judge-style defaults to")
 	samples := flag.Int("samples", 1, "number of conversations to run")
 	questions := flag.Int("questions", 0, "max questions per conversation (0 = all)")
 	categoryFilter := flag.String("categories", "", "only run these question categories (comma-separated, empty = all)")
@@ -78,6 +81,14 @@ func main() {
 	if *envFile != "" {
 		loadEnvFile(*envFile)
 	}
+	// The LongMemEval gold is a full clause (and, for two of its types, a stated
+	// preference or a refusal), which is not what the strict rubric scores, so a
+	// LongMemEval run that names no judge style gets the dataset's own. An
+	// explicit -judge-style still wins: grading one library with both protocols
+	// is how the two are compared.
+	if !flagWasSet(flag.CommandLine, "judge-style") && *loaderName == "longmemeval" {
+		*judgeStyle = string(evalanswer.JudgeLongMemEval)
+	}
 	if *skipDerive && *prepareAll {
 		must(fmt.Errorf("memory eval: -skip-derive answers from the stored derivation, so it cannot run -prepare-all's ingest and derive pass"))
 	}
@@ -89,18 +100,43 @@ func main() {
 	raw, err := os.ReadFile(*dataset)
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
-	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
+	loaderOptions := eval.LoaderOptions{
 		Scope:      evalScope,
 		Budget:     corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
 		Images:     *imageMode,
 		Samples:    *samples,
 		Dateless:   *noDatePrefix,
 		ObservedAt: *observedAt,
-	})
+	}
+	var (
+		scenarios []eval.Scenario
+		stats     eval.LoaderStats
+	)
+	switch *loaderName {
+	case "locomo":
+		scenarios, stats, err = eval.LoadLoCoMo(raw, loaderOptions)
+	case "longmemeval":
+		scenarios, stats, err = eval.LoadLongMemEval(raw, loaderOptions)
+	default:
+		err = fmt.Errorf("unknown -loader %q (want locomo|longmemeval)", *loaderName)
+	}
 	must(err)
-	fmt.Printf("dataset: scenarios=%d turns=%d questions=%d skipped=%d skipped_adversarial=%d",
-		stats.Conversations, stats.Turns, stats.Questions, stats.Skipped, stats.SkippedAdversarial)
-	if *imageMode == "native" || *imageMode == "both" {
+	fmt.Printf("dataset: loader=%s scenarios=%d turns=%d questions=%d skipped=%d",
+		*loaderName, stats.Conversations, stats.Turns, stats.Questions, stats.Skipped)
+	if *loaderName == "locomo" {
+		fmt.Printf(" skipped_adversarial=%d", stats.SkippedAdversarial)
+	}
+	if stats.EvidenceUnresolved > 0 {
+		fmt.Printf(" unresolved_evidence=%d", stats.EvidenceUnresolved)
+	}
+	if stats.ObservedAtAnchored > 0 || stats.ObservedAtUnparsed > 0 {
+		// Anchor coverage is a reading on the conversion, not an assumption:
+		// a session whose date did not parse carries no anchor, and a run over
+		// it cannot resolve a relative-time question.
+		fmt.Printf(" observed_at_anchored=%d observed_at_unparsed=%d",
+			stats.ObservedAtAnchored, stats.ObservedAtUnparsed)
+	}
+	if *loaderName == "locomo" && (*imageMode == "native" || *imageMode == "both") {
 		fmt.Printf(" images_attached=%d images_failed=%d", stats.ImagesAttached, stats.ImagesFailed)
 		// Why the images are missing decides whether the run is comparable: a
 		// dead link is the dataset's, a timeout is the network's.
@@ -130,16 +166,12 @@ func main() {
 		}
 	}
 	if strings.TrimSpace(*categoryFilter) != "" {
-		allowed := map[int]struct{}{}
-		for _, value := range strings.Split(*categoryFilter, ",") {
-			number, convErr := strconv.Atoi(strings.TrimSpace(value))
-			must(convErr)
-			allowed[number] = struct{}{}
-		}
+		allowed, labels, err := parseCategoryFilter(*categoryFilter)
+		must(err)
 		for index := range scenarios {
 			filtered := scenarios[index].Questions[:0]
 			for _, question := range scenarios[index].Questions {
-				if _, ok := allowed[question.Category]; ok {
+				if categoryMatches(question, allowed, labels) {
 					filtered = append(filtered, question)
 				}
 			}
@@ -204,6 +236,11 @@ func main() {
 			options.Judge = newJudge(evalanswer.JudgeStrict)
 		case "locomo":
 			options.Judge = newJudge(evalanswer.JudgeLocoMo)
+		case "lme":
+			// The LongMemEval rubrics dispatch per question (a preference row
+			// is graded on the preference it states, an abstention row on the
+			// refusal), which is why the style is not just another prompt.
+			options.Judge = newJudge(evalanswer.JudgeLongMemEval)
 		case "both":
 			strict := newJudge(evalanswer.JudgeStrict)
 			lenient := newJudge(evalanswer.JudgeLocoMo)
@@ -213,7 +250,7 @@ func main() {
 				usageRole{role: "judge", counts: strict},
 				usageRole{role: "lenient_judge", counts: lenient})
 		default:
-			must(fmt.Errorf("unknown -judge-style %q (want strict|locomo|both)", *judgeStyle))
+			must(fmt.Errorf("unknown -judge-style %q (want strict|locomo|lme|both)", *judgeStyle))
 		}
 		if options.Judge != nil && len(usage) == 1 {
 			usage = append(usage, usageRole{role: "judge", counts: options.Judge.(*evalanswer.Model)})
@@ -285,8 +322,8 @@ func main() {
 		Questions:    stats.Questions,
 		PolicyDigest: deployment.Memory.PolicyDigest(),
 		Values: map[string]string{
-			"loader":               "locomo10",
-			"images":               *imageMode,
+			"loader":               loaderFingerprint(*loaderName),
+			"images":               imageFingerprint(*loaderName, *imageMode),
 			"skipped_adversarial":  strconv.Itoa(stats.SkippedAdversarial),
 			"samples":              strconv.Itoa(*samples),
 			"questions_per_sample": strconv.Itoa(*questions),
@@ -347,7 +384,7 @@ func main() {
 			// retrieval knob flipped in the document or in code lands here,
 			// and two retrieval configurations cannot share a fingerprint.
 			"retrieval":    deployment.Memory.RetrievalSummary(),
-			"judge_prompt": evalanswer.JudgePromptVersion,
+			"judge_prompt": evalanswer.PromptVersion(evalanswer.JudgeStyle(*judgeStyle)),
 			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
@@ -361,6 +398,13 @@ func main() {
 			// -answer-concurrency is deliberately absent: it changes only the
 			// schedule, so it must not block resuming a run.
 		},
+	}
+	// A conversion that dropped a gold reference (the haystack does not hold the
+	// session or turn the dataset names) is a different measurement, but the key
+	// is only written when it happens: a constant "0" would relabel every report
+	// measured before the field existed and block -resume on them.
+	if stats.EvidenceUnresolved > 0 {
+		fingerprint.Values["unresolved_evidence"] = strconv.Itoa(stats.EvidenceUnresolved)
 	}
 	fmt.Printf("fingerprint: %s\n", fingerprint)
 	// Say what the store holds once the ingest phase has landed: the report's
@@ -462,6 +506,7 @@ func main() {
 
 	var total, hits, ungraded, answers, answerHits int
 	var evidenceTotal, evidenceFound, evidenceRaw, evidenceProvenance, ungradedAnswers, lenientAnswers, lenientHits int
+	var sessionTotal, sessionFound int
 	var latency time.Duration
 	byCategory := map[int]eval.CategoryStats{}
 	for _, report := range reports {
@@ -474,12 +519,15 @@ func main() {
 		evidenceFound += report.EvidenceFound
 		evidenceRaw += report.EvidenceRaw
 		evidenceProvenance += report.EvidenceProvenance
+		sessionTotal += report.SessionTotal
+		sessionFound += report.SessionFound
 		ungradedAnswers += report.UngradedAnswers
 		lenientAnswers += report.LenientAnswers
 		lenientHits += report.LenientHits
 		latency += report.MeanLatency * time.Duration(len(report.Questions))
 		for category, value := range report.ByCategory {
 			current := byCategory[category]
+			current.Label = value.Label
 			current.Questions += value.Questions
 			current.Hits += value.Hits
 			current.Answered += value.Answered
@@ -498,6 +546,15 @@ func main() {
 		fmt.Printf("evidence recall: turns=%d/%d recall=%.4f (raw=%d provenance-only=%d) questions_with_full_evidence=%.4f\n",
 			evidenceFound, evidenceTotal, float64(evidenceFound)/float64(evidenceTotal),
 			evidenceRaw, evidenceProvenance,
+			float64(hits)/float64(graded))
+	}
+	if sessionTotal > 0 {
+		// Session-level evidence is a separate unit from the turn-level figure
+		// above: a session counts once, and a question hits when every gold
+		// session was recalled. Adding the two would be a rate over two
+		// denominators.
+		fmt.Printf("session recall: sessions=%d/%d recall=%.4f questions_with_every_gold_session=%.4f\n",
+			sessionFound, sessionTotal, float64(sessionFound)/float64(sessionTotal),
 			float64(hits)/float64(graded))
 	}
 	if answers > 0 {
@@ -525,8 +582,12 @@ func main() {
 	sort.Ints(categories)
 	for _, category := range categories {
 		stats := byCategory[category]
-		line := fmt.Sprintf("category %d: questions=%4d hits=%4d hit_rate=%.4f",
-			category, stats.Questions, stats.Hits, float64(stats.Hits)/float64(stats.Questions))
+		name := fmt.Sprintf("category %d", category)
+		if stats.Label != "" {
+			name += " (" + stats.Label + ")"
+		}
+		line := fmt.Sprintf("%s: questions=%4d hits=%4d hit_rate=%.4f",
+			name, stats.Questions, stats.Hits, float64(stats.Hits)/float64(stats.Questions))
 		if stats.Answered > 0 {
 			line += fmt.Sprintf(" answer_hits=%4d answer_rate=%.4f",
 				stats.AnswerHits, float64(stats.AnswerHits)/float64(stats.Answered))
@@ -593,6 +654,74 @@ func onOff(enabled bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// flagWasSet reports whether the command line named a flag, which is how a
+// per-loader default tells an explicit choice from an unset one.
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// parseCategoryFilter splits -categories into the ids and the labels a question
+// may match. A token that is not a number is a category label: LoCoMo numbers
+// its categories, LongMemEval names them ("temporal-reasoning"), and a run
+// should not have to know which numbering it is filtering on to ask for one
+// question type.
+func parseCategoryFilter(value string) (map[int]struct{}, map[string]struct{}, error) {
+	ids := map[int]struct{}{}
+	labels := map[string]struct{}{}
+	for _, token := range strings.Split(value, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if number, err := strconv.Atoi(token); err == nil {
+			ids[number] = struct{}{}
+			continue
+		}
+		labels[strings.ToLower(token)] = struct{}{}
+	}
+	if len(ids) == 0 && len(labels) == 0 {
+		return nil, nil, fmt.Errorf("memory eval: -categories names no category")
+	}
+	return ids, labels, nil
+}
+
+// categoryMatches reports whether a question falls under -categories. The id
+// and the label are both accepted, so the flag keeps working across the two
+// datasets' numbering schemes.
+func categoryMatches(question eval.Question, ids map[int]struct{}, labels map[string]struct{}) bool {
+	if _, ok := ids[question.Category]; ok {
+		return true
+	}
+	_, ok := labels[strings.ToLower(strings.TrimSpace(question.CategoryLabel))]
+	return ok
+}
+
+// loaderFingerprint names the conversion a run used. LoCoMo keeps the value
+// reports were measured under before -loader existed, so those reports still
+// compare.
+func loaderFingerprint(loader string) string {
+	if loader == "longmemeval" {
+		return "longmemeval"
+	}
+	return "locomo10"
+}
+
+// imageFingerprint names the image policy, which only the LoCoMo conversion
+// has. LongMemEval carries no images, so two runs over it that differ only in
+// -images measure the same conversion and must not be split by the fingerprint.
+func imageFingerprint(loader, mode string) string {
+	if loader == "longmemeval" {
+		return "n/a"
+	}
+	return mode
 }
 
 // scheduleName names the ingestion schedule a run uses, so a report says which
