@@ -69,6 +69,9 @@ retrieval, runtime orchestration, and voice. Source on
 
 ### Application assembly
 
+- [Craft ABI](guides/craft-abi.md) — `flowcraft.craft/v1`: the lifecycle RPCs,
+  business envelopes, capability namespaces, the bootstrap token, and the
+  conformance checklist every craft must pass.
 - [Craft Assembly](guides/craft.md) — `craft`: the `craft.yaml` definition
   and capability set, the plugin manifest and permissions, the host-primitive
   protocol, and the process-level manager.
