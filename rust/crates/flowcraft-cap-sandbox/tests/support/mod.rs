@@ -17,15 +17,19 @@ use serde_json::json;
 
 /// A started deployment: the endpoint is listening and the client is built.
 pub struct Stack {
-    _dir: tempfile::TempDir,
+    /// Also the local runner's root, so it outlives the deployment.
+    pub dir: tempfile::TempDir,
     pub platform: Platform,
     pub built: flowcraft_resource::Built,
 }
 
-/// Deploy `local → endpoint → remote` for the given command allow-list.
+/// Deploy `local → endpoint → remote` for the given command allow-list, with the
+/// local runner rooted at a fresh temporary directory.
 pub async fn stack(commands: &[&str]) -> Stack {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("sandbox.sock");
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root).expect("root");
     let config = Config {
         remote: RemoteConfig {
             mode: Mode::Trusted,
@@ -55,7 +59,11 @@ pub async fn stack(commands: &[&str]) -> Stack {
         serde_json::to_vec(&json!({
             "version": "v1",
             "resources": {
-                "runner": {"kind": "sandbox.Runner", "impl": "local"},
+                "runner": {
+                    "kind": "sandbox.Runner",
+                    "impl": "local",
+                    "settings": {"root": root.display().to_string()}
+                },
                 "ep": {
                     "kind": "sandbox.Endpoint",
                     "impl": "grpc",
@@ -98,7 +106,7 @@ pub async fn stack(commands: &[&str]) -> Stack {
         .expect("deploy");
     built.start().await.expect("start");
     Stack {
-        _dir: dir,
+        dir,
         platform,
         built,
     }

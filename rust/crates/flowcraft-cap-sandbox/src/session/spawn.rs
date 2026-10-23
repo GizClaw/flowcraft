@@ -28,6 +28,15 @@ use crate::session::log::Log;
 /// Output retained when the spec declares no bound (10 MiB, as the Go side).
 pub(crate) const DEFAULT_OUTPUT_LIMIT: u64 = 10 * 1024 * 1024;
 
+/// How one backend spawns: its filesystem boundary and its output budget.
+pub(crate) struct SpawnOptions {
+    /// The runner root. `None` means "no root to check against" — the confined
+    /// backends resolve the workdir themselves and hand over a plain path.
+    pub(crate) root: Option<std::path::PathBuf>,
+    /// Output budget for sessions that declare none.
+    pub(crate) default_output_limit: u64,
+}
+
 /// How long a `SIGTERM` gets before the group is killed outright.
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
@@ -270,8 +279,9 @@ fn classify(status: &std::process::ExitStatus, pending: Option<ExitReason>) -> E
     }
 }
 
-/// Validate the policy this backend can actually enforce.
-fn validate_spec(spec: &SessionSpec) -> Result<()> {
+/// Validate the policy this backend can actually enforce, and resolve the
+/// working directory against the runner root when there is one.
+fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
     if spec.argv.is_empty() {
         return Err(Error::validation("sandbox: argv is empty"));
     }
@@ -313,13 +323,25 @@ fn validate_spec(spec: &SessionSpec) -> Result<()> {
             "sandbox: this build has no pty; start the session with tty: false",
         ));
     }
-    if let Some(dir) = &spec.opts.workdir
-        && !dir.is_dir()
-    {
-        return Err(Error::not_found(format!(
-            "sandbox: workdir {} does not exist",
-            dir.display()
-        )));
+    match &options.root {
+        Some(root) => {
+            // Containment is checked twice (lexically, then through symlinks) by
+            // the shared resolver, so `local`, `bwrap` and `seatbelt` cannot
+            // disagree about what "inside the root" means.
+            let resolved =
+                crate::confinement::path::resolve_workdir(root, spec.opts.workdir.as_deref())?;
+            spec.opts.workdir = Some(resolved);
+        }
+        None => {
+            if let Some(dir) = &spec.opts.workdir
+                && !dir.is_dir()
+            {
+                return Err(Error::not_found(format!(
+                    "sandbox: workdir {} does not exist",
+                    dir.display()
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -346,10 +368,10 @@ fn apply_env(command: &mut Command, policy: &EnvPolicy) {
 
 /// Spawn one pipe-backed session.
 pub(crate) async fn spawn(
-    spec: SessionSpec,
-    default_output_limit: u64,
+    mut spec: SessionSpec,
+    options: &SpawnOptions,
 ) -> Result<Arc<dyn Session>> {
-    validate_spec(&spec)?;
+    validate_spec(&mut spec, options)?;
 
     let mut command = Command::new(&spec.argv[0]);
     command.args(&spec.argv[1..]);
@@ -391,7 +413,7 @@ pub(crate) async fn spawn(
         .limits
         .max_output_bytes
         .filter(|limit| *limit > 0)
-        .unwrap_or(default_output_limit);
+        .unwrap_or(options.default_output_limit);
     let log = Arc::new(Log::new(limit));
     let pending: Arc<Mutex<Option<ExitReason>>> = Arc::new(Mutex::new(None));
     let (exited_tx, exited) = watch::channel(None);
@@ -502,6 +524,13 @@ mod tests {
         SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect())
     }
 
+    fn options() -> SpawnOptions {
+        SpawnOptions {
+            root: None,
+            default_output_limit: DEFAULT_OUTPUT_LIMIT,
+        }
+    }
+
     async fn read_all(session: &Arc<dyn Session>) -> String {
         let mut out = String::new();
         let mut after = 0;
@@ -519,12 +548,9 @@ mod tests {
 
     #[tokio::test]
     async fn runs_a_command_and_reports_output_and_exit() {
-        let session = spawn(
-            spec(&["sh", "-c", "echo hello; exit 3"]),
-            DEFAULT_OUTPUT_LIMIT,
-        )
-        .await
-        .unwrap();
+        let session = spawn(spec(&["sh", "-c", "echo hello; exit 3"]), &options())
+            .await
+            .unwrap();
         let exit = session.wait().await.unwrap();
         assert_eq!(exit.code, Some(3));
         assert_eq!(exit.reason, ExitReason::Exited);
@@ -534,12 +560,9 @@ mod tests {
 
     #[tokio::test]
     async fn stderr_is_a_separate_stream() {
-        let session = spawn(
-            spec(&["sh", "-c", "echo out; echo err 1>&2"]),
-            DEFAULT_OUTPUT_LIMIT,
-        )
-        .await
-        .unwrap();
+        let session = spawn(spec(&["sh", "-c", "echo out; echo err 1>&2"]), &options())
+            .await
+            .unwrap();
         session.wait().await.unwrap();
         let mut after = 0;
         let mut stdout = String::new();
@@ -567,7 +590,7 @@ mod tests {
     async fn stdin_is_delivered_and_can_be_closed() {
         let mut start = spec(&["cat"]);
         start.stdin = true;
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.write(b"ping\n").await.unwrap();
         session.close_input().await.unwrap();
         let exit = session.wait().await.unwrap();
@@ -578,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_input_without_stdin_is_a_no_op() {
-        let session = spawn(spec(&["true"]), DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(spec(&["true"]), &options()).await.unwrap();
         session.close_input().await.unwrap();
         session.wait().await.unwrap();
         session.close().await.unwrap();
@@ -586,9 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn writing_without_an_input_side_is_not_available() {
-        let session = spawn(spec(&["sleep", "5"]), DEFAULT_OUTPUT_LIMIT)
-            .await
-            .unwrap();
+        let session = spawn(spec(&["sleep", "5"]), &options()).await.unwrap();
         let error = session.write(b"x").await.expect_err("no stdin");
         assert_eq!(error.kind(), flowcraft_error::ErrorKind::NotAvailable);
         session.close().await.unwrap();
@@ -602,7 +623,7 @@ mod tests {
             .env
             .inject
             .insert("SECRET".to_owned(), "s3cr3t".to_owned());
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "s3cr3t");
         session.close().await.unwrap();
@@ -614,7 +635,7 @@ mod tests {
         // (`HOME`) must be absent in the child.
         let mut start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
         start.opts.env.allow = Some(Vec::new());
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "missing");
         session.close().await.unwrap();
@@ -626,7 +647,7 @@ mod tests {
         // filter runs: `HOME` would have been inherited if it did not.
         let mut start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
         start.opts.env.allow = Some(vec!["FLOWCRAFT_TEST_ABSENT".to_owned()]);
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "missing");
         session.close().await.unwrap();
@@ -636,7 +657,7 @@ mod tests {
     async fn a_none_allow_list_inherits_the_host_environment() {
         let expected = std::env::var("HOME").unwrap_or_else(|_| "missing".to_owned());
         let start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, expected);
         session.close().await.unwrap();
@@ -646,7 +667,7 @@ mod tests {
     async fn timeouts_are_classified_not_merely_killed() {
         let mut start = spec(&["sleep", "30"]);
         start.opts.timeout = Some(Duration::from_millis(100));
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         let exit = session.wait().await.unwrap();
         assert_eq!(exit.reason, ExitReason::TimedOut);
         assert_eq!(
@@ -664,7 +685,7 @@ mod tests {
                 "-c",
                 "trap 'exit 7' TERM; while :; do sleep 0.05; done",
             ]),
-            DEFAULT_OUTPUT_LIMIT,
+            &options(),
         )
         .await
         .unwrap();
@@ -684,7 +705,7 @@ mod tests {
     async fn terminate_escalates_when_the_child_ignores_sigterm() {
         let session = spawn(
             spec(&["sh", "-c", "trap '' TERM; while :; do sleep 0.05; done"]),
-            DEFAULT_OUTPUT_LIMIT,
+            &options(),
         )
         .await
         .unwrap();
@@ -706,7 +727,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signaled_exit_is_classified() {
-        let session = spawn(spec(&["sh", "-c", "kill -TERM $$"]), DEFAULT_OUTPUT_LIMIT)
+        let session = spawn(spec(&["sh", "-c", "kill -TERM $$"]), &options())
             .await
             .unwrap();
         let exit = session.wait().await.unwrap();
@@ -717,9 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn closing_releases_every_later_call() {
-        let session = spawn(spec(&["sleep", "30"]), DEFAULT_OUTPUT_LIMIT)
-            .await
-            .unwrap();
+        let session = spawn(spec(&["sleep", "30"]), &options()).await.unwrap();
         session.close().await.unwrap();
         for error in [
             session.read(0, 16).await.err().unwrap(),
@@ -738,48 +757,37 @@ mod tests {
         let mut net = spec(&["true"]);
         net.opts.net.mode = crate::contract::NetMode::DenyAll;
         assert_eq!(
-            spawn(net, DEFAULT_OUTPUT_LIMIT).await.err().unwrap().kind(),
+            spawn(net, &options()).await.err().unwrap().kind(),
             flowcraft_error::ErrorKind::NotAvailable
         );
 
         let mut write = spec(&["true"]);
         write.opts.write = crate::contract::WriteMode::ReadOnly;
         assert_eq!(
-            spawn(write, DEFAULT_OUTPUT_LIMIT)
-                .await
-                .err()
-                .unwrap()
-                .kind(),
+            spawn(write, &options()).await.err().unwrap().kind(),
             flowcraft_error::ErrorKind::NotAvailable
         );
 
         let mut memory = spec(&["true"]);
         memory.opts.limits.memory_bytes = Some(1024);
         assert_eq!(
-            spawn(memory, DEFAULT_OUTPUT_LIMIT)
-                .await
-                .err()
-                .unwrap()
-                .kind(),
+            spawn(memory, &options()).await.err().unwrap().kind(),
             flowcraft_error::ErrorKind::NotAvailable
         );
 
         let mut tty = spec(&["true"]);
         tty.tty = true;
         assert_eq!(
-            spawn(tty, DEFAULT_OUTPUT_LIMIT).await.err().unwrap().kind(),
+            spawn(tty, &options()).await.err().unwrap().kind(),
             flowcraft_error::ErrorKind::NotAvailable
         );
     }
 
     #[tokio::test]
     async fn a_missing_command_is_not_found() {
-        let error = spawn(
-            spec(&["flowcraft-command-that-does-not-exist"]),
-            DEFAULT_OUTPUT_LIMIT,
-        )
-        .await
-        .expect_err("not found");
+        let error = spawn(spec(&["flowcraft-command-that-does-not-exist"]), &options())
+            .await
+            .expect_err("not found");
         assert_eq!(error.kind(), flowcraft_error::ErrorKind::NotFound);
     }
 
@@ -787,7 +795,7 @@ mod tests {
     async fn output_is_bounded_and_reports_a_gap() {
         let mut start = spec(&["sh", "-c", "yes x | head -c 200000"]);
         start.opts.limits.max_output_bytes = Some(64);
-        let session = spawn(start, DEFAULT_OUTPUT_LIMIT).await.unwrap();
+        let session = spawn(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         // The retained window is tiny, so an early cursor is a gap rather than
         // a silent hole.

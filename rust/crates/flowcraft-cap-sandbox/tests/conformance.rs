@@ -18,51 +18,52 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flowcraft_cap_sandbox::{
-    ConfinedRunner, Event, ExitReason, LocalRunner, NetMode, Runner, Sandbox, SessionSpec, Signal,
-    Stream, WriteMode,
+    ConfinedRunner, Event, ExitReason, LocalRunner, NetMode, Runner, Sandbox, SandboxConfig,
+    SessionSpec, Signal, Stream, WriteMode,
 };
 use tokio_stream::StreamExt;
 
-fn local() -> Option<Arc<dyn Runner>> {
-    Some(Arc::new(LocalRunner::new()))
+/// A temporary root that outlives `suite`.
+fn root() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
 }
 
-fn confined(sandbox: Sandbox, binary: &str) -> Option<Arc<dyn Runner>> {
-    if std::process::Command::new(binary)
+/// Whether the wrapper binary can actually be run here.
+fn available(binary: &str) -> bool {
+    std::process::Command::new(binary)
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_err()
-    {
-        eprintln!(
-            "skipping {}: {binary} is not usable here",
-            sandbox.impl_name()
-        );
-        return None;
-    }
-    Some(Arc::new(ConfinedRunner::new(sandbox, Some(binary))))
+        .is_ok()
 }
 
 #[tokio::test]
 async fn local_conforms() {
-    if let Some(runner) = local() {
-        suite("local", runner).await;
-    }
+    let dir = root();
+    suite("local", Arc::new(LocalRunner::at(dir.path()))).await;
 }
 
 #[tokio::test]
 async fn seatbelt_conforms() {
-    if let Some(runner) = confined(Sandbox::Seatbelt, "sandbox-exec") {
-        suite("seatbelt", runner).await;
+    if !available("sandbox-exec") {
+        eprintln!("skipping seatbelt: sandbox-exec is not usable here");
+        return;
     }
+    let dir = root();
+    let config = SandboxConfig::new(Sandbox::Seatbelt, dir.path());
+    suite("seatbelt", Arc::new(ConfinedRunner::new(config))).await;
 }
 
 #[tokio::test]
 async fn bwrap_conforms() {
-    if let Some(runner) = confined(Sandbox::Bwrap, "bwrap") {
-        suite("bwrap", runner).await;
+    if !available("bwrap") {
+        eprintln!("skipping bwrap: bwrap is not usable here");
+        return;
     }
+    let dir = root();
+    let config = SandboxConfig::new(Sandbox::Bwrap, dir.path());
+    suite("bwrap", Arc::new(ConfinedRunner::new(config))).await;
 }
 
 #[tokio::test]
@@ -87,6 +88,7 @@ async fn suite(backend: &str, runner: Arc<dyn Runner>) {
     closing_releases_the_handle(backend, &*runner).await;
     listing_reflects_lifecycle(backend, &*runner).await;
     capabilities_never_overclaim(backend, &*runner).await;
+    a_workdir_escape_is_forbidden(backend, &*runner).await;
     runner.close().await.expect("runner close");
 }
 
@@ -337,6 +339,29 @@ async fn listing_reflects_lifecycle(backend: &str, runner: &dyn Runner) {
             .iter()
             .any(|info| info.id == id),
         "{backend}: a released session must disappear from the list"
+    );
+}
+
+/// Every backend that knows a root must refuse a working directory outside it.
+///
+/// This is the property the root exists for: without it a `workdir` is a
+/// suggestion, and `filesystem_bounds` would be a claim without a mechanism.
+async fn a_workdir_escape_is_forbidden(backend: &str, runner: &dyn Runner) {
+    let mut request = support::spec(&["sh", "-c", "true"]);
+    request.opts.workdir = Some(std::path::PathBuf::from(".."));
+    let error = runner
+        .start(request)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{backend}: a workdir outside the root was accepted"));
+    assert_eq!(
+        error.kind(),
+        flowcraft_error::ErrorKind::Forbidden,
+        "{backend}: {error}"
+    );
+    assert!(
+        error.to_string().contains("path traversal"),
+        "{backend}: the message must name the refusal: {error}"
     );
 }
 

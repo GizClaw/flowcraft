@@ -32,7 +32,7 @@ pub mod scope;
 mod session;
 mod wire;
 
-pub use confinement::{BwrapFactory, ConfinedRunner, Sandbox, SeatbeltFactory};
+pub use confinement::{BwrapFactory, ConfinedRunner, Sandbox, SandboxConfig, SeatbeltFactory};
 pub use contract::{
     CONTRACT, Capabilities, Chunk, Enforcement, EnvPolicy, Event, EventStream, ExecOptions,
     ExitReason, ExitStatus, Features, Handle, JournalCapabilities, KIND, NetAction, NetMode,

@@ -10,6 +10,7 @@
 //! The session machinery itself lives in [`crate::session`]; this type is the
 //! contract implementation plus its factory.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,6 +29,10 @@ use crate::session::{DEFAULT_OUTPUT_LIMIT, Registry, Spawn, spawn};
 /// A runner that spawns processes on this host.
 pub struct LocalRunner {
     registry: Registry,
+    /// The filesystem boundary used to validate a working directory. There is
+    /// no OS enforcement behind it (see [`Runner::capabilities`]), but it makes
+    /// a `workdir` escape a refusal rather than a coincidence.
+    root: Option<PathBuf>,
     default_output_limit: u64,
 }
 
@@ -44,13 +49,36 @@ impl Default for LocalRunner {
 }
 
 impl LocalRunner {
-    /// A runner with no sessions.
+    /// A runner without a root: every `workdir` is checked for existence only.
+    ///
+    /// This is what a confined backend uses for its inner execution, because the
+    /// wrapper already resolved the path against a real boundary.
     #[must_use]
     pub fn new() -> Self {
         Self {
             registry: Registry::new(),
+            root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
         }
+    }
+
+    /// A runner whose working directories must stay inside `root`.
+    ///
+    /// The root is canonicalized when it exists (see [`SandboxConfig::new`]),
+    /// so containment is compared between real paths.
+    #[must_use]
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        Self {
+            root: Some(std::fs::canonicalize(&root).unwrap_or(root)),
+            ..Self::new()
+        }
+    }
+
+    /// The root this runner validates against, if any.
+    #[must_use]
+    pub fn root(&self) -> Option<&std::path::Path> {
+        self.root.as_deref()
     }
 
     /// The output cap for sessions that do not declare one.
@@ -62,8 +90,14 @@ impl LocalRunner {
 
     /// The spawn function the registry calls.
     fn spawner(&self) -> Spawn {
-        let limit = self.default_output_limit;
-        Arc::new(move |spec: SessionSpec| Box::pin(async move { spawn(spec, limit).await }))
+        let options = Arc::new(crate::session::SpawnOptions {
+            root: self.root.clone(),
+            default_output_limit: self.default_output_limit,
+        });
+        Arc::new(move |spec: SessionSpec| {
+            let options = options.clone();
+            Box::pin(async move { spawn(spec, &options).await })
+        })
     }
 }
 
@@ -130,12 +164,17 @@ impl Runner for LocalRunner {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
+    /// The filesystem boundary the runner validates working directories against.
+    root: String,
     #[serde(default)]
     max_output_bytes: Option<u64>,
 }
 
 fn validate(value: &Value) -> Result<()> {
     let settings: Settings = flowcraft_resource::settings(value)?;
+    if settings.root.trim().is_empty() {
+        return Err(Error::validation("sandbox: settings.root is required"));
+    }
     if settings.max_output_bytes == Some(0) {
         return Err(Error::validation(
             "sandbox/local: max_output_bytes must be positive",
@@ -165,7 +204,8 @@ impl Factory for LocalFactory {
     fn build<'a>(&'a self, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Self::Output>>> {
         Box::pin(async move {
             let settings: Settings = ctx.settings()?;
-            let mut runner = LocalRunner::new();
+            let root = crate::confinement::path::resolve_root(&settings.root)?;
+            let mut runner = LocalRunner::at(root);
             if let Some(limit) = settings.max_output_bytes {
                 runner = runner.with_output_limit(limit);
             }
@@ -240,5 +280,65 @@ mod tests {
         runner.close().await.unwrap();
         let exit = session.wait().await.unwrap();
         assert_eq!(exit.reason, ExitReason::Terminated);
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+
+    fn spec(argv: &[&str]) -> SessionSpec {
+        SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_working_directory_inside_the_root_is_used() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("sub")).expect("sub");
+        let runner = LocalRunner::at(dir.path());
+        let mut request = spec(&["sh", "-c", "pwd"]);
+        request.opts.workdir = Some(PathBuf::from("sub"));
+        let session = runner.start(request).await.expect("start");
+        session.wait().await.expect("wait");
+        let mut out = String::new();
+        let mut after = 0;
+        loop {
+            let read = session.read(after, 4096).await.expect("read");
+            for chunk in &read.chunks {
+                out.push_str(&String::from_utf8_lossy(&chunk.data));
+            }
+            after = read.next_seq;
+            if read.eof {
+                break;
+            }
+        }
+        assert!(
+            out.trim().ends_with("/sub"),
+            "the child must run in the resolved workdir: {out:?}"
+        );
+        runner.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn a_working_directory_outside_the_root_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runner = LocalRunner::at(dir.path());
+        let mut request = spec(&["sh", "-c", "true"]);
+        request.opts.workdir = Some(PathBuf::from(".."));
+        let error = runner.start(request).await.expect_err("traversal");
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::Forbidden);
+        assert!(error.to_string().contains("path traversal"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn without_a_root_only_existence_is_checked() {
+        let runner = LocalRunner::new();
+        let mut request = spec(&["sh", "-c", "true"]);
+        request.opts.workdir = Some(PathBuf::from("/"));
+        runner
+            .start(request)
+            .await
+            .expect("a rootless runner accepts any existing directory");
+        runner.close().await.expect("close");
     }
 }
