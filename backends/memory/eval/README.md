@@ -188,17 +188,42 @@ under identical settings:
 
 Read that as two experiments rather than one ladder: the first pair changes the
 official short shape, the second changes the product shape, and the two shapes
-are not comparable with each other (the product prompt carries the long-form
-rules and a 24k-rune context).
+carry different prompts (the product prompt carries the long-form rules and a
+24k-rune context). The 11pp between the short and product rows is not a paired
+reading of the flag — the two rows come from different libraries — and the pinned
+library below reads those same two shapes at 66.69% and 76.30%.
 
-- **Short shape: +8.57pp for 3.0×.** Paired, 152 questions improved to 20
-  regressed, McNemar p=2.6e-26; every category moved the same way.
-- **Product shape: nothing for 2.6×.** Paired over the 1529 questions the two
-  runs share, −0.26pp, 26 improved to 30 regressed, p=0.69. Open-domain is the
-  one category that moved up (+4.2pp on n=96, inside its noise band) and
-  multi-hop the one that moved down; the answer side still went 779 → 2034
-  output tokens per question, measured by a paired 30-question cost probe over
-  the same library (the same probe prices short at 601 and evidence at 1798).
+- **The product shape is worth +9.61pp, measured paired.** Both arms over the
+  pinned library (`84154bf9`, `-skip-derive`, 30 items / 6144 tokens, temperature
+  0, `-judge-style both`, same answering model): `answer-short-v1` grades 66.69%
+  strict / 84.55% lenient, `answer-policy-v2` 76.30% / 87.60%. 181 questions
+  improved to 33 regressed, McNemar p<1e-6, and every category moved up —
+  multi-hop 36.52 → 50.35 (+13.83, p<1e-6), temporal 75.39 → 79.13 (+3.74,
+  p=0.050), open-domain 42.71 → 52.08 (+9.38, p=0.022), single-hop 76.22 →
+  86.68 (+10.46, p<1e-6). Evidence recall is unchanged (88.64% → 88.77%, two
+  questions), because the read path is not the variable. It costs 2.9× the
+  answer side's output tokens (164 → 470 per question on these runs; the
+  smaller-context probe above prices the same two shapes at 601 and 779) plus
+  ~1.3× the two judges'.
+- **The shape is a measurement choice as much as a product choice.** Questions
+  whose evidence the recall stage fully delivered convert at 72.4% under the
+  short shape and 82.6% under the product shape, so a strict score taken on the
+  short shape understates what a deployment running the product prompt answers.
+  The remaining 365 strict errors split as: 239 with the evidence in hand (17.4%
+  of the questions that had it, of which 127 the lenient judge also rejects) and
+  126 where the recall stage was missing evidence. Retrieval would have to become
+  perfect to reach 82.55%, so under the product shape the read path is worth
+  +6.26pp, and half of it (45 questions) sits in multi-hop alone.
+- **Quoting the evidence pays on the short shape, +8.57pp for 3.0×.** Paired
+  short against short-plus-quoting, 152 questions improved to 20 regressed,
+  McNemar p=2.6e-26; every category moved the same way.
+- **It pays nothing on the product shape.** Paired over the 1529 questions the
+  two product runs share, −0.26pp, 26 improved to 30 regressed, p=0.69.
+  Open-domain is the one category that moved up (+4.2pp on n=96, inside its
+  noise band) and multi-hop the one that moved down; the answer side still went
+  779 → 2034 output tokens per question, measured by a paired 30-question cost
+  probe over the same library (the same probe prices short at 601 and evidence
+  at 1798).
 - **Retrieval was not the variable.** Per-conversation evidence recall is
   identical in 8 of 10 conversations and differs by a single turn in the other
   two; both arms read the same frozen library (`-skip-derive`, and the report's
@@ -219,6 +244,129 @@ is gone. That block was never what the table measures — this harness renders t
 recalled pack itself — so a deployment that wants the step back has to add the
 template block *and* re-test here first: the short shape's +8.57pp is not
 evidence for the product shape.
+
+## The answering model
+
+`-answer-model` was the one knob this harness had never paired, and the product
+shape made it worth pairing: 239 questions still failed with the evidence fully
+in hand, and "the answerer is too weak" is the obvious reading of that.
+
+The numbers do not support it. Swapping the answerer to `deepseek-v4-pro` over
+the same frozen library with everything else held fixed — same prompt, same
+recalled context, temperature 0, and the same two `deepseek-flash` judges —
+moves the score not at all: 76.30% → 76.10% strict (−0.19pp, 40 questions up to
+37 down, McNemar p=0.82) and 87.60% → 87.14% lenient (−0.45pp, 33:26, p=0.44).
+Every category stays inside its own noise band, and the report's fingerprint
+differs from the flash arm in exactly one field, `answer_model`. The judge is
+deliberately not swapped along with the answerer: the arm asks whether a better
+answerer clears the residual, and a ruler that moved with the treatment could
+not answer that.
+
+Splitting by whether the recall stage delivered the evidence is what makes the
+result usable:
+
+| evidence in hand (n=1370) | strict | fixed by the swap | broken by it |
+| --- | --- | --- | --- |
+| `deepseek-flash` | 82.6% | — | — |
+| `deepseek-v4-pro` | 82.0% | 28 | 36 |
+
+211 of flash's 239 in-hand errors stay wrong under `v4-pro` (88%), and 85% of
+`v4-pro`'s own in-hand errors were already flash's, so the two arms fail the
+same questions rather than trading them. The perfect-recall ceiling — the in-hand
+conversion rate, by construction — does not move either (82.6% → 82.0%).
+
+Reading the 211 stored answers says where the loss lives instead:
+
+- 74 (35%) — the answer says the memory does not contain the fact ("the memories
+  don't name that book"). The control set, in-hand questions the same arm got
+  right, says that 6.5% of the time, so the residual is ~5× enriched for a fact
+  that never reached the prompt.
+- 42 (20%) — a multi-part gold ("Oliver, Luna, Bailey") answered in part: the
+  missing part did not reach the prompt either.
+- 6 (3%) — the gold string is in both answers and both judges still said no.
+- 89 (42%) — wrong in their own words.
+
+Only the last bucket can be read as answering skill, and it does not shrink when
+the answerer gets stronger — including the questions where both arms answer a
+coarser neighbour instead of the specific detail the gold wants. So the next
+lever is what the prompt is given — which items the pack selects, or how much
+detail the derivation keeps — not the model. Every one of the 1540 questions
+reads a pack of exactly 30 items, so the budget is a selection and not the whole
+memory; the next section doubles it.
+
+What the swap costs: 973 vs 470 answer output tokens per question (2.07×; most of
+it is the model's own reasoning, since the visible answers are 29% *shorter*, 208
+vs 291 characters), and 59m25s against 1h01m56s for the same 1540 questions —
+although this arm ran at `-answer-concurrency 32` and the flash arm at 4, and the
+report's per-question latency is queue-inclusive, so call-level latency is not
+comparable between the two.
+
+## The recall budget
+
+Arm M closed the answer-model question, so arm N asked the one the residual
+raises next: if 239 questions fail with the evidence in hand, is a 30-item pack
+showing the answerer too little? The arm doubles the budget — 60 items / 12288
+tokens — and raises the cap that renders the pack into the answer prompt with it
+(24000 → 60000 runes). The cap has to move with the budget: the 30-item arm's
+whole answer prompt averaged 4250 tokens, so 24000 runes never bound, while at 60
+items the pack alone averages 7761 (p90 10045) — about 31k runes — and the old
+cap would have clipped it, so the arm would have measured the cap. Everything
+else is held: the same library, `answer-policy-v2`, the same `deepseek-flash`
+answerer and the same two judges, temperature 0. The fingerprint differs in
+exactly those three fields.
+
+It is worth +5.32pp, the second-largest effect measured here after the prompt
+shape:
+
+| | strict | lenient | evidence hit | multi-hop | temporal | open-domain | single-hop |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 30 items | 76.30% | 87.60% | 88.77% | 50.35% | 79.13% | 52.08% | 86.68% |
+| 60 items | **81.62%** | **91.62%** | **95.13%** | **65.60%** | 81.93% | **61.46%** | **89.18%** |
+| paired | +5.32 | +4.03 | +6.36 | +15.25 | +2.80 | +9.38 | +2.50 |
+| flips | 20:102 | 14:76 | 0:98 | 3:46 | 6:15 | 1:10 | 10:31 |
+| McNemar | <1e-6 | <1e-6 | <1e-6 | <1e-6 | 0.078 | 0.012 | 0.001 |
+
+The bigger pack never loses a turn it had — all 98 evidence flips go one way —
+and finds 2246 of 2354 evidence turns, up from 2074. Splitting the 1540 questions
+by what the pack delivered says where the 82 extra correct answers came from:
+
+| group | n | 30 items | 60 items | flips | McNemar |
+| --- | --- | --- | --- | --- | --- |
+| evidence in hand in both arms | 1370 | 82.55% | 85.62% | 61:19 | 2.7e-6 |
+| evidence the bigger pack gained | 98 | 21.43% | 56.12% | 34:0 | 1.2e-10 |
+| evidence still missing | 72 | 31.94% | 40.28% | 7:1 | 0.07 |
+
+Half of the gain (+42 of +82 questions) is not new evidence at all — it is the
+same evidence turns with 30 more items of surrounding context, and it is the
+significant half. The other half (+34) is questions whose evidence the 30-item
+pack had cut. The pack does two jobs at once and only one of them is retrieval.
+
+The ceiling moves the other way. In-hand conversion — the rate a perfect recall
+stage would buy — goes 82.55% → 83.65%, so what perfect retrieval is worth falls
+from +6.26pp to +2.02pp: 283 errors remain, 240 with the evidence in hand and 43
+without. And the 240 still look like the 239 did. Of the 178 that were already
+wrong at 30 items and are still wrong at 60, 72 (40%) have the answer say the
+memory does not name the fact — the control, in-hand and correct, says that 7.8%
+of the time — 23 answer part of a multi-part gold, 4 carry the gold verbatim, 79
+are wrong in their own words. Arm M read the same split (35/20/3/42 against
+40/13/2/44): a quarter of the in-hand errors are gone and the shape of the rest
+has not changed.
+
+That shape has a mechanism, and `memory-eval-diag` measures it: of the 2238
+packed evidence turns, 1910 (85%) arrive as a derived item whose sources cover
+the evidence turn's whole commit — the prompt carries a paraphrase, not the
+wording the gold is scored against. A fact can therefore be "in hand" by turn id
+and still not be legible in the item that stands for it, which is what the 40%
+absent bucket looks like.
+
+Cost: the answer prompt goes from 4250 to 8913 input tokens per question (2.10×)
+and the answer side from 470 to 534 output tokens (1.14×); the two judges barely
+move, since they read the answer and not the pack. Wall is 1h09m47s against
+1h01m56s, but this arm ran at `-answer-concurrency 32` and the 30-item arm at 4,
+so per-question latency rose by more than the wall clock shows. `-max-tokens
+12288` never binds at 60 items (max 11785): the item cap is the knob, and every
+question chose from a pool of 188, with the evidence a 60-item pack misses
+sitting at pool rank p50 82 — 90 items would reach the median missed turn.
 
 ## What a report stores
 
