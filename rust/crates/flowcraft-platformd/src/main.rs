@@ -7,6 +7,12 @@ use flowcraft_kernel::identity::MachineIdentity;
 use flowcraft_platformd::{assembly, cli, commands, logging};
 
 fn main() -> ExitCode {
+    // The daemon is also the in-namespace bridge: `bwrap` re-executes this
+    // binary with a reserved argument so that something inside the network
+    // namespace can own the proxy port. That path has to be taken before
+    // anything else looks at argv, and it exits the process when it applies.
+    let _ = flowcraft_cap_sandbox::net::bridge::run_if_invoked();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(args) {
         Ok(code) => code,
