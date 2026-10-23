@@ -54,7 +54,10 @@ func main() {
 	answerContextRunes := flag.Int("answer-context-runes", 24_000, "runes of recalled context rendered into one answer prompt")
 	judgeProvider := flag.String("judge-provider", "", "provider id of the judge model (default: answer provider)")
 	judgeModel := flag.String("judge-model", "", "name of the judge model (default: answer model)")
-	judgeStyle := flag.String("judge-style", "strict", "judge prompt style: strict | locomo | both")
+	judgeStyle := flag.String("judge-style", "strict",
+		"judge prompt style: strict | locomo | lme | both. both grades every answer twice -- once with the "+
+			"dataset's own rubric, once with LoCoMo's -- so one report carries both columns; on the longmemeval "+
+			"loader that pair is lme + locomo")
 	answerStyle := flag.String("answer-style", "long",
 		"answering protocol: long (product, used for strict/lenient), short (official LoCoMo protocol, for token-F1), or evidence (short, but the model quotes its evidence first)")
 	temporalHint := flag.Bool("temporal-hint", false,
@@ -89,6 +92,10 @@ func main() {
 	if !flagWasSet(flag.CommandLine, "judge-style") && *loaderName == "longmemeval" {
 		*judgeStyle = string(evalanswer.JudgeLongMemEval)
 	}
+	// Which rubrics a style names depends on the loader, so it is resolved once,
+	// before the run, and both the wiring and the fingerprint read the result.
+	grading, err := resolveJudgePlan(*loaderName, *judgeStyle)
+	must(err)
 	if *skipDerive && *prepareAll {
 		must(fmt.Errorf("memory eval: -skip-derive answers from the stored derivation, so it cannot run -prepare-all's ingest and derive pass"))
 	}
@@ -228,32 +235,22 @@ func main() {
 			must(err)
 			return judge.WithJudgeStyle(style).WithTemperature(temperatureSetting(*temperature))
 		}
-		switch *judgeStyle {
-		case "none":
+		switch {
+		case grading.primary == "":
 			// The official metric is computed offline from the stored answers,
 			// so this run needs no judge at all.
-		case "strict":
-			options.Judge = newJudge(evalanswer.JudgeStrict)
-		case "locomo":
-			options.Judge = newJudge(evalanswer.JudgeLocoMo)
-		case "lme":
-			// The LongMemEval rubrics dispatch per question (a preference row
-			// is graded on the preference it states, an abstention row on the
-			// refusal), which is why the style is not just another prompt.
-			options.Judge = newJudge(evalanswer.JudgeLongMemEval)
-		case "both":
-			strict := newJudge(evalanswer.JudgeStrict)
-			lenient := newJudge(evalanswer.JudgeLocoMo)
-			options.Judge = strict
+		case grading.lenient == "":
+			judge := newJudge(grading.primary)
+			options.Judge = judge
+			usage = append(usage, usageRole{role: "judge", counts: judge})
+		default:
+			primary := newJudge(grading.primary)
+			lenient := newJudge(grading.lenient)
+			options.Judge = primary
 			options.LenientJudge = lenient
 			usage = append(usage,
-				usageRole{role: "judge", counts: strict},
+				usageRole{role: "judge", counts: primary},
 				usageRole{role: "lenient_judge", counts: lenient})
-		default:
-			must(fmt.Errorf("unknown -judge-style %q (want strict|locomo|lme|both)", *judgeStyle))
-		}
-		if options.Judge != nil && len(usage) == 1 {
-			usage = append(usage, usageRole{role: "judge", counts: options.Judge.(*evalanswer.Model)})
 		}
 		for index := range usage {
 			usage[index].model = judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel)
@@ -384,7 +381,7 @@ func main() {
 			// retrieval knob flipped in the document or in code lands here,
 			// and two retrieval configurations cannot share a fingerprint.
 			"retrieval":    deployment.Memory.RetrievalSummary(),
-			"judge_prompt": evalanswer.PromptVersion(evalanswer.JudgeStyle(*judgeStyle)),
+			"judge_prompt": grading.promptVersion(),
 			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
@@ -505,7 +502,8 @@ func main() {
 	wall := time.Since(started)
 
 	var total, hits, ungraded, answers, answerHits int
-	var evidenceTotal, evidenceFound, evidenceRaw, evidenceProvenance, ungradedAnswers, lenientAnswers, lenientHits int
+	var evidenceTotal, evidenceFound, evidenceRaw, evidenceProvenance, ungradedAnswers int
+	var lenientAnswers, lenientHits, lenientUngraded int
 	var sessionTotal, sessionFound int
 	var latency time.Duration
 	byCategory := map[int]eval.CategoryStats{}
@@ -524,16 +522,9 @@ func main() {
 		ungradedAnswers += report.UngradedAnswers
 		lenientAnswers += report.LenientAnswers
 		lenientHits += report.LenientHits
+		lenientUngraded += report.LenientUngraded
 		latency += report.MeanLatency * time.Duration(len(report.Questions))
-		for category, value := range report.ByCategory {
-			current := byCategory[category]
-			current.Label = value.Label
-			current.Questions += value.Questions
-			current.Hits += value.Hits
-			current.Answered += value.Answered
-			current.AnswerHits += value.AnswerHits
-			byCategory[category] = current
-		}
+		mergeCategories(byCategory, report.ByCategory)
 	}
 	graded := total - ungraded
 	mean := time.Duration(0)
@@ -566,9 +557,13 @@ func main() {
 		fmt.Printf("answered: questions=%d graded=%d ungraded=%d answer_hits=%d answer_rate=%.4f\n",
 			answers, gradedAnswers, ungradedAnswers, answerHits, rate)
 	}
-	if lenientAnswers > 0 {
-		fmt.Printf("lenient judge: graded=%d answer_hits=%d answer_rate=%.4f\n",
-			lenientAnswers, lenientHits, float64(lenientHits)/float64(lenientAnswers))
+	if lenientAnswers > 0 || lenientUngraded > 0 {
+		rate := 0.0
+		if lenientAnswers > 0 {
+			rate = float64(lenientHits) / float64(lenientAnswers)
+		}
+		fmt.Printf("lenient judge: graded=%d ungraded=%d answer_hits=%d answer_rate=%.4f\n",
+			lenientAnswers, lenientUngraded, lenientHits, rate)
 	}
 	for _, entry := range usage {
 		calls, input, output := entry.counts.Stats()
@@ -591,6 +586,10 @@ func main() {
 		if stats.Answered > 0 {
 			line += fmt.Sprintf(" answer_hits=%4d answer_rate=%.4f",
 				stats.AnswerHits, float64(stats.AnswerHits)/float64(stats.Answered))
+		}
+		if stats.LenientAnswered > 0 {
+			line += fmt.Sprintf(" lenient_hits=%4d lenient_rate=%.4f",
+				stats.LenientAnswerHits, float64(stats.LenientAnswerHits)/float64(stats.LenientAnswered))
 		}
 		fmt.Println(line)
 	}
@@ -722,6 +721,67 @@ func imageFingerprint(loader, mode string) string {
 		return "n/a"
 	}
 	return mode
+}
+
+// judgePlan is what -judge-style resolves to on one loader: the rubric that
+// scores the report's answer columns, and the optional second, leaderboard
+// rubric whose verdicts land in the lenient columns.
+type judgePlan struct {
+	primary evalanswer.JudgeStyle
+	lenient evalanswer.JudgeStyle
+}
+
+// resolveJudgePlan maps a -judge-style value onto the prompts a run calls.
+// "both" is a pair of rubrics rather than one, and which pair depends on the
+// loader: LoCoMo's gold is a short topic phrase that its strict rubric scores,
+// while a LongMemEval gold is a full clause -- and 60 of its 500 rows are
+// graded on a stated preference or on a refusal, which the strict fact rubric
+// cannot see. Pairing strict with locomo there would grade every such row as a
+// miss, so the strict half has to be the dataset's own rubric: comparing one
+// library under both protocols is lme + locomo.
+func resolveJudgePlan(loader, style string) (judgePlan, error) {
+	switch style {
+	case "none":
+		// The official metric is computed offline from the stored answers.
+		return judgePlan{}, nil
+	case "strict":
+		return judgePlan{primary: evalanswer.JudgeStrict}, nil
+	case "locomo":
+		return judgePlan{primary: evalanswer.JudgeLocoMo}, nil
+	case "lme":
+		return judgePlan{primary: evalanswer.JudgeLongMemEval}, nil
+	case "both":
+		if loader == "longmemeval" {
+			return judgePlan{primary: evalanswer.JudgeLongMemEval, lenient: evalanswer.JudgeLocoMo}, nil
+		}
+		return judgePlan{primary: evalanswer.JudgeStrict, lenient: evalanswer.JudgeLocoMo}, nil
+	}
+	return judgePlan{}, fmt.Errorf("unknown -judge-style %q (want strict|locomo|lme|both)", style)
+}
+
+// promptVersion names the rubric that scored the answer columns. The lenient
+// half has one prompt and does not need naming; a run that names no judge keeps
+// naming the v2 prompt, because that is what its stored reports recorded.
+func (plan judgePlan) promptVersion() string {
+	return evalanswer.PromptVersion(plan.primary)
+}
+
+// mergeCategories adds one scenario's category table into the run's. The
+// lenient halves ride along: under -judge-style both every scenario line and
+// every category line carries a second rate, and summing only the strict halves
+// would print an empty lenient column over a report that holds both.
+func mergeCategories(into, from map[int]eval.CategoryStats) {
+	for category, value := range from {
+		current := into[category]
+		current.Label = value.Label
+		current.Questions += value.Questions
+		current.Hits += value.Hits
+		current.Answered += value.Answered
+		current.AnswerHits += value.AnswerHits
+		current.LenientAnswered += value.LenientAnswered
+		current.LenientAnswerHits += value.LenientAnswerHits
+		into[category] = current
+	}
 }
 
 // scheduleName names the ingestion schedule a run uses, so a report says which
