@@ -92,8 +92,9 @@ impl Sandbox {
     /// What this wrapper genuinely enforces.
     ///
     /// Both backends confine writes to the configured root, so both may claim a
-    /// filesystem boundary. Neither enforces cpu/memory caps, a network mode
-    /// that needs the proxy, or a tty in this build.
+    /// filesystem boundary. Memory/CPU caps come from the inner runner (they are
+    /// enforced by the same supervisor), and neither backend enforces a network
+    /// mode that needs the proxy or a tty in this build.
     #[must_use]
     pub fn capabilities(self) -> Capabilities {
         Capabilities {
@@ -322,6 +323,11 @@ impl Runner for ConfinedRunner {
     fn capabilities(&self) -> flowcraft_resource::BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             let mut capabilities = self.config.sandbox.capabilities();
+            // Resource caps are enforced by the inner runner's supervisor, so the
+            // claim comes from there rather than from the wrapper.
+            let inner = self.inner.capabilities().await?;
+            capabilities.policy.memory_cap = inner.policy.memory_cap;
+            capabilities.policy.cpu_cap = inner.policy.cpu_cap;
             capabilities.journal = self
                 .config
                 .journal

@@ -23,6 +23,7 @@ use crate::contract::{
     EnvPolicy, EventStream, ExitReason, ExitStatus, ReadResult, Session, SessionFeatures,
     SessionSpec, Signal, Stream,
 };
+use crate::limits::{Armed, Manager};
 use crate::session::log::Log;
 
 /// Output retained when the spec declares no bound (10 MiB, as the Go side).
@@ -35,10 +36,18 @@ pub(crate) struct SpawnOptions {
     pub(crate) root: Option<std::path::PathBuf>,
     /// Output budget for sessions that declare none.
     pub(crate) default_output_limit: u64,
+    /// What this host can enforce for cpu and memory.
+    pub(crate) limits: std::sync::Arc<Manager>,
 }
 
 /// How long a `SIGTERM` gets before the group is killed outright.
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
+
+/// How often the supervisor checks the deadline and the resource budgets.
+///
+/// Fast enough to catch a runaway build, slow enough to be free: one read of two
+/// small files per tick, only for sessions that asked for a cap.
+const SUPERVISE_TICK: Duration = Duration::from_millis(50);
 
 /// How much one pump reads per call.
 const PUMP_BUFFER: usize = 8 * 1024;
@@ -302,22 +311,9 @@ fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
             "sandbox: the local runner has no filesystem boundary, so a read-only root cannot be enforced",
         ));
     }
-    let limits = &spec.opts.limits;
-    if limits.cpu_millicores.is_some() || limits.memory_bytes.is_some() {
-        if limits.cpu_millicores.is_some() && spec.opts.timeout.is_none() {
-            return Err(Error::not_available(
-                "sandbox: cpu_millicores needs a per-call timeout to derive a cpu-time budget",
-            ));
-        }
-        return Err(Error::not_available(
-            "sandbox: this backend cannot enforce cpu/memory limits",
-        ));
-    }
-    if limits.disk_bytes.is_some() {
-        return Err(Error::not_available(
-            "sandbox: disk limits are not supported (no quota mechanism)",
-        ));
-    }
+    // Resource caps: the platform decides what it can enforce, and a request it
+    // cannot honour is refused rather than silently ignored.
+    options.limits.check(&spec.opts.limits, spec.opts.timeout)?;
     if spec.tty {
         return Err(Error::not_available(
             "sandbox: this build has no pty; start the session with tty: false",
@@ -392,6 +388,12 @@ pub(crate) async fn spawn(
     #[cfg(unix)]
     command.process_group(0);
 
+    // Prepare before spawning so a refusal leaves no process behind; attach after,
+    // because a control group needs the pid.
+    let plan = options
+        .limits
+        .plan(&spec.id, &spec.opts.limits, spec.opts.timeout)?;
+
     let mut child = command.spawn().map_err(|error| {
         let kind = match error.kind() {
             std::io::ErrorKind::NotFound => flowcraft_error::ErrorKind::NotFound,
@@ -405,6 +407,19 @@ pub(crate) async fn spawn(
     })?;
 
     let pid = child.id();
+    let armed = match plan
+        .map(|plan| plan.arm(child.id().unwrap_or_default()))
+        .transpose()
+    {
+        Ok(armed) => armed,
+        Err(error) => {
+            // The child exists but cannot be accounted for: kill it rather than
+            // run unguarded.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(error);
+        }
+    };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdin = child.stdin.take();
@@ -480,20 +495,77 @@ pub(crate) async fn spawn(
     if !wants_stdin {
         session.close_input().await?;
     }
-    if let Some(timeout) = spec.opts.timeout {
-        let watchdog_session = session.clone();
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
-            if watchdog_session.exit().is_none() {
-                let _ = watchdog_session.stop(ExitReason::TimedOut).await;
-            }
-        });
+    if spec.opts.timeout.is_some() || armed.is_some() {
+        let handle = supervise(session.clone(), spec.opts.timeout, armed);
         if let Ok(mut slot) = session.watchdog.lock() {
             *slot = Some(handle);
         }
     }
 
     Ok(session)
+}
+
+/// Watch one session's deadline and resource budgets.
+///
+/// One task for both, because they answer the same question ("should this stop,
+/// and why") and a session that is killed twice must keep the first reason:
+/// [`ProcessSession::stop`] only records a reason the first time.
+fn supervise(
+    session: Arc<ProcessSession>,
+    timeout: Option<Duration>,
+    mut armed: Option<Armed>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        let mut exited = session.exited.clone();
+        loop {
+            // The process is gone: stop accounting, and let the reaper publish.
+            if exited.borrow().is_some() {
+                if let Some(armed) = armed.take() {
+                    armed.close();
+                }
+                return;
+            }
+
+            if let Some(limits) = &mut armed {
+                match limits.check() {
+                    // A cap fired: the process group goes with the whole tree.
+                    Ok(Some(reason)) => {
+                        let _ = session.stop(reason).await;
+                        if let Some(armed) = armed.take() {
+                            armed.close();
+                        }
+                        return;
+                    }
+                    Ok(None) => {}
+                    // Accounting is gone: kill it rather than run it unguarded.
+                    Err(error) => {
+                        tracing::debug!(%error, "sandbox: resource accounting was lost");
+                        let _ = session.stop(ExitReason::Unenforceable).await;
+                        if let Some(armed) = armed.take() {
+                            armed.close();
+                        }
+                        return;
+                    }
+                }
+            }
+
+            if let Some(deadline) = deadline
+                && tokio::time::Instant::now() >= deadline
+            {
+                let _ = session.stop(ExitReason::TimedOut).await;
+                if let Some(armed) = armed.take() {
+                    armed.close();
+                }
+                return;
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(SUPERVISE_TICK) => {}
+                _ = exited.changed() => {}
+            }
+        }
+    })
 }
 
 /// Read one stream to EOF into the log.
@@ -523,6 +595,7 @@ mod tests {
         SpawnOptions {
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
+            limits: std::sync::Arc::new(Manager::probe()),
         }
     }
 

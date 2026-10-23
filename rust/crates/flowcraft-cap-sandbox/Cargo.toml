@@ -23,6 +23,11 @@ notify.workspace = true
 tonic.workspace = true
 tracing.workspace = true
 
+# cgroups are a Linux-only mechanism; everything else compiles without it and
+# reports the caps as unavailable.
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs.workspace = true
+
 [dev-dependencies]
 tempfile = "3"
 

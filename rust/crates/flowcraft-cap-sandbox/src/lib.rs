@@ -28,6 +28,7 @@ pub mod contract;
 pub mod endpoint;
 pub mod exec;
 pub mod journal;
+mod limits;
 pub mod local;
 pub mod policy;
 pub mod remote;

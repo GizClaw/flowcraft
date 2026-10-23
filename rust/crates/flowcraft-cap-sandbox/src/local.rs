@@ -36,6 +36,7 @@ pub struct LocalRunner {
     root: Option<PathBuf>,
     default_output_limit: u64,
     journal: Option<Arc<Journal>>,
+    limits: Arc<crate::limits::Manager>,
 }
 
 impl std::fmt::Debug for LocalRunner {
@@ -62,6 +63,9 @@ impl LocalRunner {
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
             journal: None,
+            // Probed once: creating and removing a control group is not something
+            // to do per session, and the answer is a property of the host.
+            limits: Arc::new(crate::limits::Manager::probe()),
         }
     }
 
@@ -103,6 +107,7 @@ impl LocalRunner {
         let options = Arc::new(crate::session::SpawnOptions {
             root: self.root.clone(),
             default_output_limit: self.default_output_limit,
+            limits: self.limits.clone(),
         });
         Arc::new(move |spec: SessionSpec| {
             let options = options.clone();
@@ -115,6 +120,7 @@ impl LocalRunner {
 impl Runner for LocalRunner {
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
+            let limits = self.limits.support();
             Ok(Capabilities {
                 policy: Enforcement {
                     env_allow_list: true,
@@ -124,8 +130,9 @@ impl Runner for LocalRunner {
                     socks5: false,
                     mitm: false,
                     unix_sockets: false,
-                    memory_cap: false,
-                    cpu_cap: false,
+                    memory_cap: limits.memory,
+                    cpu_cap: limits.cpu,
+                    // No local backend has a quota mechanism.
                     disk_cap: false,
                     // The workdir check is call-time validation only: once the
                     // child runs it can chdir anywhere, so this is not a
