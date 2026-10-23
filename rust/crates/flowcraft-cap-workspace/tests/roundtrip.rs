@@ -210,3 +210,45 @@ async fn capabilities_come_from_the_provider() {
     let _ = LocalWorkspace::open(stack._dir.path().join("probe")).expect("local");
     stack.built.shutdown().await.expect("shutdown");
 }
+
+/// The bounded read is a wire operation, not a client-side check: the endpoint
+/// refuses an oversized file with the provider's own classification, so the
+/// bytes never cross the socket in full.
+#[tokio::test]
+async fn bounded_reads_cross_the_wire() {
+    let stack = start_stack("", true).await;
+    let remote = stack.built.get::<Handle>("remote").expect("remote handle");
+    remote.write("file", b"0123456789").await.expect("write");
+
+    let data = remote.read_limited("file", 10).await.expect("at the cap");
+    assert_eq!(data, b"0123456789");
+
+    // A client-side fallback would answer `NotAvailable`-then-read; the served
+    // RPC answers with the provider's classification instead.
+    let over = remote
+        .read_limited("file", 9)
+        .await
+        .expect_err("over the cap");
+    assert_eq!(over.kind(), flowcraft_error::ErrorKind::Validation);
+    let missing = remote
+        .read_limited("missing", 10)
+        .await
+        .expect_err("missing file");
+    assert_eq!(missing.kind(), flowcraft_error::ErrorKind::NotFound);
+
+    // `capped` therefore prefers the bounded path here too, and still enforces
+    // the cap for a caller that only has the composed operation.
+    let data = flowcraft_cap_workspace::capped(&*remote.workspace(), "file", 10)
+        .await
+        .expect("capped");
+    assert_eq!(data.len(), 10);
+    assert_eq!(
+        flowcraft_cap_workspace::capped(&*remote.workspace(), "file", 9)
+            .await
+            .expect_err("over the cap")
+            .kind(),
+        flowcraft_error::ErrorKind::Validation
+    );
+
+    stack.built.shutdown().await.expect("shutdown");
+}

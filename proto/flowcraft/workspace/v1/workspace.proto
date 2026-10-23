@@ -10,6 +10,7 @@ option go_package = "github.com/GizClaw/flowcraft/core/workspace/v1;workspacev1"
 service Workspace {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Read(ReadRequest) returns (ReadResponse);
+  rpc ReadLimited(ReadLimitedRequest) returns (ReadLimitedResponse);
   rpc Write(WriteRequest) returns (WriteResponse);
   rpc Append(AppendRequest) returns (AppendResponse);
   rpc Rename(RenameRequest) returns (RenameResponse);
@@ -30,6 +31,17 @@ message DescribeResponse {
 
 message ReadRequest { string path = 1; }
 message ReadResponse { bytes data = 1; }
+
+// ReadLimited is the bounded form of Read: the payload never exceeds
+// `max_bytes`, and a larger file is refused with INVALID_ARGUMENT rather than
+// transferred. It exists so a caller's byte cap survives the process boundary —
+// a plain Read followed by a length check has already materialized the bytes,
+// which is the allocation the cap is there to prevent.
+message ReadLimitedRequest {
+  string path = 1;
+  uint64 max_bytes = 2;
+}
+message ReadLimitedResponse { bytes data = 1; }
 
 message WriteRequest { string path = 1; bytes data = 2; }
 message WriteResponse {}

@@ -8,8 +8,9 @@ use flowcraft_kernel::{Endpoint as EndpointDescriptor, EndpointHost, Grants};
 use flowcraft_proto::workspace::{
     AppendRequest, AppendResponse, DeleteRequest, DeleteResponse, DescribeRequest,
     DescribeResponse, Entry as WireEntry, ExistsRequest, ExistsResponse, ListRequest, ListResponse,
-    ReadRequest, ReadResponse, RemoveAllRequest, RemoveAllResponse, RenameRequest, RenameResponse,
-    StatRequest, StatResponse, WriteRequest, WriteResponse, workspace_server,
+    ReadLimitedRequest, ReadLimitedResponse, ReadRequest, ReadResponse, RemoveAllRequest,
+    RemoveAllResponse, RenameRequest, RenameResponse, StatRequest, StatResponse, WriteRequest,
+    WriteResponse, workspace_server,
 };
 use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Resource, Spec, require};
@@ -226,6 +227,23 @@ impl workspace_server::Workspace for Service {
         self.authorize(&request, &path, false)?;
         let data = self.workspace.read(&path).await.map_err(status)?;
         Ok(Response::new(ReadResponse { data }))
+    }
+
+    async fn read_limited(
+        &self,
+        request: Request<ReadLimitedRequest>,
+    ) -> std::result::Result<Response<ReadLimitedResponse>, Status> {
+        let (path, max_bytes) = {
+            let payload = request.get_ref();
+            (payload.path.clone(), payload.max_bytes)
+        };
+        self.authorize(&request, &path, false)?;
+        let data = self
+            .workspace
+            .read_limited(&path, max_bytes)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(ReadLimitedResponse { data }))
     }
 
     async fn write(

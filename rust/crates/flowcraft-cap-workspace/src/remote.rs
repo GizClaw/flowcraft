@@ -8,8 +8,9 @@ use flowcraft_client::wire::Wire;
 use flowcraft_error::{Error, Result};
 use flowcraft_kernel::{EndpointProvider, Endpoints};
 use flowcraft_proto::workspace::{
-    AppendRequest, DeleteRequest, DescribeRequest, ExistsRequest, ListRequest, ReadRequest,
-    RemoveAllRequest, RenameRequest, StatRequest, WriteRequest, workspace_client::WorkspaceClient,
+    AppendRequest, DeleteRequest, DescribeRequest, ExistsRequest, ListRequest, ReadLimitedRequest,
+    ReadRequest, RemoveAllRequest, RenameRequest, StatRequest, WriteRequest,
+    workspace_client::WorkspaceClient,
 };
 use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec, require};
@@ -88,6 +89,19 @@ impl Workspace for RemoteWorkspace {
             })
             .await?;
         let response = client.read(request).await.map_err(from_status)?;
+        Ok(response.into_inner().data)
+    }
+
+    async fn read_limited(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let mut client = self.client().await?;
+        let request = self
+            .wire
+            .request(ReadLimitedRequest {
+                path: path.to_owned(),
+                max_bytes,
+            })
+            .await?;
+        let response = client.read_limited(request).await.map_err(from_status)?;
         Ok(response.into_inner().data)
     }
 

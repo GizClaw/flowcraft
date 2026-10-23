@@ -74,14 +74,23 @@ pub trait Workspace: Send + Sync {
 
     /// Read a file under a byte cap.
     ///
-    /// The default is deliberately **not** `read` followed by a length check:
-    /// by the time a full read returns, the bytes have already been
+    /// The cap is a promise about *memory*, not just about the answer: a file
+    /// larger than `max_bytes` is refused
+    /// ([`ErrorKind::Validation`](flowcraft_error::ErrorKind::Validation)), never
+    /// truncated, and the payload never materializes past the cap. The gRPC
+    /// endpoint serves this as its own RPC (`ReadLimited`), so the promise
+    /// survives the process boundary — a remote provider is not a read followed
+    /// by a length check.
+    ///
+    /// The default is deliberately **not** `read` followed by a length check
+    /// either: by the time a full read returns, the bytes have already been
     /// materialized, which is the allocation the cap exists to prevent. A
-    /// provider that cannot refuse at the read layer therefore reports
+    /// provider that cannot refuse at the read layer (a test double, a future
+    /// store with no streaming open) therefore reports
     /// [`ErrorKind::NotAvailable`] and lets the caller decide, instead of
-    /// pretending the contract holds. [`crate::helpers::capped`] is that
-    /// caller: it falls back to a full read with a post-check, which is
-    /// correct but bounded only by the provider's own memory discipline.
+    /// pretending the contract holds. [`crate::helpers::capped`] is that caller:
+    /// it falls back to a full read with a post-check, which is correct but
+    /// bounded only by the provider's own memory discipline.
     ///
     /// Implementations that can stream must read at most `max_bytes + 1` bytes,
     /// so a file that grows concurrently cannot force an oversized allocation.
