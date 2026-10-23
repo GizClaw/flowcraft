@@ -23,6 +23,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::codes::{self, Code};
 use crate::contract::{
     CONTRACT, Capabilities, Chunk, Enforcement, ExitStatus, Features, Handle, KIND, ReadResult,
     Runner, Session, SessionFeatures, SessionInfo, SessionSpec, WriteMode,
@@ -276,7 +277,10 @@ impl Session for LocalSession {
     async fn write(&self, data: &[u8]) -> Result<()> {
         let mut guard = self.stdin.lock().await;
         let stdin = guard.as_mut().ok_or_else(|| {
-            Error::not_available("session was started without stdin; set spec.stdin")
+            codes::unavailable(
+                Code::StdinNotConfigured,
+                "session was started without stdin; set spec.stdin",
+            )
         })?;
         stdin.write_all(data).await.map_err(Error::from)?;
         stdin.flush().await.map_err(Error::from)?;
@@ -353,21 +357,26 @@ impl Runner for LocalRunner {
 
     async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
         if spec.argv.is_empty() {
-            return Err(Error::validation("sandbox: argv is empty"));
+            return Err(codes::validation(Code::ArgvEmpty, "sandbox: argv is empty"));
         }
         if spec.tty {
-            return Err(Error::not_available(
+            return Err(codes::unavailable(
+                Code::TtyUnsupported,
                 "sandbox: the local runner has no TTY; use a backend that declares tty",
             ));
         }
         if !spec.opts.net.mode.is_empty() && spec.opts.net.mode != "default" {
-            return Err(Error::not_available(format!(
-                "sandbox: the local runner cannot enforce net mode {:?}",
-                spec.opts.net.mode
-            )));
+            return Err(codes::unavailable(
+                Code::NetModeUnsupported,
+                format!(
+                    "sandbox: the local runner cannot enforce net mode {:?}",
+                    spec.opts.net.mode
+                ),
+            ));
         }
         if spec.opts.write == WriteMode::ReadOnly {
-            return Err(Error::not_available(
+            return Err(codes::unavailable(
+                Code::WriteModeUnsupported,
                 "sandbox: the local runner has no filesystem boundary, so read-only writes cannot be enforced",
             ));
         }
@@ -375,16 +384,18 @@ impl Runner for LocalRunner {
             || spec.opts.limits.memory_bytes.is_some()
             || spec.opts.limits.disk_bytes.is_some()
         {
-            return Err(Error::not_available(
+            return Err(codes::unavailable(
+                Code::LimitsUnsupported,
                 "sandbox: the local runner cannot enforce cpu/memory/disk limits",
             ));
         }
         if let Some(dir) = &spec.opts.workdir
             && !std::path::Path::new(dir).is_dir()
         {
-            return Err(Error::not_found(format!(
-                "sandbox: workdir {dir:?} does not exist"
-            )));
+            return Err(codes::not_found(
+                Code::WorkdirMissing,
+                format!("sandbox: workdir {dir:?} does not exist"),
+            ));
         }
 
         let id = if spec.id.trim().is_empty() {
@@ -399,9 +410,10 @@ impl Runner for LocalRunner {
         {
             let sessions = self.sessions.lock().await;
             if sessions.contains_key(&id) {
-                return Err(Error::conflict(format!(
-                    "sandbox: session {id:?} already exists"
-                )));
+                return Err(codes::conflict(
+                    Code::SessionExists,
+                    format!("sandbox: session {id:?} already exists"),
+                ));
             }
         }
 
@@ -521,7 +533,10 @@ impl Runner for LocalRunner {
         let sessions = self.sessions.lock().await;
         match sessions.get(id) {
             Some(session) => Ok(session.clone()),
-            None => Err(Error::not_found(format!("sandbox: session {id:?}"))),
+            None => Err(codes::not_found(
+                Code::SessionNotFound,
+                format!("sandbox: session {id:?}"),
+            )),
         }
     }
 

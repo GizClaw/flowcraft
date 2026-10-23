@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::codes::{self, Code};
 use crate::contract::{
     CONTRACT, Capabilities, Chunk, Enforcement, ExitStatus, Handle, KIND, ReadResult, Runner,
     Session, SessionFeatures, SessionInfo, SessionSpec, WriteMode,
@@ -251,9 +252,9 @@ impl Runner for RemoteRunner {
 
     async fn session(&self, id: &str) -> Result<Arc<dyn Session>> {
         let sessions = self.sessions.lock().await;
-        let reference = sessions
-            .get(id)
-            .ok_or_else(|| Error::not_found(format!("sandbox: session {id:?}")))?;
+        let reference = sessions.get(id).ok_or_else(|| {
+            codes::not_found(Code::SessionNotFound, format!("sandbox: session {id:?}"))
+        })?;
         Ok(Arc::new(RemoteSession {
             wire: self.wire.clone(),
             id: id.to_owned(),

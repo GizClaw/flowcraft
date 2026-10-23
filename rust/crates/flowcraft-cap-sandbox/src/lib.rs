@@ -13,6 +13,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod codes;
 pub mod confinement;
 pub mod contract;
 pub mod endpoint;
@@ -20,6 +21,7 @@ pub mod local;
 pub mod remote;
 pub mod scope;
 
+pub use codes::Code;
 pub use confinement::{BwrapFactory, ConfinedRunner, Sandbox, SeatbeltFactory};
 pub use contract::{
     CONTRACT, Capabilities, Chunk, Enforcement, ExecOptions, ExitStatus, Features, Handle, KIND,

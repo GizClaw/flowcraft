@@ -15,6 +15,7 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::codes::{self, Code};
 use crate::contract::{
     self, CONTRACT, Capabilities, Enforcement, ExecOptions, Features, Handle, KIND, Runner,
     Session, SessionInfo, SessionSpec, WriteMode,
@@ -168,19 +169,21 @@ impl ConfinedRunner {
     /// Rewrite a spec so the inner runner executes the sandbox wrapper.
     fn wrap(&self, mut spec: SessionSpec) -> Result<SessionSpec> {
         if spec.argv.is_empty() {
-            return Err(Error::validation("sandbox: argv is empty"));
+            return Err(codes::validation(Code::ArgvEmpty, "sandbox: argv is empty"));
         }
         if spec.tty {
-            return Err(Error::not_available(
+            return Err(codes::unavailable(
+                Code::TtyUnsupported,
                 "sandbox: confined runners do not provide a TTY",
             ));
         }
         match spec.opts.net.mode.as_str() {
             "" | "default" | "deny-all" => {}
             other => {
-                return Err(Error::not_available(format!(
-                    "sandbox: net mode {other:?} is not supported"
-                )));
+                return Err(codes::unavailable(
+                    Code::NetModeUnsupported,
+                    format!("sandbox: net mode {other:?} is not supported"),
+                ));
             }
         }
         let argv = self.sandbox.argv(&self.binary, &spec);

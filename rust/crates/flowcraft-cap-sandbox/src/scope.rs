@@ -5,6 +5,8 @@ use std::time::Duration;
 use flowcraft_error::{Error, Result};
 use serde_json::Value;
 
+use crate::codes::{self, Code};
+
 /// Limits signed into a `sandbox.Runner/v1` grant.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,9 +42,10 @@ impl Scope {
         if self.commands.iter().any(|allowed| allowed == program) {
             return Ok(());
         }
-        Err(Error::forbidden(format!(
-            "sandbox: {program:?} is outside the grant's command allow-list"
-        )))
+        Err(codes::forbidden(
+            Code::CommandNotAllowed,
+            format!("sandbox: {program:?} is outside the grant's command allow-list"),
+        ))
     }
 
     /// Clamp a requested timeout to the grant's ceiling.
@@ -52,9 +55,10 @@ impl Scope {
         };
         let max = Duration::from_secs(max);
         match requested {
-            Some(requested) if requested > max => Err(Error::forbidden(format!(
-                "sandbox: timeout {requested:?} exceeds the grant's {max:?}"
-            ))),
+            Some(requested) if requested > max => Err(codes::forbidden(
+                Code::TimeoutExceedsGrant,
+                format!("sandbox: timeout {requested:?} exceeds the grant's {max:?}"),
+            )),
             Some(requested) => Ok(Some(requested)),
             None => Ok(Some(max)),
         }
