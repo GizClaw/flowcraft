@@ -13,6 +13,12 @@
 pub(crate) mod log;
 pub(crate) mod registry;
 pub(crate) mod spawn;
+// A pty is a platform mechanism: the unix one is `portable-pty`, the Windows one
+// is planned (W2) and is a stub that reports itself unavailable.
+#[cfg(unix)]
+pub(crate) mod terminal;
+#[cfg(not(unix))]
+#[path = "terminal_windows.rs"]
 pub(crate) mod terminal;
 
 pub(crate) use registry::{Registry, Spawn};

@@ -119,8 +119,9 @@ impl Sandbox {
                 },
             },
             features: Features {
-                // The pty is inherited by the wrapper, so confinement keeps it.
-                tty: true,
+                // The pty is inherited by the wrapper, so confinement keeps
+                // whatever the platform can provide.
+                tty: crate::session::terminal::available(),
                 // Per session, from the spec.
                 stdin: false,
                 signal: cfg!(unix),
