@@ -30,6 +30,7 @@ pub mod exec;
 pub mod journal;
 mod limits;
 pub mod local;
+mod net;
 pub mod policy;
 pub mod remote;
 pub mod scope;
