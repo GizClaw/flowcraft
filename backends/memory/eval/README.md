@@ -146,6 +146,15 @@ questions. The style dispatches on the question's own labels —
   contain the answer, so returning a plausible fact is the failure being
   measured, not a near miss.
 
+`-judge-style both` on this loader grades each answer twice, with `lme` and with
+`locomo`, and writes both verdicts in one report: the `answer_*` fields and the
+`lenient_*` ones, plus a `lenient_hits` / `lenient_rate` column on every
+`category` line. That pair is the point of the mode — the strict half has to be
+the rubric the dataset's own gold was written for, because pairing `strict` with
+`locomo` would score all 30 preference rows and all 30 `_abs` rows as misses in
+the first column. A `both` run therefore costs two judge calls per question; the
+`usage` block lists them as the `judge` and `lenient_judge` roles.
+
 Two consequences for reading a LongMemEval report next to a LoCoMo one:
 
 - **The answer rate is not the published LongMemEval number.** That number is
@@ -421,11 +430,15 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   this endpoint also serves `deepseek-v4-pro`, and any other name is silently
   substituted, which `TestConfiguredModelsExistInCatalog` guards against)
 - `-judge-provider` / `-judge-model` (default: the answering model)
-- `-judge-style strict|locomo|both` — `strict` asks for a bare `CORRECT` /
-  `INCORRECT` token, `locomo` mirrors the leaderboard prompt (`{"correct":…}`).
-  Only those two shapes are accepted; hedged prose is **ungraded** rather than
-  guessed at, and ungraded answers leave the denominator (reported as
-  `ungraded_answers`).
+- `-judge-style strict|locomo|lme|both|none` — `strict` asks for a bare
+  `CORRECT` / `INCORRECT` token, `locomo` mirrors the leaderboard prompt
+  (`{"correct":…}`), `lme` is LongMemEval's per-type rubric (and this loader's
+  default), `none` runs the answering stage with no judge at all so the official
+  token-F1 can be scored offline. `both` grades every answer twice: the strict
+  half is the dataset's own rubric (`lme` on the `longmemeval` loader, `strict`
+  on LoCoMo), the lenient half is always `locomo`. Only those verdict shapes are
+  accepted; hedged prose is **ungraded** rather than guessed at, and ungraded
+  answers leave the denominator (reported as `ungraded_answers`).
 - `-answer-style long|short|evidence` (default `long`) — `long` is the product
   policy, `short` reproduces the official LoCoMo prompt shape that token-F1 is
   defined over, and `evidence` is `short` with the quoting step added. All three
