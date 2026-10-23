@@ -91,7 +91,12 @@ pub(crate) struct ProcessSession {
     /// `wait`.
     pending: Arc<Mutex<Option<ExitReason>>>,
     closed: Mutex<bool>,
-    watchdog: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Set the moment `child.wait()` returns, before the pumps are joined.
+    ///
+    /// The exit status is published later (the last bytes must land first), and
+    /// in between the pid may already be reusable: signalling on it would hit
+    /// whatever now owns that pid.
+    reaped: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for ProcessSession {
@@ -110,6 +115,10 @@ impl ProcessSession {
 
     fn is_closed(&self) -> bool {
         self.lock_closed().map(|closed| *closed).unwrap_or(true)
+    }
+
+    fn is_reaped(&self) -> bool {
+        self.reaped.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Wait for the reaper to publish the outcome.
@@ -139,6 +148,10 @@ impl ProcessSession {
         let Some(pid) = self.pid else {
             return Ok(());
         };
+        if self.is_reaped() {
+            // The pid may already belong to someone else; the exit is on its way.
+            return Ok(());
+        }
         signal_group(pid, GroupSignal::Terminate);
         if tokio::time::timeout(TERMINATE_GRACE, self.await_exit())
             .await
@@ -146,8 +159,21 @@ impl ProcessSession {
         {
             return Ok(());
         }
-        signal_group(pid, GroupSignal::Kill);
-        let _ = self.await_exit().await;
+        if !self.is_reaped() {
+            signal_group(pid, GroupSignal::Kill);
+        }
+        // Bounded: a child that survived SIGKILL, or a descendant that keeps the
+        // output pipes open, must not make `terminate`/`close` hang forever.
+        let _ = tokio::time::timeout(TERMINATE_GRACE, self.await_exit()).await;
+        #[cfg(not(unix))]
+        {
+            // Without a signal mechanism there is nothing further to do; the
+            // Windows lane replaces this with a job object (see the plan, W1).
+            return Err(Error::not_available(
+                "sandbox: terminate needs a job object on this platform (not implemented yet)",
+            ));
+        }
+        #[cfg(unix)]
         Ok(())
     }
 }
@@ -219,7 +245,7 @@ impl Session for ProcessSession {
         if self.is_closed() {
             return Err(closed_error());
         }
-        if self.exit().is_some() {
+        if self.exit().is_some() || self.is_reaped() {
             return Err(closed_error());
         }
         let Some(pid) = self.pid else {
@@ -254,11 +280,9 @@ impl Session for ProcessSession {
             }
             *closed = true;
         }
-        if let Ok(mut watchdog) = self.watchdog.lock()
-            && let Some(handle) = watchdog.take()
-        {
-            handle.abort();
-        }
+        // The supervisor is *not* aborted: it owns the armed control group and
+        // releases it when it observes the exit. Aborting it here would leak the
+        // group (and its accounting would then poison a re-used session id).
         let stopped = self.stop(ExitReason::Terminated).await;
         self.log.close();
         stopped
@@ -366,6 +390,15 @@ pub(crate) async fn spawn(
     // A pty is a different session shape (merged stream, resize, no stdin EOF),
     // so it has its own implementation rather than a flag here.
     if spec.tty {
+        let limits = &spec.opts.limits;
+        if limits.memory_bytes.is_some() || limits.cpu_millicores.is_some() {
+            // The control group is armed on the pipe path; a pty session does not
+            // go through it yet, and running unguarded would break the promise.
+            return Err(Error::not_available(
+                "sandbox: a pty session cannot enforce memory/cpu limits yet; \
+                 start it without limits or use a pipe session",
+            ));
+        }
         return crate::session::terminal::spawn(spec, options).await;
     }
 
@@ -431,6 +464,8 @@ pub(crate) async fn spawn(
         .unwrap_or(options.default_output_limit);
     let log = Arc::new(Log::new(limit));
     let pending: Arc<Mutex<Option<ExitReason>>> = Arc::new(Mutex::new(None));
+    let reaped: Arc<std::sync::atomic::AtomicBool> =
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (exited_tx, exited) = watch::channel(None);
 
     // One owner of the child: the reaper waits, joins both pumps, and only then
@@ -445,15 +480,23 @@ pub(crate) async fn spawn(
     {
         let log = log.clone();
         let pending = pending.clone();
+        let reaped = reaped.clone();
         let mut child = child;
         tokio::spawn(async move {
             let status = child.wait().await;
+            // The pid is now reusable: no caller may signal it again.
+            reaped.store(true, std::sync::atomic::Ordering::Release);
             // Dropping the child also drops the stdin pipe, which signals EOF
             // to a child that is still reading it.
             drop(child);
-            for handle in pumps {
-                let _ = handle.await;
-            }
+            // Bounded: a descendant that escaped the process group keeps fd 1/2
+            // open, so the pumps would otherwise wait for it forever.
+            let joins = async {
+                for handle in pumps {
+                    let _ = handle.await;
+                }
+            };
+            let _ = tokio::time::timeout(TERMINATE_GRACE, joins).await;
             let reason = pending.lock().ok().and_then(|slot| *slot);
             let exit = match status {
                 Ok(status) => classify(&status, reason),
@@ -485,7 +528,7 @@ pub(crate) async fn spawn(
         exited,
         pending: pending.clone(),
         closed: Mutex::new(false),
-        watchdog: Mutex::new(None),
+        reaped: reaped.clone(),
     });
 
     // `Opts.stdin` is one-shot `Exec` input, not a declaration: `start` neither
@@ -496,10 +539,10 @@ pub(crate) async fn spawn(
         session.close_input().await?;
     }
     if spec.opts.timeout.is_some() || armed.is_some() {
-        let handle = supervise(session.clone(), spec.opts.timeout, armed);
-        if let Ok(mut slot) = session.watchdog.lock() {
-            *slot = Some(handle);
-        }
+        // Detached on purpose: the task ends by itself once the exit is
+        // published (it observes `exited`), and it is the only owner of `armed`,
+        // so nothing else may cancel it mid-release.
+        supervise(session.clone(), spec.opts.timeout, armed);
     }
 
     Ok(session)
@@ -510,11 +553,7 @@ pub(crate) async fn spawn(
 /// One task for both, because they answer the same question ("should this stop,
 /// and why") and a session that is killed twice must keep the first reason:
 /// [`ProcessSession::stop`] only records a reason the first time.
-fn supervise(
-    session: Arc<ProcessSession>,
-    timeout: Option<Duration>,
-    mut armed: Option<Armed>,
-) -> tokio::task::JoinHandle<()> {
+fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed: Option<Armed>) {
     tokio::spawn(async move {
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         let mut exited = session.exited.clone();
@@ -565,7 +604,7 @@ fn supervise(
                 _ = exited.changed() => {}
             }
         }
-    })
+    });
 }
 
 /// Read one stream to EOF into the log.

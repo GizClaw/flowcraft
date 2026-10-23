@@ -58,7 +58,7 @@ impl Rule {
                 "sandbox: allowlist rule \"*\" matches every command",
             ));
         }
-        if tokens.contains(&"*") {
+        if tokens.iter().any(|token| token.contains('*')) {
             return Err(Error::validation(format!(
                 "sandbox: allowlist rule {raw:?}: '*' is only allowed as the last token"
             )));
@@ -95,9 +95,20 @@ impl Rule {
     }
 }
 
-/// Compare two command names by literal form or by base name.
+/// Compare a rule's first token with the command's.
+///
+/// A rule that names a path is exact: `Allowlist::parse(["/usr/bin/git"])` must
+/// not approve `/tmp/evil/git`, which is the whole reason an operator pins a
+/// path. A bare name still matches by base name, so `go *` approves
+/// `/usr/local/bin/go build`.
 fn names_match(rule: &str, command: &str) -> bool {
-    rule == command || base_name(rule) == base_name(command)
+    if rule == command {
+        return true;
+    }
+    if rule.contains('/') {
+        return false;
+    }
+    rule == base_name(command)
 }
 
 fn base_name(token: &str) -> &str {
@@ -197,27 +208,39 @@ pub fn normalise_argv(argv: &[String]) -> Vec<String> {
         return Vec::new();
     };
     let base = base_name(program);
-    if let Some(script) = unwrap_script(base, &argv[1..])
-        && let Some(tokens) = tokenize(script)
+    if let Some((script, shell)) = unwrap_script(base, &argv[1..])
+        && let Some(tokens) = tokenize(script, shell)
     {
         return tokens;
     }
     argv.to_vec()
 }
 
+/// The shell a wrapper script will be run by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    /// A POSIX shell: `'`, `"` and `\\` are quoting syntax.
+    Posix,
+    /// `cmd.exe`: only plain words; `'` and `\\` are ordinary characters, so a
+    /// POSIX tokeniser would read a script cmd would split differently.
+    Cmd,
+    /// PowerShell: backslash is ordinary, backtick and `$` are syntax.
+    Pwsh,
+}
+
 /// The script a wrapper runs, when the wrapper is in its exact supported form.
-fn unwrap_script<'a>(base: &str, rest: &'a [String]) -> Option<&'a str> {
+fn unwrap_script<'a>(base: &str, rest: &'a [String]) -> Option<(&'a str, Shell)> {
     let at = |index: usize| rest.get(index).map(String::as_str);
     if SHELLS.contains(&base) && rest.len() == 2 && at(0) == Some("-c") {
-        return at(1);
+        return at(1).map(|script| (script, Shell::Posix));
     }
     if (base == "cmd" || base == "cmd.exe") && rest.len() == 2 && at(0) == Some("/c") {
-        return at(1);
+        return at(1).map(|script| (script, Shell::Cmd));
     }
     let windows_shell = base == "pwsh" || base == "pwsh.exe" || base == "powershell";
     if windows_shell && rest.len() == 3 && at(0) == Some("-NoProfile") && at(1) == Some("-Command")
     {
-        return at(2);
+        return at(2).map(|script| (script, Shell::Pwsh));
     }
     None
 }
@@ -228,7 +251,10 @@ fn unwrap_script<'a>(base: &str, rest: &'a [String]) -> Option<&'a str> {
 /// Refusal conditions (all conservative): an unquoted metacharacter, or any
 /// expansion character anywhere (`$`, backtick) — a body that can compute its own
 /// arguments is not a body a rule should be matched against.
-fn tokenize(script: &str) -> Option<Vec<String>> {
+fn tokenize(script: &str, shell: Shell) -> Option<Vec<String>> {
+    if shell != Shell::Posix {
+        return tokenize_plain(script, shell);
+    }
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut started = false;
@@ -286,6 +312,40 @@ fn tokenize(script: &str) -> Option<Vec<String>> {
         }
     }
     if started {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens)
+    }
+}
+
+/// Split a `cmd` / PowerShell script into plain words.
+///
+/// Only word characters (plus the per-shell punctuation sets) survive: any other
+/// character — a quote, a backslash in cmd, `&`, `|`, `>`, `$`, `{`, a newline —
+/// makes the script unwrappable, which keeps a rule from approving a command the
+/// wrapper would split into two.
+fn tokenize_plain(script: &str, shell: Shell) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in script.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        let allowed = ch.is_alphanumeric()
+            || matches!(ch, '_' | '.' | '/' | ':' | '+' | '-' | '=' | '*' | '?')
+            || (shell == Shell::Pwsh && ch == '\\');
+        if !allowed {
+            return None;
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
         tokens.push(current);
     }
     if tokens.is_empty() {
@@ -409,13 +469,55 @@ mod tests {
     #[test]
     fn the_exact_wrapper_forms_are_unwrapped() {
         assert_eq!(
-            normalise(&spec(&["cmd.exe", "/c", "dir"])),
-            ["dir".to_owned()]
+            normalise(&spec(&["cmd.exe", "/c", "dir /b"])),
+            ["dir".to_owned(), "/b".to_owned()]
         );
         assert_eq!(
             normalise(&spec(&["pwsh", "-NoProfile", "-Command", "Get-ChildItem"])),
             ["Get-ChildItem".to_owned()]
         );
+    }
+
+    #[test]
+    fn a_windows_script_with_quoting_is_never_unwrapped() {
+        // `'` and `\` are ordinary characters in cmd, so a POSIX tokeniser would
+        // approve `echo` while cmd runs a second command.
+        for argv in [
+            vec!["cmd", "/c", "echo 'a & del x'"],
+            vec!["cmd", "/c", "echo \\& del x"],
+            vec!["cmd", "/c", "echo a & del x"],
+            vec!["pwsh", "-NoProfile", "-Command", "echo 'a | rm x'"],
+            vec!["pwsh", "-NoProfile", "-Command", "echo `whoami`"],
+        ] {
+            assert_eq!(
+                normalise(&spec(&argv))[0],
+                argv[0],
+                "{argv:?} must stay raw"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_qualified_rule_is_exact() {
+        let list = allow(&["/usr/bin/git"]);
+        assert!(list.allows(&["/usr/bin/git".to_owned()]));
+        assert!(
+            !list.allows(&["/usr/bin/git".to_owned(), "status".to_owned()]),
+            "without a trailing '*' the match is exact"
+        );
+        assert!(
+            !list.allows(&["/tmp/evil/git".to_owned(), "status".to_owned()]),
+            "a pinned path must not approve another binary with the same name"
+        );
+        assert!(
+            !list.allows(&["git".to_owned(), "status".to_owned()]),
+            "and it must not degrade to a bare-name rule either"
+        );
+    }
+
+    #[test]
+    fn a_star_inside_a_token_is_rejected() {
+        assert!(Allowlist::parse(["git push*".to_owned()]).is_err());
     }
 
     #[test]

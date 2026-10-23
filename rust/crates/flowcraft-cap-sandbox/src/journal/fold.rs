@@ -107,7 +107,14 @@ impl Fold {
                 })
             }
             RawKind::Removed { is_dir } => {
-                self.forget(&event.path);
+                if is_dir {
+                    // A removed directory reports nothing per child, so the marks
+                    // of its subtree must go with it — otherwise re-creating a
+                    // child under a re-created directory is silently swallowed.
+                    self.forget_subtree(&event.path);
+                } else {
+                    self.forget(&event.path);
+                }
                 Some(Folded {
                     op: FileOp::Remove,
                     path: event.path.display().to_string(),
@@ -117,8 +124,12 @@ impl Fold {
             }
             RawKind::Renamed { from, is_dir } => {
                 let old_path = from.as_ref().map(|path| path.display().to_string());
-                if let Some(from) = from {
-                    self.forget(&from);
+                if let Some(from) = &from {
+                    if is_dir {
+                        self.forget_subtree(from);
+                    } else {
+                        self.forget(from);
+                    }
                 }
                 self.remember(&event.path);
                 Some(Folded {
@@ -147,6 +158,12 @@ impl Fold {
 
     fn forget(&mut self, path: &Path) {
         self.created.remove(path);
+    }
+
+    /// Forget `path` and everything under it.
+    fn forget_subtree(&mut self, path: &Path) {
+        self.created.retain(|known| !known.starts_with(path));
+        self.order.retain(|known| !known.starts_with(path));
     }
 }
 
@@ -255,6 +272,25 @@ mod tests {
         });
         // Writing the *destination* is part of the rename, not a new write.
         assert_eq!(fold.apply(modified("/w/b")), None);
+    }
+
+    #[test]
+    fn re_creating_a_child_of_a_removed_directory_is_reported() {
+        let mut fold = Fold::new();
+        fold.apply(RawEvent {
+            kind: RawKind::Created { is_dir: true },
+            path: PathBuf::from("d"),
+        });
+        fold.apply(created("d/f"));
+        // `rm -rf d` sends one event for the directory, no per-child removals.
+        fold.apply(RawEvent {
+            kind: RawKind::Removed { is_dir: true },
+            path: PathBuf::from("d"),
+        });
+        assert!(
+            fold.apply(created("d/f")).is_some(),
+            "a mark under a removed directory must not survive it"
+        );
     }
 
     #[test]

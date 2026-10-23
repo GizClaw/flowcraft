@@ -85,6 +85,7 @@ impl Resource for Endpoint {
                 capability: self.capability.clone(),
                 journals: Mutex::new(BTreeMap::new()),
                 next_journal: AtomicU64::new(1),
+                started: Mutex::new(BTreeMap::new()),
             };
             let interceptor = GrantInterceptor {
                 grants: self.grants.clone(),
@@ -187,6 +188,9 @@ impl Interceptor for GrantInterceptor {
     }
 }
 
+/// One open journal reader, with the session that opened it.
+type JournalHandles = Mutex<BTreeMap<String, (String, Arc<dyn Journal>)>>;
+
 struct Service {
     runner: Handle,
     descriptor: EndpointDescriptor,
@@ -196,25 +200,58 @@ struct Service {
     /// This is the one table the endpoint legitimately owns: a journal handle is
     /// *addressed* by an opaque id, and the runner has no way to look one up
     /// again.
-    journals: Mutex<BTreeMap<String, Arc<dyn Journal>>>,
+    journals: JournalHandles,
     next_journal: AtomicU64,
+    /// Ids this endpoint started.
+    ///
+    /// The runner's registry is the source of truth for session *state*, but it
+    /// also holds sessions the host started in-process (a one-shot `exec`, a
+    /// craft's own session). A grant is not an ownership token: without this
+    /// set, any client allowed to call `Read` could read a session it never
+    /// started. Membership is the missing dimension, so it is kept here rather
+    /// than widening the grant scope.
+    started: Mutex<BTreeMap<String, String>>,
 }
 
 impl Service {
-    fn scope<T>(&self, request: &Request<T>) -> std::result::Result<Scope, Status> {
+    fn scope<T>(&self, request: &Request<T>) -> std::result::Result<(String, Scope), Status> {
         let grant = grant_of(request)?;
         self.descriptor.authorize(&grant).map_err(status)?;
         if grant.capability != self.capability {
             return Err(Status::permission_denied("grant capability mismatch"));
         }
-        Scope::parse(&grant.scope).map_err(|_| Status::permission_denied("grant scope is invalid"))
+        let scope = Scope::parse(&grant.scope)
+            .map_err(|_| Status::permission_denied("grant scope is invalid"))?;
+        // The session a grant was minted for is the ownership dimension the scope
+        // does not have: two clients of the same session are one principal, and
+        // different sessions must not see each other's handles.
+        Ok((grant.session.clone(), scope))
     }
 
     async fn session(
         &self,
+        owner: &str,
         id: &str,
     ) -> std::result::Result<Arc<dyn crate::contract::Session>, Status> {
+        if !self.owned(owner, id).await {
+            // Not this endpoint's session (or another session's): answering
+            // `NotFound` keeps a host-started session invisible instead of merely
+            // unlisted.
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
         self.runner.session(id).await.map_err(status)
+    }
+
+    async fn owned(&self, owner: &str, id: &str) -> bool {
+        self.started
+            .lock()
+            .await
+            .get(id)
+            .is_some_and(|session| session == owner)
+    }
+
+    async fn forget(&self, id: &str) {
+        self.started.lock().await.remove(id);
     }
 }
 
@@ -232,7 +269,7 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::StartRequest>,
     ) -> std::result::Result<Response<pb::StartResponse>, Status> {
-        let scope = self.scope(&request)?;
+        let (owner, scope) = self.scope(&request)?;
         let raw = request
             .get_ref()
             .spec
@@ -243,6 +280,10 @@ impl sandbox_server::Sandbox for Service {
         spec.opts.timeout = scope.timeout(spec.opts.timeout).map_err(status)?;
         spec.opts.limits.max_output_bytes = scope.output_limit(spec.opts.limits.max_output_bytes);
         let session = self.runner.start(spec).await.map_err(status)?;
+        self.started
+            .lock()
+            .await
+            .insert(session.id().to_owned(), owner.clone());
         let reference = pb::SessionRef {
             id: session.id().to_owned(),
             pid: session
@@ -260,9 +301,9 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::ReadRequest>,
     ) -> std::result::Result<Response<pb::ReadResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         let after = u64::try_from(payload.after_seq).unwrap_or(0);
         let max = usize::try_from(payload.max_bytes).unwrap_or(usize::MAX);
         let read = session.read(after, max).await.map_err(status)?;
@@ -273,9 +314,9 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::WriteRequest>,
     ) -> std::result::Result<Response<pb::WriteResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         session.write(&payload.data).await.map_err(status)?;
         Ok(Response::new(pb::WriteResponse {}))
     }
@@ -284,8 +325,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseInputRequest>,
     ) -> std::result::Result<Response<pb::CloseInputResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         session.close_input().await.map_err(status)?;
         Ok(Response::new(pb::CloseInputResponse {}))
     }
@@ -294,9 +335,9 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::ResizeRequest>,
     ) -> std::result::Result<Response<pb::ResizeResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         let rows = u16::try_from(payload.rows).unwrap_or(0);
         let cols = u16::try_from(payload.cols).unwrap_or(0);
         session.resize(rows, cols).await.map_err(status)?;
@@ -307,9 +348,9 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::SignalRequest>,
     ) -> std::result::Result<Response<pb::SignalResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         let signal = wire::signal_from_proto(&payload.signal).map_err(status)?;
         session.signal(signal).await.map_err(status)?;
         Ok(Response::new(pb::SignalResponse {}))
@@ -321,8 +362,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::WatchRequest>,
     ) -> std::result::Result<Response<Self::WatchStream>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         let events = session.watch().map_err(status)?;
         let streamed = events.map(|event| Ok(wire::event_to_proto(&event)));
         Ok(Response::new(Box::pin(streamed)))
@@ -332,8 +373,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::WaitRequest>,
     ) -> std::result::Result<Response<pb::WaitResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         let exit = session.wait().await.map_err(status)?;
         // A timeout or an exhausted budget is a failure of the call as well as
         // an outcome, so the RPC reports the classification; the outcome itself
@@ -350,11 +391,21 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseSessionRequest>,
     ) -> std::result::Result<Response<pb::CloseSessionResponse>, Status> {
-        self.scope(&request)?;
-        self.runner
-            .close_session(&request.get_ref().session)
-            .await
-            .map_err(status)?;
+        let (owner, _) = self.scope(&request)?;
+        let id = request.get_ref().session.clone();
+        if !self.owned(&owner, &id).await {
+            // Closing a session this endpoint never started would let any client
+            // kill the host's own work.
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
+        self.forget(&id).await;
+        match self.runner.close_session(&id).await {
+            Ok(()) => {}
+            // Closing something already gone is a success: the caller's intent
+            // is satisfied, and a retried close must not fail.
+            Err(error) if error.kind() == flowcraft_error::ErrorKind::NotFound => {}
+            Err(error) => return Err(status(error)),
+        }
         Ok(Response::new(pb::CloseSessionResponse {}))
     }
 
@@ -362,8 +413,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::TerminateSessionRequest>,
     ) -> std::result::Result<Response<pb::TerminateSessionResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         session.terminate().await.map_err(status)?;
         Ok(Response::new(pb::TerminateSessionResponse {}))
     }
@@ -372,7 +423,9 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::ListRequest>,
     ) -> std::result::Result<Response<pb::ListResponse>, Status> {
-        self.scope(&request)?;
+        // `List` reports the runner's truth, including host-started sessions; the
+        // ownership check on every addressed call keeps those unreachable.
+        let (_, _) = self.scope(&request)?;
         let sessions = self.runner.list().await.map_err(status)?;
         Ok(Response::new(pb::ListResponse {
             sessions: sessions.iter().map(wire::info_to_proto).collect(),
@@ -383,11 +436,12 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::TerminateRequest>,
     ) -> std::result::Result<Response<pb::TerminateResponse>, Status> {
-        self.scope(&request)?;
-        self.runner
-            .terminate(&request.get_ref().session)
-            .await
-            .map_err(status)?;
+        let (owner, _) = self.scope(&request)?;
+        let id = request.get_ref().session.clone();
+        if !self.owned(&owner, &id).await {
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
+        self.runner.terminate(&id).await.map_err(status)?;
         Ok(Response::new(pb::TerminateResponse {}))
     }
 
@@ -395,14 +449,18 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseRunnerRequest>,
     ) -> std::result::Result<Response<pb::CloseRunnerResponse>, Status> {
-        self.scope(&request)?;
+        let (_, _) = self.scope(&request)?;
         self.runner.close().await.map_err(status)?;
         // Readers handed out over the wire die with the runner they read from.
         let readers: Vec<Arc<dyn Journal>> = {
             let journals = self.journals.lock().await;
-            journals.values().cloned().collect()
+            journals
+                .values()
+                .map(|(_, journal)| journal.clone())
+                .collect()
         };
         self.journals.lock().await.clear();
+        self.started.lock().await.clear();
         for reader in readers {
             let _ = reader.close().await;
         }
@@ -413,13 +471,16 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::OpenJournalRequest>,
     ) -> std::result::Result<Response<pb::OpenJournalResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let journal = self.runner.open_journal().await.map_err(status)?;
         let id = format!(
             "journal-{}",
             self.next_journal.fetch_add(1, Ordering::Relaxed)
         );
-        self.journals.lock().await.insert(id.clone(), journal);
+        self.journals
+            .lock()
+            .await
+            .insert(id.clone(), (owner.clone(), journal));
         Ok(Response::new(pb::OpenJournalResponse { journal: id }))
     }
 
@@ -427,11 +488,18 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::JournalReadRequest>,
     ) -> std::result::Result<Response<pb::JournalReadResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
         let journal = self.journals.lock().await.get(&payload.journal).cloned();
-        let journal = journal
-            .ok_or_else(|| Status::not_found(format!("sandbox: journal {:?}", payload.journal)))?;
+        let journal = match journal {
+            Some((session, journal)) if session == owner => journal,
+            _ => {
+                return Err(Status::not_found(format!(
+                    "sandbox: journal {:?}",
+                    payload.journal
+                )));
+            }
+        };
         let after = u64::try_from(payload.after_seq).unwrap_or(0);
         let max = usize::try_from(payload.max).unwrap_or(usize::MAX);
         let batch = journal.read(after, max).await.map_err(status)?;
@@ -442,14 +510,27 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseJournalRequest>,
     ) -> std::result::Result<Response<pb::CloseJournalResponse>, Status> {
-        self.scope(&request)?;
-        let journal = self
+        let (owner, _) = self.scope(&request)?;
+        let removed = self
             .journals
             .lock()
             .await
             .remove(&request.get_ref().journal);
-        if let Some(journal) = journal {
-            journal.close().await.map_err(status)?;
+        match removed {
+            Some((session, journal)) if session == owner => {
+                journal.close().await.map_err(status)?;
+            }
+            Some((_, journal)) => {
+                // Put it back: a foreign reader must not be closeable.
+                self.journals
+                    .lock()
+                    .await
+                    .insert(request.get_ref().journal.clone(), (owner.clone(), journal));
+                return Err(Status::permission_denied(
+                    "sandbox: journal belongs to another session",
+                ));
+            }
+            None => {}
         }
         Ok(Response::new(pb::CloseJournalResponse {}))
     }

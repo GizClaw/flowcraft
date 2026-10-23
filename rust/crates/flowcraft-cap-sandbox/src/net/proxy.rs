@@ -175,15 +175,13 @@ impl Proxy {
 /// Start the proxy.
 pub(crate) async fn start(config: Config) -> Result<Proxy> {
     if config.policy.proxy.is_some() {
+        // Legal in the policy (Go accepts it in both modes) but not implemented
+        // here: refuse rather than silently dialling direct.
         return Err(Error::not_available(
             "sandbox: upstream proxy chaining is not implemented; drop `proxy` or use rules",
         ));
     }
     let matcher = Matcher::new(&config.policy)?;
-    if matcher.is_empty() && config.policy.mode == NetMode::Proxy {
-        // Nothing to deny and no upstream: a proxy that only forwards is still
-        // worth having (it is the one hole), so this is allowed on purpose.
-    }
     let mode = config.policy.mode;
     let audit = config.audit;
     let shared = Arc::new(Shared {
@@ -423,7 +421,10 @@ where
         .await;
     };
 
-    // Rebuild the head in origin form, dropping the proxy's own headers.
+    // Rebuild the head in origin form, dropping the proxy's own headers and
+    // replacing `Host` with the authority the rules actually validated: a
+    // virtual-host front end would otherwise route the request to a destination
+    // the decision never saw.
     let mut rewritten = format!("{method} {path} HTTP/1.1\r\n");
     for line in &headers {
         let name = line
@@ -432,14 +433,19 @@ where
             .unwrap_or_default();
         if name.eq_ignore_ascii_case("proxy-connection")
             || name.eq_ignore_ascii_case("proxy-authorization")
+            || name.eq_ignore_ascii_case("host")
         {
             continue;
         }
         rewritten.push_str(line);
         rewritten.push_str("\r\n");
     }
-    rewritten.push_str("\r\n");
-    rewritten.push_str(&String::from_utf8_lossy(&head[0..0]));
+    let authority = if port == 80 {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
+    rewritten.push_str(&format!("Host: {authority}\r\n\r\n"));
     let mut upstream = upstream;
     upstream
         .write_all(rewritten.as_bytes())
@@ -816,6 +822,52 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert!(!decisions[0].allow);
         assert_eq!(decisions[0].mode, NetMode::AllowList);
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn the_forwarded_host_is_the_validated_one() {
+        // A listener that reports the request head it received.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let upstream_port = listener.local_addr().expect("addr").port();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                *recorded.lock().expect("lock") =
+                    String::from_utf8_lossy(&buffer[..read]).into_owned();
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let proxy = start(Config {
+            policy: policy(NetMode::Proxy, vec![]),
+            listen: Listen::Loopback,
+            audit: None,
+        })
+        .await
+        .expect("proxy");
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        // Absolute-form to the validated authority, with a decoy `Host`.
+        let request = format!(
+            "GET http://127.0.0.1:{upstream_port}/ HTTP/1.1\r\nHost: internal.corp\r\n\r\n"
+        );
+        client.write_all(request.as_bytes()).await.expect("write");
+        let mut response = Vec::new();
+        let _ = client.read(&mut response).await;
+        let head = seen.lock().expect("lock").clone();
+        assert!(
+            head.contains(&format!("Host: 127.0.0.1:{upstream_port}")),
+            "the upstream must see the authority the rules validated: {head:?}"
+        );
+        assert!(!head.contains("internal.corp"), "{head:?}");
         proxy.shutdown().await;
     }
 

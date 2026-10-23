@@ -155,16 +155,59 @@ struct WorkdirOutsideRoot {
 impl Predicate for WorkdirOutsideRoot {
     fn matches(&self, request: &ExecRequest) -> Option<String> {
         let dir = request.opts.workdir.as_ref()?;
-        if dir.starts_with(&self.root) {
+        // A relative workdir is resolved against the runner root, so it can never
+        // escape it: only an absolute one is worth asking about.
+        if !dir.is_absolute() {
+            return None;
+        }
+        // Lexical normalisation, so `/root/../etc` is flagged rather than read as
+        // "starts with /root".
+        let cleaned = crate::confinement::path::normalize(dir);
+        if cleaned.starts_with(&self.root) {
             None
         } else {
             Some(format!(
                 "workdir {} is outside {}",
-                dir.display(),
+                cleaned.display(),
                 self.root.display()
             ))
         }
     }
+}
+
+/// Match a `*`/`?` glob against `text` (the Go `filepath.Match` subset the
+/// predicate has always promised).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut p, mut t) = (0usize, 0usize);
+    let (mut star, mut resume) = (None::<usize>, 0usize);
+    while t < text.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some(p);
+                resume = t;
+                p += 1;
+            }
+            Some('?') => {
+                p += 1;
+                t += 1;
+            }
+            Some(ch) if *ch == text[t] => {
+                p += 1;
+                t += 1;
+            }
+            _ => match star {
+                Some(at) => {
+                    p = at + 1;
+                    resume += 1;
+                    t = resume;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|ch| *ch == '*')
 }
 
 /// Ask for any network posture other than the host default.
@@ -210,8 +253,12 @@ impl Predicate for Patterns {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(&request.command);
-        if self.names.contains(base) || self.names.contains(&request.command) {
-            Some(format!("{} is a sensitive command", base))
+        if self
+            .names
+            .iter()
+            .any(|pattern| glob_match(pattern, base) || glob_match(pattern, &request.command))
+        {
+            Some(format!("{base} matches a sensitive command pattern"))
         } else {
             None
         }
@@ -301,6 +348,9 @@ fn tighten(opts: &mut ExecOptions, defaults: &ExecOptions) {
     if opts.workdir.is_none() {
         opts.workdir = defaults.workdir.clone();
     }
+    if opts.stdin.is_none() {
+        opts.stdin = defaults.stdin.clone();
+    }
     opts.timeout = match (opts.timeout, defaults.timeout) {
         (Some(caller), Some(default)) => Some(caller.min(default)),
         (caller, default) => caller.or(default),
@@ -308,45 +358,24 @@ fn tighten(opts: &mut ExecOptions, defaults: &ExecOptions) {
     if opts.write != WriteMode::ReadOnly && defaults.write == WriteMode::ReadOnly {
         opts.write = WriteMode::ReadOnly;
     }
-    if net_rank(defaults.net.mode) > net_rank(opts.net.mode) {
+    // The network posture is sandbox-level policy: when the daemon has one it
+    // replaces the caller's *entirely* — mode and parameters, so a same-mode
+    // caller cannot swap the upstream or the allow-list. A caller may still ask
+    // for something stricter than a daemon that expressed no opinion.
+    if defaults.net.mode != NetMode::Default {
         opts.net = defaults.net.clone();
     }
-    tighten_limit(
-        &mut opts.limits.cpu_millicores,
-        defaults.limits.cpu_millicores,
-    );
-    tighten_limit(&mut opts.limits.memory_bytes, defaults.limits.memory_bytes);
-    tighten_limit(&mut opts.limits.disk_bytes, defaults.limits.disk_bytes);
-    tighten_limit(
-        &mut opts.limits.max_output_bytes,
-        defaults.limits.max_output_bytes,
-    );
-    // The daemon's allow-list replaces "inherit everything".
-    if opts.env.allow.is_none() {
-        opts.env.allow = defaults.env.allow.clone();
-    }
-    // A daemon-injected variable wins over the caller's, because it may be what
-    // the sandbox itself needs.
-    for (name, value) in &defaults.env.inject {
-        opts.env.inject.insert(name.clone(), value.clone());
-    }
-}
-
-fn tighten_limit<T: Ord + Copy>(value: &mut Option<T>, default: Option<T>) {
-    *value = match (*value, default) {
-        (Some(caller), Some(default)) => Some(caller.min(default)),
-        (caller, default) => caller.or(default),
-    };
-}
-
-/// How restrictive a net mode is, for merging.
-const fn net_rank(mode: NetMode) -> u8 {
-    match mode {
-        NetMode::Default => 0,
-        NetMode::Proxy => 1,
-        NetMode::AllowList => 2,
-        NetMode::DenyAll => 3,
-    }
+    // Caps belong to the daemon: "narrow a cap per call" is not actionable for a
+    // local backend, so mixing the two sides would only invent semantics.
+    opts.limits = defaults.limits.clone();
+    // The host-environment allow-list is daemon policy; a caller that could widen
+    // it would defeat the sandbox, so the default wins even when it is `None`.
+    opts.env.allow = defaults.env.allow.clone();
+    // Injection is the one place a caller may layer per-call context, so the
+    // caller wins on a collision (RUN_ID, REQUEST_ID, ...).
+    let mut inject = defaults.env.inject.clone();
+    inject.extend(opts.env.inject.clone());
+    opts.env.inject = inject;
 }
 
 /// Ask the approver about any call a predicate flags.
@@ -376,10 +405,18 @@ pub fn approval(
                     {
                         return Ok(spec);
                     }
-                    let Some(reason) = predicates
+                    let flagged = predicates
                         .iter()
-                        .find_map(|predicate| predicate.matches(&request))
-                    else {
+                        .find_map(|predicate| predicate.matches(&request));
+                    let Some(reason) = flagged.or_else(|| {
+                        // A configured allowlist is a gate: anything it does not
+                        // approve still needs a human, otherwise the list quietly
+                        // degrades from "pre-approve, ask about the rest" to
+                        // "skip predicates for a few commands".
+                        allowlist
+                            .as_ref()
+                            .map(|_| "command is not in the sandbox allowlist".to_owned())
+                    }) else {
                         return Ok(spec);
                     };
                     let Some(approver) = approver else {
@@ -448,14 +485,11 @@ pub fn compose_local(backend: RunnerRef, policy: LocalPolicy) -> RunnerRef {
         approver,
         predicates,
     } = policy;
-    if predicates.is_empty() && !default_opts.eq(&ExecOptions::default()) {
-        // Nothing to ask about; the defaults still apply.
-    }
     let mut layers: Vec<Layer> = Vec::new();
     if !default_opts.eq(&ExecOptions::default()) {
         layers.push(defaults(default_opts));
     }
-    if !predicates.is_empty() || approver.is_some() {
+    if !predicates.is_empty() || approver.is_some() || allowlist.is_some() {
         layers.push(approval(approver, allowlist, predicates));
     }
     if let Some(allowed) = allowed_commands {
@@ -596,13 +630,17 @@ mod tests {
     }
 
     #[test]
-    fn defaults_only_tighten() {
+    fn the_daemon_owns_the_caps_and_the_environment_allow_list() {
         let mut caller = ExecOptions {
             timeout: Some(std::time::Duration::from_secs(1)),
             write: WriteMode::ReadOnly,
             limits: crate::contract::ResourceLimits {
                 max_output_bytes: Some(1024),
                 ..crate::contract::ResourceLimits::default()
+            },
+            env: crate::contract::EnvPolicy {
+                allow: Some(vec!["AWS_SECRET_ACCESS_KEY".to_owned()]),
+                inject: Default::default(),
             },
             ..ExecOptions::default()
         };
@@ -613,6 +651,10 @@ mod tests {
                 memory_bytes: Some(1 << 20),
                 ..crate::contract::ResourceLimits::default()
             },
+            env: crate::contract::EnvPolicy {
+                allow: Some(vec!["PATH".to_owned()]),
+                inject: Default::default(),
+            },
             ..ExecOptions::default()
         };
         tighten(&mut caller, &daemon);
@@ -621,20 +663,41 @@ mod tests {
             Some(std::time::Duration::from_secs(1)),
             "the caller's shorter timeout survives"
         );
-        assert_eq!(caller.limits.max_output_bytes, Some(1024));
-        assert_eq!(caller.limits.memory_bytes, Some(1 << 20), "the daemon adds");
-        assert_eq!(caller.write, WriteMode::ReadOnly);
+        assert_eq!(caller.write, WriteMode::ReadOnly, "read-only is pinned");
+        // Go: `Resources: r.defaults.Resources`, `Env.Allow: defaults wins entirely`.
+        assert_eq!(caller.limits.max_output_bytes, Some(4096));
+        assert_eq!(caller.limits.memory_bytes, Some(1 << 20));
+        assert_eq!(
+            caller.env.allow,
+            Some(vec!["PATH".to_owned()]),
+            "a caller must not be able to widen the host-environment allow-list"
+        );
     }
 
     #[test]
-    fn a_stricter_net_mode_wins_and_a_looser_one_does_not() {
+    fn the_daemon_owns_the_network_posture() {
         let daemon = ExecOptions {
             net: crate::contract::NetPolicy {
                 mode: NetMode::Proxy,
+                proxy: Some("http://corp:3128".to_owned()),
                 ..crate::contract::NetPolicy::default()
             },
             ..ExecOptions::default()
         };
+        // Same mode, different parameters: the daemon's whole policy must win,
+        // otherwise a caller swaps the upstream the rules were written for.
+        let mut caller = ExecOptions {
+            net: crate::contract::NetPolicy {
+                mode: NetMode::Proxy,
+                proxy: Some("http://attacker:3128".to_owned()),
+                ..crate::contract::NetPolicy::default()
+            },
+            ..ExecOptions::default()
+        };
+        tighten(&mut caller, &daemon);
+        assert_eq!(caller.net.proxy.as_deref(), Some("http://corp:3128"));
+
+        // A caller may still tighten beyond a daemon that expressed no opinion.
         let mut caller = ExecOptions {
             net: crate::contract::NetPolicy {
                 mode: NetMode::DenyAll,
@@ -642,41 +705,45 @@ mod tests {
             },
             ..ExecOptions::default()
         };
-        tighten(&mut caller, &daemon);
+        tighten(&mut caller, &ExecOptions::default());
         assert_eq!(caller.net.mode, NetMode::DenyAll);
-
-        let mut caller = ExecOptions::default();
-        tighten(&mut caller, &daemon);
-        assert_eq!(caller.net.mode, NetMode::Proxy);
     }
 
     #[test]
-    fn the_daemon_environment_wins_over_the_caller() {
+    fn injected_variables_are_a_union_the_caller_wins() {
         let mut caller = ExecOptions::default();
         caller
             .env
             .inject
             .insert("PATH".to_owned(), "/caller".to_owned());
-        caller.env.inject.insert("KEEP".to_owned(), "1".to_owned());
+        caller
+            .env
+            .inject
+            .insert("RUN_ID".to_owned(), "42".to_owned());
         let mut daemon = ExecOptions::default();
         daemon
             .env
             .inject
             .insert("PATH".to_owned(), "/daemon".to_owned());
+        daemon
+            .env
+            .inject
+            .insert("STATIC".to_owned(), "1".to_owned());
         tighten(&mut caller, &daemon);
+        // Go: "union; caller entries override defaults on key collision" — the one
+        // place a caller may layer per-call context.
         assert_eq!(
             caller.env.inject.get("PATH").map(String::as_str),
-            Some("/daemon")
+            Some("/caller")
         );
-        assert_eq!(caller.env.inject.get("KEEP").map(String::as_str), Some("1"));
-    }
-
-    #[test]
-    fn a_request_is_rendered_for_a_prompt() {
-        let request = ExecRequest::from_spec(&spec(&["sh", "-c", "echo a b"]));
-        assert_eq!(request.command, "sh");
-        assert_eq!(request.display(), "sh -c 'echo a b'");
-        assert_eq!(request.tokens, ["echo", "a", "b"]);
+        assert_eq!(
+            caller.env.inject.get("RUN_ID").map(String::as_str),
+            Some("42")
+        );
+        assert_eq!(
+            caller.env.inject.get("STATIC").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -687,6 +754,39 @@ mod tests {
         assert!(predicate.matches(&request).is_none());
         request.opts.workdir = Some(PathBuf::from("/srv/box2"));
         assert!(predicate.matches(&request).is_some());
+    }
+
+    #[test]
+    fn a_sensitive_pattern_is_a_glob() {
+        let predicate = command_patterns(["git-*".to_owned()]).expect("patterns");
+        let request = ExecRequest::from_spec(&spec(&["/usr/bin/git-upload-pack"]));
+        assert!(
+            predicate.matches(&request).is_some(),
+            "a glob must match, not silently disable the tripwire"
+        );
+        let exact = command_patterns(["git-upload-pack".to_owned()]).expect("patterns");
+        assert!(exact.matches(&request).is_some());
+        assert!(
+            exact
+                .matches(&ExecRequest::from_spec(&spec(&["git"])))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_traversing_or_relative_workdir_is_classified() {
+        let predicate = workdir_outside_root("/srv/box");
+        let mut request = ExecRequest::from_spec(&spec(&["true"]));
+        request.opts.workdir = Some(PathBuf::from("/srv/box/../etc"));
+        assert!(
+            predicate.matches(&request).is_some(),
+            "a lexical escape must be flagged"
+        );
+        request.opts.workdir = Some(PathBuf::from("sub"));
+        assert!(
+            predicate.matches(&request).is_none(),
+            "a relative workdir stays under the root"
+        );
     }
 
     #[test]

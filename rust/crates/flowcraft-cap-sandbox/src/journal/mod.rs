@@ -338,6 +338,10 @@ impl Engine {
 
         let ops = config.ops.clone();
         let task_ring = ring.clone();
+        // The wire contract says a path under the root is relative to it: an
+        // absolute host path would leak the installation layout into a
+        // model-facing stream.
+        let root = root.to_path_buf();
         // The source is synchronous (a watcher thread); this task is the seam
         // between it and the ring.
         tokio::spawn(async move {
@@ -345,9 +349,11 @@ impl Engine {
             while let Some(incoming) = receiver.recv().await {
                 match incoming {
                     Incoming::Event(raw) => {
-                        let Some(folded) = fold.apply(raw) else {
+                        let Some(mut folded) = fold.apply(raw) else {
                             continue;
                         };
+                        folded.path = relative(&root, &folded.path);
+                        folded.old_path = folded.old_path.map(|path| relative(&root, &path));
                         if !allows(&ops, folded.op) {
                             // Filtered: never an event, so never a gap either.
                             continue;
@@ -397,6 +403,15 @@ impl Journal for Engine {
         }
         lock(&self.ring)?.close();
         Ok(())
+    }
+}
+
+/// Report `path` relative to `root` when it lives under it.
+fn relative(root: &Path, path: &str) -> String {
+    let path = Path::new(path);
+    match path.strip_prefix(root) {
+        Ok(inner) => inner.display().to_string(),
+        Err(_) => path.display().to_string(),
     }
 }
 

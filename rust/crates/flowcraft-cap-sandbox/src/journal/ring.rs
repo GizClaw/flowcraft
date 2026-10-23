@@ -98,11 +98,6 @@ impl Ring {
         while self.gaps.len() > MAX_GAPS {
             self.gaps.pop_front();
         }
-        // A hole makes the window useless for replay: a consumer that reads it
-        // would silently get "before the hole" data with no marker. Drop it and
-        // let the retention gap take over.
-        self.events.clear();
-        self.dropped = true;
     }
 
     /// Freeze the journal: no further events arrive, the residue stays readable.
@@ -118,20 +113,12 @@ impl Ring {
     /// either delivers events or declares a hole — never both, so the caller's
     /// decision is unambiguous.
     pub(crate) fn read(&self, after: u64, max: usize) -> Batch {
-        // The earliest hole after the cursor wins: everything up to it is
-        // unknown, so returning events would be a guess. Resuming at the hole's
-        // own sequence number accepts the loss and continues past it.
-        if let Some((seq, reason)) = self.gaps.iter().find(|(seq, _)| *seq > after) {
-            return Batch {
-                events: Vec::new(),
-                next_seq: *seq,
-                gap: Some(Gap {
-                    first_missing: *seq,
-                    reason: *reason,
-                }),
-                closed: self.closed,
-            };
-        }
+        // The earliest hole after the cursor bounds this batch. Events *before* it
+        // are still good and must be delivered first — otherwise a reader is told
+        // "coverage resumes at the hole" while the events it never saw sit inside
+        // the range it just declared covered.
+        let hole = self.gaps.iter().find(|(seq, _)| *seq > after).copied();
+        let limit = hole.map_or(u64::MAX, |(seq, _)| seq);
 
         // A cursor older than the window lost coverage to retention. The extent
         // of the loss is unknown (`after + 1` is the first cursor we cannot
@@ -156,7 +143,7 @@ impl Ring {
         let mut events = Vec::new();
         let mut next_seq = after;
         for event in &self.events {
-            if event.seq <= after {
+            if event.seq <= after || event.seq >= limit {
                 continue;
             }
             if events.len() >= max.max(1) {
@@ -164,6 +151,27 @@ impl Ring {
             }
             next_seq = event.seq;
             events.push(event.clone());
+        }
+        if !events.is_empty() {
+            return Batch {
+                events,
+                next_seq,
+                gap: None,
+                closed: self.closed,
+            };
+        }
+        // Nothing deliverable before the hole: declare it, and let the caller
+        // resume past it.
+        if let Some((seq, reason)) = hole {
+            return Batch {
+                events: Vec::new(),
+                next_seq: seq,
+                gap: Some(Gap {
+                    first_missing: seq,
+                    reason,
+                }),
+                closed: self.closed,
+            };
         }
         Batch {
             events,
@@ -263,13 +271,32 @@ mod tests {
     }
 
     #[test]
-    fn a_source_gap_freezes_the_window_until_it_is_read() {
+    fn a_source_gap_does_not_discard_what_was_already_observed() {
+        // Two events are already in the window when the hole is recorded: they are
+        // still deliverable, and only after them does the reader learn of the loss.
         let mut ring = ring(8, 2);
+        ring.gap(GapReason::Overflow);
+        let first = ring.read(0, 16);
+        assert_eq!(first.events.len(), 2, "seql 1 and 2 are not lost");
+        assert_eq!(first.gap, None);
+        let second = ring.read(first.next_seq, 16);
+        let gap = second.gap.expect("overflow gap after the retained events");
+        assert_eq!(gap.reason, GapReason::Overflow);
+        assert_eq!(gap.first_missing, 3);
+        let third = ring.read(second.next_seq, 16);
+        assert_eq!(third.gap, None, "the hole is behind the cursor");
+    }
+
+    #[test]
+    fn a_source_gap_on_an_empty_window_is_reported_immediately() {
+        let mut ring = Ring::new(8);
         ring.gap(GapReason::Overflow);
         let batch = ring.read(0, 16);
         let gap = batch.gap.expect("overflow gap");
         assert_eq!(gap.reason, GapReason::Overflow);
-        assert_eq!(gap.first_missing, 3);
+        // On an empty window the hole owns the first sequence number.
+        assert_eq!(gap.first_missing, 1);
+        assert_eq!(batch.next_seq, 1);
         // Resume after the hole: the ring is empty, so nothing follows.
         let resumed = ring.read(batch.next_seq, 16);
         assert_eq!(resumed.gap, None);
@@ -280,8 +307,12 @@ mod tests {
     fn a_gap_behind_the_cursor_does_not_reappear() {
         let mut ring = ring(8, 2);
         ring.gap(GapReason::Overflow);
+        // The two retained events come first, then the hole, then nothing.
         let batch = ring.read(0, 16);
-        let resumed = ring.read(batch.next_seq, 16);
+        assert_eq!(batch.events.len(), 2);
+        let hole = ring.read(batch.next_seq, 16);
+        assert!(hole.is_gap(), "the hole follows the retained events");
+        let resumed = ring.read(hole.next_seq, 16);
         assert_eq!(resumed.gap, None);
         // New events after the hole are visible.
         ring.push(

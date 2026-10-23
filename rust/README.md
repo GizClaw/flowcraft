@@ -302,7 +302,7 @@ Two rules carry most of the design:
 | Sandbox write boundary: `root` + `writable_paths` + `readonly_root`, symlink-safe containment, `bwrap`/`seatbelt` profiles | ✅ |
 | Sandbox limits: cgroup v2 memory ceiling and cpu budget (probed; elsewhere reported as unavailable) | ✅ |
 | Sandbox policy: allow-list with shell unwrapping, approval predicates, tightening defaults, read-only classifier, escalation | ✅ |
-| Sandbox network: deny-all, allow-list/proxy via the enforcement proxy (CONNECT + HTTP + SOCKS5), bwrap bridge | ✅ |
+| Sandbox network: deny-all, allow-list/proxy via the enforcement proxy (terminates CONNECT + HTTP + SOCKS5 for the child; upstream chaining is not implemented), bwrap bridge | ✅ |
 | Sandbox file journal: net-state folding, retention ring with gaps, three RPCs, remote reader | ✅ |
 | Sandbox endpoint: describe/start/read/write/close-input/resize/signal/watch/wait/list/terminate/close-runner/journal, scope (commands, timeout ceiling, output bound) | ✅ |
 | Shared endpoint plumbing: bearer auth, capability/tenant check, status mapping, lazy client | ✅ |
@@ -447,7 +447,7 @@ Two rules carry most of the design:
   the clear. One block configures both directions: `cert`/`key`/`client_ca` for
   the listener, `ca`/`client_cert`/`client_key`/`server_name` for the client.
 - **A sandbox runner declares only what it enforces.** The local runner reports
-  `env_allow_list` but not `filesystem_bounds` or `tty`, and a spec that asks for
+  `env_allow_list` and a pty, but no `filesystem_bounds`, and a spec that asks for
   a policy it cannot enforce is rejected with `NotAvailable` — never quietly
   downgraded. Capabilities are fetched lazily: a remote runner asks its server on
   first use and refuses to fall back to an empty set.

@@ -35,10 +35,15 @@ use crate::exec::{ExecResult, exec};
 /// or lookup failure, and prompting for it would train users to approve noise.
 /// So are the cannot-execute statuses 126/127.
 const FRAGMENTS: &[&str] = &[
-    "Operation not permitted",
-    "Read-only file system",
-    "Access is denied",
-    "Sandbox: ",
+    "operation not permitted",
+    "read-only file system",
+    "access is denied",
+    // PowerShell / .NET phrasings. Note the missing spaces: `permissiondenied`
+    // is not the plain "Permission denied", which stays ignored on purpose.
+    "access to the path",
+    "unauthorizedaccessexception",
+    "permissiondenied",
+    "sandbox:",
 ];
 
 /// How a command ended up running.
@@ -118,9 +123,14 @@ pub struct Denial {
 /// which one they use.
 #[must_use]
 pub fn denial(result: &ExecResult) -> Option<Denial> {
+    // A command that succeeded was not refused: escalating it would re-run it, and
+    // its side effects would happen twice — outside the confine.
+    if result.exit_code == 0 || result.exit_code == 126 || result.exit_code == 127 {
+        return None;
+    }
     for fragment in FRAGMENTS {
         for stream in [&result.stdout, &result.stderr] {
-            if let Some(index) = stream.find(fragment) {
+            if let Some(index) = find_ci(stream, fragment) {
                 return Some(Denial {
                     fragment: (*fragment).trim().to_owned(),
                     excerpt: excerpt(stream, index),
@@ -129,6 +139,21 @@ pub fn denial(result: &ExecResult) -> Option<Denial> {
         }
     }
     None
+}
+
+/// Case-insensitive search returning a byte offset into `haystack`.
+///
+/// The fragments are ASCII, so a byte-window comparison never splits a character:
+/// a multi-byte character can never equal an ASCII byte sequence.
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// The line around `index`, trimmed and bounded.
@@ -287,6 +312,19 @@ mod tests {
         assert!(denial(&result("", "bwrap: Read-only file system", 1)).is_some());
         assert!(denial(&result("Operation not permitted", "", 1)).is_some());
         assert!(denial(&result("", "Sandbox: sh(1) deny file-write", 1)).is_some());
+        // Case-insensitive, and the Windows / PowerShell spellings.
+        assert!(denial(&result("", "operation not permitted", 1)).is_some());
+        assert!(denial(&result("", "UnauthorizedAccessException: nope", 1)).is_some());
+        assert!(denial(&result("", "Access to the path '/x' is denied.", 1)).is_some());
+    }
+
+    #[test]
+    fn a_command_that_succeeded_was_not_refused() {
+        // Re-running it would double its side effects, outside the confine.
+        assert!(denial(&result("Sandbox: hello", "", 0)).is_none());
+        // 126/127 are cannot-execute statuses, not sandbox refusals.
+        assert!(denial(&result("", "bwrap: Read-only file system", 126)).is_none());
+        assert!(denial(&result("", "Operation not permitted", 127)).is_none());
     }
 
     #[test]

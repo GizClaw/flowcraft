@@ -179,12 +179,9 @@ impl NetPolicy {
                     "sandbox: proxy {proxy:?} has a password but no username"
                 )));
             }
-            if self.mode != NetMode::Proxy {
-                return Err(Error::validation(format!(
-                    "sandbox: net mode {} ignores settings.proxy",
-                    self.mode.as_str()
-                )));
-            }
+            // `proxy` is honoured by both `allow_list` and `proxy` mode (Go
+            // accepts both), so the field is validated on its own and the
+            // backend decides whether it can chain.
         }
         for (index, rule) in self.rules.iter().enumerate() {
             if rule.host.trim().is_empty() {
@@ -896,13 +893,15 @@ mod tests {
     }
 
     #[test]
-    fn a_proxy_needs_proxy_mode_and_a_host() {
+    fn a_proxy_url_is_validated_on_its_own() {
+        // Go accepts an upstream in both allow-list and proxy mode, so the field
+        // is checked for form, not for a mode it happens to appear with.
         let policy = NetPolicy {
             mode: NetMode::AllowList,
             proxy: Some("http://127.0.0.1:3128".to_owned()),
             ..NetPolicy::default()
         };
-        assert!(policy.validate().is_err());
+        assert!(policy.validate().is_ok());
 
         let policy = NetPolicy {
             mode: NetMode::Proxy,

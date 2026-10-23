@@ -8,7 +8,7 @@
 //! It pairs with the per-call write mode rather than replacing it:
 //!
 //! ```text
-//! if request.opts.write == WriteOnly && classify_read_only(&request) { Approve }
+//! if request.opts.write == WriteMode::ReadOnly && classify_read_only(&request) { Approve }
 //! ```
 //!
 //! Commands that can run other programs or touch non-file state are excluded on
@@ -117,79 +117,159 @@ fn find_is_read_only(args: &[String]) -> bool {
     })
 }
 
-/// `ripgrep` can run a preprocessor and write generated artefacts.
+/// `ripgrep` can execute a helper, decompress archives and write artefacts.
+///
+/// `--hostname-bin` and `-z` are the CVE-2025-54558 class: both make rg run
+/// another program, so they must never be auto-approved.
 fn rg_is_read_only(args: &[String]) -> bool {
-    !args
-        .iter()
-        .any(|arg| arg.starts_with("--pre") || arg.starts_with("--generate"))
-}
-
-/// `git` read subcommands, minus the ones with a writing flag.
-fn git_is_read_only(args: &[String]) -> bool {
-    let Some(subcommand) = args.iter().find(|arg| !arg.starts_with('-')) else {
-        return false;
-    };
-    let subcommand = subcommand.as_str();
-    let allowed = matches!(
-        subcommand,
-        "status"
-            | "log"
-            | "diff"
-            | "show"
-            | "rev-parse"
-            | "rev-list"
-            | "ls-files"
-            | "ls-tree"
-            | "blame"
-            | "grep"
-            | "describe"
-            | "cat-file"
-            | "shortlog"
-            | "show-ref"
-            | "name-rev"
-            | "merge-base"
-            | "whatchanged"
-            | "symbolic-ref"
-            | "for-each-ref"
-    );
-    allowed && !args.iter().any(|arg| arg.starts_with("--output"))
-}
-
-/// `sed` can edit in place and write files from a script.
-fn sed_is_read_only(args: &[String]) -> bool {
     for arg in args {
-        if arg.starts_with("-i") || arg.starts_with("--in-place") {
+        let long = arg.as_str();
+        if matches!(
+            long,
+            "-z" | "--null-data" | "--pre" | "--pre-glob" | "--search-zip" | "--hostname-bin"
+        ) || long.starts_with("--pre=")
+            || long.starts_with("--pre-glob=")
+            || long.starts_with("--hostname-bin=")
+            || long.starts_with("--generate")
+        {
             return false;
         }
-        if arg == "-e" || arg == "--expression" {
-            continue;
-        }
-        if sed_script_writes(arg) {
+        // A short group that contains `z` (`-az`, `-zf`) enables the same path.
+        if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('z') {
             return false;
         }
     }
     true
 }
 
-/// Whether a `sed` script contains the `w` (write file) or `e` (execute)
-/// command. Split on `;` and newlines, then look at the first token of each part.
-fn sed_script_writes(script: &str) -> bool {
-    script.split([';', '\n', '}']).any(|part| {
-        let part = part.trim_start();
-        part.starts_with("w ")
-            || part == "w"
-            || part.starts_with("w/")
-            || part.starts_with("e ")
-            || part == "e"
-            || part.contains("/w ")
+/// `git` subcommands whose every form is read-only once their options are checked.
+///
+/// Subcommands with a writing variant (`branch`, `tag`, `remote`, `config`,
+/// `stash`, `reflog`, `symbolic-ref`, ...) are absent on purpose: `symbolic-ref`
+/// rewrites `.git/HEAD`.
+fn git_is_read_only(args: &[String]) -> bool {
+    let mut subcommand: Option<&str> = None;
+    let mut rest: &[String] = &[];
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "-c"
+            || arg.starts_with("-c")
+            || arg == "--config-env"
+            || arg.starts_with("--config-env=")
+        {
+            // `-c core.pager=…` / `core.fsmonitor` / `core.sshCommand` are run by
+            // git on read-only subcommands, so no `-c` form is auto-approved.
+            return false;
+        }
+        if arg.starts_with("--") {
+            if matches!(
+                arg,
+                "--exec-path" | "--git-dir" | "--namespace" | "--work-tree"
+            ) && index + 1 < args.len()
+            {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            // `-C` takes a directory value; the rest are boolean flags.
+            if arg == "-C" && index + 1 < args.len() {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        subcommand = Some(arg);
+        rest = &args[index + 1..];
+        break;
+    }
+    // Bare `git` (or `git --version`) prints help/version.
+    let Some(subcommand) = subcommand else {
+        return true;
+    };
+    let known = matches!(
+        subcommand,
+        "blame"
+            | "cat-file"
+            | "check-attr"
+            | "check-ignore"
+            | "check-ref-format"
+            | "count-objects"
+            | "describe"
+            | "diff"
+            | "for-each-ref"
+            | "grep"
+            | "help"
+            | "log"
+            | "ls-files"
+            | "ls-tree"
+            | "name-rev"
+            | "rev-parse"
+            | "shortlog"
+            | "show"
+            | "status"
+            | "verify-commit"
+            | "verify-tag"
+            | "whatchanged"
+    );
+    if !known {
+        return false;
+    }
+    !rest.iter().any(|arg| {
+        arg == "--output"
+            || arg.starts_with("--output=")
+            || ["--ext-diff", "--textconv", "--exec"]
+                .iter()
+                .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
     })
 }
 
-/// `sort` can write its result to a file.
+/// `sed` can edit in place, run a script file, or write/execute from a script
+/// (`s///w file`, `s///e`). Nothing but a bounded print is provably read-only.
+fn sed_is_read_only(args: &[String]) -> bool {
+    // Go's shape: `sed -n <Np|N,Mp> [file]`.
+    if args.len() < 2 || args.len() > 3 {
+        return false;
+    }
+    if args[0] != "-n" {
+        return false;
+    }
+    is_sed_print_address(&args[1])
+}
+
+/// `Np` or `N,Mp`, the only `sed` program treated as read-only.
+fn is_sed_print_address(script: &str) -> bool {
+    let Some(core) = script.strip_suffix('p') else {
+        return false;
+    };
+    if core.is_empty() {
+        return false;
+    }
+    match core.split_once(',') {
+        None => core.chars().all(|ch| ch.is_ascii_digit()),
+        Some((start, end)) => {
+            !start.is_empty()
+                && !end.is_empty()
+                && start.chars().all(|ch| ch.is_ascii_digit())
+                && end.chars().all(|ch| ch.is_ascii_digit())
+        }
+    }
+}
+
+/// `sort` can write its result to a file, including via a grouped short flag
+/// (`-ro out` means `-r -o out`).
 fn sort_is_read_only(args: &[String]) -> bool {
-    !args
-        .iter()
-        .any(|arg| arg == "-o" || arg.starts_with("-o") || arg.starts_with("--output"))
+    for arg in args {
+        if arg == "--output" || arg.starts_with("--output=") {
+            return false;
+        }
+        if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('o') {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -253,6 +333,21 @@ mod tests {
         assert!(classify_read_only(&request(&["rg", "-n", "needle", "."])));
         assert!(!classify_read_only(&request(&["rg", "--pre", "./x", "y"])));
         assert!(!classify_read_only(&request(&["rg", "--generate", "man"])));
+        // The CVE-2025-54558 class: rg running another program or a decompressor.
+        assert!(!classify_read_only(&request(&[
+            "rg",
+            "--hostname-bin=./x",
+            "a",
+            "f"
+        ])));
+        assert!(!classify_read_only(&request(&["rg", "-z", "p", "f.zip"])));
+        assert!(!classify_read_only(&request(&[
+            "rg",
+            "--search-zip",
+            "p",
+            "f"
+        ])));
+        assert!(!classify_read_only(&request(&["rg", "-nz", "p", "f"])));
     }
 
     #[test]
@@ -273,19 +368,27 @@ mod tests {
             );
         }
         assert!(!classify_read_only(&request(&["git", "log", "--output=f"])));
-    }
-
-    #[test]
-    fn sed_in_place_and_script_writes_are_not_read_only() {
-        assert!(classify_read_only(&request(&["sed", "-n", "1,5p", "f"])));
-        assert!(!classify_read_only(&request(&["sed", "-i", "s/a/b/", "f"])));
+        // A subcommand that writes, and options that run a program.
         assert!(!classify_read_only(&request(&[
-            "sed",
-            "-n",
-            "w out.txt",
-            "f"
+            "git",
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/x"
         ])));
-        assert!(!classify_read_only(&request(&["sed", "e whoami", "f"])));
+        assert!(!classify_read_only(&request(&[
+            "git",
+            "-c",
+            "core.pager=x",
+            "log"
+        ])));
+        assert!(!classify_read_only(&request(&[
+            "git",
+            "diff",
+            "--ext-diff"
+        ])));
+        assert!(!classify_read_only(&request(&["git", "log", "--textconv"])));
+        // A value-taking global option is skipped when locating the subcommand.
+        assert!(classify_read_only(&request(&["git", "-C", "d", "status"])));
     }
 
     #[test]

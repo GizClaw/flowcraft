@@ -49,9 +49,10 @@ impl ExecResult {
 /// cannot leak a process group *or* a session-table entry by returning early —
 /// a one-shot call leaves no trace in [`Runner::list`].
 ///
-/// Output beyond the bound is reported as an `Aborted` gap rather than silently
-/// trimmed to whatever happened to be retained: "you asked for at most N bytes
-/// and there were more" is a fact the caller should see.
+/// Output beyond the bound is truncated per stream and dropped silently, which is
+/// the one-shot contract on the Go side as well: `Exec` is a summary, and a chatty
+/// stderr must not eat stdout. A caller that needs to know the difference should
+/// use a session and read with a cursor.
 pub async fn exec(runner: &dyn Runner, mut spec: SessionSpec) -> Result<ExecResult> {
     // `Exec` is the one-shot form: a tty would merge the streams and make the
     // capture meaningless.
@@ -69,6 +70,11 @@ pub async fn exec(runner: &dyn Runner, mut spec: SessionSpec) -> Result<ExecResu
         .max_output_bytes
         .filter(|limit| *limit > 0)
         .unwrap_or(DEFAULT_CAPTURE_LIMIT);
+    // The ring must not be squeezed to the *result* bound: with two pumps racing,
+    // bytes would be trimmed before this reader sees them and `read` would report a
+    // sequence gap instead of a truncated result. The session keeps its own
+    // default; truncation happens at capture time, below.
+    spec.opts.limits.max_output_bytes = None;
 
     let session = runner.start(spec).await?;
     let id = session.id().to_owned();
@@ -204,6 +210,23 @@ mod tests {
         let result = exec(&runner, spec(&["cat"])).await.unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn the_capture_bound_is_not_handed_to_the_session_ring() {
+        // A small result bound with output far larger than it must return a
+        // truncated result, never an `Aborted` sequence gap: the ring keeps its own
+        // budget and trimming happens at capture.
+        let runner = LocalRunner::new();
+        let mut request = spec(&[
+            "sh",
+            "-c",
+            "head -c 65536 /dev/zero | tr '\\0' a; head -c 65536 /dev/zero | tr '\\0' b 1>&2",
+        ]);
+        request.opts.limits.max_output_bytes = Some(64);
+        let result = exec(&runner, request).await.expect("truncated, not a gap");
+        assert_eq!(result.stdout.len(), 64);
+        assert_eq!(result.stderr.len(), 64);
     }
 
     #[tokio::test]

@@ -101,7 +101,7 @@ pub(crate) fn spec_from_proto(spec: pb::SessionSpec) -> Result<SessionSpec> {
                 },
             },
             net: net_from_proto(net)?,
-            write: write_from_wire(&exec.write),
+            write: write_from_wire(&exec.write)?,
             limits: limits_from_proto(exec.resources.unwrap_or_default()),
         },
     })
@@ -199,8 +199,11 @@ fn write_to_wire(write: WriteMode) -> String {
     }
 }
 
-fn write_from_wire(raw: &str) -> WriteMode {
-    WriteMode::parse(raw).unwrap_or_default()
+fn write_from_wire(raw: &str) -> Result<WriteMode> {
+    // An unknown spelling must not fall back to `Workspace`: that is the *wider*
+    // mode, so a peer's `"readonly"` would silently run a read-only request
+    // writable. Refusing is the only safe reading of a mode we do not know.
+    WriteMode::parse(raw)
 }
 
 fn limits_to_proto(limits: &ResourceLimits) -> pb::ResourceLimits {
@@ -566,7 +569,9 @@ pub(crate) fn journal_event_to_proto(event: &WriteEvent) -> pb::JournalEvent {
         is_dir: event.is_dir,
         dev: event.dev.unwrap_or(0),
         ino: event.ino.unwrap_or(0),
-        size: event.size.unwrap_or(0),
+        // The Go contract uses -1 for "could not be determined"; 0 is a real,
+        // empty file.
+        size: event.size.unwrap_or(-1),
         session: event.session.clone(),
     }
 }
@@ -582,7 +587,7 @@ pub(crate) fn journal_event_from_proto(event: pb::JournalEvent) -> Result<WriteE
         is_dir: event.is_dir,
         dev: Some(event.dev).filter(|dev| *dev != 0),
         ino: Some(event.ino).filter(|ino| *ino != 0),
-        size: Some(event.size).filter(|size| *size != 0),
+        size: Some(event.size).filter(|size| *size != -1),
         session: event.session,
     })
 }
@@ -663,10 +668,13 @@ mod tests {
     fn the_permissive_write_mode_is_the_zero_value() {
         assert_eq!(write_to_wire(WriteMode::Workspace), "");
         assert_eq!(write_to_wire(WriteMode::ReadOnly), "read_only");
-        assert_eq!(write_from_wire(""), WriteMode::Workspace);
-        assert_eq!(write_from_wire("read-only"), WriteMode::ReadOnly);
-        // An unreadable value must not be read as "unrestricted".
-        assert_eq!(write_from_wire("nonsense"), WriteMode::Workspace);
+        assert_eq!(write_from_wire("").unwrap(), WriteMode::Workspace);
+        assert_eq!(write_from_wire("read-only").unwrap(), WriteMode::ReadOnly);
+        // An unreadable value must never be read as the *wider* mode.
+        assert_eq!(
+            write_from_wire("readonly").unwrap_err().kind(),
+            flowcraft_error::ErrorKind::Validation
+        );
     }
 
     #[test]

@@ -51,6 +51,9 @@ pub(crate) struct PtySession {
     pending: Arc<Mutex<Option<ExitReason>>>,
     exited: watch::Receiver<Option<ExitStatus>>,
     closed: AtomicBool,
+    /// The timeout task, aborted on close so a long timeout does not pin the
+    /// session (and its master fd) after it is gone.
+    watchdog: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for PtySession {
@@ -115,7 +118,7 @@ impl PtySession {
             return Ok(());
         }
         self.signal(GroupSignal::Kill);
-        let _ = self.await_exit().await;
+        let _ = tokio::time::timeout(TERMINATE_GRACE, self.await_exit()).await;
         Ok(())
     }
 }
@@ -251,11 +254,21 @@ impl Session for PtySession {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        // Drop the writer first so the pump sees EOF once the child is gone.
-        if let Ok(mut guard) = self.writer.lock() {
+        if let Ok(mut watchdog) = self.watchdog.lock()
+            && let Some(handle) = watchdog.take()
+        {
+            handle.abort();
+        }
+        // Stop the child *first*: a blocking `write` holds the writer mutex while
+        // it waits for queue space, so taking the lock before the kill would park
+        // a runtime worker forever. Killing the child closes the slave side, the
+        // pending write returns, and the writer becomes free.
+        let stopped = self.stop(ExitReason::Terminated).await;
+        if let Ok(mut guard) = self.writer.try_lock() {
             guard.take();
         }
-        let stopped = self.stop(ExitReason::Terminated).await;
+        // A writer still held by its own blocking task is dropped there when the
+        // fd errors out; nothing here may wait for it.
         self.log.close();
         stopped
     }
@@ -336,7 +349,9 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
     let reap_pending = pending.clone();
     tokio::spawn(async move {
         let status = tokio::task::spawn_blocking(move || child.wait()).await;
-        let _ = pump.await;
+        // Bounded for the same reason as the pipe path: an escaped descendant can
+        // keep the master open.
+        let _ = tokio::time::timeout(TERMINATE_GRACE, pump).await;
         let reason = reap_pending.lock().ok().and_then(|slot| *slot);
         let exit = match status {
             Ok(Ok(status)) => classify(&status, reason),
@@ -366,6 +381,7 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
         pending: pending.clone(),
         exited,
         closed: AtomicBool::new(false),
+        watchdog: Mutex::new(None),
     });
 
     if let Some(timeout) = spec.opts.timeout {
@@ -376,10 +392,9 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
                 let _ = watchdog.stop(ExitReason::TimedOut).await;
             }
         });
-        // Stored nowhere: the task ends when the timer fires, and its `stop` is a
-        // no-op for a session that already exited. `close` therefore does not
-        // need to abort it.
-        drop(handle);
+        if let Ok(mut slot) = session.watchdog.lock() {
+            *slot = Some(handle);
+        }
     }
     Ok(session)
 }

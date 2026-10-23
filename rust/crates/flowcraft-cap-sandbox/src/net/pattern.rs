@@ -122,6 +122,9 @@ impl Pattern {
 
     /// Whether an address matches (address patterns only).
     pub(crate) fn matches_ip(&self, ip: IpAddr) -> bool {
+        // `::ffff:10.1.2.3` reaches 10.1.2.3, so a v4 rule has to judge the
+        // canonical form: otherwise the mapped spelling walks past a deny.
+        let ip = ip.to_canonical();
         match self {
             Self::Domain { .. } => false,
             Self::Ip(pattern) => *pattern == ip,
@@ -238,6 +241,15 @@ mod tests {
     fn a_v4_rule_never_matches_a_v6_destination() {
         let pattern = pattern("127.0.0.1");
         assert!(!pattern.matches_ip("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn an_ipv4_mapped_literal_is_judged_as_the_v4_address() {
+        // `::ffff:10.1.2.3` is routed to 10.1.2.3, so a deny must catch it.
+        let denied = pattern("10.0.0.0/8");
+        assert!(denied.matches_ip("::ffff:10.1.2.3".parse().unwrap()));
+        let loopback = pattern("127.0.0.1");
+        assert!(loopback.matches_ip("::ffff:127.0.0.1".parse().unwrap()));
     }
 
     #[test]

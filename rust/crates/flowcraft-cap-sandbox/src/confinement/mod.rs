@@ -459,7 +459,9 @@ impl Runner for ConfinedRunner {
             let proxied = self.config.proxy_capable();
             capabilities.policy.net.allow_list = proxied;
             capabilities.policy.net.proxy = proxied;
-            capabilities.policy.socks5 = proxied;
+            // `socks5` is "the proxy can dial a socks5 *upstream*" (the Go
+            // meaning). This crate only terminates SOCKS5 for the child, so the
+            // field stays false until upstream chaining exists.
             capabilities.journal = self
                 .config
                 .journal

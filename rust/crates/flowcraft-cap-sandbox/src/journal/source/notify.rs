@@ -47,6 +47,15 @@ impl NotifySource {
             notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
                 let incoming = match result {
                     Ok(event) => {
+                        // A dropped-event notification arrives as `Ok`, without
+                        // paths: inotify's `Q_OVERFLOW` and FSEvents' "must scan
+                        // subdirs" both look like this, and `to_raw` would drop
+                        // them for having no path. That is the one case the whole
+                        // ring/gap machinery exists for.
+                        if event.need_rescan() {
+                            let _ = sink.send(super::Incoming::Gap(GapReason::Overflow));
+                            return;
+                        }
                         let Some(raw) = to_raw(&event) else {
                             return;
                         };
@@ -61,7 +70,14 @@ impl NotifySource {
                     // coverage broke.
                     Err(error) => {
                         tracing::debug!(%error, "sandbox: journal source reported an error");
-                        super::Incoming::Gap(GapReason::Backend)
+                        // The kernel's watch limit is a capacity problem, not a
+                        // backend failure: the reader can act on the difference.
+                        match error.kind {
+                            notify::ErrorKind::MaxFilesWatch => {
+                                super::Incoming::Gap(GapReason::Capacity)
+                            }
+                            _ => super::Incoming::Gap(GapReason::Backend),
+                        }
                     }
                 };
                 // A closed receiver means the journal is shutting down.
@@ -266,6 +282,15 @@ mod tests {
     #[test]
     fn an_event_without_a_path_is_dropped() {
         assert!(to_raw(&notify::Event::new(EventKind::Create(CreateKind::Any))).is_none());
+    }
+
+    #[test]
+    fn a_dropped_event_notification_is_recognisable() {
+        // inotify's Q_OVERFLOW and FSEvents' "must scan subdirs" both arrive as an
+        // `Ok` event with no paths and the rescan flag.
+        let overflow = notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        assert!(overflow.need_rescan());
+        assert!(to_raw(&overflow).is_none(), "it carries no path");
     }
 
     #[test]

@@ -107,6 +107,11 @@ fn split_port(raw: &str) -> Result<(&str, Option<u16>)> {
         Some((host, port)) if !host.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) => {
             Ok((host, Some(parse_port(port, raw)?)))
         }
+        // A colon with a non-numeric tail would otherwise become a "domain" that
+        // matches nothing: a deny written that way looks like a working deny.
+        Some((host, tail)) if !host.is_empty() && !tail.is_empty() => Err(Error::validation(
+            format!("sandbox: net rule host {raw:?} has a non-numeric port {tail:?}"),
+        )),
         _ => Ok((raw, None)),
     }
 }
@@ -397,6 +402,17 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_with_a_non_numeric_port_is_rejected() {
+        let error = Matcher::new(&policy(
+            NetMode::AllowList,
+            vec![allow("example.com:https")],
+            vec![],
+        ))
+        .expect_err("not a port");
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::Validation);
+    }
+
+    #[test]
     fn a_rule_port_and_a_host_port_must_agree() {
         let mut rule = allow("example.com:443");
         rule.port = 8443;
@@ -513,12 +529,15 @@ mod tests {
 
     #[test]
     fn a_malformed_policy_never_compiles() {
+        // An unparseable upstream is still a configuration error, whatever the
+        // mode: the field's form is checked independently of where it is used.
         let mut policy = policy(NetMode::AllowList, vec![allow("example.com")], vec![]);
-        policy.proxy = Some("http://127.0.0.1:1".to_owned());
-        assert!(
-            Matcher::new(&policy).is_err(),
-            "a proxy URL outside proxy mode is a config bug"
-        );
+        policy.proxy = Some("ftp://127.0.0.1:1".to_owned());
+        assert!(Matcher::new(&policy).is_err(), "bad upstream scheme");
+        // A well-formed upstream is legal in allow-list mode (Go accepts it);
+        // whether the backend can chain is a separate question.
+        policy.proxy = Some("http://127.0.0.1:3128".to_owned());
+        assert!(Matcher::new(&policy).is_ok());
     }
 
     #[test]
