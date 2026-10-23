@@ -17,7 +17,7 @@ use flowcraft_cap_secret::{
     keychain as secret_keychain, memory as secret_memory, remote as secret_remote,
 };
 use flowcraft_cap_tool::{endpoint as tool_endpoint, remote as tool_remote};
-use flowcraft_cap_workspace::{endpoint, local, remote};
+use flowcraft_cap_workspace::{endpoint, local, remote, scoped, sub};
 use flowcraft_error::{Error, Result};
 use flowcraft_kernel::{Endpoints, Grants, Platform};
 use flowcraft_resource::PlanError;
@@ -57,6 +57,8 @@ pub fn registry() -> Registry {
     // Registration failures would mean a duplicate kind in this function.
     for outcome in [
         registry.register(local::LocalFactory),
+        registry.register(scoped::ScopedFactory),
+        registry.register(sub::SubFactory),
         registry.register(endpoint::EndpointFactory),
         registry.register(remote::RemoteFactory),
         registry.register(secret_memory::MemoryFactory),

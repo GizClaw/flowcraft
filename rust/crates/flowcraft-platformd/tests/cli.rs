@@ -46,6 +46,26 @@ resources:
     settings: { endpoint: ws, scope: { write: true } }
 "#;
 
+/// The in-process decorators, which only plan if the builtin registry has them.
+const DECORATED: &str = r#"
+version: v1
+resources:
+  local:
+    kind: workspace.Workspace
+    impl: local
+    settings: { root: __ROOT__/data }
+  policy:
+    kind: workspace.Workspace
+    impl: scoped
+    deps: { workspace: local }
+    settings: { allow_write: ["**"], mandatory_deny: ["**/.env"] }
+  view:
+    kind: workspace.Workspace
+    impl: sub
+    deps: { workspace: policy }
+    settings: { prefix: run-1 }
+"#;
+
 fn write(path: &Path, text: &str) {
     std::fs::write(path, text).expect("write fixture");
 }
@@ -83,6 +103,35 @@ fn check_accepts_a_valid_deployment() {
     assert_eq!(report["ok"], true);
     assert_eq!(report["resources"], 3);
     assert_eq!(report["errors"].as_array().expect("errors").len(), 0);
+}
+
+#[test]
+fn check_accepts_the_workspace_decorators() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().display().to_string();
+    let config = dir.path().join("platform.yaml");
+    let deploy = dir.path().join("decorated.yaml");
+    write(&config, &CONFIG.replace("__ROOT__", &root));
+    write(&deploy, &DECORATED.replace("__ROOT__", &root));
+    let output = support::isolated(Command::new(binary()))
+        .args([
+            "check",
+            "--config",
+            config.to_str().expect("path"),
+            "--deploy",
+            deploy.to_str().expect("path"),
+            "--json",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json report");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["resources"], 3, "{report}");
 }
 
 #[test]

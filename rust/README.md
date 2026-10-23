@@ -36,7 +36,9 @@ rust/
                              bootstrap secrets, TLS, transport
     flowcraft-client         client plumbing: grant-carrying `Wire`, gRPC
                              auth/status helpers, the craft ABI client
-    flowcraft-cap-workspace  workspace: local provider, endpoint server, remote client
+    flowcraft-cap-workspace  workspace: local provider (cap-std confined), scoped and
+                             prefixed decorators, helper operations, endpoint
+                             server, remote client
     flowcraft-cap-secret     secret: memory/env/file/keychain providers, endpoint, remote client
     flowcraft-cap-sandbox    sandbox: local process runner, endpoint, remote client
     flowcraft-cap-tool       tool: capability (endpoint/remote/MCP) + agent-side

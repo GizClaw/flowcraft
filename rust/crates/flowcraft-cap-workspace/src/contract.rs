@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use flowcraft_error::Result;
+use flowcraft_error::{Error, Result};
 use flowcraft_resource::Resource;
 
 /// The registry kind.
@@ -56,9 +56,14 @@ pub struct Entry {
 
 /// A filesystem-shaped workspace.
 ///
-/// Paths are relative to the workspace root. Absolute paths and `..` are
-/// rejected; `rename` is the "publish a finalized payload" operation; `delete`
-/// and `remove_all` are idempotent.
+/// Paths are relative to the workspace root. Absolute paths and `..` that climb
+/// above the root are rejected with [`ErrorKind::Forbidden`], the same class the
+/// Go side's `ErrPathTraversal` maps to; the empty path and `.` name the root of
+/// the view. `rename` is the "publish a finalized payload" operation; `delete`
+/// and `remove_all` are idempotent, and deleting a directory through `delete` is
+/// a validation error rather than a recursive removal.
+///
+/// [`ErrorKind::Forbidden`]: flowcraft_error::ErrorKind::Forbidden
 #[async_trait]
 pub trait Workspace: Send + Sync {
     /// What this provider guarantees.
@@ -66,6 +71,28 @@ pub trait Workspace: Send + Sync {
 
     /// Read a file.
     async fn read(&self, path: &str) -> Result<Vec<u8>>;
+
+    /// Read a file under a byte cap.
+    ///
+    /// The default is deliberately **not** `read` followed by a length check:
+    /// by the time a full read returns, the bytes have already been
+    /// materialized, which is the allocation the cap exists to prevent. A
+    /// provider that cannot refuse at the read layer therefore reports
+    /// [`ErrorKind::NotAvailable`] and lets the caller decide, instead of
+    /// pretending the contract holds. [`crate::helpers::capped`] is that
+    /// caller: it falls back to a full read with a post-check, which is
+    /// correct but bounded only by the provider's own memory discipline.
+    ///
+    /// Implementations that can stream must read at most `max_bytes + 1` bytes,
+    /// so a file that grows concurrently cannot force an oversized allocation.
+    ///
+    /// [`ErrorKind::NotAvailable`]: flowcraft_error::ErrorKind::NotAvailable
+    async fn read_limited(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let _ = (path, max_bytes);
+        Err(Error::not_available(
+            "workspace: this provider cannot perform bounded reads",
+        ))
+    }
 
     /// Write a file, creating parent directories.
     async fn write(&self, path: &str, data: &[u8]) -> Result<()>;

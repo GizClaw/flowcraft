@@ -1,35 +1,94 @@
-//! The local provider: a directory tree with path confinement.
+//! The local provider: a directory tree pinned by a capability handle.
+//!
+//! # Why a handle and not a path string
+//!
+//! Every operation runs against a [`cap_std::fs::Dir`] opened on the root. The
+//! handle resolves each component with `openat` (and `openat2` with
+//! `RESOLVE_BENEATH` where the kernel has it), so the root is a *capability*
+//! rather than a prefix comparison: a symlink swapped in after a check cannot
+//! widen what the handle reaches, and a symlink that leaves the root is refused
+//! by the kernel. This is the Rust counterpart of Go's `os.OpenRoot` in
+//! `core/workspace`, which exists for the same reason.
+//!
+//! Two consequences are visible in behaviour and worth stating up front:
+//!
+//! * an absolute symlink is refused even when it points back inside the root,
+//!   because `openat` cannot verify a target it does not resolve;
+//! * `remove_all` on a final symlink removes the link, never the target tree.
+//!
+//! # Path syntax
+//!
+//! Paths are relative to the root; `""` and `.` name the root of the view. `..`
+//! is resolved lexically first, and an operation is refused when the result
+//! would climb above the root — the rule Go's `cleanPath` uses, so `a/../b.txt`
+//! names `b.txt` while `../b.txt` is refused. Absolute paths are refused too.
+//! Both refusals are [`ErrorKind::Forbidden`], matching the class the Go side
+//! attaches to `ErrPathTraversal`; a missing path is
+//! [`ErrorKind::NotFound`](flowcraft_error::ErrorKind::NotFound).
+//!
+//! # Blocking work
+//!
+//! cap-std is a blocking API and the contract is async, so every operation hops
+//! to [`tokio::task::spawn_blocking`]. The handle is shared behind an `Arc`, so
+//! a task owns a clone for the duration of the call and no lock is involved.
+//!
+//! # Lifecycle
+//!
+//! There is no `close`. The handle is reference counted, so the root descriptor
+//! is released when the last holder drops — which is the same moment the Go
+//! provider's explicit `Close` would be called, minus the chance of forgetting
+//! it. A decorator ([`crate::scoped`], [`crate::sub`]) holding the [`Handle`]
+//! therefore keeps the root open exactly as long as it can be reached.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use flowcraft_error::{Error, ErrorKind, Result};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, Metadata, OpenOptions};
+use flowcraft_error::{Error, Result};
 use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Spec};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspace};
+use crate::path;
+
+/// File mode for created files, matching the Go provider.
+const FILE_MODE: u32 = 0o600;
+/// Directory mode for created directories, matching the Go provider.
+const DIR_MODE: u32 = 0o700;
 
 /// A workspace rooted at one directory.
 ///
-/// Paths are resolved component by component and `..` is rejected outright, so
-/// a caller cannot leave the root through the path syntax. Symlinks are not
-/// resolved here; moving to a capability-based handle (`cap-std`) is the
-/// follow-up that removes that class entirely.
+/// The root is canonicalized once, at open, and every operation is resolved
+/// relative to the pinned handle, so the root cannot be swapped for a symlink
+/// afterwards.
 #[derive(Debug, Clone)]
 pub struct LocalWorkspace {
     root: PathBuf,
+    dir: Arc<Dir>,
 }
 
 impl LocalWorkspace {
     /// Open (creating when missing) a workspace root.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be created, canonicalized, or opened.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
-        let root = root.canonicalize()?;
-        Ok(Self { root })
+        // Resolve the root once: the handle below is opened on the real path,
+        // so a later swap of the root for a symlink changes nothing.
+        let root = std::fs::canonicalize(&root)?;
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
+        Ok(Self {
+            root,
+            dir: Arc::new(dir),
+        })
     }
 
     /// The canonical root.
@@ -38,148 +97,126 @@ impl LocalWorkspace {
         &self.root
     }
 
+    /// Resolve a caller path to a path relative to the pinned handle.
+    ///
+    /// The lexical rules live in [`crate::path`] so a view and a provider agree
+    /// on them; the security boundary is the handle itself, which re-checks
+    /// every component at use time.
     fn resolve(&self, path: &str) -> Result<PathBuf> {
-        if path.is_empty() {
-            return Err(Error::validation("path is empty"));
-        }
-        if path.len() > 4096 {
-            return Err(Error::validation("path is longer than 4096 bytes"));
-        }
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            return Err(Error::validation(format!(
-                "path {path:?} must be relative to the workspace root"
-            )));
-        }
-        let mut resolved = self.root.clone();
-        for component in candidate.components() {
-            match component {
-                Component::Normal(part) => resolved.push(part),
-                Component::CurDir => {}
-                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                    return Err(Error::validation(format!(
-                        "path {path:?} escapes the workspace root"
-                    )));
-                }
-            }
-        }
-        Ok(resolved)
+        let cleaned = path::clean(path)?;
+        Ok(PathBuf::from(if cleaned.is_empty() {
+            ".".to_owned()
+        } else {
+            cleaned
+        }))
     }
 
-    async fn create_parents(&self, resolved: &Path) -> Result<()> {
-        if let Some(parent) = resolved.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        Ok(())
+    /// Run one blocking operation off the async executor.
+    async fn blocking<T, F>(&self, label: String, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Dir) -> Result<T> + Send + 'static,
+    {
+        let dir = Arc::clone(&self.dir);
+        tokio::task::spawn_blocking(move || operation(&dir))
+            .await
+            .map_err(|error| {
+                Error::internal(format!("workspace: {label}: blocking task failed: {error}"))
+            })?
+            .map_err(|error| annotate(&label, error))
     }
 }
 
-#[async_trait]
-impl Workspace for LocalWorkspace {
-    async fn capabilities(&self) -> flowcraft_error::Result<Capabilities> {
-        Ok(Capabilities {
-            atomic_rename: true,
-            read_after_write: true,
-            durable_on_write: false,
-            distributed: false,
-        })
+/// Add operation and path context to an error without changing its class.
+///
+/// The class is the part that travels a wire and that callers branch on, so it
+/// survives; the message gains the operation that failed, with the module's own
+/// `workspace: ` prefix stripped first so a nested failure reads once.
+fn annotate(label: &str, error: Error) -> Error {
+    let message = error.message();
+    let message = message.strip_prefix("workspace: ").unwrap_or(message);
+    Error::new(error.kind(), format!("workspace: {label}: {message}")).with_source(error)
+}
+
+/// Create the missing parent directories of `path` with the provider's mode.
+fn create_parents(dir: &Dir, path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() || parent == Path::new(".") {
+        return Ok(());
     }
-
-    async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let resolved = self.resolve(path)?;
-        Ok(tokio::fs::read(resolved).await?)
+    #[cfg(unix)]
+    {
+        use cap_std::fs::{DirBuilder, DirBuilderExt};
+        let mut builder = DirBuilder::new();
+        builder.recursive(true).mode(DIR_MODE);
+        dir.create_dir_with(parent, &builder)?;
     }
-
-    async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let resolved = self.resolve(path)?;
-        self.create_parents(&resolved).await?;
-        tokio::fs::write(resolved, data).await?;
-        Ok(())
+    #[cfg(not(unix))]
+    {
+        dir.create_dir_all(parent)?;
     }
+    Ok(())
+}
 
-    async fn append(&self, path: &str, data: &[u8]) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-
-        let resolved = self.resolve(path)?;
-        self.create_parents(&resolved).await?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(resolved)
-            .await?;
-        file.write_all(data).await?;
-        file.flush().await?;
-        Ok(())
+/// Options for a fresh write: truncate, creating the file with the provider's
+/// mode.
+fn write_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(FILE_MODE);
     }
+    options
+}
 
-    async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let from = self.resolve(from)?;
-        let to = self.resolve(to)?;
-        self.create_parents(&to).await?;
-        tokio::fs::rename(from, to).await?;
-        Ok(())
+/// Options for an append: create when missing, never truncate.
+fn append_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(FILE_MODE);
     }
+    options
+}
 
-    async fn delete(&self, path: &str) -> Result<()> {
-        let resolved = self.resolve(path)?;
-        match tokio::fs::remove_file(resolved).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+fn mode_of(metadata: &Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        metadata.mode()
     }
-
-    async fn remove_all(&self, path: &str) -> Result<()> {
-        let resolved = self.resolve(path)?;
-        if resolved == self.root {
-            return Err(Error::forbidden("cannot remove the workspace root"));
-        }
-        match tokio::fs::remove_dir_all(resolved).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    async fn stat(&self, path: &str) -> Result<Stat> {
-        let resolved = self.resolve(path)?;
-        let metadata = tokio::fs::metadata(&resolved).await?;
-        Ok(stat_of(path, &metadata))
-    }
-
-    async fn exists(&self, path: &str) -> Result<bool> {
-        let resolved = self.resolve(path)?;
-        match tokio::fs::metadata(resolved).await {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    async fn list(&self, dir: &str) -> Result<Vec<Entry>> {
-        let resolved = self.resolve(dir)?;
-        let mut entries = Vec::new();
-        let mut reader = match tokio::fs::read_dir(resolved).await {
-            Ok(reader) => reader,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
-            Err(error) => return Err(error.into()),
-        };
-        while let Some(entry) = reader.next_entry().await? {
-            let metadata = entry.metadata().await?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            entries.push(entry_of(name, &metadata));
-        }
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(entries)
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        0
     }
 }
 
-fn stat_of(path: &str, metadata: &std::fs::Metadata) -> Stat {
+fn modified_nanos(metadata: &Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .map(cap_std::time::SystemTime::into_std)
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos() as i64)
+}
+
+/// The base name Go's `fs.FileInfo.Name` would report for `path`.
+fn name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn stat_of(path: &Path, metadata: &Metadata) -> Stat {
     Stat {
-        name: Path::new(path)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_owned()),
+        name: name_of(path),
         size: metadata.len(),
         mode: mode_of(metadata),
         modified_unix_nanos: modified_nanos(metadata),
@@ -187,7 +224,7 @@ fn stat_of(path: &str, metadata: &std::fs::Metadata) -> Stat {
     }
 }
 
-fn entry_of(name: String, metadata: &std::fs::Metadata) -> Entry {
+fn entry_of(name: String, metadata: &Metadata) -> Entry {
     Entry {
         name,
         is_dir: metadata.is_dir(),
@@ -197,23 +234,169 @@ fn entry_of(name: String, metadata: &std::fs::Metadata) -> Entry {
     }
 }
 
-#[cfg(unix)]
-fn mode_of(metadata: &std::fs::Metadata) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode()
-}
+#[async_trait]
+impl Workspace for LocalWorkspace {
+    async fn capabilities(&self) -> Result<Capabilities> {
+        Ok(Capabilities {
+            atomic_rename: true,
+            read_after_write: true,
+            // Writes reach the OS page cache, not stable storage: the same
+            // honest answer the Go provider gives.
+            durable_on_write: false,
+            distributed: false,
+        })
+    }
 
-#[cfg(not(unix))]
-fn mode_of(_metadata: &std::fs::Metadata) -> u32 {
-    0
-}
+    async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let target = self.resolve(path)?;
+        self.blocking(format!("read {path}"), move |dir| Ok(dir.read(&target)?))
+            .await
+    }
 
-fn modified_nanos(metadata: &std::fs::Metadata) -> i64 {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_nanos() as i64)
+    async fn read_limited(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        if max_bytes == 0 {
+            return Err(Error::validation(
+                "workspace: read_limited max_bytes must be positive",
+            ));
+        }
+        let target = self.resolve(path)?;
+        let label = format!("read {path}");
+        let shown = path.to_owned();
+        self.blocking(label, move |dir| {
+            let file = dir.open(&target)?;
+            // Read at most one byte past the cap: enough to detect an oversized
+            // file without materializing it.
+            let mut reader = std::io::Read::take(file, max_bytes + 1);
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut data)?;
+            if data.len() as u64 > max_bytes {
+                return Err(Error::validation(format!(
+                    "workspace: {shown} exceeds the {max_bytes}-byte read cap"
+                )));
+            }
+            Ok(data)
+        })
+        .await
+    }
+
+    async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        let target = self.resolve(path)?;
+        let bytes = data.to_vec();
+        self.blocking(format!("write {path}"), move |dir| {
+            create_parents(dir, &target)?;
+            let mut file = dir.open_with(&target, &write_options())?;
+            std::io::Write::write_all(&mut file, &bytes)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn append(&self, path: &str, data: &[u8]) -> Result<()> {
+        let target = self.resolve(path)?;
+        let bytes = data.to_vec();
+        self.blocking(format!("append {path}"), move |dir| {
+            create_parents(dir, &target)?;
+            let mut file = dir.open_with(&target, &append_options())?;
+            std::io::Write::write_all(&mut file, &bytes)?;
+            std::io::Write::flush(&mut file)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let source = self.resolve(from)?;
+        let destination = self.resolve(to)?;
+        self.blocking(format!("rename {from} -> {to}"), move |dir| {
+            create_parents(dir, &destination)?;
+            dir.rename(&source, dir, &destination)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let target = self.resolve(path)?;
+        // The error message names the caller's path, so it travels into the
+        // blocking task.
+        let label = format!("delete {path}");
+        let shown = path.to_owned();
+        self.blocking(label, move |dir| {
+            match dir.metadata(&target) {
+                Ok(metadata) if metadata.is_dir() => {
+                    return Err(Error::validation(format!(
+                        "workspace: {shown} is a directory (use remove_all)"
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+            match dir.remove_file(&target) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
+    async fn remove_all(&self, path: &str) -> Result<()> {
+        let target = self.resolve(path)?;
+        if target == Path::new(".") {
+            return Err(Error::forbidden("cannot remove the workspace root"));
+        }
+        self.blocking(format!("remove_all {path}"), move |dir| {
+            match dir.remove_dir_all(&target) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
+    async fn stat(&self, path: &str) -> Result<Stat> {
+        let target = self.resolve(path)?;
+        self.blocking(format!("stat {path}"), move |dir| {
+            let metadata = dir.metadata(&target)?;
+            Ok(stat_of(&target, &metadata))
+        })
+        .await
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        let target = self.resolve(path)?;
+        self.blocking(format!("exists {path}"), move |dir| {
+            match dir.try_exists(&target) {
+                Ok(exists) => Ok(exists),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
+    async fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+        let target = self.resolve(dir)?;
+        self.blocking(format!("list {dir}"), move |handle| {
+            let mut reader = match handle.read_dir(&target) {
+                Ok(reader) => reader,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error.into()),
+            };
+            let mut entries = Vec::new();
+            for entry in &mut reader {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let metadata = entry.metadata()?;
+                entries.push(entry_of(name, &metadata));
+            }
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+            Ok(entries)
+        })
+        .await
+    }
 }
 
 /// Settings for the local provider.
@@ -279,15 +462,10 @@ impl Factory for LocalFactory {
     }
 }
 
-/// Whether a workspace error is a classification the caller should see.
-#[allow(dead_code)]
-fn is_not_found(error: &Error) -> bool {
-    error.kind() == ErrorKind::NotFound
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flowcraft_error::ErrorKind;
 
     async fn workspace() -> (tempfile::TempDir, LocalWorkspace) {
         let dir = tempfile::tempdir().unwrap();
@@ -322,21 +500,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn traversal_is_rejected() {
+    async fn traversal_is_forbidden() {
         let (_dir, workspace) = workspace().await;
-        for path in ["../escape", "a/../../escape", "/etc/passwd", "a/.."] {
+        for path in ["..", "../escape", "a/../../escape", "/etc/passwd"] {
             let error = workspace.read(path).await.unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Validation, "{path}");
+            assert_eq!(error.kind(), ErrorKind::Forbidden, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_interior_parent_dir_is_cleaned_not_refused() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("b.txt", b"payload").await.unwrap();
+        assert_eq!(workspace.read("a/../b.txt").await.unwrap(), b"payload");
+    }
+
+    #[tokio::test]
+    async fn a_symlink_cannot_escape_the_root() {
+        let (dir, workspace) = workspace().await;
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.root().join("escape")).unwrap();
+        let error = workspace.read("escape").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Forbidden);
+        // An absolute link is refused even when it points back inside the root:
+        // `openat` cannot verify a target it does not resolve itself.
+        std::os::unix::fs::symlink(
+            workspace.root().join("nested"),
+            workspace.root().join("absolute"),
+        )
+        .unwrap();
+        workspace.write("nested/file", b"inside").await.unwrap();
+        assert_eq!(
+            workspace.read("absolute/file").await.unwrap_err().kind(),
+            ErrorKind::Forbidden
+        );
+        // A relative link inside the root still works.
+        std::os::unix::fs::symlink("nested/file", workspace.root().join("inside")).unwrap();
+        assert_eq!(workspace.read("inside").await.unwrap(), b"inside");
     }
 
     #[tokio::test]
     async fn removing_the_root_is_forbidden() {
         let (_dir, workspace) = workspace().await;
-        assert_eq!(
-            workspace.remove_all(".").await.unwrap_err().kind(),
-            ErrorKind::Forbidden
-        );
+        for path in [".", ""] {
+            assert_eq!(
+                workspace.remove_all(path).await.unwrap_err().kind(),
+                ErrorKind::Forbidden
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn deleting_a_directory_is_a_validation_error() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("dir/file", b"x").await.unwrap();
+        let error = workspace.delete("dir").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert!(error.to_string().contains("remove_all"));
+        workspace.remove_all("dir").await.unwrap();
+        assert!(!workspace.exists("dir").await.unwrap());
     }
 
     #[tokio::test]
@@ -346,8 +569,55 @@ mod tests {
         let file = workspace.stat("dir/file").await.unwrap();
         assert_eq!(file.size, 4);
         assert!(!file.is_dir);
+        assert_eq!(file.name, "file");
         let dir = workspace.stat("dir").await.unwrap();
         assert!(dir.is_dir);
+        assert_eq!(dir.name, "dir");
+        assert_eq!(workspace.stat(".").await.unwrap().name, ".");
+    }
+
+    #[tokio::test]
+    async fn a_missing_path_is_not_found() {
+        let (_dir, workspace) = workspace().await;
+        assert_eq!(
+            workspace.read("missing").await.unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+        assert_eq!(
+            workspace.stat("missing").await.unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+        assert!(!workspace.exists("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn bounded_reads_stop_at_the_cap() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("file", b"0123456789").await.unwrap();
+        assert_eq!(workspace.read_limited("file", 10).await.unwrap().len(), 10);
+        let error = workspace.read_limited("file", 9).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(
+            workspace.read_limited("file", 0).await.unwrap_err().kind(),
+            ErrorKind::Validation
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn created_files_and_directories_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, workspace) = workspace().await;
+        workspace.write("dir/file", b"x").await.unwrap();
+        let file = workspace.root().join("dir/file");
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let dir = std::fs::metadata(workspace.root().join("dir"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir, 0o700);
     }
 
     #[tokio::test]

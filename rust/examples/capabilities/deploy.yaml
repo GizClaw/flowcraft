@@ -26,11 +26,37 @@ resources:
     settings:
       root: "${secret:demo/workspace}"
 
+  # A policy over the provider: reads are deny-only, writes allow-only, and
+  # `mandatory_deny` wins over both. It is its own resource, not a setting, so
+  # the same rules wrap any provider and the endpoint cannot tell the difference.
+  # An invalid pattern fails `check`, not the first call that hits the rule.
+  workspace-policy:
+    kind: workspace.Workspace
+    impl: scoped
+    deps:
+      workspace: workspace
+    settings:
+      deny_read: ["secrets/**"]
+      allow_write: ["**"]
+      mandatory_deny: ["**/.env"]
+
+  # A prefixed view over the policy. Every caller of the endpoint below is
+  # confined to one subtree by a name mapping, so the grant's scope and the
+  # provider's root stay independent of per-run layout.
+  workspace-view:
+    kind: workspace.Workspace
+    impl: sub
+    deps:
+      workspace: workspace-policy
+    settings:
+      prefix: run-1
+
   workspace-endpoint:
     kind: workspace.Endpoint
     impl: grpc
+    # Serve the view: the policy and the prefix apply to every remote call.
     deps:
-      workspace: workspace
+      workspace: workspace-view
     settings:
       endpoint: workspace-dev
 
