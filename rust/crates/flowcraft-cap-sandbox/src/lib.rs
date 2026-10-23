@@ -1,15 +1,25 @@
 //! The sandbox capability.
 //!
-//! One contract ([`contract::Runner`]) with a local process provider, an
-//! endpoint that serves it over gRPC, and a remote client presenting the same
-//! contract.
+//! One contract ([`contract::Runner`] / [`contract::Session`]) with a local
+//! process provider, an endpoint that serves it over gRPC, and a remote client
+//! presenting the same contract.
 //!
 //! # Honest capabilities
 //!
-//! The provider declares what it can actually enforce. The local runner has no
-//! filesystem or network boundary, so a spec that asks for one is rejected with
-//! `NotAvailable` — never quietly downgraded. A caller that wants confinement
-//! points the deployment at a backend that has it.
+//! A provider declares what it can actually enforce, and the declaration is
+//! part of the wire contract. The local runner has no filesystem or network
+//! boundary, so a spec that asks for one is rejected with `NotAvailable` —
+//! never quietly downgraded. A caller that wants confinement points the
+//! deployment at a backend that has it.
+//!
+//! # Output is pulled, not pushed
+//!
+//! [`contract::Session::read`] takes a **byte** cursor and blocks until there
+//! is something to return, so a slow consumer cannot stall the child and a
+//! reconnecting client resumes at the exact offset it consumed. The bounded
+//! buffer drops the oldest chunks and reports a cursor below the retained range
+//! as a gap; [`contract::Session::watch`] is the optional push view of the same
+//! stream.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -19,11 +29,15 @@ pub mod endpoint;
 pub mod local;
 pub mod remote;
 pub mod scope;
+mod session;
+mod wire;
 
 pub use confinement::{BwrapFactory, ConfinedRunner, Sandbox, SeatbeltFactory};
 pub use contract::{
-    CONTRACT, Capabilities, Chunk, Enforcement, ExecOptions, ExitStatus, Features, Handle, KIND,
-    ReadResult, Runner, Session, SessionFeatures, SessionInfo, SessionSpec,
+    CONTRACT, Capabilities, Chunk, Enforcement, EnvPolicy, Event, EventStream, ExecOptions,
+    ExitReason, ExitStatus, Features, Handle, JournalCapabilities, KIND, NetAction, NetMode,
+    NetModes, NetPolicy, NetRule, ReadResult, ResourceLimits, Runner, Session, SessionFeatures,
+    SessionInfo, SessionSpec, Signal, Stream, WriteMode, WriteModes,
 };
 pub use local::LocalRunner;
 pub use remote::RemoteRunner;

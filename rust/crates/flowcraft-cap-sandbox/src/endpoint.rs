@@ -1,8 +1,12 @@
 //! The endpoint server: a runner exposed over gRPC.
+//!
+//! The service holds no session table of its own: every call resolves the
+//! session through the runner, so there is exactly one answer to "is this
+//! session open" and a session started by one call is visible to the next
+//! without any bookkeeping to keep in sync.
 
-use std::collections::BTreeMap;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use flowcraft_client::grpc::{authenticate, grant_of, status};
 use flowcraft_error::{Error, Result};
@@ -14,15 +18,13 @@ use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Resource, Spec, require};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio_stream::{Stream, StreamExt};
 use tonic::service::Interceptor;
 use tonic::{Request, Response, Status};
 
-use crate::contract::{
-    self, CONTRACT, Capabilities, ExecOptions, ExitStatus, Handle, NetPolicy, ResourceLimits,
-    Session, SessionFeatures, SessionSpec, WriteMode,
-};
+use crate::contract::{self, CONTRACT, Capabilities, Handle};
 use crate::scope::Scope;
+use crate::wire;
 
 /// The registry kind.
 pub const KIND: &str = "sandbox.Endpoint";
@@ -75,7 +77,6 @@ impl Resource for Endpoint {
             let (mut server, listener) = self.host.bind(&self.descriptor.name)?;
             let service = Service {
                 runner: self.runner.clone(),
-                sessions: Mutex::new(BTreeMap::new()),
                 descriptor: self.descriptor.clone(),
                 capability: self.capability.clone(),
             };
@@ -182,7 +183,6 @@ impl Interceptor for GrantInterceptor {
 
 struct Service {
     runner: Handle,
-    sessions: Mutex<BTreeMap<String, Arc<dyn Session>>>,
     descriptor: EndpointDescriptor,
     capability: String,
 }
@@ -197,128 +197,12 @@ impl Service {
         Scope::parse(&grant.scope).map_err(|_| Status::permission_denied("grant scope is invalid"))
     }
 
-    async fn session(&self, id: &str) -> std::result::Result<Arc<dyn Session>, Status> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .get(id)
-            .cloned()
-            .ok_or_else(|| Status::not_found(format!("sandbox: session {id:?}")))
+    async fn session(
+        &self,
+        id: &str,
+    ) -> std::result::Result<Arc<dyn crate::contract::Session>, Status> {
+        self.runner.session(id).await.map_err(status)
     }
-}
-
-fn parse_duration(raw: &str) -> Result<Option<Duration>> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
-    let (number, unit) = raw.split_at(split);
-    let value: u64 = number
-        .parse()
-        .map_err(|_| Error::validation(format!("timeout {raw:?} is not a duration")))?;
-    let duration = match unit {
-        "" | "s" => Duration::from_secs(value),
-        "ms" => Duration::from_millis(value),
-        "m" => Duration::from_secs(value.saturating_mul(60)),
-        "h" => Duration::from_secs(value.saturating_mul(3600)),
-        other => {
-            return Err(Error::validation(format!(
-                "timeout {raw:?}: unknown unit {other:?}"
-            )));
-        }
-    };
-    Ok(Some(duration))
-}
-
-fn runner_features_to_proto(features: SessionFeatures) -> pb::Features {
-    pb::Features {
-        tty: features.tty,
-        signal: features.signal,
-        events: features.events,
-    }
-}
-
-fn features_to_proto(features: SessionFeatures) -> pb::SessionFeatures {
-    pb::SessionFeatures {
-        tty: features.tty,
-        stdin: features.stdin,
-        signal: features.signal,
-        events: features.events,
-    }
-}
-
-fn exit_to_proto(exit: &ExitStatus) -> pb::SessionExit {
-    pb::SessionExit {
-        code: exit.code.unwrap_or(-1),
-        signal: exit.signal.unwrap_or(0),
-        reason: exit.reason.clone(),
-    }
-}
-
-fn capabilities_to_proto(capabilities: Capabilities) -> pb::DescribeResponse {
-    pb::DescribeResponse {
-        policy: Some(pb::Enforcement {
-            env_allow_list: capabilities.policy.env_allow_list,
-            net_modes: capabilities.policy.net_modes,
-            socks5: false,
-            mitm: false,
-            unix_socket_policy: false,
-            memory_cap: capabilities.policy.memory_cap,
-            cpu_cap: capabilities.policy.cpu_cap,
-            disk_cap: capabilities.policy.disk_cap,
-            filesystem_bounds: capabilities.policy.filesystem_bounds,
-            write_modes: capabilities.policy.write_modes,
-        }),
-        features: Some(runner_features_to_proto(capabilities.features)),
-        journal: None,
-    }
-}
-
-fn spec_from_proto(spec: pb::SessionSpec) -> Result<SessionSpec> {
-    let exec = spec.opts.unwrap_or_default();
-    let write = match exec.write.as_str() {
-        "" | "default" => WriteMode::Default,
-        "read_only" | "read-only" => WriteMode::ReadOnly,
-        other => {
-            return Err(Error::validation(format!(
-                "sandbox: unknown write mode {other:?}"
-            )));
-        }
-    };
-    let limits = exec.resources.unwrap_or_default();
-    let net = exec.net.unwrap_or_default();
-    let env = exec.env.unwrap_or_default();
-    Ok(SessionSpec {
-        id: spec.id,
-        argv: spec.argv,
-        tty: spec.tty,
-        stdin: spec.stdin,
-        opts: ExecOptions {
-            workdir: Some(exec.workdir).filter(|dir| !dir.is_empty()),
-            stdin: Some(exec.stdin).filter(|bytes| !bytes.is_empty()),
-            timeout: parse_duration(&exec.timeout)?,
-            env: contract::EnvPolicy {
-                allow: env.allow,
-                inject: env.inject.into_iter().collect(),
-            },
-            net: NetPolicy { mode: net.mode },
-            write,
-            limits: ResourceLimits {
-                cpu_millicores: u32::try_from(limits.cpu_millicores)
-                    .ok()
-                    .filter(|value| *value > 0),
-                memory_bytes: u64::try_from(limits.memory_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-                disk_bytes: u64::try_from(limits.disk_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-                max_output_bytes: u64::try_from(limits.max_output_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-            },
-        },
-    })
 }
 
 #[tonic::async_trait]
@@ -327,8 +211,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         _request: Request<pb::DescribeRequest>,
     ) -> std::result::Result<Response<pb::DescribeResponse>, Status> {
-        let capabilities = self.runner.capabilities().await.map_err(status)?;
-        Ok(Response::new(capabilities_to_proto(capabilities)))
+        let capabilities: Capabilities = self.runner.capabilities().await.map_err(status)?;
+        Ok(Response::new(wire::capabilities_to_proto(&capabilities)))
     }
 
     async fn start(
@@ -341,7 +225,7 @@ impl sandbox_server::Sandbox for Service {
             .spec
             .clone()
             .ok_or_else(|| Status::invalid_argument("sandbox: spec is required"))?;
-        let mut spec = spec_from_proto(raw).map_err(status)?;
+        let mut spec = wire::spec_from_proto(raw).map_err(status)?;
         scope.allows_command(&spec.argv).map_err(status)?;
         spec.opts.timeout = scope.timeout(spec.opts.timeout).map_err(status)?;
         spec.opts.limits.max_output_bytes = scope.output_limit(spec.opts.limits.max_output_bytes);
@@ -352,12 +236,8 @@ impl sandbox_server::Sandbox for Service {
                 .pid()
                 .and_then(|pid| i32::try_from(pid).ok())
                 .unwrap_or(0),
-            capabilities: Some(features_to_proto(session.features())),
+            capabilities: Some(wire::features_to_proto(session.features())),
         };
-        self.sessions
-            .lock()
-            .await
-            .insert(session.id().to_owned(), session);
         Ok(Response::new(pb::StartResponse {
             session: Some(reference),
         }))
@@ -373,19 +253,7 @@ impl sandbox_server::Sandbox for Service {
         let after = u64::try_from(payload.after_seq).unwrap_or(0);
         let max = usize::try_from(payload.max_bytes).unwrap_or(usize::MAX);
         let read = session.read(after, max).await.map_err(status)?;
-        Ok(Response::new(pb::ReadResponse {
-            next_seq: i64::try_from(read.next_seq).unwrap_or(i64::MAX),
-            chunks: read
-                .chunks
-                .into_iter()
-                .map(|chunk| pb::Chunk {
-                    seq: i64::try_from(chunk.seq).unwrap_or(i64::MAX),
-                    stream: chunk.stream,
-                    data: chunk.data,
-                })
-                .collect(),
-            eof: read.eof,
-        }))
+        Ok(Response::new(wire::read_to_proto(&read)))
     }
 
     async fn write(
@@ -409,6 +277,44 @@ impl sandbox_server::Sandbox for Service {
         Ok(Response::new(pb::CloseInputResponse {}))
     }
 
+    async fn resize(
+        &self,
+        request: Request<pb::ResizeRequest>,
+    ) -> std::result::Result<Response<pb::ResizeResponse>, Status> {
+        self.scope(&request)?;
+        let payload = request.get_ref();
+        let session = self.session(&payload.session).await?;
+        let rows = u16::try_from(payload.rows).unwrap_or(0);
+        let cols = u16::try_from(payload.cols).unwrap_or(0);
+        session.resize(rows, cols).await.map_err(status)?;
+        Ok(Response::new(pb::ResizeResponse {}))
+    }
+
+    async fn signal(
+        &self,
+        request: Request<pb::SignalRequest>,
+    ) -> std::result::Result<Response<pb::SignalResponse>, Status> {
+        self.scope(&request)?;
+        let payload = request.get_ref();
+        let session = self.session(&payload.session).await?;
+        let signal = wire::signal_from_proto(&payload.signal).map_err(status)?;
+        session.signal(signal).await.map_err(status)?;
+        Ok(Response::new(pb::SignalResponse {}))
+    }
+
+    type WatchStream = Pin<Box<dyn Stream<Item = std::result::Result<pb::Event, Status>> + Send>>;
+
+    async fn watch(
+        &self,
+        request: Request<pb::WatchRequest>,
+    ) -> std::result::Result<Response<Self::WatchStream>, Status> {
+        self.scope(&request)?;
+        let session = self.session(&request.get_ref().session).await?;
+        let events = session.watch().map_err(status)?;
+        let streamed = events.map(|event| Ok(wire::event_to_proto(&event)));
+        Ok(Response::new(Box::pin(streamed)))
+    }
+
     async fn wait(
         &self,
         request: Request<pb::WaitRequest>,
@@ -416,8 +322,14 @@ impl sandbox_server::Sandbox for Service {
         self.scope(&request)?;
         let session = self.session(&request.get_ref().session).await?;
         let exit = session.wait().await.map_err(status)?;
+        // A timeout or an exhausted budget is a failure of the call as well as
+        // an outcome, so the RPC reports the classification; the outcome itself
+        // is still carried when it is a plain exit.
+        if let Some(error) = exit.error() {
+            return Err(status(error));
+        }
         Ok(Response::new(pb::WaitResponse {
-            exit: Some(exit_to_proto(&exit)),
+            exit: Some(wire::exit_to_proto(&exit)),
         }))
     }
 
@@ -426,11 +338,10 @@ impl sandbox_server::Sandbox for Service {
         request: Request<pb::CloseSessionRequest>,
     ) -> std::result::Result<Response<pb::CloseSessionResponse>, Status> {
         self.scope(&request)?;
-        let id = request.get_ref().session.clone();
-        let session = self.sessions.lock().await.remove(&id);
-        if let Some(session) = session {
-            session.terminate().await.map_err(status)?;
-        }
+        self.runner
+            .close_session(&request.get_ref().session)
+            .await
+            .map_err(status)?;
         Ok(Response::new(pb::CloseSessionResponse {}))
     }
 
@@ -451,22 +362,7 @@ impl sandbox_server::Sandbox for Service {
         self.scope(&request)?;
         let sessions = self.runner.list().await.map_err(status)?;
         Ok(Response::new(pb::ListResponse {
-            sessions: sessions
-                .into_iter()
-                .map(|info| pb::SessionInfo {
-                    id: info.id,
-                    argv: info.argv,
-                    tty: info.features.tty,
-                    pid: info
-                        .pid
-                        .and_then(|pid| i32::try_from(pid).ok())
-                        .unwrap_or(0),
-                    started_at_unix_nano: i64::try_from(info.started_at_unix_nano)
-                        .unwrap_or(i64::MAX),
-                    running: info.running,
-                    exit: info.exit.as_ref().map(exit_to_proto),
-                })
-                .collect(),
+            sessions: sessions.iter().map(wire::info_to_proto).collect(),
         }))
     }
 
@@ -488,41 +384,11 @@ impl sandbox_server::Sandbox for Service {
     ) -> std::result::Result<Response<pb::CloseRunnerResponse>, Status> {
         self.scope(&request)?;
         self.runner.close().await.map_err(status)?;
-        self.sessions.lock().await.clear();
         Ok(Response::new(pb::CloseRunnerResponse {}))
     }
 
-    // The v1 wire keeps these local-only; the proto says so explicitly. A
-    // caller that needs them must run in-process or wait for v2.
-    async fn resize(
-        &self,
-        _request: Request<pb::ResizeRequest>,
-    ) -> std::result::Result<Response<pb::ResizeResponse>, Status> {
-        Err(Status::unimplemented("sandbox: resize is local-only in v1"))
-    }
-
-    async fn signal(
-        &self,
-        _request: Request<pb::SignalRequest>,
-    ) -> std::result::Result<Response<pb::SignalResponse>, Status> {
-        Err(Status::unimplemented("sandbox: signal is local-only in v1"))
-    }
-
-    type WatchStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = std::result::Result<pb::Event, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-
-    async fn watch(
-        &self,
-        _request: Request<pb::WatchRequest>,
-    ) -> std::result::Result<Response<Self::WatchStream>, Status> {
-        Err(Status::unimplemented("sandbox: watch is local-only in v1"))
-    }
-
+    // The file journal arrives with its own plan phase; answering
+    // UNIMPLEMENTED is the honest answer today.
     async fn open_journal(
         &self,
         _request: Request<pb::OpenJournalRequest>,
@@ -550,3 +416,6 @@ impl sandbox_server::Sandbox for Service {
         ))
     }
 }
+
+/// Keep the contract import used by the capability constant above.
+const _: &str = contract::CONTRACT;
