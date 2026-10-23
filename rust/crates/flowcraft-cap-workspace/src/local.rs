@@ -162,16 +162,35 @@ fn create_parents(dir: &Dir, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Refuse a rename Windows cannot express.
+/// Whether this platform's `rename` can replace an existing directory.
 ///
-/// `MoveFileEx`'s `REPLACE_EXISTING` cannot replace a directory, so renaming
-/// over an existing directory fails with a platform-specific code where POSIX
-/// `rename(2)` replaces an empty one. Directory rename is outside the contract,
-/// so the divergent case is reported in the contract's own vocabulary instead of
-/// leaking an OS code. Moving a directory to a *new* name works and is left
-/// alone, and a destination that does not exist cannot be a directory.
-#[cfg(windows)]
-fn check_rename(dir: &Dir, source: &Path, destination: &Path) -> Result<()> {
+/// `MoveFileEx`'s `REPLACE_EXISTING` cannot; POSIX `rename(2)` replaces an empty
+/// one. This is the only platform-specific fact in the rename path — the
+/// decision that uses it, [`check_rename`], is written once and tested
+/// everywhere.
+const RENAME_REPLACES_DIRECTORIES: bool = !cfg!(windows);
+
+/// Refuse a rename the platform cannot express.
+///
+/// Directory rename is outside the contract, so replacing an existing directory
+/// where the platform cannot is reported in the contract's own vocabulary
+/// (a validation error) instead of leaking an OS code at the first call. Moving a
+/// directory to a *new* name works everywhere and is left alone, and a
+/// destination that does not exist cannot be a directory.
+///
+/// `replaces_directories` is [`RENAME_REPLACES_DIRECTORIES`]; taking it as a
+/// parameter rather than consulting `cfg!` keeps the decision testable on any
+/// host, which is the only way this branch gets exercised before a Windows
+/// runner does.
+fn check_rename(
+    dir: &Dir,
+    source: &Path,
+    destination: &Path,
+    replaces_directories: bool,
+) -> Result<()> {
+    if replaces_directories {
+        return Ok(());
+    }
     let (Ok(source_meta), Ok(destination_meta)) = (dir.metadata(source), dir.metadata(destination))
     else {
         return Ok(());
@@ -183,13 +202,6 @@ fn check_rename(dir: &Dir, source: &Path, destination: &Path) -> Result<()> {
             destination.display()
         )));
     }
-    Ok(())
-}
-
-/// POSIX `rename(2)` replaces a file or an empty directory, so there is nothing
-/// to refuse before the call.
-#[cfg(not(windows))]
-fn check_rename(_dir: &Dir, _source: &Path, _destination: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -342,7 +354,7 @@ impl Workspace for LocalWorkspace {
         let destination = self.resolve(to)?;
         self.blocking(format!("rename {from} -> {to}"), move |dir| {
             create_parents(dir, &destination)?;
-            check_rename(dir, &source, &destination)?;
+            check_rename(dir, &source, &destination, RENAME_REPLACES_DIRECTORIES)?;
             dir.rename(&source, dir, &destination)?;
             Ok(())
         })
@@ -532,6 +544,65 @@ mod tests {
         workspace.rename("tmp", "live").await.unwrap();
         assert!(!workspace.exists("tmp").await.unwrap());
         assert_eq!(workspace.read("live").await.unwrap(), b"payload");
+    }
+
+    /// The Windows decision, exercised on every host by passing the flag the
+    /// platform would pass.
+    #[test]
+    fn replacing_a_directory_is_refused_only_where_the_platform_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = Dir::open_ambient_dir(dir.path(), ambient_authority()).unwrap();
+        handle.create_dir_all("tree").unwrap();
+        handle.write("file", b"x").unwrap();
+        handle.write("other", b"y").unwrap();
+
+        // POSIX rename(2) replaces a file or an empty directory.
+        for (source, destination) in [("tree", "file"), ("file", "tree")] {
+            assert!(
+                check_rename(&handle, Path::new(source), Path::new(destination), true).is_ok(),
+                "{source} -> {destination}"
+            );
+        }
+
+        // Windows cannot, in either direction, once both paths exist.
+        for (source, destination) in [("tree", "file"), ("file", "tree")] {
+            let error = check_rename(&handle, Path::new(source), Path::new(destination), false)
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ErrorKind::Validation,
+                "{source} -> {destination}"
+            );
+            assert!(error.to_string().contains("replacing a directory"));
+        }
+
+        // Two files are a plain replacement, and a destination that does not
+        // exist cannot be a directory, so moving a directory to a new name works.
+        assert!(check_rename(&handle, Path::new("file"), Path::new("other"), false).is_ok());
+        assert!(check_rename(&handle, Path::new("tree"), Path::new("fresh"), false).is_ok());
+    }
+
+    /// Only runs on Windows: this is the end-to-end shape of the branch above.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn rename_over_a_directory_is_a_validation_error() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("tree/file", b"x").await.unwrap();
+        workspace.write("other", b"y").await.unwrap();
+        let error = workspace.rename("tree", "other").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        // A directory moved to a new name is still fine.
+        workspace.rename("tree", "moved").await.unwrap();
+        assert_eq!(workspace.read("moved/file").await.unwrap(), b"x");
+    }
+
+    /// Only runs on Windows, where there are no unix mode bits to report.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stat_reports_no_mode_bits_without_unix_permissions() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("file", b"x").await.unwrap();
+        assert_eq!(workspace.stat("file").await.unwrap().mode, 0);
     }
 
     #[tokio::test]

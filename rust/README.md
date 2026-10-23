@@ -91,12 +91,16 @@ The kernel's transport is unix-domain sockets, so the platform as a whole is
 unix-only. Some crates are portable in isolation; the workspace crate is the
 first where that matters, because its provider is the thing most likely to be
 reused. `--no-default-features` drops `endpoint`, `remote` and `scope`, leaving
-the provider, its decorators and the helper operations, and that shape builds for
-a Windows target. `make rust-windows-check` runs it locally and a CI lane runs it
-on every PR, so the provider's `cfg(windows)` branches (the sharing-violation
-retry, the directory-replace refusal) are compiled rather than merely written.
-Nothing executes there: this is a compile gate for the code that differs, not a
-Windows support claim.
+the provider, its decorators and the helper operations — a shape with no
+control-plane dependency that builds for a Windows target.
+
+`make rust-windows-check` cross-compiles it locally (it needs the
+`x86_64-pc-windows-gnu` target and a mingw gcc), which is the fast feedback loop;
+the `rust-windows` CI lane runs the same shape on a Windows host, so the
+`cfg(windows)` branches — the sharing-violation retry, the refusal to replace a
+directory with `MoveFileEx` — are executed, not merely compiled. That is still
+not a Windows support claim: the daemon, its transport and the other capabilities
+remain unix-only.
 
 ## Quickstart
 
@@ -106,7 +110,7 @@ build time from `proto/`, so there is no vendored stub to go stale.
 
 ```bash
 cd rust
-cargo test                       # 521 tests, no network, no credentials
+cargo test                       # 523 tests, no network, no credentials
 
 cargo run -p flowcraft-platformd -- catalog
 cargo run -p flowcraft-platformd -- check \

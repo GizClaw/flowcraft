@@ -138,10 +138,12 @@ rust-clippy:
 	@cd $(RUST_DIR) && $(CARGO) clippy --workspace --all-targets -- -D warnings
 
 # The kernel's transport is unix-domain sockets, so only the workspace provider
-# compiles for Windows, and only without the `wire` feature. This lane exists so
-# the provider's `cfg(windows)` branches are compiled rather than merely written;
-# it needs `rustup target add x86_64-pc-windows-gnu` and a mingw gcc, which is why
-# it is not part of `lint`/`ci`.
+# builds for Windows, and only without the `wire` feature. This target is the
+# local feedback loop — a cross-compile, so the provider's `cfg(windows)` branches
+# are compiled rather than merely written. It needs `rustup target add
+# x86_64-pc-windows-gnu` and a mingw gcc, which is why it is not part of
+# `lint`/`ci`; the `rust-windows` CI lane runs the same shape on a Windows host,
+# where those branches also execute.
 RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
 
 .PHONY: rust-windows-check

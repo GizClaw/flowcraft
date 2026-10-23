@@ -499,40 +499,43 @@ jobs:
         working-directory: rust
         run: cargo test --workspace
 
+  # The kernel's transport is unix-domain sockets, so the platform itself is
+  # unix-only. The workspace provider is not: without the `wire` feature it has
+  # no control-plane dependency, and it has `cfg(windows)` branches worth more
+  # than a compile check — the sharing-violation retry and the refusal to replace
+  # a directory with `MoveFileEx`. This lane runs that shape on a real Windows
+  # host, so those branches execute instead of merely compiling.
+  #
+  # It is a separate runner rather than a cross-compile on ubuntu because the
+  # interesting part is behaviour: what Windows does when a directory is in the
+  # way, and what `ERROR_SHARING_VIOLATION` looks like to `std`. `make
+  # rust-windows-check` does the cheap cross-compile for a feed-back loop without
+  # a Windows machine. No protoc: the local-only shape does not build
+  # flowcraft-proto.
   rust-windows:
-    name: Rust platform (windows check)
-    runs-on: ubuntu-latest
+    name: Rust platform (windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Read the pinned toolchain
         id: toolchain
+        shell: bash
         run: |
           channel=$(grep '^channel' rust/rust-toolchain.toml | cut -d'"' -f2)
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-          targets: x86_64-pc-windows-gnu
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      # The kernel's transport is unix-domain sockets, so only the workspace
-      # provider compiles for Windows, and only without the `wire` feature. This
-      # lane exists so the provider's `cfg(windows)` branches (sharing-violation
-      # retry, directory-replace refusal) are compiled rather than merely
-      # written. Nothing runs: a cross-compiled binary cannot execute here.
-      # mingw is the assembler/linker that target needs; no protoc, because the
-      # local-only shape does not build flowcraft-proto.
-      - name: Install the mingw toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
-      - name: Clippy for the Windows target
+      - name: Clippy for the local-only shape
         working-directory: rust
-        run: |
-          cargo clippy -p flowcraft-cap-workspace --all-targets \
-            --no-default-features --target x86_64-pc-windows-gnu -- -D warnings
+        run: cargo clippy -p flowcraft-cap-workspace --all-targets --no-default-features -- -D warnings
+      - name: Test the local-only shape
+        working-directory: rust
+        run: cargo test -p flowcraft-cap-workspace --no-default-features
 
   ci-pass:
     name: CI

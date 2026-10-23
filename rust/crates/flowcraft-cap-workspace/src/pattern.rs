@@ -126,4 +126,16 @@ mod tests {
             flowcraft_error::ErrorKind::Validation
         );
     }
+
+    /// Only runs on Windows: matching folds case exactly where the filesystem
+    /// does, so a deny rule cannot be sidestepped by spelling the path
+    /// differently.
+    #[cfg(windows)]
+    #[test]
+    fn matching_folds_case_where_the_filesystem_does() {
+        let set = compile_set(&["Secrets/**".to_owned()]).unwrap();
+        assert!(set.is_match("secrets/key"));
+        assert!(set.is_match("SECRETS"));
+        assert!(matches("**/*.JSON", "a/b.json"));
+    }
 }

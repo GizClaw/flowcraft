@@ -5,14 +5,15 @@
 //! transient, so a short bounded retry turns a race into a success while a file
 //! that stays locked still fails honestly instead of hanging.
 //!
-//! The loop is portable and tested on every platform; only the classification of
-//! "transient" is Windows-specific, which keeps the code that cannot run here
-//! down to a handful of lines. The Go side has the same split: `removeWithRetry`
-//! in `remove_windows.go`, a pass-through in `remove_other.go`.
+//! Everything except the entry-point selection is portable and tested on every
+//! platform: the loop, and the classification of the two Windows codes. What
+//! differs per platform is one decision — whether to spend the retries at all —
+//! which mirrors the Go side's `removeWithRetry` in `remove_windows.go` and the
+//! pass-through in `remove_other.go`.
 
-// The loop exists for the Windows path, but the tests below exercise it on every
-// platform; a non-Windows library build therefore sees it as unused, not as an
-// error.
+// The loop and the classification exist for the Windows entry point, but the
+// tests below exercise both on every platform; a non-Windows library build
+// therefore sees them as unused, not as an error.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::io;
@@ -26,6 +27,15 @@ const ATTEMPTS: u32 = 3;
 
 /// The pause after the first failure; each further failure doubles it.
 const FIRST_DELAY: Duration = Duration::from_millis(200);
+
+/// `ERROR_SHARING_VIOLATION` (32) and `ERROR_LOCK_VIOLATION` (33): the two codes
+/// `remove_file` / `remove_dir_all` surface when the target is held open by
+/// another process. They are the only failures worth a second attempt — a
+/// missing path or a real permission error is final, and retrying it would only
+/// delay the honest answer.
+fn is_sharing_violation(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32) | Some(33))
+}
 
 /// Run `op`, retrying while it fails with a transient error and attempts remain.
 ///
@@ -62,20 +72,13 @@ where
 }
 
 /// Run a remove-shaped operation. Unix unlinks an open file, so this is a
-/// pass-through and the loop above is unreachable.
+/// pass-through and the retry is never spent.
 #[cfg(not(windows))]
 pub(crate) fn remove<T, F>(mut op: F) -> io::Result<T>
 where
     F: FnMut() -> io::Result<T>,
 {
     op()
-}
-
-/// `ERROR_SHARING_VIOLATION` (32) and `ERROR_LOCK_VIOLATION` (33): the two codes
-/// `remove_file` / `remove_dir_all` surface when the target is held open.
-#[cfg(windows)]
-fn is_sharing_violation(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(32) | Some(33))
 }
 
 #[cfg(test)]
@@ -86,16 +89,16 @@ mod tests {
         error.kind() == io::ErrorKind::PermissionDenied
     }
 
+    fn denied() -> io::Error {
+        io::Error::from(io::ErrorKind::PermissionDenied)
+    }
+
     #[test]
     fn a_transient_failure_is_retried_into_a_success() {
         let mut calls = 0;
         let value = retry_when(2, transient, || {
             calls += 1;
-            if calls < 2 {
-                Err(io::Error::from(io::ErrorKind::PermissionDenied))
-            } else {
-                Ok(7)
-            }
+            if calls < 2 { Err(denied()) } else { Ok(7) }
         })
         .unwrap();
         assert_eq!(value, 7);
@@ -107,7 +110,7 @@ mod tests {
         let mut calls = 0;
         let error = retry_when::<(), _, _>(2, transient, || {
             calls += 1;
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            Err(denied())
         })
         .unwrap_err();
         assert_eq!(calls, 2);
@@ -124,5 +127,52 @@ mod tests {
         .unwrap_err();
         assert_eq!(calls, 1);
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// The classification is pure, so it is checkable off Windows too: the codes
+    /// are numbers, not platform types.
+    #[test]
+    fn only_sharing_and_lock_violations_are_transient() {
+        assert!(is_sharing_violation(&io::Error::from_raw_os_error(32)));
+        assert!(is_sharing_violation(&io::Error::from_raw_os_error(33)));
+        for code in [2, 5, 112, 1234] {
+            assert!(
+                !is_sharing_violation(&io::Error::from_raw_os_error(code)),
+                "{code}"
+            );
+        }
+        assert!(!is_sharing_violation(&denied()));
+    }
+
+    /// Only runs where the retry is armed: a sharing violation is what a remove
+    /// retries, and the Windows CI lane proves it end to end.
+    #[cfg(windows)]
+    #[test]
+    fn a_remove_retries_a_sharing_violation() {
+        let mut calls = 0;
+        let value = remove(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(io::Error::from_raw_os_error(32))
+            } else {
+                Ok("removed")
+            }
+        })
+        .unwrap();
+        assert_eq!(value, "removed");
+        assert_eq!(calls, 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_remove_does_not_retry_a_missing_path() {
+        let mut calls = 0;
+        let error = remove::<(), _>(|| {
+            calls += 1;
+            Err(io::Error::from_raw_os_error(2))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.raw_os_error(), Some(2));
     }
 }
