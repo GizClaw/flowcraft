@@ -10,7 +10,7 @@
 //! flowcraft::kernel     control plane: config, catalog, grants, listeners
 //! flowcraft::client     grant-carrying client wire + craft ABI client
 //! flowcraft::search     text retrieval primitives (tokenize + BM25)
-//! flowcraft::caps::*    workspace / secret / checkpoint / sandbox / tool
+//! flowcraft::caps::*    workspace / secret / sandbox / tool
 //! ```
 //!
 //! # Features
@@ -57,7 +57,6 @@ pub use flowcraft_search as search;
 /// server, and remote client.
 #[cfg(feature = "caps")]
 pub mod caps {
-    pub use flowcraft_cap_checkpoint as checkpoint;
     pub use flowcraft_cap_sandbox as sandbox;
     pub use flowcraft_cap_secret as secret;
     pub use flowcraft_cap_tool as tool;

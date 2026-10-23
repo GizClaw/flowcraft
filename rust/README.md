@@ -4,9 +4,11 @@
 graph, and the capability endpoints other processes call. The agent loop lives
 in the Go `craft` SDK, not here; the two sides speak protobuf.
 
-Status: **five capabilities are end to end** — workspace, secret, checkpoint,
-sandbox, and tool — each with a provider, a grant-authenticated gRPC endpoint,
-and a remote client presenting the same contract. Endpoints are unix sockets by
+Status: **four capabilities are end to end** — workspace, secret, sandbox, and
+tool — each with a provider, a grant-authenticated gRPC endpoint, and a remote
+client presenting the same contract. Checkpointing stays in the craft SDK: an
+agent owns the state it can resume from, so the platform does not provide a
+checkpoint store. Endpoints are unix sockets by
 default and TLS/mTLS over TCP when a `dns://` target is configured. `SIGHUP`
 reloads the deployment as a new generation; a bad document never disturbs the
 running one, and new TLS material is picked up by the reload. `craft.Craft/v1`
@@ -36,14 +38,13 @@ rust/
                              auth/status helpers, the craft ABI client
     flowcraft-cap-workspace  workspace: local provider, endpoint server, remote client
     flowcraft-cap-secret     secret: memory/env/file/keychain providers, endpoint, remote client
-    flowcraft-cap-checkpoint checkpoint: local directory provider, endpoint, remote client
     flowcraft-cap-sandbox    sandbox: local process runner, endpoint, remote client
     flowcraft-cap-tool       tool: capability (endpoint/remote/MCP) + agent-side
                              framework (registry, assembly, middleware, exposure,
                              discovery, executor)
     flowcraft-platformd      the `flowcraftd` binary
   examples/workspace/        a runnable platform.yaml + deploy.yaml
-  examples/capabilities/     workspace, secret, checkpoint, sandbox + `${secret:...}`
+  examples/capabilities/     workspace, secret, sandbox, tool + `${secret:...}`
 ```
 
 Dependency direction is one way, and a test pins it
@@ -456,12 +457,15 @@ Two rules carry most of the design:
   blocks keep their typed part, and anything else falls back to a JSON data part
   instead of being dropped. Optional servers (`required: false`), per-call
   deadlines (`http_timeout`) and the MCP resource bridge (`resources: true`)
-  are supported. A failed call reconnects the server once, and a successful
-  reconnect re-lists its tools and reconciles the registry (new and changed
-  entries replace their old ones, removed ones disappear). Liveness pings run
-  every 15s by default (`liveness: off` disables); peers on protocol
-  2026-07-28+ are skipped because SEP-2575 removed the method, and a failed
-  ping reconnects.
+  are supported. Connection is lazy: a required server is awaited for up to
+  `connect_timeout` (default 30s) during build, an optional one connects in the
+  background and publishes its tools through the registrar, and a tool whose
+  server has not connected yet connects on first use. A failed call reconnects
+  the server once, and a successful reconnect re-lists its tools and reconciles
+  the registry (new and changed entries replace their old ones, removed ones
+  disappear). Liveness pings run every 15s by default (`liveness: off`
+  disables); peers on protocol 2026-07-28+ are skipped because SEP-2575 removed
+  the method, and a failed ping reconnects.
 - **Assembly is the composition point.** `Assembly` builds a registry, appends
   `tool_search` when dynamic injection is enabled, and installs the session
   recorder. An assembly is long-lived and stateless per run: the per-run session
@@ -480,11 +484,6 @@ Two rules carry most of the design:
   the session, so renewing the lease (a fresh token) does not refill it. The
   registry is programmatic (a tool is code, not YAML), so there is no
   `tool.Source/local` document factory.
-- **A checkpoint payload carries its own id.** The wire's `Save` has no
-  `exec_id` field: the payload is JSON with an `exec_id`, exactly as the Go
-  client sends it. The Rust endpoint reads that one field, enforces the grant
-  scope against it, and stores the bytes untouched; the remote client refuses a
-  payload whose id disagrees with the call.
 - **Grants are validated offline** by the endpoint (no introspection call).
   Revocation is local to the daemon; cross-daemon revocation is deliberately
   left to short TTLs.

@@ -9,9 +9,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flowcraft_cap_checkpoint::{
-    endpoint as checkpoint_endpoint, local as checkpoint_local, remote as checkpoint_remote,
-};
 use flowcraft_cap_sandbox::{
     endpoint as sandbox_endpoint, local as sandbox_local, remote as sandbox_remote,
 };
@@ -38,10 +35,6 @@ const ENDPOINT_CAPABILITIES: &[(&str, &str)] = &[
     (
         "secret.Endpoint",
         flowcraft_cap_secret::endpoint::CAPABILITY,
-    ),
-    (
-        "checkpoint.Endpoint",
-        flowcraft_cap_checkpoint::endpoint::CAPABILITY,
     ),
     (
         "sandbox.Endpoint",
@@ -72,9 +65,6 @@ pub fn registry() -> Registry {
         registry.register(secret_endpoint::EndpointFactory),
         registry.register(secret_remote::RemoteFactory),
         registry.register(secret_keychain::KeychainFactory),
-        registry.register(checkpoint_local::LocalFactory),
-        registry.register(checkpoint_endpoint::EndpointFactory),
-        registry.register(checkpoint_remote::RemoteFactory),
         registry.register(sandbox_local::LocalFactory),
         registry.register(flowcraft_cap_sandbox::BwrapFactory),
         registry.register(flowcraft_cap_sandbox::SeatbeltFactory),

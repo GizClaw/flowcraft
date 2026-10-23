@@ -21,7 +21,6 @@ path = "src/main.rs"
 otlp = ["flowcraft-telemetry/otlp"]
 
 [dependencies]
-flowcraft-cap-checkpoint.workspace = true
 flowcraft-cap-sandbox.workspace = true
 flowcraft-cap-tool.workspace = true
 flowcraft-cap-secret.workspace = true

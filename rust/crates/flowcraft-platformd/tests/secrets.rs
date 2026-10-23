@@ -46,12 +46,12 @@ async fn references_route_by_store_id_and_by_default() {
                     "settings": {"values": {"root": shared}, "id": "shared"}
                 },
                 "by-default": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:root}"}
                 },
                 "by-id": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:shared.root}"}
                 }
@@ -64,12 +64,9 @@ async fn references_route_by_store_id_and_by_default() {
 
     for (name, expected) in [("by-default", &team), ("by-id", &shared)] {
         let store = built
-            .get::<flowcraft_cap_checkpoint::Handle>(name)
+            .get::<flowcraft_cap_workspace::Handle>(name)
             .expect("store");
-        store
-            .save("run-1", br#"{"exec_id":"run-1"}"#)
-            .await
-            .expect("save");
+        store.write("run-1", b"run-1").await.expect("save");
         assert!(
             std::path::Path::new(expected).join("run-1").exists(),
             "{name} must resolve to {expected}"
@@ -88,7 +85,7 @@ async fn a_second_default_store_fails_the_build() {
                 "a": {"kind": "secret.Store", "impl": "memory", "settings": {"default": true}},
                 "b": {"kind": "secret.Store", "impl": "memory", "settings": {"default": true}},
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:x}"}
                 }
@@ -139,7 +136,7 @@ async fn a_name_only_reference_needs_a_default_store() {
                     "settings": {"id": "team", "values": {"root": "/tmp/x"}}
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:root}"}
                 }
@@ -165,7 +162,7 @@ async fn every_reference_is_checked_against_the_declared_stores() {
                     "settings": {"id": "team", "default": true, "values": {"root": "/tmp/x"}}
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:other.root}"}
                 }
@@ -176,7 +173,7 @@ async fn every_reference_is_checked_against_the_declared_stores() {
     .await
     .expect_err("unknown store");
     // `other` is not a store id, so the whole path is a name in the default
-    // store: it resolves, and the checkpoint store then fails on the value.
+    // store: it resolves, and the workspace then fails on the value.
     assert!(
         error.to_string().contains("other.root"),
         "the name must be reported: {error}"
@@ -186,8 +183,8 @@ async fn every_reference_is_checked_against_the_declared_stores() {
 #[tokio::test]
 async fn the_keychain_serves_lazy_references_and_stays_sealed() {
     let secrets_dir = tempfile::tempdir().unwrap();
-    let checkpoints = tempfile::tempdir().unwrap();
-    let root = checkpoints.path().join("stores").display().to_string();
+    let stores = tempfile::tempdir().unwrap();
+    let root = stores.path().join("stores").display().to_string();
 
     // Write the secret the way an app-side settings page would.
     let manager = Manager::open(secrets_dir.path());
@@ -208,7 +205,7 @@ async fn the_keychain_serves_lazy_references_and_stays_sealed() {
                     }
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:demo/root}"}
                 }
@@ -220,12 +217,9 @@ async fn the_keychain_serves_lazy_references_and_stays_sealed() {
     .expect("build");
 
     let store = built
-        .get::<flowcraft_cap_checkpoint::Handle>("store")
+        .get::<flowcraft_cap_workspace::Handle>("store")
         .expect("store");
-    store
-        .save("run-1", br#"{"exec_id":"run-1"}"#)
-        .await
-        .expect("save");
+    store.write("run-1", b"run-1").await.expect("save");
     assert!(std::path::Path::new(&root).join("run-1").exists());
 
     // The resolved value went into the store, not into the process's settings:
@@ -248,8 +242,8 @@ async fn the_keychain_serves_lazy_references_and_stays_sealed() {
 
 #[tokio::test]
 async fn a_host_injected_store_is_the_default() {
-    let checkpoints = tempfile::tempdir().unwrap();
-    let root = checkpoints.path().join("host").display().to_string();
+    let stores = tempfile::tempdir().unwrap();
+    let root = stores.path().join("host").display().to_string();
     let host: Arc<dyn SecretStore> =
         Arc::new(MemoryStore::new([("demo/root".to_owned(), root.clone())]));
     let handle = Arc::new(SecretHandle::new(host));
@@ -261,7 +255,7 @@ async fn a_host_injected_store_is_the_default() {
             "version": "v1",
             "resources": {
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:demo/root}"}
                 }
@@ -274,12 +268,9 @@ async fn a_host_injected_store_is_the_default() {
     .expect("build with an injected store");
 
     let store = built
-        .get::<flowcraft_cap_checkpoint::Handle>("store")
+        .get::<flowcraft_cap_workspace::Handle>("store")
         .expect("store");
-    store
-        .save("run-1", br#"{"exec_id":"run-1"}"#)
-        .await
-        .expect("save");
+    store.write("run-1", b"run-1").await.expect("save");
     assert!(std::path::Path::new(&root).join("run-1").exists());
     built.shutdown().await.unwrap();
 }
@@ -313,7 +304,7 @@ async fn a_missing_secret_still_fails_the_build_that_needs_it() {
             "resources": {
                 "secrets": {"kind": "secret.Store", "impl": "memory", "settings": {"default": true}},
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:absent}"}
                 }
@@ -330,11 +321,11 @@ async fn a_missing_secret_still_fails_the_build_that_needs_it() {
 #[tokio::test]
 async fn the_file_provider_serves_one_file_per_secret() {
     let secrets_dir = tempfile::tempdir().unwrap();
-    let checkpoints = tempfile::tempdir().unwrap();
-    let root = checkpoints.path().join("from-file");
+    let stores = tempfile::tempdir().unwrap();
+    let root = stores.path().join("from-file");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
-        secrets_dir.path().join("checkpoint-root"),
+        secrets_dir.path().join("workspace-root"),
         format!("{}\n", root.display()),
     )
     .unwrap();
@@ -353,9 +344,9 @@ async fn the_file_provider_serves_one_file_per_secret() {
                     }
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
-                    "settings": {"root": "${secret:checkpoint-root}"}
+                    "settings": {"root": "${secret:workspace-root}"}
                 }
             }
         })),
@@ -365,12 +356,9 @@ async fn the_file_provider_serves_one_file_per_secret() {
     .expect("build");
 
     let store = built
-        .get::<flowcraft_cap_checkpoint::Handle>("store")
+        .get::<flowcraft_cap_workspace::Handle>("store")
         .expect("store");
-    store
-        .save("run-1", br#"{"exec_id":"run-1"}"#)
-        .await
-        .expect("save");
+    store.write("run-1", b"run-1").await.expect("save");
     assert!(root.join("run-1").exists());
     built.shutdown().await.unwrap();
 }

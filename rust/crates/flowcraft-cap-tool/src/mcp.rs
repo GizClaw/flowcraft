@@ -5,6 +5,11 @@
 //! content blocks onto `flowcraft.message.v1` parts. The mapping is deliberately
 //! lossless where it has a typed home and falls back to a JSON data part
 //! otherwise.
+//!
+//! Connection is lazy: a required server is awaited for up to `connect_timeout`
+//! (default 30s) during build, while an optional one connects in the background
+//! and publishes its tools through the registry's [`Registrar`]. A tool whose
+//! server has not connected yet connects on first use.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
@@ -20,8 +25,8 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Phase, Spec};
 use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientRequest, ContentBlock, ListResourcesResult,
-    ListToolsResult, PingRequest, ProtocolVersion, ReadResourceRequestParams, ReadResourceResult,
-    ResourceContents, Tool as McpToolInfo,
+    PingRequest, ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    Tool as McpToolInfo,
 };
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
@@ -93,6 +98,10 @@ pub struct ServerSpec {
     /// protocol 2026-07-28+ are never pinged (SEP-2575 removed the method).
     #[serde(default)]
     pub liveness: Option<String>,
+    /// How long a required server may take to connect during build (default
+    /// `30s`). Optional servers never block.
+    #[serde(default)]
+    pub connect_timeout: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -101,6 +110,22 @@ fn default_true() -> bool {
 
 /// The default liveness interval, matching Go's `DefaultLivenessInterval`.
 const DEFAULT_LIVENESS: Duration = Duration::from_secs(15);
+
+/// The default wait for a required server's initial connection.
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn parse_connect_timeout(raw: Option<&str>) -> Result<Duration> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_CONNECT_TIMEOUT);
+    };
+    let value = crate::middleware::parse_duration(raw)?;
+    if value.is_zero() {
+        return Err(Error::validation(
+            "mcp: connect_timeout must be a positive duration",
+        ));
+    }
+    Ok(value)
+}
 
 /// Parse a per-server liveness setting: `off` disables probing; anything else
 /// must be a positive duration. Absent keeps the default.
@@ -199,6 +224,7 @@ impl ServerSpec {
             crate::middleware::parse_duration(timeout)?;
         }
         parse_liveness(self.liveness.as_deref())?;
+        parse_connect_timeout(self.connect_timeout.as_deref())?;
         Ok(())
     }
 
@@ -253,94 +279,258 @@ impl flowcraft_resource::Factory for Factory {
 /// A group of connected MCP servers, exposed as one tool source.
 pub struct McpSource {
     servers: Vec<Arc<Server>>,
-    tools: Vec<Arc<AdaptedTool>>,
 }
 
 impl std::fmt::Debug for McpSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpSource")
-            .field("tools", &self.tools.len())
+            .field("tools", &self.len())
             .finish()
     }
 }
 
 impl McpSource {
-    /// Connect every declared server and list its tools.
+    /// Start every declared server. Required servers are awaited up to their
+    /// `connect_timeout`; optional servers connect in the background and publish
+    /// their tools through the registry's [`Registrar`] once connected.
     pub async fn connect(settings: &Settings) -> Result<Self> {
         settings.validate()?;
         let mut servers = Vec::new();
-        let mut tools: Vec<Arc<AdaptedTool>> = Vec::new();
-        let mut seen = BTreeSet::new();
         for spec in &settings.servers {
-            let service = match connect_server(spec).await {
-                Ok(service) => Arc::new(service),
-                Err(error) if !spec.required => {
-                    tracing::warn!(server = %spec.name, %error, "mcp: optional server unavailable");
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
             let timeout = spec
                 .http_timeout
                 .as_deref()
                 .map(crate::middleware::parse_duration)
                 .transpose()?;
             let liveness = parse_liveness(spec.liveness.as_deref())?;
-            let server = Arc::new(Server {
-                name: spec.name.clone(),
-                spec: spec.clone(),
-                prefix: spec.prefix(),
-                timeout,
-                service: tokio::sync::Mutex::new(service),
-                known: std::sync::Mutex::new(BTreeSet::new()),
-                registrar: std::sync::Mutex::new(None),
-            });
+            let server = Arc::new(Server::new(spec.clone(), spec.prefix(), timeout));
             if let Some(interval) = liveness {
                 spawn_liveness(Arc::downgrade(&server), interval);
             }
-            let listed = server.list_tools_initial().await?;
-            let mut known = BTreeSet::new();
-            for info in &listed.tools {
-                let tool = call_tool(&server, info)?;
-                if !seen.insert(tool.definition.name.clone()) {
-                    return Err(Error::conflict(format!(
-                        "mcp: duplicate tool {:?} across servers",
-                        tool.definition.name
-                    )));
-                }
-                known.insert(tool.definition.name.clone());
-                tools.push(tool);
-            }
-            if spec.resources {
-                for tool in resource_tools(&server)? {
-                    if !seen.insert(tool.definition.name.clone()) {
-                        return Err(Error::conflict(format!(
-                            "mcp: duplicate tool {:?} across servers",
-                            tool.definition.name
+            let task = {
+                let server = server.clone();
+                tokio::spawn(async move { server.ensure_service().await.map(|_| ()) })
+            };
+            if spec.required {
+                let limit = parse_connect_timeout(spec.connect_timeout.as_deref())?;
+                match tokio::time::timeout(limit, task).await {
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(error))) => return Err(error),
+                    Ok(Err(error)) => {
+                        return Err(Error::internal(format!(
+                            "mcp: server {:?}: connect task: {error}",
+                            spec.name
                         )));
                     }
-                    known.insert(tool.definition.name.clone());
-                    tools.push(tool);
+                    Err(_) => {
+                        return Err(Error::timeout(format!(
+                            "mcp: server {:?}: connect exceeded {limit:?}",
+                            spec.name
+                        )));
+                    }
                 }
-            }
-            if let Ok(mut slot) = server.known.lock() {
-                *slot = known;
             }
             servers.push(server);
         }
-        Ok(Self { servers, tools })
+        Ok(Self { servers })
     }
 
-    /// The adapted tools, for tests.
+    /// The number of tools currently known across servers.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.tools.len()
+        self.servers.iter().map(|server| server.tool_count()).sum()
     }
 
-    /// Whether no server contributed a tool.
+    /// Whether no server has published a tool yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.len() == 0
+    }
+}
+
+/// One configured server, shared by its tools.
+struct Server {
+    name: String,
+    spec: ServerSpec,
+    prefix: String,
+    timeout: Option<Duration>,
+    service: tokio::sync::Mutex<Option<Arc<RunningService<RoleClient, ()>>>>,
+    connect: tokio::sync::Mutex<()>,
+    tools: std::sync::Mutex<Vec<Arc<AdaptedTool>>>,
+    known: std::sync::Mutex<BTreeSet<String>>,
+    registrar: std::sync::Mutex<Option<Arc<dyn Registrar>>>,
+}
+
+impl Server {
+    fn new(spec: ServerSpec, prefix: String, timeout: Option<Duration>) -> Self {
+        Self {
+            name: spec.name.clone(),
+            spec,
+            prefix,
+            timeout,
+            service: tokio::sync::Mutex::new(None),
+            connect: tokio::sync::Mutex::new(()),
+            tools: std::sync::Mutex::new(Vec::new()),
+            known: std::sync::Mutex::new(BTreeSet::new()),
+            registrar: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn tool_count(&self) -> usize {
+        self.tools.lock().map(|tools| tools.len()).unwrap_or(0)
+    }
+
+    fn tool_snapshot(&self) -> Vec<Arc<AdaptedTool>> {
+        self.tools
+            .lock()
+            .map(|tools| tools.clone())
+            .unwrap_or_default()
+    }
+
+    async fn within<F, T>(&self, future: F) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, rmcp::ServiceError>>,
+    {
+        let wrap = |error: rmcp::ServiceError| {
+            Error::not_available(format!("mcp: server {:?}: {error}", self.name))
+        };
+        match self.timeout {
+            Some(limit) => match tokio::time::timeout(limit, future).await {
+                Ok(result) => result.map_err(wrap),
+                Err(_) => Err(Error::timeout(format!(
+                    "mcp: server {:?}: exceeded {limit:?}",
+                    self.name
+                ))),
+            },
+            None => future.await.map_err(wrap),
+        }
+    }
+
+    /// Connect on first use. Serialized so concurrent tool calls share one
+    /// connection attempt.
+    async fn ensure_service(self: &Arc<Self>) -> Result<Arc<RunningService<RoleClient, ()>>> {
+        if let Some(service) = self.service.lock().await.clone() {
+            return Ok(service);
+        }
+        let _guard = self.connect.lock().await;
+        if let Some(service) = self.service.lock().await.clone() {
+            return Ok(service);
+        }
+        let service = Arc::new(connect_server(&self.spec).await?);
+        *self.service.lock().await = Some(service.clone());
+        self.load_tools(&service).await?;
+        Ok(service)
+    }
+
+    async fn load_tools(
+        self: &Arc<Self>,
+        service: &Arc<RunningService<RoleClient, ()>>,
+    ) -> Result<Vec<Arc<AdaptedTool>>> {
+        let listed = self.within(service.list_tools(None)).await?;
+        let mut tools = Vec::new();
+        for info in &listed.tools {
+            tools.push(call_tool(self, info)?);
+        }
+        if self.spec.resources {
+            tools.extend(resource_tools(self)?);
+        }
+        if let Ok(mut slot) = self.tools.lock() {
+            *slot = tools.clone();
+        }
+        self.publish(&tools);
+        Ok(tools)
+    }
+
+    /// Publish the current tool set through the registrar, when one is
+    /// attached. Called on first connect, on attach, and after a reconnect.
+    fn publish(self: &Arc<Self>, tools: &[Arc<AdaptedTool>]) {
+        let registrar = self.registrar.lock().ok().and_then(|slot| slot.clone());
+        let mut next = BTreeSet::new();
+        for tool in tools {
+            next.insert(tool.definition.name.clone());
+            if let Some(registrar) = &registrar {
+                registrar.remove(&tool.definition.name);
+                if let Err(error) = registrar.add(tool.clone()) {
+                    tracing::warn!(
+                        server = %self.name,
+                        tool = %tool.definition.name,
+                        %error,
+                        "mcp: publish tool failed"
+                    );
+                }
+            }
+        }
+        let stale: Vec<String> = {
+            let Ok(known) = self.known.lock() else {
+                return;
+            };
+            known.difference(&next).cloned().collect()
+        };
+        if let Some(registrar) = &registrar {
+            for name in stale {
+                registrar.remove(&name);
+            }
+        }
+        if let Ok(mut known) = self.known.lock() {
+            *known = next;
+        }
+    }
+
+    async fn call_tool(
+        self: &Arc<Self>,
+        remote: String,
+        arguments: Map<String, Value>,
+    ) -> Result<CallToolResult> {
+        let service = self.ensure_service().await?;
+        let first = self
+            .within(service.call_tool(
+                CallToolRequestParams::new(remote.clone()).with_arguments(arguments.clone()),
+            ))
+            .await;
+        match first {
+            Ok(result) => Ok(result),
+            Err(error) if error.kind() == ErrorKind::NotAvailable => {
+                let service = self.reconnect().await?;
+                self.within(
+                    service.call_tool(CallToolRequestParams::new(remote).with_arguments(arguments)),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn list_resources(self: &Arc<Self>) -> Result<ListResourcesResult> {
+        let service = self.ensure_service().await?;
+        match self.within(service.list_resources(None)).await {
+            Ok(result) => Ok(result),
+            Err(error) if error.kind() == ErrorKind::NotAvailable => {
+                let service = self.reconnect().await?;
+                self.within(service.list_resources(None)).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn read_resource(self: &Arc<Self>, uri: String) -> Result<ReadResourceResult> {
+        let service = self.ensure_service().await?;
+        let first = self
+            .within(service.read_resource(ReadResourceRequestParams::new(uri.clone())))
+            .await;
+        match first {
+            Ok(result) => Ok(result),
+            Err(error) if error.kind() == ErrorKind::NotAvailable => {
+                let service = self.reconnect().await?;
+                self.within(service.read_resource(ReadResourceRequestParams::new(uri)))
+                    .await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn reconnect(self: &Arc<Self>) -> Result<Arc<RunningService<RoleClient, ()>>> {
+        *self.service.lock().await = None;
+        self.ensure_service().await
     }
 }
 
@@ -406,154 +596,11 @@ fn schema_bytes(info: &McpToolInfo) -> Vec<u8> {
     serde_json::to_vec(&*info.input_schema).unwrap_or_else(|_| b"{\"type\":\"object\"}".to_vec())
 }
 
-/// One connected server, shared by its tools.
-struct Server {
-    name: String,
-    spec: ServerSpec,
-    prefix: String,
-    timeout: Option<Duration>,
-    service: tokio::sync::Mutex<Arc<RunningService<RoleClient, ()>>>,
-    known: std::sync::Mutex<BTreeSet<String>>,
-    registrar: std::sync::Mutex<Option<Arc<dyn Registrar>>>,
-}
-
-impl Server {
-    async fn current(&self) -> Arc<RunningService<RoleClient, ()>> {
-        self.service.lock().await.clone()
-    }
-
-    async fn list_tools_initial(&self) -> Result<ListToolsResult> {
-        let service = self.current().await;
-        self.within(service.list_tools(None)).await
-    }
-
-    async fn within<F, T>(&self, future: F) -> Result<T>
-    where
-        F: std::future::Future<Output = std::result::Result<T, rmcp::ServiceError>>,
-    {
-        let wrap = |error: rmcp::ServiceError| {
-            Error::not_available(format!("mcp: server {:?}: {error}", self.name))
-        };
-        match self.timeout {
-            Some(limit) => match tokio::time::timeout(limit, future).await {
-                Ok(result) => result.map_err(wrap),
-                Err(_) => Err(Error::timeout(format!(
-                    "mcp: server {:?}: exceeded {limit:?}",
-                    self.name
-                ))),
-            },
-            None => future.await.map_err(wrap),
-        }
-    }
-
-    async fn call_tool(
-        self: &Arc<Self>,
-        remote: String,
-        arguments: Map<String, Value>,
-    ) -> Result<CallToolResult> {
-        let service = self.current().await;
-        let first = self
-            .within(service.call_tool(
-                CallToolRequestParams::new(remote.clone()).with_arguments(arguments.clone()),
-            ))
-            .await;
-        match first {
-            Ok(result) => Ok(result),
-            Err(error) if error.kind() == ErrorKind::NotAvailable => {
-                let service = self.reconnect().await?;
-                self.within(
-                    service.call_tool(CallToolRequestParams::new(remote).with_arguments(arguments)),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn list_resources(self: &Arc<Self>) -> Result<ListResourcesResult> {
-        let service = self.current().await;
-        match self.within(service.list_resources(None)).await {
-            Ok(result) => Ok(result),
-            Err(error) if error.kind() == ErrorKind::NotAvailable => {
-                let service = self.reconnect().await?;
-                self.within(service.list_resources(None)).await
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn read_resource(self: &Arc<Self>, uri: String) -> Result<ReadResourceResult> {
-        let service = self.current().await;
-        let first = self
-            .within(service.read_resource(ReadResourceRequestParams::new(uri.clone())))
-            .await;
-        match first {
-            Ok(result) => Ok(result),
-            Err(error) if error.kind() == ErrorKind::NotAvailable => {
-                let service = self.reconnect().await?;
-                self.within(service.read_resource(ReadResourceRequestParams::new(uri)))
-                    .await
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn reconnect(self: &Arc<Self>) -> Result<Arc<RunningService<RoleClient, ()>>> {
-        let service = Arc::new(connect_server(&self.spec).await?);
-        *self.service.lock().await = service.clone();
-        if let Err(error) = self.reconcile(&service).await {
-            tracing::warn!(server = %self.name, %error, "mcp: reconcile after reconnect failed");
-        }
-        Ok(service)
-    }
-
-    /// Refresh the registry's entries for this server after a reconnect: new and
-    /// changed tools replace their old entries, and removed tools disappear.
-    async fn reconcile(
-        self: &Arc<Self>,
-        service: &Arc<RunningService<RoleClient, ()>>,
-    ) -> Result<()> {
-        let registrar = self.registrar.lock().ok().and_then(|slot| slot.clone());
-        let Some(registrar) = registrar else {
-            return Ok(());
-        };
-        let listed = self.within(service.list_tools(None)).await?;
-        let mut next = BTreeSet::new();
-        for info in &listed.tools {
-            let tool = call_tool(self, info)?;
-            next.insert(tool.definition.name.clone());
-            registrar.remove(&tool.definition.name);
-            registrar.add(tool)?;
-        }
-        if self.spec.resources {
-            for tool in resource_tools(self)? {
-                next.insert(tool.definition.name.clone());
-                registrar.remove(&tool.definition.name);
-                registrar.add(tool)?;
-            }
-        }
-        let stale: Vec<String> = {
-            let known = self
-                .known
-                .lock()
-                .map_err(|_| Error::internal("mcp: server state lock poisoned"))?;
-            known.difference(&next).cloned().collect()
-        };
-        for name in stale {
-            registrar.remove(&name);
-        }
-        *self
-            .known
-            .lock()
-            .map_err(|_| Error::internal("mcp: server state lock poisoned"))? = next;
-        Ok(())
-    }
-}
-
-/// Probe a server periodically; a failed ping reconnects and reconciles.
+/// Probe a server periodically; a failed ping reconnects.
 ///
 /// SEP-2575 removed `ping` in protocol 2026-07-28, so a modern peer is never
-/// probed — its liveness is observed through call failures instead.
+/// probed. Servers that have not connected yet are skipped: liveness never
+/// initiates a connection on its own.
 fn spawn_liveness(server: Weak<Server>, interval: Duration) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -563,7 +610,10 @@ fn spawn_liveness(server: Weak<Server>, interval: Duration) {
             let Some(server) = server.upgrade() else {
                 return;
             };
-            let service = server.current().await;
+            let service = server.service.lock().await.clone();
+            let Some(service) = service else {
+                continue;
+            };
             let modern = service
                 .peer_info()
                 .is_some_and(|info| info.protocol_version >= ProtocolVersion::V_2026_07_28);
@@ -725,9 +775,10 @@ fn json_content(value: &serde_json::Value) -> msg::Content {
 impl Source for McpSource {
     async fn tools(&self) -> Result<Vec<Arc<dyn Tool>>> {
         Ok(self
-            .tools
+            .servers
             .iter()
-            .map(|tool| tool.clone() as Arc<dyn Tool>)
+            .flat_map(|server| server.tool_snapshot())
+            .map(|tool| tool as Arc<dyn Tool>)
             .collect())
     }
 
@@ -736,6 +787,8 @@ impl Source for McpSource {
             if let Ok(mut slot) = server.registrar.lock() {
                 *slot = Some(registrar.clone());
             }
+            // Publish tools that connected before the registry attached.
+            server.publish(&server.tool_snapshot());
         }
     }
 }
@@ -743,13 +796,19 @@ impl Source for McpSource {
 #[async_trait]
 impl ToolSource for McpSource {
     async fn list(&self) -> Result<Vec<msg::ToolDefinition>> {
-        Ok(self.tools.iter().map(|tool| tool.definition()).collect())
+        Ok(self
+            .servers
+            .iter()
+            .flat_map(|server| server.tool_snapshot())
+            .map(|tool| tool.definition())
+            .collect())
     }
 
     async fn execute(&self, name: &str, arguments: &str) -> Result<msg::Content> {
         let tool = self
-            .tools
+            .servers
             .iter()
+            .flat_map(|server| server.tool_snapshot())
             .find(|tool| tool.definition.name == name)
             .ok_or_else(|| Error::not_found(format!("mcp: tool {name:?} is not registered")))?;
         tool.execute(&CallContext::default(), arguments).await
@@ -968,6 +1027,49 @@ mod tests {
             let error = settings.validate().unwrap_err();
             assert!(error.to_string().contains(needle), "{error}");
         }
+    }
+
+    #[test]
+    fn connect_timeout_defaults_and_parses() {
+        assert_eq!(
+            parse_connect_timeout(None).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_connect_timeout(Some("5s")).unwrap(),
+            Duration::from_secs(5)
+        );
+        assert!(parse_connect_timeout(Some("0s")).is_err());
+        assert!(parse_connect_timeout(Some("soon")).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_optional_server_does_not_block_the_build() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "name": "files",
+                "transport": "stdio",
+                "command": "definitely-not-a-real-binary-flowcraft",
+                "required": false
+            }]
+        }))
+        .expect("settings");
+        let source = McpSource::connect(&settings).await.expect("connect");
+        assert!(source.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_required_server_fails_the_build() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "name": "files",
+                "transport": "stdio",
+                "command": "definitely-not-a-real-binary-flowcraft",
+                "connect_timeout": "2s"
+            }]
+        }))
+        .expect("settings");
+        assert!(McpSource::connect(&settings).await.is_err());
     }
 
     #[test]

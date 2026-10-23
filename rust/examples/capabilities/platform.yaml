@@ -11,9 +11,6 @@ remote:
     secrets-dev:
       target: "unix:///tmp/flowcraft/secrets.sock"
       capabilities: ["secret.Store/v1"]
-    checkpoints-dev:
-      target: "unix:///tmp/flowcraft/checkpoints.sock"
-      capabilities: ["checkpoint.Store/v1"]
     sandbox-dev:
       target: "unix:///tmp/flowcraft/sandbox.sock"
       capabilities: ["sandbox.Runner/v1"]

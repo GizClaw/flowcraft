@@ -113,7 +113,6 @@ fn capabilities_depend_only_on_the_public_layers() {
     for capability in [
         "flowcraft-cap-workspace",
         "flowcraft-cap-secret",
-        "flowcraft-cap-checkpoint",
         "flowcraft-cap-sandbox",
         "flowcraft-cap-tool",
     ] {
@@ -140,7 +139,6 @@ fn the_facade_reexports_every_crate_and_nobody_depends_on_it() {
         "flowcraft-search",
         "flowcraft-cap-workspace",
         "flowcraft-cap-secret",
-        "flowcraft-cap-checkpoint",
         "flowcraft-cap-sandbox",
         "flowcraft-cap-tool",
     ] {

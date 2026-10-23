@@ -299,7 +299,7 @@ async fn the_assembly_builds_starts_and_serves_the_remote_capability() {
 #[tokio::test]
 async fn settings_resolve_from_the_deployment_secret_store() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("checkpoints").display().to_string();
+    let root = dir.path().join("data").display().to_string();
     let platform = Platform::new(Config::default()).expect("platform");
     let deployment: Deployment = flowcraft_resource::deployment(
         serde_json::to_vec(&serde_json::json!({
@@ -311,7 +311,7 @@ async fn settings_resolve_from_the_deployment_secret_store() {
                     "settings": {"values": {"demo/root": root}, "default": true}
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:demo/root}"}
                 }
@@ -326,15 +326,12 @@ async fn settings_resolve_from_the_deployment_secret_store() {
         .await
         .expect("build");
     let store = built
-        .get::<flowcraft_cap_checkpoint::Handle>("store")
+        .get::<flowcraft_cap_workspace::Handle>("store")
         .expect("store");
-    store
-        .save("run-1", br#"{"exec_id":"run-1"}"#)
-        .await
-        .expect("save");
+    store.write("run-1", b"run-1").await.expect("save");
     assert!(
         std::path::Path::new(&root).join("run-1").exists(),
-        "the resolved root must be where the checkpoint landed"
+        "the resolved root must be where the workspace write landed"
     );
     built.shutdown().await.expect("shutdown");
 }
@@ -352,7 +349,7 @@ async fn an_absent_secret_fails_the_build() {
                     "settings": {"default": true}
                 },
                 "store": {
-                    "kind": "checkpoint.Store",
+                    "kind": "workspace.Workspace",
                     "impl": "local",
                     "settings": {"root": "${secret:demo/missing}"}
                 }

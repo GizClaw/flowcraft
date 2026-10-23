@@ -34,7 +34,6 @@ caps = [
     "platform",
     "dep:flowcraft-cap-workspace",
     "dep:flowcraft-cap-secret",
-    "dep:flowcraft-cap-checkpoint",
     "dep:flowcraft-cap-sandbox",
     "dep:flowcraft-cap-tool",
 ]
@@ -49,7 +48,6 @@ flowcraft-client = { workspace = true, optional = true }
 flowcraft-search = { workspace = true, optional = true }
 flowcraft-cap-workspace = { workspace = true, optional = true }
 flowcraft-cap-secret = { workspace = true, optional = true }
-flowcraft-cap-checkpoint = { workspace = true, optional = true }
 flowcraft-cap-sandbox = { workspace = true, optional = true }
 flowcraft-cap-tool = { workspace = true, optional = true }
 
