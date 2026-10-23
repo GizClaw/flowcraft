@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use flowcraft_error::{Error, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
 
 use super::matcher::Matcher;
@@ -213,26 +215,36 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
             })
         }
         Listen::Unix(path) => {
-            // A stale socket from a crashed run must not block the next one.
-            let _ = std::fs::remove_file(&path);
-            let listener = UnixListener::bind(&path).map_err(|error| {
-                Error::not_available(format!(
-                    "sandbox: bind the enforcement proxy at {}: {error}",
-                    path.display()
+            #[cfg(not(unix))]
+            {
+                let _ = (&path, &shared);
+                Err(Error::not_available(
+                    "sandbox: a unix socket proxy listener is a unix mechanism",
                 ))
-            })?;
-            let handle = tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
-                    let shared = shared.clone();
-                    tokio::spawn(async move {
-                        let _ = serve_unix(stream, shared).await;
-                    });
-                }
-            });
-            Ok(Proxy {
-                endpoint: Endpoint::Unix(path),
-                handle,
-            })
+            }
+            #[cfg(unix)]
+            {
+                // A stale socket from a crashed run must not block the next one.
+                let _ = std::fs::remove_file(&path);
+                let listener = UnixListener::bind(&path).map_err(|error| {
+                    Error::not_available(format!(
+                        "sandbox: bind the enforcement proxy at {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                let handle = tokio::spawn(async move {
+                    while let Ok((stream, _)) = listener.accept().await {
+                        let shared = shared.clone();
+                        tokio::spawn(async move {
+                            let _ = serve_unix(stream, shared).await;
+                        });
+                    }
+                });
+                Ok(Proxy {
+                    endpoint: Endpoint::Unix(path),
+                    handle,
+                })
+            }
         }
     }
 }
@@ -289,6 +301,7 @@ async fn serve_tcp(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     dispatch(stream, first.to_vec(), shared).await
 }
 
+#[cfg(unix)]
 async fn serve_unix(mut stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await.map_err(Error::from)?;
