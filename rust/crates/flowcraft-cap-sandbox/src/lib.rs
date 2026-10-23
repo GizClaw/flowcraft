@@ -26,7 +26,9 @@
 pub mod confinement;
 pub mod contract;
 pub mod endpoint;
+pub mod exec;
 pub mod local;
+pub mod policy;
 pub mod remote;
 pub mod scope;
 mod session;
@@ -39,5 +41,13 @@ pub use contract::{
     NetModes, NetPolicy, NetRule, ReadResult, ResourceLimits, Runner, Session, SessionFeatures,
     SessionInfo, SessionSpec, Signal, Stream, WriteMode, WriteModes,
 };
+pub use exec::{ExecResult, exec};
 pub use local::LocalRunner;
+pub use policy::{
+    Allowlist, ApprovalRequest, Approver, ApproverFn, Chain, Decision, Escalation,
+    EscalationDecision, EscalationGate, EscalationRules, Escalator, ExecRequest, Layer,
+    LocalPolicy, Outcome, Predicate, RunnerRef, allow_commands, approval, classify_read_only,
+    command_patterns, compose_local, defaults, denial, interactive, net_non_default, normalise,
+    rule_for, workdir_outside_root,
+};
 pub use remote::RemoteRunner;

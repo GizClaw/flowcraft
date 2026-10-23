@@ -473,15 +473,10 @@ pub(crate) async fn spawn(
         watchdog: Mutex::new(None),
     });
 
-    if let Some(bytes) = &spec.opts.stdin
-        && !bytes.is_empty()
-    {
-        let mut guard = session.stdin.lock().await;
-        if let Some(stdin) = guard.as_mut() {
-            stdin.write_all(bytes).await.map_err(Error::from)?;
-            stdin.flush().await.map_err(Error::from)?;
-        }
-    }
+    // `Opts.stdin` is one-shot `Exec` input, not a declaration: `start` neither
+    // delivers those bytes nor lets them open an input side. A caller that wants
+    // a streaming session calls `write`/`close_input` itself, and `exec` does
+    // exactly that.
     if !wants_stdin {
         session.close_input().await?;
     }
