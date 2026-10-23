@@ -22,9 +22,9 @@
 //! is resolved lexically first, and an operation is refused when the result
 //! would climb above the root — the rule Go's `cleanPath` uses, so `a/../b.txt`
 //! names `b.txt` while `../b.txt` is refused. Absolute paths are refused too.
-//! Both refusals are [`ErrorKind::Forbidden`], matching the class the Go side
-//! attaches to `ErrPathTraversal`; a missing path is
-//! [`ErrorKind::NotFound`](flowcraft_error::ErrorKind::NotFound).
+//! Both refusals are [`ErrorKind::Forbidden`](flowcraft_error::ErrorKind::Forbidden),
+//! matching the class the Go side attaches to `ErrPathTraversal`; a missing path
+//! is [`ErrorKind::NotFound`](flowcraft_error::ErrorKind::NotFound).
 //!
 //! # Blocking work
 //!
@@ -82,7 +82,7 @@ impl LocalWorkspace {
     /// Fails when the directory cannot be created, canonicalized, or opened.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
+        create_root(&root)?;
         // Resolve the root once: the handle below is opened on the real path,
         // so a later swap of the root for a symlink changes nothing.
         let root = std::fs::canonicalize(&root)?;
@@ -140,6 +140,28 @@ fn annotate(label: &str, error: Error) -> Error {
     Error::new(error.kind(), format!("workspace: {label}: {message}")).with_source(error)
 }
 
+/// Create the workspace root itself with the provider's mode.
+///
+/// `create_dir_all` would leave the root at `0o777 & !umask` (0755 on a normal
+/// host) while every directory below it is 0700, so the root — the one a
+/// deployment names in a document and shares between runs — would be the
+/// readable one. The Go provider passes 0700 to `os.MkdirAll` for the same
+/// reason.
+fn create_root(root: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(DIR_MODE);
+        builder.create(root)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(root)?;
+    }
+    Ok(())
+}
+
 /// Create the missing parent directories of `path` with the provider's mode.
 fn create_parents(dir: &Dir, path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
@@ -191,7 +213,17 @@ fn check_rename(
     if replaces_directories {
         return Ok(());
     }
-    let (Ok(source_meta), Ok(destination_meta)) = (dir.metadata(source), dir.metadata(destination))
+    // `metadata` follows symlinks, matching the Go provider's `Stat` probes. A
+    // missing path on either side means the rename cannot be replacing an
+    // existing directory, so it may proceed; any other stat failure is reported
+    // rather than swallowed, so a permission problem is not mistaken for
+    // "nothing there".
+    let metadata = |path: &Path| match dir.metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::from(error)),
+    };
+    let (Some(source_meta), Some(destination_meta)) = (metadata(source)?, metadata(destination)?)
     else {
         return Ok(());
     };
@@ -311,7 +343,11 @@ impl Workspace for LocalWorkspace {
             let file = dir.open(&target)?;
             // Read at most one byte past the cap: enough to detect an oversized
             // file without materializing it.
-            let mut reader = std::io::Read::take(file, max_bytes + 1);
+            // `saturating_add`, not `+`: `max_bytes` is a `uint64` on the wire,
+            // so `u64::MAX` is a legal request. Overflowing would panic in a
+            // debug build and silently wrap to `take(0)` in release, answering
+            // an empty payload for a non-empty file.
+            let mut reader = std::io::Read::take(file, max_bytes.saturating_add(1));
             let mut data = Vec::new();
             std::io::Read::read_to_end(&mut reader, &mut data)?;
             if data.len() as u64 > max_bytes {
@@ -368,7 +404,12 @@ impl Workspace for LocalWorkspace {
         let label = format!("delete {path}");
         let shown = path.to_owned();
         self.blocking(label, move |dir| {
-            match dir.metadata(&target) {
+            // `symlink_metadata` is the right probe: a symlink is removed as a
+            // link, never followed. Following it here would refuse a link to a
+            // directory the contract says to unlink, and would treat a dangling
+            // link as a missing path and leave it behind (the Go provider's
+            // `Remove` unlinks it).
+            match dir.symlink_metadata(&target) {
                 Ok(metadata) if metadata.is_dir() => {
                     return Err(Error::validation(format!(
                         "workspace: {shown} is a directory (use remove_all)"
@@ -392,14 +433,28 @@ impl Workspace for LocalWorkspace {
         if target == Path::new(".") {
             return Err(Error::forbidden("cannot remove the workspace root"));
         }
-        self.blocking(
-            format!("remove_all {path}"),
-            move |dir| match crate::retry::remove(|| dir.remove_dir_all(&target)) {
+        self.blocking(format!("remove_all {path}"), move |dir| {
+            // The contract names a tree, but removal is idempotent and total: a
+            // file or a symlink at that path is removed too (Go's
+            // `os.RemoveAll` does). Dispatching on the entry type keeps a link
+            // from being followed and a file from failing with `ENOTDIR`.
+            let directory = match dir.symlink_metadata(&target) {
+                Ok(metadata) => metadata.is_dir(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            let removed = if directory {
+                crate::retry::remove(|| dir.remove_dir_all(&target))
+            } else {
+                crate::retry::remove(|| dir.remove_file(&target))
+            };
+            match removed {
                 Ok(()) => Ok(()),
+                // A concurrent remover got there first: removal is idempotent.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.into()),
-            },
-        )
+            }
+        })
         .await
     }
 
@@ -647,6 +702,58 @@ mod tests {
         assert_eq!(workspace.read("inside").await.unwrap(), b"inside");
     }
 
+    /// Removal is total: a file at the path is removed, not reported as
+    /// "not a directory" (Go's `os.RemoveAll` behaves the same).
+    #[tokio::test]
+    async fn remove_all_also_removes_a_file() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("file.txt", b"x").await.unwrap();
+        workspace.remove_all("file.txt").await.unwrap();
+        assert!(!workspace.exists("file.txt").await.unwrap());
+        // Still idempotent.
+        workspace.remove_all("file.txt").await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_unlinks_a_symlink_without_following_it() {
+        let (dir, workspace) = workspace().await;
+        // A link to a directory is unlinked, not refused: the contract removes
+        // files, and a link is an entry of its own.
+        std::fs::create_dir_all(workspace.root().join("tree")).unwrap();
+        std::os::unix::fs::symlink(
+            workspace.root().join("tree"),
+            workspace.root().join("link-to-dir"),
+        )
+        .unwrap();
+        workspace.delete("link-to-dir").await.unwrap();
+        assert!(!workspace.exists("link-to-dir").await.unwrap());
+        assert!(workspace.exists("tree").await.unwrap());
+
+        // A dangling link is an entry too, and used to be left behind because
+        // the follow-based probe answered NotFound.
+        std::os::unix::fs::symlink(dir.path().join("gone"), workspace.root().join("dangling"))
+            .unwrap();
+        workspace.delete("dangling").await.unwrap();
+        assert!(
+            std::fs::symlink_metadata(workspace.root().join("dangling")).is_err(),
+            "the dangling link should be gone"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_root_itself_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, workspace) = workspace().await;
+        let mode = std::fs::metadata(workspace.root())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
     #[tokio::test]
     async fn removing_the_root_is_forbidden() {
         let (_dir, workspace) = workspace().await;
@@ -702,6 +809,12 @@ mod tests {
         let (_dir, workspace) = workspace().await;
         workspace.write("file", b"0123456789").await.unwrap();
         assert_eq!(workspace.read_limited("file", 10).await.unwrap().len(), 10);
+        // `u64::MAX` is a legal wire value: the cap arithmetic must not
+        // overflow into an empty answer.
+        assert_eq!(
+            workspace.read_limited("file", u64::MAX).await.unwrap(),
+            b"0123456789"
+        );
         let error = workspace.read_limited("file", 9).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Validation);
         assert_eq!(
