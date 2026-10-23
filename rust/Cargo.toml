@@ -1,0 +1,90 @@
+# FlowCraft platform in Rust — workspace root.
+#
+# Layout follows the platform (not Go package) boundaries:
+#   contract  → serde contracts, error kinds, deployment document types
+#   proto     → prost/tonic codegen from the existing .proto files
+#   resource  → local composition kernel (Plan/Build/Start/Close)
+#   kernel    → code-first control plane (config, catalog, grants, endpoints)
+#   cap-*     → capability providers + endpoint servers + remote clients
+#   platformd → the single delivered binary
+#
+# Dependency direction is one-way: contract → proto → resource → kernel → cap-* → platformd.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/GizClaw/flowcraft"
+
+
+[workspace.dependencies]
+flowcraft-error = { path = "crates/flowcraft-error" }
+flowcraft-telemetry = { path = "crates/flowcraft-telemetry" }
+flowcraft-client = { path = "crates/flowcraft-client" }
+flowcraft-proto = { path = "crates/flowcraft-proto" }
+flowcraft-search = { path = "crates/flowcraft-search" }
+flowcraft-resource = { path = "crates/flowcraft-resource" }
+flowcraft-kernel = { path = "crates/flowcraft-kernel" }
+flowcraft-cap-workspace = { path = "crates/flowcraft-cap-workspace" }
+flowcraft-cap-secret = { path = "crates/flowcraft-cap-secret" }
+flowcraft-cap-checkpoint = { path = "crates/flowcraft-cap-checkpoint" }
+flowcraft-cap-sandbox = { path = "crates/flowcraft-cap-sandbox" }
+flowcraft-cap-tool = { path = "crates/flowcraft-cap-tool" }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tower = { version = "0.5", features = ["util"] }
+
+async-trait = "0.1"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+globset = "0.4"
+nix = { version = "0.31", features = ["signal"] }
+notify = "8"
+http = "1"
+prost = "0.14"
+rand = "0.8"
+ring = "0.17"
+saphyr = "0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "io-util",
+    "fs",
+    "process",
+] }
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.27", default-features = false, features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.27", default-features = false, features = ["trace", "logs"] }
+tracing-opentelemetry = { version = "0.28", default-features = false }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = [
+    "http-proto",
+    "reqwest-client",
+    "logs",
+] }
+opentelemetry-appender-tracing = { version = "0.27", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+future_not_send = "warn"

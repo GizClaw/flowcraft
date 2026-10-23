@@ -1,0 +1,13 @@
+---
+# Go stubs only. Rust generates its bindings in `flowcraft-proto/build.rs` from
+# the same tree, so there is exactly one source of truth and no committed Rust
+# output to drift.
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-go
+    out: ../.proto-gen/go
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../.proto-gen/go
+    opt: paths=source_relative

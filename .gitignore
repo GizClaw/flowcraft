@@ -29,6 +29,10 @@
 !go.work
 !core/
 !core/**
+
+# ── Wire contracts (proto + future JSON Schema) ──
+!proto/
+!proto/**
 !craft/
 !craft/**
 !driver/
@@ -41,6 +45,10 @@
 !skills/**
 !tools/
 !tools/**
+
+# ── Rust platform ──
+!rust/
+!rust/**
 !.release/
 !.release/**
 

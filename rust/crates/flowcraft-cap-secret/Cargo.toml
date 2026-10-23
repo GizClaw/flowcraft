@@ -1,0 +1,30 @@
+[package]
+name = "flowcraft-cap-secret"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FlowCraft secret capability: memory/env/file/keychain providers, secret writes, endpoint server, remote client."
+
+[dependencies]
+flowcraft-error.workspace = true
+flowcraft-client.workspace = true
+flowcraft-kernel.workspace = true
+flowcraft-proto.workspace = true
+flowcraft-resource.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ring.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

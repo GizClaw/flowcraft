@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package flowcraft.tool.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/tool/v1;toolv1";
+
+import "flowcraft/message/v1/message.proto";
+
+service ToolSource {
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+message ListRequest {}
+message ToolDescriptor {
+  string name = 1;
+  // The definition the model sees.
+  flowcraft.message.v1.ToolDefinition definition = 2;
+}
+message ListResponse { repeated ToolDescriptor tools = 1; }
+
+message ExecuteRequest {
+  string name = 1;
+  string arguments = 2;
+}
+message ExecuteResponse {
+  // The ordered multimodal result.
+  flowcraft.message.v1.Content content = 1;
+}

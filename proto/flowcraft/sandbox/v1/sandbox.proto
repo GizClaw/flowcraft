@@ -1,0 +1,239 @@
+syntax = "proto3";
+
+package flowcraft.sandbox.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/sandbox/v1;sandboxv1";
+
+// Sandbox is the process-execution capability served by a platform endpoint.
+// v1 exposes the pull-based session surface needed by sandbox.Exec; Watch,
+// Resize and Signal remain local-only until their wire semantics are fixed.
+service Sandbox {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc Start(StartRequest) returns (StartResponse);
+  rpc Read(ReadRequest) returns (ReadResponse);
+  rpc Write(WriteRequest) returns (WriteResponse);
+  rpc CloseInput(CloseInputRequest) returns (CloseInputResponse);
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
+  rpc Signal(SignalRequest) returns (SignalResponse);
+  rpc Watch(WatchRequest) returns (stream Event);
+  rpc Wait(WaitRequest) returns (WaitResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc TerminateSession(TerminateSessionRequest) returns (TerminateSessionResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Terminate(TerminateRequest) returns (TerminateResponse);
+  rpc CloseRunner(CloseRunnerRequest) returns (CloseRunnerResponse);
+  rpc OpenJournal(OpenJournalRequest) returns (OpenJournalResponse);
+  rpc JournalRead(JournalReadRequest) returns (JournalReadResponse);
+  rpc CloseJournal(CloseJournalRequest) returns (CloseJournalResponse);
+}
+
+message DescribeRequest {}
+message DescribeResponse {
+  Enforcement policy = 1;
+  Features features = 2;
+  Journal journal = 3;
+}
+
+message Enforcement {
+  bool env_allow_list = 1;
+  repeated string net_modes = 2;
+  bool socks5 = 3;
+  bool mitm = 4;
+  bool unix_socket_policy = 5;
+  bool memory_cap = 6;
+  bool cpu_cap = 7;
+  bool disk_cap = 8;
+  bool filesystem_bounds = 9;
+  repeated string write_modes = 10;
+}
+
+message Features {
+  bool tty = 1;
+  bool signal = 2;
+  bool events = 3;
+}
+
+message Journal {
+  bool enabled = 1;
+  bool writer_id = 2;
+  bool rename_pairing = 3;
+  bool file_identity = 4;
+  int32 watch_budget = 5;
+}
+
+message SessionSpec {
+  string id = 1;
+  repeated string argv = 2;
+  bool tty = 3;
+  int32 rows = 4;
+  int32 cols = 5;
+  bool stdin = 6;
+  ExecOptions opts = 7;
+}
+
+message ExecOptions {
+  string workdir = 1;
+  bytes stdin = 2;
+  string timeout = 3;
+  EnvPolicy env = 4;
+  NetPolicy net = 5;
+  string write = 6;
+  ResourceLimits resources = 7;
+}
+
+message EnvPolicy {
+  repeated string allow = 1;
+  map<string, string> inject = 2;
+}
+
+message NetPolicy {
+  string mode = 1;
+  repeated string allow_hosts = 2;
+  repeated NetRule rules = 3;
+  string proxy = 4;
+  repeated string unix_sockets = 5;
+}
+
+message NetRule {
+  string action = 1;
+  string host = 2;
+  int32 port = 3;
+  string reason = 4;
+}
+
+message ResourceLimits {
+  int32 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+  int64 disk_bytes = 3;
+  int64 max_output_bytes = 4;
+}
+
+message SessionRef {
+  string id = 1;
+  int32 pid = 2;
+  SessionFeatures capabilities = 3;
+}
+
+message SessionFeatures {
+  bool tty = 1;
+  bool stdin = 2;
+  bool signal = 3;
+  bool events = 4;
+}
+
+message StartRequest { SessionSpec spec = 1; }
+message StartResponse { SessionRef session = 1; }
+
+message ReadRequest {
+  string session = 1;
+  int64 after_seq = 2;
+  int32 max_bytes = 3;
+}
+message ReadResponse {
+  int64 next_seq = 1;
+  repeated Chunk chunks = 2;
+  bool eof = 3;
+}
+message Chunk {
+  int64 seq = 1;
+  string stream = 2;
+  bytes data = 3;
+}
+
+message WriteRequest {
+  string session = 1;
+  bytes data = 2;
+}
+message WriteResponse {}
+
+message CloseInputRequest { string session = 1; }
+message CloseInputResponse {}
+
+message ResizeRequest {
+  string session = 1;
+  int32 rows = 2;
+  int32 cols = 3;
+}
+message ResizeResponse {}
+
+message SignalRequest {
+  string session = 1;
+  string signal = 2;
+}
+message SignalResponse {}
+
+message WatchRequest { string session = 1; }
+message Event {
+  int64 seq = 1;
+  string type = 2;
+  string stream = 3;
+  bytes data = 4;
+  SessionExit exit = 5;
+}
+
+message WaitRequest { string session = 1; }
+message WaitResponse { SessionExit exit = 1; }
+
+message SessionExit {
+  int32 code = 1;
+  int32 signal = 2;
+  string reason = 3;
+}
+
+message CloseSessionRequest { string session = 1; }
+message CloseSessionResponse {}
+
+message TerminateSessionRequest { string session = 1; }
+message TerminateSessionResponse {}
+
+message ListRequest {}
+message ListResponse { repeated SessionInfo sessions = 1; }
+
+message SessionInfo {
+  string id = 1;
+  repeated string argv = 2;
+  bool tty = 3;
+  int32 pid = 4;
+  int64 started_at_unix_nano = 5;
+  bool running = 6;
+  SessionExit exit = 7;
+}
+
+message TerminateRequest { string session = 1; }
+message TerminateResponse {}
+
+message CloseRunnerRequest {}
+message CloseRunnerResponse {}
+
+message OpenJournalRequest {}
+message OpenJournalResponse { string journal = 1; }
+
+message JournalReadRequest {
+  string journal = 1;
+  int64 after_seq = 2;
+  int32 max = 3;
+}
+message JournalReadResponse {
+  repeated JournalEvent events = 1;
+  int64 next_seq = 2;
+  JournalGap gap = 3;
+  bool closed = 4;
+}
+message JournalEvent {
+  int64 seq = 1;
+  int64 at_unix_nano = 2;
+  string op = 3;
+  string path = 4;
+  string old_path = 5;
+  bool is_dir = 6;
+  uint64 dev = 7;
+  uint64 ino = 8;
+  int64 size = 9;
+  string session = 10;
+}
+message JournalGap {
+  int64 first_missing = 1;
+  string reason = 2;
+}
+message CloseJournalRequest { string journal = 1; }
+message CloseJournalResponse {}

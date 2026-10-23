@@ -1,0 +1,37 @@
+---
+# The composition document: what the daemon builds in-process.
+#
+# `host` and `grants` are supplied by the platform when an endpoint resource is
+# present; `endpoints` is supplied when a remote client asks for it.
+version: v1
+
+resources:
+  local:
+    kind: workspace.Workspace
+    impl: local
+    settings:
+      root: /tmp/flowcraft/data
+
+  serve:
+    kind: workspace.Endpoint
+    impl: grpc
+    deps:
+      workspace: local
+    settings:
+      endpoint: workspace-dev
+
+  client:
+    kind: workspace.Workspace
+    impl: remote
+    deps:
+      endpoints: endpoints
+    settings:
+      endpoint: workspace-dev
+      # Signed into the grant; the endpoint enforces it per call.
+      scope:
+        root: repos
+        write: true
+
+entries:
+  - local
+  - serve

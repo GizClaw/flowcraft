@@ -1,0 +1,25 @@
+[package]
+name = "flowcraft-resource"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FlowCraft local composition kernel: typed factories, a dependency plan, deterministic construction."
+
+[dependencies]
+flowcraft-error.workspace = true
+flowcraft-telemetry.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+saphyr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

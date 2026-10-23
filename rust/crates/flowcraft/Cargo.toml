@@ -1,0 +1,57 @@
+[package]
+name = "flowcraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Facade over the FlowCraft platform crates: error, resource, kernel, client, proto, capabilities."
+
+[features]
+# The platform assembly: documents, the composition kernel, the control plane,
+# and client plumbing. This is what a program that hosts FlowCraft wants.
+default = ["platform"]
+# The error taxonomy alone (it is the only crate every other one depends on).
+error = ["dep:flowcraft-error"]
+# The telemetry pipeline: field vocabulary, rendering, sinks, the subscriber host.
+telemetry = ["dep:flowcraft-telemetry"]
+# Ship telemetry to an OTLP collector (adds an HTTP stack and a runtime).
+otlp = ["telemetry", "flowcraft-telemetry/otlp"]
+# Generated wire types, for callers that speak a capability protocol directly.
+proto = ["dep:flowcraft-proto"]
+# Documents + composition + control plane + client, without capability impls.
+platform = [
+    "error",
+    "telemetry",
+    "proto",
+    "dep:flowcraft-resource",
+    "dep:flowcraft-kernel",
+    "dep:flowcraft-client",
+    "dep:flowcraft-search",
+]
+# Every built-in capability: local provider, endpoint server, remote client.
+caps = [
+    "platform",
+    "dep:flowcraft-cap-workspace",
+    "dep:flowcraft-cap-secret",
+    "dep:flowcraft-cap-checkpoint",
+    "dep:flowcraft-cap-sandbox",
+    "dep:flowcraft-cap-tool",
+]
+
+[dependencies]
+flowcraft-error = { workspace = true, optional = true }
+flowcraft-telemetry = { workspace = true, optional = true }
+flowcraft-proto = { workspace = true, optional = true }
+flowcraft-resource = { workspace = true, optional = true }
+flowcraft-kernel = { workspace = true, optional = true }
+flowcraft-client = { workspace = true, optional = true }
+flowcraft-search = { workspace = true, optional = true }
+flowcraft-cap-workspace = { workspace = true, optional = true }
+flowcraft-cap-secret = { workspace = true, optional = true }
+flowcraft-cap-checkpoint = { workspace = true, optional = true }
+flowcraft-cap-sandbox = { workspace = true, optional = true }
+flowcraft-cap-tool = { workspace = true, optional = true }
+
+[lints]
+workspace = true

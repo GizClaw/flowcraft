@@ -1,0 +1,36 @@
+[package]
+name = "flowcraft-cap-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FlowCraft workspace capability: local provider, endpoint server, remote client."
+
+[dependencies]
+flowcraft-error.workspace = true
+flowcraft-client.workspace = true
+flowcraft-kernel.workspace = true
+flowcraft-proto.workspace = true
+flowcraft-resource.workspace = true
+async-trait.workspace = true
+http.workspace = true
+hyper-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14"
+# The tests pin the rustls provider explicitly: a workspace-wide build unifies
+# rustls' `ring` feature (tonic) with `aws_lc_rs` (the OTLP client), which leaves
+# the process default ambiguous.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tempfile = "3"
+
+[lints]
+workspace = true

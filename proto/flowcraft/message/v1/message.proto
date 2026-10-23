@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+package flowcraft.message.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/message/v1;messagev1";
+
+// The canonical conversation model. This is a data schema, not a service: it is
+// the wire form of `core/message`, shared by every contract that carries
+// conversation content — the craft ABI's envelopes and `tool.v1` results.
+//
+// `media.SourceKind = "stream"` is deliberately absent: a live stream is the
+// transport form of a media part while a message is in flight, and callers
+// materialize it before the message crosses a process boundary. A stream source
+// therefore has no wire form.
+
+// Message is one conversation turn.
+message Message {
+  Role role = 1;
+  Content content = 2;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_SYSTEM = 1;
+  ROLE_USER = 2;
+  ROLE_ASSISTANT = 3;
+  ROLE_TOOL = 4;
+}
+
+// Content is an ordered multimodal payload.
+message Content {
+  repeated Part parts = 1;
+}
+
+// Part is one canonical content kind. The oneof is the sealed union: adding a
+// kind is an additive change on the wire, but every consumer's switch becomes
+// non-exhaustive until it decides what the new kind means.
+message Part {
+  oneof kind {
+    TextPart text = 1;
+    ImagePart image = 2;
+    AudioPart audio = 3;
+    VideoPart video = 4;
+    FilePart file = 5;
+    DataPart data = 6;
+    ToolCallPart tool_call = 7;
+    ToolResultPart tool_result = 8;
+    ReasoningPart reasoning = 9;
+  }
+}
+
+// MediaSource is an image, audio, or video source: either a URL or inline bytes.
+message MediaSource {
+  oneof from {
+    string url = 1;
+    bytes data = 2;
+  }
+  // The source's media type, e.g. "image/png".
+  string media_type = 3;
+}
+
+message TextPart {
+  string text = 1;
+}
+
+message ImagePart {
+  MediaSource source = 1;
+}
+
+message AudioPart {
+  MediaSource source = 1;
+  AudioFormat format = 2;
+  // Absent when unknown.
+  optional int64 duration_millis = 3;
+}
+
+message AudioFormat {
+  // "pcm16", "pcm24", "float32", "mp3", "opus", "aac", "flac".
+  string encoding = 1;
+  int32 sample_rate_hz = 2;
+  int32 channels = 3;
+}
+
+message VideoPart {
+  MediaSource source = 1;
+}
+
+message FilePart {
+  string uri = 1;
+  string media_type = 2;
+  string name = 3;
+}
+
+message DataPart {
+  string media_type = 1;
+  // A JSON object.
+  bytes value = 2;
+}
+
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  // A JSON Schema object.
+  bytes input_schema = 3;
+}
+
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  // A JSON object.
+  bytes arguments = 3;
+}
+
+message ToolResult {
+  string call_id = 1;
+  Content content = 2;
+  bool is_error = 3;
+}
+
+message ToolCallPart {
+  ToolCall call = 1;
+}
+
+message ToolResultPart {
+  ToolResult result = 1;
+}
+
+// ReasoningPart is one provider reasoning trace. Text is empty when the provider
+// withheld the content; Signature is the provider-issued verification payload
+// that must round-trip verbatim; ID addresses the trace for providers that use
+// item ids; Source is the opaque verification scope stamped by the driver.
+message ReasoningPart {
+  string text = 1;
+  string signature = 2;
+  string id = 3;
+  string source = 4;
+}
+
+// Delta is one streaming fragment of a message being produced.
+message Delta {
+  oneof kind {
+    string text = 1;
+    string reasoning = 2;
+    ToolCall tool_call = 3;
+  }
+}

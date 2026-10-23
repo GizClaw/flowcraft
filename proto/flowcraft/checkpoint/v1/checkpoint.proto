@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package flowcraft.checkpoint.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/agent/checkpoint/v1;checkpointv1";
+
+service Checkpoint {
+  rpc Save(SaveRequest) returns (SaveResponse);
+  rpc Load(LoadRequest) returns (LoadResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message SaveRequest { bytes checkpoint = 1; }
+message SaveResponse {}
+
+message LoadRequest { string exec_id = 1; }
+message LoadResponse {
+  bytes checkpoint = 1;
+  bool found = 2;
+}
+
+message ListRequest {}
+message ListResponse { repeated string exec_ids = 1; }
+
+message DeleteRequest { string exec_id = 1; }
+message DeleteResponse {}

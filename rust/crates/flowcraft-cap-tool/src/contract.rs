@@ -1,0 +1,153 @@
+//! The tool-source contract.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use flowcraft_error::{Error, Result};
+use flowcraft_proto::message as msg;
+use flowcraft_resource::Resource;
+
+/// The registry kind.
+pub const KIND: &str = "tool.Source";
+/// The cross-process contract identity.
+pub const CONTRACT: &str = "tool.ToolSource/v1";
+
+/// A named set of tools: list what is available, run one call.
+#[async_trait]
+pub trait ToolSource: Send + Sync {
+    /// Every tool this source exposes, sorted by name.
+    async fn list(&self) -> Result<Vec<msg::ToolDefinition>>;
+
+    /// Run `name` with `arguments` (a JSON document, empty for no arguments).
+    async fn execute(&self, name: &str, arguments: &str) -> Result<msg::Content>;
+}
+
+/// The value a factory of this capability produces.
+#[derive(Clone)]
+pub struct Handle(pub Arc<dyn ToolSource>);
+
+impl Handle {
+    /// Wrap a provider.
+    #[must_use]
+    pub fn new(source: Arc<dyn ToolSource>) -> Self {
+        Self(source)
+    }
+
+    /// The provider.
+    #[must_use]
+    pub fn source(&self) -> Arc<dyn ToolSource> {
+        self.0.clone()
+    }
+}
+
+impl std::fmt::Debug for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tool.Handle")
+    }
+}
+
+impl std::ops::Deref for Handle {
+    type Target = Arc<dyn ToolSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Resource for Handle {}
+
+/// A tool definition must be addressable by the model.
+pub fn validate_definition(definition: &msg::ToolDefinition) -> Result<()> {
+    let name = definition.name.trim();
+    if name.is_empty() {
+        return Err(Error::validation("tool definition has an empty name"));
+    }
+    if name.len() > 128 {
+        return Err(Error::validation(format!(
+            "tool name {name:?} is longer than 128 bytes"
+        )));
+    }
+    // The same alphabet the Go SDK accepts, minus whitespace: a name travels
+    // through model output, grants, and logs, so it stays boring.
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err(Error::validation(format!(
+            "tool name {name:?} may only contain letters, digits, '.', '-', '_'"
+        )));
+    }
+    Ok(())
+}
+
+/// A result must carry at least one typed part, or the caller sees an empty
+/// turn it cannot explain.
+pub fn validate_content(content: &msg::Content) -> Result<()> {
+    if content.parts.is_empty() {
+        return Err(Error::validation("tool result has no content parts"));
+    }
+    if content.parts.iter().any(|part| part.kind.is_none()) {
+        return Err(Error::validation("tool result has a part with no kind"));
+    }
+    Ok(())
+}
+
+/// Arguments are a JSON document. An empty string means "no arguments" (the
+/// platform sends that for a no-parameter tool).
+pub fn validate_arguments(arguments: &str) -> Result<()> {
+    if arguments.trim().is_empty() {
+        return Ok(());
+    }
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .map(|_| ())
+        .map_err(|error| Error::validation(format!("tool arguments must be JSON: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(name: &str) -> msg::ToolDefinition {
+        msg::ToolDefinition {
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn names_are_checked() {
+        validate_definition(&definition("search")).unwrap();
+        validate_definition(&definition("team.search_v2")).unwrap();
+        for bad in ["", " ", "two words", "a/b", "héllo"] {
+            assert!(validate_definition(&definition(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_result_needs_a_typed_part() {
+        assert!(validate_content(&msg::Content { parts: Vec::new() }).is_err());
+        assert!(
+            validate_content(&msg::Content {
+                parts: vec![msg::Part { kind: None }],
+            })
+            .is_err()
+        );
+        validate_content(&msg::Content {
+            parts: vec![msg::Part {
+                kind: Some(msg::part::Kind::Text(msg::TextPart {
+                    text: "ok".to_owned(),
+                })),
+            }],
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn arguments_must_be_json_or_empty() {
+        validate_arguments("").unwrap();
+        validate_arguments("{}").unwrap();
+        validate_arguments(r#"{"query":"x"}"#).unwrap();
+        assert!(validate_arguments("{not json").is_err());
+    }
+}

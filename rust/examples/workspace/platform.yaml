@@ -1,0 +1,18 @@
+---
+# Host configuration. Owned by the operator, never by a tenant document.
+remote:
+  # strict: every endpoint target must match allow_targets.
+  mode: strict
+  allow_targets:
+    - "unix:///tmp/flowcraft/*"
+  endpoints:
+    workspace-dev:
+      target: "unix:///tmp/flowcraft/workspace.sock"
+      capabilities:
+        - "workspace.Workspace/v1"
+      # tls material is a secret reference, never inline PEM:
+      #   tls:
+      #     cert: "${secret:remote/workspace/cert}"
+      #     key: "${secret:remote/workspace/key}"
+grants:
+  ttl_secs: 900
