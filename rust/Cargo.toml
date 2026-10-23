@@ -40,6 +40,7 @@ tower = { version = "0.5", features = ["util"] }
 
 async-trait = "0.1"
 base64 = "0.22"
+bytes = "1"
 cap-std = "4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 globset = "0.4"

@@ -648,12 +648,14 @@ dependencies = [
 name = "flowcraft-client"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "flowcraft-error",
  "flowcraft-kernel",
  "flowcraft-proto",
  "flowcraft-telemetry",
  "http",
  "hyper-util",
+ "prost 0.14.4",
  "serde_json",
  "tokio",
  "tonic 0.14.5",

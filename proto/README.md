@@ -15,6 +15,8 @@ proto/
 ├── buf.gen.yaml                   # Go codegen (Rust generates at build time)
 ├── generate.py                    # buf generate + copy next to the Go packages
 └── flowcraft/
+    ├── error/v1/error.proto       # the structured error every endpoint carries
+    ├── message/v1/message.proto   # shared content model (parts, tools, deltas)
     ├── craft/v1/craft.proto       # platform ↔ craft lifecycle ABI
     ├── workspace/v1/workspace.proto
     ├── sandbox/v1/sandbox.proto
@@ -25,6 +27,35 @@ proto/
 
 The directory path matches the proto package (`flowcraft.<area>.v<major>`), which
 is what `buf lint` enforces.
+
+`error/v1` and `message/v1` declare messages only — no service. They describe
+what other contracts put on the wire, so they have no endpoint of their own.
+
+## Errors on the wire
+
+Every endpoint reports failure as a gRPC status, and every FlowCraft endpoint
+fills `Status.details` with one `flowcraft.error.v1.Error`. The category travels
+in the payload, not only in the status code: two pairs of categories share a code
+(`BUDGET_EXCEEDED`/`RATE_LIMIT` on `ResourceExhausted`, `POLICY_DENIED`/
+`FORBIDDEN` on `PermissionDenied`), so a peer reading only the code would treat a
+permanent budget failure as retryable and a policy refusal as a permission
+problem.
+
+Two layers, on purpose:
+
+- `Kind` — the fourteen shared categories (`flowcraft-error` / `core/errdefs`).
+  Authoritative when present; a peer falls back to the status code when a server
+  sends no payload, so old peers and non-FlowCraft servers keep working.
+- `Detail{domain, code, fields}` — a domain's own vocabulary. `(domain, code)` is
+  the machine-readable key, `fields` holds bounded, redacted scalars.
+
+Deliberately absent: any opaque or binary channel. Model output, prompts, and
+credentials are not "error detail", and an error payload that can carry them
+would be a leak surface by construction. A value that does not fit a short
+string is a modelling problem, not a transport problem.
+
+The `code` values are added, never renamed — a rename is a new code. `fields`
+keys and `code` spellings are therefore part of the contract.
 
 ## What belongs here
 

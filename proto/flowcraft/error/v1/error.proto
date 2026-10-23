@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package flowcraft.error.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/errdefs/v1;errdefsv1";
+
+// The structured error every endpoint carries in `Status.details`.
+//
+// A gRPC status alone cannot name a FlowCraft category: two pairs of
+// categories share a code (BudgetExceeded/RateLimit on ResourceExhausted,
+// PolicyDenied/Forbidden on PermissionDenied), so a peer reading only the code
+// downgrades a permanent budget failure into a retryable rate limit and a
+// policy refusal into a permission problem. `Kind` is therefore authoritative
+// when present, and `Status.code` stays a coarse hint for generic middleware.
+//
+// Presence is optional and additive: a peer that does not decode `details`
+// behaves exactly as before, so adding this contract did not change any
+// existing `v1` service.
+message Error {
+  // Authoritative category. KIND_UNSPECIFIED means "not carried"; the peer
+  // must then fall back to `Status.code`.
+  Kind kind = 1;
+  // Free-form text. Peers keep using the status message when this is empty.
+  string message = 2;
+  // Domain-scoped detail, in the order the failing layer produced it.
+  repeated Detail details = 3;
+  // Backoff hint and wire accounting, when the failing layer knows them.
+  RetryInfo retry = 4;
+  // Peer-assigned correlation id (for example a provider request id). Not the
+  // trace id: the trace travels in `traceparent` metadata.
+  string request_id = 5;
+}
+
+// Kind is the shared error taxonomy: the fourteen categories of
+// `flowcraft-error` (and `core/errdefs` on the Go side), one to one.
+//
+// Additive changes only: a `v1` peer may ignore a value it does not know, and
+// an unknown value is not a reason to fail a request.
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_VALIDATION = 1;
+  KIND_NOT_FOUND = 2;
+  KIND_UNAUTHORIZED = 3;
+  KIND_FORBIDDEN = 4;
+  KIND_CONFLICT = 5;
+  KIND_RATE_LIMIT = 6;
+  KIND_TIMEOUT = 7;
+  KIND_INTERRUPTED = 8;
+  KIND_ABORTED = 9;
+  KIND_CLOSED = 10;
+  KIND_NOT_AVAILABLE = 11;
+  KIND_INTERNAL = 12;
+  KIND_BUDGET_EXCEEDED = 13;
+  KIND_POLICY_DENIED = 14;
+}
+
+// Detail is one domain's own vocabulary for a failure.
+//
+// The pair `(domain, code)` is the machine-readable key; `fields` carries
+// bounded, redacted scalars only. There is deliberately no opaque or binary
+// channel: a value that does not fit a short string is either a caller bug or a
+// modelling mistake, and letting model or user output through an error channel
+// would make every error a leak surface.
+message Detail {
+  // Owning capability or subsystem, for example "workspace" or "inference".
+  string domain = 1;
+  // Stable snake_case code, unique within the domain. Versioned by spelling:
+  // codes are added, never renamed.
+  string code = 2;
+  // Human-readable explanation of this particular occurrence. Redacted.
+  string message = 3;
+  // Bounded scalars that let a peer act without parsing `message`.
+  map<string, string> fields = 4;
+}
+
+// RetryInfo is diagnostic metadata, not an instruction: it reports what the
+// failing layer observed.
+message RetryInfo {
+  // Server-provided backoff hint. Zero means no hint.
+  uint64 retry_after_millis = 1;
+  // Number of wire sends the failing layer made before giving up. Zero means
+  // it did not report a count.
+  uint32 wire_attempts = 2;
+}
