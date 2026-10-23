@@ -57,8 +57,10 @@ use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspa
 use crate::path;
 
 /// File mode for created files, matching the Go provider.
+#[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
 /// Directory mode for created directories, matching the Go provider.
+#[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
 
 /// A workspace rooted at one directory.
@@ -157,6 +159,37 @@ fn create_parents(dir: &Dir, path: &Path) -> Result<()> {
     {
         dir.create_dir_all(parent)?;
     }
+    Ok(())
+}
+
+/// Refuse a rename Windows cannot express.
+///
+/// `MoveFileEx`'s `REPLACE_EXISTING` cannot replace a directory, so renaming
+/// over an existing directory fails with a platform-specific code where POSIX
+/// `rename(2)` replaces an empty one. Directory rename is outside the contract,
+/// so the divergent case is reported in the contract's own vocabulary instead of
+/// leaking an OS code. Moving a directory to a *new* name works and is left
+/// alone, and a destination that does not exist cannot be a directory.
+#[cfg(windows)]
+fn check_rename(dir: &Dir, source: &Path, destination: &Path) -> Result<()> {
+    let (Ok(source_meta), Ok(destination_meta)) = (dir.metadata(source), dir.metadata(destination))
+    else {
+        return Ok(());
+    };
+    if source_meta.is_dir() || destination_meta.is_dir() {
+        return Err(Error::validation(format!(
+            "workspace: rename {} -> {}: replacing a directory is not supported",
+            source.display(),
+            destination.display()
+        )));
+    }
+    Ok(())
+}
+
+/// POSIX `rename(2)` replaces a file or an empty directory, so there is nothing
+/// to refuse before the call.
+#[cfg(not(windows))]
+fn check_rename(_dir: &Dir, _source: &Path, _destination: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -309,6 +342,7 @@ impl Workspace for LocalWorkspace {
         let destination = self.resolve(to)?;
         self.blocking(format!("rename {from} -> {to}"), move |dir| {
             create_parents(dir, &destination)?;
+            check_rename(dir, &source, &destination)?;
             dir.rename(&source, dir, &destination)?;
             Ok(())
         })
@@ -332,7 +366,7 @@ impl Workspace for LocalWorkspace {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
-            match dir.remove_file(&target) {
+            match crate::retry::remove(|| dir.remove_file(&target)) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.into()),
@@ -346,13 +380,14 @@ impl Workspace for LocalWorkspace {
         if target == Path::new(".") {
             return Err(Error::forbidden("cannot remove the workspace root"));
         }
-        self.blocking(format!("remove_all {path}"), move |dir| {
-            match dir.remove_dir_all(&target) {
+        self.blocking(
+            format!("remove_all {path}"),
+            move |dir| match crate::retry::remove(|| dir.remove_dir_all(&target)) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.into()),
-            }
-        })
+            },
+        )
         .await
     }
 
@@ -515,6 +550,7 @@ mod tests {
         assert_eq!(workspace.read("a/../b.txt").await.unwrap(), b"payload");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_symlink_cannot_escape_the_root() {
         let (dir, workspace) = workspace().await;

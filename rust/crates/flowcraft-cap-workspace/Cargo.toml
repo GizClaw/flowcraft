@@ -5,26 +5,36 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "FlowCraft workspace capability: local provider, endpoint server, remote client."
+description = "FlowCraft workspace capability: local provider, decorators, endpoint server, remote client."
+
+[features]
+default = ["wire"]
+# The gRPC endpoint and the remote client. Turning it off leaves the in-process
+# provider, its decorators and the helper operations — the shape a consumer that
+# only needs a directory needs, and the only shape that builds on a host without
+# unix-domain sockets. CI checks exactly that shape for a Windows target, so the
+# `cfg(windows)` code in the provider is compiled rather than merely written.
+wire = [
+    "dep:flowcraft-client",
+    "dep:flowcraft-kernel",
+    "dep:flowcraft-proto",
+    "dep:tonic",
+]
 
 [dependencies]
 flowcraft-error.workspace = true
-flowcraft-client.workspace = true
-flowcraft-kernel.workspace = true
-flowcraft-proto.workspace = true
 flowcraft-resource.workspace = true
 async-trait.workspace = true
 cap-std.workspace = true
 globset.workspace = true
-http.workspace = true
-hyper-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
-tonic.workspace = true
-tower.workspace = true
 tracing.workspace = true
+flowcraft-client = { workspace = true, optional = true }
+flowcraft-kernel = { workspace = true, optional = true }
+flowcraft-proto = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
 
 [dev-dependencies]
 rcgen = "0.14"
@@ -33,6 +43,28 @@ rcgen = "0.14"
 # the process default ambiguous.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+
+# The wire tests need the kernel's unix-socket transport; `--no-default-features`
+# (the Windows check) skips them instead of failing to compile.
+[[test]]
+name = "conformance"
+required-features = ["wire"]
+
+[[test]]
+name = "decorators"
+required-features = ["wire"]
+
+[[test]]
+name = "roundtrip"
+required-features = ["wire"]
+
+[[test]]
+name = "tenant"
+required-features = ["wire"]
+
+[[test]]
+name = "tls"
+required-features = ["wire"]
 
 [lints]
 workspace = true

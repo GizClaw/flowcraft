@@ -499,6 +499,41 @@ jobs:
         working-directory: rust
         run: cargo test --workspace
 
+  rust-windows:
+    name: Rust platform (windows check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the pinned toolchain
+        id: toolchain
+        run: |
+          channel=$(grep '^channel' rust/rust-toolchain.toml | cut -d'"' -f2)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          targets: x86_64-pc-windows-gnu
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The kernel's transport is unix-domain sockets, so only the workspace
+      # provider compiles for Windows, and only without the `wire` feature. This
+      # lane exists so the provider's `cfg(windows)` branches (sharing-violation
+      # retry, directory-replace refusal) are compiled rather than merely
+      # written. Nothing runs: a cross-compiled binary cannot execute here.
+      # mingw is the assembler/linker that target needs; no protoc, because the
+      # local-only shape does not build flowcraft-proto.
+      - name: Install the mingw toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - name: Clippy for the Windows target
+        working-directory: rust
+        run: |
+          cargo clippy -p flowcraft-cap-workspace --all-targets \
+            --no-default-features --target x86_64-pc-windows-gnu -- -D warnings
+
   ci-pass:
     name: CI
     if: always()
@@ -510,6 +545,7 @@ jobs:
       - lint
       - test
       - rust
+      - rust-windows
       - test-memory-postgres
       - test-memory-windows
       - test-sandbox-bwrap
@@ -529,6 +565,7 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.rust.result }}" \
+            "${{ needs.rust-windows.result }}" \
             "${{ needs.test-memory-postgres.result }}" \
             "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \

@@ -77,6 +77,7 @@ help:
 	@echo "  make rust-test   Run cargo test on the Rust workspace"
 	@echo "  make rust-fmt    Run cargo fmt on the Rust workspace"
 	@echo "  make rust-clippy Run cargo clippy -D warnings on the Rust workspace"
+	@echo "  make rust-windows-check Check the workspace provider for a Windows target"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
 	@echo "                      plus craft itself; exemptions must still be exempt."
 	@echo "  make proto-lint  Lint the wire contracts in proto/ (needs buf)"
@@ -135,6 +136,19 @@ rust-fmt-check:
 rust-clippy:
 	@echo "==> clippy $(RUST_DIR)"
 	@cd $(RUST_DIR) && $(CARGO) clippy --workspace --all-targets -- -D warnings
+
+# The kernel's transport is unix-domain sockets, so only the workspace provider
+# compiles for Windows, and only without the `wire` feature. This lane exists so
+# the provider's `cfg(windows)` branches are compiled rather than merely written;
+# it needs `rustup target add x86_64-pc-windows-gnu` and a mingw gcc, which is why
+# it is not part of `lint`/`ci`.
+RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
+
+.PHONY: rust-windows-check
+rust-windows-check:
+	@echo "==> check $(RUST_DIR) for $(RUST_WINDOWS_TARGET)"
+	@cd $(RUST_DIR) && $(CARGO) clippy -p flowcraft-cap-workspace --all-targets \
+		--no-default-features --target $(RUST_WINDOWS_TARGET) -- -D warnings
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree

@@ -634,17 +634,13 @@ dependencies = [
  "flowcraft-proto",
  "flowcraft-resource",
  "globset",
- "http",
- "hyper-util",
  "rcgen",
  "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-stream",
  "tonic 0.14.5",
- "tower",
  "tracing",
 ]
 
