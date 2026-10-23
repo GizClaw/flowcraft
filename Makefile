@@ -1,7 +1,10 @@
-# shellcheck disable=SC1088,SC1036,SC2283,SC2035,SC2046
-# shellcheck cannot parse Make syntax: variable assignments (`?=`), make
-# functions (`$(wildcard ...)`), and recipe lines are not shell, so those
-# codes fire on every Makefile and mean nothing here.
+# shellcheck shell=bash
+# shellcheck disable=SC1088,SC1036,SC2283,SC2035,SC2046,SC2034,SC2091
+# ShellCheck is a shell linter and has no Make parser: variable assignments
+# (`?=`), make functions (`$(wildcard ...)`, `$(1)`), and recipe lines are read
+# as shell, so those codes fire on every Makefile and mean nothing here. The
+# comment must not start with "shellcheck": the tool would parse the prose as a
+# malformed directive (SC1072/SC1073).
 # Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
 # stable across hosts (default sh on some macOS setups treats `set -e`
 # inside compound statements differently).
