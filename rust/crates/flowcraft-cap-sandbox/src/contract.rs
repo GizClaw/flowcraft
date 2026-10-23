@@ -797,6 +797,18 @@ pub trait Runner: Send + Sync + std::fmt::Debug {
     /// forget it so it disappears from [`list`](Runner::list).
     async fn close_session(&self, id: &str) -> Result<()>;
 
+    /// Open the file journal of this runner.
+    ///
+    /// The default is [`ErrorKind::NotAvailable`](flowcraft_error::ErrorKind::NotAvailable):
+    /// [`Capabilities::journal`] says whether asking makes sense, and a decorator
+    /// must forward this rather than swallow it, or the declaration becomes a
+    /// lie.
+    async fn open_journal(&self) -> Result<Arc<dyn crate::journal::Journal>> {
+        Err(Error::not_available(
+            "sandbox: this runner has no file journal",
+        ))
+    }
+
     /// Terminate every session and release the runner.
     async fn close(&self) -> Result<()>;
 }

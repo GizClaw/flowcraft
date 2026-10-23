@@ -32,6 +32,7 @@ use crate::contract::{
     ResourceLimits, SessionFeatures, SessionInfo, SessionSpec, Signal, Stream, WriteMode,
     WriteModes,
 };
+use crate::journal::{Batch, FileOp, Gap, GapReason, WriteEvent};
 
 // ---------------------------------------------------------------------------
 // Spec
@@ -279,7 +280,12 @@ pub(crate) fn capabilities_to_proto(capabilities: &Capabilities) -> pb::Describe
             write_modes,
         }),
         features: Some(runner_features_to_proto(capabilities.features)),
-        journal: Some(journal_to_proto(&capabilities.journal)),
+        // An absent message is how the wire says "no journal": sending an empty
+        // one would look like a journal that reports nothing.
+        journal: capabilities
+            .journal
+            .enabled
+            .then(|| journal_to_proto(&capabilities.journal)),
     }
 }
 
@@ -548,6 +554,74 @@ pub(crate) fn info_from_proto(info: pb::SessionInfo) -> SessionInfo {
     }
 }
 
+/// Encode one journal event.
+#[must_use]
+pub(crate) fn journal_event_to_proto(event: &WriteEvent) -> pb::JournalEvent {
+    pb::JournalEvent {
+        seq: i64::try_from(event.seq).unwrap_or(i64::MAX),
+        at_unix_nano: i64::try_from(event.at_unix_nano).unwrap_or(i64::MAX),
+        op: event.op.as_str().to_owned(),
+        path: event.path.clone(),
+        old_path: event.old_path.clone().unwrap_or_default(),
+        is_dir: event.is_dir,
+        dev: event.dev.unwrap_or(0),
+        ino: event.ino.unwrap_or(0),
+        size: event.size.unwrap_or(0),
+        session: event.session.clone(),
+    }
+}
+
+/// Decode one journal event.
+pub(crate) fn journal_event_from_proto(event: pb::JournalEvent) -> Result<WriteEvent> {
+    Ok(WriteEvent {
+        seq: u64::try_from(event.seq).unwrap_or(0),
+        at_unix_nano: u64::try_from(event.at_unix_nano).unwrap_or(0),
+        op: FileOp::parse(&event.op)?,
+        path: event.path,
+        old_path: Some(event.old_path).filter(|path| !path.is_empty()),
+        is_dir: event.is_dir,
+        dev: Some(event.dev).filter(|dev| *dev != 0),
+        ino: Some(event.ino).filter(|ino| *ino != 0),
+        size: Some(event.size).filter(|size| *size != 0),
+        session: event.session,
+    })
+}
+
+/// Encode one journal read.
+#[must_use]
+pub(crate) fn batch_to_proto(batch: &Batch) -> pb::JournalReadResponse {
+    pb::JournalReadResponse {
+        events: batch.events.iter().map(journal_event_to_proto).collect(),
+        next_seq: i64::try_from(batch.next_seq).unwrap_or(i64::MAX),
+        gap: batch.gap.map(|gap| pb::JournalGap {
+            first_missing: i64::try_from(gap.first_missing).unwrap_or(i64::MAX),
+            reason: gap.reason.as_str().to_owned(),
+        }),
+        closed: batch.closed,
+    }
+}
+
+/// Decode one journal read.
+pub(crate) fn batch_from_proto(response: pb::JournalReadResponse) -> Result<Batch> {
+    let mut events = Vec::with_capacity(response.events.len());
+    for event in response.events {
+        events.push(journal_event_from_proto(event)?);
+    }
+    let gap = match response.gap {
+        None => None,
+        Some(gap) => Some(Gap {
+            first_missing: u64::try_from(gap.first_missing).unwrap_or(0),
+            reason: GapReason::parse(&gap.reason)?,
+        }),
+    };
+    Ok(Batch {
+        events,
+        next_seq: u64::try_from(response.next_seq).unwrap_or(0),
+        gap,
+        closed: response.closed,
+    })
+}
+
 /// Encode a signal name.
 #[must_use]
 pub(crate) fn signal_to_proto(signal: Signal) -> String {
@@ -684,6 +758,50 @@ mod tests {
         for event in events {
             assert_eq!(event_from_proto(event_to_proto(&event)).unwrap(), event);
         }
+    }
+
+    #[test]
+    fn a_journal_batch_survives_the_round_trip() {
+        let batch = Batch {
+            events: vec![WriteEvent {
+                seq: 3,
+                at_unix_nano: 42,
+                op: FileOp::Rename,
+                path: "out/b".to_owned(),
+                old_path: Some("out/a".to_owned()),
+                is_dir: false,
+                dev: Some(7),
+                ino: Some(9),
+                size: Some(11),
+                session: String::new(),
+            }],
+            next_seq: 4,
+            gap: Some(Gap {
+                first_missing: 5,
+                reason: GapReason::Overflow,
+            }),
+            closed: true,
+        };
+        assert_eq!(batch_from_proto(batch_to_proto(&batch)).unwrap(), batch);
+    }
+
+    #[test]
+    fn an_absent_journal_message_means_no_journal() {
+        let capabilities = Capabilities::default();
+        let encoded = capabilities_to_proto(&capabilities);
+        assert!(encoded.journal.is_none(), "no journal must not look empty");
+
+        let enabled = Capabilities {
+            journal: JournalCapabilities {
+                enabled: true,
+                watch_budget: 128,
+                ..JournalCapabilities::default()
+            },
+            ..Capabilities::default()
+        };
+        let decoded = capabilities_from_proto(capabilities_to_proto(&enabled));
+        assert!(decoded.journal.enabled);
+        assert_eq!(decoded.journal.watch_budget, 128);
     }
 
     #[test]

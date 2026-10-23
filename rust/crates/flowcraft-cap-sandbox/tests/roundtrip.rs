@@ -226,6 +226,45 @@ async fn a_workdir_escape_is_refused_across_the_wire() {
 }
 
 #[tokio::test]
+async fn a_journal_round_trips_over_the_wire() {
+    let stack = support::stack(&["sh"]).await;
+    let runner = client(&stack);
+    let capabilities = runner.capabilities().await.expect("capabilities");
+    assert!(
+        capabilities.journal.enabled,
+        "the server declared a journal"
+    );
+
+    let journal = runner.open_journal().await.expect("open_journal");
+    // A file written under the runner root must show up as one create.
+    std::fs::write(stack.dir.path().join("root/artifact.txt"), b"x").expect("write");
+
+    let mut cursor = 0;
+    let mut ops = Vec::new();
+    for _ in 0..40 {
+        let batch = journal.read(cursor, 64).await.expect("read");
+        assert!(batch.gap.is_none(), "no coverage loss expected: {batch:?}");
+        cursor = batch.next_seq;
+        ops.extend(batch.events.iter().map(|event| event.op));
+        if !ops.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    journal.close().await.expect("close_journal");
+    assert!(
+        ops.contains(&flowcraft_cap_sandbox::journal::FileOp::Create),
+        "the creation must travel: {ops:?}"
+    );
+    // A closed reader refuses further reads.
+    assert_eq!(
+        journal.read(cursor, 8).await.expect_err("closed").kind(),
+        flowcraft_error::ErrorKind::Closed
+    );
+    stack.built.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn a_revoked_session_cannot_start_a_process() {
     let stack = support::stack(&["sh"]).await;
     stack

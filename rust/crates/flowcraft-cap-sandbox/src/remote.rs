@@ -30,6 +30,7 @@ use crate::contract::{
     CONTRACT, Capabilities, EventStream, ExitStatus, Handle, KIND, ReadResult, Runner, Session,
     SessionFeatures, SessionInfo, SessionSpec, Signal,
 };
+use crate::journal::{Batch, Journal};
 use crate::wire;
 
 /// The implementation name.
@@ -233,6 +234,23 @@ impl Runner for RemoteRunner {
             .map_err(from_status)?;
         self.sessions.lock().await.remove(id);
         Ok(())
+    }
+
+    async fn open_journal(&self) -> Result<Arc<dyn Journal>> {
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        let response = client
+            .open_journal(self.wire.request(pb::OpenJournalRequest {}).await?)
+            .await
+            .map_err(from_status)?
+            .into_inner();
+        if response.journal.is_empty() {
+            return Err(Error::internal("sandbox: server returned no journal"));
+        }
+        Ok(Arc::new(RemoteJournal {
+            wire: self.wire.clone(),
+            id: response.journal,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }))
     }
 
     async fn close(&self) -> Result<()> {
@@ -471,6 +489,63 @@ impl Session for RemoteSession {
             .await
             .map_err(from_status)?;
         self.mark_closed();
+        Ok(())
+    }
+}
+
+/// A journal served by another process.
+struct RemoteJournal {
+    wire: Arc<Wire>,
+    id: String,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Debug for RemoteJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("sandbox.RemoteJournal")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl Journal for RemoteJournal {
+    async fn read(&self, after_seq: u64, max: usize) -> Result<Batch> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::closed("sandbox: journal is closed"));
+        }
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        let response = client
+            .journal_read(
+                self.wire
+                    .request(pb::JournalReadRequest {
+                        journal: self.id.clone(),
+                        after_seq: i64::try_from(after_seq).unwrap_or(i64::MAX),
+                        max: i32::try_from(max).unwrap_or(i32::MAX),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?
+            .into_inner();
+        wire::batch_from_proto(response)
+    }
+
+    async fn close(&self) -> Result<()> {
+        if self.closed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(());
+        }
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .close_journal(
+                self.wire
+                    .request(pb::CloseJournalRequest {
+                        journal: self.id.clone(),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
         Ok(())
     }
 }

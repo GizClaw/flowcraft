@@ -21,9 +21,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::contract::{
-    CONTRACT, Capabilities, Enforcement, Features, Handle, KIND, NetModes, Runner, Session,
-    SessionInfo, SessionSpec, WriteModes,
+    CONTRACT, Capabilities, Enforcement, Features, Handle, JournalCapabilities, KIND, NetModes,
+    Runner, Session, SessionInfo, SessionSpec, WriteModes,
 };
+use crate::journal::{Config as JournalConfig, Engine as Journal};
 use crate::session::{DEFAULT_OUTPUT_LIMIT, Registry, Spawn, spawn};
 
 /// A runner that spawns processes on this host.
@@ -34,6 +35,7 @@ pub struct LocalRunner {
     /// a `workdir` escape a refusal rather than a coincidence.
     root: Option<PathBuf>,
     default_output_limit: u64,
+    journal: Option<Arc<Journal>>,
 }
 
 impl std::fmt::Debug for LocalRunner {
@@ -59,6 +61,7 @@ impl LocalRunner {
             registry: Registry::new(),
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
+            journal: None,
         }
     }
 
@@ -79,6 +82,13 @@ impl LocalRunner {
     #[must_use]
     pub fn root(&self) -> Option<&std::path::Path> {
         self.root.as_deref()
+    }
+
+    /// Attach a file journal.
+    #[must_use]
+    pub(crate) fn with_journal(mut self, journal: Arc<Journal>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 
     /// The output cap for sessions that do not declare one.
@@ -131,7 +141,12 @@ impl Runner for LocalRunner {
                     signal: cfg!(unix),
                     events: true,
                 },
-                journal: crate::contract::JournalCapabilities::default(),
+                journal: self
+                    .journal
+                    .as_ref()
+                    .map_or_else(JournalCapabilities::default, |journal| {
+                        journal.capabilities()
+                    }),
             })
         })
     }
@@ -159,6 +174,17 @@ impl Runner for LocalRunner {
     async fn close(&self) -> Result<()> {
         self.registry.close().await
     }
+
+    async fn open_journal(&self) -> Result<Arc<dyn crate::journal::Journal>> {
+        self.journal.as_ref().map_or_else(
+            || {
+                Err(Error::not_available(
+                    "sandbox/local: no file journal is attached to this runner",
+                ))
+            },
+            |journal| Ok(journal.clone() as Arc<dyn crate::journal::Journal>),
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +194,10 @@ struct Settings {
     root: String,
     #[serde(default)]
     max_output_bytes: Option<u64>,
+    /// Attach a file journal. The subtree being present is the opt-in: an absent
+    /// key costs nothing, and a typo fails the build.
+    #[serde(default)]
+    journal: Option<Value>,
 }
 
 fn validate(value: &Value) -> Result<()> {
@@ -179,6 +209,9 @@ fn validate(value: &Value) -> Result<()> {
         return Err(Error::validation(
             "sandbox/local: max_output_bytes must be positive",
         ));
+    }
+    if let Some(journal) = &settings.journal {
+        JournalConfig::parse(journal)?;
     }
     Ok(())
 }
@@ -205,9 +238,16 @@ impl Factory for LocalFactory {
         Box::pin(async move {
             let settings: Settings = ctx.settings()?;
             let root = crate::confinement::path::resolve_root(&settings.root)?;
-            let mut runner = LocalRunner::at(root);
+            let mut runner = LocalRunner::at(root.clone());
             if let Some(limit) = settings.max_output_bytes {
                 runner = runner.with_output_limit(limit);
+            }
+            if let Some(value) = &settings.journal {
+                // A deployment that asked for a journal must not end up with a
+                // runner that silently watches nothing.
+                let config = JournalConfig::parse(value)?;
+                let journal = Journal::open(&root, &config)?;
+                runner = runner.with_journal(journal);
             }
             Ok(Arc::new(Handle::new(Arc::new(runner))))
         })

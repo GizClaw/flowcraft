@@ -62,7 +62,12 @@ pub async fn stack(commands: &[&str]) -> Stack {
                 "runner": {
                     "kind": "sandbox.Runner",
                     "impl": "local",
-                    "settings": {"root": root.display().to_string()}
+                    "settings": {
+                        "root": root.display().to_string(),
+                        // A journal is opt-in per resource; the wire tests need one
+                        // to exercise `OpenJournal` / `JournalRead`.
+                        "journal": {"retention": 64}
+                    }
                 },
                 "ep": {
                     "kind": "sandbox.Endpoint",

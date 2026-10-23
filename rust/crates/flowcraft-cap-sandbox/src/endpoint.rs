@@ -5,8 +5,10 @@
 //! session open" and a session started by one call is visible to the next
 //! without any bookkeeping to keep in sync.
 
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flowcraft_client::grpc::{authenticate, grant_of, status};
 use flowcraft_error::{Error, Result};
@@ -18,11 +20,13 @@ use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Resource, Spec, require};
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tokio_stream::{Stream, StreamExt};
 use tonic::service::Interceptor;
 use tonic::{Request, Response, Status};
 
 use crate::contract::{self, CONTRACT, Capabilities, Handle};
+use crate::journal::Journal;
 use crate::scope::Scope;
 use crate::wire;
 
@@ -79,6 +83,8 @@ impl Resource for Endpoint {
                 runner: self.runner.clone(),
                 descriptor: self.descriptor.clone(),
                 capability: self.capability.clone(),
+                journals: Mutex::new(BTreeMap::new()),
+                next_journal: AtomicU64::new(1),
             };
             let interceptor = GrantInterceptor {
                 grants: self.grants.clone(),
@@ -185,6 +191,13 @@ struct Service {
     runner: Handle,
     descriptor: EndpointDescriptor,
     capability: String,
+    /// Open journal readers, by the id handed out on the wire.
+    ///
+    /// This is the one table the endpoint legitimately owns: a journal handle is
+    /// *addressed* by an opaque id, and the runner has no way to look one up
+    /// again.
+    journals: Mutex<BTreeMap<String, Arc<dyn Journal>>>,
+    next_journal: AtomicU64,
 }
 
 impl Service {
@@ -384,36 +397,61 @@ impl sandbox_server::Sandbox for Service {
     ) -> std::result::Result<Response<pb::CloseRunnerResponse>, Status> {
         self.scope(&request)?;
         self.runner.close().await.map_err(status)?;
+        // Readers handed out over the wire die with the runner they read from.
+        let readers: Vec<Arc<dyn Journal>> = {
+            let journals = self.journals.lock().await;
+            journals.values().cloned().collect()
+        };
+        self.journals.lock().await.clear();
+        for reader in readers {
+            let _ = reader.close().await;
+        }
         Ok(Response::new(pb::CloseRunnerResponse {}))
     }
 
-    // The file journal arrives with its own plan phase; answering
-    // UNIMPLEMENTED is the honest answer today.
     async fn open_journal(
         &self,
-        _request: Request<pb::OpenJournalRequest>,
+        request: Request<pb::OpenJournalRequest>,
     ) -> std::result::Result<Response<pb::OpenJournalResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        self.scope(&request)?;
+        let journal = self.runner.open_journal().await.map_err(status)?;
+        let id = format!(
+            "journal-{}",
+            self.next_journal.fetch_add(1, Ordering::Relaxed)
+        );
+        self.journals.lock().await.insert(id.clone(), journal);
+        Ok(Response::new(pb::OpenJournalResponse { journal: id }))
     }
 
     async fn journal_read(
         &self,
-        _request: Request<pb::JournalReadRequest>,
+        request: Request<pb::JournalReadRequest>,
     ) -> std::result::Result<Response<pb::JournalReadResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        self.scope(&request)?;
+        let payload = request.get_ref();
+        let journal = self.journals.lock().await.get(&payload.journal).cloned();
+        let journal = journal
+            .ok_or_else(|| Status::not_found(format!("sandbox: journal {:?}", payload.journal)))?;
+        let after = u64::try_from(payload.after_seq).unwrap_or(0);
+        let max = usize::try_from(payload.max).unwrap_or(usize::MAX);
+        let batch = journal.read(after, max).await.map_err(status)?;
+        Ok(Response::new(wire::batch_to_proto(&batch)))
     }
 
     async fn close_journal(
         &self,
-        _request: Request<pb::CloseJournalRequest>,
+        request: Request<pb::CloseJournalRequest>,
     ) -> std::result::Result<Response<pb::CloseJournalResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        self.scope(&request)?;
+        let journal = self
+            .journals
+            .lock()
+            .await
+            .remove(&request.get_ref().journal);
+        if let Some(journal) = journal {
+            journal.close().await.map_err(status)?;
+        }
+        Ok(Response::new(pb::CloseJournalResponse {}))
     }
 }
 

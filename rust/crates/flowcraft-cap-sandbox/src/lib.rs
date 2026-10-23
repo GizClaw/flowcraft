@@ -27,6 +27,7 @@ pub mod confinement;
 pub mod contract;
 pub mod endpoint;
 pub mod exec;
+pub mod journal;
 pub mod local;
 pub mod policy;
 pub mod remote;

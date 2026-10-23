@@ -28,6 +28,8 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::journal::{Config as JournalConfig, Engine as Journal};
+
 use crate::contract::{
     self, CONTRACT, Capabilities, Enforcement, Features, Handle, JournalCapabilities, KIND,
     NetModes, Runner, Session, SessionInfo, SessionSpec, WriteMode, WriteModes,
@@ -148,6 +150,7 @@ pub struct SandboxConfig {
     readonly_root: bool,
     binary: String,
     extra_flags: Vec<String>,
+    journal: Option<Arc<Journal>>,
 }
 
 impl std::fmt::Debug for SandboxConfig {
@@ -178,6 +181,7 @@ impl SandboxConfig {
             readonly_root: false,
             binary: sandbox.default_binary().to_owned(),
             extra_flags: Vec::new(),
+            journal: None,
         }
     }
 
@@ -251,6 +255,13 @@ impl SandboxConfig {
     pub(crate) fn extra_flags(&self) -> &[String] {
         &self.extra_flags
     }
+
+    /// Attach a file journal.
+    #[must_use]
+    pub(crate) fn with_journal(mut self, journal: Arc<Journal>) -> Self {
+        self.journal = Some(journal);
+        self
+    }
 }
 
 /// A runner that wraps commands in an OS sandbox.
@@ -309,7 +320,17 @@ impl ConfinedRunner {
 #[async_trait]
 impl Runner for ConfinedRunner {
     fn capabilities(&self) -> flowcraft_resource::BoxFuture<'_, Result<Capabilities>> {
-        Box::pin(async move { Ok(self.config.sandbox.capabilities()) })
+        Box::pin(async move {
+            let mut capabilities = self.config.sandbox.capabilities();
+            capabilities.journal = self
+                .config
+                .journal
+                .as_ref()
+                .map_or_else(JournalCapabilities::default, |journal| {
+                    journal.capabilities()
+                });
+            Ok(capabilities)
+        })
     }
 
     async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
@@ -336,6 +357,18 @@ impl Runner for ConfinedRunner {
     async fn close(&self) -> Result<()> {
         self.inner.close().await
     }
+
+    async fn open_journal(&self) -> Result<Arc<dyn crate::journal::Journal>> {
+        self.config.journal.as_ref().map_or_else(
+            || {
+                Err(Error::not_available(format!(
+                    "sandbox/{}: no file journal is attached to this runner",
+                    self.config.sandbox.impl_name()
+                )))
+            },
+            |journal| Ok(journal.clone() as Arc<dyn crate::journal::Journal>),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -355,6 +388,9 @@ struct Settings {
     /// Extra wrapper flags (`bwrap` only).
     #[serde(default)]
     extra_flags: Vec<String>,
+    /// Attach a file journal (see `journal::Config`).
+    #[serde(default)]
+    journal: Option<Value>,
 }
 
 fn parse(value: &Value) -> Result<Settings> {
@@ -387,7 +423,8 @@ fn check_common(settings: &Settings) -> Result<()> {
 fn validate_bwrap(value: &Value) -> Result<()> {
     let settings = parse(value)?;
     check_common(&settings)?;
-    bwrap::validate_extra_flags(&settings.extra_flags)
+    bwrap::validate_extra_flags(&settings.extra_flags)?;
+    check_journal(&settings)
 }
 
 /// Schema validation for `seatbelt`.
@@ -398,6 +435,13 @@ fn validate_seatbelt(value: &Value) -> Result<()> {
         return Err(Error::validation(
             "sandbox/seatbelt: extra_flags is only valid for bwrap",
         ));
+    }
+    check_journal(&settings)
+}
+
+fn check_journal(settings: &Settings) -> Result<()> {
+    if let Some(journal) = &settings.journal {
+        JournalConfig::parse(journal)?;
     }
     Ok(())
 }
@@ -420,14 +464,21 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
         let root = path::resolve_root(&settings.root)?;
         let writable =
             path::resolve_writable(&root, &settings.writable_paths, settings.readonly_root)?;
-        let config = SandboxConfig {
+        let mut config = SandboxConfig {
             sandbox,
-            root,
+            root: root.clone(),
             writable,
             readonly_root: settings.readonly_root,
             binary: sandbox.binary(settings.binary.as_deref()),
             extra_flags: settings.extra_flags,
+            journal: None,
         };
+        if let Some(value) = &settings.journal {
+            // A deployment that asked for a journal must not end up with a
+            // runner that silently watches nothing.
+            let journal_config = JournalConfig::parse(value)?;
+            config = config.with_journal(Journal::open(&root, &journal_config)?);
+        }
         let runner = ConfinedRunner::new(config);
         Ok(Arc::new(Handle::new(Arc::new(runner))))
     })

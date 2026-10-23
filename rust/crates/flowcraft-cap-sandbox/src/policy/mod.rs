@@ -146,6 +146,12 @@ impl Runner for Guarded {
     async fn close(&self) -> Result<()> {
         self.inner.close().await
     }
+
+    async fn open_journal(&self) -> Result<Arc<dyn crate::journal::Journal>> {
+        // A decorator that swallowed the journal while `capabilities` kept
+        // advertising it would make the declaration a lie.
+        self.inner.open_journal().await
+    }
 }
 
 #[cfg(test)]
