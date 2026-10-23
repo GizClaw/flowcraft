@@ -18,5 +18,7 @@
 //! dead-code allowance stays until the proxy calls into it.
 #![allow(dead_code)]
 
+pub mod bridge;
 pub(crate) mod matcher;
 pub(crate) mod pattern;
+pub(crate) mod proxy;

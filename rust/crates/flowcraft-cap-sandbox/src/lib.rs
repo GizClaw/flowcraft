@@ -30,7 +30,7 @@ pub mod exec;
 pub mod journal;
 mod limits;
 pub mod local;
-mod net;
+pub mod net;
 pub mod policy;
 pub mod remote;
 pub mod scope;
@@ -46,6 +46,7 @@ pub use contract::{
 };
 pub use exec::{ExecResult, exec};
 pub use local::LocalRunner;
+pub use net::bridge;
 pub use policy::{
     Allowlist, ApprovalRequest, Approver, ApproverFn, Chain, Decision, Escalation,
     EscalationDecision, EscalationGate, EscalationRules, Escalator, ExecRequest, Layer,

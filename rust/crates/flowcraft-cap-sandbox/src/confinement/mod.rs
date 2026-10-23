@@ -29,6 +29,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::journal::{Config as JournalConfig, Engine as Journal};
+use crate::net::proxy;
 
 use crate::contract::{
     self, CONTRACT, Capabilities, Enforcement, Features, Handle, JournalCapabilities, KIND,
@@ -134,12 +135,26 @@ impl Sandbox {
         config: &SandboxConfig,
         spec: &SessionSpec,
         workdir: &Path,
+        endpoint: Option<&crate::net::proxy::Endpoint>,
     ) -> Result<Plan> {
         match self {
-            Self::Bwrap => bwrap::plan(config, spec, workdir),
-            Self::Seatbelt => seatbelt::plan(config, spec, workdir),
+            Self::Bwrap => bwrap::plan(config, spec, workdir, endpoint),
+            Self::Seatbelt => seatbelt::plan(config, spec, workdir, endpoint),
         }
     }
+}
+
+/// The network wiring of one confined runner.
+#[derive(Debug, Clone, Default)]
+pub struct NetSettings {
+    /// The binary re-executed as the in-namespace bridge (bwrap only).
+    ///
+    /// A deployment points this at `flowcraftd`, whose `main` calls
+    /// [`crate::net::bridge::run_if_invoked`] first; without it, bwrap cannot
+    /// offer `allow_list` / `proxy` and says so instead of degrading to deny-all.
+    pub bridge: Option<PathBuf>,
+    /// Send one audit record per decision to `tracing`.
+    pub audit: bool,
 }
 
 /// The resolved configuration of one confined runner.
@@ -152,6 +167,7 @@ pub struct SandboxConfig {
     binary: String,
     extra_flags: Vec<String>,
     journal: Option<Arc<Journal>>,
+    net: NetSettings,
 }
 
 impl std::fmt::Debug for SandboxConfig {
@@ -183,6 +199,7 @@ impl SandboxConfig {
             binary: sandbox.default_binary().to_owned(),
             extra_flags: Vec::new(),
             journal: None,
+            net: NetSettings::default(),
         }
     }
 
@@ -263,6 +280,29 @@ impl SandboxConfig {
         self.journal = Some(journal);
         self
     }
+
+    /// Configure the network wiring.
+    #[must_use]
+    pub fn with_net(mut self, net: NetSettings) -> Self {
+        self.net = net;
+        self
+    }
+
+    pub(crate) fn net(&self) -> &NetSettings {
+        &self.net
+    }
+
+    /// Whether this backend can enforce `allow_list` / `proxy` as configured.
+    ///
+    /// seatbelt only needs the proxy (it shares the host network stack); bwrap
+    /// also needs a bridge binary to reach the socket from inside its namespace.
+    #[must_use]
+    pub fn proxy_capable(&self) -> bool {
+        match self.sandbox {
+            Sandbox::Seatbelt => true,
+            Sandbox::Bwrap => self.net.bridge.is_some(),
+        }
+    }
 }
 
 /// A runner that wraps commands in an OS sandbox.
@@ -291,8 +331,9 @@ impl ConfinedRunner {
         }
     }
 
-    /// Rewrite a spec so the inner runner executes the sandbox wrapper.
-    fn wrap(&self, mut spec: SessionSpec) -> Result<SessionSpec> {
+    /// Rewrite a spec so the inner runner executes the sandbox wrapper, starting
+    /// the enforcement proxy when the policy needs one.
+    async fn prepare(&self, mut spec: SessionSpec) -> Result<Prepared> {
         if spec.argv.is_empty() {
             return Err(Error::validation("sandbox: argv is empty"));
         }
@@ -303,7 +344,88 @@ impl ConfinedRunner {
         }
         spec.opts.net.validate()?;
         let workdir = path::resolve_workdir(&self.config.root, spec.opts.workdir.as_deref())?;
-        let plan = self.config.sandbox.plan(&self.config, &spec, &workdir)?;
+
+        let proxied = spec.opts.net.mode.uses_proxy();
+        if proxied {
+            if !self.config.proxy_capable() {
+                return Err(Error::not_available(format!(
+                    "sandbox/{}: net mode {} needs settings.net.bridge",
+                    self.config.sandbox.impl_name(),
+                    spec.opts.net.mode.as_str()
+                )));
+            }
+            // The proxy owns these variables: letting a caller set them would be
+            // a way to point the child at a destination the rules never saw.
+            for name in proxy::OWNED_ENV {
+                if spec
+                    .opts
+                    .env
+                    .inject
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case(name))
+                {
+                    return Err(Error::validation(format!(
+                        "sandbox: {name} is owned by the sandbox while a network policy is enforced"
+                    )));
+                }
+            }
+        }
+
+        let listen = match self.config.sandbox {
+            // seatbelt shares the host network stack, so a loopback port is the
+            // one hole its profile can allow.
+            Sandbox::Seatbelt => proxy::Listen::Loopback,
+            // bwrap gets a unix socket bind-mounted into its namespace.
+            Sandbox::Bwrap => proxy::Listen::Unix(PathBuf::from(format!(
+                "/tmp/flowcraft-proxy-{}.sock",
+                if spec.id.is_empty() {
+                    format!("{}", std::process::id())
+                } else {
+                    spec.id.clone()
+                }
+            ))),
+        };
+        let audit: Option<proxy::Audit> = self.config.net().audit.then(|| {
+            Arc::new(|decision: &proxy::Decision| {
+                tracing::info!(
+                    host = %decision.host,
+                    port = decision.port,
+                    allow = decision.allow,
+                    mode = decision.mode.as_str(),
+                    rule = decision.rule.as_deref().unwrap_or(""),
+                    reason = decision.reason.as_deref().unwrap_or(""),
+                    "sandbox: network decision"
+                );
+            }) as proxy::Audit
+        });
+        let proxy = if proxied {
+            Some(
+                proxy::start(proxy::Config {
+                    policy: spec.opts.net.clone(),
+                    listen,
+                    audit,
+                })
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        let plan = self.config.sandbox.plan(
+            &self.config,
+            &spec,
+            &workdir,
+            proxy.as_ref().map(|proxy| proxy.endpoint()),
+        );
+        let plan = match plan {
+            Ok(plan) => plan,
+            Err(error) => {
+                if let Some(proxy) = proxy {
+                    proxy.shutdown().await;
+                }
+                return Err(error);
+            }
+        };
 
         spec.argv = plan.argv;
         // The wrapper consumed these; the inner runner would reject them and
@@ -314,8 +436,15 @@ impl ConfinedRunner {
         for (name, value) in plan.env {
             spec.opts.env.inject.insert(name, value);
         }
-        Ok(spec)
+        Ok(Prepared { spec, proxy })
     }
+}
+
+/// A spec that is ready to hand to the inner runner, plus the proxy it needs to
+/// keep alive.
+struct Prepared {
+    spec: SessionSpec,
+    proxy: Option<proxy::Proxy>,
 }
 
 #[async_trait]
@@ -328,6 +457,12 @@ impl Runner for ConfinedRunner {
             let inner = self.inner.capabilities().await?;
             capabilities.policy.memory_cap = inner.policy.memory_cap;
             capabilities.policy.cpu_cap = inner.policy.cpu_cap;
+            // `allow_list` / `proxy` are only claimed when the wiring for this
+            // backend exists: seatbelt always, bwrap only with a bridge binary.
+            let proxied = self.config.proxy_capable();
+            capabilities.policy.net.allow_list = proxied;
+            capabilities.policy.net.proxy = proxied;
+            capabilities.policy.socks5 = proxied;
             capabilities.journal = self
                 .config
                 .journal
@@ -340,8 +475,26 @@ impl Runner for ConfinedRunner {
     }
 
     async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
-        let wrapped = self.wrap(spec)?;
-        self.inner.start(wrapped).await
+        let prepared = self.prepare(spec).await?;
+        let session = match self.inner.start(prepared.spec).await {
+            Ok(session) => session,
+            Err(error) => {
+                if let Some(proxy) = prepared.proxy {
+                    proxy.shutdown().await;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(proxy) = prepared.proxy {
+            // The proxy lives exactly as long as the session it enforces for: the
+            // socket is bound before the spawn and removed once the child is gone.
+            let watched = session.clone();
+            tokio::spawn(async move {
+                let _ = watched.wait().await;
+                proxy.shutdown().await;
+            });
+        }
+        Ok(session)
     }
 
     async fn session(&self, id: &str) -> Result<Arc<dyn Session>> {
@@ -397,6 +550,20 @@ struct Settings {
     /// Attach a file journal (see `journal::Config`).
     #[serde(default)]
     journal: Option<Value>,
+    /// Network wiring: the bridge binary and the audit switch.
+    #[serde(default)]
+    net: NetInput,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetInput {
+    /// The binary re-executed as the in-namespace bridge (bwrap only).
+    #[serde(default)]
+    bridge: Option<PathBuf>,
+    /// Send one audit record per decision to `tracing`.
+    #[serde(default)]
+    audit: bool,
 }
 
 fn parse(value: &Value) -> Result<Settings> {
@@ -430,7 +597,8 @@ fn validate_bwrap(value: &Value) -> Result<()> {
     let settings = parse(value)?;
     check_common(&settings)?;
     bwrap::validate_extra_flags(&settings.extra_flags)?;
-    check_journal(&settings)
+    check_journal(&settings)?;
+    check_net(&settings)
 }
 
 /// Schema validation for `seatbelt`.
@@ -443,6 +611,15 @@ fn validate_seatbelt(value: &Value) -> Result<()> {
         ));
     }
     check_journal(&settings)
+}
+
+fn check_net(settings: &Settings) -> Result<()> {
+    if let Some(bridge) = &settings.net.bridge
+        && bridge.as_os_str().is_empty()
+    {
+        return Err(Error::validation("sandbox: net.bridge must not be empty"));
+    }
+    Ok(())
 }
 
 fn check_journal(settings: &Settings) -> Result<()> {
@@ -478,6 +655,10 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
             binary: sandbox.binary(settings.binary.as_deref()),
             extra_flags: settings.extra_flags,
             journal: None,
+            net: NetSettings {
+                bridge: settings.net.bridge.clone(),
+                audit: settings.net.audit,
+            },
         };
         if let Some(value) = &settings.journal {
             // A deployment that asked for a journal must not end up with a
@@ -550,6 +731,20 @@ mod tests {
         }
         assert!(Sandbox::Bwrap.capabilities().policy.unix_sockets);
         assert!(!Sandbox::Seatbelt.capabilities().policy.unix_sockets);
+    }
+
+    #[test]
+    fn the_proxy_claim_follows_the_wiring() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // seatbelt only needs the proxy itself.
+        assert!(SandboxConfig::new(Sandbox::Seatbelt, dir.path()).proxy_capable());
+        // bwrap also needs something inside its namespace to reach the socket.
+        assert!(!SandboxConfig::new(Sandbox::Bwrap, dir.path()).proxy_capable());
+        let with_bridge = SandboxConfig::new(Sandbox::Bwrap, dir.path()).with_net(NetSettings {
+            bridge: Some(dir.path().join("flowcraftd")),
+            audit: false,
+        });
+        assert!(with_bridge.proxy_capable());
     }
 
     #[test]
@@ -647,6 +842,65 @@ mod tests {
         assert!(!outside.exists(), "the file must not have been created");
 
         runner.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn the_proxy_is_the_only_way_out() {
+        if !seatbelt_available() || !std::path::Path::new("/usr/bin/curl").exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_dir = dir.path().join("root");
+        std::fs::create_dir(&root_dir).expect("root");
+        let runner = ConfinedRunner::new(config(&root_dir));
+        // No rule allows anything, so the proxy must refuse and the reason must
+        // reach the child: that proves the environment reached it and the socket
+        // hole is the only egress.
+        let mut request = spec(&["curl", "-s", "--max-time", "5", "http://example.com/"]);
+        request.opts.net.mode = contract::NetMode::AllowList;
+        let session = runner.start(request).await.expect("start");
+        session.wait().await.expect("wait");
+        let mut out = String::new();
+        let mut after = 0;
+        loop {
+            let read = session.read(after, 64 * 1024).await.expect("read");
+            for chunk in &read.chunks {
+                out.push_str(&String::from_utf8_lossy(&chunk.data));
+            }
+            after = read.next_seq;
+            if read.eof {
+                break;
+            }
+        }
+        assert!(
+            out.contains("not reachable under this policy"),
+            "the child must have reached the proxy and been refused: {out:?}"
+        );
+        runner.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn a_caller_cannot_take_over_the_proxy_variables() {
+        if !seatbelt_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_dir = dir.path().join("root");
+        std::fs::create_dir(&root_dir).expect("root");
+        let runner = ConfinedRunner::new(config(&root_dir));
+        let mut request = spec(&["true"]);
+        request.opts.net.mode = contract::NetMode::AllowList;
+        request
+            .opts
+            .env
+            .inject
+            .insert("http_proxy".to_owned(), "http://127.0.0.1:1".to_owned());
+        let error = runner.start(request).await.expect_err("owned variable");
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::Validation);
+        assert!(
+            error.to_string().contains("owned by the sandbox"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

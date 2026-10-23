@@ -20,6 +20,8 @@ use flowcraft_error::{Error, Result};
 
 use super::{Plan, SandboxConfig};
 use crate::contract::{NetMode, SessionSpec};
+use crate::net::bridge;
+use crate::net::proxy::Endpoint;
 
 /// Every `bwrap` option that can weaken a policy dimension this backend
 /// promises to enforce (filesystem bounds, env allow-list, net posture,
@@ -102,7 +104,16 @@ pub(crate) fn validate_extra_flags(flags: &[String]) -> Result<()> {
 }
 
 /// Build the argv that runs `spec` inside the sandbox.
-pub(crate) fn plan(config: &SandboxConfig, spec: &SessionSpec, workdir: &Path) -> Result<Plan> {
+///
+/// When the policy needs the proxy the command becomes the in-namespace bridge:
+/// only it can reach the bind-mounted socket, and only it knows the loopback port
+/// the child should use.
+pub(crate) fn plan(
+    config: &SandboxConfig,
+    spec: &SessionSpec,
+    workdir: &Path,
+    endpoint: Option<&Endpoint>,
+) -> Result<Plan> {
     let mut argv = vec![config.binary().to_owned()];
     // Extras first: every flag below is emitted after them on purpose.
     argv.extend(config.extra_flags().iter().cloned());
@@ -148,6 +159,7 @@ pub(crate) fn plan(config: &SandboxConfig, spec: &SessionSpec, workdir: &Path) -
     argv.push("--dev".to_owned());
     argv.push("/dev".to_owned());
 
+    let proxied = spec.opts.net.mode.uses_proxy();
     match spec.opts.net.mode {
         NetMode::Default => argv.push("--share-net".to_owned()),
         NetMode::DenyAll => {
@@ -157,20 +169,58 @@ pub(crate) fn plan(config: &SandboxConfig, spec: &SessionSpec, workdir: &Path) -
             argv.push(super::RUN_DIR.to_owned());
         }
         NetMode::AllowList | NetMode::Proxy => {
-            return Err(Error::not_available(format!(
-                "sandbox/bwrap: net mode {} needs the enforcement proxy",
-                spec.opts.net.mode.as_str()
-            )));
+            let Some(endpoint) = endpoint else {
+                return Err(Error::not_available(format!(
+                    "sandbox/bwrap: net mode {} needs the enforcement proxy",
+                    spec.opts.net.mode.as_str()
+                )));
+            };
+            let Some(socket) = endpoint.socket() else {
+                return Err(Error::internal(
+                    "sandbox/bwrap: the proxy must listen on a unix socket inside a netns",
+                ));
+            };
+            let bridge_binary = config.net().bridge.as_deref().ok_or_else(|| {
+                Error::not_available(
+                    "sandbox/bwrap: net mode allow_list/proxy needs settings.net.bridge (the binary \
+                     re-executed as the in-namespace bridge)",
+                )
+            })?;
+            argv.push("--unshare-net".to_owned());
+            // Order matters: hide the host /run first, then put the one hole in it.
+            argv.push("--tmpfs".to_owned());
+            argv.push(super::RUN_DIR.to_owned());
+            argv.push("--bind".to_owned());
+            push_path(&mut argv, socket);
+            argv.push(bridge::PROXY_SOCKET.to_owned());
+            // The child runs the bridge, so the bridge must exist inside.
+            argv.push("--ro-bind".to_owned());
+            push_path(&mut argv, bridge_binary);
+            push_path(&mut argv, bridge_binary);
         }
     }
 
     argv.push("--chdir".to_owned());
     push_path(&mut argv, workdir);
     argv.push("--".to_owned());
+    if proxied {
+        let bridge_binary = config
+            .net()
+            .bridge
+            .as_deref()
+            .unwrap_or_else(|| Path::new(""));
+        push_path(&mut argv, bridge_binary);
+        argv.push(bridge::MARKER.to_owned());
+        argv.push("--sock".to_owned());
+        argv.push(bridge::PROXY_SOCKET.to_owned());
+        argv.push("--".to_owned());
+    }
     argv.extend(spec.argv.iter().cloned());
     Ok(Plan {
         argv,
         cwd: None,
+        // The bridge injects the proxy environment: the port only exists inside
+        // the namespace.
         env: Vec::new(),
     })
 }
@@ -214,7 +264,7 @@ mod tests {
     fn the_root_is_bound_writable_and_the_host_root_is_not() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = sandbox_config(dir.path());
-        let plan = plan(&config, &spec(&["true"]), dir.path()).expect("plan");
+        let plan = plan(&config, &spec(&["true"]), dir.path(), None).expect("plan");
         let joined = plan.argv.join(" ");
         assert!(joined.contains("--ro-bind / /"), "{joined}");
         let root = real(dir.path());
@@ -243,7 +293,7 @@ mod tests {
         let config = sandbox_config(dir.path())
             .with_extra_flags(vec!["--quiet".to_owned()])
             .expect("benign flag");
-        let plan = plan(&config, &spec(&["true"]), dir.path()).expect("plan");
+        let plan = plan(&config, &spec(&["true"]), dir.path(), None).expect("plan");
         assert_eq!(plan.argv[1], "--quiet", "extras first");
         assert_eq!(plan.argv[2], "--die-with-parent", "policy flags after");
     }
@@ -256,7 +306,7 @@ mod tests {
         let config = sandbox_config(dir.path()).with_writable(vec![out.clone()]);
         let mut request = spec(&["true"]);
         request.opts.write = WriteMode::ReadOnly;
-        let plan = plan(&config, &request, &real(dir.path())).expect("plan");
+        let plan = plan(&config, &request, &real(dir.path()), None).expect("plan");
         let joined = plan.argv.join(" ");
         let root = real(dir.path());
         assert!(
@@ -274,7 +324,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut request = spec(&["true"]);
         request.opts.net.mode = NetMode::DenyAll;
-        let plan = plan(&sandbox_config(dir.path()), &request, dir.path()).expect("plan");
+        let plan = plan(&sandbox_config(dir.path()), &request, dir.path(), None).expect("plan");
         let joined = plan.argv.join(" ");
         assert!(joined.contains("--unshare-net"), "{joined}");
         // The private /run must come after the filesystem binds.
@@ -296,7 +346,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut request = spec(&["true"]);
         request.opts.net.mode = NetMode::AllowList;
-        let error = plan(&sandbox_config(dir.path()), &request, dir.path()).expect_err("no proxy");
+        let error =
+            plan(&sandbox_config(dir.path()), &request, dir.path(), None).expect_err("no proxy");
         assert_eq!(error.kind(), flowcraft_error::ErrorKind::NotAvailable);
     }
 
@@ -341,9 +392,89 @@ mod tests {
     fn the_default_environment_and_options_are_untouched() {
         let dir = tempfile::tempdir().expect("tempdir");
         let request = spec(&["sh", "-c", "true"]);
-        let plan = plan(&sandbox_config(dir.path()), &request, dir.path()).expect("plan");
+        let plan = plan(&sandbox_config(dir.path()), &request, dir.path(), None).expect("plan");
         assert!(plan.env.is_empty(), "the wrapper needs no extra env yet");
         assert_eq!(plan.cwd, None, "bwrap chdirs itself");
+    }
+
+    #[test]
+    fn the_proxy_hole_is_placed_after_the_private_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bridge = dir.path().join("flowcraft-sandbox-bridge");
+        let socket = dir.path().join("proxy.sock");
+        let config = sandbox_config(dir.path()).with_net(crate::confinement::NetSettings {
+            bridge: Some(bridge.clone()),
+            audit: false,
+        });
+        let mut request = spec(&["curl", "https://example.com"]);
+        request.opts.net.mode = NetMode::AllowList;
+        let plan = plan(
+            &config,
+            &request,
+            &real(dir.path()),
+            Some(&crate::net::proxy::Endpoint::Unix(socket.clone())),
+        )
+        .expect("plan");
+
+        let rendered = plan.argv.join(" ");
+        assert!(rendered.contains("--unshare-net"), "{rendered}");
+        let run = plan
+            .argv
+            .iter()
+            .position(|arg| arg == "/run")
+            .expect("/run");
+        let tmpfs = plan
+            .argv
+            .iter()
+            .position(|arg| arg == "--tmpfs")
+            .expect("tmpfs");
+        assert!(
+            run > tmpfs,
+            "/run must be hidden before the socket is bind-mounted into it: {rendered}"
+        );
+        assert!(
+            plan.argv
+                .windows(3)
+                .any(|w| w[0] == "--bind" && w[2] == "/run/flowcraft-proxy.sock"),
+            "the proxy socket is the one hole: {rendered}"
+        );
+        // The child runs the bridge, which owns the port and the environment.
+        // The bridge itself is invoked with a `--` separator, so split on the
+        // bridge's own path rather than on the separator.
+        let bridge_path = bridge.display().to_string();
+        let at = plan
+            .argv
+            .iter()
+            .rposition(|arg| *arg == bridge_path)
+            .expect("the bridge is the command");
+        assert_eq!(plan.argv[at + 1], crate::net::bridge::MARKER);
+        assert_eq!(plan.argv[at + 2], "--sock");
+        assert_eq!(plan.argv[at + 3], "/run/flowcraft-proxy.sock");
+        assert_eq!(plan.argv[at + 4], "--");
+        assert_eq!(plan.argv[at + 5], "curl");
+        assert_eq!(plan.argv[at + 6], "https://example.com");
+        assert!(
+            plan.env.is_empty(),
+            "the bridge injects the proxy environment, the runner cannot"
+        );
+    }
+
+    #[test]
+    fn a_proxy_mode_without_a_bridge_binary_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut request = spec(&["true"]);
+        request.opts.net.mode = NetMode::Proxy;
+        let error = plan(
+            &sandbox_config(dir.path()),
+            &request,
+            dir.path(),
+            Some(&crate::net::proxy::Endpoint::Unix(
+                dir.path().join("p.sock"),
+            )),
+        )
+        .expect_err("no bridge");
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::NotAvailable);
+        assert!(error.to_string().contains("net.bridge"), "{error}");
     }
 
     #[test]
@@ -351,7 +482,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut request = spec(&["sh"]);
         request.opts = ExecOptions::default();
-        let plan = plan(&sandbox_config(dir.path()), &request, dir.path()).expect("plan");
+        let plan = plan(&sandbox_config(dir.path()), &request, dir.path(), None).expect("plan");
         assert_eq!(plan.argv[0], "bwrap");
     }
 }
