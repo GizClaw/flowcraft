@@ -1,23 +1,33 @@
 //! One spelling of "which paths a rule names".
 //!
 //! Two callers share it: [`crate::helpers::glob`], where a pattern selects files
-//! to return, and [`crate::scoped`], where a pattern selects paths a grant lets
-//! through. Sharing the compiler is what keeps a deny rule and a glob search
-//! from disagreeing about what `**` means.
+//! to return, and [`crate::scoped`], where a pattern selects the paths a policy
+//! lets through. Sharing the compiler is what keeps a deny rule and a glob
+//! search from disagreeing about what `**` means.
 //!
-//! Two rules are deliberate and differ from a naive glob:
+//! Rules that are deliberate and differ from a naive glob:
 //!
 //! * `*` and `?` never cross a `/`; only `**` spans components. So `*.ext`
 //!   matches a top-level file only, and `**/*.ext` is how a caller says "at any
 //!   depth".
-//! * a pattern ending in `/**` also names the directory itself, because a
-//!   policy rule that says "everything under `secrets`" must not be sidestepped
-//!   by addressing `secrets`. The Go side's matcher spells this case out
-//!   explicitly; here it is one expansion, so both callers inherit it.
+//! * a bare `**` matches everything, including nested paths. The Go side's
+//!   hand-rolled matcher instead falls through to `path.Match("**", path)`,
+//!   which cannot cross a `/`, so the same policy denies `a/b.txt` there. The
+//!   Rust reading is the intended one — `allow_write: ["**"]` is the documented
+//!   way to say "writes are allowed" — and the divergence is pinned by a test.
+//! * a pattern ending in `/**` also names the directory itself, because a policy
+//!   rule that says "everything under `secrets`" must not be sidestepped by
+//!   addressing `secrets`. This expansion applies to [`compile_set`] (policy
+//!   rules); [`compile`] (a glob search) returns files only, so it needs none.
 //!
-//! Case is folded only where the filesystem folds it (`cfg!(windows)`), matching
-//! the Go side: on a case-insensitive host a policy that ignored case would be
-//! bypassable by spelling the path differently.
+//! Case is folded on Windows only, matching the Go side. That is narrower than
+//! "wherever the filesystem folds case": a case-insensitive host elsewhere
+//! (default APFS on macOS, say) is not folded, because the Go side does not fold
+//! it either and a policy that behaved differently per host would be worse than
+//! one that is merely conservative.
+//!
+//! Callers match the **cleaned** path (`crate::path::clean`), never the raw
+//! string, so `a/../b` is matched as `b` — the path the provider will act on.
 
 use flowcraft_error::{Error, Result};
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
@@ -57,27 +67,6 @@ fn expand(pattern: &str) -> Vec<String> {
     }
 }
 
-/// Normalize a caller path for matching: portable separators, no `.` segments,
-/// no duplicate slashes. `..` segments are kept as written, so a rule that names
-/// them can match them; refusing them is the provider's job, not the matcher's.
-pub(crate) fn normalize(path: &str) -> String {
-    use std::path::Component;
-
-    let mut parts: Vec<String> = Vec::new();
-    for component in std::path::Path::new(path).components() {
-        match component {
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::ParentDir => parts.push("..".to_owned()),
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) => {}
-        }
-    }
-    if path.starts_with('/') || path.starts_with('\\') {
-        return format!("/{}", parts.join("/"));
-    }
-    parts.join("/")
-}
-
 fn invalid(pattern: &str, error: &globset::Error) -> Error {
     Error::validation(format!("workspace: invalid pattern {pattern:?}: {error}"))
 }
@@ -87,7 +76,7 @@ mod tests {
     use super::*;
 
     fn matches(pattern: &str, path: &str) -> bool {
-        compile(pattern).unwrap().is_match(normalize(path))
+        compile(pattern).unwrap().is_match(path)
     }
 
     #[test]
@@ -96,6 +85,16 @@ mod tests {
         assert!(!matches("*.json", "nested/deep.json"));
         assert!(matches("**/*.json", "nested/deep.json"));
         assert!(matches("**/*.json", "top.json"));
+    }
+
+    /// The Rust reading of a bare `**` (see the module docs): it spans
+    /// components, unlike the Go side's fall-through to `path.Match`.
+    #[test]
+    fn a_bare_double_star_matches_everything() {
+        assert!(matches("**", "a"));
+        assert!(matches("**", "a/b/c.txt"));
+        let set = compile_set(&["**".to_owned()]).unwrap();
+        assert!(set.is_match("a/b.txt"));
     }
 
     #[test]
@@ -109,14 +108,6 @@ mod tests {
         assert!(nested.is_match("node_modules"));
         assert!(nested.is_match("a/node_modules"));
         assert!(nested.is_match("a/node_modules/pkg/index.js"));
-    }
-
-    #[test]
-    fn normalization_is_portable() {
-        assert_eq!(normalize("./a/b"), "a/b");
-        assert_eq!(normalize("a//b/"), "a/b");
-        assert_eq!(normalize("a/../b"), "a/../b");
-        assert_eq!(normalize("."), "");
     }
 
     #[test]

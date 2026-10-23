@@ -1,8 +1,9 @@
 //! Policy decoration: glob rules over any provider.
 //!
 //! This is the provider-side half of access control. The other half is the
-//! grant's scope (see [`crate::scope`]), which is signed into a token and
-//! enforced at the endpoint's trust boundary. Here the rules live inside the
+//! grant's scope (`scope`, behind the `wire` feature), which is signed into a
+//! token and enforced at the endpoint's trust boundary. Both match the *cleaned*
+//! path, so `a/../b` is decided as `b` on either side. Here the rules live inside the
 //! process, next to the data, and apply no matter how the caller reached the
 //! provider: a local handle, a decorator, or a future transport.
 //!
@@ -37,6 +38,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspace};
+use crate::path;
 use crate::pattern;
 
 /// Which operation a violation record is about.
@@ -172,38 +174,69 @@ impl ScopedWorkspace {
         self.inner.clone()
     }
 
+    /// Match the path the provider will actually act on.
+    ///
+    /// `path::clean` collapses interior `..` exactly as every provider does, so
+    /// `public/../secrets/key` is matched as `secrets/key`. Matching the raw
+    /// string instead would let the rule miss and the provider still resolve
+    /// past it — the Go side cleans first for the same reason
+    /// (`filepath.Clean` in `checkRead`/`checkWrite`).
+    ///
+    /// A path that cannot be cleaned is refused: a rule cannot allow what the
+    /// provider will not accept, and the error is already `Forbidden`.
     fn check_read(&self, path: &str) -> Result<()> {
-        let normalized = pattern::normalize(path);
-        if self.policy.mandatory_deny.is_match(&normalized) {
-            return Err(self.deny(Operation::Read, path, "mandatory deny"));
+        let cleaned = path::clean(path)?;
+        if self.policy.mandatory_deny.is_match(&cleaned) {
+            return Err(self.deny(Operation::Read, path, "mandatory deny", "mandatory deny"));
         }
-        if self.policy.deny_read.is_match(&normalized) {
-            return Err(self.deny(Operation::Read, path, "deny-read pattern matched"));
+        if self.policy.deny_read.is_match(&cleaned) {
+            return Err(self.deny(
+                Operation::Read,
+                path,
+                "deny-read pattern matched",
+                "read denied",
+            ));
         }
         Ok(())
     }
 
     fn check_write(&self, path: &str) -> Result<()> {
-        let normalized = pattern::normalize(path);
-        if self.policy.mandatory_deny.is_match(&normalized) {
-            return Err(self.deny(Operation::Write, path, "mandatory deny"));
+        let cleaned = path::clean(path)?;
+        if self.policy.mandatory_deny.is_match(&cleaned) {
+            return Err(self.deny(Operation::Write, path, "mandatory deny", "mandatory deny"));
         }
-        if !self.policy.allow_write.is_match(&normalized) {
-            return Err(self.deny(Operation::Write, path, "not in allow-write list"));
+        if !self.policy.allow_write.is_match(&cleaned) {
+            return Err(self.deny(
+                Operation::Write,
+                path,
+                "not in allow-write list",
+                "write denied",
+            ));
         }
         Ok(())
     }
 
-    fn deny(&self, operation: Operation, path: &str, reason: &'static str) -> Error {
+    /// Record a refusal and build the error.
+    ///
+    /// `reason` is the fixed vocabulary a [`ViolationRecord`] carries (`"not in
+    /// allow-write list"`); `suffix` is the short phrase the error message adds
+    /// (`"write denied"`), which is what the Go side's `ErrAccessDenied` wrap
+    /// prints. They differ, so an operator greps the same two strings on both
+    /// trees.
+    fn deny(
+        &self,
+        operation: Operation,
+        path: &str,
+        reason: &'static str,
+        suffix: &'static str,
+    ) -> Error {
         self.sink.record(&ViolationRecord {
             time: SystemTime::now(),
             operation,
             path: path.to_owned(),
             reason,
         });
-        // The wording mirrors the Go side's `ErrAccessDenied` wrap, so an
-        // operator switching a deployment between the two trees greps once.
-        Error::forbidden(format!("workspace: access denied: {path} ({reason})"))
+        Error::forbidden(format!("workspace: access denied: {path} ({suffix})"))
     }
 }
 
@@ -449,6 +482,53 @@ mod tests {
         // rather than truncated.
         assert_eq!(scoped.read_limited("file", 10).await.unwrap().len(), 10);
         assert!(scoped.read_limited("file", 9).await.is_err());
+    }
+
+    /// Regression: the rules used to be matched against the raw caller path
+    /// while the provider resolved interior `..`, so `a/../private/b.txt` slipped
+    /// past `deny_read: ["private/**"]` and was then read as `private/b.txt`.
+    #[tokio::test]
+    async fn an_interior_parent_dir_cannot_step_around_a_rule() {
+        let (_read_dir, read_workspace) = workspace().await;
+        read_workspace
+            .write("private/b.txt", b"secret")
+            .await
+            .unwrap();
+        let (guarded, recorder) = scoped(read_workspace, &["private/**"], &["out/**"], &[]);
+
+        // Read: the deny rule must see `private/b.txt`.
+        let error = guarded
+            .read("public/../private/b.txt")
+            .await
+            .expect_err("read must be denied");
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::Forbidden);
+        assert!(error.to_string().contains("read denied"));
+        assert_eq!(
+            recorder.records.lock().unwrap()[0].reason,
+            "deny-read pattern matched"
+        );
+
+        // Write: the allow list must not be escaped either.
+        assert_eq!(
+            guarded
+                .write("out/../elsewhere/x", b"x")
+                .await
+                .unwrap_err()
+                .kind(),
+            flowcraft_error::ErrorKind::Forbidden
+        );
+
+        // Mandatory deny applies to both directions, through the same clean.
+        let (_deny_dir, deny_workspace) = workspace().await;
+        let (guarded, _recorder) = scoped(deny_workspace, &[], &["**"], &["private/**"]);
+        assert_eq!(
+            guarded
+                .write("a/../private/b.txt", b"x")
+                .await
+                .unwrap_err()
+                .kind(),
+            flowcraft_error::ErrorKind::Forbidden
+        );
     }
 
     #[tokio::test]
