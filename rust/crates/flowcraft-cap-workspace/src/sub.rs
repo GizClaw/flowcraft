@@ -57,6 +57,19 @@ impl SubWorkspace {
         &self.prefix
     }
 
+    /// The workspace this view prefixes.
+    ///
+    /// The names a caller writes through the view are relative to the prefix;
+    /// the handle returned here speaks the parent's names, so both spellings of
+    /// one file are reachable. It exists for the same reason the Go side lets a
+    /// `ScopedWorkspace` be unwrapped: a caller that needs the underlying
+    /// provider (its root path, another policy) should not have to reconstruct
+    /// it.
+    #[must_use]
+    pub fn parent(&self) -> Handle {
+        self.inner.clone()
+    }
+
     fn join(&self, path: &str) -> Result<String> {
         Ok(path::join(&self.prefix, &path::clean(path)?))
     }
@@ -241,6 +254,19 @@ mod tests {
                 "{prefix}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_parent_is_reachable_under_its_own_names() {
+        let (_dir, view, inner) = view("run-1").await;
+        view.write("file", b"x").await.unwrap();
+        // One file, two spellings: the view's and the parent's.
+        assert_eq!(inner.read("run-1/file").await.unwrap(), b"x");
+        assert_eq!(view.parent().read("run-1/file").await.unwrap(), b"x");
+        assert_eq!(
+            view.parent().read("file").await.unwrap_err().kind(),
+            flowcraft_error::ErrorKind::NotFound
+        );
     }
 
     #[test]

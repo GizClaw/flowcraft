@@ -160,6 +160,18 @@ impl ScopedWorkspace {
         self
     }
 
+    /// The provider this policy filters.
+    ///
+    /// The counterpart of the Go side's `Unwrap`: a caller that needs
+    /// provider-specific extras (a local root path, say) recovers them from the
+    /// handle it wrapped. Operations on the returned handle **bypass this
+    /// policy** — that is the point of the accessor, and the reason the Go side
+    /// documents the same caveat on `Unwrap`.
+    #[must_use]
+    pub fn provider(&self) -> Handle {
+        self.inner.clone()
+    }
+
     fn check_read(&self, path: &str) -> Result<()> {
         let normalized = pattern::normalize(path);
         if self.policy.mandatory_deny.is_match(&normalized) {
@@ -437,6 +449,17 @@ mod tests {
         // rather than truncated.
         assert_eq!(scoped.read_limited("file", 10).await.unwrap().len(), 10);
         assert!(scoped.read_limited("file", 9).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_wrapped_provider_is_reachable_and_unscoped() {
+        let (_dir, workspace) = workspace().await;
+        workspace.write("private/b.txt", b"b").await.unwrap();
+        let (scoped, _recorder) = scoped(workspace, &["private/**"], &["**"], &[]);
+        assert!(scoped.read("private/b.txt").await.is_err());
+        // The accessor exists so provider-specific extras stay reachable; the
+        // caveat is that the returned handle is not filtered.
+        assert_eq!(scoped.provider().read("private/b.txt").await.unwrap(), b"b");
     }
 
     #[test]
