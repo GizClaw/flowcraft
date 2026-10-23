@@ -3,8 +3,9 @@
 //! These are the parts of the contract that are *policy over the primitive*, not
 //! storage: publishing a payload atomically, copying, bounded reads, and the two
 //! traversals (`walk`, `glob`). They are free functions over `&dyn Workspace` so
-//! a provider does not have to reimplement them and a decorator gets them for
-//! free.
+//! a provider does not have to reimplement them, and they compose over a
+//! decorator as long as the decorator's rules allow every path the operation
+//! touches — `atomic_write`'s temp name is the one to watch (see its docs).
 //!
 //! Paths in and out are the portable workspace namespace: `/`-separated on every
 //! platform, relative to the workspace root, with no leading `./`. The Go side
@@ -70,6 +71,15 @@ pub async fn capped(workspace: &dyn Workspace, path: &str, max_bytes: u64) -> Re
 /// consumers that enumerate a directory should tolerate entries that end in
 /// `.tmp`.
 ///
+/// # Under a policy
+///
+/// The temp name is `.<base>.tmp` next to the destination, and a decorator
+/// checks it like any other path — so an allow-list that names only the final
+/// path (`out/report.json`) refuses the publish, because the temp write is
+/// denied. Spell the rule for the directory (`out/**`) or for both names. The
+/// Go side has the same requirement; it is inherent to publishing through a
+/// temp file.
+///
 /// # Errors
 ///
 /// The write or the rename failure is reported; a leftover temp file after a
@@ -131,7 +141,9 @@ pub async fn walk<F>(workspace: &dyn Workspace, dir: &str, visit: &mut F) -> Res
 where
     F: FnMut(&str, &Entry) -> Result<Step> + Send,
 {
-    walk_dir(workspace, dir.to_owned(), visit).await
+    // Clean the root once so the walk speaks the provider's portable namespace:
+    // `""` and `"."` both mean the workspace root, and `a/../b` means `b`.
+    walk_dir(workspace, crate::path::clean(dir)?, visit).await
 }
 
 fn walk_dir<'a, F>(
@@ -144,7 +156,7 @@ where
 {
     Box::pin(async move {
         for entry in workspace.list(&dir).await? {
-            let child = join(&dir, &entry.name);
+            let child = crate::path::join(&dir, &entry.name);
             if visit(&child, &entry)? == Step::SkipDir {
                 continue;
             }
@@ -178,15 +190,6 @@ pub async fn glob(workspace: &dyn Workspace, pattern: &str) -> Result<Vec<String
     })
     .await?;
     Ok(matches)
-}
-
-/// Join a workspace directory and a child name with the portable separator.
-pub(crate) fn join(dir: &str, name: &str) -> String {
-    if dir.is_empty() || dir == "." {
-        name.to_owned()
-    } else {
-        format!("{dir}/{name}")
-    }
 }
 
 /// The private temp path a payload is written to before it is published.
@@ -363,7 +366,9 @@ mod tests {
         assert_eq!(capped(&PlainWorkspace, "file", 8).await.unwrap().len(), 8);
         let error = capped(&PlainWorkspace, "file", 7).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Validation);
-        assert!(error.to_string().contains("read cap"));
+        // The wording proves which layer refused: `over the … cap` is the
+        // post-check in `capped`, not a provider's bounded read.
+        assert!(error.to_string().contains("over the"), "{error}");
     }
 
     #[tokio::test]
@@ -371,9 +376,33 @@ mod tests {
         let (_dir, workspace) = workspace().await;
         workspace.write("file", b"0123456789").await.unwrap();
         assert_eq!(capped(&workspace, "file", 10).await.unwrap().len(), 10);
-        assert_eq!(
-            capped(&workspace, "file", 9).await.unwrap_err().kind(),
-            ErrorKind::Validation
-        );
+        let error = capped(&workspace, "file", 9).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        // `exceeds the … cap` is the provider's refusal. Asserting only the kind
+        // would pass with the bounded read deleted and the fallback answering.
+        assert!(error.to_string().contains("exceeds the"), "{error}");
+    }
+
+    /// Publishing through a temp name needs that name allowed too.
+    #[tokio::test]
+    async fn atomic_write_needs_the_temp_name_allowed_by_a_policy() {
+        use crate::contract::Handle;
+        use crate::scoped::{Policy, ScopedWorkspace};
+        use std::sync::Arc;
+
+        let (_dir, workspace) = workspace().await;
+        let exact = Policy::new(&[], &["out/report.json".to_owned()], &[]).unwrap();
+        let guarded = ScopedWorkspace::new(Handle::new(Arc::new(workspace.clone())), exact);
+        let error = atomic_write(&guarded, "out/report.json", b"x")
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Forbidden, "{error}");
+
+        let directory = Policy::new(&[], &["out/**".to_owned()], &[]).unwrap();
+        let guarded = ScopedWorkspace::new(Handle::new(Arc::new(workspace)), directory);
+        atomic_write(&guarded, "out/report.json", b"x")
+            .await
+            .unwrap();
+        assert_eq!(guarded.read("out/report.json").await.unwrap(), b"x");
     }
 }

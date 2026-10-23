@@ -1,6 +1,6 @@
 //! The workspace capability.
 //!
-//! One contract, seven pieces:
+//! One contract, six pieces:
 //!
 //! * [`contract`] — the [`Workspace`] trait, the capability bits, and the
 //!   [`Handle`] a factory produces.
@@ -9,10 +9,14 @@
 //! * [`scoped`] — a decorator that refuses paths a glob policy does not allow,
 //!   and records what it refused.
 //! * [`sub`] — a decorator that presents one subtree as a whole workspace.
-//! * [`endpoint`] — a resource that serves a provider over gRPC, from a socket
-//!   the host's [`flowcraft_kernel::EndpointHost`] created.
-//! * [`remote`] — a resource that presents a remote endpoint as the same
+//! * `endpoint` — a resource that serves a provider over gRPC, from a socket
+//!   the host's `EndpointHost` created.
+//! * `remote` — a resource that presents a remote endpoint as the same
 //!   [`contract::Workspace`], so callers cannot tell local from remote.
+//!
+//! (`endpoint` and `remote` are spelled as code rather than links: they only
+//! exist with the `wire` feature, and a link that resolves in one build and not
+//! the other is a doc warning waiting to happen.)
 //!
 //! [`helpers`] adds the composed operations every provider inherits (atomic
 //! publish, copy, bounded reads, `walk`, `glob`). The `pattern` and `path`
@@ -20,7 +24,7 @@
 //! path means" that the helpers, the decorators and the provider share, and
 //! `retry` holds the bounded retry Windows needs.
 //!
-//! [`endpoint`], [`remote`] and [`scope`] are behind the default `wire` feature.
+//! `endpoint`, `remote` and `scope` are behind the default `wire` feature.
 //! Turning it off leaves a crate that only needs a filesystem — no control
 //! plane, no transport — which is what a consumer that just wants a confined
 //! directory should compile, and what the Windows check lane builds.

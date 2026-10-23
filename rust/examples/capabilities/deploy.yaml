@@ -36,7 +36,10 @@ resources:
     deps:
       workspace: workspace
     settings:
-      deny_read: ["secrets/**"]
+      # `**/secrets/**`, not `secrets/**`: the policy sits *below* the view, so
+      # it sees the prefixed path (`run-1/secrets/…`) and an anchored rule would
+      # never match. A leading `**` makes the rule layer-independent.
+      deny_read: ["**/secrets/**"]
       allow_write: ["**"]
       mandatory_deny: ["**/.env"]
 

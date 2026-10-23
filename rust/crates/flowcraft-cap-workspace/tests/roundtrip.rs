@@ -224,12 +224,15 @@ async fn bounded_reads_cross_the_wire() {
     assert_eq!(data, b"0123456789");
 
     // A client-side fallback would answer `NotAvailable`-then-read; the served
-    // RPC answers with the provider's classification instead.
+    // RPC answers with the provider's classification instead. The wording tells
+    // the two layers apart: `exceeds the … cap` comes from the provider, so it
+    // proves the refusal happened before the bytes crossed the socket.
     let over = remote
         .read_limited("file", 9)
         .await
         .expect_err("over the cap");
     assert_eq!(over.kind(), flowcraft_error::ErrorKind::Validation);
+    assert!(over.to_string().contains("exceeds the"), "{over}");
     let missing = remote
         .read_limited("missing", 10)
         .await

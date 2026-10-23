@@ -495,6 +495,17 @@ jobs:
       - name: Clippy
         working-directory: rust
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The workspace crate documents two shapes: with `wire` (the platform) and
+      # without (the provider alone, which is what the Windows lane builds). A
+      # link or a `cfg`-gated item that resolves in one and not the other is a
+      # doc warning, so both shapes are gated here.
+      - name: Docs
+        working-directory: rust
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc -p flowcraft-cap-workspace --no-deps
+          cargo doc -p flowcraft-cap-workspace --no-deps --no-default-features
       - name: Test
         working-directory: rust
         run: cargo test --workspace

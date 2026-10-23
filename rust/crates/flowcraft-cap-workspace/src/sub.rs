@@ -4,7 +4,13 @@
 //! a caller holding the view cannot name anything outside it: the provider's own
 //! confinement applies to the joined path. That is the whole mechanism — the
 //! view adds a name mapping, not a second permission system (a policy belongs in
-//! [`crate::scoped`], where it composes with this one in either order).
+//! [`crate::scoped`]).
+//!
+//! Order with a policy matters for the *spelling* of its rules, not for whether
+//! they hold: a policy below the view sees the prefixed path (`run-1/secrets/x`),
+//! so a rule anchored at `secrets/` never matches there. Spell such a rule
+//! `**/secrets/**` to make it order-independent; a test pins this
+//! ([`crate::scoped`]'s test module and `tests/decorators.rs`).
 //!
 //! A view is also how a deployment gives each run its own "root" without
 //! minting a new grant or opening a second handle: `sub(prefix = "runs/42")`

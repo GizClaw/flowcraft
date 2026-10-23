@@ -102,6 +102,14 @@ async fn a_policy_holds_for_a_caller_that_arrives_over_the_endpoint() {
     // too, which is why `exists` is a refusal rather than `false`.
     remote.write("notes.txt", b"ok").await.unwrap();
     assert_eq!(remote.read("notes.txt").await.unwrap(), b"ok");
+
+    // The fixture's deny rule is spelled `**/secrets/**`, so it still matches
+    // after the prefix is applied; writes are allowed, reads are not.
+    remote.write("secrets/notes.txt", b"x").await.unwrap();
+    assert_eq!(
+        remote.read("secrets/notes.txt").await.unwrap_err().kind(),
+        ErrorKind::Forbidden
+    );
     let error = remote.write(".env", b"SECRET=1").await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Forbidden);
     assert_eq!(

@@ -110,7 +110,7 @@ build time from `proto/`, so there is no vendored stub to go stale.
 
 ```bash
 cd rust
-cargo test                       # 526 tests, no network, no credentials
+cargo test                       # 521 tests, no network, no credentials
 
 cargo run -p flowcraft-platformd -- catalog
 cargo run -p flowcraft-platformd -- check \

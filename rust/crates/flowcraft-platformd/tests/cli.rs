@@ -105,6 +105,48 @@ fn check_accepts_a_valid_deployment() {
     assert_eq!(report["errors"].as_array().expect("errors").len(), 0);
 }
 
+/// The shipped examples are documents too, and nothing else parses them: a
+/// stale settings key or dep edge would be invisible until someone ran the
+/// demo. `check` is the gate that keeps them honest.
+#[test]
+fn every_example_deploy_checks() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&examples).expect("examples directory") {
+        let directory = entry.expect("example entry").path();
+        let config = directory.join("platform.yaml");
+        let deploy = directory.join("deploy.yaml");
+        if !config.is_file() || !deploy.is_file() {
+            continue;
+        }
+        let output = support::isolated(Command::new(binary()))
+            .args([
+                "check",
+                "--config",
+                config.to_str().expect("path"),
+                "--deploy",
+                deploy.to_str().expect("path"),
+                "--json",
+            ])
+            .output()
+            .expect("run");
+        assert!(
+            output.status.success(),
+            "{}: stderr: {}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("json report");
+        assert_eq!(report["ok"], true, "{}: {report}", directory.display());
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected the workspace and capabilities examples, found {checked}"
+    );
+}
+
 #[test]
 fn check_accepts_the_workspace_decorators() {
     let dir = tempfile::tempdir().expect("tempdir");

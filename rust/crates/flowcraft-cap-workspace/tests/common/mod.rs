@@ -84,7 +84,10 @@ pub async fn start() -> Stack {
                     "impl": "scoped",
                     "deps": {"workspace": "local"},
                     "settings": {
-                        "deny_read": ["secrets/**"],
+                        // `**/secrets/**` because the policy sits below the
+                        // `view` prefix: it sees `run-1/secrets/…`, so an
+                        // anchored rule would be inert.
+                        "deny_read": ["**/secrets/**"],
                         "allow_write": ["**"],
                         "mandatory_deny": ["**/.env"]
                     }
