@@ -13,6 +13,7 @@
 pub(crate) mod log;
 pub(crate) mod registry;
 pub(crate) mod spawn;
+pub(crate) mod terminal;
 
 pub(crate) use registry::{Registry, Spawn};
 pub(crate) use spawn::{DEFAULT_OUTPUT_LIMIT, SpawnOptions, spawn};

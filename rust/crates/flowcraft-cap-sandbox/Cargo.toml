@@ -25,6 +25,12 @@ tracing.workspace = true
 
 # cgroups are a Linux-only mechanism; everything else compiles without it and
 # reports the caps as unavailable.
+[target.'cfg(unix)'.dependencies]
+# A pty needs `setsid` + `TIOCSCTTY`, which are `unsafe` and this workspace
+# forbids `unsafe_code` outright (`forbid` cannot be relaxed by an inner
+# `allow`), so the mechanism comes from a dependency.
+portable-pty.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 cgroups-rs.workspace = true
 

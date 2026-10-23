@@ -141,7 +141,7 @@ impl Runner for LocalRunner {
                     write: WriteModes::default(),
                 },
                 features: Features {
-                    tty: false,
+                    tty: crate::session::terminal::available(),
                     // `stdin` is decided per session (by the spec), not by the
                     // backend, so the runner-level answer is `false`.
                     stdin: false,
@@ -315,7 +315,10 @@ mod tests {
         assert!(!capabilities.policy.filesystem_bounds);
         assert_eq!(capabilities.policy.net, NetModes::default());
         assert_eq!(capabilities.policy.write, WriteModes::default());
-        assert!(!capabilities.features.tty);
+        assert_eq!(
+            capabilities.features.tty,
+            crate::session::terminal::available()
+        );
         assert!(capabilities.features.events);
         assert!(!capabilities.journal.enabled);
     }

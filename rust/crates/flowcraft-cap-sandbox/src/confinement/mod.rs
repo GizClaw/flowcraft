@@ -119,7 +119,8 @@ impl Sandbox {
                 },
             },
             features: Features {
-                tty: false,
+                // The pty is inherited by the wrapper, so confinement keeps it.
+                tty: true,
                 // Per session, from the spec.
                 stdin: false,
                 signal: cfg!(unix),
@@ -336,11 +337,6 @@ impl ConfinedRunner {
     async fn prepare(&self, mut spec: SessionSpec) -> Result<Prepared> {
         if spec.argv.is_empty() {
             return Err(Error::validation("sandbox: argv is empty"));
-        }
-        if spec.tty {
-            return Err(Error::not_available(
-                "sandbox: confined runners do not provide a tty in this build",
-            ));
         }
         spec.opts.net.validate()?;
         let workdir = path::resolve_workdir(&self.config.root, spec.opts.workdir.as_deref())?;
@@ -727,7 +723,8 @@ mod tests {
             assert!(capabilities.policy.net.deny_all, "{sandbox:?}");
             assert!(!capabilities.policy.net.allow_list, "{sandbox:?}");
             assert!(!capabilities.policy.memory_cap, "{sandbox:?}");
-            assert!(!capabilities.features.tty, "{sandbox:?}");
+            // A pty is inherited by the wrapper, so confinement keeps it.
+            assert!(capabilities.features.tty, "{sandbox:?}");
         }
         assert!(Sandbox::Bwrap.capabilities().policy.unix_sockets);
         assert!(!Sandbox::Seatbelt.capabilities().policy.unix_sockets);

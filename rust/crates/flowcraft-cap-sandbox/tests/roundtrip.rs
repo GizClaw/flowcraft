@@ -115,7 +115,8 @@ async fn capabilities_come_from_the_server() {
     assert!(capabilities.policy.env_allow_list);
     // The local backend has no OS boundary, so it must not claim one.
     assert!(!capabilities.policy.filesystem_bounds);
-    assert!(!capabilities.features.tty);
+    // The local runner provides a pty, so the client must see that claim.
+    assert!(capabilities.features.tty);
     // `stdin` is decided per session, so a runner-level `true` would be wrong.
     assert!(!capabilities.features.stdin);
     stack.built.shutdown().await.expect("shutdown");

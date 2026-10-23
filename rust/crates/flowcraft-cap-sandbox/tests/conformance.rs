@@ -88,6 +88,7 @@ async fn suite(backend: &str, runner: Arc<dyn Runner>) {
     closing_releases_the_handle(backend, &*runner).await;
     listing_reflects_lifecycle(backend, &*runner).await;
     capabilities_never_overclaim(backend, &*runner).await;
+    a_pty_merges_the_streams(backend, &*runner).await;
     a_workdir_escape_is_forbidden(backend, &*runner).await;
     runner.close().await.expect("runner close");
 }
@@ -363,6 +364,51 @@ async fn a_workdir_escape_is_forbidden(backend: &str, runner: &dyn Runner) {
         error.to_string().contains("path traversal"),
         "{backend}: the message must name the refusal: {error}"
     );
+}
+
+/// A backend that claims a pty must provide one: one merged stream, a working
+/// resize, and an exit status. A backend that does not claim it is skipped, not
+/// failed — the claim is the contract, not the feature.
+async fn a_pty_merges_the_streams(backend: &str, runner: &dyn Runner) {
+    let capabilities = runner.capabilities().await.expect("capabilities");
+    if !capabilities.features.tty {
+        eprintln!("{backend}: no pty claimed, skipping");
+        return;
+    }
+    let mut request = support::spec(&["sh", "-c", "echo out; echo err 1>&2"]);
+    request.tty = true;
+    let session = runner.start(request).await.expect("pty start");
+    assert!(
+        session.features().tty,
+        "{backend}: the session claims a pty"
+    );
+    session
+        .resize(40, 120)
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: resize: {error}"));
+    let exit = session.wait().await.expect("wait");
+    assert_eq!(exit.code, Some(0), "{backend}: {exit:?}");
+
+    let mut text = String::new();
+    let mut cursor = 0;
+    loop {
+        let read = session.read(cursor, 64 * 1024).await.expect("read");
+        for chunk in &read.chunks {
+            assert_eq!(
+                chunk.stream,
+                Stream::Tty,
+                "{backend}: a pty merges stdout and stderr"
+            );
+            text.push_str(&String::from_utf8_lossy(&chunk.data));
+        }
+        cursor = read.next_seq;
+        if read.eof {
+            break;
+        }
+    }
+    assert!(text.contains("out"), "{backend}: {text:?}");
+    assert!(text.contains("err"), "{backend}: {text:?}");
+    session.close().await.expect("close");
 }
 
 async fn capabilities_never_overclaim(backend: &str, runner: &dyn Runner) {

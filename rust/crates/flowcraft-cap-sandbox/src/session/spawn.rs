@@ -41,7 +41,7 @@ pub(crate) struct SpawnOptions {
 }
 
 /// How long a `SIGTERM` gets before the group is killed outright.
-const TERMINATE_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 /// How often the supervisor checks the deadline and the resource budgets.
 ///
@@ -314,11 +314,6 @@ fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
     // Resource caps: the platform decides what it can enforce, and a request it
     // cannot honour is refused rather than silently ignored.
     options.limits.check(&spec.opts.limits, spec.opts.timeout)?;
-    if spec.tty {
-        return Err(Error::not_available(
-            "sandbox: this build has no pty; start the session with tty: false",
-        ));
-    }
     match &options.root {
         Some(root) => {
             // Containment is checked twice (lexically, then through symlinks) by
@@ -368,6 +363,11 @@ pub(crate) async fn spawn(
     options: &SpawnOptions,
 ) -> Result<Arc<dyn Session>> {
     validate_spec(&mut spec, options)?;
+    // A pty is a different session shape (merged stream, resize, no stdin EOF),
+    // so it has its own implementation rather than a flag here.
+    if spec.tty {
+        return crate::session::terminal::spawn(spec, options).await;
+    }
 
     let mut command = Command::new(&spec.argv[0]);
     command.args(&spec.argv[1..]);
@@ -843,12 +843,8 @@ mod tests {
             flowcraft_error::ErrorKind::NotAvailable
         );
 
-        let mut tty = spec(&["true"]);
-        tty.tty = true;
-        assert_eq!(
-            spawn(tty, &options()).await.err().unwrap().kind(),
-            flowcraft_error::ErrorKind::NotAvailable
-        );
+        // A pty is no longer an unsupported policy: it has its own session shape
+        // and its own tests.
     }
 
     #[tokio::test]
