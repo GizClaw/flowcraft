@@ -27,12 +27,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use flowcraft_error::{Error, Result};
+use flowcraft_error::Result;
 use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec, require};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::codes::{self, Code};
 use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspace};
 use crate::path;
 
@@ -116,7 +117,10 @@ impl Workspace for SubWorkspace {
         // The view's own root is off limits, exactly like a provider's root:
         // forwarding "." would ask the parent to remove the prefix itself.
         if path::clean(path)?.is_empty() {
-            return Err(Error::forbidden("workspace: refusing to remove root"));
+            return Err(codes::forbidden(
+                Code::RootRemoval,
+                "workspace: refusing to remove root",
+            ));
         }
         self.inner.remove_all(&self.join(path)?).await
     }

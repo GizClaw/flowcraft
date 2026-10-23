@@ -8,7 +8,8 @@
 //! * `""` and `"."` name the root of the view;
 //! * `a/../b` is cleaned to `b` (interior `..` is allowed when it stays inside);
 //! * `..` that would climb above the root, and any absolute path, is
-//!   [`ErrorKind::Forbidden`] — the class Go's `ErrPathTraversal` carries.
+//!   [`ErrorKind::Forbidden`] — the class Go's `ErrPathTraversal` carries, told
+//!   apart by [`Code::PathTraversal`] and [`Code::PathAbsolute`].
 //!
 //! This is a lexical pass for clear errors and stable spelling. The security
 //! boundary is the capability handle underneath (see [`crate::local`]), which
@@ -18,7 +19,9 @@
 
 use std::path::{Component, Path};
 
-use flowcraft_error::{Error, Result};
+use flowcraft_error::Result;
+
+use crate::codes::{self, Code};
 
 /// Upper bound on one path, so a pathological string fails fast.
 const MAX_PATH: usize = 4096;
@@ -36,14 +39,16 @@ const MAX_PATH: usize = 4096;
 /// absolute or escapes the root.
 pub(crate) fn clean(path: &str) -> Result<String> {
     if path.len() > MAX_PATH {
-        return Err(Error::validation(format!(
-            "path is longer than {MAX_PATH} bytes"
-        )));
+        return Err(codes::validation(
+            Code::PathTooLong,
+            format!("path is longer than {MAX_PATH} bytes"),
+        ));
     }
     if Path::new(path).is_absolute() {
-        return Err(Error::forbidden(format!(
-            "path {path:?} must be relative to the workspace root"
-        )));
+        return Err(codes::forbidden(
+            Code::PathAbsolute,
+            format!("path {path:?} must be relative to the workspace root"),
+        ));
     }
     let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
     for component in Path::new(path).components() {
@@ -52,18 +57,20 @@ pub(crate) fn clean(path: &str) -> Result<String> {
             Component::CurDir => {}
             Component::ParentDir => {
                 if parts.pop().is_none() {
-                    return Err(Error::forbidden(format!(
-                        "path {path:?} escapes the workspace root"
-                    )));
+                    return Err(codes::forbidden(
+                        Code::PathTraversal,
+                        format!("path {path:?} escapes the workspace root"),
+                    ));
                 }
             }
             // `is_absolute` already rejected the rooted forms; a prefix that
             // slipped through (a Windows drive-relative path) is a refusal too,
             // never a silently reinterpreted path.
             Component::RootDir | Component::Prefix(_) => {
-                return Err(Error::forbidden(format!(
-                    "path {path:?} must be relative to the workspace root"
-                )));
+                return Err(codes::forbidden(
+                    Code::PathAbsolute,
+                    format!("path {path:?} must be relative to the workspace root"),
+                ));
             }
         }
     }
@@ -115,12 +122,26 @@ mod tests {
         }
     }
 
+    /// The category alone cannot tell an escape from an absolute path, and a
+    /// caller acting on the wrong one writes the wrong operator report.
+    #[test]
+    fn the_two_refusals_carry_distinct_codes() {
+        assert_eq!(clean("../a").unwrap_err().code(), Some("path_traversal"));
+        assert_eq!(
+            clean("/etc/passwd").unwrap_err().code(),
+            Some("path_absolute")
+        );
+    }
+
     #[test]
     fn an_overlong_path_is_a_validation_error() {
         let path = "a".repeat(MAX_PATH + 1);
+        let error = clean(&path).unwrap_err();
+        assert_eq!(error.kind(), flowcraft_error::ErrorKind::Validation);
+        assert_eq!(error.code(), Some("path_too_long"));
         assert_eq!(
-            clean(&path).unwrap_err().kind(),
-            flowcraft_error::ErrorKind::Validation
+            error.detail("workspace").expect("detail").domain(),
+            "workspace"
         );
     }
 

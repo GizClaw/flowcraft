@@ -53,6 +53,7 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Spec};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::codes::{self, Code};
 use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspace};
 use crate::path;
 
@@ -351,9 +352,10 @@ impl Workspace for LocalWorkspace {
             let mut data = Vec::new();
             std::io::Read::read_to_end(&mut reader, &mut data)?;
             if data.len() as u64 > max_bytes {
-                return Err(Error::validation(format!(
-                    "workspace: {shown} exceeds the {max_bytes}-byte read cap"
-                )));
+                return Err(codes::validation(
+                    Code::TooLarge,
+                    format!("workspace: {shown} exceeds the {max_bytes}-byte read cap"),
+                ));
             }
             Ok(data)
         })
@@ -431,7 +433,10 @@ impl Workspace for LocalWorkspace {
     async fn remove_all(&self, path: &str) -> Result<()> {
         let target = self.resolve(path)?;
         if target == Path::new(".") {
-            return Err(Error::forbidden("cannot remove the workspace root"));
+            return Err(codes::forbidden(
+                Code::RootRemoval,
+                "cannot remove the workspace root",
+            ));
         }
         self.blocking(format!("remove_all {path}"), move |dir| {
             // The contract names a tree, but removal is idempotent and total: a

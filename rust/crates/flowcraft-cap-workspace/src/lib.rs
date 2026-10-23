@@ -40,8 +40,12 @@
 //!
 //! Path confinement is the provider's job ([`local`]); the decorators map and
 //! filter names, they do not resolve them.
+//!
+//! [`codes`] is the vocabulary of workspace failures a caller can distinguish
+//! without parsing a message; it is the machine-readable half of an error.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+pub mod codes;
 pub mod contract;
 pub mod helpers;
 pub mod local;
@@ -58,6 +62,7 @@ pub mod remote;
 #[cfg(feature = "wire")]
 pub mod scope;
 
+pub use codes::Code;
 pub use contract::{Capabilities, Entry, Handle, KIND, Stat, Workspace};
 pub use helpers::{Step, atomic_write, capped, copy, glob, walk};
 pub use local::LocalWorkspace;

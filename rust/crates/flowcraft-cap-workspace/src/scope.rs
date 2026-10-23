@@ -1,7 +1,9 @@
 //! Grant scope: the limits signed into the token.
 
-use flowcraft_error::{Error, Result};
+use flowcraft_error::Result;
 use serde_json::Value;
+
+use crate::codes::{self, Code};
 
 /// What a grant allows on this capability.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -41,7 +43,10 @@ impl Scope {
     /// [`ErrorKind::Forbidden`]: flowcraft_error::ErrorKind::Forbidden
     pub fn allows(&self, path: &str, write: bool) -> Result<()> {
         if write && !self.write {
-            return Err(Error::forbidden("grant scope is read-only"));
+            return Err(codes::forbidden(
+                Code::ScopeReadOnly,
+                "grant scope is read-only",
+            ));
         }
         let cleaned = crate::path::clean(path)?;
         if self.root.is_empty() {
@@ -50,10 +55,10 @@ impl Scope {
         if cleaned == self.root || cleaned.starts_with(&format!("{}/", self.root)) {
             return Ok(());
         }
-        Err(Error::forbidden(format!(
-            "path {path:?} is outside the grant scope {:?}",
-            self.root
-        )))
+        Err(codes::forbidden(
+            Code::ScopeDenied,
+            format!("path {path:?} is outside the grant scope {:?}", self.root),
+        ))
     }
 }
 

@@ -37,6 +37,7 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec, require};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::codes::{self, Code};
 use crate::contract::{CONTRACT, Capabilities, Entry, Handle, KIND, Stat, Workspace};
 use crate::path;
 use crate::pattern;
@@ -236,7 +237,10 @@ impl ScopedWorkspace {
             path: path.to_owned(),
             reason,
         });
-        Error::forbidden(format!("workspace: access denied: {path} ({suffix})"))
+        codes::forbidden(
+            Code::AccessDenied,
+            format!("workspace: access denied: {path} ({suffix})"),
+        )
     }
 }
 
