@@ -546,6 +546,11 @@ func (store *Store[B, D]) publishBaseLocked(
 	if sourceDigest == "" {
 		sourceDigest = baseDigest
 	}
+	// What this publication replaces is what the sweep spares. The read is
+	// best-effort: a lane whose manifest cannot be decoded is a lane a rebuild
+	// replaces, and refusing to publish because the state being replaced is
+	// unreadable would be a repair that cannot repair.
+	previous, previousFound, _ := store.loadManifestLocked(ctx, scope, name)
 	if err := store.writeImmutable(ctx, store.buildPath(scope, name, baseDigest), payload); err != nil {
 		return fmt.Errorf("projection: write immutable base: %w", err)
 	}
@@ -563,6 +568,11 @@ func (store *Store[B, D]) publishBaseLocked(
 		return err
 	}
 	store.cache = nil
+	// The manifest is what makes state reachable, so the sweep runs after it is
+	// durable: everything the new manifest does not name stopped being
+	// readable at that instant, and the one generation of grace is what a
+	// reader that resolved the previous manifest finishes on.
+	store.sweepSupersededLocked(ctx, scope, name, active, previous, previousFound)
 	return nil
 }
 

@@ -331,10 +331,15 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	}
 	indexers := make([]worker.ProjectionIndexer, 0, len(projections))
 	auditors := make([]projectionAuditor, 0, len(projections))
+	reclaimers := make([]maintain.ProjectionReclaimer, 0, len(projections))
 	for _, lane := range projections {
 		indexers = append(indexers, lane.workerIndexer())
 		auditors = append(auditors, projectionAuditor{Name: lane.Name, Auditor: lane.Auditor, Producer: lane.Producer})
+		reclaimers = append(reclaimers, maintain.ProjectionReclaimer{Name: lane.Name, Reclaimer: lane.Reclaimer})
 	}
+	// A maintenance pass reclaims what each lane compacted away, beside the
+	// document builds it reclaims: both are derived storage no manifest names.
+	maintainService.Projections = reclaimers
 	// The summary branch is a first-class fusion lane. Appending its
 	// candidates after fusion (as an earlier revision did) skipped lane
 	// calibration and weighting, so its raw lexical ratios were not
@@ -815,6 +820,10 @@ type projectionLane struct {
 	Auditor   component.Auditor
 	Producer  component.Producer
 	Rebuilder component.FullRebuilder
+	// Reclaimer reclaims the objects this lane compacted or rebuilt away. Every
+	// lane that stores anything implements it; the field is kept optional so a
+	// lane that stores nothing outside its manifest needs no sweep.
+	Reclaimer component.Reclaimer
 	// RebuildNeedsInference marks a lane whose rebuild embeds every artifact
 	// again, so a repair that was not asked for that lane leaves it alone.
 	RebuildNeedsInference bool
@@ -840,8 +849,8 @@ func buildProjections(
 		return nil, nil, nil, err
 	}
 	projections := []projectionLane{
-		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index},
-		{Name: "entity", Indexer: entityIndex, Auditor: entityIndex, Producer: entityIndex, Rebuilder: entityIndex},
+		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index, Reclaimer: bm25Index},
+		{Name: "entity", Indexer: entityIndex, Auditor: entityIndex, Producer: entityIndex, Rebuilder: entityIndex, Reclaimer: entityIndex},
 	}
 	lanes := []fusion.Lane{
 		{Name: "bm25", Searcher: bm25Index, Weight: settings.Lanes.BM25.Weight, Calibrator: fusion.BM25QuerySigmoid{}},
@@ -859,7 +868,7 @@ func buildProjections(
 	}
 	projections = append(projections, projectionLane{
 		Name: "vector", Indexer: vectorIndex, Auditor: vectorIndex, Producer: vectorIndex,
-		Rebuilder: vectorIndex, RebuildNeedsInference: true,
+		Rebuilder: vectorIndex, Reclaimer: vectorIndex, RebuildNeedsInference: true,
 	})
 	lanes = append(lanes, fusion.Lane{
 		Name: "vector", Searcher: vectorIndex, Weight: settings.Lanes.Vector.Weight, Calibrator: fusion.Cosine{},

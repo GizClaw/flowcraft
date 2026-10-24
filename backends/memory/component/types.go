@@ -143,6 +143,41 @@ type Producer interface {
 	OtherStoredNames(context.Context, corememory.Scope) ([]string, error)
 }
 
+// ReclaimResult reports what one lane's reclaim removed: the immutable bases
+// and segments the lane published before and its active manifest stopped
+// pointing at. It counts objects rather than bytes because a sweep deletes by
+// key: measuring what it removes would read the storage the sweep exists to
+// give up, and a host that wants the size stats the workspace it owns.
+type ReclaimResult struct {
+	// Bases counts the full snapshots removed.
+	Bases int `json:"bases"`
+	// Segments counts the incremental deltas removed.
+	Segments int `json:"segments"`
+}
+
+// Empty reports whether the sweep found nothing to remove.
+func (result ReclaimResult) Empty() bool { return result.Bases == 0 && result.Segments == 0 }
+
+// Reclaimer reclaims the storage a projection lane no longer serves.
+//
+// A lane publishes immutable bases and segments and moves one manifest at
+// them, so every publication that rewrites the shape -- a compaction, a
+// rebuild -- leaves the state it replaced unreachable but stored. Nothing
+// reads it: the manifest is the only pointer, and it names what is current.
+// Reclaiming is unreachability, not erasure of authority: a lane reads its
+// manifest, and a rebuild writes again what a sweep removed.
+type Reclaimer interface {
+	// ReclaimSuperseded removes the objects of one scope this lane's active
+	// manifest does not reference. It is idempotent -- a retried sweep finds
+	// less to remove -- and it reports what it removed.
+	//
+	// It expects the lane's single writer to be held off, which is the same
+	// discipline every publication to the lane already needs: a manifest this
+	// sweep read while another writer replaced it would name the objects that
+	// writer is about to publish.
+	ReclaimSuperseded(context.Context, corememory.Scope) (ReclaimResult, error)
+}
+
 // DocumentAddress qualifies a document within one hard scope.
 type DocumentAddress struct {
 	DatasetID  string `json:"dataset_id"`

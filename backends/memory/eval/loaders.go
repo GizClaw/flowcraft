@@ -101,6 +101,13 @@ type LoaderStats struct {
 	// a reading on the run, not an assumption.
 	ObservedAtAnchored int `json:"observed_at_anchored,omitempty"`
 	ObservedAtUnparsed int `json:"observed_at_unparsed,omitempty"`
+	// EvidenceUnresolved counts gold evidence references the conversion could
+	// not resolve against the conversation it rendered: a dataset that names a
+	// session (LongMemEval) or a turn (LoCoMo) the haystack does not hold. The
+	// reference is dropped from the question's evidence instead of grading as a
+	// miss no retrieval could ever fix, and counted here so the drop is never
+	// silent.
+	EvidenceUnresolved int `json:"evidence_unresolved,omitempty"`
 }
 
 // ImageFailureCounts breaks the failed image fetches down by cause. A failure
@@ -206,14 +213,27 @@ func LoadLoCoMo(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, er
 	return scenarios, stats, nil
 }
 
-// LoadLongMemEval converts xiaowu0162/longmemeval-cleaned JSON into
-// scenarios. Sessions are reordered by haystack_dates so temporal questions
-// see a coherent history.
+// LoadLongMemEval converts xiaowu0162/longmemeval-cleaned JSON into scenarios.
+//
+// Three dataset facts shape the conversion. Sessions are reordered by
+// haystack_dates so temporal questions see a coherent history. Each session
+// carries a date that the asking side needs -- a question phrased "last year"
+// cannot be resolved from an undated transcript -- so the conversion writes it
+// the way the LoCoMo conversion does, under the same -no-date-prefix /
+// -observed-at switches. And the dataset names its evidence by session rather
+// than by turn, so Question.EvidenceSessions carries the gold sessions while
+// Turn.DatasetIDs still names every message, which is what lets a recalled
+// message be matched back to the session that holds the answer.
 func LoadLongMemEval(data []byte, options LoaderOptions) ([]Scenario, LoaderStats, error) {
 	var instances []lmeRawInstance
 	if err := json.Unmarshal(data, &instances); err != nil {
 		return nil, LoaderStats{}, fmt.Errorf("memory eval: parse longmemeval: %w", err)
 	}
+	observedAt, err := options.observedAtMode()
+	if err != nil {
+		return nil, LoaderStats{}, err
+	}
+	render := lmeRender{dateless: options.Dateless, observedAt: observedAt == "metadata"}
 	var (
 		scenarios []Scenario
 		stats     LoaderStats
@@ -223,24 +243,39 @@ func LoadLongMemEval(data []byte, options LoaderOptions) ([]Scenario, LoaderStat
 			stats.Skipped++
 			continue
 		}
-		turns := lmeTurns(instance)
-		if len(turns) == 0 {
+		sessions := lmeSessions(instance, render, &stats)
+		if len(sessions) == 0 {
 			stats.Skipped++
 			continue
 		}
 		scenario := Scenario{
 			Name: "longmemeval/" + instance.QuestionID, Scope: options.Scope,
-			ConversationID: instance.QuestionID, Budget: options.Budget, Turns: turns,
+			ConversationID: instance.QuestionID, Budget: options.Budget,
+		}
+		known := make(map[string]struct{}, len(sessions))
+		for _, session := range sessions {
+			scenario.Turns = append(scenario.Turns, session.turn(instance.QuestionID))
+			known[session.id] = struct{}{}
 		}
 		stats.Conversations++
-		stats.Turns += len(turns)
+		stats.Turns += len(scenario.Turns)
 		query := strings.TrimSpace(instance.Question)
 		answer := lmeAnswer(instance.Answer)
 		if query == "" || answer == "" {
 			stats.Skipped++
 			continue
 		}
-		scenario.Questions = append(scenario.Questions, Question{Query: query, WantContains: []string{answer}})
+		scenario.Questions = append(scenario.Questions, Question{
+			Query: query, WantContains: []string{answer},
+			EvidenceSessions: lmeEvidenceSessions(instance.AnswerSessionIDs, known, &stats),
+			AskedAt:          strings.TrimSpace(instance.QuestionDate),
+			Category:         lmeCategory(instance.QuestionType),
+			CategoryLabel:    strings.TrimSpace(instance.QuestionType),
+			// The abstention rows are the dataset's own marker for a question
+			// its history cannot answer: the graded behaviour is saying so,
+			// not producing the fact.
+			Unanswerable: strings.HasSuffix(strings.TrimSpace(instance.QuestionID), longMemEvalAbstentionSuffix),
+		})
 		stats.Questions++
 		scenarios = append(scenarios, scenario)
 	}
@@ -1060,12 +1095,128 @@ type lmeRawInstance struct {
 	Question           string          `json:"question"`
 	Answer             json.RawMessage `json:"answer"`
 	QuestionDate       string          `json:"question_date"`
+	AnswerSessionIDs   []string        `json:"answer_session_ids"`
 	HaystackSessionIDs []string        `json:"haystack_session_ids"`
 	HaystackDates      []string        `json:"haystack_dates"`
 	HaystackSessions   [][]lmeRawTurn  `json:"haystack_sessions"`
 }
 
-func lmeTurns(instance lmeRawInstance) []Turn {
+// LongMemEval category ids. The numbering starts above LoCoMo's 1..5 on
+// purpose: TemporalCategory (2) is LoCoMo's category and it decides whether the
+// answering stage appends the reference harness's question suffix, so a
+// LongMemEval question must never land on it. A report says which dataset a
+// bucket came from through Question.CategoryLabel rather than through the
+// number alone.
+const (
+	LongMemEvalMultiSession            = 101
+	LongMemEvalTemporalReasoning       = 102
+	LongMemEvalKnowledgeUpdate         = 103
+	LongMemEvalSingleSessionUser       = 104
+	LongMemEvalSingleSessionAssistant  = 105
+	LongMemEvalSingleSessionPreference = 106
+	// LongMemEvalUnknownCategory is the bucket for a question_type this build
+	// does not know. It keeps the question graded (the label still names the
+	// type) instead of letting it read as "no category".
+	LongMemEvalUnknownCategory = 107
+)
+
+// longMemEvalCategories maps the dataset's question_type strings to the ids a
+// report groups by.
+var longMemEvalCategories = map[string]int{
+	"multi-session":             LongMemEvalMultiSession,
+	"temporal-reasoning":        LongMemEvalTemporalReasoning,
+	"knowledge-update":          LongMemEvalKnowledgeUpdate,
+	"single-session-user":       LongMemEvalSingleSessionUser,
+	"single-session-assistant":  LongMemEvalSingleSessionAssistant,
+	"single-session-preference": LongMemEvalSingleSessionPreference,
+}
+
+func lmeCategory(questionType string) int {
+	if category, ok := longMemEvalCategories[strings.TrimSpace(questionType)]; ok {
+		return category
+	}
+	return LongMemEvalUnknownCategory
+}
+
+// longMemEvalAbstentionSuffix marks the rows whose question the history cannot
+// answer ("_abs" in question_id). Their gold is a statement that the
+// information is missing, so grading them on containment would score every
+// answer wrong.
+const longMemEvalAbstentionSuffix = "_abs"
+
+// longMemEvalDateTimeLayout is the shape of every haystack_dates and
+// question_date value: "2023/05/30 (Tue) 23:40". It is not LoCoMo's layout
+// ("1:56 pm on 8 May, 2023"), so the two parsers keep separate constants.
+const longMemEvalDateTimeLayout = "2006/01/02 (Mon) 15:04"
+
+func parseLongMemEvalDateTime(value string) (time.Time, bool) {
+	parsed, err := time.Parse(longMemEvalDateTimeLayout, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+// LongMemEvalTurnID names one message of a LongMemEval session for the store.
+// The dataset labels its gold at session granularity, so the harness derives a
+// turn id from the session id and the message's position: ingest writes it
+// under DatasetTurnMetadataKey like a LoCoMo dia_id, and grading reads it back
+// to decide whether a session was recalled.
+func LongMemEvalTurnID(sessionID string, position int) string {
+	return sessionID + "#" + strconv.Itoa(position)
+}
+
+// LongMemEvalSessionOfTurn splits a turn id back into its session id. It is how
+// grading turns "this message was recalled" into "its session was recalled".
+func LongMemEvalSessionOfTurn(turnID string) (string, bool) {
+	at := strings.LastIndex(turnID, "#")
+	if at <= 0 || at == len(turnID)-1 {
+		return "", false
+	}
+	return turnID[:at], true
+}
+
+// lmeRender says how one conversion writes a session date: into every message's
+// text (the default, and what the LoCoMo conversion does), into every message's
+// observed_at metadata, or nowhere. The text prefix and the anchor are
+// alternative renderings of the same fact, which is why LoaderOptions refuses a
+// conversion that would write both.
+type lmeRender struct {
+	dateless   bool
+	observedAt bool
+}
+
+// lmeSession is one dataset session rendered for ingest: its identity, the date
+// it happened, and the messages that carry both.
+type lmeSession struct {
+	id       string
+	dateTime string
+	messages []coremessage.Message
+	ids      []string
+	observed []string
+}
+
+// turn renders the session as one committed batch. The observation anchor is a
+// property of the session -- every message exchanged in it was observed at its
+// date -- so the anchor repeats across the messages, exactly as on the LoCoMo
+// side.
+func (session lmeSession) turn(questionID string) Turn {
+	turn := Turn{
+		IdempotencyKey: "longmemeval/" + questionID + "/" + session.id,
+		Messages:       session.messages,
+		DatasetIDs:     session.ids,
+	}
+	if hasNonEmpty(session.observed) {
+		turn.ObservedAt = session.observed
+	}
+	return turn
+}
+
+// lmeSessions renders every session of one instance in date order. An
+// unparsable date still renders its raw string into the text and leaves the
+// metadata anchor empty rather than guessing one; the count is reported so
+// anchor coverage is a reading on the run.
+func lmeSessions(instance lmeRawInstance, render lmeRender, stats *LoaderStats) []lmeSession {
 	indexes := make([]int, len(instance.HaystackSessions))
 	for index := range indexes {
 		indexes[index] = index
@@ -1077,33 +1228,76 @@ func lmeTurns(instance lmeRawInstance) []Turn {
 		}
 		return indexes[i] < indexes[j]
 	})
-	turns := make([]Turn, 0, len(indexes))
+	sessions := make([]lmeSession, 0, len(indexes))
 	for _, index := range indexes {
-		messages := make([]coremessage.Message, 0, len(instance.HaystackSessions[index]))
-		for _, raw := range instance.HaystackSessions[index] {
-			text := strings.TrimSpace(raw.Content)
-			if text == "" {
+		sessionID := strconv.Itoa(index)
+		if index < len(instance.HaystackSessionIDs) && strings.TrimSpace(instance.HaystackSessionIDs[index]) != "" {
+			sessionID = strings.TrimSpace(instance.HaystackSessionIDs[index])
+		}
+		dateTime := lmeDate(instance, index)
+		anchor := ""
+		if render.observedAt && dateTime != "" {
+			if parsed, ok := parseLongMemEvalDateTime(dateTime); ok {
+				anchor = parsed.Format(time.RFC3339)
+			} else {
+				stats.ObservedAtUnparsed++
+			}
+		}
+		rawTurns := instance.HaystackSessions[index]
+		messages := make([]coremessage.Message, 0, len(rawTurns))
+		ids := make([]string, 0, len(rawTurns))
+		observed := make([]string, 0, len(rawTurns))
+		for position, raw := range rawTurns {
+			body := strings.TrimSpace(raw.Content)
+			if body == "" {
 				continue
 			}
 			role := coremessage.RoleUser
 			if strings.EqualFold(raw.Role, "assistant") {
 				role = coremessage.RoleAssistant
 			}
+			// The date is dataset content; carrying it in the text is the
+			// conversion's choice, and the dateless conversion drops exactly
+			// this step (the anchor above takes over).
+			text := body
+			if dateTime != "" && !render.dateless {
+				text = "[" + dateTime + "] " + text
+			}
 			messages = append(messages, coremessage.NewTextMessage(role, text))
+			ids = append(ids, LongMemEvalTurnID(sessionID, position))
+			observed = append(observed, anchor)
+			if anchor != "" {
+				stats.ObservedAtAnchored++
+			}
 		}
 		if len(messages) == 0 {
 			continue
 		}
-		sessionID := strconv.Itoa(index)
-		if index < len(instance.HaystackSessionIDs) && instance.HaystackSessionIDs[index] != "" {
-			sessionID = instance.HaystackSessionIDs[index]
-		}
-		turns = append(turns, Turn{
-			IdempotencyKey: "longmemeval/" + instance.QuestionID + "/" + sessionID,
-			Messages:       messages,
+		sessions = append(sessions, lmeSession{
+			id: sessionID, dateTime: dateTime,
+			messages: messages, ids: ids, observed: observed,
 		})
 	}
-	return turns
+	return sessions
+}
+
+// lmeEvidenceSessions keeps the gold session ids the conversion actually
+// rendered. A gold naming a session the haystack does not hold would make its
+// question impossible to hit, so it is counted and dropped instead of grading
+// as a permanent miss no retrieval could ever fix.
+func lmeEvidenceSessions(answerSessionIDs []string, known map[string]struct{}, stats *LoaderStats) []string {
+	evidence := make([]string, 0, len(answerSessionIDs))
+	for _, sessionID := range uniqueNonEmpty(answerSessionIDs) {
+		if _, ok := known[sessionID]; !ok {
+			stats.EvidenceUnresolved++
+			continue
+		}
+		evidence = append(evidence, sessionID)
+	}
+	if len(evidence) == 0 {
+		return nil
+	}
+	return evidence
 }
 
 func lmeDate(instance lmeRawInstance, index int) string {
