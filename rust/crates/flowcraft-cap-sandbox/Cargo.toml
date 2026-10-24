@@ -14,13 +14,30 @@ flowcraft-kernel.workspace = true
 flowcraft-proto.workspace = true
 flowcraft-resource.workspace = true
 async-trait.workspace = true
-nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+notify.workspace = true
 tonic.workspace = true
 tracing.workspace = true
+
+# Unix mechanisms live here: signals/process groups, and the pty syscalls. A
+# platform without them compiles the same crate and reports the features it
+# cannot provide (see `session::terminal::available` and `Runner::capabilities`).
+[target.'cfg(unix)'.dependencies]
+# Signals and process groups are a unix mechanism; naming them in the shared
+# dependency table would make the crate uncompilable everywhere else.
+nix.workspace = true
+# A pty needs `setsid` + `TIOCSCTTY`, which are `unsafe` and this workspace
+# forbids `unsafe_code` outright (`forbid` cannot be relaxed by an inner
+# `allow`), so the mechanism comes from a dependency.
+portable-pty.workspace = true
+
+# cgroups are a Linux-only mechanism; everywhere else the probe reports the caps
+# as unavailable.
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

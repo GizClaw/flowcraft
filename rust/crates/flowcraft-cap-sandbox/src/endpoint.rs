@@ -1,8 +1,14 @@
 //! The endpoint server: a runner exposed over gRPC.
+//!
+//! The service holds no session table of its own: every call resolves the
+//! session through the runner, so there is exactly one answer to "is this
+//! session open" and a session started by one call is visible to the next
+//! without any bookkeeping to keep in sync.
 
 use std::collections::BTreeMap;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flowcraft_client::grpc::{authenticate, grant_of, status};
 use flowcraft_error::{Error, Result};
@@ -15,14 +21,14 @@ use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Resource, Spec, re
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio_stream::{Stream, StreamExt};
 use tonic::service::Interceptor;
 use tonic::{Request, Response, Status};
 
-use crate::contract::{
-    self, CONTRACT, Capabilities, ExecOptions, ExitStatus, Handle, NetPolicy, ResourceLimits,
-    Session, SessionFeatures, SessionSpec, WriteMode,
-};
+use crate::contract::{self, CONTRACT, Capabilities, Handle};
+use crate::journal::Journal;
 use crate::scope::Scope;
+use crate::wire;
 
 /// The registry kind.
 pub const KIND: &str = "sandbox.Endpoint";
@@ -75,9 +81,11 @@ impl Resource for Endpoint {
             let (mut server, listener) = self.host.bind(&self.descriptor.name)?;
             let service = Service {
                 runner: self.runner.clone(),
-                sessions: Mutex::new(BTreeMap::new()),
                 descriptor: self.descriptor.clone(),
                 capability: self.capability.clone(),
+                journals: Mutex::new(BTreeMap::new()),
+                next_journal: AtomicU64::new(1),
+                started: Mutex::new(BTreeMap::new()),
             };
             let interceptor = GrantInterceptor {
                 grants: self.grants.clone(),
@@ -180,145 +188,71 @@ impl Interceptor for GrantInterceptor {
     }
 }
 
+/// One open journal reader, with the session that opened it.
+type JournalHandles = Mutex<BTreeMap<String, (String, Arc<dyn Journal>)>>;
+
 struct Service {
     runner: Handle,
-    sessions: Mutex<BTreeMap<String, Arc<dyn Session>>>,
     descriptor: EndpointDescriptor,
     capability: String,
+    /// Open journal readers, by the id handed out on the wire.
+    ///
+    /// This is the one table the endpoint legitimately owns: a journal handle is
+    /// *addressed* by an opaque id, and the runner has no way to look one up
+    /// again.
+    journals: JournalHandles,
+    next_journal: AtomicU64,
+    /// Ids this endpoint started.
+    ///
+    /// The runner's registry is the source of truth for session *state*, but it
+    /// also holds sessions the host started in-process (a one-shot `exec`, a
+    /// craft's own session). A grant is not an ownership token: without this
+    /// set, any client allowed to call `Read` could read a session it never
+    /// started. Membership is the missing dimension, so it is kept here rather
+    /// than widening the grant scope.
+    started: Mutex<BTreeMap<String, String>>,
 }
 
 impl Service {
-    fn scope<T>(&self, request: &Request<T>) -> std::result::Result<Scope, Status> {
+    fn scope<T>(&self, request: &Request<T>) -> std::result::Result<(String, Scope), Status> {
         let grant = grant_of(request)?;
         self.descriptor.authorize(&grant).map_err(status)?;
         if grant.capability != self.capability {
             return Err(Status::permission_denied("grant capability mismatch"));
         }
-        Scope::parse(&grant.scope).map_err(|_| Status::permission_denied("grant scope is invalid"))
+        let scope = Scope::parse(&grant.scope)
+            .map_err(|_| Status::permission_denied("grant scope is invalid"))?;
+        // The session a grant was minted for is the ownership dimension the scope
+        // does not have: two clients of the same session are one principal, and
+        // different sessions must not see each other's handles.
+        Ok((grant.session.clone(), scope))
     }
 
-    async fn session(&self, id: &str) -> std::result::Result<Arc<dyn Session>, Status> {
-        let sessions = self.sessions.lock().await;
-        sessions
+    async fn session(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> std::result::Result<Arc<dyn crate::contract::Session>, Status> {
+        if !self.owned(owner, id).await {
+            // Not this endpoint's session (or another session's): answering
+            // `NotFound` keeps a host-started session invisible instead of merely
+            // unlisted.
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
+        self.runner.session(id).await.map_err(status)
+    }
+
+    async fn owned(&self, owner: &str, id: &str) -> bool {
+        self.started
+            .lock()
+            .await
             .get(id)
-            .cloned()
-            .ok_or_else(|| Status::not_found(format!("sandbox: session {id:?}")))
+            .is_some_and(|session| session == owner)
     }
-}
 
-fn parse_duration(raw: &str) -> Result<Option<Duration>> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(None);
+    async fn forget(&self, id: &str) {
+        self.started.lock().await.remove(id);
     }
-    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
-    let (number, unit) = raw.split_at(split);
-    let value: u64 = number
-        .parse()
-        .map_err(|_| Error::validation(format!("timeout {raw:?} is not a duration")))?;
-    let duration = match unit {
-        "" | "s" => Duration::from_secs(value),
-        "ms" => Duration::from_millis(value),
-        "m" => Duration::from_secs(value.saturating_mul(60)),
-        "h" => Duration::from_secs(value.saturating_mul(3600)),
-        other => {
-            return Err(Error::validation(format!(
-                "timeout {raw:?}: unknown unit {other:?}"
-            )));
-        }
-    };
-    Ok(Some(duration))
-}
-
-fn runner_features_to_proto(features: SessionFeatures) -> pb::Features {
-    pb::Features {
-        tty: features.tty,
-        signal: features.signal,
-        events: features.events,
-    }
-}
-
-fn features_to_proto(features: SessionFeatures) -> pb::SessionFeatures {
-    pb::SessionFeatures {
-        tty: features.tty,
-        stdin: features.stdin,
-        signal: features.signal,
-        events: features.events,
-    }
-}
-
-fn exit_to_proto(exit: &ExitStatus) -> pb::SessionExit {
-    pb::SessionExit {
-        code: exit.code.unwrap_or(-1),
-        signal: exit.signal.unwrap_or(0),
-        reason: exit.reason.clone(),
-    }
-}
-
-fn capabilities_to_proto(capabilities: Capabilities) -> pb::DescribeResponse {
-    pb::DescribeResponse {
-        policy: Some(pb::Enforcement {
-            env_allow_list: capabilities.policy.env_allow_list,
-            net_modes: capabilities.policy.net_modes,
-            socks5: false,
-            mitm: false,
-            unix_socket_policy: false,
-            memory_cap: capabilities.policy.memory_cap,
-            cpu_cap: capabilities.policy.cpu_cap,
-            disk_cap: capabilities.policy.disk_cap,
-            filesystem_bounds: capabilities.policy.filesystem_bounds,
-            write_modes: capabilities.policy.write_modes,
-        }),
-        features: Some(runner_features_to_proto(capabilities.features)),
-        journal: None,
-    }
-}
-
-fn spec_from_proto(spec: pb::SessionSpec) -> Result<SessionSpec> {
-    let exec = spec.opts.unwrap_or_default();
-    let write = match exec.write.as_str() {
-        "" | "default" => WriteMode::Default,
-        "read_only" | "read-only" => WriteMode::ReadOnly,
-        other => {
-            return Err(Error::validation(format!(
-                "sandbox: unknown write mode {other:?}"
-            )));
-        }
-    };
-    let limits = exec.resources.unwrap_or_default();
-    let net = exec.net.unwrap_or_default();
-    let env = exec.env.unwrap_or_default();
-    Ok(SessionSpec {
-        id: spec.id,
-        argv: spec.argv,
-        tty: spec.tty,
-        stdin: spec.stdin,
-        opts: ExecOptions {
-            workdir: Some(exec.workdir).filter(|dir| !dir.is_empty()),
-            stdin: Some(exec.stdin).filter(|bytes| !bytes.is_empty()),
-            timeout: parse_duration(&exec.timeout)?,
-            env: contract::EnvPolicy {
-                allow: env.allow,
-                inject: env.inject.into_iter().collect(),
-            },
-            net: NetPolicy { mode: net.mode },
-            write,
-            limits: ResourceLimits {
-                cpu_millicores: u32::try_from(limits.cpu_millicores)
-                    .ok()
-                    .filter(|value| *value > 0),
-                memory_bytes: u64::try_from(limits.memory_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-                disk_bytes: u64::try_from(limits.disk_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-                max_output_bytes: u64::try_from(limits.max_output_bytes)
-                    .ok()
-                    .filter(|value| *value > 0),
-            },
-        },
-    })
 }
 
 #[tonic::async_trait]
@@ -327,37 +261,37 @@ impl sandbox_server::Sandbox for Service {
         &self,
         _request: Request<pb::DescribeRequest>,
     ) -> std::result::Result<Response<pb::DescribeResponse>, Status> {
-        let capabilities = self.runner.capabilities().await.map_err(status)?;
-        Ok(Response::new(capabilities_to_proto(capabilities)))
+        let capabilities: Capabilities = self.runner.capabilities().await.map_err(status)?;
+        Ok(Response::new(wire::capabilities_to_proto(&capabilities)))
     }
 
     async fn start(
         &self,
         request: Request<pb::StartRequest>,
     ) -> std::result::Result<Response<pb::StartResponse>, Status> {
-        let scope = self.scope(&request)?;
+        let (owner, scope) = self.scope(&request)?;
         let raw = request
             .get_ref()
             .spec
             .clone()
             .ok_or_else(|| Status::invalid_argument("sandbox: spec is required"))?;
-        let mut spec = spec_from_proto(raw).map_err(status)?;
+        let mut spec = wire::spec_from_proto(raw).map_err(status)?;
         scope.allows_command(&spec.argv).map_err(status)?;
         spec.opts.timeout = scope.timeout(spec.opts.timeout).map_err(status)?;
         spec.opts.limits.max_output_bytes = scope.output_limit(spec.opts.limits.max_output_bytes);
         let session = self.runner.start(spec).await.map_err(status)?;
+        self.started
+            .lock()
+            .await
+            .insert(session.id().to_owned(), owner.clone());
         let reference = pb::SessionRef {
             id: session.id().to_owned(),
             pid: session
                 .pid()
                 .and_then(|pid| i32::try_from(pid).ok())
                 .unwrap_or(0),
-            capabilities: Some(features_to_proto(session.features())),
+            capabilities: Some(wire::features_to_proto(session.features())),
         };
-        self.sessions
-            .lock()
-            .await
-            .insert(session.id().to_owned(), session);
         Ok(Response::new(pb::StartResponse {
             session: Some(reference),
         }))
@@ -367,34 +301,22 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::ReadRequest>,
     ) -> std::result::Result<Response<pb::ReadResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         let after = u64::try_from(payload.after_seq).unwrap_or(0);
         let max = usize::try_from(payload.max_bytes).unwrap_or(usize::MAX);
         let read = session.read(after, max).await.map_err(status)?;
-        Ok(Response::new(pb::ReadResponse {
-            next_seq: i64::try_from(read.next_seq).unwrap_or(i64::MAX),
-            chunks: read
-                .chunks
-                .into_iter()
-                .map(|chunk| pb::Chunk {
-                    seq: i64::try_from(chunk.seq).unwrap_or(i64::MAX),
-                    stream: chunk.stream,
-                    data: chunk.data,
-                })
-                .collect(),
-            eof: read.eof,
-        }))
+        Ok(Response::new(wire::read_to_proto(&read)))
     }
 
     async fn write(
         &self,
         request: Request<pb::WriteRequest>,
     ) -> std::result::Result<Response<pb::WriteResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let payload = request.get_ref();
-        let session = self.session(&payload.session).await?;
+        let session = self.session(&owner, &payload.session).await?;
         session.write(&payload.data).await.map_err(status)?;
         Ok(Response::new(pb::WriteResponse {}))
     }
@@ -403,21 +325,65 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseInputRequest>,
     ) -> std::result::Result<Response<pb::CloseInputResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         session.close_input().await.map_err(status)?;
         Ok(Response::new(pb::CloseInputResponse {}))
+    }
+
+    async fn resize(
+        &self,
+        request: Request<pb::ResizeRequest>,
+    ) -> std::result::Result<Response<pb::ResizeResponse>, Status> {
+        let (owner, _) = self.scope(&request)?;
+        let payload = request.get_ref();
+        let session = self.session(&owner, &payload.session).await?;
+        let rows = u16::try_from(payload.rows).unwrap_or(0);
+        let cols = u16::try_from(payload.cols).unwrap_or(0);
+        session.resize(rows, cols).await.map_err(status)?;
+        Ok(Response::new(pb::ResizeResponse {}))
+    }
+
+    async fn signal(
+        &self,
+        request: Request<pb::SignalRequest>,
+    ) -> std::result::Result<Response<pb::SignalResponse>, Status> {
+        let (owner, _) = self.scope(&request)?;
+        let payload = request.get_ref();
+        let session = self.session(&owner, &payload.session).await?;
+        let signal = wire::signal_from_proto(&payload.signal).map_err(status)?;
+        session.signal(signal).await.map_err(status)?;
+        Ok(Response::new(pb::SignalResponse {}))
+    }
+
+    type WatchStream = Pin<Box<dyn Stream<Item = std::result::Result<pb::Event, Status>> + Send>>;
+
+    async fn watch(
+        &self,
+        request: Request<pb::WatchRequest>,
+    ) -> std::result::Result<Response<Self::WatchStream>, Status> {
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
+        let events = session.watch().map_err(status)?;
+        let streamed = events.map(|event| Ok(wire::event_to_proto(&event)));
+        Ok(Response::new(Box::pin(streamed)))
     }
 
     async fn wait(
         &self,
         request: Request<pb::WaitRequest>,
     ) -> std::result::Result<Response<pb::WaitResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         let exit = session.wait().await.map_err(status)?;
+        // A timeout or an exhausted budget is a failure of the call as well as
+        // an outcome, so the RPC reports the classification; the outcome itself
+        // is still carried when it is a plain exit.
+        if let Some(error) = exit.error() {
+            return Err(status(error));
+        }
         Ok(Response::new(pb::WaitResponse {
-            exit: Some(exit_to_proto(&exit)),
+            exit: Some(wire::exit_to_proto(&exit)),
         }))
     }
 
@@ -425,11 +391,20 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseSessionRequest>,
     ) -> std::result::Result<Response<pb::CloseSessionResponse>, Status> {
-        self.scope(&request)?;
+        let (owner, _) = self.scope(&request)?;
         let id = request.get_ref().session.clone();
-        let session = self.sessions.lock().await.remove(&id);
-        if let Some(session) = session {
-            session.terminate().await.map_err(status)?;
+        if !self.owned(&owner, &id).await {
+            // Closing a session this endpoint never started would let any client
+            // kill the host's own work.
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
+        self.forget(&id).await;
+        match self.runner.close_session(&id).await {
+            Ok(()) => {}
+            // Closing something already gone is a success: the caller's intent
+            // is satisfied, and a retried close must not fail.
+            Err(error) if error.kind() == flowcraft_error::ErrorKind::NotFound => {}
+            Err(error) => return Err(status(error)),
         }
         Ok(Response::new(pb::CloseSessionResponse {}))
     }
@@ -438,8 +413,8 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::TerminateSessionRequest>,
     ) -> std::result::Result<Response<pb::TerminateSessionResponse>, Status> {
-        self.scope(&request)?;
-        let session = self.session(&request.get_ref().session).await?;
+        let (owner, _) = self.scope(&request)?;
+        let session = self.session(&owner, &request.get_ref().session).await?;
         session.terminate().await.map_err(status)?;
         Ok(Response::new(pb::TerminateSessionResponse {}))
     }
@@ -448,25 +423,12 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::ListRequest>,
     ) -> std::result::Result<Response<pb::ListResponse>, Status> {
-        self.scope(&request)?;
+        // `List` reports the runner's truth, including host-started sessions; the
+        // ownership check on every addressed call keeps those unreachable.
+        let (_, _) = self.scope(&request)?;
         let sessions = self.runner.list().await.map_err(status)?;
         Ok(Response::new(pb::ListResponse {
-            sessions: sessions
-                .into_iter()
-                .map(|info| pb::SessionInfo {
-                    id: info.id,
-                    argv: info.argv,
-                    tty: info.features.tty,
-                    pid: info
-                        .pid
-                        .and_then(|pid| i32::try_from(pid).ok())
-                        .unwrap_or(0),
-                    started_at_unix_nano: i64::try_from(info.started_at_unix_nano)
-                        .unwrap_or(i64::MAX),
-                    running: info.running,
-                    exit: info.exit.as_ref().map(exit_to_proto),
-                })
-                .collect(),
+            sessions: sessions.iter().map(wire::info_to_proto).collect(),
         }))
     }
 
@@ -474,11 +436,12 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::TerminateRequest>,
     ) -> std::result::Result<Response<pb::TerminateResponse>, Status> {
-        self.scope(&request)?;
-        self.runner
-            .terminate(&request.get_ref().session)
-            .await
-            .map_err(status)?;
+        let (owner, _) = self.scope(&request)?;
+        let id = request.get_ref().session.clone();
+        if !self.owned(&owner, &id).await {
+            return Err(Status::not_found(format!("sandbox: session {id:?}")));
+        }
+        self.runner.terminate(&id).await.map_err(status)?;
         Ok(Response::new(pb::TerminateResponse {}))
     }
 
@@ -486,67 +449,92 @@ impl sandbox_server::Sandbox for Service {
         &self,
         request: Request<pb::CloseRunnerRequest>,
     ) -> std::result::Result<Response<pb::CloseRunnerResponse>, Status> {
-        self.scope(&request)?;
+        let (_, _) = self.scope(&request)?;
         self.runner.close().await.map_err(status)?;
-        self.sessions.lock().await.clear();
+        // Readers handed out over the wire die with the runner they read from.
+        let readers: Vec<Arc<dyn Journal>> = {
+            let journals = self.journals.lock().await;
+            journals
+                .values()
+                .map(|(_, journal)| journal.clone())
+                .collect()
+        };
+        self.journals.lock().await.clear();
+        self.started.lock().await.clear();
+        for reader in readers {
+            let _ = reader.close().await;
+        }
         Ok(Response::new(pb::CloseRunnerResponse {}))
-    }
-
-    // The v1 wire keeps these local-only; the proto says so explicitly. A
-    // caller that needs them must run in-process or wait for v2.
-    async fn resize(
-        &self,
-        _request: Request<pb::ResizeRequest>,
-    ) -> std::result::Result<Response<pb::ResizeResponse>, Status> {
-        Err(Status::unimplemented("sandbox: resize is local-only in v1"))
-    }
-
-    async fn signal(
-        &self,
-        _request: Request<pb::SignalRequest>,
-    ) -> std::result::Result<Response<pb::SignalResponse>, Status> {
-        Err(Status::unimplemented("sandbox: signal is local-only in v1"))
-    }
-
-    type WatchStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = std::result::Result<pb::Event, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-
-    async fn watch(
-        &self,
-        _request: Request<pb::WatchRequest>,
-    ) -> std::result::Result<Response<Self::WatchStream>, Status> {
-        Err(Status::unimplemented("sandbox: watch is local-only in v1"))
     }
 
     async fn open_journal(
         &self,
-        _request: Request<pb::OpenJournalRequest>,
+        request: Request<pb::OpenJournalRequest>,
     ) -> std::result::Result<Response<pb::OpenJournalResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        let (owner, _) = self.scope(&request)?;
+        let journal = self.runner.open_journal().await.map_err(status)?;
+        let id = format!(
+            "journal-{}",
+            self.next_journal.fetch_add(1, Ordering::Relaxed)
+        );
+        self.journals
+            .lock()
+            .await
+            .insert(id.clone(), (owner.clone(), journal));
+        Ok(Response::new(pb::OpenJournalResponse { journal: id }))
     }
 
     async fn journal_read(
         &self,
-        _request: Request<pb::JournalReadRequest>,
+        request: Request<pb::JournalReadRequest>,
     ) -> std::result::Result<Response<pb::JournalReadResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        let (owner, _) = self.scope(&request)?;
+        let payload = request.get_ref();
+        let journal = self.journals.lock().await.get(&payload.journal).cloned();
+        let journal = match journal {
+            Some((session, journal)) if session == owner => journal,
+            _ => {
+                return Err(Status::not_found(format!(
+                    "sandbox: journal {:?}",
+                    payload.journal
+                )));
+            }
+        };
+        let after = u64::try_from(payload.after_seq).unwrap_or(0);
+        let max = usize::try_from(payload.max).unwrap_or(usize::MAX);
+        let batch = journal.read(after, max).await.map_err(status)?;
+        Ok(Response::new(wire::batch_to_proto(&batch)))
     }
 
     async fn close_journal(
         &self,
-        _request: Request<pb::CloseJournalRequest>,
+        request: Request<pb::CloseJournalRequest>,
     ) -> std::result::Result<Response<pb::CloseJournalResponse>, Status> {
-        Err(Status::unimplemented(
-            "sandbox: journal is not implemented yet",
-        ))
+        let (owner, _) = self.scope(&request)?;
+        let removed = self
+            .journals
+            .lock()
+            .await
+            .remove(&request.get_ref().journal);
+        match removed {
+            Some((session, journal)) if session == owner => {
+                journal.close().await.map_err(status)?;
+            }
+            Some((_, journal)) => {
+                // Put it back: a foreign reader must not be closeable.
+                self.journals
+                    .lock()
+                    .await
+                    .insert(request.get_ref().journal.clone(), (owner.clone(), journal));
+                return Err(Status::permission_denied(
+                    "sandbox: journal belongs to another session",
+                ));
+            }
+            None => {}
+        }
+        Ok(Response::new(pb::CloseJournalResponse {}))
     }
 }
+
+/// Keep the contract import used by the capability constant above.
+const _: &str = contract::CONTRACT;

@@ -5,8 +5,26 @@ package flowcraft.sandbox.v1;
 option go_package = "github.com/GizClaw/flowcraft/core/sandbox/v1;sandboxv1";
 
 // Sandbox is the process-execution capability served by a platform endpoint.
-// v1 exposes the pull-based session surface needed by sandbox.Exec; Watch,
-// Resize and Signal remain local-only until their wire semantics are fixed.
+//
+// The pull-based session surface is the contract: `Read` carries a byte cursor,
+// so a client resumes where it left off and a slow consumer never stalls the
+// child. `Resize`, `Signal` and `Watch` are served too (they were described as
+// local-only when v1 was drafted); their string vocabularies are part of the
+// contract and are named here so two implementations cannot disagree. The
+// vocabularies, one sentence each:
+//
+//   SessionExit.reason is one of exited, signaled, terminated, timed_out,
+//   budget_exceeded, unenforceable.
+//   Chunk.stream is one of stdout, stderr, tty.
+//   Event.type is one of output, exited, closed, lag.
+//   SignalRequest.signal is interrupt.
+//   Enforcement.net_modes lists deny_all, allow_list and proxy. It never lists
+//   "default", which is the absence of a policy rather than an enforced posture.
+//   Enforcement.write_modes lists workspace and read_only. ExecOptions.write
+//   accepts "" (workspace) and read_only, and an unknown value is an error.
+//   JournalEvent.op is one of create, write, rename, remove, and
+//   JournalGap.reason is one of overflow, retention, capacity, watch_lost,
+//   backend.
 service Sandbox {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Start(StartRequest) returns (StartResponse);

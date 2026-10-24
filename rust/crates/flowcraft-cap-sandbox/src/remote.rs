@@ -1,11 +1,16 @@
 //! The remote client: a remote runner presented as the local contract.
 //!
-//! Capabilities are fetched once at build time and then reported verbatim, so a
-//! remote runner declares exactly what its server declared.
+//! Capabilities are fetched once, lazily, and then reported verbatim, so a
+//! remote runner declares exactly what its server declared — never less (which
+//! would look like a downgrade) and never more (which would be a lie).
+//!
+//! A remote client can only address the sessions *it* started: the wire's
+//! `List` is the way to see what else exists, and `Session::features` from the
+//! start response is authoritative (the wire's `SessionInfo` carries only
+//! `tty`).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use flowcraft_client::grpc::from_status;
@@ -18,28 +23,34 @@ use flowcraft_resource::Kind;
 use flowcraft_resource::{BoxFuture, BuildCtx, Factory, Phase, Spec, require};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::codes::{self, Code};
 use crate::contract::{
-    CONTRACT, Capabilities, Chunk, Enforcement, ExitStatus, Handle, KIND, ReadResult, Runner,
-    Session, SessionFeatures, SessionInfo, SessionSpec, WriteMode,
+    CONTRACT, Capabilities, EventStream, ExitStatus, Handle, KIND, ReadResult, Runner, Session,
+    SessionFeatures, SessionInfo, SessionSpec, Signal,
 };
+use crate::journal::{Batch, Journal};
+use crate::wire;
 
 /// The implementation name.
 pub const IMPL: &str = "remote";
+
+/// What this client remembers about one started session.
+#[derive(Clone)]
+struct SessionRef {
+    pid: Option<u32>,
+    features: SessionFeatures,
+    /// Shared with the handle, so `wait` on one view is visible from the other.
+    exit: Arc<Mutex<Option<ExitStatus>>>,
+}
 
 /// A runner served by another process.
 pub struct RemoteRunner {
     wire: Arc<Wire>,
     capabilities: std::sync::Mutex<Option<Capabilities>>,
-    sessions: Mutex<BTreeMap<String, SessionRef>>,
-}
-
-#[derive(Clone, Copy)]
-struct SessionRef {
-    pid: Option<u32>,
-    features: SessionFeatures,
+    sessions: AsyncMutex<BTreeMap<String, SessionRef>>,
 }
 
 /// One session of a remote runner.
@@ -48,19 +59,38 @@ pub struct RemoteSession {
     id: String,
     pid: Option<u32>,
     features: SessionFeatures,
+    exit: Arc<Mutex<Option<ExitStatus>>>,
+    /// Closed locally, so every later call answers `Closed` without a round
+    /// trip — and the same answer the in-process backends give, instead of the
+    /// server's `NotFound` for an id it already forgot.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for RemoteRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteRunner")
+        f.debug_struct("sandbox.RemoteRunner")
             .field("wire", &self.wire)
             .finish_non_exhaustive()
     }
 }
 
+impl RemoteSession {
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::closed("sandbox: session is closed"));
+        }
+        Ok(())
+    }
+
+    fn mark_closed(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl std::fmt::Debug for RemoteSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteSession")
+        f.debug_struct("sandbox.RemoteSession")
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
@@ -78,124 +108,14 @@ impl RemoteRunner {
         Ok(Self {
             wire: Arc::new(Wire::open(provider, endpoint, CONTRACT, tenant, scope).await?),
             capabilities: std::sync::Mutex::new(None),
-            sessions: Mutex::new(BTreeMap::new()),
+            sessions: AsyncMutex::new(BTreeMap::new()),
         })
-    }
-}
-
-fn capabilities_from_proto(response: pb::DescribeResponse) -> Capabilities {
-    let enforcement = response.policy.unwrap_or_default();
-    let features = response.features.unwrap_or_default();
-    Capabilities {
-        policy: Enforcement {
-            env_allow_list: enforcement.env_allow_list,
-            net_modes: enforcement.net_modes,
-            filesystem_bounds: enforcement.filesystem_bounds,
-            write_modes: enforcement.write_modes,
-            memory_cap: enforcement.memory_cap,
-            cpu_cap: enforcement.cpu_cap,
-            disk_cap: enforcement.disk_cap,
-        },
-        features: SessionFeatures {
-            tty: features.tty,
-            stdin: false,
-            signal: features.signal,
-            events: features.events,
-        },
-    }
-}
-
-fn features_from_proto(features: pb::SessionFeatures) -> SessionFeatures {
-    SessionFeatures {
-        tty: features.tty,
-        stdin: features.stdin,
-        signal: features.signal,
-        events: features.events,
-    }
-}
-
-fn exit_from_proto(exit: Option<pb::SessionExit>) -> ExitStatus {
-    let exit = exit.unwrap_or_default();
-    ExitStatus {
-        code: if exit.code >= 0 {
-            Some(exit.code)
-        } else {
-            None
-        },
-        signal: if exit.signal > 0 {
-            Some(exit.signal)
-        } else {
-            None
-        },
-        reason: exit.reason,
-    }
-}
-
-fn format_duration(duration: Duration) -> String {
-    if duration.subsec_millis() == 0 && duration.as_secs() > 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}ms", duration.as_millis())
-    }
-}
-
-fn spec_to_proto(spec: &SessionSpec) -> pb::SessionSpec {
-    let opts = &spec.opts;
-    pb::SessionSpec {
-        id: spec.id.clone(),
-        argv: spec.argv.clone(),
-        tty: spec.tty,
-        rows: 0,
-        cols: 0,
-        stdin: spec.stdin,
-        opts: Some(pb::ExecOptions {
-            workdir: opts.workdir.clone().unwrap_or_default(),
-            stdin: opts.stdin.clone().unwrap_or_default(),
-            timeout: opts.timeout.map(format_duration).unwrap_or_default(),
-            env: Some(pb::EnvPolicy {
-                allow: opts.env.allow.clone(),
-                inject: opts.env.inject.clone().into_iter().collect(),
-            }),
-            net: Some(pb::NetPolicy {
-                mode: opts.net.mode.clone(),
-                allow_hosts: Vec::new(),
-                rules: Vec::new(),
-                proxy: String::new(),
-                unix_sockets: Vec::new(),
-            }),
-            write: match opts.write {
-                WriteMode::Default => String::new(),
-                WriteMode::ReadOnly => "read_only".to_owned(),
-            },
-            resources: Some(pb::ResourceLimits {
-                cpu_millicores: opts
-                    .limits
-                    .cpu_millicores
-                    .and_then(|value| i32::try_from(value).ok())
-                    .unwrap_or(0),
-                memory_bytes: opts
-                    .limits
-                    .memory_bytes
-                    .and_then(|value| i64::try_from(value).ok())
-                    .unwrap_or(0),
-                disk_bytes: opts
-                    .limits
-                    .disk_bytes
-                    .and_then(|value| i64::try_from(value).ok())
-                    .unwrap_or(0),
-                max_output_bytes: opts
-                    .limits
-                    .max_output_bytes
-                    .and_then(|value| i64::try_from(value).ok())
-                    .unwrap_or(0),
-            }),
-        }),
     }
 }
 
 #[async_trait]
 impl Runner for RemoteRunner {
-    fn capabilities(&self) -> flowcraft_resource::BoxFuture<'_, Result<Capabilities>> {
+    fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             if let Ok(guard) = self.capabilities.lock()
                 && let Some(capabilities) = guard.clone()
@@ -208,7 +128,7 @@ impl Runner for RemoteRunner {
                 .await
                 .map_err(from_status)?
                 .into_inner();
-            let capabilities = capabilities_from_proto(described);
+            let capabilities = wire::capabilities_from_proto(described);
             if let Ok(mut guard) = self.capabilities.lock() {
                 *guard = Some(capabilities.clone());
             }
@@ -222,7 +142,7 @@ impl Runner for RemoteRunner {
             .start(
                 self.wire
                     .request(pb::StartRequest {
-                        spec: Some(spec_to_proto(&spec)),
+                        spec: Some(wire::spec_to_proto(&spec)),
                     })
                     .await?,
             )
@@ -235,18 +155,25 @@ impl Runner for RemoteRunner {
         let pid = u32::try_from(reference.pid).ok().filter(|pid| *pid > 0);
         let features = reference
             .capabilities
-            .map(features_from_proto)
+            .map(wire::features_from_proto)
             .unwrap_or_default();
+        let exit = Arc::new(Mutex::new(None));
         let session: Arc<dyn Session> = Arc::new(RemoteSession {
             wire: self.wire.clone(),
             id: reference.id.clone(),
             pid,
             features,
+            exit: exit.clone(),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
-        self.sessions
-            .lock()
-            .await
-            .insert(reference.id, SessionRef { pid, features });
+        self.sessions.lock().await.insert(
+            reference.id,
+            SessionRef {
+                pid,
+                features,
+                exit,
+            },
+        );
         Ok(session)
     }
 
@@ -260,6 +187,8 @@ impl Runner for RemoteRunner {
             id: id.to_owned(),
             pid: reference.pid,
             features: reference.features,
+            exit: reference.exit.clone(),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }))
     }
 
@@ -273,18 +202,7 @@ impl Runner for RemoteRunner {
         Ok(response
             .sessions
             .into_iter()
-            .map(|info| SessionInfo {
-                id: info.id,
-                argv: info.argv,
-                pid: u32::try_from(info.pid).ok().filter(|pid| *pid > 0),
-                started_at_unix_nano: u64::try_from(info.started_at_unix_nano).unwrap_or(0),
-                features: SessionFeatures {
-                    tty: info.tty,
-                    ..SessionFeatures::default()
-                },
-                running: info.running,
-                exit: info.exit.map(|exit| exit_from_proto(Some(exit))),
-            })
+            .map(wire::info_from_proto)
             .collect())
     }
 
@@ -301,6 +219,39 @@ impl Runner for RemoteRunner {
             .await
             .map_err(from_status)?;
         Ok(())
+    }
+
+    async fn close_session(&self, id: &str) -> Result<()> {
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .close_session(
+                self.wire
+                    .request(pb::CloseSessionRequest {
+                        session: id.to_owned(),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
+        self.sessions.lock().await.remove(id);
+        Ok(())
+    }
+
+    async fn open_journal(&self) -> Result<Arc<dyn Journal>> {
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        let response = client
+            .open_journal(self.wire.request(pb::OpenJournalRequest {}).await?)
+            .await
+            .map_err(from_status)?
+            .into_inner();
+        if response.journal.is_empty() {
+            return Err(Error::internal("sandbox: server returned no journal"));
+        }
+        Ok(Arc::new(RemoteJournal {
+            wire: self.wire.clone(),
+            id: response.journal,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }))
     }
 
     async fn close(&self) -> Result<()> {
@@ -351,7 +302,12 @@ impl Session for RemoteSession {
         self.features
     }
 
+    fn exit(&self) -> Option<ExitStatus> {
+        self.exit.lock().ok().and_then(|slot| slot.clone())
+    }
+
     async fn read(&self, after_seq: u64, max_bytes: usize) -> Result<ReadResult> {
+        self.ensure_open()?;
         let mut client = SandboxClient::new(self.wire.channel().await?);
         let response = client
             .read(
@@ -366,22 +322,11 @@ impl Session for RemoteSession {
             .await
             .map_err(from_status)?
             .into_inner();
-        Ok(ReadResult {
-            next_seq: u64::try_from(response.next_seq).unwrap_or(after_seq),
-            chunks: response
-                .chunks
-                .into_iter()
-                .map(|chunk| Chunk {
-                    seq: u64::try_from(chunk.seq).unwrap_or(0),
-                    stream: chunk.stream,
-                    data: chunk.data,
-                })
-                .collect(),
-            eof: response.eof,
-        })
+        Ok(wire::read_from_proto(response))
     }
 
     async fn write(&self, data: &[u8]) -> Result<()> {
+        self.ensure_open()?;
         let mut client = SandboxClient::new(self.wire.channel().await?);
         client
             .write(
@@ -398,6 +343,7 @@ impl Session for RemoteSession {
     }
 
     async fn close_input(&self) -> Result<()> {
+        self.ensure_open()?;
         let mut client = SandboxClient::new(self.wire.channel().await?);
         client
             .close_input(
@@ -412,7 +358,59 @@ impl Session for RemoteSession {
         Ok(())
     }
 
+    async fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        self.ensure_open()?;
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .resize(
+                self.wire
+                    .request(pb::ResizeRequest {
+                        session: self.id.clone(),
+                        rows: i32::from(rows),
+                        cols: i32::from(cols),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
+        Ok(())
+    }
+
+    async fn signal(&self, signal: Signal) -> Result<()> {
+        self.ensure_open()?;
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .signal(
+                self.wire
+                    .request(pb::SignalRequest {
+                        session: self.id.clone(),
+                        signal: wire::signal_to_proto(signal),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
+        Ok(())
+    }
+
+    async fn terminate(&self) -> Result<()> {
+        self.ensure_open()?;
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .terminate_session(
+                self.wire
+                    .request(pb::TerminateSessionRequest {
+                        session: self.id.clone(),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
+        Ok(())
+    }
+
     async fn wait(&self) -> Result<ExitStatus> {
+        self.ensure_open()?;
         let mut client = SandboxClient::new(self.wire.channel().await?);
         let response = client
             .wait(
@@ -425,16 +423,125 @@ impl Session for RemoteSession {
             .await
             .map_err(from_status)?
             .into_inner();
-        Ok(exit_from_proto(response.exit))
+        let exit = response.exit.map(wire::exit_from_proto).unwrap_or_default();
+        if let Ok(mut slot) = self.exit.lock() {
+            *slot = Some(exit.clone());
+        }
+        // The server reports a timeout or an exhausted budget as a failed call;
+        // the classification travels with the outcome either way.
+        if let Some(error) = exit.error() {
+            return Err(error);
+        }
+        Ok(exit)
     }
 
-    async fn terminate(&self) -> Result<()> {
+    fn watch(&self) -> Result<EventStream> {
+        self.ensure_open()?;
+        let wire = self.wire.clone();
+        let id = self.id.clone();
+        let (sender, receiver) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let Ok(request) = wire.request(pb::WatchRequest { session: id }).await else {
+                return;
+            };
+            let Ok(channel) = wire.channel().await else {
+                return;
+            };
+            let Ok(response) = SandboxClient::new(channel).watch(request).await else {
+                return;
+            };
+            let mut stream = response.into_inner();
+            loop {
+                match stream.message().await {
+                    Ok(Some(event)) => match wire::event_from_proto(event) {
+                        Ok(event) => {
+                            if sender.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, "sandbox: dropping an unreadable event");
+                        }
+                    },
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::debug!(%error, "sandbox: watch stream ended");
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Box::pin(ReceiverStream::new(receiver)))
+    }
+
+    async fn close(&self) -> Result<()> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
         let mut client = SandboxClient::new(self.wire.channel().await?);
         client
-            .terminate_session(
+            .close_session(
                 self.wire
-                    .request(pb::TerminateSessionRequest {
+                    .request(pb::CloseSessionRequest {
                         session: self.id.clone(),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?;
+        self.mark_closed();
+        Ok(())
+    }
+}
+
+/// A journal served by another process.
+struct RemoteJournal {
+    wire: Arc<Wire>,
+    id: String,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Debug for RemoteJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("sandbox.RemoteJournal")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl Journal for RemoteJournal {
+    async fn read(&self, after_seq: u64, max: usize) -> Result<Batch> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::closed("sandbox: journal is closed"));
+        }
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        let response = client
+            .journal_read(
+                self.wire
+                    .request(pb::JournalReadRequest {
+                        journal: self.id.clone(),
+                        after_seq: i64::try_from(after_seq).unwrap_or(i64::MAX),
+                        max: i32::try_from(max).unwrap_or(i32::MAX),
+                    })
+                    .await?,
+            )
+            .await
+            .map_err(from_status)?
+            .into_inner();
+        wire::batch_from_proto(response)
+    }
+
+    async fn close(&self) -> Result<()> {
+        if self.closed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(());
+        }
+        let mut client = SandboxClient::new(self.wire.channel().await?);
+        client
+            .close_journal(
+                self.wire
+                    .request(pb::CloseJournalRequest {
+                        journal: self.id.clone(),
                     })
                     .await?,
             )

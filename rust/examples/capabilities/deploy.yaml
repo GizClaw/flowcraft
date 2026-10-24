@@ -95,6 +95,9 @@ resources:
   sandbox:
     kind: sandbox.Runner
     impl: local
+    settings:
+      # The filesystem boundary every session's workdir is resolved against.
+      root: .
 
   sandbox-endpoint:
     kind: sandbox.Endpoint

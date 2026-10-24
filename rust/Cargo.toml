@@ -42,11 +42,13 @@ async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
 cap-std = "4"
+cgroups-rs = "0.5"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 globset = "0.4"
 nix = { version = "0.31", features = ["signal"] }
 notify = "8"
 http = "1"
+portable-pty = "0.9"
 prost = "0.14"
 rand = "0.8"
 ring = "0.17"

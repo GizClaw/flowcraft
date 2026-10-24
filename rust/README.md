@@ -316,8 +316,15 @@ Two rules carry most of the design:
 | Secret: memory/env/file/keychain providers, gRPC endpoint, remote client, scope (prefix/prefixes) | ✅ |
 | Secret writes: `Mutable` (set/delete/delete-prefix) and the app-side keychain `Manager` | ✅ |
 | Checkpoint: local directory store, gRPC endpoint, remote client, scope (prefix) | ✅ |
-| Sandbox: local process runner (env allow-list, timeout, bounded output, process-group kill) | ✅ |
-| Sandbox endpoint: describe/start/read/write/close-input/wait/list/terminate/close, scope (commands, timeout ceiling) | ✅ |
+| Sandbox: local runner, byte-cursor output with replay and gaps, SIGTERM→grace→SIGKILL, six exit reasons | ✅ |
+| Sandbox sessions: blocking `read`, `write`, `close_input`, `resize`, `signal`, `watch`, `close`, per-session features | ✅ |
+| Sandbox pty: ConPTY is not wired yet; unix ptys are (merged stream, resize, Ctrl-C as `0x03`) | ⚠️ |
+| Sandbox write boundary: `root` + `writable_paths` + `readonly_root`, symlink-safe containment, `bwrap`/`seatbelt` profiles | ✅ |
+| Sandbox limits: cgroup v2 memory ceiling and cpu budget (probed; elsewhere reported as unavailable) | ✅ |
+| Sandbox policy: allow-list with shell unwrapping, approval predicates, tightening defaults, read-only classifier, escalation | ✅ |
+| Sandbox network: deny-all, allow-list/proxy via the enforcement proxy (terminates CONNECT + HTTP + SOCKS5 for the child; upstream chaining is not implemented), bwrap bridge | ✅ |
+| Sandbox file journal: net-state folding, retention ring with gaps, three RPCs, remote reader | ✅ |
+| Sandbox endpoint: describe/start/read/write/close-input/resize/signal/watch/wait/list/terminate/close-runner/journal, scope (commands, timeout ceiling, output bound) | ✅ |
 | Shared endpoint plumbing: bearer auth, capability/tenant check, status mapping, lazy client | ✅ |
 | TLS / mTLS: per-endpoint cert/key/client_ca, bootstrap secrets from env or a directory | ✅ |
 | Rotation: changes under `bootstrap.dir` reload automatically (debounced, off while draining) | ✅ |
@@ -334,7 +341,7 @@ Two rules carry most of the design:
 | `entries:` surfaced: `serve` logs them, admin `status` reports them | ✅ |
 | Admin socket + `flowcraftd ctl`: status / reload / drain / crafts / revoke, owner-only | ✅ |
 | Drain: readiness off and no new grants minted; existing leases keep working | ✅ |
-| Sandbox confinement: `bwrap` (Linux) and `seatbelt` (macOS) process wrappers | ✅ |
+| Sandbox confinement: `bwrap` (Linux) and `seatbelt` (macOS) process wrappers, with the enforcement proxy | ✅ |
 | Graceful drain: listeners stop accepting and finish in-flight requests on shutdown | ✅ |
 | Grant renewal: remote clients re-mint before expiry, hosted crafts push `Renew` | ✅ |
 | `flowcraftd serve` / `check` / `catalog` | ✅ |
@@ -344,9 +351,14 @@ Two rules carry most of the design:
 
 1. **Packaging** — static musl builds, a systemd unit, a distroless image, and
    Helm. The binary already runs under a service manager by hand.
-2. **Sandbox journal** — the file journal and the `resize` / `signal` / `watch`
-   RPCs. The v1 wire declares them local-only, so the endpoint answers
-   `UNIMPLEMENTED` instead of pretending they work.
+2. **Windows** — the crate is platform-split so it *builds* there, but no Windows
+   provider exists yet: no job objects, no ConPTY, no token-based write
+   confinement, no AppContainer. `Capabilities` reports the gap honestly (a
+   `tty` request on Windows is `NotAvailable`, not an empty session). The planned
+   phases are in the local Windows working note.
+3. **Upstream proxy chaining** — a `sandbox` net policy with `proxy: http://…`
+   is refused at build time rather than silently dialling direct. `allow_list`
+   and `proxy` mode work as a deny-list proxy with the enforcement proxy.
 
 ## Design notes and deviations from the Go side
 
@@ -455,7 +467,7 @@ Two rules carry most of the design:
   the clear. One block configures both directions: `cert`/`key`/`client_ca` for
   the listener, `ca`/`client_cert`/`client_key`/`server_name` for the client.
 - **A sandbox runner declares only what it enforces.** The local runner reports
-  `env_allow_list` but not `filesystem_bounds` or `tty`, and a spec that asks for
+  `env_allow_list` and a pty, but no `filesystem_bounds`, and a spec that asks for
   a policy it cannot enforce is rejected with `NotAvailable` — never quietly
   downgraded. Capabilities are fetched lazily: a remote runner asks its server on
   first use and refuses to fall back to an empty set.
