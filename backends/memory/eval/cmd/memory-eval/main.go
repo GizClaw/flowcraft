@@ -446,9 +446,11 @@ func main() {
 		for _, scenario := range scenarios {
 			scopes = append(scopes, scenario.Scope.MemoryScope())
 		}
-		ran, err := eval.Maintain(context.Background(), deployment.Memory, scopes)
+		maintained, err := eval.Maintain(context.Background(), deployment.Memory, scopes)
 		must(err)
-		fmt.Printf("maintained %d scopes; the read-path overlay and the profile block are what a pass wrote\n", ran)
+		fmt.Printf("maintained %d scopes; the read-path overlay and the profile block are what a pass wrote, "+
+			"and the pass reclaimed %d projection objects and %d document chunks\n",
+			maintained.Scopes, maintained.ReclaimedProjectionObjects, maintained.ReclaimedChunks)
 	}
 	reports := make([]eval.Report, 0, len(scenarios))
 	for index, scenario := range scenarios {

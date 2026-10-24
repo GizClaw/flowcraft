@@ -345,41 +345,58 @@ func Derive(ctx context.Context, runner Runner) error {
 	return nil
 }
 
-// Maintain runs one maintenance pass per scope and returns how many it ran: the
-// pass that saves the read-path overlay and fills the resident profile block.
+// MaintainResult reports what one maintenance pass over a set of scopes did.
+type MaintainResult struct {
+	// Scopes counts the passes this call ran: one per distinct hard partition.
+	Scopes int `json:"scopes"`
+	// ReclaimedProjectionObjects counts the lane storage the passes removed:
+	// the bases and segments a compaction or a rebuild superseded. It is what
+	// says on a run's own log that the workspace did not grow by its history.
+	ReclaimedProjectionObjects int `json:"reclaimed_projection_objects,omitempty"`
+	// ReclaimedChunks counts the superseded document chunk records the passes
+	// removed.
+	ReclaimedChunks int `json:"reclaimed_chunks,omitempty"`
+}
+
+// Maintain runs one maintenance pass per scope and reports what the passes did:
+// the pass that saves the read-path overlay, fills the resident profile block,
+// and reclaims the derived storage no manifest names.
 // It is what a run that measures either has to do between deriving and
 // answering, and it is deliberately not folded into Derive: a pass costs the
 // scope's facts, and a run that does not measure a pass must not pay for one.
 //
 // A runner that cannot maintain fails here rather than measuring a store no
 // pass touched -- the same direction the fingerprint's resume check fails in.
-func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (int, error) {
+func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (MaintainResult, error) {
+	result := MaintainResult{}
 	if ctx == nil {
-		return 0, errors.New("memory eval: context is required")
+		return result, errors.New("memory eval: context is required")
 	}
 	if runner == nil {
-		return 0, errors.New("memory eval: runner is required")
+		return result, errors.New("memory eval: runner is required")
 	}
 	maintainer, ok := runner.(Maintainer)
 	if !ok {
-		return 0, errors.New("memory eval: the runner does not maintain")
+		return result, errors.New("memory eval: the runner does not maintain")
 	}
 	seen := make(map[string]struct{}, len(scopes))
-	ran := 0
 	for _, scope := range scopes {
 		if err := scope.Validate(); err != nil {
-			return ran, fmt.Errorf("memory eval: maintain: %w", err)
+			return result, fmt.Errorf("memory eval: maintain: %w", err)
 		}
 		if _, dup := seen[scope.HardPartitionKey()]; dup {
 			continue
 		}
 		seen[scope.HardPartitionKey()] = struct{}{}
-		if _, err := maintainer.Maintain(ctx, scope); err != nil {
-			return ran, fmt.Errorf("memory eval: maintain: %w", err)
+		plan, err := maintainer.Maintain(ctx, scope)
+		if err != nil {
+			return result, fmt.Errorf("memory eval: maintain: %w", err)
 		}
-		ran++
+		result.Scopes++
+		result.ReclaimedProjectionObjects += plan.ReclaimedProjectionObjects
+		result.ReclaimedChunks += plan.ReclaimedChunks
 	}
-	return ran, nil
+	return result, nil
 }
 
 // Answer grades one already-ingested scenario: every question is retrieved,

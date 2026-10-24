@@ -274,6 +274,7 @@ var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Searcher = (*Index)(nil)
 var _ component.VectorSearcher = (*Index)(nil)
 var _ component.Producer = (*Index)(nil)
+var _ component.Reclaimer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if config.Runtime == nil {
@@ -335,6 +336,22 @@ func (index *Index) StoredProducerIdentity(
 // this lane no longer reads; that is what this reports.
 func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope) ([]string, error) {
 	return index.store.OtherNames(ctx, scope, index.storageProjection)
+}
+
+// ReclaimSuperseded removes the bases and segments the lane compacted or
+// rebuilt away, keeping the one the active manifest names.
+//
+// It sweeps the generation this lane reads and no other. A generation another
+// producer filled is a name a deployment still on that producer serves, and the
+// state a version bump left behind is the state a rollback back to it reads;
+// `OtherStoredNames` is what reports it, and repairing the lane is what fills
+// the name this run reads. Reclaiming it here would make a rebuild delete
+// another deployment's index.
+func (index *Index) ReclaimSuperseded(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ReclaimResult, error) {
+	return index.store.Reclaim(ctx, scope, index.storageProjection)
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
