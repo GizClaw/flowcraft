@@ -52,6 +52,11 @@ maintenance; `core/memory` stays implementation-neutral.
   projection lanes from canonical state and reports what each one published.
   No deriver runs, so converging a lexical lane costs no model call; see *Lane
   repair (host-invoked)* below.
+- Projection storage reclamation: a lane publishes immutable bases and
+  segments and keeps one manifest as the only pointer, so what a compaction or
+  a rebuild replaced is collected -- on the publication itself, keeping one
+  generation of grace, and by the maintenance pass down to the active manifest;
+  see *Projection storage reclamation* below.
 - Retrieval: the context path fuses the recent lane with the configured
   projection lanes (BM25, entity, and vector when an embed model is
   configured), hydrates candidates, and packs them within the request
@@ -231,7 +236,10 @@ With the workspace driver all state lives under the bound workspace:
 - `worker/v1/leases/<partition>` — the scope's claim: the runner holding it,
   when it took it and when it expires. It is written back as released rather
   than deleted, so a host can still read who last held the scope.
-- `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
+- `projections/<family>/v2/...` — rebuildable BM25 / entity / vector lane
+  state: one `active.json` manifest per index name, the immutable bases and
+  segments it names, and nothing a manifest stopped naming (see *Projection
+  storage reclamation*).
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
 
@@ -544,6 +552,50 @@ size, the facts of the active generation and the chunks of the active builds are
 read whole (that is the shape their readers offer), and the artifact set is
 handed to every lane as it is rather than cloned per lane -- `ProjectionRequest`
 documents `Artifacts` as read-only for that reason.
+
+## Projection storage reclamation
+
+A lane writes immutable **bases** and **segments** and keeps one `active.json`
+manifest as the sole pointer at the state it serves. A delta appends a segment
+and names it; a compaction folds the base and every segment into a new base and
+moves the manifest; a rebuild does the same from canonical state. What the old
+manifest pointed at stops being reachable at that instant -- nothing reads it
+again, because nothing but the manifest can find it -- and until this existed
+nothing removed it either, so a lane's storage grew with the product of how
+often it compacted and how large it was: one measured workspace held 25 GB, of
+which 24.9 GB was 95 superseded snapshots of a lane whose live state was 0.5 GB.
+
+Three sweeps collect it, all of them deleting unreachability rather than
+authority -- a rebuild writes again what a sweep removed:
+
+- **On publication.** A base publication sweeps the lane's two object areas and
+  keeps what the new manifest names, plus the generation it just replaced: a
+  reader that resolved the previous manifest is allowed to finish, and a lane
+  holds two generations at most. The grace generation costs no disk the
+  compaction did not already hold, since it is the state that compaction read.
+- **In the maintenance pass.** `Assembly.Maintain` reclaims each lane down to
+  the active manifest — no grace generation — beside the superseded document
+  builds it already reclaimed, and reports the count as
+  `Plan.ReclaimedProjectionObjects`. It is what cleans a workspace an earlier
+  build filled, and what an eval run's `-maintain` pass reports on its own log.
+- **Per lane, when a host has to.** `component.Reclaimer` is the lane-side
+  entry point (`ReclaimSuperseded`), implemented by the bm25, entity, and vector
+  lanes; it delegates to the projection store's `Reclaim`.
+
+The sweep is scoped to the name the lane reads, and to keys under `bases/` and
+`segments/`. Another name of the same family is another projection — the vector
+lane names its storage after the embedding model it was built with — and a
+deployment still serving that generation, or a rollback to it, reads what a
+sweep would delete; `LaneDiagnostics.OtherGenerations` reports it instead of
+removing it. A manifest the sweep cannot decode is refused rather than read as
+empty: the sweep's question is what the manifest names, and a corrupt one has
+no answer. Like every other publication to a lane, a sweep expects the lane's
+single writer — the state a concurrent writer is publishing is not in the
+manifest the sweep read.
+
+`ReclaimResult` counts objects rather than bytes: a sweep deletes by key, and
+measuring what it removes would read the storage it exists to give up. A host
+that wants the size stats the workspace it owns.
 
 ## Integrity and evaluation
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/component"
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/recall"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
@@ -691,6 +692,13 @@ type Service struct {
 	// nothing to reclaim, and a host that would rather sweep them separately can
 	// call DocumentViewStore.RetireScopeBuilds itself.
 	Documents *docview.DocumentViewStore
+	// Projections, when set, are the projection lanes a pass reclaims the
+	// storage of: the immutable bases and segments a lane compacted or rebuilt
+	// away, which its active manifest no longer names. It is optional the same
+	// way Documents is -- a lane reclaims on its own publication too, so a pass
+	// that never runs leaves two generations, not every generation the lane
+	// ever published.
+	Projections []ProjectionReclaimer
 	// Recalls, when set, is the receipt store the retrieval provider writes
 	// to. It is what lets the pass tell a fact that keeps being served from
 	// one that was imported and never read; without it every fact decays from
@@ -707,8 +715,17 @@ type Service struct {
 	Clock    func() time.Time
 }
 
+// ProjectionReclaimer names one projection lane as the reclaimer of what it
+// published before. The name is the lane's catalog name, so a pass that fails
+// reclaiming one lane reports which.
+type ProjectionReclaimer struct {
+	Name      string
+	Reclaimer component.Reclaimer
+}
+
 // RunScope plans and saves one scope's maintenance overlay, then reclaims the
-// superseded document builds of the scope.
+// scope's derived storage: the superseded document builds and the projection
+// objects the lanes' active manifests no longer name.
 //
 // The overlay is saved before the builds are reclaimed, so a pass that fails
 // while reclaiming still publishes what it detected, and the reclaim is
@@ -831,6 +848,19 @@ func (service *Service) run(
 			return plan, fmt.Errorf("maintain: reclaim superseded document builds: %w", err)
 		}
 		plan.ReclaimedChunks = reclaimed
+	}
+	// The lanes reclaim after the overlay is saved, for the same reason the
+	// document builds do: a pass that fails reclaiming still publishes what it
+	// detected, and the sweep is idempotent, so the retry finds less to remove.
+	for _, lane := range service.Projections {
+		if lane.Reclaimer == nil {
+			continue
+		}
+		reclaimed, err := lane.Reclaimer.ReclaimSuperseded(ctx, scope)
+		if err != nil {
+			return plan, fmt.Errorf("maintain: reclaim %s projection: %w", lane.Name, err)
+		}
+		plan.ReclaimedProjectionObjects += reclaimed.Bases + reclaimed.Segments
 	}
 	if err := service.fillProfiles(ctx, scope, conversations, plan, now); err != nil {
 		return plan, err

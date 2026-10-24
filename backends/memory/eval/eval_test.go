@@ -138,14 +138,14 @@ func TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly := Runner(value)
-	ran, err := Maintain(ctx, assembly, []corememory.Scope{
+	maintained, err := Maintain(ctx, assembly, []corememory.Scope{
 		{RuntimeID: "memories"}, {RuntimeID: "memories"}, {RuntimeID: "other"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ran != 2 {
-		t.Fatalf("passes = %d, want one per scope with the repeat counted once", ran)
+	if maintained.Scopes != 2 {
+		t.Fatalf("passes = %d, want one per scope with the repeat counted once", maintained.Scopes)
 	}
 	if _, err := Maintain(ctx, assembly, []corememory.Scope{{}}); err == nil {
 		t.Fatal("an invalid scope was maintained")

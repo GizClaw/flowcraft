@@ -192,8 +192,14 @@ type Plan struct {
 	// removed: an immutable build leaves one record per chunk when a document
 	// is published again, and reads reach only the active build. See
 	// document.DocumentViewStore.RetireScopeBuilds for what is kept.
-	ReclaimedChunks  int    `json:"reclaimed_chunks,omitempty"`
-	AlgorithmVersion string `json:"algorithm_version"`
+	ReclaimedChunks int `json:"reclaimed_chunks,omitempty"`
+	// ReclaimedProjectionObjects counts the immutable projection objects this
+	// pass removed: the bases and segments the lanes compacted or rebuilt away
+	// and their active manifests stopped pointing at. Reads reach only what a
+	// manifest names, so what it does not name is storage nothing serves -- see
+	// component.Reclaimer for what is kept.
+	ReclaimedProjectionObjects int    `json:"reclaimed_projection_objects,omitempty"`
+	AlgorithmVersion           string `json:"algorithm_version"`
 	// RecalledFacts counts the scope's facts that carried a receipt: how many
 	// of them the read path has actually returned. It is the wiring signal --
 	// a deployment whose receipts never arrive reports zero here however long

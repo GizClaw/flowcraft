@@ -507,6 +507,10 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (or `-skip-derive`, to pass over a stored derivation); the fingerprint records
   `maintain=on|off`, and the block's own settings are in the `retrieval` value
   when the deploy document enables them.
+  The pass also reclaims derived storage nothing serves -- the lane bases and
+  segments a compaction or a rebuild superseded, and the superseded document
+  builds -- and prints what it removed, which is also how a run confirms that
+  the workspace it wrote holds its live state rather than its history.
 
 ### Reproducibility
 

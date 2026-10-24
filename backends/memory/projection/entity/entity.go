@@ -95,6 +95,7 @@ var _ component.Searcher = (*Index)(nil)
 var _ component.DeltaIndexer = (*Index)(nil)
 var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Producer = (*Index)(nil)
+var _ component.Reclaimer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if strings.TrimSpace(config.Projection) == "" {
@@ -142,6 +143,18 @@ func (index *Index) StoredProducerIdentity(
 // name left behind.
 func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope) ([]string, error) {
 	return index.store.OtherNames(ctx, scope, index.projection)
+}
+
+// ReclaimSuperseded removes the bases and segments the lane compacted or
+// rebuilt away, keeping the one the active manifest names. The entity lane
+// names its storage after the projection setting alone, so the sweep is exactly
+// the lane's own area: no generation of this family is something the lane is
+// not.
+func (index *Index) ReclaimSuperseded(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ReclaimResult, error) {
+	return index.store.Reclaim(ctx, scope, index.projection)
 }
 
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
