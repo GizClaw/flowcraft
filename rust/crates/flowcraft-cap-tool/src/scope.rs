@@ -9,11 +9,15 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct Scope {
     /// Tool names this grant may call. Empty allows every registered tool.
+    /// The same list also filters what `List` returns.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Lease call budget, shared across renewals of the same session. `None` is
-    /// unlimited; `Some(0)` denies every call, which is how a lease is handed
-    /// out disabled.
+    /// Lease call budget, shared across renewals of the same session.
+    ///
+    /// The budget counts `Execute` *attempts*, including calls that fail; a
+    /// malformed request never reaches that point (arguments are validated
+    /// first), and `List` is free. `None` is unlimited; `Some(0)` denies every
+    /// call, which is how a lease is handed out disabled.
     #[serde(default)]
     pub max_calls: Option<u64>,
 }

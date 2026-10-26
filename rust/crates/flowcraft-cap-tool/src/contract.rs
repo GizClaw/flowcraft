@@ -15,10 +15,13 @@ pub const CONTRACT: &str = "tool.ToolSource/v1";
 /// A named set of tools: list what is available, run one call.
 #[async_trait]
 pub trait ToolSource: Send + Sync {
-    /// Every tool this source exposes, sorted by name.
+    /// Every tool this source exposes.
+    ///
+    /// Order is not significant: the endpoint sorts by name before a peer sees
+    /// the catalog, so a source does not have to promise an order.
     async fn list(&self) -> Result<Vec<msg::ToolDefinition>>;
 
-    /// Run `name` with `arguments` (a JSON document, empty for no arguments).
+    /// Run `name` with `arguments` (a JSON object, empty for no arguments).
     async fn execute(&self, name: &str, arguments: &str) -> Result<msg::Content>;
 }
 
@@ -62,6 +65,12 @@ pub fn validate_definition(definition: &msg::ToolDefinition) -> Result<()> {
     if name.is_empty() {
         return Err(Error::validation("tool definition has an empty name"));
     }
+    if name != definition.name {
+        return Err(Error::validation(format!(
+            "tool name {:?} has surrounding whitespace",
+            definition.name
+        )));
+    }
     if name.len() > 128 {
         return Err(Error::validation(format!(
             "tool name {name:?} is longer than 128 bytes"
@@ -75,6 +84,19 @@ pub fn validate_definition(definition: &msg::ToolDefinition) -> Result<()> {
     {
         return Err(Error::validation(format!(
             "tool name {name:?} may only contain letters, digits, '.', '-', '_'"
+        )));
+    }
+    // The schema is a JSON Schema object (the conversation model says so). An
+    // empty schema is the historical shorthand for "no declared input", used by
+    // code-only tools, so it stays accepted.
+    if !definition.input_schema.is_empty()
+        && !matches!(
+            serde_json::from_slice::<serde_json::Value>(&definition.input_schema),
+            Ok(serde_json::Value::Object(_))
+        )
+    {
+        return Err(Error::validation(format!(
+            "tool {name:?} has an input_schema that is not a JSON object"
         )));
     }
     Ok(())
@@ -92,15 +114,23 @@ pub fn validate_content(content: &msg::Content) -> Result<()> {
     Ok(())
 }
 
-/// Arguments are a JSON document. An empty string means "no arguments" (the
-/// platform sends that for a no-parameter tool).
+/// Arguments are a JSON object, or the empty string for "no arguments".
+///
+/// `message.v1.ToolCall.arguments` documents an object, and every provider in
+/// this crate (local, MCP, the remote client's server) assumes one. A scalar or
+/// an array is a caller bug, and it is refused here rather than handed to a
+/// provider that would have to guess.
 pub fn validate_arguments(arguments: &str) -> Result<()> {
     if arguments.trim().is_empty() {
         return Ok(());
     }
-    serde_json::from_str::<serde_json::Value>(arguments)
-        .map(|_| ())
-        .map_err(|error| Error::validation(format!("tool arguments must be JSON: {error}")))
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        Ok(_) => Err(Error::validation("tool arguments must be a JSON object")),
+        Err(error) => Err(Error::validation(format!(
+            "tool arguments must be JSON: {error}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -119,8 +149,21 @@ mod tests {
     fn names_are_checked() {
         validate_definition(&definition("search")).unwrap();
         validate_definition(&definition("team.search_v2")).unwrap();
-        for bad in ["", " ", "two words", "a/b", "héllo"] {
+        for bad in ["", " ", "two words", "a/b", "héllo", " search", "search "] {
             assert!(validate_definition(&definition(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_input_schema_must_be_a_json_object() {
+        let mut valid = definition("search");
+        valid.input_schema = br#"{"type":"object"}"#.to_vec();
+        validate_definition(&valid).unwrap();
+
+        for bad in [&b"[1]"[..], b"\"text\"", b"{oops", b"null"] {
+            let mut invalid = definition("search");
+            invalid.input_schema = bad.to_vec();
+            assert!(validate_definition(&invalid).is_err(), "{bad:?}");
         }
     }
 
@@ -144,10 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn arguments_must_be_json_or_empty() {
+    fn arguments_must_be_json_object_or_empty() {
         validate_arguments("").unwrap();
+        validate_arguments("  ").unwrap();
         validate_arguments("{}").unwrap();
         validate_arguments(r#"{"query":"x"}"#).unwrap();
-        assert!(validate_arguments("{not json").is_err());
+        for bad in ["{not json", "[1]", "\"text\"", "1", "null"] {
+            assert!(validate_arguments(bad).is_err(), "{bad:?}");
+        }
     }
 }

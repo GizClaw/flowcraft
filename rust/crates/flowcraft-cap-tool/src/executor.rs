@@ -135,7 +135,15 @@ fn core_dispatch(catalog: Arc<dyn Catalog>) -> Dispatch {
     Arc::new(move |context: CallContext, call: msg::ToolCall| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let arguments = String::from_utf8_lossy(&call.arguments).into_owned();
+            // `ToolCall.arguments` is bytes on the wire; a tool handler takes
+            // text. Refuse an invalid sequence instead of silently turning it
+            // into replacement characters the provider would then parse.
+            let arguments = match std::str::from_utf8(&call.arguments) {
+                Ok(arguments) => arguments.to_owned(),
+                Err(_) => {
+                    return error_result(&call.id, "tool arguments are not valid UTF-8");
+                }
+            };
             let Some(tool) = catalog.get(&call.name) else {
                 return error_result(&call.id, format!("tool {:?} not found", call.name));
             };
@@ -254,6 +262,16 @@ mod tests {
             .execute(CallContext::default(), call("panics"))
             .await;
         assert!(text_of(&result).contains("kaboom"), "{}", text_of(&result));
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_arguments_become_an_error_result() {
+        let executor = Executor::new(catalog().await, Vec::new());
+        let mut call = call("echo");
+        call.arguments = vec![0xff, 0xfe];
+        let result = executor.execute(CallContext::default(), call).await;
+        assert!(result.is_error);
+        assert!(text_of(&result).contains("UTF-8"), "{}", text_of(&result));
     }
 
     #[tokio::test]

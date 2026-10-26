@@ -7,13 +7,18 @@ option go_package = "github.com/GizClaw/flowcraft/core/tool/v1;toolv1";
 import "flowcraft/message/v1/message.proto";
 
 service ToolSource {
+  // The catalog. A FlowCraft endpoint validates every definition and returns
+  // the set in name order; a consumer must not depend on order for correctness.
   rpc List(ListRequest) returns (ListResponse);
+  // One call. `arguments` is a JSON object (empty for none); a failure is a
+  // gRPC status, not a content part.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
 }
 
 message ListRequest {}
 message ToolDescriptor {
   string name = 1;
+  // Mirrors `definition.name`; a server must set both to the same value.
   // The definition the model sees.
   flowcraft.message.v1.ToolDefinition definition = 2;
 }
@@ -21,9 +26,11 @@ message ListResponse { repeated ToolDescriptor tools = 1; }
 
 message ExecuteRequest {
   string name = 1;
+  // A JSON object, or the empty string for a tool that takes no arguments.
   string arguments = 2;
 }
 message ExecuteResponse {
-  // The ordered multimodal result.
+  // The ordered multimodal result. A failed call is a gRPC status carrying
+  // `flowcraft.error.v1`; it is never represented as an empty part list.
   flowcraft.message.v1.Content content = 1;
 }

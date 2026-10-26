@@ -514,10 +514,14 @@ Two rules carry most of the design:
 - **A tool source speaks the conversation schema.** `List` returns
   `flowcraft.message.v1.ToolDefinition` and `Execute` returns
   `flowcraft.message.v1.Content` — the same messages a craft turn carries. The
-  grant scope is an allow-list plus a `max_calls` budget; the budget is keyed by
-  the session, so renewing the lease (a fresh token) does not refill it. The
-  registry is programmatic (a tool is code, not YAML), so there is no
-  `tool.Source/local` document factory.
+  endpoint validates the catalog it serves (names, schemas, duplicates) and
+  returns it in name order; `Execute` checks that the arguments are a JSON
+  object before charging the call budget, so a malformed request never reaches
+  a provider or spends a lease. The grant scope is an allow-list plus a
+  `max_calls` budget; the budget is keyed by the session, so renewing the lease
+  (a fresh token) does not refill it, `List` is free, and an `Execute` attempt
+  counts even when it fails. The registry is programmatic (a tool is code, not
+  YAML), so there is no `tool.Source/local` document factory.
 - **Grants are validated offline** by the endpoint (no introspection call).
   Revocation is local to the daemon; cross-daemon revocation is deliberately
   left to short TTLs.

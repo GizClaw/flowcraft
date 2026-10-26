@@ -180,6 +180,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn arguments_must_be_a_json_object() {
+        let source = LocalSource::new()
+            .with(definition("echo"), echo())
+            .expect("insert");
+        for bad in ["[1]", "\"text\"", "1", "null"] {
+            let error = source.execute("echo", bad).await.expect_err(bad);
+            assert_eq!(error.kind(), ErrorKind::Validation, "{bad}");
+        }
+        source.execute("echo", "").await.expect("no arguments");
+        source.execute("echo", r#"{"x":1}"#).await.expect("object");
+    }
+
+    #[test]
+    fn an_invalid_schema_is_refused_at_registration() {
+        let mut source = LocalSource::new();
+        let mut bad = definition("echo");
+        bad.input_schema = b"[1]".to_vec();
+        let error = source.insert(bad, echo()).expect_err("schema");
+        assert_eq!(error.kind(), ErrorKind::Validation);
+    }
+
+    #[tokio::test]
     async fn an_empty_result_is_refused() {
         let source = LocalSource::new()
             .with(

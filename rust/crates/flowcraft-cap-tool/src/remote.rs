@@ -1,6 +1,7 @@
 //! The remote client: another process's tool source presented as the local
 //! contract.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -55,6 +56,7 @@ impl ToolSource for RemoteSource {
         let request = self.wire.request(ListRequest {}).await?;
         let response = client.list(request).await.map_err(from_status)?;
         let mut definitions = Vec::new();
+        let mut seen = BTreeSet::new();
         for descriptor in response.into_inner().tools {
             let definition = descriptor.definition.ok_or_else(|| {
                 Error::validation(format!(
@@ -69,6 +71,12 @@ impl ToolSource for RemoteSource {
                 )));
             }
             validate_definition(&definition)?;
+            if !seen.insert(definition.name.clone()) {
+                return Err(Error::internal(format!(
+                    "remote tool source listed {:?} twice",
+                    definition.name
+                )));
+            }
             definitions.push(definition);
         }
         Ok(definitions)
