@@ -1,0 +1,299 @@
+[package]
+name = "flowcraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The FlowCraft platform: wire contracts, deployment composition, control plane, and the built-in capabilities."
+readme = "../../README.md"
+keywords = ["agent", "platform", "sandbox", "grpc", "workspace"]
+categories = ["development-tools", "filesystem"]
+documentation = "https://docs.rs/flowcraft"
+# Declared targets only: every integration test names the features it needs,
+# which autodiscovery cannot.
+autotests = false
+
+# docs.rs builds with every feature so the capability modules and the OTLP
+# exporter are documented; the crate itself defaults to `platform` only.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+# The composition plane: documents, the kernel that builds them, the control
+# plane, and client plumbing. This is what a program that hosts FlowCraft wants.
+default = ["platform"]
+platform = ["telemetry", "proto", "search", "resource", "kernel", "client"]
+
+# One capability each. Only `workspace` builds without the control plane, so
+# `--no-default-features --features workspace` is the portable shape (no tonic,
+# no unix-domain sockets) that the Windows lane checks.
+workspace = [
+    "resource",
+    "dep:async-trait",
+    "dep:cap-std",
+    "dep:globset",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tracing",
+]
+secret = [
+    "resource",
+    "kernel",
+    "client",
+    "proto",
+    "wire",
+    "dep:async-trait",
+    "dep:ring",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tracing",
+]
+sandbox = [
+    "resource",
+    "kernel",
+    "client",
+    "proto",
+    "wire",
+    # The unix mechanisms the runner owns. Naming them here keeps a host that
+    # embeds another capability from compiling a pty stack or a cgroup reader.
+    "dep:portable-pty",
+    "dep:cgroups-rs",
+    "dep:async-trait",
+    "dep:notify",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tracing",
+]
+tool = [
+    "resource",
+    "search",
+    "kernel",
+    "client",
+    "proto",
+    "wire",
+    "dep:async-trait",
+    "dep:base64",
+    "dep:futures-util",
+    "dep:http",
+    "dep:prost",
+    "dep:regex",
+    "dep:rmcp",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tonic",
+    "dep:tracing",
+]
+# Every built-in capability, endpoint servers and remote clients included.
+caps = ["platform", "workspace", "secret", "sandbox", "tool", "wire"]
+
+# The layers underneath `platform`, for a consumer that wants less of it.
+# `error` has no feature: it is the only module whose dependency is `thiserror`
+# alone, so it is always compiled and every other module may rely on it.
+telemetry = ["dep:tracing", "dep:tracing-subscriber"]
+otel = [
+    "telemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+]
+# Ship telemetry to an OTLP collector. Off by default: it adds an HTTP stack and
+# a runtime to a build that a client never needs, which `tests/telemetry_deps.rs`
+# pins from both sides.
+otlp = [
+    "otel",
+    "opentelemetry_sdk/rt-tokio",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tokio",
+]
+proto = ["dep:prost", "dep:tonic", "dep:tonic-prost"]
+search = []
+resource = [
+    "otel",
+    "dep:async-trait",
+    "dep:saphyr",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_path_to_error",
+    "dep:tracing",
+]
+kernel = [
+    "resource",
+    "dep:base64",
+    "dep:ed25519-dalek",
+    "dep:globset",
+    "dep:http",
+    "dep:hyper-util",
+    "dep:nix",
+    "dep:rand",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tower",
+    "dep:tracing",
+]
+client = [
+    "kernel",
+    "proto",
+    "dep:bytes",
+    "dep:http",
+    "dep:hyper-util",
+    "dep:prost",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tonic",
+    "dep:tower",
+    "dep:tracing",
+]
+# The gRPC endpoint servers, the remote clients, and the grant-scope checks they
+# share. The workspace capability proved the split when it was a crate of its
+# own: everything else in a capability is a provider a host can embed without a
+# control plane.
+wire = ["client", "proto", "dep:tonic"]
+
+[dependencies]
+thiserror.workspace = true
+
+async-trait = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+cap-std = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+futures-util = { version = "0.3", optional = true }
+globset = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+nix = { workspace = true, features = ["user"], optional = true }
+notify = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-appender-tracing = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+ring = { workspace = true, optional = true }
+rmcp = { version = "3.7", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+], optional = true }
+saphyr = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde_path_to_error = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+tonic = { workspace = true, features = ["tls-ring"], optional = true }
+tonic-prost = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+# Unix mechanisms live here: signals and process groups, and the pty syscalls. A
+# platform without them compiles the same crate and reports the features it
+# cannot provide (see `caps::sandbox::session::terminal::available` and
+# `Runner::capabilities`).
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["user"], optional = true }
+# A pty needs `setsid` + `TIOCSCTTY`, which are `unsafe` and this crate forbids
+# `unsafe_code` outright (`forbid` cannot be relaxed by an inner `allow`), so the
+# mechanism comes from a dependency.
+portable-pty = { workspace = true, optional = true }
+
+# cgroups are a Linux-only mechanism; everywhere else the probe reports the caps
+# as unavailable.
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+rcgen = "0.14"
+# The tests pin the rustls provider explicitly: a workspace-wide build unifies
+# rustls' `ring` feature (tonic) with `aws_lc_rs` (the OTLP client), which
+# leaves the process default ambiguous.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json.workspace = true
+tempfile = "3"
+tokio.workspace = true
+tonic-prost-build.workspace = true
+tracing-subscriber.workspace = true
+
+[lib]
+name = "flowcraft"
+path = "src/lib.rs"
+
+# The integration tests are declared rather than discovered: each one names the
+# feature it needs, so `cargo test --no-default-features --features workspace`
+# skips the socket-bound suites instead of failing to compile them.
+[[test]]
+name = "workspace_conformance"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_decorators"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_roundtrip"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_tenant"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_tls"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "secret_roundtrip"
+required-features = ["secret"]
+
+[[test]]
+name = "sandbox_conformance"
+required-features = ["sandbox"]
+
+[[test]]
+name = "sandbox_roundtrip"
+required-features = ["sandbox"]
+
+[[test]]
+name = "tool_registry"
+required-features = ["tool"]
+
+[[test]]
+name = "tool_roundtrip"
+required-features = ["tool"]
+
+[[test]]
+name = "kernel_trace"
+required-features = ["kernel"]
+
+[[test]]
+name = "resource_kernel"
+required-features = ["resource"]
+
+[[test]]
+name = "telemetry_deps"
+required-features = ["telemetry"]
+
+[[test]]
+name = "telemetry_install"
+required-features = ["telemetry"]
+
+[lints]
+workspace = true

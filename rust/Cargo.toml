@@ -1,39 +1,32 @@
 # FlowCraft platform in Rust — workspace root.
 #
-# Layout follows the platform (not Go package) boundaries:
-#   contract  → serde contracts, error kinds, deployment document types
-#   proto     → prost/tonic codegen from the existing .proto files
-#   resource  → local composition kernel (Plan/Build/Start/Close)
-#   kernel    → code-first control plane (config, catalog, grants, endpoints)
-#   cap-*     → capability providers + endpoint servers + remote clients
-#   platformd → the single delivered binary
+# Two packages, two audiences:
+#   flowcraft          the library: contracts, composition, control plane,
+#                      capabilities. Everything a consumer depends on.
+#   flowcraft-platformd the daemon: `flowcraftd`, the single delivered binary,
+#                      plus the supervisor/admin surface only it needs.
 #
-# Dependency direction is one-way: contract → proto → resource → kernel → cap-* → platformd.
+# Inside `flowcraft` the module graph is one-way:
+#   error → telemetry → resource → kernel → client → caps → (daemon)
+# and `tests/layering.rs` pins it.
 
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["flowcraft", "flowcraft-platformd"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Not 1.85: the dependency tree already needs more (rmcp 3.7 wants 1.88,
+# process-wrap 1.87). A published `rust-version` is a promise cargo enforces, so
+# it names the floor that actually builds.
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/GizClaw/flowcraft"
 
 
 [workspace.dependencies]
-flowcraft-error = { path = "crates/flowcraft-error" }
-flowcraft-telemetry = { path = "crates/flowcraft-telemetry" }
-flowcraft-client = { path = "crates/flowcraft-client" }
-flowcraft-proto = { path = "crates/flowcraft-proto" }
-flowcraft-search = { path = "crates/flowcraft-search" }
-flowcraft-resource = { path = "crates/flowcraft-resource" }
-flowcraft-kernel = { path = "crates/flowcraft-kernel" }
-flowcraft-cap-workspace = { path = "crates/flowcraft-cap-workspace" }
-flowcraft-cap-secret = { path = "crates/flowcraft-cap-secret" }
-flowcraft-cap-sandbox = { path = "crates/flowcraft-cap-sandbox" }
-flowcraft-cap-tool = { path = "crates/flowcraft-cap-tool" }
+flowcraft = { path = "flowcraft", version = "0.1.0" }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tower = { version = "0.5", features = ["util"] }
