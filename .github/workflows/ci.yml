@@ -511,6 +511,7 @@ jobs:
           cargo doc -p flowcraft --no-deps
           cargo doc -p flowcraft --no-deps \
             --no-default-features --features workspace
+          cargo doc -p flowcraft-platformd --no-deps
       # Every provider shape must compile for a Windows target: the kernel's
       # unix assumptions are `cfg(unix)` now, so a host elsewhere binds `dns://`
       # targets over TCP and refuses a unix target at bind time. The matrix lives

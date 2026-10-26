@@ -118,7 +118,7 @@ async fn the_exec_supervisor_starts_and_stops_a_craft() {
             "--name".to_owned(),
             "demo".to_owned(),
         ],
-        socket.clone(),
+        Target::Unix(socket.clone()),
     );
     spec.env.insert(identity_env, identity);
 
@@ -150,7 +150,7 @@ async fn a_craft_that_never_listens_times_out() {
     let mut spec = CraftSpec::new(
         "sleepy",
         vec!["sleep".to_owned(), "30".to_owned()],
-        socket.clone(),
+        Target::Unix(socket.clone()),
     );
     spec.ready_timeout = Duration::from_millis(200);
     let supervisor = ExecSupervisor::new();

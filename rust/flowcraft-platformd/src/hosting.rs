@@ -219,16 +219,51 @@ async fn launch(
 ) -> Result<CraftHandle> {
     let grants = mint_grants(platform, config)?;
 
-    let mut spec = CraftSpec::new(name, config.argv.clone(), config.socket.clone());
+    let secrets = platform.secrets();
+    let target = flowcraft::kernel::config::parse_target(&config.target)?;
+    // A `dns` target carries its TLS material the way an endpoint does: the block
+    // holds references, the bytes come from the bootstrap provider.
+    let tls = match &config.tls {
+        Some(tls) => flowcraft::kernel::tls::client(tls, &*secrets)?,
+        None => None,
+    };
+    let mut spec = CraftSpec::new(name, config.argv.clone(), target);
+    spec.tls = tls;
     spec.env = config.env.clone();
     spec.ready_timeout = Duration::from_secs(config.ready_timeout_secs);
     spec.unit = Some(config.unit.clone()).filter(|unit| !unit.trim().is_empty());
     spec.tenant = config.tenant.clone();
-    // One bootstrap token per craft: handed to `exec` via the environment, sent
-    // as metadata by the platform on every call after Describe.
-    spec.token = Some(format!("{:032x}", rand::random::<u128>()));
+    // A child of this daemon is handed a token the platform mints, through its
+    // environment. Any other craft is not ours to touch, so its token comes from
+    // the host's bootstrap provider — the same source as the TLS bytes above.
+    spec.token = match config.supervisor.as_str() {
+        "external" => configured_token(name, &config.token, &*secrets)?,
+        _ => Some(format!("{:032x}", rand::random::<u128>())),
+    };
     spec.stdio = stdio_policy(&platform.config().log, &config.supervisor);
     supervisor.start(&spec, grants).await
+}
+
+/// Resolve a craft's configured token: a `${secret:…}` reference, never a value.
+fn configured_token(
+    name: &str,
+    reference: &str,
+    secrets: &dyn flowcraft::kernel::secret_provider::SecretProvider,
+) -> Result<Option<String>> {
+    if reference.trim().is_empty() {
+        return Ok(None);
+    }
+    let Some(bytes) = flowcraft::kernel::secret_provider::resolve(
+        &format!("crafts.{name}.token"),
+        reference,
+        secrets,
+    )?
+    else {
+        return Ok(None);
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_| Error::validation(format!("crafts.{name}.token: the secret is not utf-8")))?;
+    Ok(Some(text.trim().to_owned()))
 }
 
 /// What to do with a craft's own output.

@@ -13,7 +13,7 @@
 //! * two stores may not share an `id`.
 //!
 //! A process that owns a secret store of its own (a settings page, a keychain
-//! the host opened) can inject it with [`BuildOptions::with_default_secret`]. It
+//! the host opened) can inject it with [`crate::assembly::BuildOptions::with_default_secret`]. It
 //! joins the same table, so the document does not need to declare it and the
 //! graph does not need to build it.
 

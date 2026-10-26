@@ -180,7 +180,9 @@ async fn hosted(socket: &Path, extra: &[&str]) -> Result<HostedCrafts, flowcraft
             "demo".to_owned(),
             flowcraft::kernel::CraftConfig {
                 argv: hosted_stub_argv(socket, extra),
-                socket: socket.display().to_string(),
+                target: format!("unix://{}", socket.display()),
+                tls: None,
+                token: String::new(),
                 tenant: "t".to_owned(),
                 grants: Vec::new(),
                 env: BTreeMap::from([support::identity_env()]),

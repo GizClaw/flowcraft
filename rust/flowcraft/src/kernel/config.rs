@@ -224,8 +224,26 @@ impl LogConfig {
 pub struct CraftConfig {
     /// `argv[0]` plus arguments.
     pub argv: Vec<String>,
-    /// Socket the craft serves on.
-    pub socket: String,
+    /// Where the craft serves.
+    ///
+    /// `unix:///abs/path` for a child of this host — the default, and the only
+    /// shape a child needs. `dns:///host:port` for a craft that owns its
+    /// lifecycle, including one on another machine; that shape requires `tls`.
+    /// `socket:` is accepted as the old spelling.
+    #[serde(alias = "socket")]
+    pub target: String,
+    /// Client TLS material for a `dns` target: `${secret:…}` references only,
+    /// the bytes come from the host's bootstrap provider.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+    /// The bootstrap token the craft expects, as a `${secret:…}` reference.
+    ///
+    /// `exec` and `systemd` crafts are handed the token the platform mints,
+    /// through their environment. An `external` craft cannot be, so it is
+    /// configured here — and required for a `dns` target, where the socket's file
+    /// permissions no longer stand in the way of a caller.
+    #[serde(default)]
+    pub token: String,
     /// Tenant the session belongs to.
     #[serde(default)]
     pub tenant: String,
@@ -514,10 +532,24 @@ impl Config {
             {
                 return Err(Error::validation(format!("crafts.{name}: argv is empty")));
             }
-            if craft.socket.trim().is_empty() || !Path::new(&craft.socket).is_absolute() {
-                return Err(Error::validation(format!(
-                    "crafts.{name}: socket must be an absolute path"
-                )));
+            let target = parse_target(&craft.target).map_err(|error| {
+                Error::validation(format!("crafts.{name}.target: {}", error.message()))
+            })?;
+            if target.scheme() == "dns" {
+                let configured = craft.tls.as_ref().is_some_and(|tls| {
+                    !tls.ca.trim().is_empty() || !tls.client_cert.trim().is_empty()
+                });
+                if !configured {
+                    return Err(Error::validation(format!(
+                        "crafts.{name}: a dns target requires tls (the same rule as an endpoint)"
+                    )));
+                }
+                if craft.supervisor == "external" && craft.token.trim().is_empty() {
+                    return Err(Error::validation(format!(
+                        "crafts.{name}: an external dns craft needs token: ${{secret:…}} — \
+                         the socket's file permissions cannot gate a network caller"
+                    )));
+                }
             }
             if !matches!(craft.supervisor.as_str(), "exec" | "external" | "systemd") {
                 return Err(Error::validation(format!(
@@ -765,7 +797,9 @@ mod tests {
                 "demo".to_owned(),
                 CraftConfig {
                     argv: vec!["/bin/craft".to_owned()],
-                    socket: "/tmp/demo.sock".to_owned(),
+                    target: "unix:///tmp/demo.sock".to_owned(),
+                    tls: None,
+                    token: String::new(),
                     tenant: String::new(),
                     grants: vec![CraftGrant {
                         capability: "workspace.Workspace/v1".to_owned(),
@@ -806,7 +840,9 @@ mod tests {
                 "demo".to_owned(),
                 CraftConfig {
                     argv: vec!["/bin/craft".to_owned()],
-                    socket: "/tmp/demo.sock".to_owned(),
+                    target: "unix:///tmp/demo.sock".to_owned(),
+                    tls: None,
+                    token: String::new(),
                     tenant: String::new(),
                     grants: vec![CraftGrant {
                         capability: "sandbox.Runner/v1".to_owned(),
@@ -826,14 +862,88 @@ mod tests {
         assert_eq!(error.kind(), crate::error::ErrorKind::NotAvailable);
     }
 
+    /// A craft block with every field spelled out, so a test only states the
+    /// ones it is about.
+    fn craft(target: &str, supervisor: &str, tls: Option<TlsConfig>, token: &str) -> CraftConfig {
+        CraftConfig {
+            argv: vec!["/bin/craft".to_owned()],
+            target: target.to_owned(),
+            tls,
+            token: token.to_owned(),
+            tenant: String::new(),
+            grants: Vec::new(),
+            env: BTreeMap::new(),
+            ready_timeout_secs: 10,
+            supervisor: supervisor.to_owned(),
+            unit: String::new(),
+            systemctl: String::new(),
+        }
+    }
+
+    fn one_craft(config: CraftConfig) -> Config {
+        Config {
+            crafts: BTreeMap::from([("demo".to_owned(), config)]),
+            ..Config::default()
+        }
+    }
+
     #[test]
-    fn a_craft_socket_must_be_absolute() {
+    fn a_dns_craft_requires_tls() {
+        // The same rule an endpoint follows: a network craft that could be
+        // spoken to in the clear is refused at startup, not at connect time.
+        let error = one_craft(craft("dns:///craft.example:443", "external", None, ""))
+            .validate()
+            .unwrap_err();
+        assert!(error.to_string().contains("requires tls"), "{error}");
+
+        let tls = TlsConfig {
+            ca: "${secret:ca.pem}".to_owned(),
+            ..TlsConfig::default()
+        };
+        one_craft(craft(
+            "dns:///craft.example:443",
+            "external",
+            Some(tls),
+            "${secret:craft-token}",
+        ))
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn an_external_dns_craft_requires_a_token() {
+        // File permissions no longer stand in the way of a network caller, and
+        // the platform cannot hand an `external` craft a token it minted.
+        let tls = TlsConfig {
+            ca: "${secret:ca.pem}".to_owned(),
+            ..TlsConfig::default()
+        };
+        let error = one_craft(craft(
+            "dns:///craft.example:443",
+            "external",
+            Some(tls.clone()),
+            "",
+        ))
+        .validate()
+        .unwrap_err();
+        assert!(error.to_string().contains("token"), "{error}");
+
+        // A child is handed one through its environment, so it needs none here.
+        one_craft(craft("dns:///craft.example:443", "exec", Some(tls), ""))
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn a_craft_target_must_parse() {
         let config = Config {
             crafts: BTreeMap::from([(
                 "demo".to_owned(),
                 CraftConfig {
                     argv: vec!["/bin/craft".to_owned()],
-                    socket: "relative.sock".to_owned(),
+                    target: "unix://relative.sock".to_owned(),
+                    tls: None,
+                    token: String::new(),
                     tenant: String::new(),
                     grants: Vec::new(),
                     env: BTreeMap::new(),
