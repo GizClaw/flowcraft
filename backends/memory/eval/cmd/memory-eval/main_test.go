@@ -171,3 +171,33 @@ func TestMergeCategoriesKeepsTheLenientColumn(t *testing.T) {
 		t.Fatalf("a newly seen category lost its lenient column: %+v", into[eval.LongMemEvalTemporalReasoning])
 	}
 }
+
+// -rebuild-lanes names lanes the way a repair does: a list, and an empty list
+// for "every lane whose rebuild needs no inference". The distinction has to
+// survive the flag: `-rebuild-lanes=` is a request for the default set, not a
+// request for no lane at all, and a stray space or comma must not name a lane
+// the deployment does not configure.
+func TestSplitLaneNamesReadsTheRepairRequest(t *testing.T) {
+	cases := []struct {
+		value string
+		want  int
+		names []string
+	}{
+		{"", 0, nil},
+		{" , ", 0, nil},
+		{"vector", 1, []string{"vector"}},
+		{"bm25, entity", 2, []string{"bm25", "entity"}},
+		{"bm25,,vector", 2, []string{"bm25", "vector"}},
+	}
+	for _, item := range cases {
+		names := splitLaneNames(item.value)
+		if len(names) != item.want {
+			t.Fatalf("%q: named %v, want %d names", item.value, names, item.want)
+		}
+		for index, name := range item.names {
+			if names[index] != name {
+				t.Fatalf("%q: named %v, want %v", item.value, names, item.names)
+			}
+		}
+	}
+}

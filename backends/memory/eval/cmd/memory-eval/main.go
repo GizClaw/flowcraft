@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	flowmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
 	evalanswer "github.com/GizClaw/flowcraft/backends/memory/eval/answer"
 	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
@@ -80,6 +81,11 @@ func main() {
 		"sweep every registered scope's projection lanes and exit: the bases and segments a compaction or a rebuild "+
 			"superseded, which no manifest names. It is the sweep a maintenance pass runs beside the overlay, without "+
 			"the pass, so it judges nothing and writes nothing -- it is what shrinks a workspace an earlier build filled")
+	rebuildLanes := flag.String("rebuild-lanes", "",
+		"rebuild projection lanes from canonical state and exit: one repair per scope the workspace's catalog holds. "+
+			"The value names the lanes (bm25, entity, vector); an empty value rebuilds every lane whose rebuild needs "+
+			"no inference, and `vector` is the one that embeds every artifact again. A repair is a re-index, not a "+
+			"re-derivation: watermarks and the published generation stay where they are")
 	baselinePath := flag.String("baseline", "", "compare the run against this baseline JSON and fail on regression")
 	baselineTolerance := flag.Float64("baseline-tolerance", 2.0, "allowed regression in percentage points")
 	out := flag.String("out", "", "write full reports JSON here")
@@ -93,6 +99,12 @@ func main() {
 		// Before the dataset and the judge plan: a sweep names no library and
 		// grades nothing, so it must not need either.
 		reclaimScopes(*deployPath, *recentItems)
+		return
+	}
+	if flagWasSet(flag.CommandLine, "rebuild-lanes") {
+		// Same place as the sweep, for the same reason: a repair re-indexes
+		// canonical state, so it names no library and grades nothing.
+		rebuildLaneScopes(*deployPath, *recentItems, *rebuildLanes)
 		return
 	}
 	// The LongMemEval gold is a full clause (and, for two of its types, a stated
@@ -1101,4 +1113,77 @@ func reclaimScopes(deployPath string, recentItems int) {
 	fmt.Printf("reclaim: scopes=%d objects=%d (bases=%d segments=%d) elapsed=%s\n",
 		len(scopes), total.Bases+total.Segments, total.Bases, total.Segments,
 		time.Since(started).Round(time.Millisecond))
+}
+
+// rebuildLaneScopes re-indexes the named projection lanes of every scope the
+// workspace's catalog holds, and prints what each repair published.
+//
+// It is what carries a workspace across a change to a lane's producer or to the
+// form of what it stores: the vector lane's state lives under a storage name
+// that covers both, so a build with a new form reads a name nothing was ever
+// written under and leaves the generation an earlier build filled beside it,
+// unread. A repair re-indexes canonical state -- the messages, the facts of the
+// active generation, the chunks of the active document builds -- through the
+// shapes the derivation worker writes, so nothing is derived again and no
+// deriver runs; the vector lane is the one whose repair embeds every artifact,
+// which is why it is named rather than rebuilt by default.
+//
+// The catalog is the authority on which scopes the workspace holds, for the
+// reason the sweep gives: a deploy document names what a run will write, and a
+// repair has to reach what an earlier document wrote.
+func rebuildLaneScopes(deployPath string, recentItems int, lanes string) {
+	if deployPath == "" {
+		must(fmt.Errorf("memory eval: -rebuild-lanes rebuilds the lanes a deploy document binds, so it needs -deploy"))
+	}
+	names := splitLaneNames(lanes)
+	deployment := buildAssembly(deployPath, recentItems)
+	defer deployment.Close()
+	ctx := context.Background()
+	catalog := deployment.Memory.Catalog()
+	if catalog == nil {
+		must(fmt.Errorf("memory eval: -rebuild-lanes needs the workspace's scope catalog, and this deployment has none"))
+	}
+	scopes, err := catalog.List(ctx)
+	must(err)
+	if len(scopes) == 0 {
+		fmt.Println("rebuild: the workspace catalog holds no scope, so there is nothing to rebuild")
+		return
+	}
+	started := time.Now()
+	artifacts, laneCount := 0, 0
+	for _, scope := range scopes {
+		result, err := deployment.Memory.Repair(ctx, flowmemory.RepairRequest{Scope: scope, Lanes: names})
+		must(err)
+		artifacts += result.Artifacts
+		for _, lane := range result.Lanes {
+			laneCount++
+			fmt.Printf("rebuild: scope=%s lane=%s artifacts=%d stale_before=%t source=%s build=%s\n",
+				scope.String(), lane.Name, lane.Artifacts, lane.StaleBefore,
+				shortDigest(lane.SourceDigest), shortDigest(lane.BuildDigest))
+		}
+	}
+	fmt.Printf("rebuild: scopes=%d lanes=%d artifacts=%d elapsed=%s\n",
+		len(scopes), laneCount, artifacts, time.Since(started).Round(time.Millisecond))
+}
+
+// splitLaneNames parses -rebuild-lanes. An empty value names no lane, which is
+// how a repair asks for every configured lane whose rebuild needs no inference.
+func splitLaneNames(value string) []string {
+	var names []string
+	for _, token := range strings.Split(value, ",") {
+		if token = strings.TrimSpace(token); token != "" {
+			names = append(names, token)
+		}
+	}
+	return names
+}
+
+// shortDigest names a cumulative digest by its first bytes: a repair prints one
+// per lane per scope, and the reading is compared between runs rather than with
+// anything outside the digest's own comparison.
+func shortDigest(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
 }

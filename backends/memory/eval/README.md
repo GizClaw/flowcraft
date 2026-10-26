@@ -522,6 +522,23 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   that names the vector lane's storage), and it reports objects rather than
   bytes: a sweep deletes by key, and measuring what it removes would read the
   storage it exists to give up.
+- `-rebuild-lanes <names>`: re-index the named projection lanes of every scope
+  the workspace's catalog holds and exit, with no dataset, no ingest, no
+  derivation, and no model call of its own. It is what carries a workspace
+  across a change to a lane's producer, and across a change to the form of what
+  a lane stores: a lane's state lives under a storage name that covers both, so
+  a build with a new form reads a name nothing was ever written under and leaves
+  the generation an earlier build filled beside it, unread. A repair re-indexes
+  canonical state -- the messages, the facts of the active generation, the
+  chunks of the active document builds -- through the shapes the derivation
+  worker writes, so nothing is derived again: watermarks and the published
+  generation stay where they are, and the next pass resumes where it stopped.
+  The value names lanes (`bm25`, `entity`, `vector`); an empty value rebuilds
+  every lane whose rebuild needs no inference, and the vector lane is the one
+  that embeds every artifact again, which is why it is named rather than
+  rebuilt by default. It needs `-deploy`, and it prints per lane and per scope
+  what was indexed, whether the state it replaced was another producer's
+  (`stale_before`), and the digests of the state that replaced it.
 
 ### Reproducibility
 
