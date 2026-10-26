@@ -42,6 +42,10 @@
 //     the optional [agent.CheckpointLister] / [agent.CheckpointDeleter]
 //     extensions.
 //
+//   - [CheckpointJournalSuite] — the conformance suite for a store that
+//     also implements [agent.CheckpointJournal] (a base record plus
+//     append-only increments, replayed by Load).
+//
 //   - [ResumerSuite] — the contract every [agent.Resumer]
 //     implementation should pass (cheap, classified, mutation-free,
 //     concurrent-safe).
@@ -78,6 +82,15 @@
 //     host.drainSteer() call lands relative to the rest of the round.
 //     Engines may use it directly in their own tests instead of
 //     re-implementing the full Host surface.
+//
+//   - [JournalStore] — an in-memory [agent.CheckpointStore] +
+//     [agent.CheckpointJournal] that records how many bases and
+//     increments a writer persisted, so an engine test can assert the
+//     shape of a run rather than its allocation count.
+//
+//   - [StoreHost] — a Host that persists through a store and answers
+//     the [agent.CheckpointTarget] capability the way the runtime's
+//     host does, for driving an engine against a [JournalStore].
 //
 // # What does NOT live here
 //

@@ -27,13 +27,24 @@ const (
 	LastWriteWins MergeStrategy = "last_write_wins"
 )
 
-// BranchResult is one parallel branch's outcome: the isolated board
-// snapshot it produced, or the error it failed with. A nil Snapshot
-// with a nil Err marks a skipped node — nothing to merge.
+// BranchResult is one parallel branch's outcome: the writes it made to its
+// isolated board, or the error it failed with. A result with no writes and no
+// error marks a skipped node — nothing to merge.
 type BranchResult struct {
-	NodeID   string
+	NodeID string
+
+	// Delta is what the branch wrote to its private board, relative to the
+	// pre-fork state it was seeded with. The built-in merge strategies
+	// consume this, which is why a wave of N branches costs N small write
+	// sets rather than N board copies.
+	Delta *agent.BoardDelta
+
+	// Snapshot is the branch's whole board state. It is populated only when
+	// [ParallelConfig.Merge] installs a custom function, which was written
+	// against absolute state; the built-in strategies leave it nil.
 	Snapshot *agent.BoardSnapshot
-	Err      error
+
+	Err error
 
 	// Cancelled marks a branch deliberately cancelled through the
 	// wave's ParallelController (while queued or running): it merged
@@ -129,7 +140,7 @@ func firstWriteWinsMerge(_ context.Context, board *agent.Board, preFork *agent.B
 	for _, res := range results {
 		mergeBranchVars(board, preFork, res, claimed)
 	}
-	mergeAppendedMessages(board, preFork, results)
+	mergeAppendedMessages(board, results)
 	return nil
 }
 
@@ -140,20 +151,24 @@ func lastWriteWinsMerge(_ context.Context, board *agent.Board, preFork *agent.Bo
 	for _, result := range slices.Backward(results) {
 		mergeBranchVars(board, preFork, result, claimed)
 	}
-	mergeAppendedMessages(board, preFork, results)
+	mergeAppendedMessages(board, results)
 	return nil
 }
 
+// mergeBranchVars applies one branch's var writes. The values are the branch
+// board's own and the branch is done with them: ownership transfers to the
+// shared board, which is why no copy is taken here (BoardDelta.ApplyTo, the
+// general path, copies because its caller keeps the delta).
 func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res BranchResult, claimed map[string]bool) {
-	if res.Err != nil || res.Snapshot == nil {
+	if res.Err != nil || res.Delta == nil {
 		return
 	}
-	for key, val := range res.Snapshot.Vars {
+	for key, val := range res.Delta.Vars() {
 		if claimed[key] {
 			continue
 		}
 		if prev, ok := preFork.Vars[key]; ok && reflect.DeepEqual(prev, val) {
-			continue // unchanged by this branch
+			continue // wrote the value that was already there
 		}
 		board.SetVar(key, val)
 		claimed[key] = true
@@ -161,11 +176,17 @@ func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res Branc
 }
 
 // mergeAppendedMessages replays each branch's channel additions onto
-// the shared board, in wave order. Channels are append-only by
-// convention; a branch that replaced a channel outright contributes
-// only the suffix beyond the pre-fork length.
-func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
-	mergeChannelMessages(board, preFork, results,
+// the shared board, in wave order. Channels are append-only by convention: a
+// branch that replaced or truncated a channel contributes nothing at all.
+//
+// That last rule is a deliberate difference from the pre-delta merge, which
+// appended `snapshot[base:]` whenever the branch's channel was merely longer —
+// so a branch that rebuilt the channel leaked its rewritten head into the
+// shared board. Contributing nothing is the conservative reading of "a branch
+// merges what it appended", and it is pinned by
+// TestParallelMergeIgnoresBranchChannelReplacement.
+func mergeAppendedMessages(board *agent.Board, results []BranchResult) {
+	mergeChannelMessages(board, results,
 		func(res BranchResult) bool { return res.Err == nil },
 		func(message.Message) bool { return true },
 	)
@@ -173,21 +194,16 @@ func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, res
 
 func mergeChannelMessages(
 	board *agent.Board,
-	preFork *agent.BoardSnapshot,
 	results []BranchResult,
 	includeResult func(BranchResult) bool,
 	includeMessage func(message.Message) bool,
 ) {
 	for _, res := range results {
-		if !includeResult(res) || res.Snapshot == nil {
+		if !includeResult(res) || res.Delta == nil {
 			continue
 		}
-		for ch, msgs := range res.Snapshot.Channels {
-			base := len(preFork.Channels[ch])
-			if len(msgs) <= base {
-				continue
-			}
-			for _, msg := range msgs[base:] {
+		for ch, msgs := range res.Delta.Appends() {
+			for _, msg := range msgs {
 				if includeMessage(msg) {
 					board.AppendChannelMessage(ch, msg)
 				}
@@ -199,8 +215,8 @@ func mergeChannelMessages(
 // mergeInterruptedAssistantMessages retains only assistant messages written
 // by failed branches when a parallel wave terminates as interrupted. Branch
 // order is results order; vars and non-assistant channels/state are ignored.
-func mergeInterruptedAssistantMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
-	mergeChannelMessages(board, preFork, results,
+func mergeInterruptedAssistantMessages(board *agent.Board, results []BranchResult) {
+	mergeChannelMessages(board, results,
 		func(res BranchResult) bool { return errdefs.IsInterrupted(res.Err) },
 		func(msg message.Message) bool { return msg.Role == message.RoleAssistant },
 	)

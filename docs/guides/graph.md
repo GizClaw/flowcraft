@@ -79,6 +79,7 @@ The deployment-facing factory is `core/graph/resource`. Its settings subtree:
 | `build.timeout`                  | wall-clock bound for one `Execute` call (Go duration string, e.g. `1h`); `0` means no engine-level bound |
 | `build.run_end_publish_timeout`  | deadline for publishing terminal run events; default `5s`, must be `> 0`       |
 | `build.max_node_retries`         | retries per node before the run fails                                          |
+| `build.checkpoint_compaction`    | incremental records a checkpoint chain may hold before a full one is rewritten; default `32` |
 | `build.parallel.enabled`         | enable parallel waves                                                          |
 | `build.parallel.branch_timeout`  | per-branch wall-clock bound; `0` means none                                    |
 | `build.parallel.max_concurrency` | max concurrent branches                                                        |

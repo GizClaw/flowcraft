@@ -16,6 +16,7 @@ type buildOptions struct {
 	runEndPublishTimeout time.Duration
 	parallel             ParallelConfig
 	maxNodeRetries       int
+	checkpointCompaction int
 	scriptBindings       bindings.Provider
 }
 
@@ -73,8 +74,22 @@ func WithParallel(cfg ParallelConfig) BuildOption {
 // WithMaxNodeRetries sets how many times a failing node handler is
 // retried before the run fails. Interrupted, aborted, budget-exceeded
 // and validation errors are never retried. Zero means no retries.
+//
+// Retrying costs a rollback point: the executor keeps one pre-attempt board
+// snapshot per node invocation, so a graph with retries enabled deep-copies
+// the board once per node. With the default of zero no snapshot is taken.
 func WithMaxNodeRetries(n int) BuildOption {
 	return func(o *buildOptions) { o.maxNodeRetries = n }
+}
+
+// WithCheckpointCompaction sets how many incremental checkpoints an engine may
+// append before it rewrites a self-contained base record.
+//
+// It is a resume-latency knob, not a memory knob: loading replays the base plus
+// at most this many increments. Zero keeps [agent.DefaultCheckpointCompaction];
+// negative is a build error.
+func WithCheckpointCompaction(every int) BuildOption {
+	return func(o *buildOptions) { o.checkpointCompaction = every }
 }
 
 // WithScriptBindings sets the engine-level script bindings provider:
@@ -103,6 +118,9 @@ func (o *buildOptions) validate() error {
 	}
 	if o.maxNodeRetries < 0 {
 		return errdefs.Validationf("graph: max node retries must be >= 0")
+	}
+	if o.checkpointCompaction < 0 {
+		return errdefs.Validationf("graph: checkpoint compaction must be >= 0")
 	}
 	return o.parallel.validate()
 }

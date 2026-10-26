@@ -80,6 +80,16 @@ func (ephemeralHost) Checkpoint(context.Context, agent.Checkpoint) error {
 	return nil
 }
 
+// CheckpointCapabilities withholds the capability from the inner chain, so an
+// engine does not just skip Checkpoint: it stops building the record at all.
+// Without it, capability traversal unwraps past this decorator to the base
+// host, which hands back the store's journal — and an incremental write would
+// reach the store without passing through the no-op above, leaving exactly the
+// durable trace an ephemeral session must not create.
+func (ephemeralHost) CheckpointCapabilities() agent.CheckpointCapabilities {
+	return agent.CheckpointCapabilities{}
+}
+
 // UnwrapHost preserves optional capabilities of the wrapped turn Host:
 // ephemeral sessions only suppress checkpoint writes and must not hide
 // the inner host's capabilities (delegation service, event bus, ...) from
@@ -88,6 +98,7 @@ func (h ephemeralHost) UnwrapHost() agent.Host { return h.Host }
 
 var _ agent.Checkpointer = ephemeralHost{}
 var _ agent.HostUnwrapper = ephemeralHost{}
+var _ agent.CheckpointTarget = ephemeralHost{}
 
 // steerHost installs the turn-owned steer queue as an
 // [agent.SteerSource] on every turn host. The session is the only

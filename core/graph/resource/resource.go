@@ -87,6 +87,7 @@ type BuildSettings struct {
 	Timeout              *string           `json:"timeout,omitempty"`
 	RunEndPublishTimeout *string           `json:"run_end_publish_timeout,omitempty"`
 	MaxNodeRetries       *int              `json:"max_node_retries,omitempty"`
+	CheckpointCompaction *int              `json:"checkpoint_compaction,omitempty"`
 	Parallel             *ParallelSettings `json:"parallel,omitempty"`
 }
 
@@ -530,6 +531,13 @@ func (b BuildSettings) options() ([]coregraph.BuildOption, error) {
 			return nil, errdefs.Validationf("graph engine: build.max_node_retries must be >= 0")
 		}
 		options = append(options, coregraph.WithMaxNodeRetries(*b.MaxNodeRetries))
+	}
+	if b.CheckpointCompaction != nil {
+		if *b.CheckpointCompaction < 0 {
+			return nil, errdefs.Validationf(
+				"graph engine: build.checkpoint_compaction must be >= 0")
+		}
+		options = append(options, coregraph.WithCheckpointCompaction(*b.CheckpointCompaction))
 	}
 	if b.Parallel != nil {
 		parallel, err := b.Parallel.config()

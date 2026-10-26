@@ -164,6 +164,12 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		frontier = []string{startID}
 	}
 
+	// One writer per run: it owns the checkpoint position, so a wave boundary
+	// persists the writes since the previous one instead of re-encoding the
+	// whole board, and a host that stores nothing costs no snapshot at all.
+	checkpoints := agent.NewCheckpointWriter(host, run.RunID).
+		WithCompactionWindow(g.checkpointCompaction)
+
 	for len(frontier) > 0 {
 		if ctx.Err() != nil {
 			if cause := context.Cause(ctx); errdefs.IsInterrupted(cause) {
@@ -202,7 +208,7 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		// still consume budget. That is what guarantees termination
 		// for a cycle whose nodes are all skipped.
 		iterations += len(wave)
-		g.stampCheckpoint(ctx, host, run, board, wave, iterations, originalStartedAt)
+		g.stampCheckpoint(ctx, checkpoints, run, board, wave, iterations, originalStartedAt)
 		next, err := g.resolveNext(board, wave, iterations)
 		if err != nil {
 			return retBoard, err
@@ -308,6 +314,15 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 	}
 
 	var invokeErr error
+	// A rollback point is only worth a board copy when a retry can actually
+	// happen, and one copy covers every attempt: the loop restores the same
+	// pre-attempt state, so the second attempt's snapshot would be identical
+	// to the first. With the default of no retries this stays nil and the
+	// node costs no copy at all.
+	var rollback *agent.BoardSnapshot
+	if g.maxNodeRetries > 0 {
+		rollback = board.Snapshot()
+	}
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			// Linear backoff between attempts; the wait stays
@@ -322,7 +337,6 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 				break
 			}
 		}
-		snapshot := board.Snapshot()
 		invokeErr = invoke()
 		if invokeErr == nil || !isRetryable(invokeErr) || attempt >= g.maxNodeRetries {
 			break
@@ -335,7 +349,7 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		// Roll the board back to the pre-attempt state so a retried
 		// node never sees its own half-written vars or duplicated
 		// messages. The final attempt's writes stay for diagnostics.
-		board.RestoreFrom(snapshot)
+		board.RestoreFrom(rollback)
 	}
 	if invokeErr != nil {
 		if cerr := classifyContextError(ctx, g.name, nodeID); cerr != nil {
@@ -434,7 +448,6 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		ParallelWaveEventPayload{ForkID: forkID, Branches: wave})
 
 	results := make([]BranchResult, len(wave))
-	failedBoards := make([]*agent.Board, len(wave))
 	terminal := make([]bool, len(wave))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelLimit(g.parallel.MaxConcurrency, len(wave)))
@@ -494,6 +507,10 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 
 			branchBoard := agent.NewBoard()
 			branchBoard.RestoreFrom(preFork)
+			// The branch's own writes start here: a mark taken after seeding
+			// makes the delta exactly this branch's contribution, with no
+			// comparison against the pre-fork state and no board copy.
+			mark := branchBoard.Mark()
 			skipped, err := g.invokeNode(bctx, run, host, branchBoard, slot)
 			if reason, cancelled := controller.cancelledReason(id); cancelled {
 				// Cancellation wins over every handler outcome. A
@@ -509,12 +526,18 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 				terminal[i] = true
 				return
 			}
+			result := BranchResult{NodeID: id, Delta: branchBoard.Since(mark)}
+			// A custom merge is written against absolute state; keep the
+			// snapshot it expects. The built-in strategies never need it.
+			if g.parallel.Merge != nil {
+				result.Snapshot = branchBoard.Snapshot()
+			}
 			switch {
 			case skipped:
 				results[i] = BranchResult{NodeID: id}
 			case err != nil:
-				results[i] = BranchResult{NodeID: id, Err: err}
-				failedBoards[i] = branchBoard
+				result.Err = err
+				results[i] = result
 				g.publishBranchTerminal(bctx, host, info, id, agent.StreamDeltaPayload{
 					Type:     agent.StreamDeltaParallelBranchCancel,
 					ForkID:   forkID,
@@ -523,7 +546,7 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 				})
 				terminal[i] = true
 			default:
-				results[i] = BranchResult{NodeID: id, Snapshot: branchBoard.Snapshot()}
+				results[i] = result
 			}
 		}()
 	}
@@ -550,12 +573,7 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		publishUnterminatedBranchCancels(
 			ctx, host, info, g.name, forkID, wave, terminal, waveErr.Error(), g.runEndPublishTimeout)
 		if errdefs.IsInterrupted(waveErr) {
-			for i, branchBoard := range failedBoards {
-				if branchBoard != nil {
-					results[i].Snapshot = branchBoard.Snapshot()
-				}
-			}
-			mergeInterruptedAssistantMessages(board, preFork, results)
+			mergeInterruptedAssistantMessages(board, results)
 			interruptedNode := wave[0]
 			for _, res := range results {
 				if errdefs.IsInterrupted(res.Err) {
@@ -676,24 +694,26 @@ func startNodeFromContext(ctx context.Context) (string, bool) {
 // later resume rebuilds the frontier from every branch's outgoing
 // edges — not just the last node's. Checkpoint failures never fail
 // the run — durability is the host's choice.
-func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.Run, board *agent.Board, wave []string, iterations int, startedAt time.Time) {
-	if host == nil {
+//
+// The record's shape is the writer's business: it decides between a
+// self-contained base and an incremental continuation, and it is a no-op
+// when the host stores nothing (so the board is not snapshotted either).
+func (g *Graph) stampCheckpoint(ctx context.Context, checkpoints *agent.CheckpointWriter, run agent.Run, board *agent.Board, wave []string, iterations int, startedAt time.Time) {
+	if !checkpoints.Enabled() {
 		return
 	}
 	// Checkpoint is best-effort by design (durability is the host's
 	// choice) but a silent failure here means the host can't resume a
 	// crashed run, so surface it as a warning. RunID is included for
 	// correlation with the surrounding span.
-	if err := host.Checkpoint(ctx, agent.Checkpoint{
-		ExecID:            run.RunID,
+	if err := checkpoints.Stamp(ctx, agent.CheckpointMeta{
 		Steps:             wave,
 		Iteration:         iterations,
-		Board:             board.Snapshot(),
 		Attributes:        run.Attributes,
 		Timestamp:         time.Now(),
 		OriginalStartedAt: startedAt,
 		SpecVersion:       g.specVersion,
-	}); err != nil {
+	}, board); err != nil {
 		telemetry.WarnErr(ctx, "graph: checkpoint write failed", err,
 			attribute.String(telemetry.AttrGraphName, g.name),
 			attribute.String(telemetry.AttrRunID, run.RunID),

@@ -179,14 +179,15 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 	}
 
 	x := &executor{
-		eng:       e,
-		client:    e.client,
-		run:       run,
-		host:      host,
-		board:     board,
-		seen:      make(map[string]bool),
-		artifacts: make(map[a2aprotocol.ArtifactID]*artifactBuffer),
-		streaming: e.streamEnabled(),
+		eng:         e,
+		client:      e.client,
+		run:         run,
+		host:        host,
+		board:       board,
+		seen:        make(map[string]bool),
+		artifacts:   make(map[a2aprotocol.ArtifactID]*artifactBuffer),
+		streaming:   e.streamEnabled(),
+		checkpoints: agent.NewCheckpointWriter(host, run.RunID),
 	}
 
 	stepActor := stepActorFor(run.AgentID)
@@ -225,6 +226,9 @@ type executor struct {
 	// lastState is the most recently observed task state; checkpoints are
 	// stamped on state transitions.
 	lastState a2aprotocol.TaskState
+	// checkpoints persists the board at task boundaries, choosing between a
+	// self-contained record and an incremental one.
+	checkpoints *agent.CheckpointWriter
 }
 
 // artifactBuffer accumulates artifact chunks keyed by artifact id until
@@ -694,8 +698,12 @@ func (x *executor) failedError(status *a2aprotocol.TaskStatus) error {
 
 // checkpoint stamps a resumable checkpoint at a task boundary. Failures are
 // logged and swallowed: checkpoints are advisory, never control flow.
+//
+// The writer owns the decision between a full record and an incremental one, so
+// a task that transitions many times does not re-encode the whole board each
+// time — and a host that stores nothing costs no snapshot at all.
 func (x *executor) checkpoint(ctx context.Context) {
-	if x.taskID == "" {
+	if x.taskID == "" || !x.checkpoints.Enabled() {
 		return
 	}
 	payload, err := json.Marshal(resumePayload{
@@ -708,20 +716,17 @@ func (x *executor) checkpoint(ctx context.Context) {
 			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
-	cp := agent.Checkpoint{
-		ExecID:     x.run.RunID,
-		Steps:      []string{string(x.taskID)},
-		Board:      x.board.Snapshot(),
-		Payload:    payload,
-		Attributes: x.run.Attributes,
-		Timestamp:  time.Now(),
-	}
+	startedAt := time.Now()
 	if rc, ok := agent.ResumeContextFromContext(ctx); ok && !rc.StartedAt.IsZero() {
-		cp.OriginalStartedAt = rc.StartedAt
-	} else {
-		cp.OriginalStartedAt = time.Now()
+		startedAt = rc.StartedAt
 	}
-	if err := x.host.Checkpoint(ctx, cp); err != nil {
+	if err := x.checkpoints.Stamp(ctx, agent.CheckpointMeta{
+		Steps:             []string{string(x.taskID)},
+		Payload:           payload,
+		Attributes:        x.run.Attributes,
+		Timestamp:         time.Now(),
+		OriginalStartedAt: startedAt,
+	}, x.board); err != nil {
 		telemetry.Warn(ctx, "a2a: checkpoint rejected by host",
 			attribute.String(telemetry.AttrErrorMessage, err.Error()))
 	}

@@ -119,6 +119,37 @@ func (h HostFuncs) Checkpoint(ctx context.Context, cp Checkpoint) error {
 	return h.requireInner().Checkpoint(ctx, cp)
 }
 
+// CheckpointCapabilities answers for the wrapped chain, unless CheckpointFn
+// replaces the writer: a function may store self-contained records and nothing
+// else, so the conservative answer is the full path.
+func (h HostFuncs) CheckpointCapabilities() CheckpointCapabilities {
+	if h.CheckpointFn != nil {
+		return CheckpointCapabilities{Enabled: true}
+	}
+	inner := CheckpointCapabilitiesFromHost(h.requireInner())
+	if inner.Journal == nil {
+		return inner
+	}
+	// Journal calls go through this decorator so a partial decorator keeps
+	// wrapping the incremental path too.
+	inner.Journal = h
+	return inner
+}
+
+// WriteBase is [CheckpointJournal] over [HostFuncs.Checkpoint].
+func (h HostFuncs) WriteBase(ctx context.Context, cp Checkpoint) error {
+	return h.Checkpoint(ctx, cp)
+}
+
+// Append is [CheckpointJournal] over the inner chain's journal.
+func (h HostFuncs) Append(ctx context.Context, delta CheckpointDelta) error {
+	inner := CheckpointCapabilitiesFromHost(h.requireInner())
+	if inner.Journal == nil {
+		return ErrNeedsBase
+	}
+	return inner.Journal.Append(ctx, delta)
+}
+
 // ReportUsage routes through ReportUsageFn or Inner.
 func (h HostFuncs) ReportUsage(ctx context.Context, report usage.Usage) error {
 	if h.ReportUsageFn != nil {
@@ -130,6 +161,12 @@ func (h HostFuncs) ReportUsage(ctx context.Context, report usage.Usage) error {
 // UnwrapHost preserves optional capabilities only when Publish still delegates
 // to Inner. A custom publisher may use a different event surface, so PublishFn
 // is an authoritative boundary that stops capability traversal.
+//
+// Checkpoint capabilities are the exception, and deliberately so: the publish
+// surface says nothing about where a checkpoint goes, and HostFuncs forwards
+// Checkpoint to Inner either way. What a CheckpointFn does replace is the
+// *writer* — see HostFuncs.CheckpointCapabilities — so the answer stays honest
+// even across this boundary.
 func (h HostFuncs) UnwrapHost() Host {
 	if h.PublishFn != nil {
 		return nil
@@ -255,12 +292,52 @@ func (h tracingHost) Checkpoint(ctx context.Context, cp Checkpoint) error {
 	ctx, span := h.tracer.Start(ctx, "agent.host.checkpoint",
 		trace.WithAttributes(
 			attribute.String("checkpoint.exec_id", cp.ExecID),
+			attribute.String("checkpoint.mode", "base"),
 			attribute.String("checkpoint.steps", strings.Join(cp.Steps, ",")),
 			attribute.Int("checkpoint.iteration", cp.Iteration),
 		),
 	)
 	defer span.End()
 	if err := h.inner.Checkpoint(ctx, cp); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
+}
+
+// CheckpointCapabilities answers for the inner chain and routes journal calls
+// through this decorator, so an incremental write is still one span.
+func (h tracingHost) CheckpointCapabilities() CheckpointCapabilities {
+	inner := CheckpointCapabilitiesFromHost(h.inner)
+	if inner.Journal == nil {
+		return inner
+	}
+	inner.Journal = h
+	return inner
+}
+
+// WriteBase is [CheckpointJournal] over [tracingHost.Checkpoint].
+func (h tracingHost) WriteBase(ctx context.Context, cp Checkpoint) error {
+	return h.Checkpoint(ctx, cp)
+}
+
+// Append records an incremental checkpoint write.
+func (h tracingHost) Append(ctx context.Context, delta CheckpointDelta) error {
+	ctx, span := h.tracer.Start(ctx, "agent.host.checkpoint",
+		trace.WithAttributes(
+			attribute.String("checkpoint.exec_id", delta.ExecID),
+			attribute.String("checkpoint.mode", "delta"),
+			attribute.String("checkpoint.steps", strings.Join(delta.Steps, ",")),
+			attribute.Int("checkpoint.iteration", delta.Iteration),
+		),
+	)
+	defer span.End()
+	inner := CheckpointCapabilitiesFromHost(h.inner)
+	if inner.Journal == nil {
+		return ErrNeedsBase
+	}
+	if err := inner.Journal.Append(ctx, delta); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
