@@ -134,15 +134,34 @@ type TypedOptions[B, D any] struct {
 	// is stamped into every manifest the store creates, and a reader compares
 	// it against the version the running producer writes with.
 	ProducerVersion string
-	Canonicalize    func(D) D
-	ValidateBase    func(B) error
-	ValidateDelta   func(D) error
-	Apply           func(*B, D) error
+	// ResidentBases bounds how many partitions' bases the store keeps decoded.
+	// Zero keeps one, which is what a store without the bound kept; a partition
+	// the store does not hold is decoded again when it is next read.
+	ResidentBases int
+	Canonicalize  func(D) D
+	ValidateBase  func(B) error
+	ValidateDelta func(D) error
+	Apply         func(*B, D) error
 }
 
-type materializedCache[B any] struct {
+// residentBase is one partition's materialized base, kept decoded.
+//
+// Every reader of a lane asks the store for the same base: the write path asks
+// which entries it already holds, a query asks for the table it scans, and a
+// warm-up asks for the table the next query will read. Decoding the base once
+// and keeping it turned those asks into a map lookup.
+//
+// The value belongs to the store. Only the store writes it, only under its
+// mutex, and only by replacing the slices it holds -- never by writing through
+// them -- so a caller that took a copy of the struct keeps reading the state it
+// was handed while a later delta replaces the store's copy.
+type residentBase[B any] struct {
 	identity string
 	value    B
+	// used is the store's clock reading at the base's last read. The bound
+	// evicts the base read least recently, which is the one the caller is
+	// least likely to read again.
+	used int64
 }
 
 // Store owns the common typed immutable-base and ordered-segment protocol.
@@ -151,7 +170,8 @@ type Store[B, D any] struct {
 	Family  string
 	options TypedOptions[B, D]
 	mu      sync.Mutex
-	cache   *materializedCache[B]
+	bases   map[string]*residentBase[B]
+	clock   int64
 }
 
 type ApplyResult struct {
@@ -198,7 +218,14 @@ func (store *Store[B, D]) FullRebuild(ctx context.Context, scope corememory.Scop
 	defer store.mu.Unlock()
 	// A rebuild publishes state this producer wrote, so the manifest it leaves
 	// behind names this producer rather than the one it replaced.
-	return store.publishBaseLocked(ctx, scope, name, payload, sourceDigest, store.options.ProducerVersion, nil)
+	if err := store.publishBaseLocked(ctx, scope, name, payload, sourceDigest, store.options.ProducerVersion, nil); err != nil {
+		return err
+	}
+	// The published base is not the one the store had decoded, and the value
+	// this call marshalled belongs to the caller: the next reader decodes it,
+	// and the warm-up a lane defers after a rebuild is that reader.
+	store.forgetLocked(store.residentKey(scope, name))
+	return nil
 }
 
 func (store *Store[B, D]) ApplyDelta(
@@ -238,6 +265,10 @@ func (store *Store[B, D]) ApplyDelta(
 	if !found {
 		active = store.newManifest(scope, name)
 	}
+	// What the delta this call publishes supersedes: a resident base of this
+	// identity is the state the delta was applied to, so it can be moved
+	// forward by the delta instead of decoded again.
+	previousIdentity := active.Identity
 	if active.LastApplied != nil {
 		last := active.LastApplied
 		if last.SourceRevision == sourceRevision && last.DeltaDigest == deltaDigest && last.SourceInput == sourceInput {
@@ -286,6 +317,12 @@ func (store *Store[B, D]) ApplyDelta(
 			return ApplyResult{}, err
 		}
 		compacted, _, err := store.loadManifestLocked(ctx, scope, name)
+		// The base the compaction marshalled is the state the manifest now
+		// points at, and it is the store's own copy -- materializeLocked
+		// returned one -- so it becomes the resident base without a decode.
+		if err == nil {
+			store.keepLocked(store.residentKey(scope, name), compacted.Identity, base)
+		}
 		return ApplyResult{Manifest: compacted, Compacted: true}, err
 	}
 	if err := store.writeImmutable(ctx, store.segmentPath(scope, name, segmentID), segmentPayload); err != nil {
@@ -305,7 +342,7 @@ func (store *Store[B, D]) ApplyDelta(
 	if err := store.publishManifest(ctx, scope, name, active); err != nil {
 		return ApplyResult{}, err
 	}
-	store.cache = nil
+	store.advanceLocked(store.residentKey(scope, name), previousIdentity, active.Identity, delta)
 	return ApplyResult{Manifest: active}, nil
 }
 
@@ -334,6 +371,43 @@ func (store *Store[B, D]) Materialize(ctx context.Context, scope corememory.Scop
 		// nothing -- that one reports storage.ErrNotFound above -- because
 		// the two answer different questions: "nothing was ever written
 		// here" against "what was written cannot be served".
+		return base, active, &component.StateError{Projection: name, Err: err}
+	}
+	return base, active, nil
+}
+
+// MaterializeView materializes a scope's projection for reading, sharing the
+// store's resident base rather than copying it.
+//
+// What it returns is read-only: the value shares its slices with the store and
+// with every other reader of the same state, and the store replaces those
+// slices -- it does not rewrite them -- when a later delta moves the state
+// forward, so a caller that keeps reading what it was handed keeps reading one
+// consistent state. A caller that needs to apply deltas to a base reads it with
+// Materialize, which returns a copy of its own.
+//
+// The distinction is what a write path needs: a delta's apply reads the entries
+// the base already holds, to reuse the ones whose content did not change, and on
+// a scope-sized table the copy costs more than everything else the write does.
+// Measured on the eval store, materializing one 9324-entry, 2048-dimension table
+// took 14.0s, and a derivation applies one delta per commit over hundreds of
+// commits.
+func (store *Store[B, D]) MaterializeView(ctx context.Context, scope corememory.Scope, name string) (B, Manifest, error) {
+	var zero B
+	if err := validateAddress(scope, name); err != nil {
+		return zero, Manifest{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	if err != nil {
+		return zero, Manifest{}, &component.StateError{Projection: name, Err: err}
+	}
+	if !found {
+		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", storage.ErrNotFound)
+	}
+	base, err := store.baseLocked(ctx, scope, name, active)
+	if err != nil {
 		return base, active, &component.StateError{Projection: name, Err: err}
 	}
 	return base, active, nil
@@ -405,21 +479,121 @@ func (store *Store[B, D]) ProducerIdentity(
 }
 
 func (store *Store[B, D]) materializeLocked(ctx context.Context, scope corememory.Scope, name string, active Manifest) (B, error) {
-	if store.cache != nil && store.cache.identity == active.Identity {
-		return cloneTyped(store.cache.value)
+	value, err := store.baseLocked(ctx, scope, name, active)
+	if err != nil {
+		var zero B
+		return zero, err
+	}
+	return cloneTyped(value)
+}
+
+// baseLocked returns the base for reading only: the store's resident copy when
+// it holds this identity, a fresh decode that then becomes resident otherwise.
+// Nothing is copied, and what it returns must not be written through.
+func (store *Store[B, D]) baseLocked(
+	ctx context.Context,
+	scope corememory.Scope,
+	name string,
+	active Manifest,
+) (B, error) {
+	key := store.residentKey(scope, name)
+	if value, ok := store.residentLocked(key, active.Identity); ok {
+		return value, nil
 	}
 	value, err := store.materializeUncachedLocked(ctx, scope, name, active)
 	if err != nil {
 		var zero B
 		return zero, err
 	}
-	cached, err := cloneTyped(value)
-	if err != nil {
-		var zero B
-		return zero, err
+	store.keepLocked(key, active.Identity, value)
+	return value, nil
+}
+
+// residentKey names the state one scope's projection is kept under: the
+// partition the state lives in, and the projection within it.
+func (store *Store[B, D]) residentKey(scope corememory.Scope, name string) string {
+	return name + "\x00" + scope.HardPartitionKey()
+}
+
+// residentLocked returns the base the store keeps for a key, when it holds the
+// state the caller asked for. A base of another identity is dropped: the
+// manifest is what names the active state, and what this store decoded for an
+// earlier one is not it.
+func (store *Store[B, D]) residentLocked(key, identity string) (B, bool) {
+	var zero B
+	entry, ok := store.bases[key]
+	if !ok {
+		return zero, false
 	}
-	store.cache = &materializedCache[B]{identity: active.Identity, value: cached}
-	return cloneTyped(value)
+	if entry.identity != identity {
+		delete(store.bases, key)
+		return zero, false
+	}
+	store.clock++
+	entry.used = store.clock
+	return entry.value, true
+}
+
+// keepLocked installs a base as the one the store keeps for a key. The value
+// must be the store's to keep: a fresh decode, or a copy the store made for
+// itself -- never a value a caller still holds.
+//
+// The number of resident bases is bounded by the options, and the base read
+// least recently makes room: what a bound costs is a decode of the partition it
+// evicted, never a different answer.
+func (store *Store[B, D]) keepLocked(key, identity string, value B) {
+	if store.bases == nil {
+		store.bases = make(map[string]*residentBase[B])
+	}
+	delete(store.bases, key)
+	limit := store.options.ResidentBases
+	if limit < 1 {
+		limit = 1
+	}
+	for len(store.bases) >= limit {
+		oldest, used := "", int64(0)
+		for candidate, entry := range store.bases {
+			if oldest == "" || entry.used < used {
+				oldest, used = candidate, entry.used
+			}
+		}
+		if oldest == "" {
+			break
+		}
+		delete(store.bases, oldest)
+	}
+	store.clock++
+	store.bases[key] = &residentBase[B]{identity: identity, value: value, used: store.clock}
+}
+
+// forgetLocked drops whatever the store keeps for a key.
+func (store *Store[B, D]) forgetLocked(key string) { delete(store.bases, key) }
+
+// advanceLocked moves the resident base one delta forward instead of dropping
+// it. The base the store keeps is the state the delta was applied to -- the
+// identity the segment just published names as its previous identity -- so
+// applying the same delta to it leaves it describing the state the new manifest
+// publishes, and the next reader does not decode the base and replay the
+// segment to find that out.
+//
+// The delta was validated before it was written, so an error here is a base
+// that cannot be advanced: it is dropped rather than left half-moved, and the
+// next read decodes the published state.
+func (store *Store[B, D]) advanceLocked(key, previousIdentity, identity string, delta D) {
+	entry, ok := store.bases[key]
+	if !ok {
+		return
+	}
+	if entry.identity != previousIdentity {
+		delete(store.bases, key)
+		return
+	}
+	if err := store.options.Apply(&entry.value, delta); err != nil {
+		delete(store.bases, key)
+		return
+	}
+	store.clock++
+	entry.identity, entry.used = identity, store.clock
 }
 
 func (store *Store[B, D]) materializeUncachedLocked(ctx context.Context, scope corememory.Scope, name string, active Manifest) (B, error) {
@@ -567,7 +741,6 @@ func (store *Store[B, D]) publishBaseLocked(
 	if err := store.publishManifest(ctx, scope, name, active); err != nil {
 		return err
 	}
-	store.cache = nil
 	// The manifest is what makes state reachable, so the sweep runs after it is
 	// durable: everything the new manifest does not name stopped being
 	// readable at that instant, and the one generation of grace is what a

@@ -26,8 +26,19 @@ type testBase struct {
 
 func newTestStore(t *testing.T, kv storage.Store, thresholds Thresholds) *Store[testBase, EntryDelta[testEntry]] {
 	t.Helper()
+	return newTestStoreWith(t, kv, thresholds, 0)
+}
+
+func newTestStoreWith(
+	t *testing.T,
+	kv storage.Store,
+	thresholds Thresholds,
+	residentBases int,
+) *Store[testBase, EntryDelta[testEntry]] {
+	t.Helper()
 	store, err := NewTypedStore(kv, "test", TypedOptions[testBase, EntryDelta[testEntry]]{
-		Thresholds: thresholds,
+		Thresholds:    thresholds,
+		ResidentBases: residentBases,
 		Canonicalize: func(delta EntryDelta[testEntry]) EntryDelta[testEntry] {
 			return CanonicalEntryDelta(delta, EntryKey[testEntry]{
 				ID: func(value testEntry) string { return value.ID },
