@@ -386,6 +386,12 @@ type resumeProbeEngine struct {
 	gotTaskID    string
 	reply        string
 	interrupt    bool
+	// checkpoint makes the probe persist a checkpoint the way a real engine
+	// does, so a test can observe whether the turn host lets it through.
+	checkpoint bool
+	// duringExecute runs inside Execute, where a test can arm a store failure
+	// that has to land between the turn's seeding load and its commit.
+	duringExecute func()
 }
 
 type resumeProbeSnapshot struct {
@@ -409,7 +415,7 @@ func (e *resumeProbeEngine) snapshot() resumeProbeSnapshot {
 func (e *resumeProbeEngine) Execute(
 	ctx context.Context,
 	run agent.Run,
-	_ agent.Host,
+	host agent.Host,
 	board *agent.Board,
 ) (*agent.Board, error) {
 	e.mu.Lock()
@@ -424,6 +430,13 @@ func (e *resumeProbeEngine) Execute(
 	}
 	e.gotBoard = board.Snapshot()
 	e.gotTaskID = run.TaskID
+	if e.checkpoint {
+		w := agent.NewCheckpointWriter(host, run.RunID)
+		_ = w.Stamp(ctx, agent.CheckpointMeta{Steps: []string{"step-1"}, Iteration: 1}, board)
+	}
+	if e.duringExecute != nil {
+		e.duringExecute()
+	}
 	if e.interrupt {
 		return board, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
 	}
@@ -569,5 +582,79 @@ func TestSessionStateUsesDeltas(t *testing.T) {
 	}
 	if got := len(state.Board.Channels[agent.MainChannel]); got != len(msgs) {
 		t.Fatalf("seed has %d messages, want %d", got, len(msgs))
+	}
+}
+
+// TestEphemeralTurnWritesNoCheckpoint pins the promise an ephemeral session
+// makes: no durable trace. The turn host no-ops Checkpoint, so the capability
+// has to be withheld too — otherwise an engine takes the journal path and writes
+// straight to the store, past the no-op.
+func TestEphemeralTurnWritesNoCheckpoint(t *testing.T) {
+	engine := &resumeProbeEngine{reply: "ack", checkpoint: true}
+	store := agenttest.NewJournalStore()
+	session := newResumeSession(t, engine, store)
+
+	turn, err := session.StartWithOptions(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
+		WithEphemeral(),
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := store.BaseCount(); got != 0 {
+		t.Fatalf("bases = %d, want none: an ephemeral turn must not persist", got)
+	}
+	if got := len(store.Deltas(turn.RunID())); got != 0 {
+		t.Fatalf("deltas = %d, want none", got)
+	}
+}
+
+// TestSessionStateStartsOverWhenTheLoadFails proves a base that cannot be read
+// is not extended: the next save writes a self-contained record instead of
+// appending to a chain this process cannot see.
+func TestSessionStateStartsOverWhenTheLoadFails(t *testing.T) {
+	engine := &resumeProbeEngine{reply: "ack"}
+	store := agenttest.NewJournalStore()
+	session := newResumeSession(t, engine, store)
+
+	first, err := session.Start(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "first")})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := first.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := store.BaseCount(); got != 1 {
+		t.Fatalf("bases = %d, want 1", got)
+	}
+
+	// Make the state record unreadable *after* the next turn seeds from it, so
+	// the failure lands where the runtime swallows it (the post-turn load) and
+	// not where it fails the turn (seeding).
+	engine.duringExecute = func() {
+		store.FailNext("load", errdefs.Internalf("state record unreadable"))
+	}
+
+	second, err := session.Start(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "second")})
+	if err != nil {
+		t.Fatalf("Start second turn: %v", err)
+	}
+	if _, err := second.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait second turn: %v", err)
+	}
+	if got := store.BaseCount(); got != 2 {
+		t.Fatalf("bases = %d, want 2: a failed load must start a new record", got)
+	}
+	cp, err := store.Load(context.Background(), sessionStateID(session.key))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cp == nil {
+		t.Fatal("no session state after the recovery save")
 	}
 }

@@ -24,8 +24,3 @@ var boardValueAudit atomic.Bool
 func AuditBoardValues(enabled bool) {
 	boardValueAudit.Store(enabled)
 }
-
-// BoardValueAuditEnabled reports whether the var-ownership audit is on.
-func BoardValueAuditEnabled() bool {
-	return boardValueAudit.Load()
-}

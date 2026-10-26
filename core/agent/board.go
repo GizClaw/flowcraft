@@ -459,6 +459,7 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	previous := b.vars
 	b.vars = deepCopyVars(snap.Vars)
 	b.channels = make(map[string][]message.Message)
 	if len(snap.Channels) > 0 {
@@ -473,7 +474,7 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 	// A restore replaces the whole state, so every key and channel counts
 	// as written: a mark taken before it must yield a conservative delta
 	// rather than silently miss the state that came back.
-	b.noteRestoreLocked()
+	b.noteRestoreLocked(previous)
 }
 
 // ---------- internal ----------

@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
-// DefaultCheckpointCompaction is how many incremental records an engine
-// appends before it rewrites a self-contained base.
+// DefaultCheckpointCompaction is how many incremental records an engine may
+// append after a base before the next boundary rewrites one.
 //
 // The number is a resume-latency bound, not a memory bound: a load replays the
 // base plus at most this many deltas. Every delta is O(writes at one
@@ -37,9 +39,10 @@ type CheckpointWriter struct {
 	caps      CheckpointCapabilities
 	writeBase func(context.Context, Checkpoint) error
 
-	mark   BoardMark
-	deltas int
-	window int
+	mark    BoardMark
+	hasBase bool
+	appends int
+	window  int
 }
 
 // NewCheckpointWriter builds a writer that persists through a host. A nil host,
@@ -47,7 +50,7 @@ type CheckpointWriter struct {
 // a no-op, so callers need no branch of their own.
 func NewCheckpointWriter(host Host, execID string) *CheckpointWriter {
 	w := &CheckpointWriter{execID: execID, window: DefaultCheckpointCompaction}
-	if execID == "" {
+	if execID == "" || ptr.IsNil(host) {
 		return w
 	}
 	w.caps = CheckpointCapabilitiesFromHost(host)
@@ -65,7 +68,7 @@ func NewCheckpointWriter(host Host, execID string) *CheckpointWriter {
 // A nil store yields a no-op writer.
 func NewCheckpointWriterForStore(store CheckpointStore, execID string) *CheckpointWriter {
 	w := &CheckpointWriter{execID: execID, window: DefaultCheckpointCompaction}
-	if execID == "" || store == nil {
+	if execID == "" || ptr.IsNil(store) {
 		return w
 	}
 	w.caps = CheckpointCapabilitiesForStore(store)
@@ -101,13 +104,15 @@ func (w *CheckpointWriter) Stamp(ctx context.Context, meta CheckpointMeta, board
 		return nil
 	}
 
-	if w.caps.Journal != nil && w.deltas > 0 && w.deltas < w.window {
-		delta := meta.Delta(w.execID, board.Since(w.mark))
-		err := w.caps.Journal.Append(ctx, delta)
+	if w.caps.Journal != nil && w.hasBase && w.appends < w.window {
+		// Since and Mark together: a write landing between them would be
+		// reported by neither, and the record would silently miss it.
+		writes, next := board.SinceMark(w.mark)
+		err := w.caps.Journal.Append(ctx, meta.Delta(w.execID, writes))
 		switch {
 		case err == nil:
-			w.mark = board.Mark()
-			w.deltas++
+			w.mark = next
+			w.appends++
 			return nil
 		case errors.Is(err, ErrNeedsBase):
 			// The store asked for a base; fall through and give it one.
@@ -121,7 +126,8 @@ func (w *CheckpointWriter) Stamp(ctx context.Context, meta CheckpointMeta, board
 		return err
 	}
 	w.mark = board.Mark()
-	w.deltas = 1
+	w.hasBase = true
+	w.appends = 0
 	return nil
 }
 
@@ -137,12 +143,16 @@ func (w *CheckpointWriter) StampSnapshot(ctx context.Context, meta CheckpointMet
 	if !w.Enabled() || next == nil {
 		return nil
 	}
-	if w.caps.Journal != nil && w.deltas > 0 && w.deltas < w.window {
+	// A nil base means the caller does not know what the store holds — a fresh
+	// record, or one whose load failed. Appending in that state would extend a
+	// chain the caller cannot see (duplicating history, or leaving a broken
+	// chain in place), so it always starts a new base.
+	if w.caps.Journal != nil && base != nil && w.hasBase && w.appends < w.window {
 		delta := meta.Delta(w.execID, SnapshotDelta(base, next))
 		err := w.caps.Journal.Append(ctx, delta)
 		switch {
 		case err == nil:
-			w.deltas++
+			w.appends++
 			return nil
 		case errors.Is(err, ErrNeedsBase):
 			// The store asked for a base; fall through and give it one.
@@ -154,6 +164,7 @@ func (w *CheckpointWriter) StampSnapshot(ctx context.Context, meta CheckpointMet
 	if err := w.writeBase(ctx, meta.record(w.execID, next)); err != nil {
 		return err
 	}
-	w.deltas = 1
+	w.hasBase = true
+	w.appends = 0
 	return nil
 }

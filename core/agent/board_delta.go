@@ -16,7 +16,8 @@ import (
 // A mark belongs to the board that produced it and to boards restored from a
 // snapshot of that board. Taking a mark immediately after seeding a board is
 // the contract that makes the result mean "the writes I am about to make, and
-// nothing else" — see [ParallelConfig] for the branch-isolation case.
+// nothing else" — `graph.ParallelConfig` seeds each branch and takes its mark
+// that way.
 //
 // A mark becomes stale when the board is restored through [Board.RestoreFrom]:
 // that is modelled as "every key was written", so a stale mark yields a
@@ -114,7 +115,28 @@ func (b *Board) Since(mark BoardMark) *BoardDelta {
 			delta.appends[name] = msgs[base:]
 		}
 	}
+	// A channel the board no longer has (a restore can drop one) is reported
+	// as a replacement with no messages: a delta that cannot say "gone" would
+	// leave stale history on the replaying side.
+	for name := range mark.channels {
+		if _, ok := b.channels[name]; ok {
+			continue
+		}
+		if delta.replaced == nil {
+			delta.replaced = make(map[string][]message.Message)
+		}
+		delta.replaced[name] = nil
+	}
 	return delta
+}
+
+// SinceMark returns [Board.Since] together with the mark that follows it, taken
+// under one read lock. A writer that called Since and then Mark would leave a
+// window in which a concurrent write is reported by neither, so the durable
+// record would silently miss it; taking both at once closes that window.
+func (b *Board) SinceMark(mark BoardMark) (*BoardDelta, BoardMark) {
+	delta := b.Since(mark)
+	return delta, b.Mark()
 }
 
 // noteVarWriteLocked records a var write at the current sequence. The caller
@@ -139,10 +161,15 @@ func (b *Board) noteChannelReplaceLocked(name string) {
 	b.chanSeq[name] = b.seq
 }
 
-// noteRestoreLocked marks every key and channel as written, which is what
-// makes a pre-restore mark conservative instead of silently stale. The caller
-// holds the write lock.
-func (b *Board) noteRestoreLocked() {
+// noteRestoreLocked marks every key and channel the restore touched as
+// written: the ones it installed and the ones it removed. Both matter, because
+// a delta taken against an older mark must describe the whole transition —
+// marking only what came back would leave a dropped key or channel looking
+// untouched, and the replay would keep state the board no longer has.
+//
+// previous is the var map the restore replaced; its keys that are absent
+// afterwards are the removals. The caller holds the write lock.
+func (b *Board) noteRestoreLocked(previous map[string]any) {
 	b.seq++
 	if b.varSeq == nil {
 		b.varSeq = make(map[string]uint64, len(b.vars))
@@ -150,8 +177,10 @@ func (b *Board) noteRestoreLocked() {
 	for key := range b.vars {
 		b.varSeq[key] = b.seq
 	}
-	if len(b.channels) == 0 {
-		return
+	for key := range previous {
+		if _, ok := b.vars[key]; !ok {
+			b.varSeq[key] = b.seq
+		}
 	}
 	if b.chanSeq == nil {
 		b.chanSeq = make(map[string]uint64, len(b.channels))
@@ -198,6 +227,15 @@ func SnapshotDelta(base, next *BoardSnapshot) *BoardDelta {
 	}
 	slices.Sort(delta.removed)
 
+	for name := range baseChannels {
+		if _, ok := next.Channels[name]; ok {
+			continue
+		}
+		if delta.replaced == nil {
+			delta.replaced = make(map[string][]message.Message)
+		}
+		delta.replaced[name] = nil
+	}
 	for name, msgs := range next.Channels {
 		baseMsgs := baseChannels[name]
 		if len(msgs) > len(baseMsgs) && continuesChannel(baseMsgs, msgs) {
@@ -218,9 +256,14 @@ func SnapshotDelta(base, next *BoardSnapshot) *BoardDelta {
 	return delta
 }
 
-// continuesChannel reports whether next still carries base as its prefix,
-// checked at the seam rather than over the whole history: every message on a
-// channel is immutable, so the last base message is where a divergence shows.
+// continuesChannel reports whether next still carries base as its prefix.
+//
+// It samples the ends rather than walking the history: a channel is
+// append-only by convention, so a rewrite shows up either at the head (a
+// preparer that drops the first message) or at the seam (the tail the two
+// sides share). A rewrite that keeps both ends identical is not detected — that
+// is the append-only convention, stated where the delta is applied rather than
+// paid for on every comparison.
 func continuesChannel(base, next []message.Message) bool {
 	if len(base) == 0 {
 		return true
@@ -228,7 +271,33 @@ func continuesChannel(base, next []message.Message) bool {
 	if len(next) < len(base) {
 		return false
 	}
+	if !reflect.DeepEqual(base[0], next[0]) {
+		return false
+	}
 	return reflect.DeepEqual(base[len(base)-1], next[len(base)-1])
+}
+
+// Detach copies the memory the delta borrows, so it can outlive the board that
+// produced it. A store that keeps a delta — a test double, an in-memory queue —
+// calls it (or encodes instead); the delta a writer hands out is only valid
+// while the board is not written again.
+func (d *BoardDelta) Detach() {
+	if d == nil {
+		return
+	}
+	if d.vars != nil {
+		d.vars = deepCopyVars(d.vars)
+	}
+	d.removed = slices.Clone(d.removed)
+	for name, msgs := range d.appends {
+		d.appends[name] = message.CloneMessages(msgs)
+	}
+	for name, msgs := range d.replaced {
+		if msgs == nil {
+			continue
+		}
+		d.replaced[name] = message.CloneMessages(msgs)
+	}
 }
 
 // Empty reports whether the delta carries no write at all.
@@ -311,6 +380,12 @@ func (d *BoardDelta) ApplyToSnapshot(snap *BoardSnapshot) {
 		snap.Channels = make(map[string][]message.Message, len(d.replaced))
 	}
 	for name, msgs := range d.replaced {
+		if msgs == nil {
+			// A nil replacement means the channel is gone, not empty: a
+			// restore can drop a channel outright.
+			delete(snap.Channels, name)
+			continue
+		}
 		snap.Channels[name] = message.CloneMessages(msgs)
 	}
 	for name, msgs := range d.appends {
@@ -336,7 +411,11 @@ func (b *Board) applyDeltaLocked(d *BoardDelta) {
 		b.noteVarWriteLocked(key)
 	}
 	for name, msgs := range d.replaced {
-		b.channels[name] = message.CloneMessages(msgs)
+		if msgs == nil {
+			delete(b.channels, name)
+		} else {
+			b.channels[name] = message.CloneMessages(msgs)
+		}
 		b.noteChannelReplaceLocked(name)
 	}
 	for name, msgs := range d.appends {

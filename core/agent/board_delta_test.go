@@ -96,6 +96,9 @@ func roundTripSnapshot(t *testing.T, snap *agent.BoardSnapshot) *agent.BoardSnap
 func applyRandomBoardOp(t *testing.T, rng *rand.Rand, board *agent.Board) {
 	t.Helper()
 	key := []string{"a", "b", "c"}[rng.Intn(3)]
+	// Two channels, so a channel created after the mark (base 0) and the
+	// per-channel loop are both exercised.
+	channel := []string{agent.MainChannel, "tools"}[rng.Intn(2)]
 	switch rng.Intn(7) {
 	case 0:
 		board.SetVar(key, rng.Intn(100))
@@ -104,14 +107,14 @@ func applyRandomBoardOp(t *testing.T, rng *rand.Rand, board *agent.Board) {
 	case 2:
 		board.DeleteVar(key)
 	case 3:
-		board.AppendChannelMessage(agent.MainChannel,
+		board.AppendChannelMessage(channel,
 			message.NewTextMessage(message.RoleUser, []string{"hi", "there"}[rng.Intn(2)]))
 	case 4:
-		board.PopChannelMessage(agent.MainChannel)
+		board.PopChannelMessage(channel)
 	case 5:
 		// A wholesale set may keep the length identical, which length
 		// comparison alone cannot see.
-		board.SetChannel(agent.MainChannel, []message.Message{
+		board.SetChannel(channel, []message.Message{
 			message.NewTextMessage(message.RoleAssistant, "replaced"),
 		})
 	case 6:
@@ -242,5 +245,93 @@ func TestAuditBoardValuesCopiesOnRead(t *testing.T) {
 	vars["v"].(map[string]any)["n"] = 99
 	if got, _ := board.Var("v"); !reflect.DeepEqual(got, map[string]any{"n": 1}) {
 		t.Fatalf("board var = %#v after Vars mutation", got)
+	}
+}
+
+// TestBoardSinceReportsVarsAndChannelsDroppedByRestore pins the other half of
+// the stale-mark rule: a restore can *remove* state, and a delta taken before it
+// must say so. Marking only what came back would leave the replay holding keys
+// and channels the board no longer has.
+func TestBoardSinceReportsVarsAndChannelsDroppedByRestore(t *testing.T) {
+	board := agent.NewBoard()
+	board.SetVar("keep", 1)
+	board.SetVar("drop", 2)
+	board.AppendChannelMessage("tools", message.NewTextMessage(message.RoleTool, "t1"))
+	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "hi"))
+	before := board.Snapshot()
+	mark := board.Mark()
+
+	// The restore carries neither "drop" nor the "tools" channel.
+	board.RestoreFrom(&agent.BoardSnapshot{
+		Vars:     map[string]any{"keep": 1},
+		Channels: map[string][]message.Message{agent.MainChannel: {message.NewTextMessage(message.RoleUser, "hi")}},
+	})
+
+	delta := board.Since(mark)
+	if got := delta.Removed(); len(got) != 1 || got[0] != "drop" {
+		t.Fatalf("removed = %v, want [drop]: a restore must not shrink the delta", got)
+	}
+	if msgs, ok := delta.Replaced()["tools"]; !ok || msgs != nil {
+		t.Fatalf("replaced[tools] = %v (present=%v), want an explicit removal", msgs, ok)
+	}
+
+	replayed := agent.RestoreBoard(before)
+	delta.ApplyTo(replayed)
+	if got, want := replayed.Snapshot(), board.Snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("replay diverged from the restored board\n got: %#v\nwant: %#v", got, want)
+	}
+	if _, ok := replayed.Var("drop"); ok {
+		t.Fatal("replay kept a var the restore removed")
+	}
+	if got := len(replayed.Channel("tools")); got != 0 {
+		t.Fatalf("replay kept %d messages on a channel the restore removed", got)
+	}
+}
+
+// TestSnapshotDelta covers the shapes a session turn produces: a changed var, a
+// removed var, a channel that grew, one that was rewritten, and one that
+// disappeared.
+func TestSnapshotDelta(t *testing.T) {
+	one := message.NewTextMessage(message.RoleUser, "one")
+	two := message.NewTextMessage(message.RoleAssistant, "two")
+	other := message.NewTextMessage(message.RoleTool, "other")
+
+	base := &agent.BoardSnapshot{
+		Vars: map[string]any{"kept": "same", "gone": 1, "changed": "a"},
+		Channels: map[string][]message.Message{
+			agent.MainChannel: {one},
+			"tools":           {one, two},
+			"dropped":         {one},
+		},
+	}
+	next := &agent.BoardSnapshot{
+		Vars: map[string]any{"kept": "same", "changed": "b"},
+		Channels: map[string][]message.Message{
+			agent.MainChannel: {one, two},
+			"tools":           {other},
+		},
+	}
+
+	delta := agent.SnapshotDelta(base, next)
+	if got := delta.Vars(); len(got) != 1 || got["changed"] != "b" {
+		t.Fatalf("vars = %#v, want only the changed key", got)
+	}
+	if got := delta.Removed(); len(got) != 1 || got[0] != "gone" {
+		t.Fatalf("removed = %v, want [gone]", got)
+	}
+	if got := delta.Appends()[agent.MainChannel]; len(got) != 1 || got[0].Content.Text() != "two" {
+		t.Fatalf("main appends = %#v, want only the new message", got)
+	}
+	if got, ok := delta.Replaced()["tools"]; !ok || len(got) != 1 || got[0].Content.Text() != "other" {
+		t.Fatalf("tools replacement = %#v, want the rewritten channel", got)
+	}
+	if got, ok := delta.Replaced()["dropped"]; !ok || got != nil {
+		t.Fatalf("dropped channel = %#v (present=%v), want an explicit removal", got, ok)
+	}
+
+	replayed := base
+	delta.ApplyToSnapshot(replayed)
+	if !reflect.DeepEqual(replayed, next) {
+		t.Fatalf("replay = %#v, want %#v", replayed, next)
 	}
 }

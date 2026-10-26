@@ -37,6 +37,10 @@ type CheckpointJournal interface {
 
 	// Append extends the record for delta.ExecID with one boundary. It
 	// returns [ErrNeedsBase] when the store cannot take another delta.
+	//
+	// The delta borrows the producing board's memory (see [BoardDelta]), so an
+	// implementation must encode or deep-copy what it keeps before returning;
+	// the values are not valid afterwards.
 	Append(ctx context.Context, delta CheckpointDelta) error
 }
 
@@ -54,9 +58,11 @@ type CheckpointDelta struct {
 	ExecID string `json:"exec_id"`
 
 	// Steps is the boundary marker set, replacing the base's when applied.
+	// Nil means "unchanged", matching the wire field's omission.
 	Steps []string `json:"steps,omitempty"`
 
-	// Iteration replaces the base's iteration counter when applied.
+	// Iteration replaces the base's iteration counter when applied. Zero
+	// means "unchanged".
 	Iteration int `json:"iteration,omitempty"`
 
 	// Board is the write set since the previous record.
@@ -102,8 +108,16 @@ func (d CheckpointDelta) ApplyTo(cp *Checkpoint) {
 		cp.Board = &BoardSnapshot{}
 	}
 	d.Board.ApplyToSnapshot(cp.Board)
-	cp.Steps = slices.Clone(d.Steps)
-	cp.Iteration = d.Iteration
+	// A boundary that does not name a step or an iteration leaves the anchor
+	// alone, like every other field here: a custom engine may persist state
+	// only, and erasing the resume anchor of the base it extends would move the
+	// frontier back to the entry node.
+	if d.Steps != nil {
+		cp.Steps = slices.Clone(d.Steps)
+	}
+	if d.Iteration != 0 {
+		cp.Iteration = d.Iteration
+	}
 	if len(d.Payload) > 0 {
 		cp.Payload = slices.Clone(d.Payload)
 	}

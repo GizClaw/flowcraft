@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/GizClaw/flowcraft/core/utils/ptr"
+
 // CheckpointCapabilities tells an engine how a host handles [Checkpointer]
 // writes, so it can avoid building a record nothing persists and can pick the
 // incremental shape when the store understands it.
@@ -10,7 +12,9 @@ package agent
 type CheckpointCapabilities struct {
 	// Enabled reports whether the host persists anything at all. When false
 	// the engine must not snapshot the board or encode a record: there is
-	// nowhere for it to go. Hosts without a configured store answer false.
+	// nowhere for it to go. A host that *declares* this capability and has no
+	// store answers false; a host that does not declare it at all keeps the
+	// conservative default of true (see [CheckpointCapabilitiesFromHost]).
 	Enabled bool
 
 	// Journal is the incremental write surface, or nil when the store can
@@ -33,11 +37,10 @@ type CheckpointTarget interface {
 // self-contained record, and incremental appends when it implements
 // [CheckpointJournal]. A nil store persists nothing.
 //
-// It is the store-side counterpart of [CheckpointCapabilitiesFromHost], for
-// callers that own the store directly (the runtime's session state) and for
-// hosts built around one.
+// It is the store-side counterpart of [CheckpointCapabilitiesFromHost], used by
+// [NewCheckpointWriterForStore] and by hosts built around one store.
 func CheckpointCapabilitiesForStore(store CheckpointStore) CheckpointCapabilities {
-	if store == nil {
+	if ptr.IsNil(store) {
 		return CheckpointCapabilities{}
 	}
 	caps := CheckpointCapabilities{Enabled: true}

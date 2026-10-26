@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -675,6 +676,18 @@ func (s *Session) saveSessionState(
 	checkpoints agent.CheckpointStore,
 	resume bool,
 ) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.saveSessionStateLocked(state, prev, checkpoints, resume)
+}
+
+// saveSessionStateLocked is [Session.saveSessionState] with stateMu held.
+func (s *Session) saveSessionStateLocked(
+	state *sessionState,
+	prev *agent.BoardSnapshot,
+	checkpoints agent.CheckpointStore,
+	resume bool,
+) {
 	if s == nil || !resume || checkpoints == nil || state == nil {
 		return
 	}
@@ -690,14 +703,12 @@ func (s *Session) saveSessionState(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
 
-	s.stateMu.Lock()
 	writer := s.stateCheckpointWriterLocked(checkpoints)
 	err = writer.StampSnapshot(ctx, agent.CheckpointMeta{
 		Payload:    payload,
 		Attributes: map[string]string{"runtime.session.kind": "state"},
 		Timestamp:  time.Now(),
 	}, prev, next)
-	s.stateMu.Unlock()
 
 	if err != nil {
 		telemetry.WarnErr(ctx, "runtime session: save session state checkpoint failed", err,
@@ -709,12 +720,30 @@ func (s *Session) saveSessionState(
 // once per store. The writer owns the incremental position of the session-state
 // record, so it has to outlive a turn; the caller holds stateMu.
 func (s *Session) stateCheckpointWriterLocked(store agent.CheckpointStore) *agent.CheckpointWriter {
-	if s.stateWriter != nil && s.stateStore == store {
+	if s.stateWriter != nil && sameStore(s.stateStore, store) {
 		return s.stateWriter
 	}
 	s.stateStore = store
 	s.stateWriter = agent.NewCheckpointWriterForStore(store, sessionStateID(s.key))
 	return s.stateWriter
+}
+
+// sameStore reports whether two store handles are the same one. A store is a
+// pointer in every implementation here; an interface holding an uncomparable
+// value would panic on ==, and answering "not the same" only costs one extra
+// base record, so that is the fallback.
+func sameStore(a, b agent.CheckpointStore) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	// Pointer identity is the only safe comparison across arbitrary store
+	// implementations: an interface holding an uncomparable value would panic
+	// on ==. Anything else answers "not the same", which only costs one base.
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Kind() != reflect.Pointer || bv.Kind() != reflect.Pointer {
+		return false
+	}
+	return av.Pointer() == bv.Pointer()
 }
 
 // clearParkedRun drops the resumable marker (e.g. the parked run's
@@ -750,8 +779,16 @@ func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
+	// The base this write extends is whatever the store holds *now*, so the
+	// load happens under the same lock as the write: a second writer on this
+	// session key would otherwise compute a delta against a record that is
+	// already gone.
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	prev, err := s.loadSessionState(ctx, turn.checkpoints, turn.resume)
 	if err != nil {
+		// A base that could not be read is not a base: the save below starts a
+		// new record instead of appending to a chain this process cannot see.
 		prev = nil
 	}
 	var prevBoard *agent.BoardSnapshot
@@ -772,7 +809,7 @@ func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
 		request := turn.request
 		state.Request = &request
 	}
-	s.saveSessionState(state, prevBoard, turn.checkpoints, turn.resume)
+	s.saveSessionStateLocked(state, prevBoard, turn.checkpoints, turn.resume)
 }
 
 // deleteCheckpoint removes a committed run's checkpoint. Best-effort:

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // JournalStore is an in-memory [agent.CheckpointStore] that also implements
@@ -80,8 +83,24 @@ func (s *JournalStore) Append(_ context.Context, delta agent.CheckpointDelta) er
 		return fmt.Errorf("agenttest journal store: append %s: %w",
 			delta.ExecID, agent.ErrNeedsBase)
 	}
-	s.deltas[delta.ExecID] = append(s.deltas[delta.ExecID], delta)
+	s.deltas[delta.ExecID] = append(s.deltas[delta.ExecID], detachDelta(delta))
 	return nil
+}
+
+// detachDelta copies the memory a delta borrows from its producing board, the
+// way a real store does by encoding it: the journal contract says the delta is
+// only valid for the duration of Append.
+func detachDelta(delta agent.CheckpointDelta) agent.CheckpointDelta {
+	out := delta
+	out.Steps = slices.Clone(delta.Steps)
+	out.Payload = slices.Clone(delta.Payload)
+	out.Attributes = maps.Clone(delta.Attributes)
+	if delta.Board != nil {
+		board := *delta.Board
+		board.Detach()
+		out.Board = &board
+	}
+	return out
 }
 
 // Load implements [agent.CheckpointStore]: the base plus every appended delta,
@@ -89,6 +108,10 @@ func (s *JournalStore) Append(_ context.Context, delta agent.CheckpointDelta) er
 func (s *JournalStore) Load(_ context.Context, execID string) (*agent.Checkpoint, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failOn == "load" {
+		s.failOn = ""
+		return nil, s.failErrOr("load failed")
+	}
 	base, ok := s.bases[execID]
 	if !ok {
 		return nil, nil
@@ -123,7 +146,7 @@ func (s *JournalStore) Deltas(execID string) []agent.CheckpointDelta {
 	return append([]agent.CheckpointDelta(nil), s.deltas[execID]...)
 }
 
-// FailNext makes the next call of kind ("base" or "append") fail, so a caller
+// FailNext makes the next call of kind ("base", "append" or "load") fail, so a caller
 // can assert that a persistence failure leaves the writer's position intact.
 func (s *JournalStore) FailNext(kind string, err error) {
 	s.mu.Lock()
@@ -272,6 +295,54 @@ func CheckpointJournalSuite(t *testing.T, newStore func() agent.CheckpointStore)
 		}
 		if !checkpointEqual(*got, replacement) {
 			t.Fatalf("Load = %+v, want the Save record with no chain applied", *got)
+		}
+	})
+
+	t.Run("DeltaCarriesRemovalAndReplacement", func(t *testing.T) {
+		t.Helper()
+		store := newStore()
+		ctx := context.Background()
+		journal := journalOf(t, store)
+
+		board := agent.NewBoard()
+		board.SetVar("gone", 1)
+		board.SetVar("kept", "x")
+		board.AppendChannelMessage("tools", message.NewTextMessage(message.RoleTool, "t1"))
+		board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "hi"))
+		if err := journal.WriteBase(ctx, agent.Checkpoint{
+			ExecID: "run-removal", Board: board.Snapshot(), Steps: []string{"wave-1"},
+		}); err != nil {
+			t.Fatalf("WriteBase: %v", err)
+		}
+
+		mark := board.Mark()
+		board.DeleteVar("gone")
+		board.SetChannel("tools", []message.Message{message.NewTextMessage(message.RoleTool, "t2")})
+		board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "done"))
+		if err := journal.Append(ctx, agent.CheckpointDelta{
+			ExecID: "run-removal",
+			Steps:  []string{"wave-2"},
+			Board:  board.Since(mark),
+		}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+
+		cp, err := store.Load(ctx, "run-removal")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if _, ok := cp.Board.Vars["gone"]; ok {
+			t.Fatal("the rebuilt record kept a var the delta removed")
+		}
+		if got, ok := cp.Board.Vars["kept"]; !ok || got != "x" {
+			t.Fatalf("kept = %v (present=%v), want the base's value", got, ok)
+		}
+		tools := cp.Board.Channels["tools"]
+		if len(tools) != 1 || tools[0].Content.Text() != "t2" {
+			t.Fatalf("tools = %#v, want the delta's replacement", tools)
+		}
+		if got := len(cp.Board.Channels[agent.MainChannel]); got != 2 {
+			t.Fatalf("main channel = %d messages, want base + one append", got)
 		}
 	})
 

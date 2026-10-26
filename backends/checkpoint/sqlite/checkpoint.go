@@ -31,7 +31,7 @@ import (
 
 const schema = `CREATE TABLE IF NOT EXISTS agent_checkpoints (
 	exec_id    TEXT PRIMARY KEY,
-	data       TEXT NOT NULL,
+	data       BLOB NOT NULL,
 	revision   INTEGER NOT NULL DEFAULT 1,
 	saved_at   TEXT NOT NULL
 );
@@ -194,9 +194,17 @@ func (s *Store) WriteBase(ctx context.Context, cp agent.Checkpoint) error {
 }
 
 // Append implements [agent.CheckpointJournal]: it extends an existing record
-// with one boundary. A record with no base, or a chain at the configured
-// [WithMaxDeltas] limit, answers [agent.ErrNeedsBase] so the writer stores a
-// full record instead.
+// with one boundary.
+//
+// The base check, the chain cap and the insert are one statement, so an
+// overlapping WriteBase or Delete cannot slip between them and have this delta
+// land on a record it was not computed against. A statement that inserted
+// nothing — no base, or at the cap — answers [agent.ErrNeedsBase], which tells
+// the writer to store a full record instead.
+//
+// Ordering assumes one writer per exec id, which is what an engine gives: the
+// sequence number is the row identity, so two writers racing on one record can
+// collide and fail rather than interleave.
 func (s *Store) Append(ctx context.Context, delta agent.CheckpointDelta) error {
 	if s == nil || s.db == nil {
 		return errors.New("sqlite checkpoint: store is not initialized")
@@ -204,51 +212,35 @@ func (s *Store) Append(ctx context.Context, delta agent.CheckpointDelta) error {
 	if err := delta.Validate(); err != nil {
 		return err
 	}
-	var revision int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT revision FROM agent_checkpoints WHERE exec_id = ?`, delta.ExecID,
-	).Scan(&revision)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("sqlite checkpoint: append %s: no base record: %w",
-			delta.ExecID, agent.ErrNeedsBase)
-	}
-	if err != nil {
-		return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
-	}
-	if s.maxDeltas > 0 {
-		var count int64
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM agent_checkpoint_deltas WHERE exec_id = ?`, delta.ExecID,
-		).Scan(&count); err != nil {
-			return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
-		}
-		if count >= int64(s.maxDeltas) {
-			return fmt.Errorf("sqlite checkpoint: append %s: %d deltas is the configured limit: %w",
-				delta.ExecID, count, agent.ErrNeedsBase)
-		}
-	}
 	data, err := encodeJSON(delta)
 	if err != nil {
 		return fmt.Errorf("sqlite checkpoint: encode delta: %w", err)
 	}
 	savedAt := s.clock().UTC().Format(time.RFC3339Nano)
-	// One retry covers a concurrent appender that claimed the same sequence
-	// number; the sequence is the row identity, so a duplicate is the only
-	// conflict a single-writer-per-execution store can see.
-	for attempt := 0; attempt < 2; attempt++ {
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO agent_checkpoint_deltas (exec_id, seq, data, saved_at)
-			VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1
-				FROM agent_checkpoint_deltas WHERE exec_id = ?), ?, ?)
-		`, delta.ExecID, delta.ExecID, data, savedAt)
-		if err == nil {
-			return nil
-		}
-		if !strings.Contains(err.Error(), "UNIQUE") {
-			break
-		}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_checkpoint_deltas (exec_id, seq, data, saved_at)
+		SELECT b.exec_id,
+		       COALESCE((SELECT MAX(d.seq) FROM agent_checkpoint_deltas d
+		                 WHERE d.exec_id = b.exec_id), 0) + 1,
+		       ?, ?
+		FROM agent_checkpoints b
+		WHERE b.exec_id = ?
+		  AND (? <= 0 OR (SELECT COUNT(*) FROM agent_checkpoint_deltas c
+		                  WHERE c.exec_id = b.exec_id) < ?)
+	`, data, savedAt, delta.ExecID, s.maxDeltas, s.maxDeltas)
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
 	}
-	return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
+	}
+	if inserted == 0 {
+		return fmt.Errorf(
+			"sqlite checkpoint: append %s: no base record, or the chain is at its cap: %w",
+			delta.ExecID, agent.ErrNeedsBase)
+	}
+	return nil
 }
 
 // Load implements [agent.CheckpointStore].
@@ -259,8 +251,17 @@ func (s *Store) Load(ctx context.Context, execID string) (*agent.Checkpoint, err
 	if strings.TrimSpace(execID) == "" {
 		return nil, errdefs.Validation(errors.New("sqlite checkpoint: exec_id is required"))
 	}
+	// Base and chain are read in one transaction: a WriteBase committing between
+	// two separate reads would hand back a delta belonging to the new base
+	// applied onto the old one — wrong state, reported as success.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("sqlite checkpoint: load %s: %w", execID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var data []byte
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT data FROM agent_checkpoints WHERE exec_id = ?`, execID,
 	).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -276,7 +277,7 @@ func (s *Store) Load(ctx context.Context, execID string) (*agent.Checkpoint, err
 	if err := cp.Validate(); err != nil {
 		return nil, fmt.Errorf("sqlite checkpoint: corrupt %s: %w", execID, err)
 	}
-	if err := s.replayDeltas(ctx, &cp); err != nil {
+	if err := replayDeltas(ctx, tx, &cp); err != nil {
 		return nil, err
 	}
 	return &cp, nil
@@ -286,8 +287,8 @@ func (s *Store) Load(ctx context.Context, execID string) (*agent.Checkpoint, err
 // order. A gap means the chain is corrupt: resuming from part of it would
 // silently drop state, so it is reported as unavailable — the host's cue to
 // start a fresh run instead.
-func (s *Store) replayDeltas(ctx context.Context, cp *agent.Checkpoint) error {
-	rows, err := s.db.QueryContext(ctx, `
+func replayDeltas(ctx context.Context, tx *sql.Tx, cp *agent.Checkpoint) error {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT seq, data FROM agent_checkpoint_deltas
 		WHERE exec_id = ? ORDER BY seq
 	`, cp.ExecID)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 // chainGraph builds a linear graph of n echo nodes that each write one var and
@@ -67,6 +69,11 @@ func TestWaveCheckpointsUseOneBaseThenDeltas(t *testing.T) {
 	if iter := cp.Iteration; iter != nodes {
 		t.Fatalf("checkpoint iteration = %d, want the last wave (%d)", iter, nodes)
 	}
+	// The resume anchor travels on the delta too: without it a resume from a
+	// journal-backed record would restart at the entry node.
+	if got, want := cp.Steps, []string{fmt.Sprintf("n%d", nodes-1)}; !slices.Equal(got, want) {
+		t.Fatalf("Steps = %v, want the last wave %v", got, want)
+	}
 	if got, want := len(cp.Board.Channels[agent.MainChannel]), 0; got != want {
 		t.Fatalf("main channel = %d messages, want %d", got, want)
 	}
@@ -102,13 +109,14 @@ func TestCheckpointCompactionWindow(t *testing.T) {
 	if _, err := g.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	// Waves 1, 3 and 5 start a new base, so the chain is 2 deltas long twice
-	// and empty at the end — a base discards what it replaces.
-	if got, want := store.BaseCount(), 3; got != want {
+	// A window of 2 allows two appends after a base: waves 1 (base), 2 and 3
+	// (appends), 4 (base), 5 (append) — so two bases and one surviving delta,
+	// because a base discards the chain it replaces.
+	if got, want := store.BaseCount(), 2; got != want {
 		t.Fatalf("bases = %d, want %d with a window of 2 over %d waves", got, want, nodes)
 	}
-	if got := len(store.Deltas(testRun().RunID)); got != 0 {
-		t.Fatalf("deltas = %d, want 0: the last wave wrote a base", got)
+	if got, want := len(store.Deltas(testRun().RunID)), 1; got != want {
+		t.Fatalf("deltas = %d, want %d", got, want)
 	}
 	cp, err := store.Load(context.Background(), testRun().RunID)
 	if err != nil {
@@ -166,12 +174,14 @@ func TestHostWithoutStoreCostsNoSnapshot(t *testing.T) {
 	}
 
 	// A host that does not declare the capability at all keeps the previous
-	// behaviour: one full record per wave.
+	// behaviour: one full record per wave, so a five-wave run costs about five
+	// board copies. The floor is three, which a "snapshot once and reuse"
+	// regression no longer satisfies.
 	enabled := measureExecute(t, g, agent.NoopHost{}, blobBoard(blobs, blobSize))
 	t.Logf("undeclared capability: %d bytes allocated (one record per wave)", enabled)
-	if enabled < uint64(boardSize) {
-		t.Fatalf("undeclared-capability host allocated %d bytes, want at least one board copy (%d)",
-			enabled, boardSize)
+	if limit := uint64(boardSize) * 3; enabled < limit {
+		t.Fatalf("undeclared-capability host allocated %d bytes, want at least %d (three board copies)",
+			enabled, limit)
 	}
 }
 
@@ -193,13 +203,99 @@ func TestJournalRunStaysUnderABoardCopyPerWave(t *testing.T) {
 	t.Logf("journal host: %d bytes allocated for %d waves over a %d MB board (%d bases)",
 		alloc, nodes, boardSize>>20, store.BaseCount())
 
-	// One base record costs a snapshot plus its encoding; the deltas are bytes.
-	// The ceiling is generous — the point is that it does not scale with waves.
-	if limit := uint64(boardSize) * 4; alloc > limit {
-		t.Fatalf("journal run allocated %d bytes, want less than %d (4 board copies) for %d waves",
-			alloc, limit, nodes)
+	// Compare against a single-wave run rather than an absolute constant: a
+	// journal run pays for one base at the first boundary and nothing
+	// board-sized afterwards, so growth over the extra four waves must stay
+	// under one board copy. A relative bound survives a different Go version,
+	// a loaded runner, or a change in how many copies a base costs.
+	// A separate store, so the baseline does not add a base to the run above.
+	oneWave := measureExecute(t, chainGraph(t, 1),
+		agenttest.StoreHost{Store: agenttest.NewJournalStore()}, blobBoard(blobs, blobSize))
+	growth := int64(alloc) - int64(oneWave)
+	t.Logf("journal host: %d bytes for one wave, growth over %d more waves: %d bytes",
+		oneWave, nodes-1, growth)
+	if growth > 0 && uint64(growth) > uint64(boardSize) {
+		t.Fatalf("journal run grew by %d bytes over %d waves, want less than one board copy (%d)",
+			growth, nodes-1, boardSize)
+	}
+	// A regression to full records per wave would also fail this: ~5 bases.
+	if limit := uint64(boardSize) * 6; alloc > limit {
+		t.Fatalf("journal run allocated %d bytes, want less than %d", alloc, limit)
 	}
 	if got := store.BaseCount(); got != 1 {
 		t.Fatalf("bases = %d, want exactly one for a %d-wave run inside the window", got, nodes)
+	}
+}
+
+// TestResumeFromAJournalChain proves the whole loop the design is for: a run
+// persists through a journalling store, Load rebuilds the record, and a resume
+// continues from the checkpointed frontier instead of restarting at the entry.
+func TestResumeFromAJournalChain(t *testing.T) {
+	const nodes = 4
+	reg := newTestRegistry(t)
+	defs := make([]NodeDefinition, 0, nodes)
+	edges := make([]EdgeDefinition, 0, nodes)
+	for i := 0; i < nodes; i++ {
+		id := fmt.Sprintf("n%d", i)
+		// A message per node makes a re-run of the entry observable.
+		defs = append(defs, NodeDefinition{ID: id, Type: "echo",
+			Config: []byte(fmt.Sprintf(`{"message": "step-%d"}`, i))})
+		if i+1 < nodes {
+			edges = append(edges, EdgeDefinition{From: id, To: fmt.Sprintf("n%d", i+1)})
+		} else {
+			edges = append(edges, EdgeDefinition{From: id, To: END})
+		}
+	}
+	def := &GraphDefinition{Name: "resume-chain", Entry: "n0", Nodes: defs, Edges: edges}
+	store := agenttest.NewJournalStore()
+	host := agenttest.StoreHost{Store: store}
+
+	first := mustBuild(t, def, reg)
+	if _, err := first.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cp, err := store.Load(context.Background(), testRun().RunID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cp == nil {
+		t.Fatal("no checkpoint after the run")
+	}
+	if got := len(cp.Board.Channels[agent.MainChannel]); got != nodes {
+		t.Fatalf("checkpointed channel = %d messages, want %d", got, nodes)
+	}
+
+	resumed := testRun()
+	resumed.ResumeFrom = cp
+	board, err := mustBuild(t, def, reg).Execute(context.Background(), resumed, host, agent.RestoreBoard(nil))
+	if err != nil {
+		t.Fatalf("resumed Execute: %v", err)
+	}
+	// n3 routes to END, so the resumed frontier is empty: a resume that lost
+	// Steps would replay n0 and append its message a second time.
+	if got := len(board.Channel(agent.MainChannel)); got != nodes {
+		t.Fatalf("resumed channel = %d messages, want %d (the run must not restart at the entry)", got, nodes)
+	}
+}
+
+// TestCheckpointCompactionDefaultsAndValidation pins the two values a deployment
+// can express without naming a number: zero means the engine default, and a
+// negative value is a build error.
+func TestCheckpointCompactionDefaultsAndValidation(t *testing.T) {
+	reg := newTestRegistry(t)
+	def := &GraphDefinition{
+		Name:  "compaction",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+		Edges: []EdgeDefinition{{From: "a", To: END}},
+	}
+	if g := mustBuild(t, def, reg); g.checkpointCompaction != 0 {
+		t.Fatalf("default compaction = %d, want 0 (the writer's default applies)", g.checkpointCompaction)
+	}
+	if g := mustBuild(t, def, reg, WithCheckpointCompaction(4)); g.checkpointCompaction != 4 {
+		t.Fatalf("compaction = %d, want 4", g.checkpointCompaction)
+	}
+	if _, err := Build(def, reg, WithCheckpointCompaction(-1)); !errdefs.IsValidation(err) {
+		t.Fatalf("Build with a negative window = %v, want validation", err)
 	}
 }

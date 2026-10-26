@@ -155,6 +155,10 @@ func lastWriteWinsMerge(_ context.Context, board *agent.Board, preFork *agent.Bo
 	return nil
 }
 
+// mergeBranchVars applies one branch's var writes. The values are the branch
+// board's own and the branch is done with them: ownership transfers to the
+// shared board, which is why no copy is taken here (BoardDelta.ApplyTo, the
+// general path, copies because its caller keeps the delta).
 func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res BranchResult, claimed map[string]bool) {
 	if res.Err != nil || res.Delta == nil {
 		return
@@ -172,9 +176,15 @@ func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res Branc
 }
 
 // mergeAppendedMessages replays each branch's channel additions onto
-// the shared board, in wave order. Channels are append-only by
-// convention; a branch that replaced or truncated a channel contributes
-// nothing, matching the pre-delta behaviour of comparing lengths.
+// the shared board, in wave order. Channels are append-only by convention: a
+// branch that replaced or truncated a channel contributes nothing at all.
+//
+// That last rule is a deliberate difference from the pre-delta merge, which
+// appended `snapshot[base:]` whenever the branch's channel was merely longer —
+// so a branch that rebuilt the channel leaked its rewritten head into the
+// shared board. Contributing nothing is the conservative reading of "a branch
+// merges what it appended", and it is pinned by
+// TestParallelMergeIgnoresBranchChannelReplacement.
 func mergeAppendedMessages(board *agent.Board, results []BranchResult) {
 	mergeChannelMessages(board, results,
 		func(res BranchResult) bool { return res.Err == nil },

@@ -161,6 +161,12 @@ func (h HostFuncs) ReportUsage(ctx context.Context, report usage.Usage) error {
 // UnwrapHost preserves optional capabilities only when Publish still delegates
 // to Inner. A custom publisher may use a different event surface, so PublishFn
 // is an authoritative boundary that stops capability traversal.
+//
+// Checkpoint capabilities are the exception, and deliberately so: the publish
+// surface says nothing about where a checkpoint goes, and HostFuncs forwards
+// Checkpoint to Inner either way. What a CheckpointFn does replace is the
+// *writer* — see HostFuncs.CheckpointCapabilities — so the answer stays honest
+// even across this boundary.
 func (h HostFuncs) UnwrapHost() Host {
 	if h.PublishFn != nil {
 		return nil
