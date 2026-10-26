@@ -114,7 +114,7 @@ mod tests {
     use crate::caps::tool::callable::CallContext;
     use crate::caps::tool::callable::FuncTool;
     use crate::caps::tool::executor::Dispatcher;
-    use crate::caps::tool::local::text_result;
+    use crate::message::text_content;
 
     fn definition(name: &str, description: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -128,7 +128,7 @@ mod tests {
         let mut source = StaticSource::new();
         source.push(Arc::new(FuncTool::new(
             definition("grep", "search file contents"),
-            Arc::new(|_context, _| Ok(text_result("ok"))),
+            Arc::new(|_context, _| Ok(text_content("ok"))),
         )));
         Arc::new(source)
     }

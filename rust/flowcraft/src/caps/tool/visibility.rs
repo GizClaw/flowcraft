@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 
 use crate::proto::message as msg;
 
-use crate::caps::tool::exposure::{Budget, DiscoveryPolicy, Exposure, Policy, definition_bytes};
+use crate::caps::tool::exposure::{Budget, DiscoveryPolicy, Exposure, Policy};
 use crate::caps::tool::state::{DiscoveredEntry, Snapshot};
+use crate::message::definition_bytes;
 
 /// One registry tool paired with its exposure for the computation.
 #[derive(Debug, Clone)]

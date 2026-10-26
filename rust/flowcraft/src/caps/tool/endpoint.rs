@@ -25,10 +25,9 @@ use tonic::service::Interceptor;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
-use crate::caps::tool::contract::{
-    CONTRACT, Handle, validate_arguments, validate_content, validate_definition,
-};
+use crate::caps::tool::contract::{CONTRACT, Handle};
 use crate::caps::tool::scope::Scope;
+use crate::message::{validate_arguments, validate_content, validate_definition};
 
 /// The registry kind.
 pub const KIND: &str = "tool.Endpoint";
@@ -339,7 +338,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::caps::tool::contract::ToolSource;
-    use crate::caps::tool::local::text_result;
+    use crate::message::text_content;
     use crate::proto::message as msg;
     use crate::proto::tool::tool_source_server::ToolSource as _;
 
@@ -404,7 +403,7 @@ mod tests {
 
         async fn execute(&self, _name: &str, arguments: &str) -> Result<msg::Content> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(text_result(arguments))
+            Ok(text_content(arguments))
         }
     }
 

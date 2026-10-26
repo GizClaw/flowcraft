@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
-use crate::proto::message as msg;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -209,13 +208,6 @@ impl Policy {
     pub fn exposure_of(&self, name: &str) -> Exposure {
         self.exposures.get(name).copied().unwrap_or(self.default)
     }
-}
-
-/// Approximate serialized size of a definition, for budget pruning.
-#[must_use]
-pub fn definition_bytes(definition: &msg::ToolDefinition) -> i64 {
-    (definition.name.len() + definition.description.len() + definition.input_schema.len() + 32)
-        as i64
 }
 
 #[cfg(test)]

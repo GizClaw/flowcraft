@@ -251,7 +251,7 @@ pub fn telemetry() -> Middleware {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::tool::local::text_result;
+    use crate::message::text_content;
 
     fn call(name: &str) -> msg::ToolCall {
         msg::ToolCall {
@@ -266,7 +266,7 @@ mod tests {
             Box::pin(async {
                 msg::ToolResult {
                     call_id: "call-1".to_owned(),
-                    content: Some(text_result("ok")),
+                    content: Some(text_content("ok")),
                     is_error: false,
                 }
             })
@@ -291,7 +291,7 @@ mod tests {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     msg::ToolResult {
                         call_id: "call-1".to_owned(),
-                        content: Some(text_result("late")),
+                        content: Some(text_content("late")),
                         is_error: false,
                     }
                 })

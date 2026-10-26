@@ -34,47 +34,18 @@ use crate::proto::message as msg;
 pub(crate) fn error_result(call_id: &str, message: impl Into<String>) -> msg::ToolResult {
     msg::ToolResult {
         call_id: call_id.to_owned(),
-        content: Some(crate::caps::tool::local::text_result(message)),
+        content: Some(crate::message::text_content(message)),
         is_error: true,
     }
 }
 
 /// The text of a result, for logs and audit records.
+///
+/// The reading of "the text" is [`crate::message::text_of`]; this is only the
+/// `ToolResult`-shaped door to it, because every caller here holds a result.
 pub(crate) fn result_text(result: &msg::ToolResult) -> String {
-    let Some(content) = &result.content else {
-        return String::new();
-    };
-    content
-        .parts
-        .iter()
-        .filter_map(|part| match part.kind.as_ref() {
-            Some(msg::part::Kind::Text(text)) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// Mutably visit every text part.
-pub(crate) fn for_each_text(content: &mut msg::Content, mut visit: impl FnMut(&mut msg::TextPart)) {
-    for part in &mut content.parts {
-        if let Some(msg::part::Kind::Text(text)) = part.kind.as_mut() {
-            visit(text);
-        }
-    }
-}
-
-/// Replace the text parts of a content value with one text part, keeping the
-/// non-text parts. Used by truncation, which rewrites the textual body.
-pub(crate) fn replace_text(content: &mut msg::Content, text: String) {
-    let mut parts = Vec::with_capacity(content.parts.len() + 1);
-    parts.push(msg::Part {
-        kind: Some(msg::part::Kind::Text(msg::TextPart { text })),
-    });
-    for part in content.parts.drain(..) {
-        if !matches!(part.kind, Some(msg::part::Kind::Text(_))) {
-            parts.push(part);
-        }
-    }
-    content.parts = parts;
+    result
+        .content
+        .as_ref()
+        .map_or_else(String::new, crate::message::text_of)
 }

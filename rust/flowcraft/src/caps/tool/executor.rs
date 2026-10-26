@@ -13,8 +13,9 @@ use crate::resource::BoxFuture;
 use futures_util::FutureExt;
 
 use crate::caps::tool::callable::CallContext;
-use crate::caps::tool::local::text_result;
+use crate::caps::tool::middleware::error_result;
 use crate::caps::tool::registry::Catalog;
+use crate::message::text_content;
 
 /// One call, resolving to its result.
 pub type Dispatch =
@@ -152,9 +153,9 @@ fn core_dispatch(catalog: Arc<dyn Catalog>) -> Dispatch {
                     if content.parts.is_empty() {
                         // A partless result is legal at the tool boundary but
                         // invalid as a message payload; normalize it here.
-                        content = text_result("");
+                        content = text_content("");
                     }
-                    if let Err(error) = crate::caps::tool::contract::validate_content(&content) {
+                    if let Err(error) = crate::message::validate_content(&content) {
                         return error_result(
                             &call.id,
                             format!("tool {:?} returned invalid content: {error}", call.name),
@@ -172,20 +173,12 @@ fn core_dispatch(catalog: Arc<dyn Catalog>) -> Dispatch {
     })
 }
 
-fn error_result(call_id: &str, message: impl Into<String>) -> msg::ToolResult {
-    msg::ToolResult {
-        call_id: call_id.to_owned(),
-        content: Some(text_result(message)),
-        is_error: true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::caps::tool::callable::FuncTool;
-    use crate::caps::tool::local::text_result;
     use crate::caps::tool::registry::{ConflictPolicy, Registry};
+    use crate::message::text_content;
 
     fn definition(name: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -210,7 +203,7 @@ mod tests {
         registry
             .add(Arc::new(FuncTool::new(
                 definition("echo"),
-                Arc::new(|_context, args| Ok(text_result(args))),
+                Arc::new(|_context, args| Ok(text_content(args))),
             )))
             .expect("add");
         registry

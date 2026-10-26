@@ -8,9 +8,10 @@ use crate::proto::message as msg;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{error_result, for_each_text};
+use super::error_result;
 use crate::caps::tool::callable::CallContext;
 use crate::caps::tool::executor::{Dispatch, Middleware};
+use crate::message::for_each_text;
 
 /// The replacement applied when a rule does not specify one.
 pub const DEFAULT_REDACTION: &str = "[REDACTED]";
@@ -201,7 +202,7 @@ pub fn approval(approver: Arc<dyn Approver>, tools: Vec<String>) -> Middleware {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::tool::local::text_result;
+    use crate::message::text_content;
 
     fn call(name: &str) -> msg::ToolCall {
         msg::ToolCall {
@@ -222,7 +223,7 @@ mod tests {
     fn result(text: &str) -> msg::ToolResult {
         msg::ToolResult {
             call_id: "call-1".to_owned(),
-            content: Some(text_result(text)),
+            content: Some(text_content(text)),
             is_error: false,
         }
     }

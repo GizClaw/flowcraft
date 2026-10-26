@@ -36,11 +36,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::caps::tool::callable::{CallContext, Tool};
-use crate::caps::tool::contract::{
-    CONTRACT, Handle, ToolSource, validate_content, validate_definition,
-};
-use crate::caps::tool::local::text_result;
+use crate::caps::tool::contract::{CONTRACT, Handle, ToolSource};
 use crate::caps::tool::registry::{Registrar, Source};
+use crate::message::{text_content, validate_content, validate_definition};
 
 /// The implementation name.
 pub const IMPL: &str = "mcp";
@@ -758,7 +756,7 @@ impl Tool for AdaptedTool {
                     }
                 }
                 if parts.is_empty() {
-                    return Ok(text_result(""));
+                    return Ok(text_content(""));
                 }
                 let content = msg::Content { parts };
                 validate_content(&content)?;
@@ -846,7 +844,7 @@ fn content_of(result: &CallToolResult) -> Result<msg::Content> {
         parts.push(json_part(structured));
     }
     if parts.is_empty() {
-        return Ok(text_result(""));
+        return Ok(text_content(""));
     }
     let content = msg::Content { parts };
     validate_content(&content)?;
@@ -1136,7 +1134,7 @@ mod tests {
     fn text_and_structured_content_map_to_parts() {
         let result = result_with(vec![ContentBlock::Text(TextContent::new("hi"))]);
         let content = content_of(&result).expect("content");
-        assert_eq!(content, text_result("hi"));
+        assert_eq!(content, text_content("hi"));
 
         let mut result = CallToolResult::default();
         result.structured_content = Some(serde_json::json!({"answer": 42}));
@@ -1147,7 +1145,7 @@ mod tests {
     #[test]
     fn an_empty_result_is_one_empty_text_part() {
         let content = content_of(&CallToolResult::default()).expect("content");
-        assert_eq!(content, text_result(""));
+        assert_eq!(content, text_content(""));
     }
 
     #[test]
@@ -1180,7 +1178,7 @@ mod tests {
             }),
         )]);
         let content = content_of(&result).expect("content");
-        assert_eq!(content, text_result("body"));
+        assert_eq!(content, text_content("body"));
     }
 
     #[test]

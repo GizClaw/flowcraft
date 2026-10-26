@@ -12,11 +12,12 @@ use crate::proto::message as msg;
 use async_trait::async_trait;
 
 use crate::caps::tool::callable::Tool;
-use crate::caps::tool::exposure::{Exposure, Policy, definition_bytes};
+use crate::caps::tool::exposure::{Exposure, Policy};
 use crate::caps::tool::registry::Catalog;
 use crate::caps::tool::search::{DEFAULT_SEARCH_LIMIT, SearchHit, bm25_search};
 use crate::caps::tool::state::{DiscoveredEntry, SessionState};
 use crate::caps::tool::visibility::{Candidate, fit_discovery_pool, visible_candidates};
+use crate::message::definition_bytes;
 
 /// Why a discovered name will not reach the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -416,8 +417,8 @@ impl Session for StaticSession {
 mod tests {
     use super::*;
     use crate::caps::tool::callable::FuncTool;
-    use crate::caps::tool::local::text_result;
     use crate::caps::tool::registry::{ConflictPolicy, Registry};
+    use crate::message::text_content;
 
     fn definition(name: &str, description: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -435,7 +436,7 @@ mod tests {
             registry
                 .add(Arc::new(FuncTool::new(
                     definition(name, description),
-                    Arc::new(|_context, _| Ok(text_result("ok"))),
+                    Arc::new(|_context, _| Ok(text_content("ok"))),
                 )))
                 .expect("add");
         }

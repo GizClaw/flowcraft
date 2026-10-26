@@ -7,9 +7,8 @@ use crate::error::{Error, Result};
 use crate::proto::message as msg;
 use async_trait::async_trait;
 
-use crate::caps::tool::contract::{
-    ToolSource, validate_arguments, validate_content, validate_definition,
-};
+use crate::caps::tool::contract::ToolSource;
+use crate::message::{validate_arguments, validate_content, validate_definition};
 
 /// A tool's implementation. It receives the arguments string as sent and
 /// returns the content the model will see.
@@ -120,20 +119,11 @@ impl ToolSource for LocalSource {
     }
 }
 
-/// A text-only result, the common case.
-#[must_use]
-pub fn text_result(text: impl Into<String>) -> msg::Content {
-    msg::Content {
-        parts: vec![msg::Part {
-            kind: Some(msg::part::Kind::Text(msg::TextPart { text: text.into() })),
-        }],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
+    use crate::message::text_content;
 
     fn definition(name: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -144,7 +134,7 @@ mod tests {
     }
 
     fn echo() -> Handler {
-        Arc::new(|arguments: &str| Ok(text_result(arguments)))
+        Arc::new(|arguments: &str| Ok(text_content(arguments)))
     }
 
     #[tokio::test]
@@ -154,7 +144,7 @@ mod tests {
             .expect("insert");
         assert_eq!(source.len(), 1);
         let content = source.execute("echo", r#"{"x":1}"#).await.expect("run");
-        assert_eq!(content, text_result(r#"{"x":1}"#));
+        assert_eq!(content, text_content(r#"{"x":1}"#));
     }
 
     #[tokio::test]

@@ -171,13 +171,9 @@ fn error_text(result: &msg::ToolResult) -> String {
     let Some(content) = &result.content else {
         return "tool: registry returned an error with no content".to_owned();
     };
-    content
-        .parts
-        .iter()
-        .find_map(|part| match part.kind.as_ref() {
-            Some(msg::part::Kind::Text(text)) => Some(text.text.clone()),
-            _ => None,
-        })
+    // The first text part, not the whole body: this is one line in an error.
+    crate::message::first_text(content)
+        .map(str::to_owned)
         .unwrap_or_else(|| "tool: registry returned an error".to_owned())
 }
 
@@ -221,7 +217,8 @@ impl crate::resource::Factory for RegistryFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::tool::local::{LocalSource, text_result};
+    use crate::caps::tool::local::LocalSource;
+    use crate::message::text_content;
 
     fn definition(name: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -234,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_source_bridges_into_the_registry() {
         let local = LocalSource::new()
-            .with(definition("echo"), Arc::new(|_| Ok(text_result("hi"))))
+            .with(definition("echo"), Arc::new(|_| Ok(text_content("hi"))))
             .expect("tool");
         let handle = Handle::new(Arc::new(local));
         let source = HandleSource::new(handle);
@@ -246,7 +243,7 @@ mod tests {
                 .execute(&CallContext::default(), "{}")
                 .await
                 .expect("execute"),
-            text_result("hi")
+            text_content("hi")
         );
     }
 
@@ -255,7 +252,7 @@ mod tests {
         let mut source = crate::caps::tool::registry::StaticSource::new();
         source.push(Arc::new(crate::caps::tool::callable::FuncTool::new(
             definition("echo"),
-            Arc::new(|_context, arguments| Ok(text_result(arguments))),
+            Arc::new(|_context, arguments| Ok(text_content(arguments))),
         )));
         let registry = Registry::from_sources(&[Arc::new(source)], ConflictPolicy::Error)
             .await
@@ -264,7 +261,7 @@ mod tests {
         assert_eq!(source.list().await.expect("list").len(), 1);
         assert_eq!(
             source.execute("echo", "{}").await.expect("execute"),
-            text_result("{}")
+            text_content("{}")
         );
         assert!(source.execute("missing", "{}").await.is_err());
     }

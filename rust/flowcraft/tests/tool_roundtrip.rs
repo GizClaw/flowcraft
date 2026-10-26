@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use flowcraft::caps::tool::{CONTRACT, Handle, LocalSource, endpoint, remote, text_result};
+use flowcraft::caps::tool::{CONTRACT, Handle, LocalSource, endpoint, remote};
 use flowcraft::kernel::handles::contracts;
 use flowcraft::kernel::{Config, EndpointConfig, EndpointHost, Mode, Platform, RemoteConfig};
+use flowcraft::message::text_content;
 use flowcraft::proto::message as msg;
 use flowcraft::resource::Deployment;
 use flowcraft::resource::{Builder, ExternalResource, Registry};
@@ -32,12 +33,12 @@ fn local() -> Arc<LocalSource> {
     let source = LocalSource::new()
         .with(
             definition("echo", "repeat the arguments"),
-            Arc::new(|args: &str| Ok(text_result(args))),
+            Arc::new(|args: &str| Ok(text_content(args))),
         )
         .expect("echo")
         .with(
             definition("clock", "the current time"),
-            Arc::new(|_: &str| Ok(text_result("12:00"))),
+            Arc::new(|_: &str| Ok(text_content("12:00"))),
         )
         .expect("clock");
     Arc::new(source)
@@ -133,7 +134,7 @@ async fn list_and_execute_round_trip() {
         .execute("echo", r#"{"query":"rust"}"#)
         .await
         .expect("execute");
-    assert_eq!(content, text_result(r#"{"query":"rust"}"#));
+    assert_eq!(content, text_content(r#"{"query":"rust"}"#));
     stack.built.shutdown().await.expect("shutdown");
 }
 

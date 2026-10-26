@@ -129,9 +129,9 @@ pub fn validate_private_capability(capability: &str) -> Result<()> {
 /// Check a `RunRequest.input` / `SteerRequest.payload` before sending it.
 pub fn validate_input(info: &pb::CraftInfo, envelope: &pb::Envelope) -> Result<()> {
     match envelope.body.as_ref() {
-        Some(pb::envelope::Body::Message(message)) => validate_message(message)
+        Some(pb::envelope::Body::Message(message)) => flowcraft::message::validate_message(message)
             .map_err(|error| Error::new(error.kind(), format!("input message: {error}"))),
-        Some(pb::envelope::Body::Delta(delta)) => validate_delta(delta)
+        Some(pb::envelope::Body::Delta(delta)) => flowcraft::message::validate_delta(delta)
             .map_err(|error| Error::new(error.kind(), format!("input delta: {error}"))),
         Some(pb::envelope::Body::Extension(extension)) => {
             validate_extension(extension, &info.input_types, "input")
@@ -156,7 +156,7 @@ pub fn validate_event(info: &pb::CraftInfo, event: &pb::RunEvent) -> Result<()> 
             .as_ref()
             .and_then(|envelope| envelope.body.as_ref())
         {
-            Some(pb::envelope::Body::Delta(delta)) => validate_delta(delta)
+            Some(pb::envelope::Body::Delta(delta)) => flowcraft::message::validate_delta(delta)
                 .map_err(|error| Error::new(error.kind(), format!("event delta: {error}"))),
             Some(pb::envelope::Body::Extension(extension)) => {
                 validate_extension(extension, &info.event_types, "event")
@@ -171,8 +171,10 @@ pub fn validate_event(info: &pb::CraftInfo, event: &pb::RunEvent) -> Result<()> 
             .as_ref()
             .and_then(|envelope| envelope.body.as_ref())
         {
-            Some(pb::envelope::Body::Message(message)) => validate_message(message)
-                .map_err(|error| Error::new(error.kind(), format!("event message: {error}"))),
+            Some(pb::envelope::Body::Message(message)) => {
+                flowcraft::message::validate_message(message)
+                    .map_err(|error| Error::new(error.kind(), format!("event message: {error}")))
+            }
             Some(pb::envelope::Body::Extension(extension)) => {
                 validate_extension(extension, &info.event_types, "event")
             }
@@ -186,33 +188,6 @@ pub fn validate_event(info: &pb::CraftInfo, event: &pb::RunEvent) -> Result<()> 
         )),
         _ => Ok(()),
     }
-}
-
-/// A canonical message: known role and at least one typed part.
-pub fn validate_message(message: &msg::Message) -> Result<()> {
-    let role = msg::Role::try_from(message.role)
-        .map_err(|_| Error::validation(format!("unknown message role {}", message.role)))?;
-    if role == msg::Role::Unspecified {
-        return Err(Error::validation("message role is unspecified"));
-    }
-    let Some(content) = &message.content else {
-        return Err(Error::validation("message has no content"));
-    };
-    if content.parts.is_empty() {
-        return Err(Error::validation("message content has no parts"));
-    }
-    if content.parts.iter().any(|part| part.kind.is_none()) {
-        return Err(Error::validation("message part has no kind"));
-    }
-    Ok(())
-}
-
-/// A streaming fragment: exactly one kind.
-pub fn validate_delta(delta: &msg::Delta) -> Result<()> {
-    if delta.kind.is_none() {
-        return Err(Error::validation("delta has no kind"));
-    }
-    Ok(())
 }
 
 fn validate_extension(extension: &pb::Extension, declared: &[String], what: &str) -> Result<()> {
@@ -242,16 +217,9 @@ fn validate_extension(extension: &pb::Extension, declared: &[String], what: &str
 #[must_use]
 pub fn text_message(role: msg::Role, text: &str) -> pb::Envelope {
     pb::Envelope {
-        body: Some(pb::envelope::Body::Message(msg::Message {
-            role: role as i32,
-            content: Some(msg::Content {
-                parts: vec![msg::Part {
-                    kind: Some(msg::part::Kind::Text(msg::TextPart {
-                        text: text.to_owned(),
-                    })),
-                }],
-            }),
-        })),
+        body: Some(pb::envelope::Body::Message(
+            flowcraft::message::text_message(role, text),
+        )),
     }
 }
 

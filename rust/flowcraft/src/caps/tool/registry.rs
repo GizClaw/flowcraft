@@ -470,8 +470,8 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::caps::tool::callable::FuncTool;
-    use crate::caps::tool::local::text_result;
     use crate::error::ErrorKind;
+    use crate::message::text_content;
 
     fn definition(name: &str, description: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -484,7 +484,7 @@ mod tests {
     fn tool(name: &str) -> Arc<dyn Tool> {
         Arc::new(FuncTool::new(
             definition(name, ""),
-            Arc::new(|_context, _| Ok(text_result("ok"))),
+            Arc::new(|_context, _| Ok(text_content("ok"))),
         ))
     }
 
@@ -527,12 +527,12 @@ mod tests {
         let mut first = StaticSource::new();
         first.push(Arc::new(FuncTool::new(
             definition("same", "first"),
-            Arc::new(|_context, _| Ok(text_result("first"))),
+            Arc::new(|_context, _| Ok(text_content("first"))),
         )));
         let mut second = StaticSource::new();
         second.push(Arc::new(FuncTool::new(
             definition("same", "second"),
-            Arc::new(|_context, _| Ok(text_result("second"))),
+            Arc::new(|_context, _| Ok(text_content("second"))),
         )));
         let registry = Registry::from_sources(
             &[Arc::new(first), Arc::new(second)],
@@ -574,7 +574,7 @@ mod tests {
                 _context: &crate::caps::tool::callable::CallContext,
                 _arguments: &str,
             ) -> Result<msg::Content> {
-                Ok(text_result("ok"))
+                Ok(text_content("ok"))
             }
 
             fn close(&self) -> Result<()> {

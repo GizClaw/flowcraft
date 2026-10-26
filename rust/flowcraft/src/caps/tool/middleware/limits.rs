@@ -216,7 +216,7 @@ pub fn truncate(options: TruncateOptions) -> Result<Middleware> {
                 let tail: String = tail_source[tail_source.len() - tail_len..].iter().collect();
                 let excerpt = format!("{head}{marker}{tail}");
                 if let Some(content) = result.content.as_mut() {
-                    super::replace_text(content, excerpt);
+                    crate::message::replace_text(content, excerpt);
                 }
                 result
             })
@@ -260,7 +260,7 @@ fn sanitize(call_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::tool::local::text_result;
+    use crate::message::text_content;
 
     async fn run(
         middleware: Middleware,
@@ -291,7 +291,7 @@ mod tests {
             call(),
             msg::ToolResult {
                 call_id: "call-1".to_owned(),
-                content: Some(text_result("0123456789".repeat(10))),
+                content: Some(text_content("0123456789".repeat(10))),
                 is_error: false,
             },
         )
@@ -368,7 +368,7 @@ mod tests {
             call(),
             msg::ToolResult {
                 call_id: "call-1".to_owned(),
-                content: Some(text_result(body)),
+                content: Some(text_content(body)),
                 is_error: false,
             },
         )
@@ -392,7 +392,7 @@ mod tests {
             call(),
             msg::ToolResult {
                 call_id: "call-1".to_owned(),
-                content: Some(text_result("short")),
+                content: Some(text_content("short")),
                 is_error: false,
             },
         )
@@ -404,7 +404,7 @@ mod tests {
             call(),
             msg::ToolResult {
                 call_id: "call-1".to_owned(),
-                content: Some(text_result("x".repeat(1000))),
+                content: Some(text_content("x".repeat(1000))),
                 is_error: true,
             },
         )

@@ -31,6 +31,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("error", &[]),
     ("telemetry", &["error"]),
     ("proto", &[]),
+    ("message", &["error", "proto"]),
     ("search", &["error"]),
     ("resource", &["error", "logerr"]),
     ("kernel", &["error", "telemetry", "resource", "logerr"]),

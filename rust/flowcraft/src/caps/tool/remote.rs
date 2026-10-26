@@ -16,10 +16,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::caps::tool::contract::{
-    CONTRACT, Handle, KIND, ToolSource, validate_content, validate_definition,
-};
+use crate::caps::tool::contract::{CONTRACT, Handle, KIND, ToolSource};
 use crate::caps::tool::scope::Scope;
+use crate::message::{validate_content, validate_definition};
 
 /// The implementation name.
 pub const IMPL: &str = "remote";

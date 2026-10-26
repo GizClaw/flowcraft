@@ -46,6 +46,9 @@ pub mod telemetry;
 #[cfg(feature = "proto")]
 pub mod proto;
 
+#[cfg(feature = "message")]
+pub mod message;
+
 #[cfg(feature = "search")]
 pub mod search;
 

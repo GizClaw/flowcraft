@@ -125,7 +125,7 @@ where
     FuncTool::new(
         definition,
         Arc::new(move |_context: &CallContext, arguments: &str| {
-            Ok(crate::caps::tool::local::text_result((handler)(arguments)?))
+            Ok(crate::message::text_content((handler)(arguments)?))
         }),
     )
 }
@@ -150,7 +150,7 @@ mod tests {
             .execute(&CallContext::default(), "hi")
             .await
             .expect("run");
-        assert_eq!(content, crate::caps::tool::local::text_result("hi"));
+        assert_eq!(content, crate::message::text_content("hi"));
     }
 
     #[tokio::test]

@@ -165,9 +165,9 @@ mod tests {
     use super::*;
     use crate::caps::tool::callable::FuncTool;
     use crate::caps::tool::exposure::{Exposure, Policy};
-    use crate::caps::tool::local::text_result;
     use crate::caps::tool::registry::{ConflictPolicy, Registry};
     use crate::caps::tool::session::{DynamicSession, Session};
+    use crate::message::text_content;
 
     fn definition(name: &str, description: &str) -> msg::ToolDefinition {
         msg::ToolDefinition {
@@ -184,13 +184,13 @@ mod tests {
         registry
             .add(Arc::new(FuncTool::new(
                 definition("grep", "search file contents"),
-                Arc::new(|_context, _| Ok(text_result("ok"))),
+                Arc::new(|_context, _| Ok(text_content("ok"))),
             )))
             .expect("add");
         registry
             .add(Arc::new(FuncTool::new(
                 definition("clock", "current time"),
-                Arc::new(|_context, _| Ok(text_result("ok"))),
+                Arc::new(|_context, _| Ok(text_content("ok"))),
             )))
             .expect("add");
         Arc::new(

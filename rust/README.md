@@ -32,6 +32,8 @@ rust/
                              rendering, the stderr split, the subscriber host
     src/proto/               wire bindings for every contract under proto/,
                              committed under generated/ (see `make rust-proto-gen`)
+    src/message/             the hand-written half of `flowcraft.message.v1`:
+                             shape rules, text parts, definition size
     src/search/              text retrieval primitives: tokenizer + BM25
     src/resource/            deployment document, strict decode, and the
                              composition kernel: Plan / Build / Start / Close
@@ -68,6 +70,7 @@ reaches for and compares them to the table below.
 error                leaf, always compiled (its only dependency is `thiserror`)
 telemetry            → error
 proto                leaf (generated, committed)
+message              → error, proto
 search               → error
 resource             → error, telemetry
 kernel               → error, telemetry, resource
@@ -101,7 +104,7 @@ hosts FlowCraft wants.
 | `secret` / `sandbox` / `tool` | one capability, endpoint and remote client included |
 | `wire` | the gRPC endpoints, the remote clients, the grant-scope checks |
 | `otel` / `otlp` | trace context; shipping it to a collector |
-| `telemetry`, `proto`, `search`, `resource`, `kernel`, `client` | one layer each |
+| `telemetry`, `proto`, `message`, `search`, `resource`, `kernel`, `client` | one layer each |
 
 Two shapes are load-bearing enough to be gated by tests: `otel` without `otlp`
 must carry no runtime and no HTTP stack (`flowcraft/tests/telemetry_deps.rs`),

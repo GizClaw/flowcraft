@@ -43,12 +43,10 @@ pub use self::callable::{
     CallContext, FuncTool, Handler as ToolHandler, Tool, ToolMeta, text_tool,
 };
 pub use assembly::{Assembly, Options as AssemblyOptions};
-pub use contract::{
-    CONTRACT, Handle, KIND, ToolSource, validate_arguments, validate_content, validate_definition,
-};
+pub use contract::{CONTRACT, Handle, KIND, ToolSource};
 pub use executor::{Dispatch, Dispatcher, Executor, Middleware};
 pub use exposure::{Budget, DiscoveryPolicy, Exposure, Policy};
-pub use local::{LocalSource, Tool as LocalTool, text_result};
+pub use local::{LocalSource, Tool as LocalTool};
 pub use mcp::{McpSource, ServerSpec, Settings as McpSettings};
 pub use registry::{Catalog, ConflictPolicy, Registry, Source, StaticSource};
 pub use remote::RemoteSource;

@@ -76,6 +76,7 @@ sandbox = [
 tool = [
     "resource",
     "search",
+    "message",
     "kernel",
     "client",
     "proto",
@@ -117,6 +118,10 @@ otlp = [
     "dep:tokio",
 ]
 proto = ["dep:prost", "dep:tonic", "dep:tonic-prost"]
+# The hand-written half of the message model: shape rules (they parse a schema and
+# an argument object), text parts, and the small helpers. It sits above `proto`
+# because it is a contract, not wire plumbing.
+message = ["proto", "dep:serde_json"]
 search = []
 resource = [
     "otel",
