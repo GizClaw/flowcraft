@@ -26,16 +26,23 @@
 pub mod codes;
 pub mod confinement;
 pub mod contract;
-pub mod endpoint;
 pub mod exec;
 pub mod journal;
 mod limits;
 pub mod local;
 pub mod net;
 pub mod policy;
-pub mod remote;
-pub mod scope;
 mod session;
+
+// The endpoint server, the remote client, the grant-scope checks, and the
+// `proto ⇄ domain` conversions only they use.
+#[cfg(feature = "wire")]
+pub mod endpoint;
+#[cfg(feature = "wire")]
+pub mod remote;
+#[cfg(feature = "wire")]
+pub mod scope;
+#[cfg(feature = "wire")]
 mod wire;
 
 pub use codes::Code;
@@ -56,4 +63,5 @@ pub use policy::{
     command_patterns, compose_local, defaults, denial, interactive, net_non_default, normalise,
     rule_for, workdir_outside_root,
 };
+#[cfg(feature = "wire")]
 pub use remote::RemoteRunner;

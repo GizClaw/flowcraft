@@ -25,6 +25,7 @@
 //! sandbox capability makes itself one by calling [`run_if_invoked`] before it
 //! looks at `argv`.
 
+#[cfg(unix)]
 use std::sync::Arc;
 
 /// The reserved first argument that selects bridge mode.

@@ -37,50 +37,41 @@ workspace = [
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
+    "dep:tokio-stream",
     "dep:tracing",
 ]
 secret = [
     "resource",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     "dep:async-trait",
     "dep:ring",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
-    "dep:tokio-stream",
-    "dep:tonic",
     "dep:tracing",
 ]
 sandbox = [
     "resource",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     # The unix mechanisms the runner owns. Naming them here keeps a host that
     # embeds another capability from compiling a pty stack or a cgroup reader.
     "dep:portable-pty",
     "dep:cgroups-rs",
+    "dep:nix",
     "dep:async-trait",
     "dep:notify",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
+    # The session output log is a stream; that is the provider's own interface,
+    # not the transport's.
     "dep:tokio-stream",
-    "dep:tonic",
     "dep:tracing",
 ]
 tool = [
     "resource",
     "search",
+    # The framework speaks the conversation model (`message`), but not the
+    # transport: the endpoint and the remote client are behind `wire`.
     "message",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     "dep:async-trait",
     "dep:base64",
     "dep:futures-util",
@@ -91,7 +82,7 @@ tool = [
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
-    "dep:tonic",
+    "dep:tokio-stream",
     "dep:tracing",
 ]
 # Every built-in capability, endpoint servers and remote clients included.
@@ -264,23 +255,23 @@ required-features = ["workspace", "wire"]
 
 [[test]]
 name = "secret_roundtrip"
-required-features = ["secret"]
+required-features = ["secret", "wire"]
 
 [[test]]
 name = "sandbox_conformance"
-required-features = ["sandbox"]
+required-features = ["sandbox", "wire"]
 
 [[test]]
 name = "sandbox_roundtrip"
-required-features = ["sandbox"]
+required-features = ["sandbox", "wire"]
 
 [[test]]
 name = "tool_registry"
-required-features = ["tool"]
+required-features = ["tool", "wire"]
 
 [[test]]
 name = "tool_roundtrip"
-required-features = ["tool"]
+required-features = ["tool", "wire"]
 
 [[test]]
 name = "kernel_trace"

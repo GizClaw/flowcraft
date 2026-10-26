@@ -139,35 +139,28 @@ rust-clippy:
 	@echo "==> clippy $(RUST_DIR)"
 	@cd $(RUST_DIR) && $(CARGO) clippy --workspace --all-targets -- -D warnings
 
-# The kernel's transport is unix-domain sockets, so the platform as a whole is
-# unix-only. The workspace capability is not: with `--no-default-features` it
-# keeps the provider, its decorators and the helper operations, and drops the
-# `wire` feature (endpoint, remote client, grant scope) that needs the control
-# plane. This target is the local feedback loop — a cross-compile, so the
-# provider's `cfg(windows)` branches are compiled rather than merely written. It
-# needs `rustup target add x86_64-pc-windows-gnu` and a mingw gcc, which is why
-# it is not part of `lint`/`ci`; the `rust-windows` CI lane runs the same shape
-# on a Windows host, where those branches also execute.
+# The Windows shapes. The kernel's unix assumptions are `cfg(unix)` now: a unix
+# socket, its owner-only mode and the client's unix connector are unix
+# mechanisms, while a host elsewhere binds `dns://` targets over TCP and refuses
+# a unix target at bind time instead of pretending. So every provider shape
+# compiles for a Windows target, and this target is the cheap feedback loop for
+# the whole matrix — the `rust-windows` CI lane runs it on a real host, where the
+# provider tests execute too.
+#
+# `flowcraft-platformd` is deliberately not in the matrix yet: its admin socket
+# and craft sockets are still unix-only.
 RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
+RUST_WINDOWS_SHAPES := workspace secret tool sandbox caps
 
-# The sandbox shape needs the control plane, so it cannot use the
-# `workspace`-only form above. Compiling it needs a Windows host (its toolchain
-# builds `ring`), but the failure mode that bit us first is pure dependency
-# resolution: a unix-only crate in the shared dependency table. This checks
-# exactly that, offline, without a C toolchain.
 .PHONY: rust-windows-check
 rust-windows-check:
 	@echo "==> check $(RUST_DIR) for $(RUST_WINDOWS_TARGET)"
-	@cd $(RUST_DIR) && $(CARGO) clippy -p flowcraft --all-targets \
-		--no-default-features --features workspace \
-		--target $(RUST_WINDOWS_TARGET) -- -D warnings
-	@echo "==> resolve the sandbox shape for $(RUST_WINDOWS_TARGET)"
-	@cd $(RUST_DIR) && unix_only=$$($(CARGO) tree -p flowcraft --features sandbox,wire \
-		--target $(RUST_WINDOWS_TARGET) -e normal --prefix none \
-		| grep -E '^(nix|portable-pty|cgroups-rs) v' || true); \
-	if [ -n "$$unix_only" ]; then \
-		echo "unix-only crates in the windows resolution:"; echo "$$unix_only"; exit 1; \
-	fi
+	@for shape in $(RUST_WINDOWS_SHAPES); do \
+		echo "  ==> flowcraft --no-default-features --features $$shape"; \
+		( cd $(RUST_DIR) && $(CARGO) clippy -q -p flowcraft --all-targets \
+			--no-default-features --features $$shape \
+			--target $(RUST_WINDOWS_TARGET) -- -D warnings ) || exit 1; \
+	done
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree

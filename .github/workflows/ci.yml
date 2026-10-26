@@ -486,10 +486,11 @@ jobs:
       # proto/ and fails if they moved. The checked-in tree stays the single
       # source of truth for both stacks, the way `make proto-check` holds the Go
       # stubs to it.
-      - name: Install protoc
+      - name: Install protoc and the Windows cross compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler gcc-mingw-w64-x86-64
       - name: Format check
         working-directory: rust
         run: cargo fmt --all -- --check
@@ -510,6 +511,16 @@ jobs:
           cargo doc -p flowcraft --no-deps
           cargo doc -p flowcraft --no-deps \
             --no-default-features --features workspace
+      # Every provider shape must compile for a Windows target: the kernel's
+      # unix assumptions are `cfg(unix)` now, so a host elsewhere binds `dns://`
+      # targets over TCP and refuses a unix target at bind time. The matrix lives
+      # in `make rust-windows-check`. It needs the mingw C compiler installed
+      # above, because `ring` (through tonic and rustls) compiles C for the
+      # target even under `cargo check`.
+      - name: Windows shapes compile
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          make rust-windows-check
       - name: Test
         working-directory: rust
         run: cargo test --workspace
@@ -555,6 +566,16 @@ jobs:
       - name: Test the local-only shape
         working-directory: rust
         run: cargo test -p flowcraft --no-default-features --features workspace
+      # The other providers compile here too. Their tests are compiled but not
+      # run yet: a few of them spawn `sh`, and the sandbox has no Windows backend
+      # to select. Running them is the point of this lane once that lands.
+      - name: Compile the other provider shapes
+        working-directory: rust
+        run: |
+          for shape in secret tool sandbox caps; do
+            cargo check -p flowcraft --all-targets \
+              --no-default-features --features "$shape"
+          done
       # The sandbox capability needs the control plane (kernel/client/wire), so it
       # cannot use the `workspace`-only shape above: its endpoints are gRPC over
       # the kernel's transport, which is a unix socket on unix and a `dns` target

@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 use crate::caps::sandbox::codes::{self, Code};
 use crate::caps::sandbox::contract::Session;

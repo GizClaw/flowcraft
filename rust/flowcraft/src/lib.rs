@@ -22,9 +22,11 @@
 //! - `platform` (default) — documents, composition, control plane, client.
 //! - `caps` — every built-in capability, including the endpoint servers and
 //!   remote clients that need the control plane (`wire`).
-//! - `workspace` / `secret` / `sandbox` / `tool` — one capability each. Only
-//!   `workspace` builds without the control plane, so
-//!   `--no-default-features --features workspace` is the portable shape.
+//! - `workspace` / `secret` / `sandbox` / `tool` — one capability's provider.
+//!   None of them needs the control plane on its own: `wire` adds the endpoint
+//!   server, the remote client and the grant-scope checks on top. Every one of
+//!   these shapes compiles for a Windows target — the kernel serves `dns://`
+//!   targets over TCP there and refuses a unix target at bind time.
 //! - `telemetry`, `proto`, `search`, `resource`, `kernel`, `client`, `wire` —
 //!   the layers underneath, for a consumer that wants less than `platform`.
 //! - `otel` / `otlp` — trace context, and shipping it to a collector.

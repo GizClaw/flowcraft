@@ -114,20 +114,27 @@ plane (`make rust-windows-check`, plus the `rust-windows` CI lane).
 
 ### Platform support
 
-The kernel's transport is unix-domain sockets, so the platform as a whole is
-unix-only. One capability is portable in isolation, and it is the one whose
-provider is most likely to be reused: `--no-default-features --features
-workspace` drops `wire` (the endpoint, the remote client and the grant scope) and
-leaves the provider, its decorators and the helper operations — a shape with no
-control-plane dependency that builds for a Windows target.
+The kernel's transport is a unix-domain socket on unix and a `dns://` target
+(TCP + TLS) everywhere else; on a host that cannot serve a unix socket, `bind`
+refuses that endpoint instead of quietly serving it somewhere else. The
+capabilities are split along the same line, so the *provider* shapes are
+portable:
 
-`make rust-windows-check` cross-compiles it locally (it needs the
-`x86_64-pc-windows-gnu` target and a mingw gcc), which is the fast feedback loop;
-the `rust-windows` CI lane runs the same shape on a Windows host, so the
-`cfg(windows)` branches — the sharing-violation retry, the refusal to replace a
-directory with `MoveFileEx` — are executed, not merely compiled. That is still
-not a Windows support claim: the daemon, its transport and the other capabilities
-remain unix-only.
+| shape | Windows target |
+| --- | --- |
+| `--no-default-features --features workspace` | builds — the `cfg(windows)` sharing-violation retry and `MoveFileEx` refusal are exercised |
+| `--features secret` / `tool` / `sandbox` alone | builds — provider only: no endpoint server, no remote client, no grant scope |
+| `--features caps` (the `wire` shapes) | builds — endpoints exist, but `sandbox` selects no confinement backend off unix, and `tty: true` is refused rather than served |
+| `flowcraft-platformd` | **does not build yet** — the admin socket and the craft ABI sockets are still unix-only |
+
+`make rust-windows-check` cross-compiles every shape in that table except the
+daemon (it needs the `x86_64-pc-windows-gnu` target and a mingw gcc, which `ring`
+requires even for `cargo check`); the `rust-windows` CI lane runs the workspace
+shape's tests on a real host, so the `cfg(windows)` branches — the
+sharing-violation retry, the refusal to replace a directory with `MoveFileEx` —
+are executed, not merely compiled. That is still not a Windows support claim for
+the *platform*: without a confinement backend and a sandbox runner, a Windows
+host can embed the providers but not serve the capabilities.
 
 ## Quickstart
 
@@ -196,6 +203,12 @@ log:
   craft_stdio: ""             # "" = capture for `exec`, inherit for `systemd`
   throttle_per_minute: 60     # cap for repeated warnings/errors; 0 disables
 ```
+
+Where the file lands matters more than its format. On unix it is created `0600`
+and its rotations inherit that. On Windows the file inherits the ACL of its
+directory, so put it under `%LOCALAPPDATA%\FlowCraft` (per-user, as the identity
+file already is) and leave `%ProgramData%` to an administrator who will tighten
+the ACL — a record can carry paths, tenant names and endpoint names.
 
 The profile follows the command, so an operator command stays quiet by default:
 

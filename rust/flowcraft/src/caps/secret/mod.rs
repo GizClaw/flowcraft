@@ -13,16 +13,22 @@
 //! kernel's provider and never travels this wire.
 
 pub mod contract;
-pub mod endpoint;
 pub mod env;
 pub mod file;
 pub mod keychain;
 pub mod memory;
+
+// The endpoint server, the remote client, and the grant-scope checks they share.
+#[cfg(feature = "wire")]
+pub mod endpoint;
+#[cfg(feature = "wire")]
 pub mod remote;
+#[cfg(feature = "wire")]
 pub mod scope;
 
 pub use contract::{CONTRACT, Handle, KIND, Mutable, Store};
 pub use env::EnvStore;
 pub use keychain::{Keychain, Manager};
 pub use memory::MemoryStore;
+#[cfg(feature = "wire")]
 pub use remote::RemoteStore;

@@ -169,10 +169,10 @@ impl ProcessSession {
         #[cfg(not(unix))]
         {
             // Without a signal mechanism there is nothing further to do; the
-            // Windows lane replaces this with a job object (see the plan, W1).
-            return Err(Error::not_available(
+            // Windows backend replaces this with a job object (see the plan, W1).
+            Err(Error::not_available(
                 "sandbox: terminate needs a job object on this platform (not implemented yet)",
-            ));
+            ))
         }
         #[cfg(unix)]
         Ok(())

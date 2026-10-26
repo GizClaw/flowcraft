@@ -6,6 +6,7 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 

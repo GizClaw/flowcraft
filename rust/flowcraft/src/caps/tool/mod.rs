@@ -23,21 +23,26 @@
 pub mod assembly;
 pub mod callable;
 pub mod contract;
-pub mod endpoint;
 pub mod executor;
 pub mod exposure;
 pub mod local;
 pub mod mcp;
 pub mod middleware;
 pub mod registry;
-pub mod remote;
 pub mod resource;
-pub mod scope;
 pub mod search;
 pub mod session;
 pub mod state;
 pub mod tool_search;
 pub mod visibility;
+
+// The endpoint server, the remote client, and the grant-scope checks they share.
+#[cfg(feature = "wire")]
+pub mod endpoint;
+#[cfg(feature = "wire")]
+pub mod remote;
+#[cfg(feature = "wire")]
+pub mod scope;
 
 pub use self::callable::{
     CallContext, FuncTool, Handler as ToolHandler, Tool, ToolMeta, text_tool,
@@ -49,6 +54,7 @@ pub use exposure::{Budget, DiscoveryPolicy, Exposure, Policy};
 pub use local::{LocalSource, Tool as LocalTool};
 pub use mcp::{McpSource, ServerSpec, Settings as McpSettings};
 pub use registry::{Catalog, ConflictPolicy, Registry, Source, StaticSource};
+#[cfg(feature = "wire")]
 pub use remote::RemoteSource;
 pub use resource::{HandleSource, RegistryFactory, RegistrySource};
 pub use search::SearchHit;
