@@ -307,6 +307,10 @@ fn read(path: &str) -> Result<Vec<u8>> {
 
 /// A minimal craft endpoint, used by tests and by `examples/` to exercise the
 /// ABI without a Go build.
+///
+/// The behaviour lives in [`crate::stub::StubCraft`]; this owns the socket and
+/// hands the handler to the generic adapter, which is also what a host serving a
+/// real craft does.
 pub async fn craft_stub(
     socket: &str,
     name: &str,
@@ -316,172 +320,9 @@ pub async fn craft_stub(
     provides: Option<&str>,
     bad_envelope: bool,
 ) -> Result<()> {
-    use flowcraft::proto::craft as pb;
+    use flowcraft::craft::Adapter;
     use flowcraft::proto::craft::craft_server;
     use tokio_stream::wrappers::UnixListenerStream;
-    use tonic::{Request, Response, Status};
-
-    struct StubService {
-        name: String,
-        renew_log: Option<std::path::PathBuf>,
-        token: Option<String>,
-        abi_version: String,
-        provides: Vec<String>,
-        bad_envelope: bool,
-        closed: std::sync::Mutex<std::collections::BTreeSet<String>>,
-    }
-
-    impl StubService {
-        fn require_token<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
-            let Some(expected) = &self.token else {
-                return Ok(());
-            };
-            let presented = request
-                .metadata()
-                .get("x-flowcraft-craft-token")
-                .and_then(|value| value.to_str().ok());
-            if presented == Some(expected.as_str()) {
-                Ok(())
-            } else {
-                Err(Status::unauthenticated("craft: missing or wrong token"))
-            }
-        }
-
-        fn ensure_open(&self, session: &str) -> std::result::Result<(), Status> {
-            if self
-                .closed
-                .lock()
-                .map(|closed| closed.contains(session))
-                .unwrap_or(false)
-            {
-                return Err(Status::not_found(format!(
-                    "craft: session {session:?} is closed"
-                )));
-            }
-            Ok(())
-        }
-    }
-
-    type RunStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = std::result::Result<pb::RunEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-
-    #[tonic::async_trait]
-    impl craft_server::Craft for StubService {
-        type RunStream = RunStream;
-
-        async fn describe(
-            &self,
-            _request: Request<pb::DescribeRequest>,
-        ) -> std::result::Result<Response<pb::DescribeResponse>, Status> {
-            Ok(Response::new(pb::DescribeResponse {
-                info: Some(pb::CraftInfo {
-                    name: self.name.clone(),
-                    version: env!("CARGO_PKG_VERSION").to_owned(),
-                    requires: Vec::new(),
-                    provides: self.provides.clone(),
-                    tenancy: "single".to_owned(),
-                    abi_version: self.abi_version.clone(),
-                    abi_versions: Vec::new(),
-                    input_types: vec!["stub.text".to_owned()],
-                    event_types: vec!["stub.text".to_owned()],
-                }),
-            }))
-        }
-
-        async fn start(
-            &self,
-            request: Request<pb::StartRequest>,
-        ) -> std::result::Result<Response<pb::StartResponse>, Status> {
-            self.require_token(&request)?;
-            Ok(Response::new(pb::StartResponse {
-                session: "stub-session".to_owned(),
-                grants: request.get_ref().grants.clone(),
-            }))
-        }
-
-        async fn run(
-            &self,
-            request: Request<pb::RunRequest>,
-        ) -> std::result::Result<Response<Self::RunStream>, Status> {
-            self.require_token(&request)?;
-            self.ensure_open(&request.get_ref().session)?;
-            let payload = if self.bad_envelope {
-                // A delta event with no body: the platform must reject it.
-                pb::Envelope { body: None }
-            } else {
-                crate::abi::delta_text("hello from the stub")
-            };
-            let events: Vec<std::result::Result<pb::RunEvent, Status>> = vec![
-                Ok(pb::RunEvent {
-                    seq: 1,
-                    r#type: "delta".to_owned(),
-                    payload: Some(payload),
-                    error: String::new(),
-                    credit: 0,
-                }),
-                Ok(pb::RunEvent {
-                    seq: 2,
-                    r#type: "done".to_owned(),
-                    payload: None,
-                    error: String::new(),
-                    credit: 0,
-                }),
-            ];
-            Ok(Response::new(Box::pin(tokio_stream::iter(events))))
-        }
-
-        async fn steer(
-            &self,
-            request: Request<pb::SteerRequest>,
-        ) -> std::result::Result<Response<pb::SteerResponse>, Status> {
-            self.require_token(&request)?;
-            Ok(Response::new(pb::SteerResponse {}))
-        }
-
-        async fn renew(
-            &self,
-            request: Request<pb::RenewRequest>,
-        ) -> std::result::Result<Response<pb::RenewResponse>, Status> {
-            self.require_token(&request)?;
-            if let Some(path) = &self.renew_log {
-                use std::io::Write;
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(file, "renew {}", request.get_ref().session);
-                }
-            }
-            Ok(Response::new(pb::RenewResponse {
-                grants: request.get_ref().grants.clone(),
-            }))
-        }
-
-        async fn cancel(
-            &self,
-            request: Request<pb::CancelRequest>,
-        ) -> std::result::Result<Response<pb::CancelResponse>, Status> {
-            self.require_token(&request)?;
-            Ok(Response::new(pb::CancelResponse {}))
-        }
-
-        async fn close(
-            &self,
-            request: Request<pb::CloseRequest>,
-        ) -> std::result::Result<Response<pb::CloseResponse>, Status> {
-            self.require_token(&request)?;
-            if let Ok(mut closed) = self.closed.lock() {
-                closed.insert(request.get_ref().session.clone());
-            }
-            Ok(Response::new(pb::CloseResponse {}))
-        }
-    }
 
     let path = std::path::PathBuf::from(socket);
     if path.exists() {
@@ -491,23 +332,29 @@ pub async fn craft_stub(
         std::fs::create_dir_all(parent)?;
     }
     let listener = tokio::net::UnixListener::bind(&path)?;
+
+    let handler = std::sync::Arc::new(crate::stub::StubCraft::new(
+        name,
+        abi_version,
+        provides,
+        renew_log,
+        bad_envelope,
+    ));
+    let mut adapter = Adapter::new(handler);
+    if let Some(token) = token
+        .map(str::to_owned)
+        .or_else(|| std::env::var("FLOWCRAFT_CRAFT_TOKEN").ok())
+    {
+        adapter = adapter.with_token(token);
+    }
+
     tracing::info!(
         flowcraft.socket = %path.display(),
         flowcraft.craft = name,
         "craft stub listening"
     );
     tonic::transport::Server::builder()
-        .add_service(craft_server::CraftServer::new(StubService {
-            name: name.to_owned(),
-            renew_log: renew_log.map(std::path::PathBuf::from),
-            token: token
-                .map(str::to_owned)
-                .or_else(|| std::env::var("FLOWCRAFT_CRAFT_TOKEN").ok()),
-            abi_version: abi_version.unwrap_or(crate::abi::ABI_VERSION).to_owned(),
-            provides: provides.map(|cap| vec![cap.to_owned()]).unwrap_or_default(),
-            bad_envelope,
-            closed: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-        }))
+        .add_service(craft_server::CraftServer::new(adapter))
         .serve_with_incoming(UnixListenerStream::new(listener))
         .await
         .map_err(|error| Error::internal(format!("craft stub: {error}")))

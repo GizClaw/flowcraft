@@ -32,10 +32,11 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("telemetry", &["error"]),
     ("proto", &[]),
     ("message", &["error", "proto"]),
+    ("craft", &["error", "proto"]),
     ("search", &["error"]),
     ("resource", &["error", "logerr"]),
     ("kernel", &["error", "telemetry", "resource", "logerr"]),
-    ("client", &["error", "telemetry", "proto", "kernel"]),
+    ("client", &["error", "telemetry", "proto", "kernel", "craft"]),
     (
         "caps::workspace",
         &["error", "resource", "kernel", "client", "proto"],

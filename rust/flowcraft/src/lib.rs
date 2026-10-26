@@ -51,6 +51,9 @@ pub mod proto;
 #[cfg(feature = "message")]
 pub mod message;
 
+#[cfg(feature = "craft")]
+pub mod craft;
+
 #[cfg(feature = "search")]
 pub mod search;
 

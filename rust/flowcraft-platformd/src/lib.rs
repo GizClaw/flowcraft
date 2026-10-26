@@ -12,5 +12,6 @@ pub mod craft_stdio;
 pub mod hosting;
 pub mod logging;
 pub mod secrets;
+pub mod stub;
 pub mod supervisor;
 pub mod watcher;

@@ -113,6 +113,10 @@ proto = ["dep:prost", "dep:tonic", "dep:tonic-prost"]
 # an argument object), text parts, and the small helpers. It sits above `proto`
 # because it is a contract, not wire plumbing.
 message = ["proto", "dep:serde_json"]
+# The craft side of `flowcraft.craft/v1`: the handler a craft implements and the
+# gRPC adapter that serves it. Above `proto` and below the platform: a craft is
+# not a capability, so this layer knows nothing about grants or listeners.
+craft = ["proto", "dep:async-trait", "dep:futures-util"]
 search = []
 resource = [
     "otel",
@@ -143,6 +147,7 @@ kernel = [
 client = [
     "kernel",
     "proto",
+    "craft",
     "dep:bytes",
     "dep:http",
     "dep:hyper-util",

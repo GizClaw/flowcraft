@@ -160,3 +160,66 @@ async fn a_craft_that_never_listens_times_out() {
         .expect_err("never listens");
     assert_eq!(error.kind(), flowcraft::error::ErrorKind::NotAvailable);
 }
+
+/// The in-process bearer: the same ABI with no socket, no token, no adapter.
+///
+/// This is the shape the daemon's own craft will take, so it is pinned here
+/// rather than discovered later.
+#[tokio::test]
+async fn an_in_process_craft_needs_no_wire() {
+    use flowcraft::client::CraftSession;
+    use flowcraft::craft::CraftHandler;
+    use flowcraft_platformd::stub::StubCraft;
+    use tokio_stream::StreamExt as _;
+
+    let handler: std::sync::Arc<dyn CraftHandler> =
+        std::sync::Arc::new(StubCraft::new("builtin", None, None, None, false));
+    let session = CraftSession::InProcess(handler);
+
+    let info = session.describe().await.expect("describe");
+    assert_eq!(info.name, "builtin");
+    assert_eq!(info.abi_version, flowcraft_platformd::abi::ABI_VERSION);
+
+    let started = session
+        .start(pb::StartRequest {
+            instance: "one".to_owned(),
+            tenant: "a".to_owned(),
+            grants: Vec::new(),
+        })
+        .await
+        .expect("start");
+    assert_eq!(started.session, "stub-session");
+
+    let mut events = session
+        .run(pb::RunRequest {
+            session: started.session.clone(),
+            input: Some(pb::Envelope {
+                body: Some(pb::envelope::Body::Extension(pb::Extension {
+                    r#type: "stub.text".to_owned(),
+                    data: b"hi".to_vec(),
+                })),
+            }),
+            credit: 8,
+        })
+        .await
+        .expect("run");
+    let mut kinds = Vec::new();
+    while let Some(event) = events.next().await {
+        kinds.push(event.expect("event").r#type);
+    }
+    assert_eq!(kinds, vec!["delta", "done"]);
+
+    session
+        .steer(pb::SteerRequest {
+            session: started.session.clone(),
+            payload: None,
+        })
+        .await
+        .expect("steer");
+    session
+        .close(pb::CloseRequest {
+            session: started.session,
+        })
+        .await
+        .expect("close");
+}
