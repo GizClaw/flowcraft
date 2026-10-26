@@ -481,10 +481,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      # flowcraft-proto generates its bindings from proto/ at build time, so the
-      # build needs protoc. Nothing is vendored: the checked-in tree stays the
-      # single source of truth for both stacks, which is also what `make
-      # proto-check` holds the Go stubs to.
+      # The Rust wire bindings are committed, so no build here needs protoc; the
+      # binary is only required by the drift gate, which regenerates them from
+      # proto/ and fails if they moved. The checked-in tree stays the single
+      # source of truth for both stacks, the way `make proto-check` holds the Go
+      # stubs to it.
       - name: Install protoc
         run: |
           sudo apt-get update
@@ -495,34 +496,39 @@ jobs:
       - name: Clippy
         working-directory: rust
         run: cargo clippy --workspace --all-targets -- -D warnings
-      # The workspace crate documents two shapes: with `wire` (the platform) and
-      # without (the provider alone, which is what the Windows lane builds). A
-      # link or a `cfg`-gated item that resolves in one and not the other is a
-      # doc warning, so both shapes are gated here.
+      - name: Wire bindings are not stale
+        run: make rust-proto-check
+      # Two shapes are documented: `platform` (the composition plane, which is
+      # the default) and `workspace` alone without the `wire` feature — the
+      # provider a Windows host builds. A link or a `cfg`-gated item that
+      # resolves in one and not the other is a doc warning, so both are gated.
       - name: Docs
         working-directory: rust
         env:
           RUSTDOCFLAGS: -D warnings
         run: |
-          cargo doc -p flowcraft-cap-workspace --no-deps
-          cargo doc -p flowcraft-cap-workspace --no-deps --no-default-features
+          cargo doc -p flowcraft --no-deps
+          cargo doc -p flowcraft --no-deps \
+            --no-default-features --features workspace
       - name: Test
         working-directory: rust
         run: cargo test --workspace
 
   # The kernel's transport is unix-domain sockets, so the platform itself is
-  # unix-only. The workspace provider is not: without the `wire` feature it has
-  # no control-plane dependency, and it has `cfg(windows)` branches worth more
-  # than a compile check — the sharing-violation retry and the refusal to replace
-  # a directory with `MoveFileEx`. This lane runs that shape on a real Windows
-  # host, so those branches execute instead of merely compiling.
+  # unix-only. The workspace capability is not:
+  # `--no-default-features --features workspace` keeps the provider and drops
+  # the `wire` feature (endpoint, remote client, grant scope), so it has no
+  # control-plane dependency — and it has `cfg(windows)` branches worth more
+  # than a compile check: the sharing-violation retry and the refusal to
+  # replace a directory with `MoveFileEx`. This lane runs that shape on a real
+  # Windows host, so those branches execute instead of merely compiling.
   #
   # It is a separate runner rather than a cross-compile on ubuntu because the
   # interesting part is behaviour: what Windows does when a directory is in the
   # way, and what `ERROR_SHARING_VIOLATION` looks like to `std`. `make
   # rust-windows-check` does the cheap cross-compile for a feed-back loop without
-  # a Windows machine. No protoc: the local-only shape does not build
-  # flowcraft-proto.
+  # a Windows machine. No protoc: the bindings are committed, and this shape
+  # does not even compile the `proto` module.
   rust-windows:
     name: Rust platform (windows)
     runs-on: windows-latest
@@ -543,10 +549,12 @@ jobs:
           workspaces: rust
       - name: Clippy for the local-only shape
         working-directory: rust
-        run: cargo clippy -p flowcraft-cap-workspace --all-targets --no-default-features -- -D warnings
+        run: |
+          cargo clippy -p flowcraft --all-targets \
+            --no-default-features --features workspace -- -D warnings
       - name: Test the local-only shape
         working-directory: rust
-        run: cargo test -p flowcraft-cap-workspace --no-default-features
+        run: cargo test -p flowcraft --no-default-features --features workspace
 
   ci-pass:
     name: CI

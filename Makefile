@@ -77,7 +77,9 @@ help:
 	@echo "  make rust-test   Run cargo test on the Rust workspace"
 	@echo "  make rust-fmt    Run cargo fmt on the Rust workspace"
 	@echo "  make rust-clippy Run cargo clippy -D warnings on the Rust workspace"
-	@echo "  make rust-windows-check Check the workspace provider for a Windows target"
+	@echo "  make rust-windows-check Check the workspace capability for a Windows target"
+	@echo "  make rust-proto-gen  Regenerate the committed Rust wire bindings (needs protoc)"
+	@echo "  make rust-proto-check Regenerate the Rust bindings and fail on drift"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
 	@echo "                      plus craft itself; exemptions must still be exempt."
 	@echo "  make proto-lint  Lint the wire contracts in proto/ (needs buf)"
@@ -137,20 +139,23 @@ rust-clippy:
 	@echo "==> clippy $(RUST_DIR)"
 	@cd $(RUST_DIR) && $(CARGO) clippy --workspace --all-targets -- -D warnings
 
-# The kernel's transport is unix-domain sockets, so only the workspace provider
-# builds for Windows, and only without the `wire` feature. This target is the
-# local feedback loop — a cross-compile, so the provider's `cfg(windows)` branches
-# are compiled rather than merely written. It needs `rustup target add
-# x86_64-pc-windows-gnu` and a mingw gcc, which is why it is not part of
-# `lint`/`ci`; the `rust-windows` CI lane runs the same shape on a Windows host,
-# where those branches also execute.
+# The kernel's transport is unix-domain sockets, so the platform as a whole is
+# unix-only. The workspace capability is not: with `--no-default-features` it
+# keeps the provider, its decorators and the helper operations, and drops the
+# `wire` feature (endpoint, remote client, grant scope) that needs the control
+# plane. This target is the local feedback loop — a cross-compile, so the
+# provider's `cfg(windows)` branches are compiled rather than merely written. It
+# needs `rustup target add x86_64-pc-windows-gnu` and a mingw gcc, which is why
+# it is not part of `lint`/`ci`; the `rust-windows` CI lane runs the same shape
+# on a Windows host, where those branches also execute.
 RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
 
 .PHONY: rust-windows-check
 rust-windows-check:
 	@echo "==> check $(RUST_DIR) for $(RUST_WINDOWS_TARGET)"
-	@cd $(RUST_DIR) && $(CARGO) clippy -p flowcraft-cap-workspace --all-targets \
-		--no-default-features --target $(RUST_WINDOWS_TARGET) -- -D warnings
+	@cd $(RUST_DIR) && $(CARGO) clippy -p flowcraft --all-targets \
+		--no-default-features --features workspace \
+		--target $(RUST_WINDOWS_TARGET) -- -D warnings
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree
@@ -214,9 +219,12 @@ memory-eval-probes:
 		-timeout 60m
 
 # ── Wire contracts ──
-# proto/ is the single source of truth for every cross-process contract. The
-# Rust platform compiles it in `flowcraft-proto`; the Go SDK generates its
-# stubs from the same files.
+# proto/ is the single source of truth for every cross-process contract. The Go
+# SDK generates its stubs from these files, and so does the Rust crate — but the
+# Rust bindings are committed, so anything that builds `flowcraft` (a consumer,
+# docs.rs, `cargo install`) needs neither `protoc` nor a build script.
+# `rust-proto-gen` refreshes them; `rust-proto-check` is the drift gate, the
+# counterpart of `proto-check` below.
 
 .PHONY: proto-gen
 proto-gen:
@@ -238,6 +246,27 @@ proto-check: proto-gen
 proto-lint:
 	@command -v $(BUF) >/dev/null 2>&1 || { echo "$(BUF) is required: https://buf.build/docs/installation"; exit 1; }
 	cd proto && $(BUF) lint
+
+# The Rust side of the same gate. `flowcraft/src/proto/generated/` is checked in,
+# and the generator is an example target, so no build script and no
+# build-dependency reach a consumer.
+.PHONY: rust-proto-gen
+rust-proto-gen:
+	@command -v protoc >/dev/null 2>&1 || { echo "protoc is required to regenerate the bindings"; exit 1; }
+	@echo "==> regenerate $(RUST_DIR) wire bindings"
+	@cd $(RUST_DIR) && $(CARGO) run -q -p flowcraft --example gen_proto
+
+.PHONY: rust-proto-check
+rust-proto-check: rust-proto-gen
+	@git diff --exit-code -- $(RUST_DIR)/flowcraft/src/proto || { \
+		echo "generated Rust bindings drifted: run 'make rust-proto-gen' and commit the result" >&2; \
+		exit 1; \
+	}
+	@test -z "$$(git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto | grep '^??')" || { \
+		echo "untracked generated files: commit them" >&2; \
+		git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto; \
+		exit 1; \
+	}
 
 .PHONY: proto-breaking
 proto-breaking:
