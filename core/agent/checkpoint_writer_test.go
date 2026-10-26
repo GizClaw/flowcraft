@@ -154,7 +154,7 @@ func TestCheckpointWriterAsksForBaseWhenStoreSaysSo(t *testing.T) {
 	}
 	// The in-memory fake replays without a JSON round trip, so the value keeps
 	// its Go type.
-	if got, _ := cp.Board.Vars["step"]; fmt.Sprint(got) != "2" {
+	if got := cp.Board.Vars["step"]; fmt.Sprint(got) != "2" {
 		t.Fatalf("step = %v, want the base's value", got)
 	}
 }
@@ -189,7 +189,7 @@ func TestCheckpointWriterKeepsPositionOnFailure(t *testing.T) {
 	}
 	// The recovered delta has to carry step 2 as well, because the failed
 	// write never landed.
-	if got, _ := cp.Board.Vars["step"]; fmt.Sprint(got) != "3" {
+	if got := cp.Board.Vars["step"]; fmt.Sprint(got) != "3" {
 		t.Fatalf("step = %v, want 3", got)
 	}
 	if iter := cp.Iteration; iter != 3 {
