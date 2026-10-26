@@ -239,7 +239,11 @@ With the workspace driver all state lives under the bound workspace:
 - `projections/<family>/v2/...` — rebuildable BM25 / entity / vector lane
   state: one `active.json` manifest per index name, the immutable bases and
   segments it names, and nothing a manifest stopped naming (see *Projection
-  storage reclamation*).
+  storage reclamation*). A vector entry's payload is base64 of the
+  components' little-endian float32 bytes, not a JSON array of numbers: the
+  stored bytes are what a lane's digests are computed over, and a decimal
+  rendering nobody owns made them depend on which toolchain compiled the
+  reader (#654). It costs 5.33 bytes per dimension instead of 14.1.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
 
@@ -422,9 +426,10 @@ carrying a workspace across the change is an operator's call -- which
 
 One lane does not report its staleness that way, and it is the one whose
 storage name is a function of its producer identity: the vector lane writes to
-`<projection>.vector-<digest>`, where the digest covers the algorithm version
-and the embedding model (`generationProjection`). A version bump moves the name
-rather than the stamp, so the lane reads a name nothing was ever written under
+`<projection>.vector-<digest>`, where the digest covers the algorithm version,
+the payload form, and the embedding model (`generationProjection`). A version
+bump moves the name rather than the stamp, so the lane reads a name nothing was
+ever written under
 -- it reports no stored state and no staleness, exactly like a scope that was
 never indexed, while the generation the earlier producer filled sits beside it,
 unread. `LaneDiagnostics.OtherGenerations` is what says so: the other names the

@@ -24,8 +24,15 @@ import (
 )
 
 const (
-	laneName                = "vector"
-	AlgorithmVersion        = "vector-cosine-v2"
+	laneName         = "vector"
+	AlgorithmVersion = "vector-cosine-v2"
+	// EncodingVersion names the form of one persisted vector payload. It is
+	// part of the generation a lane writes -- the name its state lives under
+	// and the stamp its manifest carries -- so changing the payload form moves
+	// the lane to a generation nothing was written under, instead of
+	// reinterpreting the payloads an earlier build published as if they were
+	// this build's.
+	EncodingVersion         = "vector-base64-v1"
 	StorageAlgorithmVersion = projectionstore.StorageAlgorithmVersion
 )
 
@@ -987,19 +994,22 @@ func textOnlyEmbedContent(content coremessage.Content) coremessage.Content {
 // generationProjection isolates vectors produced by different embedding
 // identities. A new model starts an empty generation and is filled by normal
 // source replay; retrieval degrades through the other lanes until it exists.
+// The payload form is part of the identity for the same reason: state an
+// earlier form published is not state this build can read, and a new name is
+// how the lane says so without touching what a build that still reads it holds.
 func generationProjection(projection string, model model.ModelRef) string {
 	payload := strings.Join([]string{
-		AlgorithmVersion, model.ID.Provider, model.ID.Name, model.Profile,
+		AlgorithmVersion, EncodingVersion, model.ID.Provider, model.ID.Name, model.Profile,
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return fmt.Sprintf("%s.vector-%x", projection, sum[:12])
 }
 
 // generationIdentity names the producer of one vector generation, readably:
-// the scoring algorithm together with the embedding model identity the
-// generation is bound to.
+// the scoring algorithm and the payload form, together with the embedding model
+// identity the generation is bound to.
 func generationIdentity(model model.ModelRef) string {
-	parts := []string{AlgorithmVersion, model.ID.Provider, model.ID.Name}
+	parts := []string{AlgorithmVersion, EncodingVersion, model.ID.Provider, model.ID.Name}
 	if model.Profile != "" {
 		parts = append(parts, model.Profile)
 	}
