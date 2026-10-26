@@ -59,6 +59,13 @@ type Config struct {
 
 // CacheLimits bounds the resident tables: how many scopes may hold one, and
 // how large one may be. A zero field is no bound.
+//
+// The scope bound also bounds the bases the store keeps decoded, and the two
+// are one copy per scope: a lane's table shares its entries with the base it was
+// materialized from. A derivation that fans out across scopes wants the bound at
+// least as wide as the fan-out -- an unbounded lane keeps every table, but the
+// store it shares them with keeps one base unless it is told to keep more, and
+// the delta of a scope the store dropped decodes that scope's base again.
 type CacheLimits struct {
 	Scopes  int
 	Entries int
@@ -331,6 +338,7 @@ func New(config Config) (*Index, error) {
 	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			ProducerVersion: generationIdentity(config.Model),
+			ResidentBases:   config.Limits.Scopes,
 			Thresholds:      config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
