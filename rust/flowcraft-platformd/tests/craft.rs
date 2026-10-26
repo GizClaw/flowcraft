@@ -1,3 +1,6 @@
+//! These drive unix-domain sockets and a POSIX shell; a Windows host has
+//! neither in this crate yet, so the file is unix-only rather than untested.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! The `craft.Craft/v1` ABI against the stub, and the exec supervisor.

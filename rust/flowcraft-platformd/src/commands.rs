@@ -370,6 +370,7 @@ pub async fn craft_stub(
         "craft stub listening"
     );
 
+    #[allow(unused_mut)]
     let mut builder = tonic::transport::Server::builder();
     match target {
         #[cfg(unix)]

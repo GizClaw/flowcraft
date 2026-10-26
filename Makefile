@@ -147,8 +147,9 @@ rust-clippy:
 # the whole matrix — the `rust-windows` CI lane runs it on a real host, where the
 # provider tests execute too.
 #
-# `flowcraft-platformd` is deliberately not in the matrix yet: its admin socket
-# and craft sockets are still unix-only.
+# The daemon is in the matrix too: its admin surface serves HTTP over a unix
+# socket or TCP+TLS, and a craft is reached at a `unix` or `dns` target, so the
+# only unix-only parts left are the socket helpers and the POSIX-shell tests.
 RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
 RUST_WINDOWS_SHAPES := workspace secret tool sandbox caps
 
@@ -161,6 +162,9 @@ rust-windows-check:
 			--no-default-features --features $$shape \
 			--target $(RUST_WINDOWS_TARGET) -- -D warnings ) || exit 1; \
 	done
+	@echo "  ==> flowcraft-platformd"
+	@( cd $(RUST_DIR) && $(CARGO) clippy -q -p flowcraft-platformd --all-targets \
+		--target $(RUST_WINDOWS_TARGET) -- -D warnings )
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree

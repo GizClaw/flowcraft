@@ -567,16 +567,18 @@ jobs:
       - name: Test the local-only shape
         working-directory: rust
         run: cargo test -p flowcraft --no-default-features --features workspace
-      # The other providers compile here too. Their tests are compiled but not
-      # run yet: a few of them spawn `sh`, and the sandbox has no Windows backend
-      # to select. Running them is the point of this lane once that lands.
-      - name: Compile the other provider shapes
+      # The other providers and the daemon compile here too. Their tests are
+      # compiled but not run yet: a few of them spawn `sh`, and the sandbox has no
+      # Windows backend to select. Running them is the point of this lane once
+      # that lands.
+      - name: Compile the other provider shapes and the daemon
         working-directory: rust
         run: |
           for shape in secret tool sandbox caps; do
             cargo check -p flowcraft --all-targets \
               --no-default-features --features "$shape"
           done
+          cargo check -p flowcraft-platformd --all-targets
       # The sandbox capability needs the control plane (kernel/client/wire), so it
       # cannot use the `workspace`-only shape above: its endpoints are gRPC over
       # the kernel's transport, which is a unix socket on unix and a `dns` target

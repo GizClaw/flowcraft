@@ -125,7 +125,7 @@ portable:
 | `--no-default-features --features workspace` | builds — the `cfg(windows)` sharing-violation retry and `MoveFileEx` refusal are exercised |
 | `--features secret` / `tool` / `sandbox` alone | builds — provider only: no endpoint server, no remote client, no grant scope |
 | `--features caps` (the `wire` shapes) | builds — endpoints exist, but `sandbox` selects no confinement backend off unix, and `tty: true` is refused rather than served |
-| `flowcraft-platformd` | **does not build yet** — the admin socket and the craft ABI sockets are still unix-only |
+| `flowcraft-platformd` | builds — endpoints at `dns` targets, crafts at `unix` or `dns` targets, and an admin surface that is HTTP over either. What it cannot do there yet: select a sandbox backend, and run its socket-based integration tests |
 
 `make rust-windows-check` cross-compiles every shape in that table except the
 daemon (it needs the `x86_64-pc-windows-gnu` target and a mingw gcc, which `ring`

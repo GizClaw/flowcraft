@@ -103,6 +103,7 @@ impl AdminHandle {
 enum Guard {
     /// The kernel names the peer, and it already said yes: only this uid or root
     /// can reach the socket. Nothing to check per request.
+    #[cfg(unix)]
     Peer,
     /// The request must carry `Authorization: Bearer <token>`.
     Token(String),
@@ -230,11 +231,13 @@ pub async fn serve(
 }
 
 /// Only the daemon's own uid (or root) may drive the admin socket.
+#[cfg(unix)]
 fn peer_allowed(peer_uid: u32, self_uid: u32) -> bool {
     peer_uid == self_uid || peer_uid == 0
 }
 
 /// A refusal has to be answerable, not a silent close.
+#[cfg(unix)]
 async fn write_refusal(mut stream: tokio::net::UnixStream) {
     use tokio::io::AsyncWriteExt as _;
 
@@ -242,6 +245,17 @@ async fn write_refusal(mut stream: tokio::net::UnixStream) {
         .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
         .await;
     let _ = stream.shutdown().await;
+}
+
+impl Guard {
+    /// Whether this connection may issue a command.
+    fn allows(&self, presented: Option<&str>) -> bool {
+        match self {
+            #[cfg(unix)]
+            Self::Peer => true,
+            Self::Token(expected) => bearer_matches(presented, expected),
+        }
+    }
 }
 
 /// Serve HTTP/1.1 on one connection.
@@ -286,9 +300,7 @@ async fn answer(
         .map(|body| body.to_bytes())
         .unwrap_or_default();
 
-    if let Guard::Token(expected) = guard
-        && !bearer_matches(presented.as_deref(), expected)
-    {
+    if !guard.allows(presented.as_deref()) {
         return Ok(reply(
             StatusCode::UNAUTHORIZED,
             json!({"ok": false, "error": "admin: missing or wrong bearer token"}),
@@ -529,6 +541,7 @@ mod tests {
         assert!(!bearer_matches(Some("Bearer "), "abc"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_the_owner_or_root_may_use_the_socket() {
         assert!(peer_allowed(1000, 1000));
