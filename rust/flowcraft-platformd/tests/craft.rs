@@ -223,3 +223,132 @@ async fn an_in_process_craft_needs_no_wire() {
         .await
         .expect("close");
 }
+
+/// A CA plus a server certificate for `localhost`, written into `dir`.
+fn pki(dir: &Path) {
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+
+    let ca_key = KeyPair::generate().expect("ca key");
+    let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let ca = ca_params.self_signed(&ca_key).expect("ca cert");
+    let issuer = Issuer::new(ca_params, ca_key);
+    std::fs::write(dir.join("ca.pem"), ca.pem()).expect("write ca");
+
+    let server_key = KeyPair::generate().expect("server key");
+    let mut server_params =
+        CertificateParams::new(vec!["localhost".to_owned()]).expect("server params");
+    server_params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::ServerAuth);
+    let server = server_params
+        .signed_by(&server_key, &issuer)
+        .expect("server cert");
+    std::fs::write(dir.join("server-cert.pem"), server.pem()).expect("write cert");
+    std::fs::write(dir.join("server-key.pem"), server_key.serialize_pem()).expect("write key");
+}
+
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.local_addr().expect("addr").port()
+}
+
+/// The ABI over `dns` + TLS: the second bearer the stub now serves.
+///
+/// A craft on another host has no socket to share, so the same seven calls have
+/// to work over TLS. This is the only place that path is exercised end to end.
+#[tokio::test]
+async fn the_abi_works_over_tls() {
+    use flowcraft::kernel::config::Target as CraftTarget;
+    use tonic::transport::{Certificate, ClientTlsConfig};
+
+    // A workspace-wide build enables both rustls providers; pick the one the
+    // daemon's TLS path uses.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    pki(dir.path());
+    let port = free_port();
+    let address = format!("127.0.0.1:{port}");
+
+    let mut child = support::isolated(std::process::Command::new(binary()))
+        .args([
+            "craft-stub",
+            "--target",
+            &format!("dns:///{address}"),
+            "--tls-cert",
+            dir.path().join("server-cert.pem").to_str().expect("path"),
+            "--tls-key",
+            dir.path().join("server-key.pem").to_str().expect("path"),
+            "--name",
+            "remote",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stub");
+
+    let mut listening = false;
+    for _ in 0..250 {
+        if std::net::TcpStream::connect(&address).is_ok() {
+            listening = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    if !listening {
+        let _ = child.kill();
+        panic!("craft stub never listened on {address}");
+    }
+
+    let ca = std::fs::read(dir.path().join("ca.pem")).expect("read ca");
+    let tls = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(ca))
+        .domain_name("localhost");
+    let client = match CraftClient::connect(&CraftTarget::Dns(address), Some(tls)).await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = child.kill();
+            panic!("connect over tls: {error}");
+        }
+    };
+
+    let info = client.describe().await.expect("describe");
+    assert_eq!(info.name, "remote");
+    let started = client
+        .start(pb::StartRequest {
+            instance: "one".to_owned(),
+            tenant: "a".to_owned(),
+            grants: Vec::new(),
+        })
+        .await
+        .expect("start");
+    assert_eq!(started.session, "stub-session");
+
+    let mut events = client
+        .run(pb::RunRequest {
+            session: started.session.clone(),
+            input: None,
+            credit: 4,
+        })
+        .await
+        .expect("run");
+    let first = events.message().await.expect("event").expect("some");
+    assert_eq!(first.r#type, "delta");
+
+    client
+        .close(pb::CloseRequest {
+            session: started.session,
+        })
+        .await
+        .expect("close");
+    let _ = child.kill();
+    let _ = child.wait();
+}

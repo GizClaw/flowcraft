@@ -49,6 +49,12 @@ nix = { workspace = true, features = ["user"] }
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# The TLS round trip needs a certificate to hand the stub and trust on the client.
+rcgen = "0.14"
+# Pin the process-wide rustls provider: a workspace-wide build unifies `ring`
+# (tonic's tls-ring) with `aws_lc_rs` (the OTLP client), which leaves the default
+# ambiguous.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [lints]
 workspace = true

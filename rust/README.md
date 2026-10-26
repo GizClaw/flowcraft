@@ -380,7 +380,7 @@ Two rules carry most of the design:
 | ABI enforcement: version negotiation, envelope types, capability namespaces, bootstrap token, 0600 sockets | ✅ |
 | ABI conformance suite (`tests/conformance.rs`, reusable against any craft) | ✅ |
 | `ExecSupervisor`: spawn a craft, wait for its socket, open a session, stop it | ✅ |
-| `flowcraftd craft-stub`: a minimal craft for development and tests | ✅ |
+| `flowcraftd craft-stub`: a minimal craft for development and tests, served on a unix socket or a `dns` target with TLS (`--target`, `--tls-cert`/`--tls-key`) | ✅ |
 | Hosted crafts: `crafts:` config, per-craft grants, start/stop lifecycle | ✅ |
 | Craft supervisors: `exec` (own the process), `external` (connect only), `systemd` (unit) | ✅ |
 | Host-level preflight: unknown endpoints and capability mismatches fail `check` | ✅ |
@@ -510,6 +510,12 @@ Two rules carry most of the design:
   shutdown, and never fails the reload, because the swap already happened.
   `platform.yaml` changes still require a restart, because endpoints, TLS, and
   grant policy are kernel state.
+- **A TLS listener pins the rustls provider, and the library does it.** A
+  workspace-wide build unifies `ring` (tonic's `tls-ring`) with `aws_lc_rs`
+  (pulled in through `rmcp` and the OTLP exporter), and rustls then refuses to
+  choose between two complete providers — the first listener or channel panics.
+  `kernel::tls::install_provider` installs `ring` once, from `server`, `client`,
+  and `flowcraftd`'s `main`, so a host that forgets cannot hit it.
 - **TLS material never enters a document.** A `tls` block holds
   `${secret:...}` references only; the bytes come from the host's bootstrap
   provider (environment or a directory). The kernel refuses inline PEM at

@@ -837,6 +837,8 @@ dependencies = [
  "nix 0.31.3",
  "notify",
  "rand 0.8.8",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

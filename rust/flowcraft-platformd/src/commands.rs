@@ -305,14 +305,31 @@ fn read(path: &str) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|error| Error::not_found(format!("cannot read {path}: {error}")))
 }
 
+/// How `craft-stub` listens.
+///
+/// The ABI is transport-agnostic on purpose: a craft is a `unix://` socket when
+/// the platform and the craft share a host, and a `dns://` target with TLS when
+/// they do not. The double supports both so the second path is not code that
+/// only production exercises.
+pub struct StubServe {
+    /// `unix:///abs/path` or `dns:///host:port`.
+    pub target: String,
+    /// Server certificate chain (PEM path), required for a `dns` target.
+    pub cert: Option<String>,
+    /// Server private key (PEM path), required for a `dns` target.
+    pub key: Option<String>,
+    /// Client CA bundle (PEM path), which turns the listener into mutual TLS.
+    pub client_ca: Option<String>,
+}
+
 /// A minimal craft endpoint, used by tests and by `examples/` to exercise the
 /// ABI without a Go build.
 ///
-/// The behaviour lives in [`crate::stub::StubCraft`]; this owns the socket and
+/// The behaviour lives in [`crate::stub::StubCraft`]; this owns the listener and
 /// hands the handler to the generic adapter, which is also what a host serving a
 /// real craft does.
 pub async fn craft_stub(
-    socket: &str,
+    serve: &StubServe,
     name: &str,
     renew_log: Option<&str>,
     token: Option<&str>,
@@ -321,18 +338,11 @@ pub async fn craft_stub(
     bad_envelope: bool,
 ) -> Result<()> {
     use flowcraft::craft::Adapter;
+    use flowcraft::kernel::Target;
+    use flowcraft::kernel::config::parse_target;
     use flowcraft::proto::craft::craft_server;
-    use tokio_stream::wrappers::UnixListenerStream;
 
-    let path = std::path::PathBuf::from(socket);
-    if path.exists() {
-        let _ = std::fs::remove_file(&path);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = tokio::net::UnixListener::bind(&path)?;
-
+    let target = parse_target(&serve.target)?;
     let handler = std::sync::Arc::new(crate::stub::StubCraft::new(
         name,
         abi_version,
@@ -347,17 +357,71 @@ pub async fn craft_stub(
     {
         adapter = adapter.with_token(token);
     }
-
     tracing::info!(
-        flowcraft.socket = %path.display(),
+        flowcraft.target = %target.as_uri(),
         flowcraft.craft = name,
         "craft stub listening"
     );
-    tonic::transport::Server::builder()
-        .add_service(craft_server::CraftServer::new(adapter))
-        .serve_with_incoming(UnixListenerStream::new(listener))
-        .await
-        .map_err(|error| Error::internal(format!("craft stub: {error}")))
+
+    let mut builder = tonic::transport::Server::builder();
+    match target {
+        #[cfg(unix)]
+        Target::Unix(path) => {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let listener = tokio::net::UnixListener::bind(&path)?;
+            builder
+                .add_service(craft_server::CraftServer::new(adapter))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .map_err(|error| Error::internal(format!("craft stub: {error}")))
+        }
+        #[cfg(not(unix))]
+        Target::Unix(path) => Err(Error::not_available(format!(
+            "craft-stub: {} is a unix socket and this host has none; use a dns target",
+            path.display()
+        ))),
+        Target::Dns(address) => {
+            let tls = stub_tls(serve)?;
+            let listener = std::net::TcpListener::bind(&address).map_err(|error| {
+                Error::not_available(format!("craft-stub: cannot bind {address}: {error}"))
+            })?;
+            listener.set_nonblocking(true)?;
+            let listener = tokio::net::TcpListener::from_std(listener)?;
+            builder
+                .tls_config(tls)
+                .map_err(|error| Error::validation(format!("craft-stub: tls: {error}")))?
+                .add_service(craft_server::CraftServer::new(adapter))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .map_err(|error| Error::internal(format!("craft stub: {error}")))
+        }
+    }
+}
+
+/// The server half of a `dns` stub: certificate, key, and an optional client CA
+/// that makes the listener mutual TLS.
+fn stub_tls(serve: &StubServe) -> Result<tonic::transport::ServerTlsConfig> {
+    use tonic::transport::{Certificate, Identity, ServerTlsConfig};
+
+    let (Some(cert), Some(key)) = (serve.cert.as_deref(), serve.key.as_deref()) else {
+        return Err(Error::validation(
+            "craft-stub: a dns target needs --tls-cert and --tls-key",
+        ));
+    };
+    let read = |path: &str| {
+        std::fs::read(path)
+            .map_err(|error| Error::not_found(format!("craft-stub: cannot read {path}: {error}")))
+    };
+    let mut tls = ServerTlsConfig::new().identity(Identity::from_pem(read(cert)?, read(key)?));
+    if let Some(ca) = &serve.client_ca {
+        tls = tls.client_ca_root(Certificate::from_pem(read(ca)?));
+    }
+    Ok(tls)
 }
 
 fn admin_socket(platform: &Platform) -> Option<std::path::PathBuf> {

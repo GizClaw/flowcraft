@@ -74,8 +74,14 @@ pub enum Command {
     },
     /// Serve a minimal `craft.Craft/v1` endpoint (development aid).
     CraftStub {
-        /// Socket to listen on.
-        socket: String,
+        /// Target to listen on: `unix:///abs/path` or `dns:///host:port`.
+        target: String,
+        /// Server certificate chain (PEM path), for a `dns` target.
+        tls_cert: Option<String>,
+        /// Server private key (PEM path), for a `dns` target.
+        tls_key: Option<String>,
+        /// Client CA bundle (PEM path), to require mutual TLS.
+        tls_client_ca: Option<String>,
         /// Craft name reported by Describe.
         name: String,
         /// Append a line on every Renew (tests).
@@ -154,12 +160,25 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
         }
         "craft-stub" => {
             let flags = Flags::parse(rest)?;
-            let socket = flags
-                .socket
-                .ok_or_else(|| usage("craft-stub needs --socket <path>"))?;
+            // `--socket <path>` stays accepted, and a bare path counts as
+            // `unix://`: every fixture and script writes it that way.
+            let target = flags
+                .target
+                .or(flags.socket)
+                .map(|target| {
+                    if target.contains("://") {
+                        target
+                    } else {
+                        format!("unix://{target}")
+                    }
+                })
+                .ok_or_else(|| usage("craft-stub needs --target <unix://|dns://>"))?;
             Ok((
                 Command::CraftStub {
-                    socket,
+                    target,
+                    tls_cert: flags.tls_cert,
+                    tls_key: flags.tls_key,
+                    tls_client_ca: flags.tls_client_ca,
                     name: flags.name.unwrap_or_else(|| "stub".to_owned()),
                     renew_log: flags.renew_log,
                     token: flags.token,
@@ -203,6 +222,10 @@ struct Flags {
     config: Option<String>,
     deploys: Vec<String>,
     socket: Option<String>,
+    target: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_client_ca: Option<String>,
     name: Option<String>,
     session: Option<String>,
     out: Option<String>,
@@ -237,6 +260,22 @@ impl Flags {
                 }
                 "--name" => {
                     flags.name = Some(value(args, index, "--name")?);
+                    index += 2;
+                }
+                "--target" => {
+                    flags.target = Some(value(args, index, "--target")?);
+                    index += 2;
+                }
+                "--tls-cert" => {
+                    flags.tls_cert = Some(value(args, index, "--tls-cert")?);
+                    index += 2;
+                }
+                "--tls-key" => {
+                    flags.tls_key = Some(value(args, index, "--tls-key")?);
+                    index += 2;
+                }
+                "--tls-client-ca" => {
+                    flags.tls_client_ca = Some(value(args, index, "--tls-client-ca")?);
                     index += 2;
                 }
                 "--token" => {
@@ -319,7 +358,7 @@ fn value(args: &[String], index: usize, flag: &str) -> Result<String> {
 /// The usage text.
 #[must_use]
 pub const fn usage_text() -> &'static str {
-    "usage:\n  flowcraftd serve --config <platform.yaml> --deploy <deploy.yaml> [--deploy <overlay.yaml>]...\n  flowcraftd check [--config <platform.yaml>] --deploy <deploy.yaml> [--deploy <overlay.yaml>]... [--json]\n  flowcraftd craft-stub --socket <path> [--name <name>]
+    "usage:\n  flowcraftd serve --config <platform.yaml> --deploy <deploy.yaml> [--deploy <overlay.yaml>]...\n  flowcraftd check [--config <platform.yaml>] --deploy <deploy.yaml> [--deploy <overlay.yaml>]... [--json]\n  flowcraftd craft-stub --target <unix://path|dns://host:port> [--name <name>] [--tls-cert <pem> --tls-key <pem>]
   flowcraftd ctl --socket <path> <status|reload|drain|crafts|revoke> [--session <id>]\n  flowcraftd diag --socket <path> --out <dir>\n  flowcraftd catalog [--json]\n  flowcraftd version\n\nlog flags (any command):\n  --log-level <directives>  tracing filter syntax, e.g. \"info,flowcraft::kernel=debug\"\n  --log-format <text|json>  one record per line\n  --log-file <path>         also write to a rotating file\n  --log-ring                keep recent output in memory for `diag`\n  --profile <service|client|cli>  override the shape the command implies\n  -v, --verbose             shorthand for --log-level debug\n  -q, --quiet               warnings and errors only\n  RUST_LOG overrides --log-level"
 }
 
