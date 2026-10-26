@@ -110,10 +110,23 @@ fn the_daemon_is_the_only_dependent_of_the_library() {
         .map(|p| p["name"].as_str().expect("package name"))
         .collect();
     names.sort();
-    assert_eq!(names, ["flowcraft", "flowcraft-platformd"]);
+    assert_eq!(
+        names,
+        ["flowcraft", "flowcraft-platformd", "flowcraft-proto-gen"],
+        "a new workspace member needs a deliberate decision, not an accident"
+    );
 
+    // The published surface is what `cargo publish` can reach: everything else
+    // must say `publish = false`, or it becomes a third crate on crates.io.
+    let mut published: Vec<&str> = Vec::new();
     for package in packages {
         let name = package["name"].as_str().expect("package name");
+        let unpublished = package["publish"]
+            .as_array()
+            .is_some_and(|targets| targets.is_empty());
+        if !unpublished {
+            published.push(name);
+        }
         for dep in package["dependencies"].as_array().expect("dependencies") {
             // `kind` is null for a normal dependency; "dev"/"build" otherwise.
             if !dep["kind"].is_null() {
@@ -130,6 +143,12 @@ fn the_daemon_is_the_only_dependent_of_the_library() {
             );
         }
     }
+    published.sort_unstable();
+    assert_eq!(
+        published,
+        ["flowcraft", "flowcraft-platformd"],
+        "only two packages may be publishable"
+    );
 }
 
 /// Every `.rs` file under `src/`, with the layer it belongs to.

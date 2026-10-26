@@ -79,7 +79,7 @@ make proto-breaking # buf breaking against main
 ```
 
 Rust commits its bindings: `rust/flowcraft/src/proto/generated/` is produced by
-`rust/flowcraft/examples/gen_proto.rs` (`make rust-proto-gen`). They are checked
+`rust/tools/proto-gen` (`make rust-proto-gen`). They are checked
 in so that anyone building the `flowcraft` crate — a consumer, docs.rs, `cargo
 install` — needs neither `protoc` nor a build script. `make rust-proto-check`
 fails on drift, the way `make proto-check` guards the Go stubs.

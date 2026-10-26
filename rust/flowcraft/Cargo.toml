@@ -234,7 +234,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde_json.workspace = true
 tempfile = "3"
 tokio.workspace = true
-tonic-prost-build.workspace = true
 tracing-subscriber.workspace = true
 
 [lib]

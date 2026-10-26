@@ -50,9 +50,10 @@ rust/
     src/caps/tool/           tool: capability (endpoint/remote/MCP) + agent-side
                              framework (registry, assembly, middleware, exposure,
                              discovery, executor)
-    examples/gen_proto.rs    regenerates src/proto/generated/ from proto/
   flowcraft-platformd/       the `flowcraftd` binary, and the supervisor, admin
                              and craft-hosting surface only it needs
+  tools/proto-gen/           regenerates `flowcraft/src/proto/generated/` from
+                             `proto/` (`publish = false`, a repository tool)
   examples/workspace/        a runnable platform.yaml + deploy.yaml
   examples/capabilities/     workspace, secret, sandbox, tool + `${secret:...}`
 ```

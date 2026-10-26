@@ -254,17 +254,17 @@ proto-lint:
 rust-proto-gen:
 	@command -v protoc >/dev/null 2>&1 || { echo "protoc is required to regenerate the bindings"; exit 1; }
 	@echo "==> regenerate $(RUST_DIR) wire bindings"
-	@cd $(RUST_DIR) && $(CARGO) run -q -p flowcraft --example gen_proto
+	@cd $(RUST_DIR) && $(CARGO) run -q -p flowcraft-proto-gen --bin gen-proto
 
 .PHONY: rust-proto-check
 rust-proto-check: rust-proto-gen
-	@git diff --exit-code -- $(RUST_DIR)/flowcraft/src/proto || { \
+	@git diff --exit-code -- $(RUST_DIR)/flowcraft/src/proto/generated || { \
 		echo "generated Rust bindings drifted: run 'make rust-proto-gen' and commit the result" >&2; \
 		exit 1; \
 	}
-	@test -z "$$(git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto | grep '^??')" || { \
+	@test -z "$$(git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto/generated | grep '^??')" || { \
 		echo "untracked generated files: commit them" >&2; \
-		git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto; \
+		git status --porcelain -- $(RUST_DIR)/flowcraft/src/proto/generated; \
 		exit 1; \
 	}
 

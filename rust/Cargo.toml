@@ -12,7 +12,7 @@
 
 [workspace]
 resolver = "3"
-members = ["flowcraft", "flowcraft-platformd"]
+members = ["flowcraft", "flowcraft-platformd", "tools/proto-gen"]
 
 [workspace.package]
 version = "0.1.0"

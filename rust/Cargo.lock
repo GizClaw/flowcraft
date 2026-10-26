@@ -822,7 +822,6 @@ dependencies = [
  "tokio-stream",
  "tonic 0.14.5",
  "tonic-prost",
- "tonic-prost-build",
  "tower",
  "tracing",
  "tracing-opentelemetry",
@@ -845,6 +844,13 @@ dependencies = [
  "tokio-stream",
  "tonic 0.14.5",
  "tracing",
+]
+
+[[package]]
+name = "flowcraft-proto-gen"
+version = "0.1.0"
+dependencies = [
+ "tonic-prost-build",
 ]
 
 [[package]]
