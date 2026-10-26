@@ -13,5 +13,11 @@ pub mod hosting;
 pub mod logging;
 pub mod secrets;
 pub mod stub;
+
+/// The rustls provider is process-wide and ambiguous in this build; pin it once
+/// before any TLS configuration is built (see `flowcraft::kernel::tls`).
+fn kernel_tls_provider() {
+    flowcraft::kernel::tls::install_provider();
+}
 pub mod supervisor;
 pub mod watcher;

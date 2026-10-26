@@ -12,8 +12,8 @@ checkpoint store. Endpoints are unix sockets by
 default and TLS/mTLS over TCP when a `dns://` target is configured. `SIGHUP`
 reloads the deployment as a new generation; a bad document never disturbs the
 running one, and new TLS material is picked up by the reload. `craft.Craft/v1`
-is the ABI to the craft sidecars that run the agent loop, and `admin.sock` is the
-operator surface. `${secret:...}` resolves
+is the ABI to the craft sidecars that run the agent loop, and `admin.sock` (or a
+TLS listener with a token) is the operator surface. `${secret:...}` resolves
 against a `secret.Store` built in the same deployment graph. Everything else is
 listed under [Not implemented yet](#not-implemented-yet).
 
@@ -386,7 +386,7 @@ Two rules carry most of the design:
 | Host-level preflight: unknown endpoints and capability mismatches fail `check` | ✅ |
 | Layered deployment documents: repeated `--deploy`, later layers win | ✅ |
 | `entries:` surfaced: `serve` logs them, admin `status` reports them | ✅ |
-| Admin socket + `flowcraftd ctl`: status / reload / drain / crafts / revoke, owner-only | ✅ |
+| Admin surface (HTTP): `flowcraftd ctl` / `diag` over a unix socket, or over TCP + TLS with a bearer token; status / reload / drain / crafts / revoke | ✅ |
 | Drain: readiness off and no new grants minted; existing leases keep working | ✅ |
 | Sandbox confinement: `bwrap` (Linux) and `seatbelt` (macOS) process wrappers, with the enforcement proxy | ✅ |
 | Graceful drain: listeners stop accepting and finish in-flight requests on shutdown | ✅ |
@@ -460,11 +460,20 @@ Two rules carry most of the design:
 - **Shutdown drains.** A listener stops accepting and waits for in-flight
   requests (`serve_with_incoming_shutdown`), bounded by a 10s grace; only then
   does the process exit. Reload takes the same path for the generation it
-  replaces.- **The admin surface is a socket, not a port.** `admin.sock` is owner-only
-  (0700 directory, 0600 socket) and speaks one JSON line per request. `drain`
-  clears readiness without tearing anything down, `reload` is the same path
-  `SIGHUP` takes, and `revoke` takes a session id. A failure to bind the admin
-  socket warns and continues: it is an operator convenience, not a dependency.
+  replaces.- **The admin surface is HTTP, and the transport decides who may call it.**
+  `listen.admin` names either `unix:///abs/path` — directory `0700`, socket
+  `0600`, plus the kernel's peer credentials, so only this uid or root, and no
+  secret is involved — or `dns:///host:port` for a host without unix sockets,
+  which requires `admin_tls` (TLS is mandatory there; a client CA is refused
+  because a caller is identified by the token rather than by a certificate) and
+  `admin_token_file`, a bearer token the daemon rewrites on every start and
+  `ctl --token-file` reads. Six verbs over routes — `GET /status`, `POST
+  /reload`, `POST /drain`, `GET /crafts`, `POST /revoke`, `GET /diag` — with
+  `ok` in the body as the business answer and the HTTP status speaking only
+  about the request. `drain` clears readiness without tearing anything down,
+  `reload` is the same path `SIGHUP` takes, and `revoke` takes a session id. A
+  failure to bind the admin surface warns and continues: it is an operator
+  convenience, not a dependency.
 - **Preflight is split in two on purpose.** The resource kernel checks types,
   dependencies, and cycles; the daemon checks what only the host knows — whether
   a `settings.endpoint` name resolves and whether that endpoint serves the

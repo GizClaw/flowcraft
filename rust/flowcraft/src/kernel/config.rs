@@ -313,15 +313,35 @@ pub struct BootstrapConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListenConfig {
-    /// `admin.sock` location. Unix only in this cut.
+    /// Where the admin surface listens.
+    ///
+    /// `unix:///abs/path` — directory `0700`, socket `0600`, and the kernel's
+    /// peer credentials: only this uid or root. `dns:///host:port` — TCP with
+    /// TLS (mandatory) plus the bearer token below, for a host without unix
+    /// sockets.
     #[serde(default = "default_admin")]
     pub admin: String,
+    /// TLS material for a `dns` admin target: `${secret:…}` references only.
+    ///
+    /// The server half (`cert`, `key`); a client CA is refused, because mutual
+    /// TLS is not implemented for this surface and a caller is identified by the
+    /// token instead.
+    #[serde(default)]
+    pub admin_tls: Option<TlsConfig>,
+    /// Where the daemon writes the bearer token a `dns` admin target requires.
+    ///
+    /// Rewritten on every start, `0600` on unix. `flowcraftd ctl --token-file`
+    /// reads it.
+    #[serde(default)]
+    pub admin_token_file: String,
 }
 
 impl Default for ListenConfig {
     fn default() -> Self {
         Self {
             admin: default_admin(),
+            admin_tls: None,
+            admin_token_file: String::new(),
         }
     }
 }
@@ -520,6 +540,44 @@ impl Config {
             }
             if let Some(tls) = &endpoint.tls {
                 tls.validate(name)?;
+            }
+        }
+
+        let admin = parse_target(&self.listen.admin)
+            .map_err(|error| Error::validation(format!("listen.admin: {}", error.message())))?;
+        match admin.scheme() {
+            "unix" => {
+                if self.listen.admin_tls.is_some()
+                    || !self.listen.admin_token_file.trim().is_empty()
+                {
+                    return Err(Error::validation(
+                        "listen: admin_tls and admin_token_file are only meaningful on a dns target",
+                    ));
+                }
+            }
+            _ => {
+                let configured =
+                    self.listen.admin_tls.as_ref().is_some_and(|tls| {
+                        !tls.cert.trim().is_empty() && !tls.key.trim().is_empty()
+                    });
+                if !configured {
+                    return Err(Error::validation(
+                        "listen.admin: a dns target requires admin_tls with cert and key",
+                    ));
+                }
+                if let Some(tls) = &self.listen.admin_tls
+                    && (!tls.client_ca.trim().is_empty() || !tls.ca.trim().is_empty())
+                {
+                    return Err(Error::validation(
+                        "listen.admin_tls: mutual TLS is not implemented; the caller is \
+                         identified by admin_token_file",
+                    ));
+                }
+                if self.listen.admin_token_file.trim().is_empty() {
+                    return Err(Error::validation(
+                        "listen.admin: a dns target requires admin_token_file",
+                    ));
+                }
             }
         }
 

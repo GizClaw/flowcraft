@@ -167,12 +167,12 @@ fn run(args: Vec<String>) -> Result<ExitCode, Failure> {
             }
         }
         cli::Command::Ctl {
-            socket,
+            client,
             command,
             session,
         } => {
             runtime_of(&runtime)?
-                .block_on(commands::ctl(&socket, &command, session.as_deref()))
+                .block_on(commands::ctl(&client, &command, session.as_deref()))
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -206,9 +206,9 @@ fn run(args: Vec<String>) -> Result<ExitCode, Failure> {
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::Diag { socket, out } => {
+        cli::Command::Diag { client, out } => {
             runtime_of(&runtime)?
-                .block_on(commands::diag(&socket, &out))
+                .block_on(commands::diag(&client, &out))
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }

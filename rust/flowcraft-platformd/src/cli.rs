@@ -65,8 +65,8 @@ pub enum Command {
     },
     /// Send one command to a running daemon's admin socket.
     Ctl {
-        /// Admin socket path.
-        socket: String,
+        /// How to reach the daemon.
+        client: crate::commands::AdminClient,
         /// `status`, `reload`, `drain`, `crafts`, or `revoke`.
         command: String,
         /// Session to revoke, for `revoke`.
@@ -97,8 +97,8 @@ pub enum Command {
     },
     /// Write a support bundle for a running daemon.
     Diag {
-        /// Admin socket path.
-        socket: String,
+        /// How to reach the daemon.
+        client: crate::commands::AdminClient,
         /// Directory the bundle is written into.
         out: String,
     },
@@ -151,7 +151,13 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
                 .ok_or_else(|| usage("ctl needs a command: status|reload|drain|crafts|revoke"))?;
             Ok((
                 Command::Ctl {
-                    socket,
+                    client: crate::commands::AdminClient {
+                        target: socket,
+                        ca: flags.ca,
+                        server_name: flags.server_name,
+                        token_file: flags.token_file,
+                        token: flags.token,
+                    },
                     command,
                     session: flags.session,
                 },
@@ -195,7 +201,19 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
                 .socket
                 .ok_or_else(|| usage("diag needs --socket <path>"))?;
             let out = flags.out.ok_or_else(|| usage("diag needs --out <dir>"))?;
-            Ok((Command::Diag { socket, out }, flags.log))
+            Ok((
+                Command::Diag {
+                    client: crate::commands::AdminClient {
+                        target: socket,
+                        ca: flags.ca,
+                        server_name: flags.server_name,
+                        token_file: flags.token_file,
+                        token: flags.token,
+                    },
+                    out,
+                },
+                flags.log,
+            ))
         }
         "serve" => {
             let flags = Flags::parse(rest)?;
@@ -223,6 +241,9 @@ struct Flags {
     deploys: Vec<String>,
     socket: Option<String>,
     target: Option<String>,
+    ca: Option<String>,
+    server_name: Option<String>,
+    token_file: Option<String>,
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_client_ca: Option<String>,
@@ -260,6 +281,18 @@ impl Flags {
                 }
                 "--name" => {
                     flags.name = Some(value(args, index, "--name")?);
+                    index += 2;
+                }
+                "--ca" => {
+                    flags.ca = Some(value(args, index, "--ca")?);
+                    index += 2;
+                }
+                "--server-name" => {
+                    flags.server_name = Some(value(args, index, "--server-name")?);
+                    index += 2;
+                }
+                "--token-file" => {
+                    flags.token_file = Some(value(args, index, "--token-file")?);
                     index += 2;
                 }
                 "--target" => {
@@ -359,7 +392,7 @@ fn value(args: &[String], index: usize, flag: &str) -> Result<String> {
 #[must_use]
 pub const fn usage_text() -> &'static str {
     "usage:\n  flowcraftd serve --config <platform.yaml> --deploy <deploy.yaml> [--deploy <overlay.yaml>]...\n  flowcraftd check [--config <platform.yaml>] --deploy <deploy.yaml> [--deploy <overlay.yaml>]... [--json]\n  flowcraftd craft-stub --target <unix://path|dns://host:port> [--name <name>] [--tls-cert <pem> --tls-key <pem>]
-  flowcraftd ctl --socket <path> <status|reload|drain|crafts|revoke> [--session <id>]\n  flowcraftd diag --socket <path> --out <dir>\n  flowcraftd catalog [--json]\n  flowcraftd version\n\nlog flags (any command):\n  --log-level <directives>  tracing filter syntax, e.g. \"info,flowcraft::kernel=debug\"\n  --log-format <text|json>  one record per line\n  --log-file <path>         also write to a rotating file\n  --log-ring                keep recent output in memory for `diag`\n  --profile <service|client|cli>  override the shape the command implies\n  -v, --verbose             shorthand for --log-level debug\n  -q, --quiet               warnings and errors only\n  RUST_LOG overrides --log-level"
+  flowcraftd ctl --socket <unix://path|dns://host:port> <status|reload|drain|crafts|revoke> [--session <id>] [--ca <pem> --token-file <path>]\n  flowcraftd diag --socket <unix://path|dns://host:port> --out <dir> [--ca <pem> --token-file <path>]\n  flowcraftd catalog [--json]\n  flowcraftd version\n\nlog flags (any command):\n  --log-level <directives>  tracing filter syntax, e.g. \"info,flowcraft::kernel=debug\"\n  --log-format <text|json>  one record per line\n  --log-file <path>         also write to a rotating file\n  --log-ring                keep recent output in memory for `diag`\n  --profile <service|client|cli>  override the shape the command implies\n  -v, --verbose             shorthand for --log-level debug\n  -q, --quiet               warnings and errors only\n  RUST_LOG overrides --log-level"
 }
 
 fn usage(message: impl std::fmt::Display) -> Error {

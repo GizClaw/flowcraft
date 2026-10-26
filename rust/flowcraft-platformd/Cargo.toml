@@ -31,6 +31,14 @@ otlp = ["flowcraft/otlp"]
 # The whole platform, capabilities included: the daemon is the one process that
 # serves every endpoint and hosts the crafts.
 flowcraft = { workspace = true, features = ["caps"] }
+# The admin surface is HTTP/1.1 over whichever local listener the host names; the
+# gRPC stack (tonic) only speaks HTTP/2, so this is its own thin server.
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1", features = ["std"] }
 notify.workspace = true
 rand.workspace = true
 async-trait.workspace = true

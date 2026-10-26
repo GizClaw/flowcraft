@@ -130,8 +130,8 @@ pub async fn serve(
         }
 
         let ready = std::sync::Arc::new(AtomicBool::new(true));
-        let admin = match admin_socket(&kernel) {
-            Some(path) => {
+        let admin = match admin_target(&kernel) {
+            Some(target) => {
                 let state = AdminState::new(
                     supervisor.clone(),
                     hosted.names().into_iter().map(str::to_owned).collect(),
@@ -139,11 +139,18 @@ pub async fn serve(
                     kernel.catalog().len(),
                     telemetry.clone(),
                 );
-                match serve_admin(&path, state).await {
+                let (tls, token) = match admin_credentials(&kernel, &target) {
+                    Ok(credentials) => credentials,
+                    Err(failure) => {
+                        logerr!(warn, failure, "admin listener unavailable");
+                        return Err(failure);
+                    }
+                };
+                match serve_admin(&target, tls, token, state).await {
                     Ok(handle) => {
                         tracing::info!(
-                            flowcraft.socket = %path.display(),
-                            "admin socket ready"
+                            flowcraft.admin = %target.as_uri(),
+                            "admin listener ready"
                         );
                         Some(handle)
                     }
@@ -424,48 +431,267 @@ fn stub_tls(serve: &StubServe) -> Result<tonic::transport::ServerTlsConfig> {
     Ok(tls)
 }
 
-fn admin_socket(platform: &Platform) -> Option<std::path::PathBuf> {
+/// Where the admin surface listens, or `None` when the target is unusable.
+fn admin_target(platform: &Platform) -> Option<Target> {
     match parse_target(&platform.config().listen.admin) {
-        Ok(Target::Unix(path)) => Some(path),
-        Ok(Target::Dns(_)) => {
-            tracing::warn!("admin socket must be a unix target");
-            None
-        }
+        Ok(target) => Some(target),
         Err(failure) => {
-            logerr!(warn, failure, "admin socket target is invalid");
+            logerr!(warn, failure, "admin target is invalid");
             None
         }
     }
 }
 
-/// One request line to the admin socket, one response line back.
-async fn admin_call(socket: &str, request: serde_json::Value) -> Result<serde_json::Value> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+/// TLS material and bearer token for a `dns` admin target.
+///
+/// A unix socket needs neither: its permissions and the kernel's peer
+/// credentials are the gate. A `dns` target needs both, because TLS proves only
+/// the server's identity and the socket's file mode no longer applies.
+fn admin_credentials(
+    platform: &Platform,
+    target: &Target,
+) -> Result<(Option<tokio_rustls::TlsAcceptor>, Option<String>)> {
+    let listen = &platform.config().listen;
+    let Target::Dns(_) = target else {
+        return Ok((None, None));
+    };
+    let tls = listen
+        .admin_tls
+        .as_ref()
+        .ok_or_else(|| Error::validation("listen.admin_tls is required on a dns admin target"))?;
+    let secrets = platform.secrets();
+    let read = |field: &str, reference: &str| -> Result<Vec<u8>> {
+        flowcraft::kernel::secret_provider::resolve(
+            &format!("listen.admin_tls.{field}"),
+            reference,
+            &*secrets,
+        )?
+        .ok_or_else(|| {
+            Error::validation(format!(
+                "listen.admin_tls.{field} is required on a dns admin target"
+            ))
+        })
+    };
+    let acceptor = crate::admin::acceptor(&read("cert", &tls.cert)?, &read("key", &tls.key)?)?;
 
-    let stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|error| Error::not_available(format!("admin socket {socket}: {error}")))?;
-    let (read, mut write) = stream.into_split();
-    write
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .map_err(Error::from)?;
-    write.shutdown().await.map_err(Error::from)?;
+    // A fresh token per start: a long-lived one only adds a window in which a
+    // stale copy is worth stealing.
+    let path = listen.admin_token_file.trim();
+    if path.is_empty() {
+        return Err(Error::validation(
+            "listen.admin_token_file is required on a dns admin target",
+        ));
+    }
+    let token = crate::admin::mint_token();
+    crate::admin::write_token(std::path::Path::new(path), &token)
+        .map_err(|error| Error::internal(format!("admin token file {path}: {error}")))?;
+    Ok((Some(acceptor), Some(token)))
+}
 
-    let mut reader = BufReader::new(read);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.map_err(Error::from)?;
-    serde_json::from_str(line.trim())
+/// How `ctl` and `diag` reach a running daemon.
+///
+/// A unix socket needs nothing but its path; a `dns` target needs the CA to
+/// verify the daemon and the token file the daemon wrote.
+pub struct AdminClient {
+    /// `unix:///abs/path` or `dns:///host:port`.
+    pub target: String,
+    /// CA bundle that signed the daemon's certificate (a `dns` target).
+    pub ca: Option<String>,
+    /// Name to verify in that certificate; defaults to the address's host.
+    pub server_name: Option<String>,
+    /// File the daemon wrote its bearer token to (a `dns` target).
+    pub token_file: Option<String>,
+    /// The token, inline, instead of a file.
+    pub token: Option<String>,
+}
+
+/// One admin command over either transport: an HTTP request, one JSON answer.
+///
+/// A bare path counts as `unix://`, because `ctl --socket /run/…/admin.sock` is
+/// the shape every script and fixture already writes.
+pub async fn call(
+    client: &AdminClient,
+    command: &str,
+    session: Option<&str>,
+) -> Result<serde_json::Value> {
+    use http_body_util::BodyExt as _;
+
+    let spelled = if client.target.contains("://") {
+        client.target.clone()
+    } else {
+        format!("unix://{}", client.target)
+    };
+    let target = parse_target(&spelled)?;
+    let (method, path) = match command {
+        "status" => ("GET", "/status"),
+        "reload" => ("POST", "/reload"),
+        "drain" => ("POST", "/drain"),
+        "crafts" => ("GET", "/crafts"),
+        "diag" => ("GET", "/diag"),
+        "revoke" => ("POST", "/revoke"),
+        other => {
+            return Err(Error::validation(format!(
+                "unknown admin command {other:?}"
+            )));
+        }
+    };
+    let body = if command == "revoke" {
+        serde_json::to_vec(&serde_json::json!({ "session": session.unwrap_or_default() }))
+            .map_err(|error| Error::internal(format!("admin request: {error}")))?
+    } else {
+        Vec::new()
+    };
+
+    let mut builder = hyper::Request::builder()
+        .method(method)
+        .uri(path)
+        .header(hyper::header::HOST, "flowcraft.local");
+    if !body.is_empty() {
+        builder = builder.header(hyper::header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(token) = admin_token(client, &target)? {
+        builder = builder.header(hyper::header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = builder
+        .body(http_body_util::Full::new(hyper::body::Bytes::from(body)))
+        .map_err(|error| Error::internal(format!("admin request: {error}")))?;
+
+    let response = match target {
+        #[cfg(unix)]
+        Target::Unix(path) => {
+            let stream = tokio::net::UnixStream::connect(&path)
+                .await
+                .map_err(|error| {
+                    Error::not_available(format!("admin socket {}: {error}", path.display()))
+                })?;
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                    .await
+                    .map_err(|error| Error::internal(format!("admin handshake: {error}")))?;
+            tokio::spawn(connection);
+            sender
+                .send_request(request)
+                .await
+                .map_err(|error| Error::not_available(format!("admin request: {error}")))?
+        }
+        #[cfg(not(unix))]
+        Target::Unix(path) => {
+            return Err(Error::not_available(format!(
+                "admin socket {}: this host has no unix sockets; use a dns target",
+                path.display()
+            )));
+        }
+        Target::Dns(address) => {
+            let stream = tokio::net::TcpStream::connect(&address)
+                .await
+                .map_err(|error| Error::not_available(format!("admin {address}: {error}")))?;
+            let (connector, name) = admin_client_tls(client, &address)?;
+            let stream = connector
+                .connect(name, stream)
+                .await
+                .map_err(|error| Error::not_available(format!("admin tls: {error}")))?;
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                    .await
+                    .map_err(|error| Error::internal(format!("admin handshake: {error}")))?;
+            tokio::spawn(connection);
+            sender
+                .send_request(request)
+                .await
+                .map_err(|error| Error::not_available(format!("admin request: {error}")))?
+        }
+    };
+
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| Error::internal(format!("admin response: {error}")))?
+        .to_bytes();
+    serde_json::from_slice(&bytes)
         .map_err(|error| Error::internal(format!("admin response: {error}")))
 }
 
-/// One command against a running daemon's admin socket.
-pub async fn ctl(socket: &str, command: &str, session: Option<&str>) -> Result<()> {
-    let mut request = serde_json::json!({"command": command});
-    if let Some(session) = session {
-        request["session"] = serde_json::json!(session);
+/// The token to present, if this transport needs one.
+fn admin_token(client: &AdminClient, target: &Target) -> Result<Option<String>> {
+    if let Some(token) = &client.token {
+        return Ok(Some(token.trim().to_owned()));
     }
-    let response = admin_call(socket, request).await?;
+    if let Some(path) = &client.token_file {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| Error::not_available(format!("admin token file {path}: {error}")))?;
+        return Ok(Some(text.trim().to_owned()));
+    }
+    match target {
+        // Nothing secret: the socket's mode and the peer credentials are the
+        // gate, and the daemon checks them.
+        #[cfg(unix)]
+        Target::Unix(_) => Ok(None),
+        #[cfg(not(unix))]
+        Target::Unix(_) => Ok(None),
+        Target::Dns(_) => Err(Error::validation(
+            "a dns admin target needs --token-file (or --token)",
+        )),
+    }
+}
+
+/// The TLS client a `dns` admin target needs: verify the daemon against `--ca`.
+fn admin_client_tls(
+    client: &AdminClient,
+    address: &str,
+) -> Result<(
+    tokio_rustls::TlsConnector,
+    rustls_pki_types::ServerName<'static>,
+)> {
+    use rustls_pki_types::pem::PemObject as _;
+    use rustls_pki_types::{CertificateDer, ServerName};
+
+    let path = client
+        .ca
+        .as_deref()
+        .ok_or_else(|| Error::validation("a dns admin target needs --ca"))?;
+    let pem = std::fs::read(path)
+        .map_err(|error| Error::not_available(format!("admin ca {path}: {error}")))?;
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(&pem) {
+        let certificate =
+            certificate.map_err(|error| Error::validation(format!("admin ca: {error}")))?;
+        roots
+            .add(certificate)
+            .map_err(|error| Error::validation(format!("admin ca: {error}")))?;
+    }
+
+    let host = client
+        .server_name
+        .clone()
+        .unwrap_or_else(|| default_server_name(address));
+    let name = ServerName::try_from(host)
+        .map_err(|error| Error::validation(format!("admin server name: {error}")))?;
+
+    crate::kernel_tls_provider();
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok((
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)),
+        name,
+    ))
+}
+
+/// `127.0.0.1:17777` → `127.0.0.1`; `[::1]:17777` → `::1`.
+fn default_server_name(address: &str) -> String {
+    match address.rsplit_once(':') {
+        Some((host, _)) => host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned(),
+        None => address.to_owned(),
+    }
+}
+
+/// One command against a running daemon's admin socket.
+pub async fn ctl(client: &AdminClient, command: &str, session: Option<&str>) -> Result<()> {
+    let response = call(client, command, session).await?;
     println!(
         "{}",
         serde_json::to_string_pretty(&response).unwrap_or_default()
@@ -486,8 +712,8 @@ pub async fn ctl(socket: &str, command: &str, session: Option<&str>) -> Result<(
 /// user can look inside before sending it. What it must *not* contain is as
 /// important as what it must: the identity file's salt and any grant token stay
 /// in the daemon.
-pub async fn diag(socket: &str, out: &str) -> Result<()> {
-    let response = admin_call(socket, serde_json::json!({"command": "diag"})).await?;
+pub async fn diag(client: &AdminClient, out: &str) -> Result<()> {
+    let response = call(client, "diag", None).await?;
     if response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
         let message = response
             .get("error")
