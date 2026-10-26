@@ -180,7 +180,6 @@ futures-util = { version = "0.3", optional = true }
 globset = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
-nix = { workspace = true, features = ["user"], optional = true }
 notify = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-appender-tracing = { workspace = true, optional = true }

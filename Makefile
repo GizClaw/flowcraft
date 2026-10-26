@@ -150,12 +150,24 @@ rust-clippy:
 # on a Windows host, where those branches also execute.
 RUST_WINDOWS_TARGET := x86_64-pc-windows-gnu
 
+# The sandbox shape needs the control plane, so it cannot use the
+# `workspace`-only form above. Compiling it needs a Windows host (its toolchain
+# builds `ring`), but the failure mode that bit us first is pure dependency
+# resolution: a unix-only crate in the shared dependency table. This checks
+# exactly that, offline, without a C toolchain.
 .PHONY: rust-windows-check
 rust-windows-check:
 	@echo "==> check $(RUST_DIR) for $(RUST_WINDOWS_TARGET)"
 	@cd $(RUST_DIR) && $(CARGO) clippy -p flowcraft --all-targets \
 		--no-default-features --features workspace \
 		--target $(RUST_WINDOWS_TARGET) -- -D warnings
+	@echo "==> resolve the sandbox shape for $(RUST_WINDOWS_TARGET)"
+	@cd $(RUST_DIR) && unix_only=$$($(CARGO) tree -p flowcraft --features sandbox,wire \
+		--target $(RUST_WINDOWS_TARGET) -e normal --prefix none \
+		| grep -E '^(nix|portable-pty|cgroups-rs) v' || true); \
+	if [ -n "$$unix_only" ]; then \
+		echo "unix-only crates in the windows resolution:"; echo "$$unix_only"; exit 1; \
+	fi
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree

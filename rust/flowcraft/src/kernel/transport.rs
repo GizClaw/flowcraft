@@ -32,6 +32,7 @@ pub async fn connect(target: &Target, tls: Option<ClientTlsConfig>) -> Result<Ch
 }
 
 /// Open a channel over a unix-domain socket.
+#[cfg(unix)]
 pub async fn connect_unix(path: &Path) -> Result<Channel> {
     let path = path.to_path_buf();
     let endpoint = Endpoint::try_from("http://flowcraft.local")
@@ -46,4 +47,13 @@ pub async fn connect_unix(path: &Path) -> Result<Channel> {
         }))
         .await
         .map_err(|error| Error::not_available(format!("cannot reach endpoint: {error}")))
+}
+
+/// A unix-socket target is a unix mechanism; a host elsewhere uses a dns target.
+#[cfg(not(unix))]
+pub async fn connect_unix(path: &Path) -> Result<Channel> {
+    Err(Error::not_available(format!(
+        "cannot reach endpoint {:?}: a unix socket target requires unix",
+        path.display()
+    )))
 }

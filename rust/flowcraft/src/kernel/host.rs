@@ -4,14 +4,19 @@
 //! document settings: a resource names an endpoint, and the host decides where
 //! it actually binds and whether it is wrapped in TLS.
 
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::logerr;
-use tokio::net::{TcpListener, UnixListener};
-use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
+use tokio_stream::wrappers::TcpListenerStream;
+#[cfg(unix)]
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 use tonic::transport::server::Router;
 
@@ -23,6 +28,7 @@ use crate::kernel::tls;
 /// A bound endpoint listener.
 pub enum Listener {
     /// A unix-domain socket.
+    #[cfg(unix)]
     Unix(UnixListener),
     /// A TCP socket, served with TLS.
     Tcp(TcpListener),
@@ -31,6 +37,7 @@ pub enum Listener {
 impl std::fmt::Debug for Listener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(unix)]
             Self::Unix(_) => f.write_str("Listener::Unix"),
             Self::Tcp(_) => f.write_str("Listener::Tcp"),
         }
@@ -47,6 +54,7 @@ impl Listener {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let outcome = match self {
+            #[cfg(unix)]
             Self::Unix(listener) => {
                 router
                     .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
@@ -255,6 +263,7 @@ impl EndpointHost {
         let descriptor = self.catalog.resolve(endpoint)?;
         let target = parse_target(&descriptor.target)?;
         match target {
+            #[cfg(unix)]
             Target::Unix(path) => {
                 if descriptor.tls.is_some() {
                     return Err(Error::validation(format!(
@@ -267,6 +276,13 @@ impl EndpointHost {
                     Listener::Unix(listener),
                 ))
             }
+            // A unix socket is a unix mechanism. A host elsewhere binds a `dns`
+            // target, which the arm below already serves over TCP + TLS.
+            #[cfg(not(unix))]
+            Target::Unix(path) => Err(Error::not_available(format!(
+                "endpoint {endpoint:?}: a unix socket target ({}) requires unix; use a dns target",
+                path.display()
+            ))),
             Target::Dns(address) => {
                 let Some(config) = descriptor.tls.as_ref() else {
                     return Err(Error::validation(format!(
@@ -291,6 +307,7 @@ impl EndpointHost {
     }
 }
 
+#[cfg(unix)]
 fn bind_unix(endpoint: &str, path: &Path) -> Result<UnixListener> {
     prepare_dir(path)?;
     if path.exists() {
@@ -318,6 +335,7 @@ fn bind_tcp(endpoint: &str, address: &str) -> Result<TcpListener> {
         .map_err(|error| Error::internal(format!("endpoint {endpoint:?}: {error}")))
 }
 
+#[cfg(unix)]
 fn prepare_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Err(Error::validation(format!(
@@ -334,7 +352,7 @@ fn prepare_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::kernel::config::{Config, EndpointConfig, Mode, RemoteConfig};
@@ -423,5 +441,47 @@ mod tests {
         let endpoint_host = EndpointHost::new(Arc::new(StaticCatalog::from_config(&config)));
         let error = endpoint_host.bind("farm").err().unwrap();
         assert_eq!(error.kind(), crate::error::ErrorKind::Validation);
+    }
+}
+
+/// A host off unix: the catalog still parses every target, and `bind` refuses
+/// the ones this platform cannot serve instead of quietly serving elsewhere.
+#[cfg(all(test, not(unix)))]
+mod non_unix {
+    use super::*;
+    use crate::kernel::catalog::StaticCatalog;
+    use crate::kernel::config::{Config, EndpointConfig, Mode, RemoteConfig};
+    use std::collections::BTreeMap;
+
+    fn host(dir: &std::path::Path) -> EndpointHost {
+        let config = Config {
+            remote: RemoteConfig {
+                mode: Mode::Trusted,
+                allow_targets: Vec::new(),
+                endpoints: BTreeMap::from([(
+                    "ws".to_owned(),
+                    EndpointConfig {
+                        target: format!("unix://{}", dir.join("ws.sock").display()),
+                        tenant: "a".to_owned(),
+                        capabilities: vec!["workspace.Workspace/v1".to_owned()],
+                        tls: None,
+                    },
+                )]),
+            },
+            ..Config::default()
+        };
+        config.validate().unwrap();
+        EndpointHost::new(Arc::new(StaticCatalog::from_config(&config)))
+    }
+
+    #[tokio::test]
+    async fn a_unix_target_is_refused_with_not_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = host(dir.path()).bind("ws").unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::NotAvailable);
+        assert!(
+            error.to_string().contains("requires unix"),
+            "the refusal has to say why: {error}"
+        );
     }
 }

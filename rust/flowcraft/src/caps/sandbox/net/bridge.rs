@@ -94,6 +94,7 @@ pub fn run(argv: &[String]) -> i32 {
     runtime.block_on(async move { serve(&sock, &program, &args).await })
 }
 
+#[cfg(unix)]
 async fn serve(sock: &str, program: &str, args: &[String]) -> i32 {
     // Listen before starting the child: the port must exist when the command
     // first connects.
@@ -159,6 +160,14 @@ async fn serve(sock: &str, program: &str, args: &[String]) -> i32 {
             127
         }
     }
+}
+
+/// Without unix sockets there is no socket to forward to, so the bridge has
+/// nothing to be: a host re-executed as one says so instead of pretending.
+#[cfg(not(unix))]
+async fn serve(_sock: &str, _program: &str, _args: &[String]) -> i32 {
+    eprintln!("bridge: the in-namespace bridge requires a unix socket target");
+    2
 }
 
 #[cfg(test)]

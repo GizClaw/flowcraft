@@ -555,6 +555,55 @@ jobs:
       - name: Test the local-only shape
         working-directory: rust
         run: cargo test -p flowcraft --no-default-features --features workspace
+      # The sandbox capability needs the control plane (kernel/client/wire), so it
+      # cannot use the `workspace`-only shape above: its endpoints are gRPC over
+      # the kernel's transport, which is a unix socket on unix and a `dns` target
+      # elsewhere. Two steps, because the two halves fail for different reasons.
+      - name: Compile the sandbox capability
+        working-directory: rust
+        run: cargo check -p flowcraft --all-targets --features sandbox,wire
+      # The semantics that must hold on every platform: matching, folding,
+      # cursors, the scope checks, the error codes, and the plan/argv builders.
+      # Everything left out of this list needs a platform mechanism the crate does
+      # not have on Windows yet, and each reason is named here rather than left
+      # implicit — the list may only shrink:
+      #
+      #   caps::sandbox::session::spawn, session::terminal  a pty and a process
+      #       group (signals) — ConPTY + job objects, Windows plan W1/W2
+      #   caps::sandbox::local, exec                        need a POSIX shell to
+      #       run (`sh -c`); the Windows fixtures are part of W2
+      #   caps::sandbox::net::proxy, net::bridge            TCP proxy tests pass
+      #       off-unix, but the bridge forwards to a unix socket, and one proxy
+      #       test binds one
+      #   caps::sandbox::journal::tests                     a watcher on a real
+      #       tree; `notify` supports Windows, so this is the first candidate to
+      #       move into the list once the lane proves it
+      #   caps::sandbox::policy::{approval, escalation, tests}
+      #                                                     assert through a live
+      #       `LocalRunner`, i.e. a POSIX shell
+      - name: Test the platform-independent sandbox semantics
+        working-directory: rust
+        shell: bash
+        run: |
+          cargo test -p flowcraft --lib --features sandbox,wire -- \
+            caps::sandbox::wire \
+            caps::sandbox::contract \
+            caps::sandbox::scope \
+            caps::sandbox::codes \
+            caps::sandbox::session::log \
+            caps::sandbox::session::registry \
+            caps::sandbox::policy::allowlist \
+            caps::sandbox::policy::readonly \
+            caps::sandbox::journal::ring \
+            caps::sandbox::journal::fold \
+            caps::sandbox::journal::source \
+            caps::sandbox::net::pattern \
+            caps::sandbox::net::matcher \
+            caps::sandbox::limits::tests \
+            caps::sandbox::confinement::bwrap \
+            caps::sandbox::confinement::seatbelt \
+            caps::sandbox::confinement::path \
+            caps::sandbox::confinement::tests
 
   ci-pass:
     name: CI
