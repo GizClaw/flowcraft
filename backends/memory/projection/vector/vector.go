@@ -75,6 +75,10 @@ type Index struct {
 	// the written scope's table, so a query can only see an up-to-date one.
 	snapshotMu sync.RWMutex
 	cache      tableCache
+	// warmMu guards warming: the partitions a warm-up is in flight for, and the
+	// ones a write asked to warm again while it ran. See warmSnapshots.
+	warmMu  sync.Mutex
+	warming map[string]bool
 	// stats accumulates the phase counters Stats() publishes. It is written on
 	// the serving path with atomics only, so no reader can perturb what the
 	// lane serves.
@@ -204,18 +208,48 @@ func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) 
 // serving path -- a query's load has to stay the query's own -- but it pays
 // the same materialization, so a reading that adds the two sees the whole
 // scope's first read.
+//
+// One write asks for one warm-up, and a derivation writes once per commit, so
+// the asks for one partition are coalesced: a load runs at a time, and a write
+// that arrives while it runs marks the partition as owed another one instead of
+// starting a second load. Both the store's base and the lane's table are one
+// copy per partition either way; what the coalescing removes is the run of
+// loads standing in for each other.
 func (index *Index) warmSnapshots(ctx context.Context, scope corememory.Scope) {
 	// The warm keeps running after the write that triggered it returns, so the
 	// read must not inherit the caller's cancellation; dropping only the
 	// cancellation keeps the write's span on the warm-up's load.
 	readCtx := context.WithoutCancel(ctx)
+	key := scope.HardPartitionKey()
+	index.warmMu.Lock()
+	if _, running := index.warming[key]; running {
+		index.warming[key] = true
+		index.warmMu.Unlock()
+		return
+	}
+	if index.warming == nil {
+		index.warming = make(map[string]bool)
+	}
+	index.warming[key] = false
+	index.warmMu.Unlock()
 	go func() {
-		started := time.Now()
-		_, loaded, err := index.cachedSnapshot(readCtx, scope)
-		// A warm that failed is recorded too: it is the reason a later query
-		// pays a load of its own, and a warm nobody can see is how a state
-		// that cannot be read stayed invisible.
-		index.recordWarmLoad(time.Since(started), loaded, err != nil)
+		for {
+			started := time.Now()
+			_, loaded, err := index.cachedSnapshot(readCtx, scope)
+			// A warm that failed is recorded too: it is the reason a later
+			// query pays a load of its own, and a warm nobody can see is how a
+			// state that cannot be read stayed invisible.
+			index.recordWarmLoad(time.Since(started), loaded, err != nil)
+			index.warmMu.Lock()
+			owed := index.warming[key]
+			if !owed {
+				delete(index.warming, key)
+				index.warmMu.Unlock()
+				return
+			}
+			index.warming[key] = false
+			index.warmMu.Unlock()
+		}
 	}()
 }
 
@@ -297,7 +331,14 @@ func New(config Config) (*Index, error) {
 			ValidateBase: validateSnapshot,
 			Apply: func(base *snapshot, delta projectionstore.EntryDelta[entry]) error {
 				base.Entries = projectionstore.ApplyEntryDelta(base.Entries, delta, key)
-				return recomputeDimensions(base)
+				if err := recomputeDimensions(base); err != nil {
+					return err
+				}
+				// The norms are derived from the entries the delta replaced,
+				// and a kept base is advanced by this call: a norm of the
+				// table that was there is not a norm of the one that is.
+				base.norms = nil
+				return nil
 			},
 		})
 	if err != nil {
@@ -410,7 +451,11 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
-	build, _, err := index.store.Materialize(ctx, delta.Scope, index.storageProjection)
+	// The base is read, not taken: the delta needs the entries it already
+	// holds -- to embed only what changed, and to re-use the vector of what did
+	// not -- and nothing here writes to them. Copying a scope-sized table per
+	// commit is what made the derivation quadratic.
+	build, _, err := index.store.MaterializeView(ctx, delta.Scope, index.storageProjection)
 	if err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("vector projection: materialize active build: %w", err)
 	}
@@ -524,7 +569,10 @@ func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (s
 	if index == nil || index.store == nil {
 		return snapshot{}, errors.New("vector projection: index is required")
 	}
-	build, _, err := index.store.Materialize(ctx, scope, index.storageProjection)
+	// The table shares its entries with the store's kept base: the norms below
+	// are the lane's own reading of it, so they are computed onto this copy
+	// rather than written into the state the store holds.
+	build, _, err := index.store.MaterializeView(ctx, scope, index.storageProjection)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("vector projection: %w", err)
 	}

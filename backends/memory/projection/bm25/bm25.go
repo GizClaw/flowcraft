@@ -274,7 +274,9 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if strings.TrimSpace(request.Query) == "" {
 		return []component.Candidate{}, nil
 	}
-	build, active, err := index.store.Materialize(ctx, request.Scope, index.projection)
+	// A search reads the table and never writes to it: the lane's own copy of
+	// the store's kept base is what it scans, so a query does not pay for one.
+	build, active, err := index.store.MaterializeView(ctx, request.Scope, index.projection)
 	if err != nil {
 		return nil, fmt.Errorf("bm25 projection: %w", err)
 	}
