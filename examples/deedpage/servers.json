@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "deedpage",
+      "transport": "http",
+      "url": "https://deed.page/mcp",
+      "headers": {"User-Agent": "FlowCraft/deedpage-mcp-example"},
+      "required": true,
+      "http_timeout": "60s"
+    }
+  ]
+}
