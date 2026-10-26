@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
 	evalanswer "github.com/GizClaw/flowcraft/backends/memory/eval/answer"
 	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/rerank"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
@@ -75,6 +76,10 @@ func main() {
 		"answer from the derivation the workspace already holds: no ingest, no derive pass")
 	maintain := flag.Bool("maintain", false,
 		"run one maintenance pass per scope after the derivation: it saves the read-path overlay and fills the profile block")
+	reclaim := flag.Bool("reclaim", false,
+		"sweep every registered scope's projection lanes and exit: the bases and segments a compaction or a rebuild "+
+			"superseded, which no manifest names. It is the sweep a maintenance pass runs beside the overlay, without "+
+			"the pass, so it judges nothing and writes nothing -- it is what shrinks a workspace an earlier build filled")
 	baselinePath := flag.String("baseline", "", "compare the run against this baseline JSON and fail on regression")
 	baselineTolerance := flag.Float64("baseline-tolerance", 2.0, "allowed regression in percentage points")
 	out := flag.String("out", "", "write full reports JSON here")
@@ -83,6 +88,12 @@ func main() {
 	flag.Parse()
 	if *envFile != "" {
 		loadEnvFile(*envFile)
+	}
+	if *reclaim {
+		// Before the dataset and the judge plan: a sweep names no library and
+		// grades nothing, so it must not need either.
+		reclaimScopes(*deployPath, *recentItems)
+		return
 	}
 	// The LongMemEval gold is a full clause (and, for two of its types, a stated
 	// preference or a refusal), which is not what the strict rubric scores, so a
@@ -1045,4 +1056,49 @@ func buildAssembly(deployPath string, recentItems int) deployment {
 	built, err := host.Build(deployPath, recentItems)
 	must(err)
 	return built
+}
+
+// reclaimScopes sweeps every scope the workspace's catalog holds and prints
+// what each lane removed, then the total.
+//
+// The sweep is per lane and per scope because that is what the state is: a
+// lane's manifest is the only pointer to the objects it published, and a scope
+// is what the lanes partition by. It reads no facts and writes no overlay, so
+// it is safe on a workspace whose derivation is the one a report was measured
+// on: what it removes is state no manifest names.
+//
+// The catalog is the authority on which scopes the workspace holds, not the
+// deploy document's scope list: a document names what a run will write, and a
+// sweep has to reach the scopes an earlier document wrote.
+func reclaimScopes(deployPath string, recentItems int) {
+	if deployPath == "" {
+		must(fmt.Errorf("memory eval: -reclaim sweeps the workspace a deploy document binds, so it needs -deploy"))
+	}
+	deployment := buildAssembly(deployPath, recentItems)
+	defer deployment.Close()
+	ctx := context.Background()
+	catalog := deployment.Memory.Catalog()
+	if catalog == nil {
+		must(fmt.Errorf("memory eval: -reclaim needs the workspace's scope catalog, and this deployment has none"))
+	}
+	scopes, err := catalog.List(ctx)
+	must(err)
+	if len(scopes) == 0 {
+		fmt.Println("reclaim: the workspace catalog holds no scope, so there is nothing to sweep")
+		return
+	}
+	started := time.Now()
+	var total maintain.ReclaimResult
+	for _, scope := range scopes {
+		result, err := deployment.Memory.ReclaimProjections(ctx, scope)
+		must(err)
+		fmt.Printf("reclaim: scope=%s lanes=%d bases=%d segments=%d\n",
+			scope.String(), result.Lanes, result.Bases, result.Segments)
+		total.Lanes += result.Lanes
+		total.Bases += result.Bases
+		total.Segments += result.Segments
+	}
+	fmt.Printf("reclaim: scopes=%d objects=%d (bases=%d segments=%d) elapsed=%s\n",
+		len(scopes), total.Bases+total.Segments, total.Bases, total.Segments,
+		time.Since(started).Round(time.Millisecond))
 }

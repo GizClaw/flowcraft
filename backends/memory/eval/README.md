@@ -511,6 +511,17 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   segments a compaction or a rebuild superseded, and the superseded document
   builds -- and prints what it removed, which is also how a run confirms that
   the workspace it wrote holds its live state rather than its history.
+- `-reclaim`: sweep every scope the workspace's catalog holds and exit, with no
+  dataset, no ingest, no derivation, and no pass. It is the same lane sweep
+  `-maintain` runs, on its own: it lists each lane's object keys, deletes the
+  bases and segments the active manifests do not name, and prints what each
+  scope and each lane removed. What it removes is state no manifest can find,
+  so it is safe on a workspace a report was measured on -- it does not judge
+  facts, so it cannot change the overlay or the profile block a run serves.
+  It needs `-deploy` (the document names the workspace, and the embedding model
+  that names the vector lane's storage), and it reports objects rather than
+  bytes: a sweep deletes by key, and measuring what it removes would read the
+  storage it exists to give up.
 
 ### Reproducibility
 

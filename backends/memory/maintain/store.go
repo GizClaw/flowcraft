@@ -723,6 +723,63 @@ type ProjectionReclaimer struct {
 	Reclaimer component.Reclaimer
 }
 
+// ReclaimResult reports what one sweep over a scope's projection lanes removed.
+type ReclaimResult struct {
+	// Lanes counts the lanes that carry a sweep, whether or not they found
+	// anything. It is what tells a host the sweep reached a lane: a lane whose
+	// state this run did not write -- a vector generation under another model
+	// name -- reclaims nothing and is not a lane that was swept.
+	Lanes int `json:"lanes"`
+	// Bases and Segments count the superseded objects the lane sweeps removed:
+	// what a compaction or a rebuild published and its manifest no longer
+	// names.
+	Bases    int `json:"bases"`
+	Segments int `json:"segments"`
+}
+
+// ReclaimProjections sweeps every registered lane of one scope and reports
+// what it removed.
+//
+// It is the sweep half of a maintenance pass without the pass. A host
+// reclaiming a workspace an earlier build filled has nothing to judge -- the
+// state it wants gone is already unreachable, and the pass's own subjects (the
+// overlay, the profile block) are judgments this run would have to make and
+// then serve. A sweep costs one key listing per lane and writes nothing, which
+// is what makes it safe on a store no pass is due on, and what lets a host run
+// it before a pass rather than only beside one.
+//
+// The lanes sweep in order and the counts describe the lanes that already
+// swept when one fails: the sweep deletes as it goes, so a failure leaves the
+// earlier lanes done rather than rolled back, and the retry finds less.
+func (service *Service) ReclaimProjections(
+	ctx context.Context,
+	scope corememory.Scope,
+) (ReclaimResult, error) {
+	var result ReclaimResult
+	if service == nil {
+		return result, errors.New("maintain: service is required")
+	}
+	if ctx == nil {
+		return result, errors.New("maintain: context is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return result, err
+	}
+	for _, lane := range service.Projections {
+		if lane.Reclaimer == nil {
+			continue
+		}
+		reclaimed, err := lane.Reclaimer.ReclaimSuperseded(ctx, scope)
+		if err != nil {
+			return result, fmt.Errorf("maintain: reclaim %s projection: %w", lane.Name, err)
+		}
+		result.Lanes++
+		result.Bases += reclaimed.Bases
+		result.Segments += reclaimed.Segments
+	}
+	return result, nil
+}
+
 // RunScope plans and saves one scope's maintenance overlay, then reclaims the
 // scope's derived storage: the superseded document builds and the projection
 // objects the lanes' active manifests no longer name.
@@ -852,16 +909,11 @@ func (service *Service) run(
 	// The lanes reclaim after the overlay is saved, for the same reason the
 	// document builds do: a pass that fails reclaiming still publishes what it
 	// detected, and the sweep is idempotent, so the retry finds less to remove.
-	for _, lane := range service.Projections {
-		if lane.Reclaimer == nil {
-			continue
-		}
-		reclaimed, err := lane.Reclaimer.ReclaimSuperseded(ctx, scope)
-		if err != nil {
-			return plan, fmt.Errorf("maintain: reclaim %s projection: %w", lane.Name, err)
-		}
-		plan.ReclaimedProjectionObjects += reclaimed.Bases + reclaimed.Segments
+	reclaimed, err := service.ReclaimProjections(ctx, scope)
+	if err != nil {
+		return plan, err
 	}
+	plan.ReclaimedProjectionObjects += reclaimed.Bases + reclaimed.Segments
 	if err := service.fillProfiles(ctx, scope, conversations, plan, now); err != nil {
 		return plan, err
 	}

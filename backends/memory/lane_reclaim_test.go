@@ -35,12 +35,11 @@ func laneBases(t *testing.T, ws workspace.Workspace, family string) int {
 	return bases
 }
 
-// TestMaintainReclaimsTheLanesSupersededBases is the wiring half: the sweep
-// exists inside each lane, and the maintenance pass is what a host has without
-// calling a lane directly. A lane compacts its own storage as it writes, so the
-// generations it stopped serving are collected by the same pass that reclaims
-// the superseded document builds -- or they are never collected at all.
-func TestMaintainReclaimsTheLanesSupersededBases(t *testing.T) {
+// assemblyWithSupersededLane builds an assembly whose bm25 lane holds two
+// bases: the one its manifest names and the grace generation the publication
+// that replaced it spared. Everything the two tests below sweep is this state.
+func assemblyWithSupersededLane(t *testing.T) (*Assembly, workspace.Workspace, *bm25.Index) {
+	t.Helper()
 	ctx := context.Background()
 	assembly, ws := newTestAssemblyWith(t, testSettings, WithDeriver(perInputDeriver{}))
 	if err := assembly.CommitTurn(ctx, corememory.Turn{
@@ -79,8 +78,19 @@ func TestMaintainReclaimsTheLanesSupersededBases(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bases := laneBases(t, ws, "bm25"); bases != 2 {
-		t.Fatalf("bm25 bases before the pass = %d, want the active one and its grace", bases)
+		t.Fatalf("bm25 bases before the sweep = %d, want the active one and its grace", bases)
 	}
+	return assembly, ws, lane
+}
+
+// TestMaintainReclaimsTheLanesSupersededBases is the wiring half: the sweep
+// exists inside each lane, and the maintenance pass is what a host has without
+// calling a lane directly. A lane compacts its own storage as it writes, so the
+// generations it stopped serving are collected by the same pass that reclaims
+// the superseded document builds -- or they are never collected at all.
+func TestMaintainReclaimsTheLanesSupersededBases(t *testing.T) {
+	ctx := context.Background()
+	assembly, ws, _ := assemblyWithSupersededLane(t)
 
 	plan, err := assembly.Maintain(ctx, testScope())
 	if err != nil {
@@ -100,5 +110,43 @@ func TestMaintainReclaimsTheLanesSupersededBases(t *testing.T) {
 	}
 	if again.ReclaimedProjectionObjects != 0 {
 		t.Fatalf("second pass reclaimed %d objects", again.ReclaimedProjectionObjects)
+	}
+}
+
+// TestReclaimProjectionsIsTheSweepWithoutThePass is the host-facing half: an
+// operator holding a workspace an earlier build filled asks for the storage no
+// manifest names, not for judgments over facts -- a pass is what they would
+// have to pay for decisions they are not making. What it removes is the same
+// state the pass removes, and what it leaves still resolves.
+func TestReclaimProjectionsIsTheSweepWithoutThePass(t *testing.T) {
+	ctx := context.Background()
+	assembly, ws, lane := assemblyWithSupersededLane(t)
+
+	result, err := assembly.ReclaimProjections(ctx, testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bases+result.Segments != 1 {
+		t.Fatalf("swept %+v, want the superseded base", result)
+	}
+	// The lane that swept and the one that found nothing are both visited:
+	// testSettings wires bm25 and entity, and neither stores outside its
+	// manifest.
+	if result.Lanes != 2 {
+		t.Fatalf("lanes swept = %d, want bm25 and entity", result.Lanes)
+	}
+	if bases := laneBases(t, ws, "bm25"); bases != 1 {
+		t.Fatalf("bm25 bases after the sweep = %d, want the one the manifest names", bases)
+	}
+	// The state the sweep kept is the state the read path resolves: a sweep
+	// that deleted a referenced object would leave a lane that cannot
+	// materialize.
+	source, computedSource, buildDigest, computedBuild, found, err := lane.AuditDigests(ctx, testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || source != computedSource || buildDigest != computedBuild {
+		t.Fatalf("lane audit after the sweep: found=%t source=%q/%q build=%q/%q",
+			found, source, computedSource, buildDigest, computedBuild)
 	}
 }

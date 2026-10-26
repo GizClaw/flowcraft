@@ -562,8 +562,10 @@ moves the manifest; a rebuild does the same from canonical state. What the old
 manifest pointed at stops being reachable at that instant -- nothing reads it
 again, because nothing but the manifest can find it -- and until this existed
 nothing removed it either, so a lane's storage grew with the product of how
-often it compacted and how large it was: one measured workspace held 25 GB, of
-which 24.9 GB was 95 superseded snapshots of a lane whose live state was 0.5 GB.
+often it compacted and how large it was: one measured workspace held 9.4 GB in
+its three lanes, of which 9.0 GB was state no manifest named -- the vector lane
+alone held 8.8 GB against the 284 MB it served, and a second workspace repeated
+it at 6.9 GB against 252 MB.
 
 Three sweeps collect it, all of them deleting unreachability rather than
 authority -- a rebuild writes again what a sweep removed:
@@ -578,6 +580,14 @@ authority -- a rebuild writes again what a sweep removed:
   builds it already reclaimed, and reports the count as
   `Plan.ReclaimedProjectionObjects`. It is what cleans a workspace an earlier
   build filled, and what an eval run's `-maintain` pass reports on its own log.
+- **Per scope, without the pass.** `Assembly.ReclaimProjections` runs the same
+  sweep over every registered lane of one scope and reports a
+  `ReclaimResult` (lanes swept, bases, segments). It is the pass's sweep with
+  nothing of the pass: no facts are listed, no overlay or profile block is
+  written, so a host reclaiming a workspace an earlier build filled does not
+  pay for judgments it is not making — and a workspace a report was measured on
+  keeps the overlay that report read. `memory-eval -reclaim` is the command
+  form, and it is what sweeps a store no maintenance pass is due on.
 - **Per lane, when a host has to.** `component.Reclaimer` is the lane-side
   entry point (`ReclaimSuperseded`), implemented by the bm25, entity, and vector
   lanes; it delegates to the projection store's `Reclaim`.
@@ -596,6 +606,14 @@ manifest the sweep read.
 `ReclaimResult` counts objects rather than bytes: a sweep deletes by key, and
 measuring what it removes would read the storage it exists to give up. A host
 that wants the size stats the workspace it owns.
+
+The summary view's own catalog (`views/summary/v1/...`) publishes the same way
+— immutable base, delta segments, one head — but is not swept here, and a
+workspace pays for it in kilobytes rather than gigabytes: its head is
+bookmarked per generation, so every generation a retention policy keeps names a
+chain that stays readable, and a sweep could only collect the objects a
+compaction inside one generation replaced. A measured workspace held 33 of them
+(80 KB) against 9.0 GB of lane snapshots.
 
 ## Integrity and evaluation
 

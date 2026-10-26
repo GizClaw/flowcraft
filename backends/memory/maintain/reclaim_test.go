@@ -51,6 +51,58 @@ func reclaimService(t *testing.T) (*Service, corememory.Scope) {
 	return &Service{Facts: facts, Store: store}, corememory.Scope{RuntimeID: "runtime", UserID: "user"}
 }
 
+// TestReclaimProjectionsSweepsWithoutThePass pins the sweep as its own entry
+// point: a host reclaiming a workspace an earlier build filled asks for the
+// storage no manifest names, not for judgments over the facts a pass would have
+// to list. What it must not do is save the overlay a pass saves -- a sweep that
+// wrote one would replace the judgments the read path serves with an empty
+// plan's.
+func TestReclaimProjectionsSweepsWithoutThePass(t *testing.T) {
+	ctx := context.Background()
+	service, scope := reclaimService(t)
+	bm25 := &stubReclaimer{result: component.ReclaimResult{Bases: 4, Segments: 6}}
+	entity := &stubReclaimer{}
+	service.Projections = []ProjectionReclaimer{
+		{Name: "bm25", Reclaimer: bm25},
+		// A lane that stores nothing outside its manifest carries no sweep, and
+		// is not a lane the sweep visited.
+		{Name: "vector"},
+		{Name: "entity", Reclaimer: entity},
+	}
+
+	result, err := service.ReclaimProjections(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (ReclaimResult{Lanes: 2, Bases: 4, Segments: 6}) {
+		t.Fatalf("sweep result = %+v", result)
+	}
+	if bm25.calls != 1 || entity.calls != 1 {
+		t.Fatalf("lane sweeps = %d and %d, want one each", bm25.calls, entity.calls)
+	}
+	status, err := service.Store.Status(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Stored {
+		t.Fatalf("the sweep saved the overlay a pass writes: %+v", status)
+	}
+
+	// A lane that fails returns what the lanes before it removed: the sweep
+	// deletes as it goes, so the counts describe work done rather than a plan.
+	service.Projections = []ProjectionReclaimer{
+		{Name: "bm25", Reclaimer: &stubReclaimer{result: component.ReclaimResult{Bases: 1}}},
+		{Name: "entity", Reclaimer: &stubReclaimer{err: errLaneUnavailable{}}},
+	}
+	failed, err := service.ReclaimProjections(ctx, scope)
+	if err == nil || !strings.Contains(err.Error(), "entity") {
+		t.Fatalf("sweep error = %v, want the lane named", err)
+	}
+	if failed != (ReclaimResult{Lanes: 1, Bases: 1}) {
+		t.Fatalf("failed sweep reported %+v, want the lane it swept", failed)
+	}
+}
+
 // TestRunScopeReclaimsEveryLanesSupersededObjects pins the pass's second sweep:
 // a lane compacts its own storage, and the pass is what collects the
 // generations it stopped serving. The count is reported in the plan because it

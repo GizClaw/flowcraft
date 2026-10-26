@@ -474,6 +474,33 @@ func (assembly *Assembly) Maintain(ctx context.Context, scope corememory.Scope) 
 	return assembly.maintain.RunScope(ctx, scope)
 }
 
+// ReclaimProjections sweeps one scope's projection lanes and reports what it
+// removed: the bases and segments a compaction or a rebuild published and the
+// lanes' active manifests no longer name. The read path never resolves them --
+// the manifest is the only pointer -- so a workspace that compacted sixty times
+// holds sixty snapshots until something sweeps them.
+//
+// It is the sweep a maintenance pass runs beside the overlay it writes, without
+// the pass: it lists keys, removes what no manifest names, and judges nothing.
+// A pass is the right call for a host that owes the store judgments; this is
+// the right call for a host whose workspace grew by its history and has
+// nothing to decide.
+//
+// The lanes sweep in registration order and every sweep is idempotent, so a
+// retry after a failed lane removes only what the failure left.
+func (assembly *Assembly) ReclaimProjections(
+	ctx context.Context,
+	scope corememory.Scope,
+) (maintain.ReclaimResult, error) {
+	if assembly == nil || assembly.maintain == nil {
+		return maintain.ReclaimResult{}, errors.New("memory assembly: maintenance is not configured")
+	}
+	if ctx == nil {
+		return maintain.ReclaimResult{}, errors.New("memory assembly: context is required")
+	}
+	return assembly.maintain.ReclaimProjections(ctx, scope)
+}
+
 // DerivationState reports the derivation this assembly's worker owes one
 // conversation: the state RetireGenerations refuses to sweep beside. It is the
 // observable half of that guard, for a host that would rather sweep when the
