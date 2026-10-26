@@ -256,6 +256,15 @@ impl CraftSupervisor for ExecSupervisor {
 
         let mut command = Command::new(&spec.argv[0]);
         command.args(&spec.argv[1..]);
+        // A craft is a separate program, not a separate trust domain: it runs
+        // with this daemon's uid, so anything in the daemon's environment is
+        // something the craft can read. That includes the bootstrap secrets when
+        // the host configured them through `FLOWCRAFT_SECRET_*`, and the identity
+        // path of this process. So the child starts from nothing and gets this
+        // list plus `crafts.<name>.env` — the sanctioned place to hand it a
+        // value.
+        command.env_clear();
+        command.envs(inherited_environment());
         command.envs(&spec.env);
         if let Some(token) = &spec.token {
             command.env("FLOWCRAFT_CRAFT_TOKEN", token);
@@ -349,6 +358,47 @@ impl CraftSupervisor for ExecSupervisor {
         }
         Ok(())
     }
+}
+
+/// The environment a craft child inherits.
+///
+/// Only what a program needs to start at all: where to find its own tools, where
+/// "home" is, how to spell paths and messages, and where to put temporaries. An
+/// allow-list rather than a deny-list because the failure mode of the wrong
+/// choice is a leak, and the failure mode of a missing entry is a loud one — a
+/// craft that cannot find a library says so on its first line of output.
+///
+/// Deliberately absent: anything named `FLOWCRAFT_*` (bootstrap secrets, the
+/// identity path, another craft's token), and the dynamic-loader variables
+/// (`LD_PRELOAD`, `DYLD_*`), which are an injection vector rather than a need.
+fn inherited_environment() -> Vec<(String, String)> {
+    #[cfg(windows)]
+    const NAMES: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "COMSPEC",
+    ];
+    #[cfg(not(windows))]
+    const NAMES: &[&str] = &[
+        "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM",
+    ];
+
+    NAMES
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| ((*name).to_owned(), value))
+        })
+        .collect()
 }
 
 async fn wait_for_target(target: &Target, timeout: Duration) -> Result<()> {

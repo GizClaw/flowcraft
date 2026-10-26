@@ -352,3 +352,61 @@ async fn the_abi_works_over_tls() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// A craft child does not inherit the daemon's environment.
+///
+/// The child runs with the daemon's uid, so anything in that environment is
+/// something the craft can read — the bootstrap secrets when the host configured
+/// them as `FLOWCRAFT_SECRET_*`, this process's identity path, another craft's
+/// token. The parent here is the test process, which `cargo` fills with
+/// `CARGO_*`: none of them may reach the child, while the allow-list and
+/// `crafts.<name>.env` still must.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_craft_child_does_not_inherit_the_daemons_environment() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("craft.sock");
+    let dump = dir.path().join("env.txt");
+    // A shell that records its environment, then becomes the stub.
+    let script = dir.path().join("craft.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv > '{dump}'\nexec '{bin}' craft-stub --socket '{socket}'\n",
+            dump = dump.display(),
+            bin = binary(),
+            socket = socket.display(),
+        ),
+    )
+    .expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let mut spec = CraftSpec::new(
+        "oracle",
+        vec![script.display().to_string()],
+        Target::Unix(socket.clone()),
+    );
+    spec.env = std::collections::BTreeMap::from([support::identity_env()]);
+
+    let supervisor = ExecSupervisor::new();
+    let handle = supervisor
+        .start(&spec, Vec::new())
+        .await
+        .expect("start the craft");
+    let seen = std::fs::read_to_string(&dump).expect("read the child's environment");
+    supervisor.stop(handle).await.expect("stop");
+
+    for leaked in ["CARGO_MANIFEST_DIR", "CARGO_PKG_NAME", "RUST_BACKTRACE"] {
+        assert!(
+            !seen.contains(&format!("{leaked}=")),
+            "the craft inherited {leaked}:\n{seen}"
+        );
+    }
+    assert!(seen.contains("PATH="), "a child needs its PATH:\n{seen}");
+    assert!(
+        seen.contains("FLOWCRAFT_IDENTITY_PATH="),
+        "crafts.<name>.env is the sanctioned way to pass one:\n{seen}"
+    );
+}

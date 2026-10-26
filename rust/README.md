@@ -491,6 +491,15 @@ Two rules carry most of the design:
   `event_types` (`x-` is the extension escape hatch). The platform never
   parses extension bytes; it validates the envelope, routes, replays, and
   audits.
+- **A craft child gets an empty environment plus an allow-list.** The child runs
+  with the daemon's uid, so anything in the daemon's environment is something the
+  craft can read — the bootstrap secrets when the host configures them as
+  `FLOWCRAFT_SECRET_*`, this process's identity path, another craft's token. It
+  now starts from `env_clear` and inherits only what a program needs to start
+  (`PATH`, `HOME`, locale, `TMPDIR`, and the Windows equivalents);
+  `crafts.<name>.env` is the sanctioned way to hand it a value. The
+  dynamic-loader variables stay out on purpose: they are an injection vector,
+  not a need.
 - **Every call after Describe carries a bootstrap token.** The platform mints
   one per craft, hands it to `exec` through the environment, and sends it as
   `x-flowcraft-craft-token`; the socket is chmod 0600 and its directory 0700,
