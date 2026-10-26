@@ -277,8 +277,8 @@ Three things change, and none of them change what a caller reads:
   `Load` keeps its signature and returns the rebuilt record, so a reader never
   learns whether a record cost one row or a hundred. `backends/checkpoint/sqlite`
   stores increments in a second table and replays them on load; a gap is
-  reported as `errdefs.NotAvailable` (the host's cue to start a fresh run)
-  rather than silently returning partial state.
+  reported as `errdefs.NotAvailable` rather than silently returning partial
+  state, and a caller that can start fresh branches on it.
 - **Engines ask before they build.** `CheckpointTarget` is an optional Host
   capability reporting whether the host persists anything and whether it takes
   increments. A host that does not declare it is assumed to persist full
@@ -290,10 +290,10 @@ Adoption is a deployment knob and a store contract:
 
 | Surface | Before | After |
 | --- | --- | --- |
-| `deploy.yaml` graph build settings | — | `build.checkpoint_compaction: <waves>` (optional, default `32`) |
+| `deploy.yaml` graph build settings | — | `build.checkpoint_compaction: <increments>` (optional, default `32`; a chain holds at most that many) |
 | A custom `agent.CheckpointStore` | `Save`/`Load` | unchanged; add `WriteBase`/`Append` to take increments |
 | `Host.Checkpoint` | called by every engine | still called, but through `agent.CheckpointWriter` |
-| A custom `Host` (`HostFuncs`) | — | unchanged; declare `CheckpointCapabilities` to opt into the cheap paths |
+| A custom `Host` (`HostFuncs`, `TracingMiddleware`) | — | unchanged; both forward the inner host's answer |
 
 Two behaviours change for a deployment that reconfigured nothing, both on the
 error path:

@@ -94,11 +94,12 @@ checkpoint store stop paying for a board snapshot at every wave.
 ## Compaction
 
 A chain is bounded by `build.checkpoint_compaction` (default
-`agent.DefaultCheckpointCompaction`, 32): the writer appends that many increments
-and then rewrites a base. The window is a **resume-latency** knob, not a memory
-knob — a load replays the base plus at most that many increments. A store may
-also cap its own chain and answer `agent.ErrNeedsBase`, which the writer answers
-with a base; `sqlite.WithMaxDeltas(n)` is that cap.
+`agent.DefaultCheckpointCompaction`, 32): the writer appends at most that many
+increments after a base, and the next boundary rewrites one — so boundaries sit
+about `window + 1` waves apart. The window is a **resume-latency** knob, not a
+memory knob: a load replays the base plus at most that many increments. A store
+may also cap its own chain and answer `agent.ErrNeedsBase`, which the writer
+answers with a base; `sqlite.WithMaxDeltas(n)` is that cap.
 
 ```yaml
 agents:
@@ -135,8 +136,14 @@ type CheckpointJournal interface {
 - **Apply in sequence order.** `CheckpointDelta.ApplyTo` folds one increment onto
   a decoded record; `CheckpointDelta.Validate` rejects a malformed one.
 - **Fail closed.** A gap, or an increment with no base, means the record cannot
-  be rebuilt; `Load` must return an `errdefs.NotAvailable` error so the host
-  starts a fresh run instead of resuming half a conversation.
+  be rebuilt; `Load` must return an `errdefs.NotAvailable` error rather than
+  partial state. That error is the signal a caller acts on — `core/runtime`
+  currently surfaces it and fails the turn, and a host that would rather start
+  fresh can branch on `errdefs.IsNotAvailable`.
+- **One writer per exec id.** A chain is only consistent if the caller extending
+  it is the caller that computed the increments against it; two replicas sharing
+  one record will interleave. `Load` cannot detect that (there is no gap), so it
+  is a precondition of the contract.
 
 `backends/checkpoint/sqlite` is the reference implementation: a base row plus a
 `(exec_id, seq)` table, replayed on load. `agenttest.JournalStore` is an

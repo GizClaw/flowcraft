@@ -53,7 +53,7 @@ builds the graph engine.
 | `build.timeout` | wall-clock bound for one execute call (e.g. `1h`); `0` = none |
 | `build.run_end_publish_timeout` | deadline for run-end lifecycle events; default `5s`, must be `> 0` |
 | `build.max_node_retries` | per-node retries before the run fails |
-| `build.checkpoint_compaction` | waves between two full checkpoint records; default `32` |
+| `build.checkpoint_compaction` | incremental records a checkpoint chain may hold before a full one is rewritten; default `32` |
 | `build.parallel.enabled` | enable parallel waves |
 | `build.parallel.branch_timeout` | per-branch wall-clock bound; `0` = none |
 | `build.parallel.max_concurrency` | max concurrent branches |
