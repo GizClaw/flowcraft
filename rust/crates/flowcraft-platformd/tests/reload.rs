@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use flowcraft_cap_sandbox::{ExitReason, Handle as Sandbox, SessionSpec};
 use flowcraft_cap_workspace::Handle;
 use flowcraft_kernel::{Config, EndpointConfig, Mode, Platform, RemoteConfig};
 use flowcraft_platformd::supervisor::Supervisor;
@@ -58,6 +59,21 @@ fn document(root: &Path) -> Vec<u8> {
     .expect("json")
 }
 
+/// A document with one local sandbox runner rooted at `root`.
+fn sandbox_document(root: &Path) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "version": "v1",
+        "resources": {
+            "sandbox": {
+                "kind": "sandbox.Runner",
+                "impl": "local",
+                "settings": {"root": root}
+            }
+        }
+    }))
+    .expect("json")
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     deploy: PathBuf,
@@ -101,6 +117,7 @@ async fn reload_swaps_generations_and_serves_from_the_new_one() {
     assert_eq!(outcome.previous, 1);
     assert_eq!(outcome.current, 2);
     assert_eq!(outcome.resources, 3);
+    assert!(outcome.drained, "the retired generation must be drained");
     assert_eq!(supervisor.generation().await, 2);
 
     // The new generation's endpoint is bound to the same socket, so the new
@@ -209,4 +226,126 @@ async fn later_layers_override_earlier_ones() {
     assert!(!fixture.first_root.join("layered.txt").exists());
     assert_eq!(supervisor.entries().await, vec!["local".to_owned()]);
     supervisor.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn reload_drains_the_resources_of_the_retired_generation() {
+    // A sandbox runner owns child processes, so its `shutdown` is the one whose
+    // effect is observable from the outside: a session started before the swap
+    // must be terminated by the drain, not left running until process exit.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let deploy = dir.path().join("deploy.json");
+    std::fs::write(&deploy, sandbox_document(dir.path())).expect("write");
+
+    let supervisor = Supervisor::boot(platform(dir.path()), vec![deploy])
+        .await
+        .expect("boot");
+    let runner = supervisor
+        .resource::<Sandbox>("sandbox")
+        .await
+        .expect("sandbox");
+    let session = runner
+        .start(SessionSpec::new(vec!["sleep".to_owned(), "30".to_owned()]))
+        .await
+        .expect("start");
+
+    let outcome = supervisor.reload().await.expect("reload");
+    assert!(outcome.drained, "the retired generation must be drained");
+
+    // The retired runner's `shutdown` closes its registry, which terminates
+    // every session it started (SIGTERM, then the grace, then SIGKILL).
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(15), session.wait())
+        .await
+        .expect("the retired runner must terminate its sessions")
+        .expect("wait");
+    assert_eq!(exit.reason, ExitReason::Terminated);
+
+    supervisor.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn a_drain_that_exceeds_the_grace_is_reported_and_retried_at_shutdown() {
+    // A child that ignores SIGTERM keeps `close` waiting for the full stop
+    // grace (2s), so a 100ms drain budget always expires first: the bounded-drain
+    // failure is deterministic instead of a race with a fast exit.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let deploy = dir.path().join("deploy.json");
+    std::fs::write(&deploy, sandbox_document(dir.path())).expect("write");
+
+    let booted = Supervisor::boot(platform(dir.path()), vec![deploy])
+        .await
+        .expect("boot");
+    let supervisor = Arc::new(
+        Arc::try_unwrap(booted)
+            .ok()
+            .expect("boot returns the sole owner")
+            .with_drain_grace(std::time::Duration::from_millis(100)),
+    );
+    let runner = supervisor
+        .resource::<Sandbox>("sandbox")
+        .await
+        .expect("sandbox");
+
+    // The direct child must ignore SIGTERM, and it must have installed the trap
+    // before the drain signals it: a plain script (not `sh -c` with `exec`)
+    // keeps the stop sequence waiting for the full 2s grace.
+    let script = dir.path().join("ignore-term.sh");
+    std::fs::write(
+        &script,
+        "trap '' TERM\necho ready\nwhile :; do sleep 1; done\n",
+    )
+    .expect("script");
+    let session = runner
+        .start(SessionSpec::new(vec![
+            "sh".to_owned(),
+            script.display().to_string(),
+        ]))
+        .await
+        .expect("start");
+
+    // SIGTERM arriving before `trap` runs still kills the shell, so wait for the
+    // marker the script prints after installing it.
+    let mut seen = String::new();
+    let mut after = 0;
+    while !seen.contains("ready") {
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            session.read(after, 4096),
+        )
+        .await
+        .expect("the trap marker must arrive")
+        .expect("read");
+        for chunk in &read.chunks {
+            seen.push_str(&String::from_utf8_lossy(&chunk.data));
+        }
+        after = read.next_seq;
+        assert!(
+            !read.eof,
+            "the child exited before installing the trap: {seen:?}"
+        );
+    }
+
+    let outcome = supervisor.reload().await.expect("the swap still succeeds");
+    assert!(
+        !outcome.drained,
+        "a drain budget shorter than the stop grace must expire"
+    );
+    assert_eq!(supervisor.generation().await, 2);
+
+    // The abandoned stop delivered SIGTERM, which this child ignores. Terminate
+    // it explicitly (SIGTERM again, then SIGKILL) so the test leaves nothing
+    // behind; `wait` then reports the stop reason the session recorded.
+    tokio::time::timeout(std::time::Duration::from_secs(20), session.terminate())
+        .await
+        .expect("terminate must stay bounded")
+        .expect("terminate");
+    let exit = session.wait().await.expect("wait");
+    assert_eq!(exit.reason, ExitReason::Terminated);
+
+    // The stranded generation is retried, not forgotten: the retry finds the
+    // session already closed and completes within the bound.
+    tokio::time::timeout(std::time::Duration::from_secs(15), supervisor.shutdown())
+        .await
+        .expect("shutdown must stay bounded")
+        .expect("the retried drain settles the retired runner");
 }

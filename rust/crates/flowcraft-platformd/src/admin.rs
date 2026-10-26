@@ -192,6 +192,7 @@ async fn dispatch(request: &Value, state: &AdminState) -> Value {
                     "previous": outcome.previous,
                     "current": outcome.current,
                     "resources": outcome.resources,
+                    "drained": outcome.drained,
                 }),
                 Err(error) => json!({"ok": false, "error": error.to_string()}),
             }

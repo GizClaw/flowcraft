@@ -144,6 +144,7 @@ async fn status_reload_drain_and_revoke() {
     assert_eq!(reloaded["ok"], true, "{reloaded}");
     assert_eq!(reloaded["previous"], 1);
     assert_eq!(reloaded["current"], 2);
+    assert_eq!(reloaded["drained"], true, "{reloaded}");
 
     let status = send(&fixture.socket, json!({"command": "status"})).await;
     assert_eq!(status["generation"], 2);

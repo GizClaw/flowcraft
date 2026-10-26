@@ -413,8 +413,7 @@ Two rules carry most of the design:
 - **Shutdown drains.** A listener stops accepting and waits for in-flight
   requests (`serve_with_incoming_shutdown`), bounded by a 10s grace; only then
   does the process exit. Reload takes the same path for the generation it
-  replaces.
-- **The admin surface is a socket, not a port.** `admin.sock` is owner-only
+  replaces.- **The admin surface is a socket, not a port.** `admin.sock` is owner-only
   (0700 directory, 0600 socket) and speaks one JSON line per request. `drain`
   clears readiness without tearing anything down, `reload` is the same path
   `SIGHUP` takes, and `revoke` takes a session id. A failure to bind the admin
@@ -457,9 +456,13 @@ Two rules carry most of the design:
   craft must declare its type before the platform carries it.
 - **Reload is a generation swap, not a mutation.** `SIGHUP` parses and plans
   first (nothing is created), builds and starts the new graph, swaps it in, then
-  drains the old one under a bounded grace period. A parse or plan failure keeps
-  the running generation untouched; `platform.yaml` changes still require a
-  restart, because endpoints, TLS, and grant policy are kernel state.
+  drains the old one under a bounded grace period — every resource's `shutdown`
+  runs, not just the listeners. A parse or plan failure keeps the running
+  generation untouched; a drain that exceeds the grace is logged and reported as
+  `drained: false` in the reload outcome (and by `ctl`), retried once at
+  shutdown, and never fails the reload, because the swap already happened.
+  `platform.yaml` changes still require a restart, because endpoints, TLS, and
+  grant policy are kernel state.
 - **TLS material never enters a document.** A `tls` block holds
   `${secret:...}` references only; the bytes come from the host's bootstrap
   provider (environment or a directory). The kernel refuses inline PEM at

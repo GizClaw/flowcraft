@@ -251,6 +251,7 @@ async fn wait_for_signals(supervisor: &Supervisor) {
                             flowcraft.gen.previous = outcome.previous,
                             flowcraft.gen = outcome.current,
                             flowcraft.resources = outcome.resources,
+                            flowcraft.gen.drained = outcome.drained,
                             "reloaded"
                         ),
                         // A bad document must never cost a healthy deployment.

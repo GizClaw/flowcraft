@@ -1,10 +1,15 @@
 //! Generation swapping: reload the deployment without dropping the daemon.
 //!
 //! A reload is: parse → build → start the new generation, swap it in, then
-//! drain the old one. Parsing and planning happen before anything is created,
-//! so a bad document leaves the running generation untouched. Kernel
-//! configuration (`platform.yaml`) is *not* reloadable: endpoints, TLS, and
-//! grant policy change only with a restart.
+//! drain the old one under a bounded grace period. Parsing and planning happen
+//! before anything is created, so a bad document leaves the running generation
+//! untouched. Kernel configuration (`platform.yaml`) is *not* reloadable:
+//! endpoints, TLS, and grant policy change only with a restart.
+//!
+//! The swap happens before the drain, so the new generation serves while the
+//! old one tears down. A drain that fails or exceeds the grace is reported and
+//! deferred to shutdown rather than failing the reload: the swap already
+//! happened, and an error would claim nothing changed.
 
 use std::any::Any;
 use std::path::{Path, PathBuf};
@@ -17,6 +22,7 @@ use flowcraft_kernel::Platform;
 use flowcraft_resource::Built;
 use flowcraft_resource::Deployment;
 use flowcraft_resource::layers::{self, Layer};
+use flowcraft_telemetry::logerr;
 use tokio::sync::{Mutex, RwLock};
 
 /// What a reload produced.
@@ -28,6 +34,12 @@ pub struct ReloadOutcome {
     pub current: u64,
     /// How many resources the new generation built.
     pub resources: usize,
+    /// Whether the retired generation shut down within the drain grace.
+    ///
+    /// `false` is reported, not fatal: the new generation is already serving, so
+    /// the reload itself succeeded. The retired generation is kept and retried
+    /// once more at process shutdown, inside one overall grace.
+    pub drained: bool,
 }
 
 struct Generation {
@@ -44,6 +56,13 @@ pub struct Supervisor {
     next_id: AtomicU64,
     reload_gate: Mutex<()>,
     drain_grace: Duration,
+    /// Generations a reload retired but could not drain within the grace.
+    ///
+    /// Retaining them is what gives process shutdown a second attempt: dropping
+    /// the handle would stop only the resources whose teardown is drop-driven
+    /// and silently forget the rest (a sandbox runner and the children it owns,
+    /// for example).
+    stranded: Mutex<Vec<Arc<Generation>>>,
 }
 
 impl Supervisor {
@@ -63,6 +82,7 @@ impl Supervisor {
             next_id: AtomicU64::new(2),
             reload_gate: Mutex::new(()),
             drain_grace: Duration::from_secs(10),
+            stranded: Mutex::new(Vec::new()),
         }))
     }
 
@@ -122,36 +142,102 @@ impl Supervisor {
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         tracing::Span::current().record("flowcraft.gen", id);
-        let previous = {
+        // Keep the retired generation alive across the swap: dropping it here
+        // would only stop the listeners whose teardown happens to be
+        // drop-driven, and skip every explicit `shutdown` (a sandbox runner
+        // closing its sessions, for example).
+        let retired = {
             let mut current = self.current.write().await;
-            let previous = current.id;
+            let retired = current.clone();
             *current = Arc::new(Generation { id, built });
-            previous
+            retired
         };
 
-        // The swap already happened; draining the old generation is bounded so a
-        // stuck listener cannot wedge the reload path.
         tracing::info!(
-            flowcraft.gen.previous = previous,
+            flowcraft.gen.previous = retired.id,
             flowcraft.gen = id,
             "generation swapped"
         );
+
+        // The swap already happened; draining the retired generation is bounded
+        // so a stuck listener cannot wedge the reload path.
+        let drained = self.retire(&retired).await;
         Ok(ReloadOutcome {
-            previous,
+            previous: retired.id,
             current: id,
             resources,
+            drained,
         })
     }
 
-    /// Drain the current generation.
+    /// Drain the current generation, then retry whatever a reload could not.
     pub async fn shutdown(&self) -> Result<()> {
-        let generation = self.current.read().await.clone();
-        match tokio::time::timeout(self.drain_grace, generation.built.shutdown()).await {
+        let current = self.current.read().await.clone();
+        let mut first = self.drain(&current).await.err();
+
+        // One more bounded attempt for stranded generations: the first wait
+        // already happened at reload, and the retries share one overall grace so
+        // a pathological series of stuck drains cannot hold exit open for a full
+        // grace each.
+        let stranded: Vec<Arc<Generation>> = std::mem::take(&mut *self.stranded.lock().await);
+        let deadline = tokio::time::Instant::now() + self.drain_grace;
+        for generation in stranded {
+            let grace = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(error) = self.drain_with(&generation, grace).await {
+                logerr!(
+                    warn,
+                    error,
+                    "stranded generation did not drain",
+                    flowcraft.gen = generation.id
+                );
+                if first.is_none() {
+                    first = Some(error);
+                }
+            }
+        }
+        match first {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Shut one generation down, bounded by the drain grace.
+    async fn drain(&self, generation: &Generation) -> Result<()> {
+        self.drain_with(generation, self.drain_grace).await
+    }
+
+    /// Shut one generation down, bounded by `grace`.
+    async fn drain_with(&self, generation: &Generation, grace: Duration) -> Result<()> {
+        match tokio::time::timeout(grace, generation.built.shutdown()).await {
             Ok(result) => result,
             Err(_) => Err(Error::timeout(format!(
-                "generation {} did not drain within {:?}",
-                generation.id, self.drain_grace
+                "generation {} did not drain within {grace:?}",
+                generation.id
             ))),
+        }
+    }
+
+    /// Retire a generation that a swap replaced.
+    ///
+    /// The new generation is already serving, so a failure here never becomes a
+    /// reload error: the generation is kept for a retry at shutdown and the
+    /// outcome reports `drained: false`.
+    async fn retire(&self, generation: &Arc<Generation>) -> bool {
+        match self.drain(generation).await {
+            Ok(()) => {
+                tracing::info!(flowcraft.gen = generation.id, "generation drained");
+                true
+            }
+            Err(error) => {
+                logerr!(
+                    warn,
+                    error,
+                    "retired generation did not drain; retrying at shutdown",
+                    flowcraft.gen = generation.id
+                );
+                self.stranded.lock().await.push(generation.clone());
+                false
+            }
         }
     }
 }

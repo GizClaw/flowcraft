@@ -78,6 +78,7 @@ pub fn watch(
                     flowcraft.gen.previous = outcome.previous,
                     flowcraft.gen = outcome.current,
                     flowcraft.resources = outcome.resources,
+                    flowcraft.gen.drained = outcome.drained,
                     "reloaded after a secret change"
                 ),
                 Err(failure) => logerr!(
