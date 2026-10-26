@@ -72,11 +72,46 @@ func (h *baseHost) Checkpoint(ctx context.Context, cp agent.Checkpoint) error {
 	return h.checkpoints.Save(ctx, cp)
 }
 
+// CheckpointCapabilities tells engines whether this host persists anything and
+// whether the configured store takes incremental records. It is the reason an
+// engine can stop building checkpoint records it would only discard: without
+// it, the board snapshot that becomes the Checkpoint argument is paid for
+// before the no-op is discovered.
+func (h *baseHost) CheckpointCapabilities() agent.CheckpointCapabilities {
+	if h.checkpoints == nil {
+		return agent.CheckpointCapabilities{}
+	}
+	caps := agent.CheckpointCapabilities{Enabled: true}
+	if _, ok := h.checkpoints.(agent.CheckpointJournal); ok {
+		caps.Journal = h
+	}
+	return caps
+}
+
+// WriteBase is [agent.CheckpointJournal] over the configured store: a base
+// record replaces whatever the store held for that execution.
+func (h *baseHost) WriteBase(ctx context.Context, cp agent.Checkpoint) error {
+	return h.Checkpoint(ctx, cp)
+}
+
+// Append is [agent.CheckpointJournal] over a store that takes incremental
+// records. A store without that capability makes the writer fall back to a
+// base, which is why this reports [agent.ErrNeedsBase] instead of an error.
+func (h *baseHost) Append(ctx context.Context, delta agent.CheckpointDelta) error {
+	journal, ok := h.checkpoints.(agent.CheckpointJournal)
+	if !ok {
+		return agent.ErrNeedsBase
+	}
+	return journal.Append(ctx, delta)
+}
+
 // EventBus returns the borrowed deployment bus used by Publish.
 func (h *baseHost) EventBus() event.Bus { return h.bus }
 
 var (
-	_ agent.Host             = (*baseHost)(nil)
-	_ agent.Checkpointer     = (*baseHost)(nil)
-	_ agent.EventBusProvider = (*baseHost)(nil)
+	_ agent.Host              = (*baseHost)(nil)
+	_ agent.Checkpointer      = (*baseHost)(nil)
+	_ agent.EventBusProvider  = (*baseHost)(nil)
+	_ agent.CheckpointTarget  = (*baseHost)(nil)
+	_ agent.CheckpointJournal = (*baseHost)(nil)
 )

@@ -48,6 +48,15 @@ type Cloneable interface {
 // editing a message it appended, or one it read back, must clone it
 // first.
 //
+// The same ownership rule applies to vars: a value handed to [Board.SetVar]
+// becomes board state and MUST NOT be mutated afterwards. Board records the
+// writes that go through its own methods so [Board.Since] can hand a consumer
+// the changes rather than a copy of the state; in-place mutation of a value
+// read back from [Board.Var] would be invisible to that record and is a data
+// race against any concurrent [Board.Snapshot] or parallel branch. Change a
+// var by calling SetVar again. [AuditBoardValues] turns violations into test
+// failures by copying on read.
+//
 // Board is intentionally ignorant of agent concepts. It does not know
 // what "messages", "answer" or "run id" mean; those names are
 // established by callers. Per-execution metadata (ID, Attributes,
@@ -56,6 +65,15 @@ type Board struct {
 	mu       sync.RWMutex
 	channels map[string][]message.Message
 	vars     map[string]any
+
+	// Write history behind [Board.Mark] and [Board.Since]: seq is a
+	// monotonic counter that never resets, varSeq and chanSeq remember the
+	// last write per var key and per replaced channel. A delta is therefore
+	// O(writes since the mark), not O(board state). Appends need no entry:
+	// a channel's length is its position.
+	seq     uint64
+	varSeq  map[string]uint64
+	chanSeq map[string]uint64
 }
 
 // BoardSnapshot is a serialisable representation of board state, used
@@ -80,6 +98,10 @@ func NewBoard() *Board {
 // either board do not affect the other. Use it from a Preparer that
 // wants to extend an existing board's state without mutating the
 // previous link's output.
+//
+// The write history is copied along with the state, so a clone is
+// indistinguishable from its source (including to a value comparison) and a
+// mark taken on it keeps meaning the same thing.
 func (b *Board) Clone() *Board {
 	if b == nil {
 		return nil
@@ -92,15 +114,25 @@ func (b *Board) Clone() *Board {
 	}
 	vars := make(map[string]any, len(b.vars))
 	maps.Copy(vars, b.vars)
-	return &Board{channels: channels, vars: vars}
+	return &Board{
+		channels: channels,
+		vars:     vars,
+		seq:      b.seq,
+		varSeq:   maps.Clone(b.varSeq),
+		chanSeq:  maps.Clone(b.chanSeq),
+	}
 }
 
 // ---------- Vars ----------
 
 // SetVar sets a board-level variable. Concurrent-safe.
+//
+// The value becomes board state: it MUST NOT be mutated afterwards (see the
+// [Board] ownership contract).
 func (b *Board) SetVar(key string, value any) {
 	b.mu.Lock()
 	b.vars[key] = value
+	b.noteVarWriteLocked(key)
 	b.mu.Unlock()
 }
 
@@ -108,6 +140,7 @@ func (b *Board) SetVar(key string, value any) {
 func (b *Board) DeleteVar(key string) {
 	b.mu.Lock()
 	delete(b.vars, key)
+	b.noteVarWriteLocked(key)
 	b.mu.Unlock()
 }
 
@@ -118,7 +151,10 @@ func (b *Board) Var(key string) (any, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	v, ok := b.vars[key]
-	return v, ok
+	if !ok || !boardValueAudit.Load() {
+		return v, ok
+	}
+	return deepCopyValue(v), true
 }
 
 // VarString retrieves a board variable as a string. It returns ""
@@ -150,6 +186,9 @@ func GetTyped[T any](b *Board, key string) (T, bool) {
 func (b *Board) Vars() map[string]any {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if boardValueAudit.Load() {
+		return deepCopyVars(b.vars)
+	}
 	cp := make(map[string]any, len(b.vars))
 	maps.Copy(cp, b.vars)
 	return cp
@@ -165,6 +204,7 @@ func (b *Board) AppendSliceVar(key string, value any) error {
 	existing, ok := b.vars[key]
 	if !ok {
 		b.vars[key] = []any{value}
+		b.noteVarWriteLocked(key)
 		return nil
 	}
 	slice, ok := existing.([]any)
@@ -172,6 +212,7 @@ func (b *Board) AppendSliceVar(key string, value any) error {
 		return errdefs.Validationf("agent.Board: var %q is %T, not []any", key, existing)
 	}
 	b.vars[key] = append(slice, value)
+	b.noteVarWriteLocked(key)
 	return nil
 }
 
@@ -193,6 +234,7 @@ func (b *Board) UpdateSliceVarItem(key string, match func(any) bool, update func
 	for i, item := range slice {
 		if match(item) {
 			slice[i] = update(item)
+			b.noteVarWriteLocked(key)
 			return
 		}
 	}
@@ -286,6 +328,7 @@ func (b *Board) SetChannel(name string, msgs []message.Message) {
 		b.channels = map[string][]message.Message{}
 	}
 	b.channels[name] = message.CloneMessages(msgs)
+	b.noteChannelReplaceLocked(name)
 	b.mu.Unlock()
 }
 
@@ -329,6 +372,7 @@ func (b *Board) PopChannelMessage(name string) (message.Message, bool) {
 	}
 	last := msgs[len(msgs)-1]
 	b.channels[name] = msgs[:len(msgs)-1]
+	b.noteChannelReplaceLocked(name)
 	return last, true
 }
 
@@ -426,6 +470,10 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 		// MainChannel even when the snapshot didn't carry channels.
 		b.channels[MainChannel] = []message.Message{}
 	}
+	// A restore replaces the whole state, so every key and channel counts
+	// as written: a mark taken before it must yield a conservative delta
+	// rather than silently miss the state that came back.
+	b.noteRestoreLocked()
 }
 
 // ---------- internal ----------

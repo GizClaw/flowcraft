@@ -251,3 +251,61 @@ reported nothing".
 `core/errdefs`. The classified constructors (`Validationf`, `Timeoutf`, …)
 stay a review convention, as the package doc says: `errorlint` cannot see
 inside them.
+
+## Checkpoints are incremental
+
+A checkpoint used to be a full board snapshot, taken at every boundary an engine
+recognised: each graph wave, each `a2a` task transition, each runtime session
+turn. That cost `O(history)` per boundary — one deep copy plus one JSON encode
+of the whole board — so a long session grew quadratically, and a host without a
+checkpoint store paid it too, because the snapshot was an argument to a call
+that then did nothing.
+
+Three things change, and none of them change what a caller reads:
+
+- **`Board` records its writes.** `Board.Mark()` and `Board.Since(mark)` hand a
+  consumer the writes after a position instead of a copy of the state, and
+  `BoardDelta` is their value type. This is the basis of every saving below.
+  It comes with one contract: **a value stored in a var is immutable once
+  written**. Change it with `SetVar`, not by mutating what `Var` returned. That
+  mutation was already a data race against any concurrent snapshot or parallel
+  branch; it would now also be a gap in the record. `agent.AuditBoardValues(true)`
+  makes `Var`/`Vars` return copies so a test can catch it. Empty `core/agent` and
+  `core/graph` run their suites with the audit on.
+- **A store may take increments.** `CheckpointJournal` adds `WriteBase` and
+  `Append`; `Save` on a journalling store is a base write and discards the chain.
+  `Load` keeps its signature and returns the rebuilt record, so a reader never
+  learns whether a record cost one row or a hundred. `backends/checkpoint/sqlite`
+  stores increments in a second table and replays them on load; a gap is
+  reported as `errdefs.NotAvailable` (the host's cue to start a fresh run)
+  rather than silently returning partial state.
+- **Engines ask before they build.** `CheckpointTarget` is an optional Host
+  capability reporting whether the host persists anything and whether it takes
+  increments. A host that does not declare it is assumed to persist full
+  records — the previous behaviour — so nothing that exists today has to change.
+  `runtime.baseHost` answers from its configured store, which is what stops a
+  deployment without one from copying the board at every wave.
+
+Adoption is a deployment knob and a store contract:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| `deploy.yaml` graph build settings | — | `build.checkpoint_compaction: <waves>` (optional, default `32`) |
+| A custom `agent.CheckpointStore` | `Save`/`Load` | unchanged; add `WriteBase`/`Append` to take increments |
+| `Host.Checkpoint` | called by every engine | still called, but through `agent.CheckpointWriter` |
+| A custom `Host` (`HostFuncs`) | — | unchanged; declare `CheckpointCapabilities` to opt into the cheap paths |
+
+Two behaviours change for a deployment that reconfigured nothing, both on the
+error path:
+
+- Parallel branch results carry `BranchResult.Delta`; `Snapshot` is populated
+  only when a custom `ParallelConfig.Merge` is installed, because a custom merge
+  was written against absolute state. The built-in strategies merge increments,
+  so a wave no longer holds one board copy per branch.
+- A node retry no longer takes a board snapshot per attempt: one rollback point
+  per node, and none at all with the default `max_node_retries: 0`.
+
+The guarantees are unchanged: a checkpoint is best-effort, a store failure never
+fails a run, and the next boundary retries from the position the failed one did
+not advance. See [Checkpoints](../guides/checkpoint.md) for the store contract
+and the compaction knob.

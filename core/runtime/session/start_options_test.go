@@ -311,7 +311,7 @@ func TestEphemeralSessionSkipsHistorySeeding(t *testing.T) {
 	board.AppendChannelMessage(agent.MainChannel,
 		message.NewTextMessage(message.RoleUser, "old history"))
 	state := sessionState{Board: board.Snapshot()}
-	session.saveSessionState(&state, store, true)
+	session.saveSessionState(&state, nil, store, true)
 
 	turn, err := session.StartWithOptions(
 		context.Background(),

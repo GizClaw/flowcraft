@@ -27,6 +27,9 @@ retrieval, runtime orchestration, and voice. Source on
 - [Application Runtime](guides/runtime.md) — `core/runtime` +
   `core/runtime/session`: process-level services and leased,
   interruptible streaming sessions above a built deployment.
+- [Checkpoints](guides/checkpoint.md) — `core/agent`: the checkpoint
+  store contract, incremental records, and the board write record an
+  engine persists at a boundary.
 - [Prompt Lifecycle Events](guides/prompt.md) — the
   `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
 - [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
@@ -77,8 +80,8 @@ retrieval, runtime orchestration, and voice. Source on
 
 - [`core/v0.10.0`](migrations/core-v0.10.0.md) — panic recovery is on by
   default and enforced at the fan-out boundaries, `concurrency.limit` must be
-  positive, the keychain store is one handle per directory, and `Reload`
-  applies session limits with the swap.
+  positive, the keychain store is one handle per directory, `Reload` applies
+  session limits with the swap, and checkpoints are written incrementally.
 - [`core/v0.9.0`](migrations/core-v0.9.0.md) — the typed assembly protocol:
   `Factory[T]`, `Dep[T]`, a pure `deploy.Plan` phase, and typed reads of built
   resources.

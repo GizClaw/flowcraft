@@ -29,6 +29,7 @@ type Graph struct {
 	runEndPublishTimeout time.Duration
 	parallel             ParallelConfig
 	maxNodeRetries       int
+	checkpointCompaction int
 	scriptBindings       bindings.Provider
 
 	warnings []Warning
@@ -122,6 +123,7 @@ func Build(def *GraphDefinition, reg *Registry, opts ...BuildOption) (*Graph, er
 		runEndPublishTimeout: options.runEndPublishTimeout,
 		parallel:             options.parallel,
 		maxNodeRetries:       options.maxNodeRetries,
+		checkpointCompaction: options.checkpointCompaction,
 		scriptBindings:       options.scriptBindings,
 	}
 

@@ -1,11 +1,18 @@
 // Package sqlite provides a durable [agent.CheckpointStore] backed by
 // SQLite. It implements the core store plus the optional
-// [agent.CheckpointLister] and [agent.CheckpointDeleter] interfaces.
+// [agent.CheckpointLister], [agent.CheckpointDeleter] and
+// [agent.CheckpointJournal] interfaces.
 //
-// Each checkpoint is stored as a single JSON envelope under its exec
-// id. Writes are upserts; a per-row revision increments on every Save
-// so concurrent callers observe a deterministic last-write-wins
-// order even when wall clocks agree.
+// A record is one self-contained JSON envelope under its exec id. Writes are
+// upserts; a per-row revision increments on every write of the base so
+// concurrent callers observe a deterministic last-write-wins order even when
+// wall clocks agree.
+//
+// Stores that take incremental writes keep them in a separate table: a base
+// record plus appends ordered by a per-exec-id sequence. [Store.Load] replays
+// them and returns the rebuilt record, so a reader never learns whether a
+// checkpoint cost one row or a hundred. A gap in the chain is corruption and
+// Load fails rather than returning partial state.
 package sqlite
 
 import (
@@ -27,7 +34,14 @@ const schema = `CREATE TABLE IF NOT EXISTS agent_checkpoints (
 	data       TEXT NOT NULL,
 	revision   INTEGER NOT NULL DEFAULT 1,
 	saved_at   TEXT NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS agent_checkpoint_deltas (
+	exec_id    TEXT    NOT NULL,
+	seq        INTEGER NOT NULL,
+	data       BLOB    NOT NULL,
+	saved_at   TEXT    NOT NULL,
+	PRIMARY KEY (exec_id, seq)
+) WITHOUT ROWID;`
 
 // Store is a SQLite-backed [agent.CheckpointStore].
 //
@@ -35,13 +49,15 @@ const schema = `CREATE TABLE IF NOT EXISTS agent_checkpoints (
 // [New] (the caller keeps ownership of the handle). All methods are
 // safe for concurrent use.
 type Store struct {
-	db     *sql.DB
-	ownsDB bool
-	clock  func() time.Time
+	db        *sql.DB
+	ownsDB    bool
+	clock     func() time.Time
+	maxDeltas int
 }
 
 type options struct {
-	clock func() time.Time
+	clock     func() time.Time
+	maxDeltas int
 }
 
 // Option configures a Store.
@@ -53,6 +69,18 @@ func WithClock(clock func() time.Time) Option {
 	return func(o *options) {
 		if clock != nil {
 			o.clock = clock
+		}
+	}
+}
+
+// WithMaxDeltas caps how many incremental records may be appended to a base
+// before [Store.Append] answers [agent.ErrNeedsBase], which makes the engine
+// write a fresh base. Zero means no store-side cap: the writer's own compaction
+// window still bounds the chain.
+func WithMaxDeltas(n int) Option {
+	return func(o *options) {
+		if n > 0 {
+			o.maxDeltas = n
 		}
 	}
 }
@@ -114,34 +142,113 @@ func NewContext(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error)
 			fn(&o)
 		}
 	}
-	return &Store{db: db, clock: o.clock}, nil
+	return &Store{db: db, clock: o.clock, maxDeltas: o.maxDeltas}, nil
 }
 
-// Save implements [agent.CheckpointStore].
+// Save implements [agent.CheckpointStore]. It behaves exactly like
+// [Store.WriteBase]: the record replaces whatever was stored and any appended
+// deltas are discarded, so a caller mixing the two write paths cannot leave a
+// stale chain behind. Use [Store.Append] only through a
+// [agent.CheckpointJournal] writer, which starts from a base.
 func (s *Store) Save(ctx context.Context, cp agent.Checkpoint) error {
+	return s.WriteBase(ctx, cp)
+}
+
+// WriteBase implements [agent.CheckpointJournal]: it stores a self-contained
+// record and drops the delta chain for that execution.
+func (s *Store) WriteBase(ctx context.Context, cp agent.Checkpoint) error {
 	if s == nil || s.db == nil {
 		return errors.New("sqlite checkpoint: store is not initialized")
 	}
 	if err := cp.Validate(); err != nil {
 		return err
 	}
-	data, err := json.Marshal(cp)
+	data, err := encodeJSON(cp)
 	if err != nil {
 		return fmt.Errorf("sqlite checkpoint: encode: %w", err)
 	}
 	savedAt := s.clock().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: save %s: %w", cp.ExecID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_checkpoints (exec_id, data, revision, saved_at)
 		VALUES (?, ?, 1, ?)
 		ON CONFLICT(exec_id) DO UPDATE SET
 			data = excluded.data,
 			revision = agent_checkpoints.revision + 1,
 			saved_at = excluded.saved_at
-	`, cp.ExecID, string(data), savedAt)
-	if err != nil {
+	`, cp.ExecID, data, savedAt); err != nil {
+		return fmt.Errorf("sqlite checkpoint: save %s: %w", cp.ExecID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_checkpoint_deltas WHERE exec_id = ?`, cp.ExecID); err != nil {
+		return fmt.Errorf("sqlite checkpoint: save %s: discard deltas: %w", cp.ExecID, err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite checkpoint: save %s: %w", cp.ExecID, err)
 	}
 	return nil
+}
+
+// Append implements [agent.CheckpointJournal]: it extends an existing record
+// with one boundary. A record with no base, or a chain at the configured
+// [WithMaxDeltas] limit, answers [agent.ErrNeedsBase] so the writer stores a
+// full record instead.
+func (s *Store) Append(ctx context.Context, delta agent.CheckpointDelta) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite checkpoint: store is not initialized")
+	}
+	if err := delta.Validate(); err != nil {
+		return err
+	}
+	var revision int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT revision FROM agent_checkpoints WHERE exec_id = ?`, delta.ExecID,
+	).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("sqlite checkpoint: append %s: no base record: %w",
+			delta.ExecID, agent.ErrNeedsBase)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
+	}
+	if s.maxDeltas > 0 {
+		var count int64
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM agent_checkpoint_deltas WHERE exec_id = ?`, delta.ExecID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
+		}
+		if count >= int64(s.maxDeltas) {
+			return fmt.Errorf("sqlite checkpoint: append %s: %d deltas is the configured limit: %w",
+				delta.ExecID, count, agent.ErrNeedsBase)
+		}
+	}
+	data, err := encodeJSON(delta)
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: encode delta: %w", err)
+	}
+	savedAt := s.clock().UTC().Format(time.RFC3339Nano)
+	// One retry covers a concurrent appender that claimed the same sequence
+	// number; the sequence is the row identity, so a duplicate is the only
+	// conflict a single-writer-per-execution store can see.
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO agent_checkpoint_deltas (exec_id, seq, data, saved_at)
+			VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1
+				FROM agent_checkpoint_deltas WHERE exec_id = ?), ?, ?)
+		`, delta.ExecID, delta.ExecID, data, savedAt)
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(err.Error(), "UNIQUE") {
+			break
+		}
+	}
+	return fmt.Errorf("sqlite checkpoint: append %s: %w", delta.ExecID, err)
 }
 
 // Load implements [agent.CheckpointStore].
@@ -152,7 +259,7 @@ func (s *Store) Load(ctx context.Context, execID string) (*agent.Checkpoint, err
 	if strings.TrimSpace(execID) == "" {
 		return nil, errdefs.Validation(errors.New("sqlite checkpoint: exec_id is required"))
 	}
-	var data string
+	var data []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT data FROM agent_checkpoints WHERE exec_id = ?`, execID,
 	).Scan(&data)
@@ -163,13 +270,58 @@ func (s *Store) Load(ctx context.Context, execID string) (*agent.Checkpoint, err
 		return nil, fmt.Errorf("sqlite checkpoint: load %s: %w", execID, err)
 	}
 	var cp agent.Checkpoint
-	if err := json.Unmarshal([]byte(data), &cp); err != nil {
+	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, fmt.Errorf("sqlite checkpoint: decode %s: %w", execID, err)
 	}
 	if err := cp.Validate(); err != nil {
 		return nil, fmt.Errorf("sqlite checkpoint: corrupt %s: %w", execID, err)
 	}
+	if err := s.replayDeltas(ctx, &cp); err != nil {
+		return nil, err
+	}
 	return &cp, nil
+}
+
+// replayDeltas folds the incremental records onto a decoded base, in sequence
+// order. A gap means the chain is corrupt: resuming from part of it would
+// silently drop state, so it is reported as unavailable — the host's cue to
+// start a fresh run instead.
+func (s *Store) replayDeltas(ctx context.Context, cp *agent.Checkpoint) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT seq, data FROM agent_checkpoint_deltas
+		WHERE exec_id = ? ORDER BY seq
+	`, cp.ExecID)
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: load %s: replay: %w", cp.ExecID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	want := int64(1)
+	for rows.Next() {
+		var seq int64
+		var data []byte
+		if err := rows.Scan(&seq, &data); err != nil {
+			return fmt.Errorf("sqlite checkpoint: load %s: replay: %w", cp.ExecID, err)
+		}
+		if seq != want {
+			return errdefs.NotAvailablef(
+				"sqlite checkpoint: load %s: delta chain is broken (want seq %d, got %d)",
+				cp.ExecID, want, seq)
+		}
+		var delta agent.CheckpointDelta
+		if err := json.Unmarshal(data, &delta); err != nil {
+			return fmt.Errorf("sqlite checkpoint: corrupt %s delta %d: %w", cp.ExecID, seq, err)
+		}
+		if err := delta.Validate(); err != nil {
+			return fmt.Errorf("sqlite checkpoint: corrupt %s delta %d: %w", cp.ExecID, seq, err)
+		}
+		delta.ApplyTo(cp)
+		want++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite checkpoint: load %s: replay: %w", cp.ExecID, err)
+	}
+	return nil
 }
 
 // List implements [agent.CheckpointLister].
@@ -205,8 +357,20 @@ func (s *Store) Delete(ctx context.Context, execID string) error {
 	if strings.TrimSpace(execID) == "" {
 		return errdefs.Validation(errors.New("sqlite checkpoint: exec_id is required"))
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite checkpoint: delete %s: %w", execID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_checkpoint_deltas WHERE exec_id = ?`, execID); err != nil {
+		return fmt.Errorf("sqlite checkpoint: delete %s: %w", execID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM agent_checkpoints WHERE exec_id = ?`, execID); err != nil {
+		return fmt.Errorf("sqlite checkpoint: delete %s: %w", execID, err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite checkpoint: delete %s: %w", execID, err)
 	}
 	return nil
@@ -227,4 +391,15 @@ var (
 	_ agent.CheckpointStore   = (*Store)(nil)
 	_ agent.CheckpointLister  = (*Store)(nil)
 	_ agent.CheckpointDeleter = (*Store)(nil)
+	_ agent.CheckpointJournal = (*Store)(nil)
 )
+
+// encodeJSON returns the column value for v in one copy.
+//
+// json.Marshal hands back the encoder's own buffer, so binding it directly
+// avoids the second copy a TEXT column forced (string(data)); an intermediate
+// bytes.Buffer only adds a third. A board payload is the largest thing this
+// store writes, so the copies are what the encode costs.
+func encodeJSON(v any) ([]byte, error) {
+	return json.Marshal(v)
+}

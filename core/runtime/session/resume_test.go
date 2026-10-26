@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -374,7 +375,7 @@ func parkRun(
 		ResumableRunID: runID,
 		Request:        req,
 		Board:          agent.NewBoard().Snapshot(),
-	}, store, true)
+	}, nil, store, true)
 }
 
 type resumeProbeEngine struct {
@@ -503,4 +504,70 @@ func newResumeSession(
 		_ = bus.Close()
 	})
 	return lease.Session()
+}
+
+// TestSessionStateUsesDeltas proves the session-state record is extended, not
+// rewritten: each turn used to store a second copy of the whole board next to
+// the run checkpoint that already held it.
+func TestSessionStateUsesDeltas(t *testing.T) {
+	engine := &resumeProbeEngine{reply: "ack"}
+	store := agenttest.NewJournalStore()
+	session := newResumeSession(t, engine, store)
+	stateID := sessionStateID(session.key)
+
+	turn, err := session.Start(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "first")})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	first, err := store.Load(context.Background(), stateID)
+	if err != nil {
+		t.Fatalf("Load after the first turn: %v", err)
+	}
+	if first == nil {
+		t.Fatal("no session state after the first turn")
+	}
+	if got := store.BaseCount(); got != 1 {
+		t.Fatalf("bases = %d, want 1 (the first turn has nothing to extend)", got)
+	}
+
+	turn, err = session.Start(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "second")})
+	if err != nil {
+		t.Fatalf("Start second turn: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait second turn: %v", err)
+	}
+	if got := store.BaseCount(); got != 1 {
+		t.Fatalf("bases = %d, want 1: the second turn must extend the record", got)
+	}
+	if got := len(store.Deltas(stateID)); got == 0 {
+		t.Fatal("the second turn appended no delta")
+	}
+
+	rebuilt, err := store.Load(context.Background(), stateID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	msgs := rebuilt.Board.Channels[agent.MainChannel]
+	if len(msgs) <= len(first.Board.Channels[agent.MainChannel]) {
+		t.Fatalf("rebuilt board has %d messages, want more than %d",
+			len(msgs), len(first.Board.Channels[agent.MainChannel]))
+	}
+	// The durable state is what the next turn seeds from, so the replay the
+	// session does has to agree with the record a reader sees.
+	state, err := session.loadSessionState(context.Background(), store, true)
+	if err != nil {
+		t.Fatalf("loadSessionState: %v", err)
+	}
+	if state == nil || state.Board == nil {
+		t.Fatal("no session state for the next turn")
+	}
+	if got := len(state.Board.Channels[agent.MainChannel]); got != len(msgs) {
+		t.Fatalf("seed has %d messages, want %d", got, len(msgs))
+	}
 }

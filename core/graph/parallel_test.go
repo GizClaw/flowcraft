@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -210,21 +211,143 @@ func TestMergeInterruptedAssistantMessagesExcludesOrdinaryFailures(t *testing.T)
 	board.AppendChannelMessage(agent.MainChannel,
 		message.NewTextMessage(message.RoleUser, "input"))
 	preFork := board.Snapshot()
-	snapshot := func(text string) *agent.BoardSnapshot {
+	delta := func(text string) *agent.BoardDelta {
 		branch := agent.NewBoard()
 		branch.RestoreFrom(preFork)
+		mark := branch.Mark()
 		branch.AppendChannelMessage(agent.MainChannel,
 			message.NewTextMessage(message.RoleAssistant, text))
-		return branch.Snapshot()
+		return branch.Since(mark)
 	}
 
-	mergeInterruptedAssistantMessages(board, preFork, []BranchResult{
-		{NodeID: "failed", Snapshot: snapshot("must-not-merge"), Err: errdefs.Internalf("failed")},
-		{NodeID: "interrupted", Snapshot: snapshot("partial"), Err: agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})},
+	mergeInterruptedAssistantMessages(board, []BranchResult{
+		{NodeID: "failed", Delta: delta("must-not-merge"), Err: errdefs.Internalf("failed")},
+		{NodeID: "interrupted", Delta: delta("partial"), Err: agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})},
 	})
 
 	messages := board.Channel(agent.MainChannel)
 	if len(messages) != 2 || messages[1].Content.Text() != "partial" {
 		t.Fatalf("main channel = %+v, want input and interrupted partial only", messages)
+	}
+}
+
+// legacyFirstWriteWinsMerge is the pre-delta strategy, reimplemented from
+// BranchResult.Snapshot exactly as the engine used to run it. The differential
+// test below pins the delta path against it: the incremental merge must produce
+// the same board as the absolute-state one, including the rule that a branch
+// writing the value already on the board does not claim the key.
+func legacyFirstWriteWinsMerge(_ context.Context, board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) error {
+	claimed := map[string]bool{}
+	for _, res := range results {
+		if res.Err != nil || res.Snapshot == nil {
+			continue
+		}
+		for key, val := range res.Snapshot.Vars {
+			if claimed[key] {
+				continue
+			}
+			if prev, ok := preFork.Vars[key]; ok && reflect.DeepEqual(prev, val) {
+				continue
+			}
+			board.SetVar(key, val)
+			claimed[key] = true
+		}
+	}
+	for _, res := range results {
+		if res.Err != nil || res.Snapshot == nil {
+			continue
+		}
+		for ch, msgs := range res.Snapshot.Channels {
+			base := len(preFork.Channels[ch])
+			if len(msgs) <= base {
+				continue
+			}
+			for _, msg := range msgs[base:] {
+				board.AppendChannelMessage(ch, msg)
+			}
+		}
+	}
+	return nil
+}
+
+// TestParallelDeltaMergeMatchesSnapshotMerge runs one wave twice — once through
+// the built-in strategy, which consumes branch write sets, and once through a
+// custom merge written against absolute branch state — and requires the same
+// resulting board.
+func TestParallelDeltaMergeMatchesSnapshotMerge(t *testing.T) {
+	type writeConfig struct {
+		Var   string `json:"var,omitempty"`
+		Value string `json:"value,omitempty"`
+		Msg   string `json:"msg,omitempty"`
+	}
+	build := func(t *testing.T, merge MergeFunc) *Graph {
+		t.Helper()
+		reg := NewRegistry()
+		if err := RegisterType(reg, "entry", NodeType[struct{}]{
+			Meta:    Meta{Desc: "entry"},
+			Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := RegisterType(reg, "write", NodeType[writeConfig]{
+			Meta: Meta{Desc: "writes one var and one message"},
+			Handler: func(_ ExecutionContext, board *agent.Board, cfg writeConfig) error {
+				if cfg.Var != "" {
+					board.SetVar(cfg.Var, cfg.Value)
+				}
+				if cfg.Msg != "" {
+					board.AppendChannelMessage(agent.MainChannel,
+						message.NewTextMessage(message.RoleAssistant, cfg.Msg))
+				}
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return mustBuild(t, &GraphDefinition{
+			Name:  "parallel-differential",
+			Entry: "a",
+			Nodes: []NodeDefinition{
+				{ID: "a", Type: "entry"},
+				// writes the value the board already carries: not a claim
+				{ID: "b", Type: "write", Config: []byte(`{"var":"shared","value":"seed","msg":"b"}`)},
+				// writes a new value for the same key: the first real claim
+				{ID: "c", Type: "write", Config: []byte(`{"var":"shared","value":"c-wins","msg":"c"}`)},
+				{ID: "d", Type: "write", Config: []byte(`{"var":"own","value":"d","msg":"d"}`)},
+			},
+			Edges: []EdgeDefinition{
+				{From: "a", To: "b"}, {From: "a", To: "c"}, {From: "a", To: "d"},
+				{From: "b", To: END}, {From: "c", To: END}, {From: "d", To: END},
+			},
+		}, reg, WithParallel(ParallelConfig{
+			Enabled:       true,
+			MergeStrategy: FirstWriteWins,
+			Merge:         merge,
+		}))
+	}
+	seed := func() *agent.Board {
+		board := agent.NewBoard()
+		board.SetVar("shared", "seed")
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleUser, "input"))
+		return board
+	}
+
+	incremental, err := build(t, nil).Execute(context.Background(), testRun(), agent.NoopHost{}, seed())
+	if err != nil {
+		t.Fatalf("delta merge: %v", err)
+	}
+	absolute, err := build(t, legacyFirstWriteWinsMerge).Execute(context.Background(), testRun(), agent.NoopHost{}, seed())
+	if err != nil {
+		t.Fatalf("snapshot merge: %v", err)
+	}
+
+	if got, want := incremental.Snapshot(), absolute.Snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("delta merge diverged from snapshot merge\n got: %#v\nwant: %#v", got, want)
+	}
+	// The rule the two paths have to agree on: a branch that writes the value
+	// already present does not claim the key.
+	if got, _ := incremental.Var("shared"); got != "c-wins" {
+		t.Fatalf("shared = %v, want the first branch that changed it", got)
 	}
 }

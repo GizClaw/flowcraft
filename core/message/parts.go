@@ -290,8 +290,14 @@ type ImagePart struct {
 	Source media.ImageSource `json:"source"`
 }
 
-func (ImagePart) Kind() PartKind    { return PartImage }
-func (p ImagePart) Clone() Part     { return p }
+func (ImagePart) Kind() PartKind { return PartImage }
+func (p ImagePart) Clone() Part {
+	// The source owns the inline payload ([]byte for a data source, a stream
+	// handle). Sharing it would let a "clone" mutate its original, which a
+	// board snapshot, a checkpoint record or a retry rollback cannot tolerate.
+	p.Source = p.Source.Clone()
+	return p
+}
 func (p ImagePart) Validate() error { return p.Source.Validate() }
 func (ImagePart) messagePart()      {}
 
@@ -303,6 +309,7 @@ type AudioPart struct {
 
 func (AudioPart) Kind() PartKind { return PartAudio }
 func (p AudioPart) Clone() Part {
+	p.Source = p.Source.Clone()
 	p.Format = clonePointer(p.Format)
 	p.DurationMillis = clonePointer(p.DurationMillis)
 	return p
@@ -332,8 +339,11 @@ type VideoPart struct {
 	Source media.VideoSource `json:"source"`
 }
 
-func (VideoPart) Kind() PartKind    { return PartVideo }
-func (p VideoPart) Clone() Part     { return p }
+func (VideoPart) Kind() PartKind { return PartVideo }
+func (p VideoPart) Clone() Part {
+	p.Source = p.Source.Clone()
+	return p
+}
 func (p VideoPart) Validate() error { return p.Source.Validate() }
 func (VideoPart) messagePart()      {}
 

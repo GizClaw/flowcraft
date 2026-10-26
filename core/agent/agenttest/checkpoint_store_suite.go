@@ -199,6 +199,31 @@ func CheckpointStoreSuite(t *testing.T, newStore func() agent.CheckpointStore) {
 	})
 }
 
+// JournalBase returns the self-contained record the journal suite starts from:
+// a deterministic checkpoint with a var, a channel message and a payload, so a
+// store's replay can be compared field by field.
+func JournalBase(execID string) agent.Checkpoint {
+	return checkpointStoreSample(execID)
+}
+
+// JournalDelta returns the n-th incremental record of the journal suite: it
+// writes one var and appends one message, so replay order is observable.
+func JournalDelta(execID string, n int) agent.CheckpointDelta {
+	source := agent.NewBoard()
+	mark := source.Mark()
+	// float64 keeps the in-memory expectation equal to what a JSON round trip
+	// produces, which is what a durable store hands back.
+	source.SetVar("step", float64(n))
+	source.AppendChannelMessage(agent.MainChannel,
+		message.NewTextMessage(message.RoleAssistant, fmt.Sprintf("delta-%d", n)))
+	return agent.CheckpointDelta{
+		ExecID:    execID,
+		Steps:     []string{fmt.Sprintf("wave-%d", n)},
+		Iteration: n,
+		Board:     source.Since(mark),
+	}
+}
+
 func checkpointStoreSample(execID string) agent.Checkpoint {
 	// Fixed whole-second timestamps keep the identity checks portable:
 	// stores that truncate sub-second precision must still pass.

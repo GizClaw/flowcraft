@@ -498,3 +498,63 @@ func TestMessageCloneDeepCopiesToolResultParts(t *testing.T) {
 		t.Fatalf("original text = %q, want the clone to leave it untouched", got)
 	}
 }
+
+// TestContentMarshalJSONEnvelopeIsStable pins the exact bytes of the content
+// envelope. Content.MarshalJSON writes the wrapper by hand so a board's message
+// text is copied once instead of twice on its way into a checkpoint; this is
+// what keeps that hand-written JSON byte-identical to the marshalled struct it
+// replaced.
+func TestContentMarshalJSONEnvelopeIsStable(t *testing.T) {
+	content := message.Content{Parts: []message.Part{
+		message.TextPart{Text: "hi"},
+		message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)},
+	}}
+	data, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	const want = `{"parts":[{"type":"text","text":"hi"},` +
+		`{"type":"data","media_type":"application/json","value":{"a":1}}]}`
+	if string(data) != want {
+		t.Fatalf("Marshal =\n%s\nwant\n%s", data, want)
+	}
+}
+
+// TestPartCloneDetachesInlineMedia proves a clone owns its inline payload: a
+// board snapshot, a checkpoint record or a retry rollback point keeps the
+// cloned part, so mutating the original buffer must not reach it.
+func TestPartCloneDetachesInlineMedia(t *testing.T) {
+	imageBytes := []byte{1, 2, 3, 4}
+	image, err := media.NewImageBytes(imageBytes, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	audioBytes := []byte{5, 6, 7, 8}
+	audio, err := media.NewAudioBytes(audioBytes, "audio/wav")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	videoBytes := []byte{9, 10, 11, 12}
+	video, err := media.NewVideoBytes(videoBytes, "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoBytes: %v", err)
+	}
+
+	imageClone := message.ImagePart{Source: image}.Clone()
+	audioClone := message.AudioPart{Source: audio}.Clone()
+	videoClone := message.VideoPart{Source: video}.Clone()
+
+	imageBytes[0] = 99
+	audioBytes[0] = 99
+	videoBytes[0] = 99
+
+	if got := imageClone.(message.ImagePart).Source.Bytes(); len(got) == 0 || got[0] != 1 {
+		t.Fatalf("image clone shares its source buffer: %v", got)
+	}
+	if got := audioClone.(message.AudioPart).Source.Bytes(); len(got) == 0 || got[0] != 5 {
+		t.Fatalf("audio clone shares its source buffer: %v", got)
+	}
+	if got := videoClone.(message.VideoPart).Source.Bytes(); len(got) == 0 || got[0] != 9 {
+		t.Fatalf("video clone shares its source buffer: %v", got)
+	}
+}
