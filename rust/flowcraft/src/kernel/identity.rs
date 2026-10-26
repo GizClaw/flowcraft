@@ -438,9 +438,12 @@ fn new_salt() -> String {
 
 /// FNV-1a, stable across releases and platforms.
 ///
+/// Unix-only: the principal it feeds is the one place a name is hashed.
+///
 /// The goal is not secrecy against an attacker holding the salt — it is that a
 /// name never travels. A digest that changes with a dependency upgrade would
 /// break correlation, which is worse than a non-cryptographic hash.
+#[cfg(unix)]
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -451,6 +454,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// The low `width`×5 bits of `value`, Crockford base32.
+#[cfg(unix)]
 fn base32(value: u64, width: usize) -> String {
     let mut out = String::with_capacity(width);
     for index in (0..width).rev() {

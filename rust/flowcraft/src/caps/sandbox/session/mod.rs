@@ -13,6 +13,11 @@
 pub(crate) mod log;
 pub(crate) mod registry;
 pub(crate) mod spawn;
+// The Windows process tree: job objects are the only way to own a whole tree
+// there, and they carry the caps. Unix uses process groups inside `spawn`.
+#[cfg(windows)]
+pub(crate) mod job;
+
 // A pty is a platform mechanism: the unix one is `portable-pty`, the Windows one
 // is planned (W2) and is a stub that reports itself unavailable.
 #[cfg(unix)]

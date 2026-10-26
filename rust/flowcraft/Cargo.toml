@@ -66,6 +66,7 @@ sandbox = [
     "dep:cgroups-rs",
     "dep:async-trait",
     "dep:notify",
+    "dep:flowcraft-win32",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
@@ -219,6 +220,12 @@ nix = { workspace = true, features = ["user"], optional = true }
 # mechanism comes from a dependency.
 portable-pty = { workspace = true, optional = true }
 
+# The Win32 mechanisms (job objects today, tokens and app containers next). The
+# crate is empty off Windows, so naming it in the `sandbox` feature costs nothing
+# elsewhere and keeps `unsafe` out of this one.
+[target.'cfg(windows)'.dependencies]
+flowcraft-win32 = { workspace = true, optional = true }
+
 # cgroups are a Linux-only mechanism; everywhere else the probe reports the caps
 # as unavailable.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -226,6 +233,10 @@ cgroups-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 rcgen = "0.14"
+# The Windows control experiment only: `portable-pty` is a unix mechanism for the
+# shipped crate, but its ConPTY backend is the reference this crate's own is
+# checked against. A dev-dependency keeps that out of everything shipped.
+portable-pty.workspace = true
 # The tests pin the rustls provider explicitly: a workspace-wide build unifies
 # rustls' `ring` feature (tonic) with `aws_lc_rs` (the OTLP client), which
 # leaves the process default ambiguous.
@@ -272,6 +283,19 @@ required-features = ["sandbox"]
 
 [[test]]
 name = "sandbox_roundtrip"
+required-features = ["sandbox"]
+
+# The Windows session semantics: job objects are the only mechanism that can
+# keep them, so the fixtures here are `cfg(windows)` and the target is empty
+# elsewhere.
+[[test]]
+name = "sandbox_windows"
+required-features = ["sandbox"]
+
+# The control experiment: `portable-pty`'s ConPTY, used to tell "our plumbing is
+# wrong" from "this host cannot provide a pseudo console".
+[[test]]
+name = "sandbox_win_conpty_control"
 required-features = ["sandbox"]
 
 [[test]]

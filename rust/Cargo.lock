@@ -794,6 +794,7 @@ dependencies = [
  "cap-std",
  "cgroups-rs",
  "ed25519-dalek",
+ "flowcraft-win32",
  "futures-util",
  "globset",
  "http",
@@ -851,6 +852,13 @@ name = "flowcraft-proto-gen"
 version = "0.1.0"
 dependencies = [
  "tonic-prost-build",
+]
+
+[[package]]
+name = "flowcraft-win32"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
