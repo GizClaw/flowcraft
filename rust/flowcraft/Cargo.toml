@@ -131,6 +131,7 @@ kernel = [
     "resource",
     "dep:base64",
     "dep:ed25519-dalek",
+    "dep:rustls",
     "dep:globset",
     "dep:http",
     "dep:hyper-util",
@@ -185,6 +186,10 @@ prost = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 regex = { version = "1", optional = true }
 ring = { workspace = true, optional = true }
+# rustls is reached through tonic, but the provider has to be *pinned* here: a
+# workspace-wide build unifies `ring` (tonic) with `aws_lc_rs` (rmcp → reqwest),
+# and rustls then refuses to guess. See `kernel::tls::install_provider`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 rmcp = { version = "3.7", default-features = false, features = [
     "client",
     "transport-child-process",
