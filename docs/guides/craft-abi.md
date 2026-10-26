@@ -8,9 +8,9 @@ title: Craft ABI
 between the platform and any craft (a sidecar that runs an agent loop).
 
 - Source of truth: [`proto/flowcraft/craft/v1/craft.proto`](../../proto/flowcraft/craft/v1/craft.proto)
-- Platform enforcement: `rust/crates/flowcraft-platformd/src/abi.rs`
-- Conformance suite: `rust/crates/flowcraft-platformd/tests/conformance.rs`
-- Launch/lifecycle: `rust/crates/flowcraft-platformd/src/craft.rs`
+- Platform enforcement: `rust/flowcraft-platformd/src/abi.rs`
+- Conformance suite: `rust/flowcraft-platformd/tests/conformance.rs`
+- Launch/lifecycle: `rust/flowcraft-platformd/src/craft.rs`
 
 ## Three interfaces, three owners
 

@@ -78,8 +78,11 @@ make proto-lint     # buf lint
 make proto-breaking # buf breaking against main
 ```
 
-Rust has nothing to commit: `rust/crates/flowcraft-proto/build.rs` compiles the
-same files with `tonic-build` at build time.
+Rust commits its bindings: `rust/flowcraft/src/proto/generated/` is produced by
+`rust/flowcraft/examples/gen_proto.rs` (`make rust-proto-gen`). They are checked
+in so that anyone building the `flowcraft` crate — a consumer, docs.rs, `cargo
+install` — needs neither `protoc` nor a build script. `make rust-proto-check`
+fails on drift, the way `make proto-check` guards the Go stubs.
 
 The Go stubs land next to their Go packages (the directory named by
 `option go_package`), so adding this tree did not change any import path.

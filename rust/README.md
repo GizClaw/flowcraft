@@ -19,53 +19,64 @@ listed under [Not implemented yet](#not-implemented-yet).
 
 ## Layout
 
+Two packages, because the published unit is the library:
+
 ```text
 rust/
   Cargo.toml                 workspace, shared deps, lints
   rust-toolchain.toml        pinned toolchain (1.93)
-  crates/
-    flowcraft                facade: `flowcraft::error`, `flowcraft::kernel`, … (consumers only)
-    flowcraft-error          error taxonomy: stable kinds + their status mapping
-    flowcraft-telemetry      telemetry pipeline: field vocabulary, text/JSON
+  flowcraft/                 the library — everything a consumer depends on
+    src/lib.rs               module map and the feature table
+    src/error/               error taxonomy: stable kinds + status mapping
+    src/telemetry/           telemetry pipeline: field vocabulary, text/JSON
                              rendering, the stderr split, the subscriber host
-    flowcraft-proto          prost/tonic bindings for every contract under proto/
-    flowcraft-search         text retrieval primitives: tokenizer + BM25
-    flowcraft-resource       deployment document, strict decode, and the
+    src/proto/               wire bindings for every contract under proto/,
+                             committed under generated/ (see `make rust-proto-gen`)
+    src/search/              text retrieval primitives: tokenizer + BM25
+    src/resource/            deployment document, strict decode, and the
                              composition kernel: Plan / Build / Start / Close
-    flowcraft-kernel         control plane: config, catalog, grants, listeners,
+    src/kernel/              control plane: config, catalog, grants, listeners,
                              bootstrap secrets, TLS, transport
-    flowcraft-client         client plumbing: grant-carrying `Wire`, gRPC
+    src/client/              client plumbing: grant-carrying `Wire`, gRPC
                              auth/status helpers, the craft ABI client
-    flowcraft-cap-workspace  workspace: local provider (cap-std confined), scoped and
-                             prefixed decorators, helper operations, endpoint
+    src/caps/workspace/      workspace: local provider (cap-std confined), scoped
+                             and prefixed decorators, helper operations, endpoint
                              server, remote client
-    flowcraft-cap-secret     secret: memory/env/file/keychain providers, endpoint, remote client
-    flowcraft-cap-sandbox    sandbox: local process runner, endpoint, remote client
-    flowcraft-cap-tool       tool: capability (endpoint/remote/MCP) + agent-side
+    src/caps/secret/         secret: memory/env/file/keychain providers, endpoint,
+                             remote client
+    src/caps/sandbox/        sandbox: local process runner, endpoint, remote client
+    src/caps/tool/           tool: capability (endpoint/remote/MCP) + agent-side
                              framework (registry, assembly, middleware, exposure,
                              discovery, executor)
-    flowcraft-platformd      the `flowcraftd` binary
+    examples/gen_proto.rs    regenerates src/proto/generated/ from proto/
+  flowcraft-platformd/       the `flowcraftd` binary, and the supervisor, admin
+                             and craft-hosting surface only it needs
   examples/workspace/        a runnable platform.yaml + deploy.yaml
   examples/capabilities/     workspace, secret, sandbox, tool + `${secret:...}`
 ```
 
-Dependency direction is one way, and a test pins it
-(`crates/flowcraft-platformd/tests/layering.rs`):
+The layers inside `flowcraft` used to be crates of their own. They are modules
+now, because the crate — not the layer — is the unit `cargo add` and crates.io
+see: one version, one API page, one publish. A split whose only job was to prove
+which layer another layer may use cannot justify eleven version numbers.
+
+The one-way edges survive in two places: the `dep:` entries of the feature table,
+and `flowcraft/tests/layering.rs`, which reads the `crate::` paths each module
+reaches for and compares them to the table below.
 
 ```text
-flowcraft            facade → every crate below (consumers only)
-flowcraft-error      leaf
-flowcraft-telemetry  → error
-flowcraft-proto      leaf
-flowcraft-search     → error
-flowcraft-resource   → error, telemetry
-flowcraft-kernel     → error, telemetry, resource
-flowcraft-client     → error, kernel, proto
-flowcraft-cap-*      → error, resource, kernel, client, proto
-flowcraft-platformd  → everything above
+error                leaf, always compiled (its only dependency is `thiserror`)
+telemetry            → error
+proto                leaf (generated, committed)
+search               → error
+resource             → error, telemetry
+kernel               → error, telemetry, resource
+client               → error, telemetry, proto, kernel
+caps::*              → error, resource, kernel, client, proto (+ search in tool)
+flowcraft-platformd  → flowcraft (features = ["caps"])
 ```
 
-Consumers depend on the facade and use module paths, never the sub-crate names:
+Public API, unchanged for consumers:
 
 ```rust
 use flowcraft::error::{Error, ErrorKind};
@@ -74,24 +85,36 @@ use flowcraft::client::Wire;
 use flowcraft::caps::workspace::Handle;
 ```
 
-Internal crates never depend on the facade — a facade re-exporting a crate that
-depended on it would be a cycle — so the split still buys independent builds and
-the layering test above.
+One rule held: nothing depends on the library except the daemon. Inside the
+library a module may reach *down* only — and `proto` and `error` reach nowhere.
 
-Two deliberate choices: `error` is its own leaf because every crate needs the
-taxonomy, and `client` is separate from `kernel` so a remote capability crate
-does not pull in the control plane's config, craft lifecycle, or TLS policy.
-Everything else stays a module rather than a crate — splitting `document`,
-`decode`, `transport`, or `bootstrap` would add crates without removing a
-dependency edge.
+### Features
+
+`default = ["platform"]`: the composition plane, which is what a program that
+hosts FlowCraft wants.
+
+| feature | brings |
+| --- | --- |
+| `platform` | `telemetry`, `proto`, `search`, `resource`, `kernel`, `client` |
+| `caps` | `platform` + `workspace`, `secret`, `sandbox`, `tool`, `wire` |
+| `workspace` | the provider, decorators and helpers; **no** control plane |
+| `secret` / `sandbox` / `tool` | one capability, endpoint and remote client included |
+| `wire` | the gRPC endpoints, the remote clients, the grant-scope checks |
+| `otel` / `otlp` | trace context; shipping it to a collector |
+| `telemetry`, `proto`, `search`, `resource`, `kernel`, `client` | one layer each |
+
+Two shapes are load-bearing enough to be gated by tests: `otel` without `otlp`
+must carry no runtime and no HTTP stack (`flowcraft/tests/telemetry_deps.rs`),
+and `--no-default-features --features workspace` must build without the control
+plane (`make rust-windows-check`, plus the `rust-windows` CI lane).
 
 ### Platform support
 
 The kernel's transport is unix-domain sockets, so the platform as a whole is
-unix-only. Some crates are portable in isolation; the workspace crate is the
-first where that matters, because its provider is the thing most likely to be
-reused. `--no-default-features` drops `endpoint`, `remote` and `scope`, leaving
-the provider, its decorators and the helper operations — a shape with no
+unix-only. One capability is portable in isolation, and it is the one whose
+provider is most likely to be reused: `--no-default-features --features
+workspace` drops `wire` (the endpoint, the remote client and the grant scope) and
+leaves the provider, its decorators and the helper operations — a shape with no
 control-plane dependency that builds for a Windows target.
 
 `make rust-windows-check` cross-compiles it locally (it needs the
@@ -105,12 +128,14 @@ remain unix-only.
 ## Quickstart
 
 Prerequisites: the pinned toolchain (`rust-toolchain.toml`; `rustup` installs it
-on first use) and `protoc` on `PATH` — `flowcraft-proto` generates its bindings at
-build time from `proto/`, so there is no vendored stub to go stale.
+on first use). Not `protoc`: the wire bindings under `flowcraft/src/proto` are
+committed, so a build — yours, docs.rs', or `cargo install`'s — reads them as
+ordinary source. `make rust-proto-gen` regenerates them from `proto/`, and
+`make rust-proto-check` fails if they went stale.
 
 ```bash
 cd rust
-cargo test                       # 521 tests, no network, no credentials
+cargo test                       # 778 tests, no network, no credentials
 
 cargo run -p flowcraft-platformd -- catalog
 cargo run -p flowcraft-platformd -- check \
@@ -131,7 +156,7 @@ document or configuration, `3` unreadable file, `1` internal.
 
 ## Logging
 
-One record is one line. `flowcraft-telemetry` owns the vocabulary, the rendering,
+One record is one line. `flowcraft::telemetry` owns the vocabulary, the rendering,
 and the routing; a host installs the pipeline once and keeps the returned guard
 until exit.
 
@@ -140,8 +165,13 @@ flowcraftd serve ... --log-format json   # one JSON object per line
 flowcraftd serve ... -v                  # debug
 flowcraftd serve ... --profile client    # client-daemon defaults: text + ring
 flowcraftd check ... -q                  # warnings and errors only
-RUST_LOG="info,flowcraft_kernel=debug" flowcraftd serve ...   # wins over flags
+RUST_LOG="info,flowcraft::kernel=debug" flowcraftd serve ...   # wins over flags
 ```
+
+A target is a module path inside the library — `flowcraft::caps::sandbox`, not
+`flowcraft_cap_sandbox` — so `targets:` in `platform.yaml` and `RUST_LOG` spell
+the module. `flowcraft::logerr` is the crate-root macro every layer reports
+failures through.
 
 Durable policy belongs in `platform.yaml`, under `log:` — the level there is
 applied at startup, while `format`, `file` and `ring_bytes` decide how the
@@ -152,7 +182,7 @@ silently ignored:
 log:
   level: info
   targets:
-    flowcraft_cap_sandbox: debug
+    flowcraft::caps::sandbox: debug
   format: json
   file: /var/log/flowcraftd/flowcraftd.log
   file_max_bytes: 8388608     # rotate at 8 MiB (0 disables rotation)
@@ -191,7 +221,7 @@ that span, and a call carries them to the next process:
 
 - `flowcraftd` spans `generation.reload` and `craft.start`; every endpoint wraps
   a request in an `rpc` span.
-- `flowcraft-client` stamps `traceparent` next to the grant on every capability
+- `flowcraft::client` stamps `traceparent` next to the grant on every capability
   and craft call; the endpoint middleware attaches it as the parent, so a
   capability call is part of the operation that made it.
 - A request without the header starts a new root trace rather than inventing a
@@ -199,16 +229,16 @@ that span, and a call carries them to the next process:
 
 The ids, the span lifecycle and the `traceparent` encoding are the
 **OpenTelemetry SDK's** (`opentelemetry`, `opentelemetry_sdk`,
-`tracing-opentelemetry`). `flowcraft-telemetry` supplies the resource attributes
+`tracing-opentelemetry`). `flowcraft::telemetry` supplies the resource attributes
 (`flowcraft.install`, `flowcraft.session`, …) and reads the current span's ids
 for the record renderer; it does not implement the protocol.
 
 ### Shipping to a collector (`--features otlp`)
 
 ```toml
-# crates/flowcraft-platformd/Cargo.toml
+# flowcraft-platformd/Cargo.toml
 [features]
-otlp = ["flowcraft-telemetry/otlp"]
+otlp = ["flowcraft/otlp"]
 ```
 
 ```yaml
@@ -228,9 +258,9 @@ POST /v1/traces  892 bytes
 ```
 
 The feature is **off by default** because a client binary has nowhere to send to,
-and `crates/flowcraft-telemetry/tests/deps.rs` pins both halves: the default
-build has no runtime, no HTTP stack and no exporter, and `--features otlp` has
-them.
+and `flowcraft/tests/telemetry_deps.rs` pins both halves: the build with `otel`
+and without `otlp` has no runtime, no HTTP stack and no exporter, and
+`--features otlp` has them.
 
 A field whose *name* looks like a credential (`token`, `secret`, `password`,
 `authorization`, …) has its value replaced by `<redacted>` before it is rendered,
@@ -260,8 +290,8 @@ stdout stream — an OTel Collector `filelog`/`stdout` receiver maps them withou
 bespoke exporter, and that path needs neither the feature flag nor a runtime.
 The OTLP exporter above is the other option, and it stays opt-in for the reason
 given there: the pipeline's default build carries no async runtime and no HTTP
-stack, and `crates/flowcraft-telemetry/tests/deps.rs` pins both halves of that
-split — nothing in the default closure, the exporter and the log bridge under
+stack, and `flowcraft/tests/telemetry_deps.rs` pins both halves of that split —
+nothing in the `otel` closure, the exporter and the log bridge under
 `--features otlp`.
 
 The support code is the first eight characters of the machine identity, short
@@ -351,7 +381,7 @@ Two rules carry most of the design:
 
 1. **Packaging** — static musl builds, a systemd unit, a distroless image, and
    Helm. The binary already runs under a service manager by hand.
-2. **Windows** — the crate is platform-split so it *builds* there, but no Windows
+2. **Windows** — the library is feature-split so it *builds* there, but no Windows
    provider exists yet: no job objects, no ConPTY, no token-based write
    confinement, no AppContainer. `Capabilities` reports the gap honestly (a
    `tty` request on Windows is `NotAvailable`, not an empty session). The planned
@@ -482,7 +512,7 @@ Two rules carry most of the design:
   in-process framework ported from `core/tool`: registry with conflict policy,
   exposure/visibility, the bounded discovery pool, `tool_search`, and a
   middleware executor with panic recovery. The ranking kernel (tokenizer +
-  BM25) lives in `flowcraft-search`, because skills and memory use the same
+  BM25) lives in `flowcraft::search`, because skills and memory use the same
   splitter and scoring. The layers stay separate: the wire
   side never calls the policy side, and `LocalSource` is the seam between them.
 - **MCP is an edge adapter, not the internal wire.** `tool.Source/mcp` attaches
@@ -533,6 +563,44 @@ Two rules carry most of the design:
   refuses to serve them, so an unsupported deployment fails loudly rather than
   degrading.
 
+## Publishing
+
+Two packages, one version: `version` is written once, in
+`[workspace.package]`, and both packages read it.
+
+```bash
+cd rust
+cargo publish -p flowcraft --dry-run     # unpacks the package and rebuilds it
+cargo publish -p flowcraft
+cargo publish -p flowcraft-platformd
+```
+
+`--dry-run` is the check that matters. It builds from the tarball, which is the
+only thing that proves the crate is self-contained — and it is why the wire
+bindings are committed rather than generated: a `build.rs` reading `../../proto`
+would publish a crate that cannot compile, and every consumer would need
+`protoc`. `cargo install flowcraft-platformd` therefore needs nothing but a
+Rust toolchain.
+
+Order is not a suggestion: the daemon names the library by version, so the
+library has to be on the registry first. A second publish that fails with "no
+matching package named `flowcraft`" means the index has not caught up — wait and
+retry, never `--no-verify`.
+
+Three consequences of "one version, two packages":
+
+- a patch to the daemon alone still bumps the library, because the number lives
+  in one place;
+- the wire contract is part of the library's public API (`flowcraft::proto`), so
+  a breaking `.proto` change is a breaking library change; `0.x` minors are
+  where that is allowed to happen;
+- `flowcraft` ships no binaries, so `cargo install flowcraft` has nothing to
+  install — the daemon is the installable thing. The in-namespace bridge is not a
+  second artefact either: `flowcraftd` re-executes itself with
+  `--flowcraft-sandbox-bridge`, and a host that embeds the sandbox capability does
+  the same by calling `bridge::run_if_invoked()` before it looks at `argv` (see
+  `caps::sandbox::net::bridge`).
+
 ## Tests
 
 ```text
@@ -553,5 +621,6 @@ The integration tests cover the properties that matter most:
 
 ## References
 
-- Wire contracts: `proto/flowcraft/…` (compiled by `flowcraft-proto`, not copied).
+- Wire contracts: `proto/flowcraft/…`, generated into `flowcraft::proto` and
+  committed there (`make rust-proto-gen`).
 - Go side: `core/resource`, `core/platform`, `core/workspace`.
