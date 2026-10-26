@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/backends/checkpoint
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.9.0
+	github.com/GizClaw/flowcraft/core v0.9.1-0.20261026121819-4fab8fbd7309
 	modernc.org/sqlite v1.59.0
 )
 
@@ -19,7 +19,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
