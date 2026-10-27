@@ -558,6 +558,9 @@ mod tests {
     use super::*;
     use crate::caps::sandbox::local::LocalRunner;
     use crate::caps::sandbox::policy::stub::Sink;
+    // The tests that use this are `#[cfg(unix)]`: on Windows the resolved-programme
+    // assertion has no `OsStr` to read, so the import would be unused.
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use std::ffi::OsStr;
     use std::sync::Mutex;
 
@@ -861,6 +864,8 @@ mod tests {
     }
 
     /// A host policy whose only programme directory is `dir`.
+    // Every caller is a `#[cfg(unix)]` test (they build a real programme tree).
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn host(dir: &std::path::Path) -> HostPolicy {
         HostPolicy {
             path_dirs: vec![std::fs::canonicalize(dir).expect("canonicalize")],

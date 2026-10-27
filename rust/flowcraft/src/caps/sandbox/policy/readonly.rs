@@ -492,7 +492,11 @@ fn sort_is_read_only(args: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The tests that reach for these are `#[cfg(unix)]`: they write a real
+    // programme into a temporary directory.
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use crate::caps::sandbox::contract::{ExecOptions, WriteMode};
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use crate::caps::sandbox::policy::stub::Sink;
     use std::path::PathBuf;
 
@@ -714,6 +718,7 @@ mod tests {
     }
 
     /// A host policy whose only programme directory is `dir`.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn host(dir: &Path) -> HostPolicy {
         HostPolicy {
             path_dirs: vec![std::fs::canonicalize(dir).expect("canonicalize")],

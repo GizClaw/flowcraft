@@ -223,8 +223,9 @@ impl ServerSpec {
                     )));
                 }
                 // The same rule `platform.yaml` targets follow, in one place:
-                // `crate::kernel::net`.
-                crate::kernel::net::require_secure_target(&self.url, self.allow_insecure).map_err(
+                // `crate::net`. It lives below the kernel so a provider shape
+                // (`tool` without `kernel`) can still enforce it.
+                crate::net::require_secure_target(&self.url, self.allow_insecure).map_err(
                     |error| {
                         Error::validation(format!(
                             "mcp: servers[{index}] ({}): {}",

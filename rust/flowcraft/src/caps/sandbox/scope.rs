@@ -111,6 +111,9 @@ mod tests {
         }
     }
 
+    // Every caller is a `#[cfg(unix)]` test: they build a real programme tree and
+    // ask the host policy to resolve it.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn host(dir: &Path) -> HostPolicy {
         HostPolicy {
             path_dirs: vec![std::fs::canonicalize(dir).expect("canonicalize")],

@@ -7,6 +7,10 @@
 //! because anyone decided plaintext was fine, but because the rule lived in one
 //! place that the other caller never visits.
 //!
+//! It sits at the crate root rather than in `kernel` for that reason: a provider
+//! shape (`--no-default-features --features tool`) does not compile the kernel, and
+//! a rule that only the kernel can reach is the bug this module exists to fix.
+//!
 //! From here on the rule is one function, and both surfaces call it.
 
 use std::borrow::Cow;

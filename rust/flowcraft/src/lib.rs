@@ -52,6 +52,8 @@ pub mod blocking;
 
 pub mod fs;
 
+pub mod net;
+
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 

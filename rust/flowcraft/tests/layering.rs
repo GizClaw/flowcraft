@@ -38,6 +38,11 @@ const LAYERS: &[(&str, &[&str])] = &[
     // a private directory). It sits on nothing: every layer that writes a
     // credential or a log needs it, and it must not carry a policy of its own.
     ("fs", &[]),
+    // `net` holds the remote-target rule. It sits at the root for the same kind of
+    // reason: a provider shape must be able to enforce it without compiling the
+    // kernel, which is where it used to live (and which is why a capability could
+    // name a plaintext target nobody checked).
+    ("net", &["error"]),
     ("telemetry", &["error", "fs"]),
     ("proto", &[]),
     ("message", &["error", "proto"]),
@@ -75,7 +80,8 @@ const LAYERS: &[(&str, &[&str])] = &[
         // The tool contract speaks the conversation model (`message`), which is
         // one layer above the wire types it is generated from.
         &[
-            "error", "resource", "kernel", "client", "proto", "search", "message", "fs", "blocking",
+            "error", "resource", "kernel", "client", "proto", "search", "message", "fs",
+            "blocking", "net",
         ],
     ),
 ];
