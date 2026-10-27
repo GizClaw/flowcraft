@@ -269,10 +269,16 @@ mod tests {
     #[tokio::test]
     async fn expands_references_inside_strings() {
         let resolver = Resolver::new();
-        let value = serde_json::json!({"root": "data", "path": "x-${env:HOME}"});
-        // HOME is set in every test environment; assert the shape, not the value.
+        // `PATH` is the one variable every platform this crate builds for sets;
+        // `HOME` is unix spelling (Windows has `USERPROFILE`), and asserting on it
+        // made this test pass everywhere it ran and fail the first time a Windows
+        // lane executed the suite.
+        let value = serde_json::json!({"root": "data", "path": "x-${env:PATH}"});
         let expanded = resolver.expand(&value).await.unwrap();
-        assert!(expanded["path"].as_str().unwrap().starts_with("x-/"));
+        let path = expanded["path"].as_str().unwrap();
+        assert!(path.starts_with("x-"), "{path}");
+        assert!(!path.contains("${env:"), "{path}");
+        assert_ne!(path, "x-", "the reference expanded to nothing");
         assert_eq!(expanded["root"], "data");
     }
 
