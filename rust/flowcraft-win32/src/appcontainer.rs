@@ -239,7 +239,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("flowcraft.ac.{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let probe = dir.join("probe.txt");
-        let script = format!("echo hello > \"{}\"", probe.display());
+        // `cmd` owns the redirection, so the script contains a `>` — and the
+        // argument builder quotes anything with a space, which is what makes
+        // `cmd /c "echo … > C:\path"` behave. The path itself must not contain a
+        // space: inside the script it cannot be quoted again without nesting
+        // quotes that `cmd` then reads literally (which is how this test first
+        // failed, at the control).
+        assert!(
+            !probe.display().to_string().contains(' '),
+            "the probe path must not contain a space: {}",
+            probe.display()
+        );
+        let script = format!("echo hello > {}", probe.display());
 
         let _ = std::fs::remove_file(&probe);
         let plain = run(None, &script);
