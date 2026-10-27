@@ -236,10 +236,15 @@ With the workspace driver all state lives under the bound workspace:
 - `worker/v1/leases/<partition>` — the scope's claim: the runner holding it,
   when it took it and when it expires. It is written back as released rather
   than deleted, so a host can still read who last held the scope.
-- `projections/<family>/v2/...` — rebuildable BM25 / entity / vector lane
-  state: one `active.json` manifest per index name, the immutable bases and
-  segments it names, and nothing a manifest stopped naming (see *Projection
-  storage reclamation*). A vector entry's payload is base64 of the
+- `projections/<family>/v3/partitions/<runtime>/<user>/<agent>/indexes/<name>/shards/<shard>/...`
+  — rebuildable BM25 / entity / vector lane state, one addressed unit per
+  conversation (`c:<conversation-id>`) or dataset (`d:<dataset-id>`): one
+  `active.json` manifest per shard, the immutable bases and segments it names,
+  and nothing a manifest stopped naming (see *Projection storage reclamation*).
+  A shard is what a delta writes and a selector reads; a scope-wide rebuild
+  publishes the shards its artifact set covers and drops the rest. The v2
+  whole-scope layout is not read (memory has not shipped, so this is a break,
+  not a migration). A vector entry's payload is base64 of the
   components' little-endian float32 bytes, not a JSON array of numbers: the
   stored bytes are what a lane's digests are computed over, and a decimal
   rendering nobody owns made them depend on which toolchain compiled the

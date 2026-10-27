@@ -107,7 +107,7 @@ func renderHot(w io.Writer, hot *hotReading) {
 			ratio = float64(point.Scan) / float64(hot.MeanEmbed)
 		}
 		printf(w, "    %10d %10s %10s %11.1f%%\n",
-			point.EntriesPerScope, duration(point.Scan), duration(point.Sort), ratio*100)
+			point.EntriesPerShard, duration(point.Scan), duration(point.Sort), ratio*100)
 	}
 	printf(w, "    (scan is linear in entries, the ordering is the limit's work; embed is this run's mean %.1fms)\n\n",
 		float64(hot.MeanEmbed)/float64(time.Millisecond))
@@ -116,10 +116,10 @@ func renderHot(w io.Writer, hot *hotReading) {
 func renderFootprint(w io.Writer, reading reading) {
 	footprint := reading.Footprint
 	line(w, "footprint (resident materialized tables, after the passes)")
-	printf(w, "  scopes %d  entries %d  dimensions %d  vector payload %s\n",
-		footprint.Scopes, footprint.Entries, footprint.Dimensions, megabytes(footprint.VectorBytes))
+	printf(w, "  shards %d  entries %d  dimensions %d  vector payload %s\n",
+		footprint.Shards, footprint.Entries, footprint.Dimensions, megabytes(footprint.VectorBytes))
 	if reading.Evictions > 0 || reading.UncachedLoads > 0 {
-		// A footprint below what the scopes read would hold is explained here,
+		// A footprint below what the shards read would hold is explained here,
 		// and the configured bounds are in the retrieval summary above.
 		printf(w, "  bounds: %d tables evicted, %d reads of a table too large to keep\n",
 			reading.Evictions, reading.UncachedLoads)

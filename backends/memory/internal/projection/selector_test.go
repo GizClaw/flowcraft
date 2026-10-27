@@ -23,7 +23,6 @@ var (
 		corememory.ContextDocumentChunk,
 		corememory.ContextDocumentSummary,
 	}
-	allKinds = append(append([]corememory.ContextItemKind{corememory.ContextProfile}, chatKinds...), documentKinds...)
 )
 
 // TestSelectorJudgesEachKindByItsOwnAxis is the judgement table the strict

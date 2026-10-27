@@ -77,12 +77,12 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	settings.Lanes.Vector.Weight = 2
 	settings.BM25.K1, settings.BM25.B = 1.4, 0.4
 	settings.Retrieval.SourceQuotes, settings.Retrieval.Rerank = 3, true
-	settings.Lanes.VectorCache = &VectorCacheSettings{MaxCachedScopes: 4, MaxEntriesPerScope: 20000}
+	settings.Lanes.VectorCache = &VectorCacheSettings{MaxCachedShards: 4, MaxEntriesPerShard: 20000}
 	summary, err = settings.retrievalSummary()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","vector_cache":{"max_cached_scopes":4,"max_entries_per_scope":20000}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","vector_cache":{"max_cached_shards":4,"max_entries_per_shard":20000}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
 	if summary != want {
 		t.Fatalf("tuned summary = %s, want %s", summary, want)
 	}
@@ -101,8 +101,8 @@ func TestVectorCacheBoundsAreValidatedAndNamed(t *testing.T) {
 		t.Fatalf("an untouched workspace does not validate: %v", err)
 	}
 	for _, bound := range []VectorCacheSettings{
-		{MaxCachedScopes: -1},
-		{MaxEntriesPerScope: -1},
+		{MaxCachedShards: -1},
+		{MaxEntriesPerShard: -1},
 	} {
 		invalid := Settings{}
 		invalid.applyDefaults()

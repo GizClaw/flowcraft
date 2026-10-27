@@ -154,13 +154,13 @@ func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 	if len(points) != 4 {
 		t.Fatalf("points = %+v", points)
 	}
-	if points[0].EntriesPerScope != 1000 || points[0].Scan != 10*time.Millisecond {
+	if points[0].EntriesPerShard != 1000 || points[0].Scan != 10*time.Millisecond {
 		t.Fatalf("current point = %+v", points[0])
 	}
 	// Ten times the entries cost ten times the scan, and the ordering stays at
 	// what one scan of this run cost.
 	tenX := points[1]
-	if tenX.EntriesPerScope != 10000 || tenX.Scan != 100*time.Millisecond {
+	if tenX.EntriesPerShard != 10000 || tenX.Scan != 100*time.Millisecond {
 		t.Fatalf("10k point = %+v", tenX)
 	}
 	if tenX.Sort != points[0].Sort || points[0].Sort != 500*time.Microsecond {
@@ -169,22 +169,22 @@ func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 }
 
 // TestFootprintLinesNameWhatTheBoundsHeldOut pins the reading a bounded run
-// needs: a footprint below what the scopes read would hold has to say why, and
+// needs: a footprint below what the shards read would hold has to say why, and
 // a run with no bounds in play has to stay silent about them.
 func TestFootprintLinesNameWhatTheBoundsHeldOut(t *testing.T) {
 	var out strings.Builder
 	renderFootprint(&out, reading{
-		Footprint: vector.Footprint{Scopes: 1, Entries: 12, Dimensions: 3, VectorBytes: 144},
+		Footprint: vector.Footprint{Shards: 1, Entries: 12, Dimensions: 3, VectorBytes: 144},
 	})
 	if strings.Contains(out.String(), "bounds:") {
 		t.Fatalf("a run with no eviction and no oversized table rendered a bounds line:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "scopes 1  entries 12  dimensions 3") {
+	if !strings.Contains(out.String(), "shards 1  entries 12  dimensions 3") {
 		t.Fatalf("the footprint line changed:\n%s", out.String())
 	}
 	out.Reset()
 	renderFootprint(&out, reading{
-		Footprint:     vector.Footprint{Scopes: 2, Entries: 20, Dimensions: 3, VectorBytes: 240},
+		Footprint:     vector.Footprint{Shards: 2, Entries: 20, Dimensions: 3, VectorBytes: 240},
 		Evictions:     3,
 		UncachedLoads: 1,
 	})

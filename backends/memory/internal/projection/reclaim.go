@@ -33,6 +33,10 @@ import (
 // reading that generation still serves it; sweeping it here would be a rebuild
 // silently deleting the state a rollback reads.
 //
+// It covers every shard of the scope, because a lane's state is the sum of its
+// shards: a sweep that stopped at the shards it happened to know would leave an
+// aborted publication behind in the one nobody counted.
+//
 // A manifest that cannot be read is refused rather than treated as empty: the
 // sweep's question is what the active manifest points at, and a manifest it
 // cannot decode has no answer. Nothing is deleted in that case.
@@ -44,21 +48,37 @@ func (store *Store[B, D]) Reclaim(
 	if err := validateAddress(scope, name); err != nil {
 		return component.ReclaimResult{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	shards, err := store.Shards(ctx, scope, name)
 	if err != nil {
 		return component.ReclaimResult{}, err
 	}
-	var keep map[string]struct{}
-	if found {
-		keep = store.manifestReferences(scope, name, active)
+	var result component.ReclaimResult
+	for _, shard := range shards {
+		address := Address{Scope: scope, Shard: shard}
+		mutex := store.lock(address, name)
+		mutex.Lock()
+		active, found, err := store.loadManifestLocked(ctx, address, name)
+		if err != nil {
+			mutex.Unlock()
+			return result, err
+		}
+		var keep map[string]struct{}
+		if found {
+			keep = store.manifestReferences(address, name, active)
+		}
+		// A shard with no manifest is the one case where every object is
+		// unreachable: a first publication that failed after writing its
+		// base, or a manifest a host removed. There is nothing to keep and
+		// nothing to point at.
+		swept, err := store.reclaimLocked(ctx, address, name, keep)
+		mutex.Unlock()
+		result.Bases += swept.Bases
+		result.Segments += swept.Segments
+		if err != nil {
+			return result, err
+		}
 	}
-	// A lane with no manifest is the one case where every object is
-	// unreachable: a first publication that failed after writing its base, or a
-	// manifest a host removed. There is nothing to keep and nothing to point
-	// at.
-	return store.reclaimLocked(ctx, scope, name, keep)
+	return result, nil
 }
 
 // reclaimLocked removes the bases and segments of one projection that keep does
@@ -71,12 +91,12 @@ func (store *Store[B, D]) Reclaim(
 // recognize would have to be taught every key the protocol ever gains.
 func (store *Store[B, D]) reclaimLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	keep map[string]struct{},
 ) (component.ReclaimResult, error) {
 	var result component.ReclaimResult
-	root := store.root(scope, name)
+	root := store.shardRoot(address, name)
 	keys, err := indexKeys(ctx, store.KV, root)
 	if err != nil {
 		return result, fmt.Errorf("projection: list stored objects: %w", err)
@@ -108,16 +128,16 @@ func (store *Store[B, D]) reclaimLocked(
 // and the segments chained after it. A manifest that holds nothing names
 // nothing, and the set is empty rather than nil so a caller can add to it.
 func (store *Store[B, D]) manifestReferences(
-	scope corememory.Scope,
+	address Address,
 	name string,
 	active Manifest,
 ) map[string]struct{} {
 	references := make(map[string]struct{}, 1+len(active.Segments))
 	if active.Base != nil {
-		references[store.buildPath(scope, name, active.Base.ID)] = struct{}{}
+		references[store.buildPath(address, name, active.Base.ID)] = struct{}{}
 	}
 	for _, ref := range active.Segments {
-		references[store.segmentPath(scope, name, ref.ID)] = struct{}{}
+		references[store.segmentPath(address, name, ref.ID)] = struct{}{}
 	}
 	return references
 }
@@ -141,17 +161,17 @@ func (store *Store[B, D]) manifestReferences(
 // stored until a sweep succeeds.
 func (store *Store[B, D]) sweepSupersededLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	current Manifest,
 	previous Manifest,
 	previousFound bool,
 ) {
-	keep := store.manifestReferences(scope, name, current)
+	keep := store.manifestReferences(address, name, current)
 	if previousFound {
-		for key := range store.manifestReferences(scope, name, previous) {
+		for key := range store.manifestReferences(address, name, previous) {
 			keep[key] = struct{}{}
 		}
 	}
-	_, _ = store.reclaimLocked(ctx, scope, name, keep)
+	_, _ = store.reclaimLocked(ctx, address, name, keep)
 }

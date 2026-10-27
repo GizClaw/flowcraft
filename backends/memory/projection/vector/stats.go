@@ -43,11 +43,11 @@ type Stats struct {
 	EntriesScanned int64         `json:"entries_scanned"`
 	EntriesScored  int64         `json:"entries_scored"`
 	// Evictions counts the resident tables dropped to keep their number within
-	// max_cached_scopes: the scope read least recently goes first. A lane with
+	// max_cached_shards: the shard read least recently goes first. A lane with
 	// no bound never evicts.
 	Evictions int64 `json:"evictions"`
 	// UncachedLoads counts the reads served from a table larger than
-	// max_entries_per_scope. Such a table is materialized, scanned, and
+	// max_entries_per_shard. Such a table is materialized, scanned, and
 	// dropped: the lane trades its residency for the read. A lane with no bound
 	// never refuses one.
 	UncachedLoads int64     `json:"uncached_loads"`
@@ -55,12 +55,12 @@ type Stats struct {
 }
 
 // Footprint is the resident state of the lane: one materialized vector table
-// per scope read or written since the last invalidation, less the ones the
+// per shard read or written since the last invalidation, less the ones the
 // bounds dropped. VectorBytes counts the vector payload alone (dimensions
 // times four bytes per entry); entry addresses, metadata, and text sit on top
 // of it and are not counted here.
 type Footprint struct {
-	Scopes      int   `json:"scopes"`
+	Shards      int   `json:"shards"`
 	Entries     int   `json:"entries"`
 	Dimensions  int   `json:"dimensions"`
 	VectorBytes int64 `json:"vector_bytes"`

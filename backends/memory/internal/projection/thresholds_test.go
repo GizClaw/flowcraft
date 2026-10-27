@@ -75,10 +75,10 @@ func TestTypedStoreCompactsOnTheShareItsDeltasReach(t *testing.T) {
 	for index := range base.Entries {
 		base.Entries[index] = testEntry{ID: fmt.Sprintf("entry-%03d", index), Value: strings.Repeat("x", 64)}
 	}
-	if err := store.FullRebuild(context.Background(), scope, "index", base, "source-base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", base, "source-base"); err != nil {
 		t.Fatal(err)
 	}
-	_, manifest, err := store.Materialize(context.Background(), scope, "index")
+	_, manifest, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestTypedStoreCompactsOnTheShareItsDeltasReach(t *testing.T) {
 	var stored int64
 	applied := 0
 	for ; applied < 10000; applied++ {
-		result, err := store.ApplyDelta(context.Background(), scope, "index",
+		result, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 			EntryDelta[testEntry]{Upserts: []testEntry{{
 				ID: fmt.Sprintf("added-%05d", applied), Value: strings.Repeat("y", 64),
 			}}}, fmt.Sprintf("revision-%d", applied), fmt.Sprintf("source-%d", applied))

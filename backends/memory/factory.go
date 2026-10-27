@@ -58,15 +58,15 @@ type factoryOptions struct {
 }
 
 // vectorCacheLimits maps the configured bounds onto the lane's own. An absent
-// block is no bound: the lane keeps every scope's table it reads, which is what
+// block is no bound: the lane keeps every shard's table it reads, which is what
 // it did before the bounds existed.
 func vectorCacheLimits(settings *VectorCacheSettings) vector.CacheLimits {
 	if settings == nil {
 		return vector.CacheLimits{}
 	}
 	return vector.CacheLimits{
-		Scopes:  settings.MaxCachedScopes,
-		Entries: settings.MaxEntriesPerScope,
+		Shards:  settings.MaxCachedShards,
+		Entries: settings.MaxEntriesPerShard,
 	}
 }
 

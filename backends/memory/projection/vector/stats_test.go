@@ -30,11 +30,23 @@ func TestStatsCountsAFailedLookupApartFromHitsAndLoads(t *testing.T) {
 	if !ok {
 		t.Fatalf("kvFor returned %T", kvFor(t))
 	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	// The shard has to exist for the failed read to be a lookup at all: a scope
+	// no write reached holds no shard, and a global read of it is empty rather
+	// than unreadable.
+	writer, err := New(Config{KV: kvStore, Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	index, err := New(Config{KV: unreadableStore{kvStore}, Runtime: runtime, Model: model, Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
 	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err == nil {
 		t.Fatal("a lookup that cannot read its state returned a result")
 	}
@@ -109,7 +121,7 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 		t.Fatalf("score total = %v exceeds the scan total %v: the walk cannot be negative",
 			stats.ScoreTotal, stats.ScanTotal)
 	}
-	if stats.Footprint.Scopes != 1 || stats.Footprint.Entries != 3 ||
+	if stats.Footprint.Shards != 1 || stats.Footprint.Entries != 3 ||
 		stats.Footprint.Dimensions != 2 || stats.Footprint.VectorBytes != 3*2*4 {
 		t.Fatalf("footprint = %+v", stats.Footprint)
 	}
@@ -153,7 +165,7 @@ func TestFootprintFollowsCacheInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.Footprint.Entries == 1 })
-	index.invalidateScope(scope)
+	index.invalidateShard(addressOf(scope, shardOf("conversation")))
 	if footprint := index.Stats().Footprint; footprint != (Footprint{}) {
 		t.Fatalf("footprint after invalidation = %+v", footprint)
 	}
@@ -175,7 +187,7 @@ func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
-	index.invalidateScope(scope)
+	index.invalidateShard(addressOf(scope, shardOf("conversation")))
 	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
 		t.Fatal(err)
 	}

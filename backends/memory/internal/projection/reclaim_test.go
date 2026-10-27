@@ -15,7 +15,7 @@ import (
 func storedObjects(t *testing.T, store *Store[testBase, EntryDelta[testEntry]],
 	scope corememory.Scope, name string) (bases, segments int) {
 	t.Helper()
-	root := store.root(scope, name)
+	root := store.shardRoot(testAddress(scope), name)
 	keys, err := indexKeys(context.Background(), store.KV, root)
 	if err != nil {
 		t.Fatal(err)
@@ -53,11 +53,11 @@ func TestTypedStorePublicationKeepsOneSupersededGeneration(t *testing.T) {
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	upsert := func(id, revision string) error {
-		_, err := store.ApplyDelta(ctx, scope, "index",
+		_, err := store.ApplyDelta(ctx, testAddress(scope), "index",
 			EntryDelta[testEntry]{Upserts: []testEntry{{ID: id, Value: "value"}}}, revision, revision)
 		return err
 	}
-	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
 	// The first publication replaces nothing, so there is nothing to keep and
@@ -100,7 +100,7 @@ func TestTypedStorePublicationKeepsOneSupersededGeneration(t *testing.T) {
 
 	// What the sweep removed was storage, not state: the lane still reads back
 	// every entry the manifests named along the way.
-	got, _, err := store.Materialize(ctx, scope, "index")
+	got, _, err := store.Materialize(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestReclaimKeepsNothingButTheActiveManifest(t *testing.T) {
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
-		if _, err := store.ApplyDelta(ctx, scope, "index",
+		if _, err := store.ApplyDelta(ctx, testAddress(scope), "index",
 			EntryDelta[testEntry]{Upserts: []testEntry{{ID: id, Value: "value"}}}, "revision-"+id, "revision-"+id); err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func TestReclaimKeepsNothingButTheActiveManifest(t *testing.T) {
 	if !again.Empty() {
 		t.Fatalf("second sweep reclaimed %+v", again)
 	}
-	got, _, err := store.Materialize(ctx, scope, "index")
+	got, _, err := store.Materialize(ctx, testAddress(scope), "index")
 	if err != nil || len(got.Entries) != 6 {
 		t.Fatalf("materialized after the sweep = %d entries, %v", len(got.Entries), err)
 	}
@@ -160,10 +160,10 @@ func TestReclaimCollectsABaseNoManifestNames(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, kvFor(t), DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	orphan := store.buildPath(scope, "index", strings.Repeat("0", 64))
+	orphan := store.buildPath(testAddress(scope), "index", strings.Repeat("0", 64))
 	if err := store.writeImmutable(ctx, orphan, []byte(`{"entries":[]}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -187,17 +187,17 @@ func TestReclaimRefusesAManifestItCannotRead(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"a", "b"} {
-		if _, err := store.ApplyDelta(ctx, scope, "index",
+		if _, err := store.ApplyDelta(ctx, testAddress(scope), "index",
 			EntryDelta[testEntry]{Upserts: []testEntry{{ID: id, Value: "value"}}}, "revision-"+id, "revision-"+id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	assertStoredObjects(t, store, scope, "index", 2, 1)
-	if err := store.KV.Put(ctx, store.activePath(scope, "index"), []byte(`{"schema_version":`)); err != nil {
+	if err := store.KV.Put(ctx, store.activePath(testAddress(scope), "index"), []byte(`{"schema_version":`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Reclaim(ctx, scope, "index"); err == nil {
@@ -217,7 +217,7 @@ func TestReclaimLeavesOtherNamesAndForeignKeysAlone(t *testing.T) {
 	store := newTestStore(t, kvStore, DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	for _, name := range []string{"index", "generation-older"} {
-		if err := store.FullRebuild(ctx, scope, name, testBase{}, "base-"+name); err != nil {
+		if err := store.FullRebuild(ctx, testAddress(scope), name, testBase{}, "base-"+name); err != nil {
 			t.Fatal(err)
 		}
 	}

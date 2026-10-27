@@ -63,16 +63,16 @@ func TestTypedStoreKeepsItsBaseAcrossItsOwnDeltas(t *testing.T) {
 	store := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Materialize(ctx, scope, "index"); err != nil {
+	if _, _, err := store.Materialize(ctx, testAddress(scope), "index"); err != nil {
 		t.Fatal(err)
 	}
 	settled := kvStore.count()
 	for index := 0; index < 8; index++ {
 		delta := EntryDelta[testEntry]{Upserts: []testEntry{{ID: string(rune('a' + index)), Value: "value"}}}
-		if _, err := store.ApplyDelta(ctx, scope, "index", delta, "revision", "input"); err != nil {
+		if _, err := store.ApplyDelta(ctx, testAddress(scope), "index", delta, "revision", "input"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,11 +81,11 @@ func TestTypedStoreKeepsItsBaseAcrossItsOwnDeltas(t *testing.T) {
 	}
 	// What the store advanced in memory is the state a reader decodes.
 	restarted := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
-	replayed, _, err := restarted.Materialize(ctx, scope, "index")
+	replayed, _, err := restarted.Materialize(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
-	advanced, _, err := store.MaterializeView(ctx, scope, "index")
+	advanced, _, err := store.MaterializeView(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,22 +108,22 @@ func TestTypedStoreViewDoesNotMoveWithTheState(t *testing.T) {
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index",
+	if err := store.FullRebuild(ctx, testAddress(scope), "index",
 		testBase{Entries: []testEntry{{ID: "a", Value: "one"}}}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	view, _, err := store.MaterializeView(ctx, scope, "index")
+	view, _, err := store.MaterializeView(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ApplyDelta(ctx, scope, "index",
+	if _, err := store.ApplyDelta(ctx, testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "b", Value: "two"}}}, "revision", "input"); err != nil {
 		t.Fatal(err)
 	}
 	if len(view.Entries) != 1 {
 		t.Fatalf("the view moved with the write: %+v", view.Entries)
 	}
-	next, _, err := store.MaterializeView(ctx, scope, "index")
+	next, _, err := store.MaterializeView(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +132,12 @@ func TestTypedStoreViewDoesNotMoveWithTheState(t *testing.T) {
 	}
 	// A caller that owns its base is still handed one: writing through it
 	// cannot reach the store's copy.
-	owned, _, err := store.Materialize(ctx, scope, "index")
+	owned, _, err := store.Materialize(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
 	owned.Entries[0].Value = "corrupted"
-	again, _, err := store.MaterializeView(ctx, scope, "index")
+	again, _, err := store.MaterializeView(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,26 +155,26 @@ func TestTypedStoreResidentBoundEvictsTheColdBase(t *testing.T) {
 	first := corememory.Scope{RuntimeID: "first"}
 	second := corememory.Scope{RuntimeID: "second"}
 	for _, scope := range []corememory.Scope{first, second} {
-		if err := store.FullRebuild(ctx, scope, "index",
+		if err := store.FullRebuild(ctx, testAddress(scope), "index",
 			testBase{Entries: []testEntry{{ID: "a", Value: "one"}}}, "base"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := store.MaterializeView(ctx, first, "index"); err != nil {
+	if _, _, err := store.MaterializeView(ctx, testAddress(first), "index"); err != nil {
 		t.Fatal(err)
 	}
 	settled := kvStore.count()
-	if _, _, err := store.MaterializeView(ctx, first, "index"); err != nil {
+	if _, _, err := store.MaterializeView(ctx, testAddress(first), "index"); err != nil {
 		t.Fatal(err)
 	}
 	if reads := kvStore.count() - settled; reads != 0 {
 		t.Fatalf("the resident base was decoded again: %d reads", reads)
 	}
-	if _, _, err := store.MaterializeView(ctx, second, "index"); err != nil {
+	if _, _, err := store.MaterializeView(ctx, testAddress(second), "index"); err != nil {
 		t.Fatal(err)
 	}
 	settled = kvStore.count()
-	if _, _, err := store.MaterializeView(ctx, first, "index"); err != nil {
+	if _, _, err := store.MaterializeView(ctx, testAddress(first), "index"); err != nil {
 		t.Fatal(err)
 	}
 	if reads := kvStore.count() - settled; reads == 0 {
@@ -194,25 +194,25 @@ func TestTypedStoreDoesNotAdvanceABaseAnotherWriterReplaced(t *testing.T) {
 	theirs := newTestStore(t, kvStore, thresholds)
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := mine.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
+	if err := mine.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := mine.MaterializeView(ctx, scope, "index"); err != nil {
+	if _, _, err := mine.MaterializeView(ctx, testAddress(scope), "index"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := theirs.ApplyDelta(ctx, scope, "index",
+	if _, err := theirs.ApplyDelta(ctx, testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "theirs", Value: "theirs"}}}, "revision", "input"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mine.ApplyDelta(ctx, scope, "index",
+	if _, err := mine.ApplyDelta(ctx, testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "mine", Value: "mine"}}}, "revision", "input"); err != nil {
 		t.Fatal(err)
 	}
-	replayed, _, err := newTestStore(t, kvStore, thresholds).Materialize(ctx, scope, "index")
+	replayed, _, err := newTestStore(t, kvStore, thresholds).Materialize(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
-	advanced, _, err := mine.MaterializeView(ctx, scope, "index")
+	advanced, _, err := mine.MaterializeView(ctx, testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}

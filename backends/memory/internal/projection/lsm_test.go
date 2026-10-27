@@ -80,30 +80,30 @@ func TestTypedStoreDeltaPublishIsSmallReplayableAndOrdered(t *testing.T) {
 	for index := range base.Entries {
 		base.Entries[index] = testEntry{ID: string(rune(index + 1)), Value: strings.Repeat("x", 64)}
 	}
-	if err := store.FullRebuild(context.Background(), scope, "index", base, "source-base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", base, "source-base"); err != nil {
 		t.Fatal(err)
 	}
 	meter.reset()
 	delta := EntryDelta[testEntry]{Upserts: []testEntry{{ID: "changed", Value: "small"}}}
-	first, err := store.ApplyDelta(context.Background(), scope, "index", delta, "revision-1", "source-1")
+	first, err := store.ApplyDelta(context.Background(), testAddress(scope), "index", delta, "revision-1", "source-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if meter.bytes > 4096 {
 		t.Fatalf("single delta wrote %d bytes", meter.bytes)
 	}
-	replayed, err := store.ApplyDelta(context.Background(), scope, "index", delta, "revision-1", "source-1")
+	replayed, err := store.ApplyDelta(context.Background(), testAddress(scope), "index", delta, "revision-1", "source-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !replayed.Replayed || replayed.Manifest.Identity != first.Manifest.Identity {
 		t.Fatalf("replay = %+v, first = %+v", replayed, first)
 	}
-	if _, err := store.ApplyDelta(context.Background(), scope, "index",
+	if _, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 		EntryDelta[testEntry]{DeleteIDs: []string{"changed"}}, "revision-2", "source-2"); err != nil {
 		t.Fatal(err)
 	}
-	materialized, manifest, err := store.Materialize(context.Background(), scope, "index")
+	materialized, manifest, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,24 +117,24 @@ func TestTypedStoreCrashBeforeManifestLeavesInvisibleReusableOrphan(t *testing.T
 	fault := &manifestFaultKV{Store: base}
 	store := newTestStore(t, fault, DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
 	fault.failManifest = true
 	delta := EntryDelta[testEntry]{Upserts: []testEntry{{ID: "a", Value: "new"}}}
-	if _, err := store.ApplyDelta(context.Background(), scope, "index", delta, "r1", "s1"); err == nil {
+	if _, err := store.ApplyDelta(context.Background(), testAddress(scope), "index", delta, "r1", "s1"); err == nil {
 		t.Fatal("publish unexpectedly succeeded")
 	}
-	got, _, err := store.Materialize(context.Background(), scope, "index")
+	got, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil || len(got.Entries) != 0 {
 		t.Fatalf("failed publish became visible: %+v, %v", got, err)
 	}
 	fault.failManifest = false
 	restarted := newTestStore(t, base, DefaultThresholds())
-	if _, err := restarted.ApplyDelta(context.Background(), scope, "index", delta, "r1", "s1"); err != nil {
+	if _, err := restarted.ApplyDelta(context.Background(), testAddress(scope), "index", delta, "r1", "s1"); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err = restarted.Materialize(context.Background(), scope, "index")
+	got, _, err = restarted.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil || len(got.Entries) != 1 || got.Entries[0].ID != "a" {
 		t.Fatalf("retry = %+v, %v", got, err)
 	}
@@ -143,33 +143,33 @@ func TestTypedStoreCrashBeforeManifestLeavesInvisibleReusableOrphan(t *testing.T
 func TestTypedStoreCompactsAndInvalidatesCache(t *testing.T) {
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Materialize(context.Background(), scope, "index"); err != nil {
+	if _, _, err := store.Materialize(context.Background(), testAddress(scope), "index"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ApplyDelta(context.Background(), scope, "index",
+	if _, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "a", Value: "one"}}}, "r1", "s1"); err != nil {
 		t.Fatal(err)
 	}
 	compactingDelta := EntryDelta[testEntry]{Upserts: []testEntry{{ID: "b", Value: "two"}}}
-	result, err := store.ApplyDelta(context.Background(), scope, "index", compactingDelta, "r2", "s2")
+	result, err := store.ApplyDelta(context.Background(), testAddress(scope), "index", compactingDelta, "r2", "s2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Compacted || len(result.Manifest.Segments) != 0 {
 		t.Fatalf("compaction result = %+v", result)
 	}
-	replayed, err := store.ApplyDelta(context.Background(), scope, "index", compactingDelta, "r2", "s2")
+	replayed, err := store.ApplyDelta(context.Background(), testAddress(scope), "index", compactingDelta, "r2", "s2")
 	if err != nil || !replayed.Replayed || replayed.Manifest.Identity != result.Manifest.Identity {
 		t.Fatalf("compaction replay = %+v, %v", replayed, err)
 	}
-	if _, err := store.ApplyDelta(context.Background(), scope, "index",
+	if _, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "c", Value: "three"}}}, "r3", "s3"); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := store.Materialize(context.Background(), scope, "index")
+	got, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil || len(got.Entries) != 3 {
 		t.Fatalf("materialized = %+v, %v", got, err)
 	}
@@ -179,20 +179,20 @@ func TestTypedStoreRejectsCorruptSegmentChain(t *testing.T) {
 	kvStore := kvFor(t)
 	store := newTestStore(t, kvStore, DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.ApplyDelta(context.Background(), scope, "index",
+	result, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "a", Value: "one"}}}, "r1", "s1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	segmentPath := store.segmentPath(scope, "index", result.Manifest.Segments[0].ID)
+	segmentPath := store.segmentPath(testAddress(scope), "index", result.Manifest.Segments[0].ID)
 	if err := kvStore.Put(context.Background(), segmentPath, []byte(`{"schema_version":2}`)); err != nil {
 		t.Fatal(err)
 	}
 	restarted := newTestStore(t, kvStore, DefaultThresholds())
-	if _, _, err := restarted.Materialize(context.Background(), scope, "index"); err == nil {
+	if _, _, err := restarted.Materialize(context.Background(), testAddress(scope), "index"); err == nil {
 		t.Fatal("accepted corrupt segment")
 	}
 }
@@ -200,7 +200,7 @@ func TestTypedStoreRejectsCorruptSegmentChain(t *testing.T) {
 func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
 	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 128, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
 	}
 	var wait sync.WaitGroup
@@ -210,7 +210,7 @@ func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
 		wait.Add(2)
 		go func() {
 			defer wait.Done()
-			_, err := store.ApplyDelta(context.Background(), scope, "index",
+			_, err := store.ApplyDelta(context.Background(), testAddress(scope), "index",
 				EntryDelta[testEntry]{Upserts: []testEntry{{
 					ID: fmt.Sprintf("item-%02d", index), Value: "value",
 				}}}, fmt.Sprintf("r-%02d", index), fmt.Sprintf("s-%02d", index))
@@ -218,7 +218,7 @@ func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
 		}()
 		go func() {
 			defer wait.Done()
-			_, _, err := store.Materialize(context.Background(), scope, "index")
+			_, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 			errs <- err
 		}()
 	}
@@ -229,7 +229,7 @@ func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, _, err := store.Materialize(context.Background(), scope, "index")
+	got, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil || len(got.Entries) != 32 {
 		t.Fatalf("entries=%d, err=%v", len(got.Entries), err)
 	}

@@ -366,9 +366,9 @@ func hotPass(
 	for _, latency := range latencies {
 		contextSum += latency
 	}
-	entriesPerScope := 0
-	if statsAfter.Footprint.Scopes > 0 {
-		entriesPerScope = statsAfter.Footprint.Entries / statsAfter.Footprint.Scopes
+	entriesPerShard := 0
+	if statsAfter.Footprint.Shards > 0 {
+		entriesPerShard = statsAfter.Footprint.Entries / statsAfter.Footprint.Shards
 	}
 	reading := &hotReading{
 		Questions:  len(items),
@@ -378,7 +378,7 @@ func hotPass(
 		Stages:     stages,
 		Vector:     phase,
 		Shares:     computeShares(phase, stages, contextSum),
-		Projection: projections(phase, entriesPerScope, statsAfter.Footprint.Dimensions),
+		Projection: projections(phase, entriesPerShard, statsAfter.Footprint.Dimensions),
 		// The pass states whether its own numbers describe the lane; the
 		// renderer prints it and the archive keeps it.
 		Certification: certify(phase, len(items)),

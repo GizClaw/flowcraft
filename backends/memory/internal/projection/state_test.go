@@ -16,7 +16,7 @@ import (
 // report, failing the test when the read reports anything else.
 func materializeStateError(t *testing.T, store *Store[testBase, EntryDelta[testEntry]], scope corememory.Scope) *component.StateError {
 	t.Helper()
-	_, _, err := store.Materialize(context.Background(), scope, "index")
+	_, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err == nil {
 		t.Fatal("state that cannot be read materialized without an error")
 	}
@@ -40,28 +40,28 @@ func TestMaterializeSeparatesUnreadableStateFromNoState(t *testing.T) {
 	store := newTestStore(t, kvStore, DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
 
-	if _, _, err := store.Materialize(ctx, scope, "index"); !errors.Is(err, storage.ErrNotFound) {
+	if _, _, err := store.Materialize(ctx, testAddress(scope), "index"); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("empty scope err = %v, want NotFound", err)
 	}
 
-	if err := store.FullRebuild(ctx, scope, "index",
+	if err := store.FullRebuild(ctx, testAddress(scope), "index",
 		testBase{Entries: []testEntry{{ID: "a", Value: "value"}}}, "source"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Materialize(ctx, scope, "index"); err != nil {
+	if _, _, err := store.Materialize(ctx, testAddress(scope), "index"); err != nil {
 		t.Fatalf("readable state err = %v", err)
 	}
-	manifest, found, err := store.loadManifestLocked(ctx, scope, "index")
+	manifest, found, err := store.loadManifestLocked(ctx, testAddress(scope), "index")
 	if err != nil || !found || manifest.Base == nil {
 		t.Fatalf("manifest = %+v, found = %v, err = %v", manifest, found, err)
 	}
 
-	payload, err := kvStore.Get(ctx, store.buildPath(scope, "index", manifest.Base.ID))
+	payload, err := kvStore.Get(ctx, store.buildPath(testAddress(scope), "index", manifest.Base.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload[len(payload)/2] ^= 0x01
-	if err := kvStore.Put(ctx, store.buildPath(scope, "index", manifest.Base.ID), payload); err != nil {
+	if err := kvStore.Put(ctx, store.buildPath(testAddress(scope), "index", manifest.Base.ID), payload); err != nil {
 		t.Fatal(err)
 	}
 	// The read is a fresh store's: the store that wrote the state holds it
@@ -77,7 +77,7 @@ func TestMaterializeSeparatesUnreadableStateFromNoState(t *testing.T) {
 	// The manifest area is the same answer: a manifest that no longer decodes
 	// is state that exists and cannot be served, not a scope that was never
 	// written to.
-	if err := kvStore.Put(ctx, store.activePath(scope, "index"), []byte("{")); err != nil {
+	if err := kvStore.Put(ctx, store.activePath(testAddress(scope), "index"), []byte("{")); err != nil {
 		t.Fatal(err)
 	}
 	if state := materializeStateError(t, newTestStore(t, kvStore, DefaultThresholds()), scope); !strings.Contains(state.Error(), "active manifest") {
@@ -99,10 +99,10 @@ func TestMaterializeReportsASegmentDeltaThatDoesNotRecompute(t *testing.T) {
 	kvStore := kvFor(t)
 	store := newTestStore(t, kvStore, DefaultThresholds())
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "source"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "source"); err != nil {
 		t.Fatal(err)
 	}
-	applied, err := store.ApplyDelta(ctx, scope, "index",
+	applied, err := store.ApplyDelta(ctx, testAddress(scope), "index",
 		EntryDelta[testEntry]{Upserts: []testEntry{{ID: "a", Value: "value"}}}, "revision", "input")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestMaterializeReportsASegmentDeltaThatDoesNotRecompute(t *testing.T) {
 		t.Fatalf("segments = %+v", applied.Manifest.Segments)
 	}
 	ref := applied.Manifest.Segments[0]
-	payload, err := kvStore.Get(ctx, store.segmentPath(scope, "index", ref.ID))
+	payload, err := kvStore.Get(ctx, store.segmentPath(testAddress(scope), "index", ref.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestMaterializeReportsASegmentDeltaThatDoesNotRecompute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kvStore.Put(ctx, store.segmentPath(scope, "index", ref.ID), rewritten); err != nil {
+	if err := kvStore.Put(ctx, store.segmentPath(testAddress(scope), "index", ref.ID), rewritten); err != nil {
 		t.Fatal(err)
 	}
 	manifest := applied.Manifest
@@ -135,7 +135,7 @@ func TestMaterializeReportsASegmentDeltaThatDoesNotRecompute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kvStore.Put(ctx, store.activePath(scope, "index"), encoded); err != nil {
+	if err := kvStore.Put(ctx, store.activePath(testAddress(scope), "index"), encoded); err != nil {
 		t.Fatal(err)
 	}
 	recomputed := digestBytes(func() []byte {

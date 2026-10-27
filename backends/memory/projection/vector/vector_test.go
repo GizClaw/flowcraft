@@ -43,7 +43,7 @@ func TestVectorUsesInferenceRuntimeAndCosineSort(t *testing.T) {
 	}
 }
 
-func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testing.T) {
+func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndShardFilter(t *testing.T) {
 	embedCalls := 0
 	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
 		embedCalls++
@@ -63,12 +63,9 @@ func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testi
 	otherScope := corememory.Scope{RuntimeID: "runtime", UserID: "other"}
 	artifacts := make([]component.Artifact, 0, 7)
 	for _, id := range []string{"g", "f", "e", "d", "c", "b", "a"} {
-		artifact := vectorArtifact(id, id)
-		artifact.Metadata["conversation_id"] = "wanted"
-		artifacts = append(artifacts, artifact)
+		artifacts = append(artifacts, conversationArtifact("wanted", id, id))
 	}
-	excluded := vectorArtifact("excluded", "excluded")
-	excluded.Metadata["conversation_id"] = "other"
+	excluded := conversationArtifact("other", "excluded", "excluded")
 	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
 		Scope: scope, Artifacts: append(artifacts, excluded),
 	}); err != nil {
@@ -185,7 +182,8 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 	}
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := first.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{vectorArtifact("fact", "same")}, SourceRevision: "r1",
+		Scope: scope, Shard: shardOf("conversation"),
+		Upserts: []component.Artifact{vectorArtifact("fact", "same")}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +195,7 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 	if first.storageProjection == second.storageProjection {
 		t.Fatal("different embedding models shared a vector generation")
 	}
-	if _, err := second.readSnapshot(context.Background(), scope); err == nil {
+	if _, err := second.readSnapshot(context.Background(), addressOf(scope, shardOf("conversation"))); err == nil {
 		t.Fatal("new embedding model read the previous model generation")
 	}
 }
@@ -251,13 +249,14 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 	other.Metadata["document_id"] = "other-document"
 	other.Metadata["item_id"] = "b"
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{value, other},
+		Scope: scope, Shard: datasetShardOf("dataset"), Upserts: []component.Artifact{value, other},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	value.Metadata["provenance_note"] = "changed"
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{value}, ActiveIDs: []string{"a"},
+		Scope: scope, Shard: datasetShardOf("dataset"),
+		Upserts: []component.Artifact{value}, ActiveIDs: []string{"a"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +264,8 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 		t.Fatalf("unchanged content embedded %d items", embedItems)
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, ActiveIDs: []string{},
+		Scope: scope, Shard: datasetShardOf("dataset"),
+		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, ActiveIDs: []string{},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,8 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manifest, found, err := index.store.Audit(context.Background(), scope, index.storageProjection)
+	manifest, found, err := index.store.Audit(context.Background(),
+		addressOf(scope, datasetShardOf("dataset")), index.storageProjection)
 	if err != nil || !found || len(manifest.Segments) != 0 || manifest.SourceDigest == "" {
 		t.Fatalf("full build manifest = %+v, found=%v, err=%v", manifest, found, err)
 	}
@@ -313,7 +314,8 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	meter.reset()
 	changed := vectorArtifact("changed", "updated")
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{changed}, SourceRevision: "r1",
+		Scope: scope, Shard: shardOf("conversation"),
+		Upserts: []component.Artifact{changed}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +324,8 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	}
 	meter.reset()
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
+		Scope: scope, Shard: shardOf("conversation"),
+		DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -473,10 +476,16 @@ func runtimeForModel(t *testing.T, modelName string, respond func([]string) [][]
 }
 
 func vectorArtifact(id, text string) component.Artifact {
+	return conversationArtifact("conversation", id, text)
+}
+
+// conversationArtifact builds a fact belonging to one conversation, which is
+// what decides the shard it is written to.
+func conversationArtifact(conversationID, id, text string) component.Artifact {
 	return component.Artifact{
 		Kind: "fact", ID: id,
 		Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: text}}},
 		Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-" + id}},
-		Metadata: corememory.Metadata{"conversation_id": "conversation"},
+		Metadata: corememory.Metadata{"conversation_id": conversationID},
 	}
 }

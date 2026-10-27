@@ -283,15 +283,16 @@ type ProfileSettings struct {
 
 // VectorCacheSettings bounds what the vector lane keeps resident. Both fields
 // are a count of what may be held: zero is no bound, and a bound never changes
-// what a query sees, only what the lane keeps after reading it.
+// what a query sees, only what the lane keeps after reading it. One held table
+// is one shard's, so the bounds count shards, not tenants.
 type VectorCacheSettings struct {
-	// MaxCachedScopes is how many scopes' tables may be resident at once. The
+	// MaxCachedShards is how many shard tables may be resident at once. The
 	// lane drops the one it read least recently to make room.
-	MaxCachedScopes int `json:"max_cached_scopes,omitempty"`
-	// MaxEntriesPerScope is the largest table the lane keeps. A scope whose
+	MaxCachedShards int `json:"max_cached_shards,omitempty"`
+	// MaxEntriesPerShard is the largest table the lane keeps. A shard whose
 	// table is larger is read and scanned per query instead of held, trading
 	// the memory for the read.
-	MaxEntriesPerScope int `json:"max_entries_per_scope,omitempty"`
+	MaxEntriesPerShard int `json:"max_entries_per_shard,omitempty"`
 }
 
 // applyDefaults fills zero values with the documented defaults in place.
@@ -455,8 +456,8 @@ func (settings Settings) Validate() error {
 	}
 	if cache := settings.Lanes.VectorCache; cache != nil {
 		for name, value := range map[string]int{
-			"max_cached_scopes":     cache.MaxCachedScopes,
-			"max_entries_per_scope": cache.MaxEntriesPerScope,
+			"max_cached_shards":     cache.MaxCachedShards,
+			"max_entries_per_shard": cache.MaxEntriesPerShard,
 		} {
 			if value < 0 {
 				return fmt.Errorf("lanes.vector_cache.%s must not be negative", name)

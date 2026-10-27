@@ -93,7 +93,7 @@ func TestVectorLaneStatsWireTheLane(t *testing.T) {
 	if after.Queries < 1 || after.Scans < 1 || after.Embeds < 1 {
 		t.Fatalf("queries/scans/embeds = %d/%d/%d", after.Queries, after.Scans, after.Embeds)
 	}
-	if after.Footprint.Scopes < 1 || after.Footprint.Entries < 1 || after.Footprint.VectorBytes <= 0 {
+	if after.Footprint.Shards < 1 || after.Footprint.Entries < 1 || after.Footprint.VectorBytes <= 0 {
 		t.Fatalf("footprint = %+v", after.Footprint)
 	}
 }

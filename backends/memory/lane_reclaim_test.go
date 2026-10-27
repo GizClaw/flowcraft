@@ -22,7 +22,7 @@ func laneBases(t *testing.T, ws workspace.Workspace, family string) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := kvStore.Keys(context.Background(), path.Join("projections", family, "v2"))
+	keys, err := kvStore.Keys(context.Background(), path.Join("projections", family, "v3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,10 +63,19 @@ func assemblyWithSupersededLane(t *testing.T) (*Assembly, workspace.Workspace, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := component.ProjectionRequest{Scope: testScope()}
+	request := component.ProjectionRequest{Scope: testScope(), Artifacts: []component.Artifact{{
+		Kind:     "fact",
+		ID:       "fact-0",
+		Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "a fact to replace"}}},
+		Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-0"}},
+		Metadata: corememory.Metadata{"conversation_id": "conv-1"},
+	}}}
 	if err := lane.FullRebuild(ctx, request); err != nil {
 		t.Fatal(err)
 	}
+	// A rebuild replaces the shard it publishes: an empty artifact set would
+	// drop the shard instead of leaving a generation behind, and the state this
+	// test sweeps is a publication that replaced another.
 	request.Artifacts = []component.Artifact{{
 		Kind:     "fact",
 		ID:       "fact-1",

@@ -95,7 +95,12 @@ func seedStaleBM25Lane(
 			ContentDigest: strings.Repeat("0", 64),
 		}},
 	}
-	if err := store.FullRebuild(ctx, scope, projection, snapshot, "legacy-source-digest"); err != nil {
+	shard, err := component.ConversationShard(conversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FullRebuild(ctx, projectionstore.Address{Scope: scope, Shard: shard},
+		projection, snapshot, "legacy-source-digest"); err != nil {
 		t.Fatal(err)
 	}
 }

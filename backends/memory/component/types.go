@@ -113,10 +113,18 @@ type ProducerIdentity struct {
 	// the state was written before lanes stamped one, which is itself a
 	// version: the producer that wrote it is unknown, not current.
 	Version string
+	// Mixed reports that the scope's shards were written by more than one
+	// producer. There is then no single version to report, so Version stays
+	// empty and every "is this the current producer" comparison fails: the
+	// state a read serves is a blend, and a rebuild is what converges it.
+	Mixed bool
 	// SourceDigest and BuildDigest are the cumulative digests of the active
-	// manifest: the chain of indexed inputs and the chain of builds.
+	// state: the root over the shards' chains of indexed inputs and of builds.
 	SourceDigest string
 	BuildDigest  string
+	// Shards counts the shards that hold state. It is zero when found is
+	// false and grows with the scope's conversations and datasets.
+	Shards int
 }
 
 // Producer names the state one projection lane produces and reports the

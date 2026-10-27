@@ -3,6 +3,7 @@ package component
 import (
 	"errors"
 	"fmt"
+	"sort"
 
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -53,4 +54,39 @@ func ShardForAddress(address CandidateAddress) (string, error) {
 	default:
 		return "", fmt.Errorf("memory component: unsupported candidate address kind %q", address.Kind)
 	}
+}
+
+// ShardGroup is one rebuild's artifacts that belong to the same shard.
+type ShardGroup struct {
+	Shard     string
+	Artifacts []Artifact
+}
+
+// GroupArtifactsByShard groups artifacts by the shard their address names, in
+// sorted shard order.
+//
+// A rebuild replaces a projection for a scope, and a shard is the unit one
+// write touches, so the artifacts are built one shard at a time and published
+// shard by shard. An artifact whose address names no shard refuses the set:
+// dropping it would rebuild a lane smaller than the state it replaced, and
+// a rebuild that silently loses records is not a repair.
+func GroupArtifactsByShard(artifacts []Artifact) ([]ShardGroup, error) {
+	byShard := make(map[string][]Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		shard, err := ShardForAddress(AddressFromArtifact(artifact))
+		if err != nil {
+			return nil, fmt.Errorf("memory component: artifact %q: %w", artifact.ID, err)
+		}
+		byShard[shard] = append(byShard[shard], artifact)
+	}
+	shards := make([]string, 0, len(byShard))
+	for shard := range byShard {
+		shards = append(shards, shard)
+	}
+	sort.Strings(shards)
+	groups := make([]ShardGroup, 0, len(shards))
+	for _, shard := range shards {
+		groups = append(groups, ShardGroup{Shard: shard, Artifacts: byShard[shard]})
+	}
+	return groups, nil
 }

@@ -24,12 +24,35 @@ import (
 )
 
 const (
-	SchemaVersion           = 2
-	StorageAlgorithmVersion = "workspace-lsm-v1"
+	SchemaVersion           = 3
+	StorageAlgorithmVersion = "workspace-sharded-lsm-v1"
 	DefaultMaxSegments      = 64
 	DefaultMinDeltaBytes    = 4 << 20
 	DefaultCompactionRatio  = 2
 )
+
+// Address names one projection state: a hard scope and one shard within it.
+//
+// The scope is the tenant boundary nothing crosses; the shard is the unit a
+// request reads and a delta writes, so two addresses of one scope are two
+// independent states with their own manifest, base and segments. Every method
+// that reads or writes state takes one, which is what keeps a write's cost and
+// a read's cost proportional to one conversation or one dataset instead of to
+// everything the scope ever indexed.
+type Address struct {
+	Scope corememory.Scope
+	Shard string
+}
+
+// validate checks that the address names a state this store can reach: a
+// complete scope and a shard with one of the two address families.
+func (address Address) validate(name string) error {
+	if err := validateAddress(address.Scope, name); err != nil {
+		return err
+	}
+	_, err := ShardSegment(address.Shard)
+	return err
+}
 
 // Thresholds decides when a delta is applied as a segment and when the state
 // is rewritten as a new base.
@@ -122,19 +145,25 @@ type ReplayRef struct {
 // predates the field recomputes the same identity, which is what lets a build
 // without the stamp keep reading manifests one with it wrote.
 type Manifest struct {
-	SchemaVersion    int              `json:"schema_version"`
-	StorageVersion   string           `json:"storage_version"`
-	ProducerVersion  string           `json:"producer_version,omitempty"`
-	Projection       string           `json:"projection"`
-	Scope            corememory.Scope `json:"scope"`
-	Base             *BaseRef         `json:"base,omitempty"`
-	Segments         []SegmentRef     `json:"segments"`
-	BaseSourceDigest string           `json:"base_source_digest"`
-	SourceDigest     string           `json:"source_digest"`
-	BuildDigest      string           `json:"build_digest"`
-	BaseLastApplied  *ReplayRef       `json:"base_last_applied,omitempty"`
-	LastApplied      *ReplayRef       `json:"last_applied,omitempty"`
-	Identity         string           `json:"identity"`
+	SchemaVersion   int              `json:"schema_version"`
+	StorageVersion  string           `json:"storage_version"`
+	ProducerVersion string           `json:"producer_version,omitempty"`
+	Projection      string           `json:"projection"`
+	Scope           corememory.Scope `json:"scope"`
+	// Shard names the state this manifest points at. It is part of the
+	// manifest's address and of its identity: a manifest published under one
+	// shard's directory that names another shard is not that shard's state,
+	// and reading it as such would serve one conversation's records to
+	// another's selector.
+	Shard            string       `json:"shard"`
+	Base             *BaseRef     `json:"base,omitempty"`
+	Segments         []SegmentRef `json:"segments"`
+	BaseSourceDigest string       `json:"base_source_digest"`
+	SourceDigest     string       `json:"source_digest"`
+	BuildDigest      string       `json:"build_digest"`
+	BaseLastApplied  *ReplayRef   `json:"base_last_applied,omitempty"`
+	LastApplied      *ReplayRef   `json:"last_applied,omitempty"`
+	Identity         string       `json:"identity"`
 }
 
 type DigestEvidence struct {
@@ -149,6 +178,7 @@ type segment[D any] struct {
 	StorageVersion   string           `json:"storage_version"`
 	Projection       string           `json:"projection"`
 	Scope            corememory.Scope `json:"scope"`
+	Shard            string           `json:"shard"`
 	ID               string           `json:"id"`
 	PreviousIdentity string           `json:"previous_identity"`
 	SourceRevision   string           `json:"source_revision,omitempty"`
@@ -197,11 +227,23 @@ type residentBase[B any] struct {
 }
 
 // Store owns the common typed immutable-base and ordered-segment protocol.
+//
+// One store serves every shard of one family: the shards of a scope share the
+// protocol and the cache, not the state. Each shard is locked on its own, so a
+// compaction of one conversation's table no longer serializes the deltas of the
+// thirty-one others -- the property a scope-sized lock had taken away.
 type Store[B, D any] struct {
 	KV      storage.Store
 	Family  string
 	options TypedOptions[B, D]
-	mu      sync.Mutex
+	// locks holds one mutex per address. A shard's state is written by one
+	// holder at a time; two shards are written at the same time.
+	locksMu sync.Mutex
+	locks   map[string]*sync.Mutex
+	// cacheMu guards the resident bases and their recency clock, which is
+	// shared by every shard: an eviction is a decision about the cache, not
+	// about one address.
+	cacheMu sync.Mutex
 	bases   map[string]*residentBase[B]
 	clock   int64
 }
@@ -230,11 +272,28 @@ func NewTypedStore[B, D any](kv storage.Store, family string, options TypedOptio
 	if _, ok := kv.(storage.PutIfAbsentStore); !ok {
 		return nil, errors.New("projection: store must support immutable writes")
 	}
-	return &Store[B, D]{KV: kv, Family: family, options: options}, nil
+	return &Store[B, D]{KV: kv, Family: family, options: options,
+		locks: make(map[string]*sync.Mutex), bases: make(map[string]*residentBase[B])}, nil
 }
 
-func (store *Store[B, D]) FullRebuild(ctx context.Context, scope corememory.Scope, name string, base B, sourceDigest string) error {
-	if err := validateAddress(scope, name); err != nil {
+// lock returns the mutex one address's state is written under, creating it on
+// first use. The map is small -- one entry per address a process has touched --
+// and never drops an entry: a lock is cheap and a released one that a
+// concurrent writer still holds must not be replaced by a fresh mutex.
+func (store *Store[B, D]) lock(address Address, name string) *sync.Mutex {
+	key := store.residentKey(address, name)
+	store.locksMu.Lock()
+	defer store.locksMu.Unlock()
+	mutex, ok := store.locks[key]
+	if !ok {
+		mutex = &sync.Mutex{}
+		store.locks[key] = mutex
+	}
+	return mutex
+}
+
+func (store *Store[B, D]) FullRebuild(ctx context.Context, address Address, name string, base B, sourceDigest string) error {
+	if err := address.validate(name); err != nil {
 		return err
 	}
 	if store.options.ValidateBase != nil {
@@ -246,29 +305,30 @@ func (store *Store[B, D]) FullRebuild(ctx context.Context, scope corememory.Scop
 	if err != nil {
 		return fmt.Errorf("projection: encode base: %w", err)
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	mutex := store.lock(address, name)
+	mutex.Lock()
+	defer mutex.Unlock()
 	// A rebuild publishes state this producer wrote, so the manifest it leaves
 	// behind names this producer rather than the one it replaced.
-	if err := store.publishBaseLocked(ctx, scope, name, payload, sourceDigest, store.options.ProducerVersion, nil); err != nil {
+	if err := store.publishBaseLocked(ctx, address, name, payload, sourceDigest, store.options.ProducerVersion, nil); err != nil {
 		return err
 	}
 	// The published base is not the one the store had decoded, and the value
 	// this call marshalled belongs to the caller: the next reader decodes it,
 	// and the warm-up a lane defers after a rebuild is that reader.
-	store.forgetLocked(store.residentKey(scope, name))
+	store.forgetLocked(store.residentKey(address, name))
 	return nil
 }
 
 func (store *Store[B, D]) ApplyDelta(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	delta D,
 	sourceRevision string,
 	sourceInput string,
 ) (ApplyResult, error) {
-	if err := validateAddress(scope, name); err != nil {
+	if err := address.validate(name); err != nil {
 		return ApplyResult{}, err
 	}
 	if store.options.Canonicalize != nil {
@@ -288,14 +348,15 @@ func (store *Store[B, D]) ApplyDelta(
 		sourceInput = deltaDigest
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	mutex := store.lock(address, name)
+	mutex.Lock()
+	defer mutex.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, address, name)
 	if err != nil {
 		return ApplyResult{}, err
 	}
 	if !found {
-		active = store.newManifest(scope, name)
+		active = store.newManifest(address, name)
 	}
 	// What the delta this call publishes supersedes: a resident base of this
 	// identity is the state the delta was applied to, so it can be moved
@@ -312,7 +373,8 @@ func (store *Store[B, D]) ApplyDelta(
 	nextBuild := chainDigest("build", active.BuildDigest, segmentID)
 	value := segment[D]{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
-		Projection: name, Scope: scope, ID: segmentID, PreviousIdentity: active.Identity,
+		Projection: name, Scope: address.Scope, Shard: address.Shard,
+		ID: segmentID, PreviousIdentity: active.Identity,
 		SourceRevision: sourceRevision, DeltaDigest: deltaDigest, SourceInput: sourceInput,
 		SourceDigest: nextSource, BuildDigest: nextBuild, Delta: delta,
 	}
@@ -329,7 +391,7 @@ func (store *Store[B, D]) ApplyDelta(
 		baseBytes = active.Base.Bytes
 	}
 	if store.options.Thresholds.over(len(active.Segments)+1, totalBytes, baseBytes) {
-		base, err := store.materializeLocked(ctx, scope, name, active)
+		base, err := store.materializeLocked(ctx, address, name, active)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -348,19 +410,19 @@ func (store *Store[B, D]) ApplyDelta(
 		replay := &ReplayRef{SourceRevision: sourceRevision, DeltaDigest: deltaDigest, SourceInput: sourceInput}
 		// Compaction rewrites the storage shape, not the state: the producer
 		// that wrote the entries stays the producer the manifest names.
-		if err := store.publishBaseLocked(ctx, scope, name, payload, nextSource, active.ProducerVersion, replay); err != nil {
+		if err := store.publishBaseLocked(ctx, address, name, payload, nextSource, active.ProducerVersion, replay); err != nil {
 			return ApplyResult{}, err
 		}
-		compacted, _, err := store.loadManifestLocked(ctx, scope, name)
+		compacted, _, err := store.loadManifestLocked(ctx, address, name)
 		// The base the compaction marshalled is the state the manifest now
 		// points at, and it is the store's own copy -- materializeLocked
 		// returned one -- so it becomes the resident base without a decode.
 		if err == nil {
-			store.keepLocked(store.residentKey(scope, name), compacted.Identity, base)
+			store.keepLocked(store.residentKey(address, name), compacted.Identity, base)
 		}
 		return ApplyResult{Manifest: compacted, Compacted: true}, err
 	}
-	if err := store.writeImmutable(ctx, store.segmentPath(scope, name, segmentID), segmentPayload); err != nil {
+	if err := store.writeImmutable(ctx, store.segmentPath(address, name, segmentID), segmentPayload); err != nil {
 		return ApplyResult{}, fmt.Errorf("projection: write immutable segment: %w", err)
 	}
 	active.Segments = append(active.Segments, SegmentRef{
@@ -374,21 +436,22 @@ func (store *Store[B, D]) ApplyDelta(
 		SourceRevision: sourceRevision, DeltaDigest: deltaDigest, SourceInput: sourceInput,
 	}
 	active.Identity = manifestIdentity(active)
-	if err := store.publishManifest(ctx, scope, name, active); err != nil {
+	if err := store.publishManifest(ctx, address, name, active); err != nil {
 		return ApplyResult{}, err
 	}
-	store.advanceLocked(store.residentKey(scope, name), previousIdentity, active.Identity, delta)
+	store.advanceLocked(store.residentKey(address, name), previousIdentity, active.Identity, delta)
 	return ApplyResult{Manifest: active}, nil
 }
 
-func (store *Store[B, D]) Materialize(ctx context.Context, scope corememory.Scope, name string) (B, Manifest, error) {
+func (store *Store[B, D]) Materialize(ctx context.Context, address Address, name string) (B, Manifest, error) {
 	var zero B
-	if err := validateAddress(scope, name); err != nil {
+	if err := address.validate(name); err != nil {
 		return zero, Manifest{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	mutex := store.lock(address, name)
+	mutex.Lock()
+	defer mutex.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, address, name)
 	if err != nil {
 		// The manifest area itself did not read back. That answers the same
 		// question as state that cannot be materialized -- something is
@@ -399,7 +462,7 @@ func (store *Store[B, D]) Materialize(ctx context.Context, scope corememory.Scop
 	if !found {
 		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", storage.ErrNotFound)
 	}
-	base, err := store.materializeLocked(ctx, scope, name, active)
+	base, err := store.materializeLocked(ctx, address, name, active)
 	if err != nil {
 		// The manifest is there and the state it points at is not readable.
 		// A reader has to be able to tell this from a lane that holds
@@ -427,94 +490,167 @@ func (store *Store[B, D]) Materialize(ctx context.Context, scope corememory.Scop
 // Measured on the eval store, materializing one 9324-entry, 2048-dimension table
 // took 14.0s, and a derivation applies one delta per commit over hundreds of
 // commits.
-func (store *Store[B, D]) MaterializeView(ctx context.Context, scope corememory.Scope, name string) (B, Manifest, error) {
+func (store *Store[B, D]) MaterializeView(ctx context.Context, address Address, name string) (B, Manifest, error) {
 	var zero B
-	if err := validateAddress(scope, name); err != nil {
+	if err := address.validate(name); err != nil {
 		return zero, Manifest{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	mutex := store.lock(address, name)
+	mutex.Lock()
+	defer mutex.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, address, name)
 	if err != nil {
 		return zero, Manifest{}, &component.StateError{Projection: name, Err: err}
 	}
 	if !found {
 		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", storage.ErrNotFound)
 	}
-	base, err := store.baseLocked(ctx, scope, name, active)
+	base, err := store.baseLocked(ctx, address, name, active)
 	if err != nil {
 		return base, active, &component.StateError{Projection: name, Err: err}
 	}
 	return base, active, nil
 }
 
-func (store *Store[B, D]) Audit(ctx context.Context, scope corememory.Scope, name string) (Manifest, bool, error) {
-	if err := validateAddress(scope, name); err != nil {
+func (store *Store[B, D]) Audit(ctx context.Context, address Address, name string) (Manifest, bool, error) {
+	if err := address.validate(name); err != nil {
 		return Manifest{}, false, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
+	mutex := store.lock(address, name)
+	mutex.Lock()
+	defer mutex.Unlock()
+	active, found, err := store.loadManifestLocked(ctx, address, name)
 	if err != nil || !found {
 		return Manifest{}, found, err
 	}
-	_, err = store.materializeUncachedLocked(ctx, scope, name, active)
+	_, err = store.materializeUncachedLocked(ctx, address, name, active)
 	return active, true, err
 }
 
+// AuditDigestEvidence audits every shard of one scope under one name and
+// reports the scope's root evidence: the digests the shards' manifests carry,
+// and the digests recomputing their bytes produces. A scope has one answer
+// because a host asks one question -- whether the projection it reads matches
+// what it can rebuild -- and the answer has to cover every shard, or a corrupt
+// shard nobody queried would stay invisible.
+//
+// found is false when no shard holds state, which is the state of a scope that
+// was never indexed.
 func (store *Store[B, D]) AuditDigestEvidence(
 	ctx context.Context,
 	scope corememory.Scope,
 	name string,
 ) (DigestEvidence, bool, error) {
-	if err := validateAddress(scope, name); err != nil {
+	shards, err := store.Shards(ctx, scope, name)
+	if err != nil {
 		return DigestEvidence{}, false, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestForAuditLocked(ctx, scope, name)
-	if err != nil || !found {
-		return DigestEvidence{}, found, err
+	var storedSource, computedSource, storedBuild, computedBuild []string
+	for _, shard := range shards {
+		address := Address{Scope: scope, Shard: shard}
+		mutex := store.lock(address, name)
+		mutex.Lock()
+		active, found, err := store.loadManifestForAuditLocked(ctx, address, name)
+		if err != nil {
+			mutex.Unlock()
+			return DigestEvidence{}, false, err
+		}
+		if !found {
+			// A shard directory without a manifest is a publication that
+			// failed before it pointed at anything: there is no state to
+			// audit, and no state a reader serves.
+			mutex.Unlock()
+			continue
+		}
+		_, sourceDigest, buildDigest, identity, err := store.materializeAuditLocked(ctx, address, name, active)
+		mutex.Unlock()
+		if err != nil {
+			return DigestEvidence{}, true, err
+		}
+		if sourceDigest == active.SourceDigest && buildDigest == active.BuildDigest && identity != active.Identity {
+			return DigestEvidence{}, true, errors.New("projection: active manifest identity mismatch")
+		}
+		storedSource = append(storedSource, chainDigest("shard", shard, active.SourceDigest))
+		storedBuild = append(storedBuild, chainDigest("shard", shard, active.BuildDigest))
+		computedSource = append(computedSource, chainDigest("shard", shard, sourceDigest))
+		computedBuild = append(computedBuild, chainDigest("shard", shard, buildDigest))
 	}
-	_, sourceDigest, buildDigest, identity, err := store.materializeAuditLocked(ctx, scope, name, active)
-	if err != nil {
-		return DigestEvidence{}, true, err
-	}
-	if sourceDigest == active.SourceDigest && buildDigest == active.BuildDigest && identity != active.Identity {
-		return DigestEvidence{}, true, errors.New("projection: active manifest identity mismatch")
+	if len(storedSource) == 0 {
+		return DigestEvidence{}, false, nil
 	}
 	return DigestEvidence{
-		StoredSourceDigest: active.SourceDigest, ComputedSourceDigest: sourceDigest,
-		StoredBuildDigest: active.BuildDigest, ComputedBuildDigest: buildDigest,
+		StoredSourceDigest:   rootDigest(storedSource),
+		ComputedSourceDigest: rootDigest(computedSource),
+		StoredBuildDigest:    rootDigest(storedBuild),
+		ComputedBuildDigest:  rootDigest(computedBuild),
 	}, true, nil
 }
 
 // ProducerIdentity reports the identity of one projection's persisted state:
-// the producer version stamped into its manifest, together with the cumulative
-// digests the manifest carries. It is a bounded read -- it decodes the active
-// manifest and reads nothing else -- so a host can ask whether a lane is stale
-// without materializing it.
+// the producer version stamped into its shards' manifests, together with the
+// root digests of their cumulative state. It is a bounded read -- it decodes
+// each active manifest and reads nothing else -- so a host can ask whether a
+// lane is stale without materializing it.
+//
+// The version is reported only when every shard agrees on it. A scope whose
+// shards were written by different producers has no single version, and
+// reporting one of them would claim the state is more converged than it is:
+// Mixed is set and Version stays empty, which fails every "is this current"
+// comparison exactly as the mismatch it is.
 func (store *Store[B, D]) ProducerIdentity(
 	ctx context.Context,
 	scope corememory.Scope,
 	name string,
 ) (component.ProducerIdentity, bool, error) {
-	if err := validateAddress(scope, name); err != nil {
+	shards, err := store.Shards(ctx, scope, name)
+	if err != nil {
 		return component.ProducerIdentity{}, false, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	active, found, err := store.loadManifestLocked(ctx, scope, name)
-	if err != nil || !found {
-		return component.ProducerIdentity{}, found, err
+	var versions, sources, builds []string
+	for _, shard := range shards {
+		address := Address{Scope: scope, Shard: shard}
+		mutex := store.lock(address, name)
+		mutex.Lock()
+		active, found, err := store.loadManifestLocked(ctx, address, name)
+		mutex.Unlock()
+		if err != nil {
+			return component.ProducerIdentity{}, false, err
+		}
+		if !found {
+			continue
+		}
+		versions = append(versions, active.ProducerVersion)
+		sources = append(sources, chainDigest("shard", shard, active.SourceDigest))
+		builds = append(builds, chainDigest("shard", shard, active.BuildDigest))
 	}
-	return component.ProducerIdentity{
-		Version: active.ProducerVersion, SourceDigest: active.SourceDigest, BuildDigest: active.BuildDigest,
-	}, true, nil
+	if len(sources) == 0 {
+		return component.ProducerIdentity{}, false, nil
+	}
+	identity := component.ProducerIdentity{
+		Version:      versions[0],
+		SourceDigest: rootDigest(sources),
+		BuildDigest:  rootDigest(builds),
+		Shards:       len(sources),
+	}
+	for _, version := range versions[1:] {
+		if version != identity.Version {
+			identity.Version, identity.Mixed = "", true
+			break
+		}
+	}
+	return identity, true, nil
 }
 
-func (store *Store[B, D]) materializeLocked(ctx context.Context, scope corememory.Scope, name string, active Manifest) (B, error) {
-	value, err := store.baseLocked(ctx, scope, name, active)
+// rootDigest folds the per-shard digests of one scope into the single digest a
+// host compares. The entries are already ordered by shard and already carry the
+// shard name, so two scopes with the same state under different addresses --
+// or the same shards in a different order -- cannot fold to the same root.
+func rootDigest(entries []string) string {
+	return chainDigest("shards", entries...)
+}
+
+func (store *Store[B, D]) materializeLocked(ctx context.Context, address Address, name string, active Manifest) (B, error) {
+	value, err := store.baseLocked(ctx, address, name, active)
 	if err != nil {
 		var zero B
 		return zero, err
@@ -527,15 +663,15 @@ func (store *Store[B, D]) materializeLocked(ctx context.Context, scope corememor
 // Nothing is copied, and what it returns must not be written through.
 func (store *Store[B, D]) baseLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	active Manifest,
 ) (B, error) {
-	key := store.residentKey(scope, name)
+	key := store.residentKey(address, name)
 	if value, ok := store.residentLocked(key, active.Identity); ok {
 		return value, nil
 	}
-	value, err := store.materializeUncachedLocked(ctx, scope, name, active)
+	value, err := store.materializeUncachedLocked(ctx, address, name, active)
 	if err != nil {
 		var zero B
 		return zero, err
@@ -544,10 +680,10 @@ func (store *Store[B, D]) baseLocked(
 	return value, nil
 }
 
-// residentKey names the state one scope's projection is kept under: the
-// partition the state lives in, and the projection within it.
-func (store *Store[B, D]) residentKey(scope corememory.Scope, name string) string {
-	return name + "\x00" + scope.HardPartitionKey()
+// residentKey names the state one shard's projection is kept under: the
+// projection, the partition the state lives in, and the shard within it.
+func (store *Store[B, D]) residentKey(address Address, name string) string {
+	return name + "\x00" + address.Scope.HardPartitionKey() + "\x00" + address.Shard
 }
 
 // residentLocked returns the base the store keeps for a key, when it holds the
@@ -556,6 +692,8 @@ func (store *Store[B, D]) residentKey(scope corememory.Scope, name string) strin
 // earlier one is not it.
 func (store *Store[B, D]) residentLocked(key, identity string) (B, bool) {
 	var zero B
+	store.cacheMu.Lock()
+	defer store.cacheMu.Unlock()
 	entry, ok := store.bases[key]
 	if !ok {
 		return zero, false
@@ -577,6 +715,8 @@ func (store *Store[B, D]) residentLocked(key, identity string) (B, bool) {
 // least recently makes room: what a bound costs is a decode of the partition it
 // evicted, never a different answer.
 func (store *Store[B, D]) keepLocked(key, identity string, value B) {
+	store.cacheMu.Lock()
+	defer store.cacheMu.Unlock()
 	if store.bases == nil {
 		store.bases = make(map[string]*residentBase[B])
 	}
@@ -602,7 +742,11 @@ func (store *Store[B, D]) keepLocked(key, identity string, value B) {
 }
 
 // forgetLocked drops whatever the store keeps for a key.
-func (store *Store[B, D]) forgetLocked(key string) { delete(store.bases, key) }
+func (store *Store[B, D]) forgetLocked(key string) {
+	store.cacheMu.Lock()
+	defer store.cacheMu.Unlock()
+	delete(store.bases, key)
+}
 
 // advanceLocked moves the resident base one delta forward instead of dropping
 // it. The base the store keeps is the state the delta was applied to -- the
@@ -615,6 +759,8 @@ func (store *Store[B, D]) forgetLocked(key string) { delete(store.bases, key) }
 // that cannot be advanced: it is dropped rather than left half-moved, and the
 // next read decodes the published state.
 func (store *Store[B, D]) advanceLocked(key, previousIdentity, identity string, delta D) {
+	store.cacheMu.Lock()
+	defer store.cacheMu.Unlock()
 	entry, ok := store.bases[key]
 	if !ok {
 		return
@@ -631,8 +777,8 @@ func (store *Store[B, D]) advanceLocked(key, previousIdentity, identity string, 
 	entry.identity, entry.used = identity, store.clock
 }
 
-func (store *Store[B, D]) materializeUncachedLocked(ctx context.Context, scope corememory.Scope, name string, active Manifest) (B, error) {
-	value, sourceDigest, buildDigest, identity, err := store.materializeAuditLocked(ctx, scope, name, active)
+func (store *Store[B, D]) materializeUncachedLocked(ctx context.Context, address Address, name string, active Manifest) (B, error) {
+	value, sourceDigest, buildDigest, identity, err := store.materializeAuditLocked(ctx, address, name, active)
 	if err != nil {
 		return value, err
 	}
@@ -644,14 +790,14 @@ func (store *Store[B, D]) materializeUncachedLocked(ctx context.Context, scope c
 
 func (store *Store[B, D]) materializeAuditLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	active Manifest,
 ) (B, string, string, string, error) {
 	var value B
 	buildDigest := ""
 	if active.Base != nil {
-		payload, err := store.KV.Get(ctx, store.buildPath(scope, name, active.Base.ID))
+		payload, err := store.KV.Get(ctx, store.buildPath(address, name, active.Base.ID))
 		if err != nil {
 			return value, "", "", "", fmt.Errorf("projection: read base: %w", err)
 		}
@@ -671,7 +817,7 @@ func (store *Store[B, D]) materializeAuditLocked(
 	previousIdentity := manifestIdentity(Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
 		ProducerVersion: active.ProducerVersion,
-		Projection:      name, Scope: scope, Base: active.Base,
+		Projection:      name, Scope: address.Scope, Shard: address.Shard, Base: active.Base,
 		Segments: []SegmentRef{}, BaseSourceDigest: baseSourceDigest(active),
 		SourceDigest: baseSourceDigest(active),
 		BuildDigest:  buildDigest, BaseLastApplied: active.BaseLastApplied,
@@ -682,7 +828,7 @@ func (store *Store[B, D]) materializeAuditLocked(
 		if ref.PreviousIdentity != previousIdentity {
 			return value, "", "", "", fmt.Errorf("projection: segment %d previous manifest identity mismatch", index)
 		}
-		payload, err := store.KV.Get(ctx, store.segmentPath(scope, name, ref.ID))
+		payload, err := store.KV.Get(ctx, store.segmentPath(address, name, ref.ID))
 		if err != nil {
 			return value, "", "", "", fmt.Errorf("projection: read segment %d: %w", index, err)
 		}
@@ -694,7 +840,8 @@ func (store *Store[B, D]) materializeAuditLocked(
 			return value, "", "", "", fmt.Errorf("projection: decode segment %d: %w", index, err)
 		}
 		if item.SchemaVersion != SchemaVersion || item.StorageVersion != StorageAlgorithmVersion ||
-			item.Projection != name || item.Scope != scope || item.ID != ref.ID ||
+			item.Projection != name || item.Scope != address.Scope || item.Shard != address.Shard ||
+			item.ID != ref.ID ||
 			item.PreviousIdentity != previousIdentity || item.SourceRevision != ref.SourceRevision ||
 			item.DeltaDigest != ref.DeltaDigest || item.SourceInput != ref.SourceInput {
 			return value, "", "", "", fmt.Errorf("projection: corrupt segment %d address or chain", index)
@@ -744,7 +891,7 @@ func (store *Store[B, D]) materializeAuditLocked(
 
 func (store *Store[B, D]) publishBaseLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 	payload []byte,
 	sourceDigest string,
@@ -759,28 +906,28 @@ func (store *Store[B, D]) publishBaseLocked(
 	// best-effort: a lane whose manifest cannot be decoded is a lane a rebuild
 	// replaces, and refusing to publish because the state being replaced is
 	// unreadable would be a repair that cannot repair.
-	previous, previousFound, _ := store.loadManifestLocked(ctx, scope, name)
-	if err := store.writeImmutable(ctx, store.buildPath(scope, name, baseDigest), payload); err != nil {
+	previous, previousFound, _ := store.loadManifestLocked(ctx, address, name)
+	if err := store.writeImmutable(ctx, store.buildPath(address, name, baseDigest), payload); err != nil {
 		return fmt.Errorf("projection: write immutable base: %w", err)
 	}
 	active := Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
 		ProducerVersion: producerVersion,
-		Projection:      name, Scope: scope,
+		Projection:      name, Scope: address.Scope, Shard: address.Shard,
 		Base:     &BaseRef{ID: baseDigest, Digest: baseDigest, Bytes: int64(len(payload))},
 		Segments: []SegmentRef{}, BaseSourceDigest: sourceDigest, SourceDigest: sourceDigest,
 		BuildDigest:     chainDigest("base", baseDigest),
 		BaseLastApplied: lastApplied, LastApplied: lastApplied,
 	}
 	active.Identity = manifestIdentity(active)
-	if err := store.publishManifest(ctx, scope, name, active); err != nil {
+	if err := store.publishManifest(ctx, address, name, active); err != nil {
 		return err
 	}
 	// The manifest is what makes state reachable, so the sweep runs after it is
 	// durable: everything the new manifest does not name stopped being
 	// readable at that instant, and the one generation of grace is what a
 	// reader that resolved the previous manifest finishes on.
-	store.sweepSupersededLocked(ctx, scope, name, active, previous, previousFound)
+	store.sweepSupersededLocked(ctx, address, name, active, previous, previousFound)
 	return nil
 }
 
@@ -807,19 +954,19 @@ func (store *Store[B, D]) writeImmutable(ctx context.Context, name string, paylo
 	return nil
 }
 
-func (store *Store[B, D]) publishManifest(ctx context.Context, scope corememory.Scope, name string, active Manifest) error {
+func (store *Store[B, D]) publishManifest(ctx context.Context, address Address, name string, active Manifest) error {
 	payload, err := json.Marshal(active)
 	if err != nil {
 		return fmt.Errorf("projection: encode active manifest: %w", err)
 	}
-	if err := store.KV.Put(ctx, store.activePath(scope, name), payload); err != nil {
+	if err := store.KV.Put(ctx, store.activePath(address, name), payload); err != nil {
 		return fmt.Errorf("projection: publish active manifest: %w", err)
 	}
 	return nil
 }
 
-func (store *Store[B, D]) loadManifestLocked(ctx context.Context, scope corememory.Scope, name string) (Manifest, bool, error) {
-	active, found, err := store.loadManifestForAuditLocked(ctx, scope, name)
+func (store *Store[B, D]) loadManifestLocked(ctx context.Context, address Address, name string) (Manifest, bool, error) {
+	active, found, err := store.loadManifestForAuditLocked(ctx, address, name)
 	if err != nil || !found {
 		return active, found, err
 	}
@@ -831,10 +978,10 @@ func (store *Store[B, D]) loadManifestLocked(ctx context.Context, scope corememo
 
 func (store *Store[B, D]) loadManifestForAuditLocked(
 	ctx context.Context,
-	scope corememory.Scope,
+	address Address,
 	name string,
 ) (Manifest, bool, error) {
-	data, err := store.KV.Get(ctx, store.activePath(scope, name))
+	data, err := store.KV.Get(ctx, store.activePath(address, name))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return Manifest{}, false, nil
@@ -846,7 +993,8 @@ func (store *Store[B, D]) loadManifestForAuditLocked(
 		return Manifest{}, false, fmt.Errorf("projection: decode active manifest: %w", err)
 	}
 	if active.SchemaVersion != SchemaVersion || active.StorageVersion != StorageAlgorithmVersion ||
-		active.Projection != name || active.Scope != scope || active.Identity == "" {
+		active.Projection != name || active.Scope != address.Scope || active.Shard != address.Shard ||
+		active.Identity == "" {
 		return Manifest{}, false, errors.New("projection: corrupt active manifest address or schema")
 	}
 	if len(active.Segments) > store.options.Thresholds.MaxSegments {
@@ -871,11 +1019,11 @@ func (store *Store[B, D]) loadManifestForAuditLocked(
 // newManifest is the manifest of a projection that holds nothing yet. It is
 // the one place a manifest is stamped: every later write of the same state --
 // an appended segment, a compaction -- carries the version forward.
-func (store *Store[B, D]) newManifest(scope corememory.Scope, name string) Manifest {
+func (store *Store[B, D]) newManifest(address Address, name string) Manifest {
 	active := Manifest{
 		SchemaVersion: SchemaVersion, StorageVersion: StorageAlgorithmVersion,
 		ProducerVersion: store.options.ProducerVersion,
-		Projection:      name, Scope: scope, Segments: []SegmentRef{},
+		Projection:      name, Scope: address.Scope, Shard: address.Shard, Segments: []SegmentRef{},
 	}
 	active.Identity = manifestIdentity(active)
 	return active
@@ -1040,23 +1188,31 @@ func (store *Store[B, D]) root(scope corememory.Scope, name string) string {
 	return path.Join(store.indexesPrefix(scope), encode(name))
 }
 
+// shardRoot is the area one shard of one projection lives under. The address is
+// validated by every entry point before it reaches here, so the segment cannot
+// be missing: an unparsable shard was refused before any storage was touched.
+func (store *Store[B, D]) shardRoot(address Address, name string) string {
+	segment, _ := ShardSegment(address.Shard)
+	return path.Join(store.root(address.Scope, name), "shards", segment)
+}
+
 // indexesPrefix is the area every index name of one family and scope lives
 // under, the parent of one lane's root.
 func (store *Store[B, D]) indexesPrefix(scope corememory.Scope) string {
-	return path.Join("projections", store.Family, "v2", "partitions", encode(scope.RuntimeID),
+	return path.Join("projections", store.Family, "v3", "partitions", encode(scope.RuntimeID),
 		encode(scope.UserID), encode(scope.AgentID), "indexes")
 }
 
-func (store *Store[B, D]) activePath(scope corememory.Scope, name string) string {
-	return path.Join(store.root(scope, name), "active.json")
+func (store *Store[B, D]) activePath(address Address, name string) string {
+	return path.Join(store.shardRoot(address, name), "active.json")
 }
 
-func (store *Store[B, D]) buildPath(scope corememory.Scope, name, build string) string {
-	return path.Join(store.root(scope, name), "bases", encode(build)+".json")
+func (store *Store[B, D]) buildPath(address Address, name, build string) string {
+	return path.Join(store.shardRoot(address, name), "bases", encode(build)+".json")
 }
 
-func (store *Store[B, D]) segmentPath(scope corememory.Scope, name, segment string) string {
-	return path.Join(store.root(scope, name), "segments", encode(segment)+".json")
+func (store *Store[B, D]) segmentPath(address Address, name, segment string) string {
+	return path.Join(store.shardRoot(address, name), "segments", encode(segment)+".json")
 }
 
 func validateAddress(scope corememory.Scope, name string) error {

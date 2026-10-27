@@ -79,7 +79,7 @@ func TestDeltaAppliesShareOneDecodedBase(t *testing.T) {
 	const deltas = 8
 	for number := 0; number < deltas; number++ {
 		delta := component.ProjectionDelta{
-			Scope: scope, Projection: "facts",
+			Scope: scope, Shard: shardOf("conversation"), Projection: "facts",
 			Upserts: []component.Artifact{vectorArtifact(fmt.Sprintf("a-%d", number), "alpha")},
 		}
 		if err := index.ApplyDelta(ctx, delta); err != nil {
@@ -106,11 +106,11 @@ func TestDeltaAppliesShareOneDecodedBase(t *testing.T) {
 	}
 }
 
-// TestWarmUpIsCoalescedPerScope pins the other half of the write path's cost: a
+// TestWarmUpIsCoalescedPerShard pins the other half of the write path's cost: a
 // warm-up per write, when a derivation writes once per commit, is a run of
 // loads standing in for each other. One load runs at a time, and the writes
 // that arrive during it ask for one more rather than one each.
-func TestWarmUpIsCoalescedPerScope(t *testing.T) {
+func TestWarmUpIsCoalescedPerShard(t *testing.T) {
 	ctx := context.Background()
 	kvStore := recordingKVFor(t, 150*time.Millisecond)
 	runtime, model := fakeRuntime(t)
@@ -127,7 +127,7 @@ func TestWarmUpIsCoalescedPerScope(t *testing.T) {
 	// The rebuild's warm-up is the load the delay holds open: every ask below
 	// lands while it runs, and one of them is the load it owes.
 	for ask := 0; ask < 5; ask++ {
-		index.warmSnapshots(ctx, scope)
+		index.warmSnapshots(ctx, addressOf(scope, shardOf("conversation")))
 	}
 	waitForStats(t, index, "the coalesced warm-ups settling", func(stats Stats) bool {
 		return stats.WarmHits+stats.WarmMisses+stats.WarmErrors >= 2
@@ -138,12 +138,12 @@ func TestWarmUpIsCoalescedPerScope(t *testing.T) {
 	}
 	// The partition is free again: the next write warms it on its own.
 	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
-		Scope: scope, Projection: "facts",
+		Scope: scope, Shard: shardOf("conversation"), Projection: "facts",
 		Upserts: []component.Artifact{vectorArtifact("b", "alpha again")},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitForStats(t, index, "the write after the coalesced run warming its scope", func(stats Stats) bool {
+	waitForStats(t, index, "the write after the coalesced run warming its shard", func(stats Stats) bool {
 		return stats.WarmHits+stats.WarmMisses+stats.WarmErrors >= 3
 	})
 }

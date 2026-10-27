@@ -141,7 +141,7 @@ type shareReading struct {
 // against is the mean query embed of this run: the scan mattering is a
 // question of what it is worth next to the network call that feeds it.
 type projectionPoint struct {
-	EntriesPerScope int           `json:"entries_per_scope"`
+	EntriesPerShard int           `json:"entries_per_shard"`
 	Scan            time.Duration `json:"scan_ns"`
 	Sort            time.Duration `json:"sort_ns"`
 }
@@ -279,9 +279,9 @@ func computeShares(phase vectorPhase, stages map[string]stageReading, contextSum
 // did not have: the scan is linear in the table, and the ordering is the work
 // of the limit the scan asked for -- the offer of one score per admitted entry
 // is part of the per-entry slope -- so it does not grow with the table.
-func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectionPoint {
+func projections(phase vectorPhase, entriesPerShard, dimensions int) []projectionPoint {
 	points := make([]projectionPoint, 0, 4)
-	if phase.EntriesScanned <= 0 || entriesPerScope <= 0 {
+	if phase.EntriesScanned <= 0 || entriesPerShard <= 0 {
 		return points
 	}
 	perEntry := time.Duration(float64(phase.ScanTotal) / float64(phase.EntriesScanned))
@@ -290,16 +290,16 @@ func projections(phase vectorPhase, entriesPerScope, dimensions int) []projectio
 		scans = 1
 	}
 	perScanSort := float64(phase.SortTotal) / float64(scans)
-	for _, size := range []int{entriesPerScope, 10000, 40000, 100000} {
+	for _, size := range []int{entriesPerShard, 10000, 40000, 100000} {
 		if size <= 0 {
 			continue
 		}
 		point := projectionPoint{
-			EntriesPerScope: size,
+			EntriesPerShard: size,
 			Scan:            perEntry * time.Duration(size),
 			Sort:            time.Duration(perScanSort),
 		}
-		if len(points) > 0 && points[len(points)-1].EntriesPerScope == size {
+		if len(points) > 0 && points[len(points)-1].EntriesPerShard == size {
 			continue
 		}
 		points = append(points, point)

@@ -8,11 +8,15 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
+
+// testShard is where artifact()'s conversation lives.
+const testShard = "c:conversation"
 
 func TestBM25HappyPathUnicodeAndStableTie(t *testing.T) {
 	index, err := New(Config{KV: kvFor(t), Projection: "facts", K1: 1.2, B: 0.75})
@@ -246,7 +250,7 @@ func TestBM25DeleteStopsMatching(t *testing.T) {
 		t.Fatalf("search(omega) = %s, want only gone", describeCandidates(results))
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteIDs: []string{"gone"}, SourceRevision: "r1",
+		Scope: scope, Shard: testShard, DeleteIDs: []string{"gone"}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +284,7 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 	meter.reset()
 	changed := artifact("changed", "common updated")
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{changed}, SourceRevision: "r1",
+		Scope: scope, Shard: testShard, Upserts: []component.Artifact{changed}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +293,7 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 	}
 	meter.reset()
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
+		Scope: scope, Shard: testShard, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -316,127 +320,289 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 	}
 }
 
-// TestBM25KernelCacheReusesScoringPerSelector pins the lane's kernel cache.
-// An unchanged (identity, selector) pair reuses one kernel, and a selector
-// change must not: the selector narrows the scored document set, and average
-// length and document frequency — the terms a BM25 score is made of — are
-// properties of that set.
-func TestBM25KernelCacheReusesScoringPerSelector(t *testing.T) {
-	index, scope := twoConversationIndex(t)
-	search := func(conversation string) []component.Candidate {
-		t.Helper()
-		results, err := index.Search(context.Background(), component.SearchRequest{
-			Scope: scope, Query: "needle",
-			Metadata: corememory.Metadata{"conversation_id": conversation},
+// TestBM25ShardedSearchEqualsOneKernelOverTheScoringSet pins the two-pass
+// contract. A sharded read has to answer like one kernel over every record the
+// selector admits: BM25's document count, average length and document frequency
+// belong to that set, and a shard scored against its own counts would weigh the
+// same term differently from the shard next to it. The cases cover the plans a
+// read can take: one named conversation, the other, and no selector at all,
+// which fans out over every shard the lane holds.
+func TestBM25ShardedSearchEqualsOneKernelOverTheScoringSet(t *testing.T) {
+	ctx := context.Background()
+	const k1, b = 1.2, 0.75
+	index, err := New(Config{KV: kvFor(t), Projection: "facts", K1: k1, B: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	first := artifact("a1", "needle needle alpha")
+	first.Metadata["conversation_id"] = "c1"
+	second := artifact("a2", "needle beta")
+	second.Metadata["conversation_id"] = "c2"
+	third := artifact("a3", "needle needle needle gamma")
+	third.Metadata["conversation_id"] = "c2"
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts",
+		Artifacts: []component.Artifact{first, second, third},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		metadata corememory.Metadata
+	}{
+		{name: "conversation c1", metadata: corememory.Metadata{"conversation_id": "c1"}},
+		{name: "conversation c2", metadata: corememory.Metadata{"conversation_id": "c2"}},
+		{name: "every conversation", metadata: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selector, err := projectionstore.ParseSelector(test.metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			shards, err := index.searchShards(ctx, scope, selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := referenceSearch(t, ctx, index, scope, shards, selector, k1, b, "needle", 0)
+			got, err := index.Search(ctx, component.SearchRequest{
+				Scope: scope, Query: "needle", Metadata: test.metadata,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(want) == 0 {
+				t.Fatal("the reference kernel matched nothing; the fixture is wrong")
+			}
+			if len(got) != len(want) {
+				t.Fatalf("search = %s, want %d results", describeCandidates(got), len(want))
+			}
+			for i := range want {
+				if got[i].ID != want[i].ID || got[i].Score != want[i].Score {
+					t.Fatalf("result %d = %s, want %s=%.17g",
+						i, describeCandidates(got), want[i].ID, want[i].Score)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return results
-	}
-
-	c1 := search("c1")
-	if len(c1) != 1 || c1[0].ID != "alpha" {
-		t.Fatalf("conversation c1 results = %s, want only alpha", describeCandidates(c1))
-	}
-	firstKernel := cachedKernelOf(t, index)
-
-	// The same request must reuse the kernel and answer identically.
-	repeat := search("c1")
-	if cachedKernelOf(t, index) != firstKernel {
-		t.Fatal("identical request rebuilt the kernel")
-	}
-	if describeCandidates(repeat) != describeCandidates(c1) {
-		t.Fatalf("identical request rescored: %s, want %s",
-			describeCandidates(repeat), describeCandidates(c1))
-	}
-
-	// A different selector selects a different set, so it must not answer
-	// from the kernel built for the previous one.
-	c2 := search("c2")
-	if cachedKernelOf(t, index) == firstKernel {
-		t.Fatal("selector change reused the previous kernel")
-	}
-	if len(c2) != 1 || c2[0].ID != "beta" {
-		t.Fatalf("conversation c2 results = %s, want only beta", describeCandidates(c2))
-	}
-
-	// Switching back re-selects c1's set and scores identically again.
-	if back := search("c1"); describeCandidates(back) != describeCandidates(c1) {
-		t.Fatalf("c1 rescored after c2: %s, want %s", describeCandidates(back), describeCandidates(c1))
 	}
 }
 
-// TestBM25KernelCacheFollowsBuildIdentity pins invalidation: a delta that
-// rewrites the projection must produce a new kernel, or the lane keeps
-// answering from a build that no longer exists.
-func TestBM25KernelCacheFollowsBuildIdentity(t *testing.T) {
+// TestBM25GlobalRecallKeepsTheSingleTableTopK pins the truncation end of the
+// two-pass read: each shard contributes its own best records and the merge
+// keeps the top limit of the union. With a limit smaller than the shard count
+// a read that truncated per shard first would still be right only by accident;
+// here one conversation outranks the other, so the limit has to cut across
+// shards in score order.
+func TestBM25GlobalRecallKeepsTheSingleTableTopK(t *testing.T) {
+	ctx := context.Background()
+	const k1, b = 1.2, 0.75
+	index, err := New(Config{KV: kvFor(t), Projection: "facts", K1: k1, B: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	weak := artifact("weak", "needle")
+	strong := artifact("strong", "needle needle needle needle")
+	strong.Metadata["conversation_id"] = "c2"
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{weak, strong},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selector, err := projectionstore.ParseSelector(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shards, err := index.searchShards(ctx, scope, selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{1, 2} {
+		want := referenceSearch(t, ctx, index, scope, shards, selector, k1, b, "needle", limit)
+		got, err := index.Search(ctx, component.SearchRequest{Scope: scope, Query: "needle", Limit: limit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) || len(got) == 0 {
+			t.Fatalf("limit %d search = %s, want %d results", limit, describeCandidates(got), len(want))
+		}
+		for i := range want {
+			if got[i].ID != want[i].ID || got[i].Score != want[i].Score {
+				t.Fatalf("limit %d result %d = %s, want %s=%.17g",
+					limit, i, describeCandidates(got), want[i].ID, want[i].Score)
+			}
+		}
+	}
+	if first, err := index.Search(ctx, component.SearchRequest{Scope: scope, Query: "needle", Limit: 1}); err != nil ||
+		len(first) != 1 || first[0].ID != "strong" {
+		t.Fatalf("limit 1 = %s, %v, want the record with the strongest term frequency", describeCandidates(first), err)
+	}
+}
+
+// TestBM25DeltaLandsOnlyInItsShard pins the write path's isolation: a delta
+// names the shard it lands in, so an upsert or a delete in one conversation
+// must not touch its neighbours. The global read afterwards is what proves the
+// neighbours are still there.
+func TestBM25DeltaLandsOnlyInItsShard(t *testing.T) {
+	ctx := context.Background()
 	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
-		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{artifact("alpha", "needle")},
+	alpha := artifact("alpha", "shared alpha")
+	beta := artifact("beta", "shared beta")
+	beta.Metadata["conversation_id"] = "other"
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{alpha, beta},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	search := func(query string) []component.Candidate {
-		t.Helper()
-		results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: query})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return results
-	}
-	if results := search("needle"); len(results) != 1 || results[0].ID != "alpha" {
-		t.Fatalf("results before delta = %s, want only alpha", describeCandidates(results))
-	}
-	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{artifact("beta", "newcomer")}, SourceRevision: "r1",
+	gamma := artifact("gamma", "omega")
+	gamma.Metadata["conversation_id"] = "other"
+	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
+		Scope: scope, Shard: "c:other", Upserts: []component.Artifact{gamma},
+		SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// A stale kernel would answer nothing here.
-	if results := search("newcomer"); len(results) != 1 || results[0].ID != "beta" {
-		t.Fatalf("results after delta = %s, want only beta", describeCandidates(results))
+	if results, err := index.Search(ctx, component.SearchRequest{
+		Scope: scope, Query: "omega", Metadata: corememory.Metadata{"conversation_id": "conversation"},
+	}); err != nil || len(results) != 0 {
+		t.Fatalf("the neighbour conversation matched the upsert: %+v, %v", results, err)
 	}
-	if results := search("needle"); len(results) != 1 || results[0].ID != "alpha" {
-		t.Fatalf("results after delta = %s, want only alpha", describeCandidates(results))
+	if results, err := index.Search(ctx, component.SearchRequest{
+		Scope: scope, Query: "omega", Metadata: corememory.Metadata{"conversation_id": "other"},
+	}); err != nil || len(results) != 1 || results[0].ID != "gamma" {
+		t.Fatalf("the addressed conversation missed its upsert: %+v, %v", results, err)
+	}
+	// A delete names its shard too: the other conversation keeps its record.
+	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
+		Scope: scope, Shard: testShard, DeleteIDs: []string{"alpha"},
+		SourceRevision: "r2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := index.Search(ctx, component.SearchRequest{Scope: scope, Query: "shared"}); err != nil ||
+		len(results) != 1 || results[0].ID != "beta" {
+		t.Fatalf("delete in one shard touched another: %+v, %v", results, err)
 	}
 }
 
-// TestBM25KernelCacheConcurrentSearches reads the cache from concurrent
-// searches whose selectors alternate, keeping hits and misses overlapped.
-func TestBM25KernelCacheConcurrentSearches(t *testing.T) {
+// TestBM25RebuildPrunesAShardItsArtifactsNoLongerCover pins replacement, not
+// addition: a scope-wide rebuild publishes the shards its artifact set covers,
+// and a conversation the set no longer holds must stop answering instead of
+// keeping its last index.
+func TestBM25RebuildPrunesAShardItsArtifactsNoLongerCover(t *testing.T) {
+	ctx := context.Background()
+	index, err := New(Config{KV: kvFor(t), Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	kept := artifact("kept", "needle")
+	gone := artifact("gone", "needle")
+	gone.Metadata["conversation_id"] = "removed"
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{kept, gone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if shards, err := index.store.Shards(ctx, scope, "facts"); err != nil || len(shards) != 2 {
+		t.Fatalf("shards = %v, %v, want both conversations", shards, err)
+	}
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "facts", Artifacts: []component.Artifact{kept},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if shards, err := index.store.Shards(ctx, scope, "facts"); err != nil || len(shards) != 1 || shards[0] != testShard {
+		t.Fatalf("shards after the rebuild = %v, %v, want only %s", shards, err, testShard)
+	}
+	if results, err := index.Search(ctx, component.SearchRequest{
+		Scope: scope, Query: "needle", Metadata: corememory.Metadata{"conversation_id": "removed"},
+	}); err != nil || len(results) != 0 {
+		t.Fatalf("the pruned conversation still answers: %+v, %v", results, err)
+	}
+}
+
+// TestBM25ConcurrentSearchesAgreeWithSequentialOnes replaces what the old
+// per-selector kernel cache test guarded. The lane keeps no kernel between
+// requests, so concurrent reads cannot race on one; what still has to hold is
+// that the answer does not depend on how many readers asked at once.
+func TestBM25ConcurrentSearchesAgreeWithSequentialOnes(t *testing.T) {
 	index, scope := twoConversationIndex(t)
+	queries := []component.SearchRequest{
+		{Scope: scope, Query: "needle", Metadata: corememory.Metadata{"conversation_id": "c1"}},
+		{Scope: scope, Query: "needle", Metadata: corememory.Metadata{"conversation_id": "c2"}},
+		{Scope: scope, Query: "needle"},
+	}
+	want := make([]string, len(queries))
+	for i, request := range queries {
+		results, err := index.Search(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[i] = describeCandidates(results)
+	}
 	var wait sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
-		conversation, want := "c1", "alpha"
-		if worker%2 == 1 {
-			conversation, want = "c2", "beta"
-		}
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			for i := 0; i < 25; i++ {
-				results, err := index.Search(context.Background(), component.SearchRequest{
-					Scope: scope, Query: "needle",
-					Metadata: corememory.Metadata{"conversation_id": conversation},
-				})
+				request := queries[i%len(queries)]
+				results, err := index.Search(context.Background(), request)
 				if err != nil {
-					t.Errorf("conversation %s: %v", conversation, err)
+					t.Errorf("search: %v", err)
 					return
 				}
-				if len(results) != 1 || results[0].ID != want {
-					t.Errorf("conversation %s results = %s, want only %s",
-						conversation, describeCandidates(results), want)
+				if got := describeCandidates(results); got != want[i%len(queries)] {
+					t.Errorf("concurrent search = %s, want %s", got, want[i%len(queries)])
 					return
 				}
 			}
 		}()
 	}
 	wait.Wait()
+}
+
+// referenceSearch answers one query the way an unsharded lane would: a single
+// kernel over every record the selector admits in the planned shards.
+func referenceSearch(
+	t *testing.T,
+	ctx context.Context,
+	index *Index,
+	scope corememory.Scope,
+	shards []string,
+	selector projectionstore.Selector,
+	k1, b float64,
+	query string,
+	limit int,
+) []corebm25.Result {
+	t.Helper()
+	documents := make([]corebm25.TermDoc, 0)
+	for _, shard := range shards {
+		build, found, err := index.materialize(ctx, scope, shard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found {
+			continue
+		}
+		for _, document := range build.Documents {
+			if !selector.Matches(document.Address) {
+				continue
+			}
+			documents = append(documents, corebm25.TermDoc{ID: document.ID, Text: document.Terms})
+		}
+	}
+	kernel, err := corebm25.NewFromTerms(documents,
+		corebm25.WithK1(k1), corebm25.WithB(b), corebm25.WithPrefixWeight(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kernel.SearchTerms(corebm25.Tokenize(query), limit)
 }
 
 // twoConversationIndex builds one fact per conversation selector, with
@@ -458,16 +624,6 @@ func twoConversationIndex(t *testing.T) (*Index, corememory.Scope) {
 		t.Fatal(err)
 	}
 	return index, scope
-}
-
-func cachedKernelOf(t *testing.T, index *Index) *corebm25.Index {
-	t.Helper()
-	index.mu.Lock()
-	defer index.mu.Unlock()
-	if index.cached == nil {
-		t.Fatal("no kernel cached")
-	}
-	return index.cached.kernel
 }
 
 func describeCandidates(results []component.Candidate) string {
