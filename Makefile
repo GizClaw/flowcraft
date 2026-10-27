@@ -77,7 +77,9 @@ help:
 	@echo "  make rust-test   Run cargo test on the Rust workspace"
 	@echo "  make rust-fmt    Run cargo fmt on the Rust workspace"
 	@echo "  make rust-clippy Run cargo clippy -D warnings on the Rust workspace"
-	@echo "  make rust-windows-check Check the workspace capability for a Windows target"
+	@echo "  make rust-windows-check Check every provider shape for a Windows target"
+	@echo "  make rust-linux-check Check the Linux-only modules from any host"
+	@echo "  make rust-cross-check Both cross-target lanes above"
 	@echo "  make rust-proto-gen  Regenerate the committed Rust wire bindings (needs protoc)"
 	@echo "  make rust-proto-check Regenerate the Rust bindings and fail on drift"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
@@ -156,6 +158,7 @@ RUST_WINDOWS_SHAPES := workspace secret tool sandbox caps
 .PHONY: rust-windows-check
 rust-windows-check:
 	@echo "==> check $(RUST_DIR) for $(RUST_WINDOWS_TARGET)"
+	$(call require_rust_target,$(RUST_WINDOWS_TARGET))
 	@for shape in $(RUST_WINDOWS_SHAPES); do \
 		echo "  ==> flowcraft --no-default-features --features $$shape"; \
 		( cd $(RUST_DIR) && $(CARGO) clippy -q -p flowcraft --all-targets \
@@ -165,6 +168,46 @@ rust-windows-check:
 	@echo "  ==> flowcraft-platformd"
 	@( cd $(RUST_DIR) && $(CARGO) clippy -q -p flowcraft-platformd --all-targets \
 		--target $(RUST_WINDOWS_TARGET) -- -D warnings )
+
+# The other side of the same coin: the modules that only exist on Linux.
+#
+# `sandbox/limits/cgroup.rs` is `#[cfg(target_os = "linux")]`, so a Darwin or
+# Windows dev machine never compiles it — and never sees what `rust/clippy.toml`
+# (or a `-D warnings` lint) says about it. CI's `Rust platform` lane runs on
+# ubuntu and catches it a round trip later; this makes the same check local.
+#
+# `--workspace --all-targets` cannot cross-check from macOS: `ring`'s build script
+# needs a C compiler for the target, so it fails before clippy sees anything. The
+# library shape below is what contains the Linux-only modules, which is the part
+# worth checking here; the full matrix is CI's job on a real Linux host.
+RUST_LINUX_TARGET := x86_64-unknown-linux-gnu
+RUST_LINUX_SHAPES := sandbox
+
+# A cross target has to be installed before it can be checked, and the error
+# `cargo` prints for a missing one is about `core`, not about a missing target.
+#
+# Advisory, not fatal: targets are installed per toolchain, and `rust/` pins one
+# (`rust-toolchain.toml`), so a target added from the repository root may not be
+# the one this build uses. The probe therefore runs where the build runs, and a
+# miss prints the command to run — `cargo` still decides.
+define require_rust_target
+	@( cd $(RUST_DIR) && rustup target list --installed 2>/dev/null | grep -qx "$(1)" ) \
+		|| echo "note: $(1) is not installed for $(RUST_DIR)'s toolchain; run 'rustup target add $(1)' in $(RUST_DIR)"
+endef
+
+.PHONY: rust-linux-check
+rust-linux-check:
+	@echo "==> check $(RUST_DIR) for $(RUST_LINUX_TARGET)"
+	$(call require_rust_target,$(RUST_LINUX_TARGET))
+	@for shape in $(RUST_LINUX_SHAPES); do \
+		echo "  ==> flowcraft --no-default-features --features $$shape"; \
+		( cd $(RUST_DIR) && $(CARGO) clippy -q -p flowcraft --lib \
+			--no-default-features --features $$shape \
+			--target $(RUST_LINUX_TARGET) -- -D warnings ) || exit 1; \
+	done
+
+.PHONY: rust-cross-check
+rust-cross-check: rust-windows-check rust-linux-check
 
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree
