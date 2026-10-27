@@ -295,7 +295,7 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	})
 	index, err := New(Config{
 		KV: meter, Runtime: runtime, Model: model, Projection: "facts",
-		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)

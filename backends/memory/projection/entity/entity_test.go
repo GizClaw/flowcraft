@@ -280,7 +280,7 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 	meter := &entityMeter{Store: kvFor(t)}
 	index, err := New(Config{
 		KV: meter, Projection: "entities",
-		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)

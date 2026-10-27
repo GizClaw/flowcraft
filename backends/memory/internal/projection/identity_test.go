@@ -17,7 +17,7 @@ func newIdentityStore(t *testing.T, kvStore storage.Store, producerVersion strin
 	t.Helper()
 	store, err := NewTypedStore(kvStore, "test", TypedOptions[map[string]bool, map[string]bool]{
 		ProducerVersion: producerVersion,
-		Thresholds:      Thresholds{MaxSegments: maxSegments, MaxDeltaBytes: 1 << 20},
+		Thresholds:      Thresholds{MaxSegments: maxSegments, MinDeltaBytes: 1 << 20},
 		Apply: func(base *map[string]bool, delta map[string]bool) error {
 			for key, value := range delta {
 				(*base)[key] = value

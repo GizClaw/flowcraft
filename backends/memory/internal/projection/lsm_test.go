@@ -74,7 +74,7 @@ func kvFor(t *testing.T) storage.Store {
 
 func TestTypedStoreDeltaPublishIsSmallReplayableAndOrdered(t *testing.T) {
 	meter := &meterKV{Store: kvFor(t)}
-	store := newTestStore(t, meter, Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, meter, Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
 	base := testBase{Entries: make([]testEntry, 1000)}
 	for index := range base.Entries {
@@ -141,7 +141,7 @@ func TestTypedStoreCrashBeforeManifestLeavesInvisibleReusableOrphan(t *testing.T
 }
 
 func TestTypedStoreCompactsAndInvalidatesCache(t *testing.T) {
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestTypedStoreRejectsCorruptSegmentChain(t *testing.T) {
 }
 
 func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 128, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 128, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)

@@ -60,7 +60,7 @@ func countingKVFor(t *testing.T) *countingStore {
 // keeps the base it decoded and moves it forward with the deltas it publishes.
 func TestTypedStoreKeepsItsBaseAcrossItsOwnDeltas(t *testing.T) {
 	kvStore := countingKVFor(t)
-	store := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
@@ -80,7 +80,7 @@ func TestTypedStoreKeepsItsBaseAcrossItsOwnDeltas(t *testing.T) {
 		t.Fatalf("eight deltas read the stored state %d times, want 0", reads)
 	}
 	// What the store advanced in memory is the state a reader decodes.
-	restarted := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MaxDeltaBytes: 1 << 20})
+	restarted := newTestStore(t, kvStore, Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
 	replayed, _, err := restarted.Materialize(ctx, scope, "index")
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestTypedStoreKeepsItsBaseAcrossItsOwnDeltas(t *testing.T) {
 // store's slices rather than rewriting them, so the view a caller already holds
 // keeps describing what it read while the next view describes the new state.
 func TestTypedStoreViewDoesNotMoveWithTheState(t *testing.T) {
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 4096, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
 	ctx := context.Background()
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(ctx, scope, "index",
@@ -150,7 +150,7 @@ func TestTypedStoreViewDoesNotMoveWithTheState(t *testing.T) {
 // partition it evicted is decoded again, never answered differently.
 func TestTypedStoreResidentBoundEvictsTheColdBase(t *testing.T) {
 	kvStore := countingKVFor(t)
-	store := newTestStoreWith(t, kvStore, Thresholds{MaxSegments: 4096, MaxDeltaBytes: 1 << 20}, 1)
+	store := newTestStoreWith(t, kvStore, Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20}, 1)
 	ctx := context.Background()
 	first := corememory.Scope{RuntimeID: "first"}
 	second := corememory.Scope{RuntimeID: "second"}
@@ -189,7 +189,7 @@ func TestTypedStoreResidentBoundEvictsTheColdBase(t *testing.T) {
 // instead of advancing a base that no longer describes it.
 func TestTypedStoreDoesNotAdvanceABaseAnotherWriterReplaced(t *testing.T) {
 	kvStore := kvFor(t)
-	thresholds := Thresholds{MaxSegments: 4096, MaxDeltaBytes: 1 << 20}
+	thresholds := Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20}
 	mine := newTestStore(t, kvStore, thresholds)
 	theirs := newTestStore(t, kvStore, thresholds)
 	ctx := context.Background()

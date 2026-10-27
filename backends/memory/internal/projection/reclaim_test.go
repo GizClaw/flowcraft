@@ -50,7 +50,7 @@ func assertStoredObjects(t *testing.T, store *Store[testBase, EntryDelta[testEnt
 // the next publication replaces that.
 func TestTypedStorePublicationKeepsOneSupersededGeneration(t *testing.T) {
 	ctx := context.Background()
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	upsert := func(id, revision string) error {
 		_, err := store.ApplyDelta(ctx, scope, "index",
@@ -115,7 +115,7 @@ func TestTypedStorePublicationKeepsOneSupersededGeneration(t *testing.T) {
 // exactly what the active manifest names.
 func TestReclaimKeepsNothingButTheActiveManifest(t *testing.T) {
 	ctx := context.Background()
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 2, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
 		if _, err := store.ApplyDelta(ctx, scope, "index",
@@ -185,7 +185,7 @@ func TestReclaimCollectsABaseNoManifestNames(t *testing.T) {
 // state a repair would have read.
 func TestReclaimRefusesAManifestItCannotRead(t *testing.T) {
 	ctx := context.Background()
-	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MinDeltaBytes: 1 << 20})
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(ctx, scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)

@@ -262,7 +262,7 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 	meter := &bm25Meter{Store: kvFor(t)}
 	index, err := New(Config{
 		KV: meter, Projection: "facts",
-		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)

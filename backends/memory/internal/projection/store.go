@@ -26,30 +26,62 @@ import (
 const (
 	SchemaVersion           = 2
 	StorageAlgorithmVersion = "workspace-lsm-v1"
-	DefaultMaxSegments      = 32
-	DefaultMaxDeltaBytes    = 4 << 20
+	DefaultMaxSegments      = 64
+	DefaultMinDeltaBytes    = 4 << 20
+	DefaultCompactionRatio  = 2
 )
 
+// Thresholds decides when a delta is applied as a segment and when the state
+// is rewritten as a new base.
+//
+// The byte trigger is relative to the base, because the fixed one it replaced
+// was not: 4 MiB is 0.2% of a 2 GiB base, so a scope-sized lane rewrote its
+// whole base every 32 commits and spent a run writing 2 GiB snapshots. With
+// the default ratio, a 10 MB base is rewritten once its deltas reach 5 MB and
+// a 2 GiB base at 1 GiB. MinDeltaBytes floors the trigger, so a small base is
+// not rewritten on every commit, and MaxSegments caps the segment count that
+// one manifest has to describe.
 type Thresholds struct {
 	MaxSegments   int   `json:"max_segments"`
-	MaxDeltaBytes int64 `json:"max_delta_bytes"`
+	MinDeltaBytes int64 `json:"min_delta_bytes"`
+	Ratio         int   `json:"ratio"`
 }
 
 func DefaultThresholds() Thresholds {
-	return Thresholds{MaxSegments: DefaultMaxSegments, MaxDeltaBytes: DefaultMaxDeltaBytes}
+	return Thresholds{
+		MaxSegments: DefaultMaxSegments, MinDeltaBytes: DefaultMinDeltaBytes, Ratio: DefaultCompactionRatio,
+	}
 }
 
 func (thresholds Thresholds) normalized() (Thresholds, error) {
 	if thresholds.MaxSegments == 0 {
 		thresholds.MaxSegments = DefaultMaxSegments
 	}
-	if thresholds.MaxDeltaBytes == 0 {
-		thresholds.MaxDeltaBytes = DefaultMaxDeltaBytes
+	if thresholds.MinDeltaBytes == 0 {
+		thresholds.MinDeltaBytes = DefaultMinDeltaBytes
 	}
-	if thresholds.MaxSegments < 1 || thresholds.MaxDeltaBytes < 1 {
+	if thresholds.Ratio == 0 {
+		thresholds.Ratio = DefaultCompactionRatio
+	}
+	if thresholds.MaxSegments < 1 || thresholds.MinDeltaBytes < 1 || thresholds.Ratio < 1 {
 		return Thresholds{}, errors.New("projection: compaction thresholds must be positive")
 	}
 	return thresholds, nil
+}
+
+// over reports whether one more segment of deltaBytes, carrying the segments
+// already stored over a base of baseBytes, is the point to compact. The
+// segment count is an upper bound that keeps a manifest readable; the byte
+// trigger is what bounds write amplification on a growing base.
+func (thresholds Thresholds) over(segments int, deltaBytes, baseBytes int64) bool {
+	if segments > thresholds.MaxSegments {
+		return true
+	}
+	limit := thresholds.MinDeltaBytes
+	if scaled := baseBytes / int64(thresholds.Ratio); scaled > limit {
+		limit = scaled
+	}
+	return deltaBytes > limit
 }
 
 type BaseRef struct {
@@ -292,8 +324,11 @@ func (store *Store[B, D]) ApplyDelta(
 	for _, ref := range active.Segments {
 		totalBytes += ref.Bytes
 	}
-	if len(active.Segments)+1 > store.options.Thresholds.MaxSegments ||
-		totalBytes > store.options.Thresholds.MaxDeltaBytes {
+	var baseBytes int64
+	if active.Base != nil {
+		baseBytes = active.Base.Bytes
+	}
+	if store.options.Thresholds.over(len(active.Segments)+1, totalBytes, baseBytes) {
 		base, err := store.materializeLocked(ctx, scope, name, active)
 		if err != nil {
 			return ApplyResult{}, err
