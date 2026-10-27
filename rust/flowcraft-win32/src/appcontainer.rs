@@ -21,6 +21,21 @@
 //!   what its ACLs allow and nothing else — no network, no user's files, no
 //!   registry hive beyond its own.
 //!
+//! # Known limitation
+//!
+//! A child created in a container does not start on a GitHub `windows-latest`
+//! runner: `CreateProcessAsUser` answers `ERROR_FILE_NOT_FOUND` on a copy of
+//! `cmd.exe` that exists, is readable by the container's SID — the grant is asserted
+//! to be in the DACL — and whose whole walk, volume root included, was granted
+//! read+execute. The same program starts uncontained. What is ruled out: the
+//! attribute itself (`UpdateProcThreadAttribute` accepts it), the grant mechanism
+//! (an explicit entry lands in the DACL), the search path (`lpApplicationName` is
+//! named), and a denied walk (granting every ancestor, `C:\` included, changed
+//! nothing). What is left needs a host that can be debugged interactively: a
+//! duplicated token *and* the attribute (Microsoft's own sample passes both), a
+//! canonical long path instead of `%TEMP%`'s `RUNNER~1`, and whether an AppContainer
+//! child may load an image from the user profile at all on a Server SKU.
+//!
 //! The SID does **not** travel on the token: `SetTokenInformation(TokenAppContainerSid)`
 //! answers `ERROR_INVALID_PARAMETER`, because an AppContainer is applied when the
 //! process is created (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), not by
@@ -258,17 +273,6 @@ mod tests {
         // ancestors are granted rather than just `bin`.
         crate::acl::grant_with_ancestors(&bin, &container, crate::Access::Read)
             .expect("grant tools");
-        // The walk's first hop is the volume root. Desktop Windows grants
-        // `ALL APPLICATION PACKAGES` read and execute on `C:\` by default; a Server
-        // image may not, and the loader then reports "not found" at the first hop —
-        // which is the failure this experiment separates from "a container cannot be
-        // started at all".
-        crate::acl::grant(
-            std::path::Path::new(r"C:\"),
-            &container,
-            crate::Access::Read,
-        )
-        .expect("grant the volume root");
         crate::acl::grant(&writable, &container, crate::Access::ReadWrite)
             .expect("grant workspace");
 
