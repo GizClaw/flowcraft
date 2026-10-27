@@ -74,8 +74,13 @@ pub(crate) enum Listen {
 pub(crate) enum Endpoint {
     /// The unix socket path.
     Unix(PathBuf),
-    /// The loopback port.
-    Loopback(u16),
+    /// The loopback port, and the credential every client must present.
+    Loopback {
+        /// The bound port.
+        port: u16,
+        /// What the listener demands of every connection.
+        credential: Credential,
+    },
 }
 
 impl Endpoint {
@@ -83,7 +88,7 @@ impl Endpoint {
     pub(crate) fn socket(&self) -> Option<&Path> {
         match self {
             Self::Unix(path) => Some(path),
-            Self::Loopback(_) => None,
+            Self::Loopback { .. } => None,
         }
     }
 
@@ -91,9 +96,108 @@ impl Endpoint {
     pub(crate) fn port(&self) -> Option<u16> {
         match self {
             Self::Unix(_) => None,
-            Self::Loopback(port) => Some(*port),
+            Self::Loopback { port, .. } => Some(*port),
         }
     }
+
+    /// The credential, when this is a loopback endpoint.
+    pub(crate) fn credential(&self) -> Option<&Credential> {
+        match self {
+            Self::Unix(_) => None,
+            Self::Loopback { credential, .. } => Some(credential),
+        }
+    }
+}
+
+/// What a loopback listener demands of every connection.
+///
+/// A unix-socket listener in its own network namespace is isolated by the
+/// namespace: only the sandbox can reach it. A loopback listener on a shared host
+/// stack has no such premise, so without a credential it is an open decision
+/// point — anything on the host that can open `127.0.0.1:<port>` gets to use the
+/// rules, and the audit record then names a decision the sandbox never asked for.
+///
+/// Two random hex strings rather than one token: the same userinfo has to be
+/// valid as `http://user:pass@host` and as `socks5h://user:pass@host`, and every
+/// client library already reads credentials from the URL. The password is as
+/// random as the user name because RFC 1929 asks for both.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Credential {
+    user: String,
+    pass: String,
+}
+
+impl std::fmt::Debug for Credential {
+    /// Never print the secret: this type is reachable from `Endpoint`, and
+    /// `Endpoint` reaches logs and `Debug` output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox.Credential(<redacted>)")
+    }
+}
+
+impl Credential {
+    /// A fresh credential from the OS random source.
+    pub(crate) fn generate() -> Self {
+        Self {
+            user: random_hex(16),
+            pass: random_hex(16),
+        }
+    }
+
+    /// `user:pass`, for a URL authority.
+    pub(crate) fn userinfo(&self) -> String {
+        format!("{}:{}", self.user, self.pass)
+    }
+
+    /// Whether an HTTP `Proxy-Authorization` value is this credential.
+    ///
+    /// Only `Basic` is accepted: it is what a client library already sends when
+    /// the proxy URL carries userinfo, and it needs no configuration from the
+    /// deployment.
+    pub(crate) fn allows_basic(&self, presented: &str) -> bool {
+        let Some(encoded) = presented.trim().strip_prefix("Basic ") else {
+            return false;
+        };
+        use base64::Engine as _;
+        let Some(decoded_bytes) = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()
+        else {
+            return false;
+        };
+        let Ok(decoded) = String::from_utf8(decoded_bytes) else {
+            return false;
+        };
+        constant_time_eq(decoded.as_bytes(), self.userinfo().as_bytes())
+    }
+
+    /// Whether a SOCKS5 username/password pair is this credential (RFC 1929).
+    pub(crate) fn allows_socks5(&self, user: &[u8], pass: &[u8]) -> bool {
+        constant_time_eq(user, self.user.as_bytes()) && constant_time_eq(pass, self.pass.as_bytes())
+    }
+}
+
+/// Compare without an early return, so a wrong guess does not reveal how much of
+/// it was right. The lengths are not secret — they are fixed here.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+/// `bytes` random bytes, hex-encoded.
+fn random_hex(bytes: usize) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes * 2);
+    for _ in 0..bytes {
+        let _ = write!(out, "{:02x}", rand::random::<u8>());
+    }
+    out
 }
 
 /// One audit record: which destination was decided, and by what.
@@ -112,9 +216,13 @@ pub(crate) struct Decision {
 /// `NO_PROXY` is set to the empty string rather than removed: a deployment that
 /// leaves `*` behind would send every connection straight past the only decision
 /// point, and an explicit empty value is what overrides an inherited one.
-pub(crate) fn environment(port: u16) -> Vec<(String, String)> {
-    let http = format!("http://127.0.0.1:{port}");
-    let socks = format!("socks5h://127.0.0.1:{port}");
+pub(crate) fn environment(port: u16, credential: &Credential) -> Vec<(String, String)> {
+    // The credential travels in the userinfo, which is where every client library
+    // looks for it: `curl`, `git` and `pip` need no extra configuration, and that
+    // is the whole reason Basic auth was chosen over a custom header.
+    let userinfo = credential.userinfo();
+    let http = format!("http://{userinfo}@127.0.0.1:{port}");
+    let socks = format!("socks5h://{userinfo}@127.0.0.1:{port}");
     let mut env = Vec::with_capacity(OWNED_ENV.len());
     for (name, value) in [
         ("HTTP_PROXY", &http),
@@ -196,6 +304,10 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
     let mode = config.policy.mode;
     let audit = config.audit;
     let limits = config.limits;
+    // A loopback listener is the one shape whose isolation does not come from a
+    // network namespace, so it demands a credential; a unix socket is isolated by
+    // the namespace itself and needs none.
+    let loopback_credential = matches!(config.listen, Listen::Loopback).then(Credential::generate);
     let shared = Arc::new(Shared {
         matcher,
         mode,
@@ -205,6 +317,7 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
         // is never "unbounded".
         permits: Arc::new(Semaphore::new(limits.max_connections)),
         limits,
+        credential: loopback_credential.clone(),
     });
 
     match config.listen {
@@ -224,8 +337,13 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
                     });
                 }
             });
+            // The narrow credential above is built for exactly this arm, so a
+            // missing one is an internal inconsistency, not a user error.
+            let credential = loopback_credential.clone().ok_or_else(|| {
+                Error::internal("sandbox: a loopback listener was started without a credential")
+            })?;
             Ok(Proxy {
-                endpoint: Endpoint::Loopback(port),
+                endpoint: Endpoint::Loopback { port, credential },
                 handle,
             })
         }
@@ -269,6 +387,8 @@ struct Shared {
     matcher: Matcher,
     mode: NetMode,
     audit: Option<Audit>,
+    /// `None` on a unix listener: the network namespace is the boundary there.
+    credential: Option<Credential>,
     /// One permit per live forwarded connection. Refusing to hand one out is what
     /// keeps a burst of connections from growing the task set without bound.
     permits: Arc<Semaphore>,
@@ -399,6 +519,13 @@ where
     let head = read_head(&mut stream, buffered).await?;
     let (request, headers) = parse_head(&head)
         .ok_or_else(|| Error::validation("sandbox: proxy request has no request line"))?;
+    // Authentication before authorization: a caller that has not proven it may
+    // use this listener must not be able to probe the policy through it either.
+    if let Some(credential) = &shared.credential
+        && !credential.allows_basic(header(&headers, "proxy-authorization").unwrap_or_default())
+    {
+        return fail(&mut stream, 407, "proxy authentication required").await;
+    }
     let mut parts = request.split_whitespace();
     let method = parts.next().unwrap_or_default().to_owned();
     let target = parts.next().unwrap_or_default().to_owned();
@@ -563,6 +690,7 @@ where
     let body = format!("{message}\n");
     let status = match code {
         403 => "Forbidden",
+        407 => "Proxy Authentication Required",
         503 => "Service Unavailable",
         _ => "Bad Gateway",
     };
@@ -799,11 +927,51 @@ where
         stream.read_exact(&mut byte).await.map_err(Error::from)?;
         greeting.push(byte[0]);
     }
-    if !greeting[2..2 + methods].contains(&0x00) {
+    // With a credential the only acceptable method is username/password
+    // (RFC 1929, `0x02`); without one it is "no authentication" (`0x00`). A
+    // listener that offered both would let a client pick the weaker one.
+    let wanted = if shared.credential.is_some() {
+        0x02
+    } else {
+        0x00
+    };
+    if !greeting[2..2 + methods].contains(&wanted) {
         stream.write_all(&[0x05, 0xff]).await.map_err(Error::from)?;
         return Ok(());
     }
-    stream.write_all(&[0x05, 0x00]).await.map_err(Error::from)?;
+    stream
+        .write_all(&[0x05, wanted])
+        .await
+        .map_err(Error::from)?;
+    if let Some(credential) = &shared.credential {
+        // Sub-negotiation: VER=0x01, ULEN, UNAME, PLEN, PASSWD.
+        let mut version = [0u8; 1];
+        stream.read_exact(&mut version).await.map_err(Error::from)?;
+        let mut user_len = [0u8; 1];
+        stream
+            .read_exact(&mut user_len)
+            .await
+            .map_err(Error::from)?;
+        let mut user = vec![0u8; usize::from(user_len[0])];
+        stream.read_exact(&mut user).await.map_err(Error::from)?;
+        let mut pass_len = [0u8; 1];
+        stream
+            .read_exact(&mut pass_len)
+            .await
+            .map_err(Error::from)?;
+        let mut pass = vec![0u8; usize::from(pass_len[0])];
+        stream.read_exact(&mut pass).await.map_err(Error::from)?;
+        // A wrong version is a protocol error, and a wrong pair is a rejected
+        // login; both end the connection with a status the client can report.
+        let ok = version[0] == 0x01 && credential.allows_socks5(&user, &pass);
+        stream
+            .write_all(&[0x01, if ok { 0x00 } else { 0x01 }])
+            .await
+            .map_err(Error::from)?;
+        if !ok {
+            return Ok(());
+        }
+    }
 
     // Request: VER, CMD, RSV, ATYP, DST.ADDR, DST.PORT
     let mut request = [0u8; 4];
@@ -1036,12 +1204,35 @@ mod tests {
         .expect("proxy")
     }
 
+    /// The `Proxy-Authorization` value this proxy demands, if any.
+    fn authorization(proxy: &Proxy) -> Option<String> {
+        use base64::Engine as _;
+        proxy.endpoint().credential().map(|credential| {
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(credential.userinfo())
+            )
+        })
+    }
+
+    /// A `CONNECT` head that authenticates the way a client with the proxy URL in
+    /// its environment would.
+    fn connect_head(proxy: &Proxy, port: u16) -> String {
+        let mut head = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+        if let Some(value) = authorization(proxy) {
+            head.push_str(&format!("Proxy-Authorization: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        head
+    }
+
     /// Open a `CONNECT` tunnel, or report that the proxy refused it with a 503.
-    async fn tunnel(proxy_port: u16, port: u16) -> Option<TcpStream> {
+    async fn tunnel(proxy: &Proxy, port: u16) -> Option<TcpStream> {
+        let proxy_port = proxy.endpoint().port().expect("port");
         let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
-        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = connect_head(proxy, port);
         client.write_all(request.as_bytes()).await.expect("write");
         let mut head = vec![0u8; 39];
         client.read_exact(&mut head).await.expect("head");
@@ -1054,18 +1245,64 @@ mod tests {
         }
     }
 
-    /// Run a SOCKS5 `CONNECT` and return the client plus the reply code.
-    async fn socks5_connect(proxy_port: u16, port: u16) -> (TcpStream, u8) {
+    /// Complete the SOCKS5 greeting and login, leaving the stream post-auth.
+    async fn socks5_authenticate(proxy: &Proxy) -> TcpStream {
+        let proxy_port = proxy.endpoint().port().expect("port");
         let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
+        let credential = proxy
+            .endpoint()
+            .credential()
+            .expect("a loopback credential");
         client
-            .write_all(&[0x05, 0x01, 0x00])
+            .write_all(&[0x05, 0x01, 0x02])
             .await
             .expect("greeting");
         let mut method = [0u8; 2];
         client.read_exact(&mut method).await.expect("method");
-        assert_eq!(method, [0x05, 0x00]);
+        assert_eq!(method, [0x05, 0x02]);
+        let userinfo = credential.userinfo();
+        let (user, pass) = userinfo.split_once(':').expect("user:pass");
+        let mut login = vec![0x01, user.len() as u8];
+        login.extend_from_slice(user.as_bytes());
+        login.push(pass.len() as u8);
+        login.extend_from_slice(pass.as_bytes());
+        client.write_all(&login).await.expect("login");
+        let mut status = [0u8; 2];
+        client.read_exact(&mut status).await.expect("status");
+        assert_eq!(status, [0x01, 0x00], "the credential is accepted");
+        client
+    }
+
+    /// Run a SOCKS5 `CONNECT` and return the client plus the reply code.
+    async fn socks5_connect(proxy: &Proxy, port: u16) -> (TcpStream, u8) {
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        let credential = proxy
+            .endpoint()
+            .credential()
+            .expect("a loopback credential");
+        client
+            .write_all(&[0x05, 0x01, 0x02])
+            .await
+            .expect("greeting");
+        let mut method = [0u8; 2];
+        client.read_exact(&mut method).await.expect("method");
+        assert_eq!(method, [0x05, 0x02]);
+        // RFC 1929 sub-negotiation.
+        let user = credential.userinfo();
+        let (user, pass) = user.split_once(':').expect("user:pass");
+        let mut login = vec![0x01, user.len() as u8];
+        login.extend_from_slice(user.as_bytes());
+        login.push(pass.len() as u8);
+        login.extend_from_slice(pass.as_bytes());
+        client.write_all(&login).await.expect("login");
+        let mut status = [0u8; 2];
+        client.read_exact(&mut status).await.expect("status");
+        assert_eq!(status, [0x01, 0x00], "the credential is accepted");
         let mut request = vec![0x05, 0x01, 0x00, 0x01];
         request.extend_from_slice(&[127, 0, 0, 1]);
         request.extend_from_slice(&port.to_be_bytes());
@@ -1099,7 +1336,7 @@ mod tests {
         let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
-        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = connect_head(&proxy, port);
         client.write_all(request.as_bytes()).await.expect("write");
         let mut head = vec![0u8; 39];
         client.read_exact(&mut head).await.expect("head");
@@ -1144,7 +1381,7 @@ mod tests {
         let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
-        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = connect_head(&proxy, port);
         client.write_all(request.as_bytes()).await.expect("write");
         let mut response = String::new();
         client.read_to_string(&mut response).await.expect("read");
@@ -1192,8 +1429,11 @@ mod tests {
             .await
             .expect("connect");
         // Absolute-form to the validated authority, with a decoy `Host`.
+        let auth = authorization(&proxy)
+            .map(|value| format!("Proxy-Authorization: {value}\r\n"))
+            .unwrap_or_default();
         let request = format!(
-            "GET http://127.0.0.1:{upstream_port}/ HTTP/1.1\r\nHost: internal.corp\r\n\r\n"
+            "GET http://127.0.0.1:{upstream_port}/ HTTP/1.1\r\nHost: internal.corp\r\n{auth}\r\n"
         );
         client.write_all(request.as_bytes()).await.expect("write");
         let mut response = Vec::new();
@@ -1232,12 +1472,24 @@ mod tests {
             .await
             .expect("connect");
         client
-            .write_all(&[0x05, 0x01, 0x00])
+            .write_all(&[0x05, 0x01, 0x02])
             .await
             .expect("greeting");
         let mut method = [0u8; 2];
         client.read_exact(&mut method).await.expect("method");
-        assert_eq!(method, [0x05, 0x00]);
+        assert_eq!(method, [0x05, 0x02]);
+        // Log in; the credential comes from the endpoint the sandbox was given.
+        let credential = proxy.endpoint().credential().expect("credential");
+        let userinfo = credential.userinfo();
+        let (user, pass) = userinfo.split_once(':').expect("user:pass");
+        let mut login = vec![0x01, user.len() as u8];
+        login.extend_from_slice(user.as_bytes());
+        login.push(pass.len() as u8);
+        login.extend_from_slice(pass.as_bytes());
+        client.write_all(&login).await.expect("login");
+        let mut status = [0u8; 2];
+        client.read_exact(&mut status).await.expect("status");
+        assert_eq!(status, [0x01, 0x00]);
 
         let mut request = vec![0x05, 0x01, 0x00, 0x01];
         request.extend_from_slice(&[127, 0, 0, 1]);
@@ -1265,16 +1517,9 @@ mod tests {
         })
         .await
         .expect("proxy");
-        let proxy_port = proxy.endpoint().port().expect("port");
-        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
-            .await
-            .expect("connect");
-        client
-            .write_all(&[0x05, 0x01, 0x00])
-            .await
-            .expect("greeting");
-        let mut method = [0u8; 2];
-        client.read_exact(&mut method).await.expect("method");
+        // Denied *after* the credential is accepted: the policy verdict, not the
+        // handshake, is what this test is about.
+        let mut client = socks5_authenticate(&proxy).await;
         let mut request = vec![0x05, 0x01, 0x00, 0x01];
         request.extend_from_slice(&[127, 0, 0, 1]);
         request.extend_from_slice(&port.to_be_bytes());
@@ -1301,7 +1546,7 @@ mod tests {
         // The first `max_connections` tunnels are accepted and carry bytes.
         let mut held = Vec::new();
         for _ in 0..2 {
-            let mut client = tunnel(proxy_port, port).await.expect("under the cap");
+            let mut client = tunnel(&proxy, port).await.expect("under the cap");
             client.write_all(b"ping").await.expect("write");
             let mut echoed = [0u8; 4];
             client.read_exact(&mut echoed).await.expect("echo");
@@ -1314,7 +1559,7 @@ mod tests {
         let mut refused = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
-        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = connect_head(&proxy, port);
         refused.write_all(request.as_bytes()).await.expect("write");
         let mut response = String::new();
         refused.read_to_string(&mut response).await.expect("read");
@@ -1339,11 +1584,10 @@ mod tests {
             },
         )
         .await;
-        let proxy_port = proxy.endpoint().port().expect("port");
 
-        let (held, code) = socks5_connect(proxy_port, port).await;
+        let (held, code) = socks5_connect(&proxy, port).await;
         assert_eq!(code, 0x00, "the first tunnel fits");
-        let (_, code) = socks5_connect(proxy_port, port).await;
+        let (_, code) = socks5_connect(&proxy, port).await;
         assert_eq!(
             code, 0x01,
             "a capacity refusal is a general SOCKS5 failure, not a policy denial"
@@ -1366,11 +1610,11 @@ mod tests {
         let proxy_port = proxy.endpoint().port().expect("port");
 
         // Fill the only slot, then refuse one that never held a permit.
-        let held = tunnel(proxy_port, port).await.expect("first tunnel");
+        let held = tunnel(&proxy, port).await.expect("first tunnel");
         let mut refused = TcpStream::connect(("127.0.0.1", proxy_port))
             .await
             .expect("connect");
-        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = connect_head(&proxy, port);
         refused.write_all(request.as_bytes()).await.expect("write");
         let mut response = String::new();
         refused.read_to_string(&mut response).await.expect("read");
@@ -1381,7 +1625,7 @@ mod tests {
         // not have kept a slot of its own, or this never gets in.
         let mut accepted = None;
         for _ in 0..100 {
-            if let Some(client) = tunnel(proxy_port, port).await {
+            if let Some(client) = tunnel(&proxy, port).await {
                 accepted = Some(client);
                 break;
             }
@@ -1410,8 +1654,7 @@ mod tests {
             },
         )
         .await;
-        let proxy_port = proxy.endpoint().port().expect("port");
-        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+        let mut client = tunnel(&proxy, port).await.expect("tunnel");
 
         // Fresh, the tunnel carries bytes.
         client.write_all(b"ping").await.expect("write");
@@ -1440,8 +1683,7 @@ mod tests {
             },
         )
         .await;
-        let proxy_port = proxy.endpoint().port().expect("port");
-        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+        let mut client = tunnel(&proxy, port).await.expect("tunnel");
 
         // A byte every 50 ms for 400 ms: longer than the 300 ms idle bound, in
         // gaps far shorter than it. A long-poll or SSE tunnel looks like this; a
@@ -1470,8 +1712,7 @@ mod tests {
             },
         )
         .await;
-        let proxy_port = proxy.endpoint().port().expect("port");
-        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+        let mut client = tunnel(&proxy, port).await.expect("tunnel");
         let opened = Instant::now();
 
         // Busy the whole time: never idle (30 s bound, 50 ms gaps), and still
@@ -1499,6 +1740,167 @@ mod tests {
             opened.elapsed()
         );
         proxy.shutdown().await;
+    }
+
+    /// A loopback listener shares the host network stack, so it has no namespace
+    /// to hide behind: without a credential, anything on the host that can reach
+    /// the port gets to use the decision point (and to appear in its audit trail).
+    #[tokio::test]
+    async fn a_connect_without_the_credential_is_refused_before_the_decision() {
+        let (port, _server) = echo().await;
+        let audit = Arc::new(std::sync::Mutex::new(Vec::<Decision>::new()));
+        let recorded = audit.clone();
+        let proxy = start(Config {
+            policy: policy(
+                NetMode::AllowList,
+                vec![NetRule {
+                    action: NetAction::Allow,
+                    host: "127.0.0.1".to_owned(),
+                    port,
+                    reason: None,
+                }],
+            ),
+            listen: Listen::Loopback,
+            audit: Some(Arc::new(move |decision: &Decision| {
+                recorded.lock().expect("lock").push(decision.clone());
+            })),
+            limits: ProxyLimits::default(),
+        })
+        .await
+        .expect("proxy");
+
+        for header in [
+            // No header at all.
+            String::new(),
+            // A plausible-looking one, which is the case a "does it start with
+            // Basic" check would wave through.
+            format!("Proxy-Authorization: Basic {}\r\n", {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode("wrong:wrong")
+            }),
+        ] {
+            let proxy_port = proxy.endpoint().port().expect("port");
+            let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+                .await
+                .expect("connect");
+            let request =
+                format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n{header}\r\n");
+            client.write_all(request.as_bytes()).await.expect("write");
+            let mut response = String::new();
+            client.read_to_string(&mut response).await.expect("read");
+            assert!(
+                response.starts_with("HTTP/1.1 407"),
+                "an unauthenticated caller must be refused: {response}"
+            );
+        }
+        // And nothing reached the policy: an unauthenticated caller cannot probe
+        // which destinations are allowed through it.
+        assert!(
+            audit.lock().expect("lock").is_empty(),
+            "no decision was made"
+        );
+        proxy.shutdown().await;
+    }
+
+    /// RFC 1929 asks for both fields, and a listener that offered "no
+    /// authentication" beside it would let the client pick the weaker method.
+    #[tokio::test]
+    async fn a_socks5_greeting_without_the_password_method_is_refused() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(allow_loopback(port), ProxyLimits::default()).await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        client
+            .write_all(&[0x05, 0x01, 0x00])
+            .await
+            .expect("greeting");
+        let mut method = [0u8; 2];
+        client.read_exact(&mut method).await.expect("method");
+        assert_eq!(method, [0x05, 0xff], "no acceptable method");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_socks5_wrong_password_is_rejected() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(allow_loopback(port), ProxyLimits::default()).await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        client
+            .write_all(&[0x05, 0x01, 0x02])
+            .await
+            .expect("greeting");
+        let mut method = [0u8; 2];
+        client.read_exact(&mut method).await.expect("method");
+        assert_eq!(method, [0x05, 0x02]);
+
+        // The right user with the wrong password: a check that only compared the
+        // user name would let this through.
+        let user = proxy
+            .endpoint()
+            .credential()
+            .expect("credential")
+            .userinfo()
+            .split_once(':')
+            .expect("user:pass")
+            .0
+            .to_owned();
+        let mut login = vec![0x01, user.len() as u8];
+        login.extend_from_slice(user.as_bytes());
+        login.push(5);
+        login.extend_from_slice(b"wrong");
+        client.write_all(&login).await.expect("login");
+        let mut status = [0u8; 2];
+        client.read_exact(&mut status).await.expect("status");
+        assert_eq!(status, [0x01, 0x01], "login rejected");
+        // The connection is over: the caller learns nothing more through it.
+        let mut rest = [0u8; 1];
+        let read = client.read(&mut rest).await;
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        proxy.shutdown().await;
+    }
+
+    /// The credential reaching a log would be equivalent to not having one: the
+    /// environment it is written into is the only copy that matters.
+    #[test]
+    fn the_endpoint_debug_does_not_print_the_credential() {
+        let credential = Credential::generate();
+        let userinfo = credential.userinfo();
+        let debug = format!("{credential:?}");
+        assert_eq!(debug, "sandbox.Credential(<redacted>)");
+        let endpoint = Endpoint::Loopback {
+            port: 4321,
+            credential,
+        };
+        let rendered = format!("{endpoint:?}");
+        assert!(!rendered.contains(&userinfo), "{rendered}");
+        assert!(
+            !rendered.contains(userinfo.split(':').next().unwrap_or("")),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn the_proxy_environment_carries_the_credential_in_the_userinfo() {
+        let credential = Credential::generate();
+        let userinfo = credential.userinfo();
+        let env: std::collections::BTreeMap<_, _> =
+            environment(4321, &credential).into_iter().collect();
+        assert_eq!(
+            env.get("HTTP_PROXY").map(String::as_str),
+            Some(format!("http://{userinfo}@127.0.0.1:4321").as_str())
+        );
+        assert_eq!(
+            env.get("ALL_PROXY").map(String::as_str),
+            Some(format!("socks5h://{userinfo}@127.0.0.1:4321").as_str())
+        );
+        // `curl`, `git` and `pip` read userinfo from the URL; nothing else needs
+        // to be configured for them to authenticate.
+        assert_eq!(env.get("NO_PROXY").map(String::as_str), Some(""));
     }
 
     #[tokio::test]
