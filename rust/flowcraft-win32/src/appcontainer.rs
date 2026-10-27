@@ -202,15 +202,13 @@ mod tests {
         AppContainer::delete(&name).expect("delete profile");
     }
 
-    /// Run one `cmd /c` script, optionally inside a container, and answer its
-    /// exit code.
-    fn run(container: Option<&AppContainer>, script: &str) -> i32 {
-        let comspec =
-            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_owned());
+    /// Run one `cmd /c` script from `program`, optionally inside a container, and
+    /// answer its exit code.
+    fn run(container: Option<&AppContainer>, program: &str, script: &str) -> i32 {
         let args = vec!["/c".to_owned(), script.to_owned()];
         let mut spawned = crate::process::spawn(crate::Launch {
             command: crate::Command {
-                program: &comspec,
+                program,
                 args: &args,
                 cwd: None,
                 env: None,
@@ -228,47 +226,83 @@ mod tests {
     }
 
     /// The property W4 exists for: a contained child owns nothing it was not
-    /// granted, so a write to the daemon's own temp directory is refused.
+    /// granted, so it can write where a grant says so and nowhere else.
     ///
-    /// The control is the same command without a container — if that failed too,
-    /// the test would be proving something about `cmd`, not about the boundary.
+    /// The program is copied into a directory this test owns and grants read on,
+    /// rather than reached at `%SystemRoot%\System32`: a container loads its image
+    /// through the same DACLs as everything else, and rewriting the ACL of a system
+    /// directory to test that would be a worse trade than copying 100 KiB.
     #[test]
-    fn a_contained_child_cannot_write_outside_the_container() {
+    fn a_contained_child_writes_only_where_it_was_granted() {
         let name = name("write");
         let container = AppContainer::open(&name).expect("create profile");
-        let dir = std::env::temp_dir().join(format!("flowcraft.ac.{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let probe = dir.join("probe.txt");
-        // `cmd` owns the redirection, so the script contains a `>` — and the
-        // argument builder quotes anything with a space, which is what makes
-        // `cmd /c "echo … > C:\path"` behave. The path itself must not contain a
-        // space: inside the script it cannot be quoted again without nesting
-        // quotes that `cmd` then reads literally (which is how this test first
-        // failed, at the control).
-        assert!(
-            !probe.display().to_string().contains(' '),
-            "the probe path must not contain a space: {}",
-            probe.display()
+
+        let root = std::env::temp_dir().join(format!("flowcraft.ac.{}", std::process::id()));
+        let bin = root.join("bin");
+        let writable = root.join("writable");
+        let readonly = root.join("readonly");
+        for dir in [&bin, &writable, &readonly] {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+        let comspec =
+            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_owned());
+        let program = bin.join("cmd.exe");
+        std::fs::copy(&comspec, &program).expect("copy cmd.exe");
+
+        // The tools are readable, the workspace is writable, and `readonly` is
+        // deliberately left ungranted — that is the third case, not an omission.
+        crate::acl::grant(&bin, &container, crate::Access::Read).expect("grant tools");
+        crate::acl::grant(&writable, &container, crate::Access::ReadWrite)
+            .expect("grant workspace");
+
+        let inside = writable.join("probe.txt");
+        let outside = readonly.join("probe.txt");
+        for probe in [&inside, &outside] {
+            assert!(
+                !probe.display().to_string().contains(' '),
+                "the probe path must not contain a space: {}",
+                probe.display()
+            );
+        }
+
+        // The control: the same program, the same script, no container.
+        assert_eq!(
+            run(
+                None,
+                program.to_str().expect("path"),
+                &format!("echo hello > {}", inside.display())
+            ),
+            0,
+            "the control must be able to write"
         );
-        let script = format!("echo hello > {}", probe.display());
+        std::fs::remove_file(&inside).expect("remove probe");
+        std::fs::remove_file(&outside).ok();
 
-        let _ = std::fs::remove_file(&probe);
-        let plain = run(None, &script);
-        assert_eq!(plain, 0, "the control must be able to write");
-        assert!(probe.exists(), "the control must have written the file");
+        // Inside the container: the granted directory accepts the write …
+        assert_eq!(
+            run(
+                Some(&container),
+                program.to_str().expect("path"),
+                &format!("echo hello > {}", inside.display())
+            ),
+            0,
+            "a granted directory must be writable inside the container"
+        );
+        assert!(inside.exists(), "the write must have created the file");
 
-        std::fs::remove_file(&probe).expect("remove probe");
-        let contained = run(Some(&container), &script);
+        // … and a directory nobody granted does not.
+        let denied = run(
+            Some(&container),
+            program.to_str().expect("path"),
+            &format!("echo hello > {}", outside.display()),
+        );
         assert_ne!(
-            contained, 0,
-            "a contained child must not write to a path its SID was not granted"
+            denied, 0,
+            "a path the container's SID was not granted must be refused"
         );
-        assert!(
-            !probe.exists(),
-            "the contained child must not have created the file"
-        );
+        assert!(!outside.exists(), "the refused write must create nothing");
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
         AppContainer::delete(&name).expect("delete profile");
     }
 

@@ -21,6 +21,8 @@
 //! [`token`] — the write boundary: a Low-integrity token derived from ours, which
 //! Windows enforces as "no write up" without any per-path ACL work.
 //!
+//! [`acl`] — what a container may touch: one merged entry per granted path.
+//!
 //! [`appcontainer`] — the stricter boundary's profile and SID: a container owns
 //! nothing until an ACL grants it, which is what makes `read_only` and
 //! `writable_paths` mean something. The SID is applied when a process is created
@@ -35,6 +37,9 @@
 
 #![deny(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+#[cfg(windows)]
+pub mod acl;
 
 #[cfg(windows)]
 pub mod appcontainer;
@@ -59,6 +64,9 @@ pub use pty::{Child, Command, CursorReport, Launch, Pty};
 
 #[cfg(windows)]
 pub use process::Spawned;
+
+#[cfg(windows)]
+pub use acl::{Access, grant};
 
 #[cfg(windows)]
 pub use appcontainer::AppContainer;
