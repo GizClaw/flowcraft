@@ -362,7 +362,6 @@ Two rules carry most of the design:
 | Workspace: local provider, gRPC endpoint, remote client, scope (root/write) | ✅ |
 | Secret: memory/env/file/keychain providers, gRPC endpoint, remote client, scope (prefix/prefixes) | ✅ |
 | Secret writes: `Mutable` (set/delete/delete-prefix) and the app-side keychain `Manager` | ✅ |
-| Checkpoint: local directory store, gRPC endpoint, remote client, scope (prefix) | ✅ |
 | Sandbox: local runner, byte-cursor output with replay and gaps, SIGTERM→grace→SIGKILL, six exit reasons | ✅ |
 | Sandbox sessions: blocking `read`, `write`, `close_input`, `resize`, `signal`, `watch`, `close`, per-session features | ✅ |
 | Sandbox pty: ConPTY is not wired yet; unix ptys are (merged stream, resize, Ctrl-C as `0x03`) | ⚠️ |
