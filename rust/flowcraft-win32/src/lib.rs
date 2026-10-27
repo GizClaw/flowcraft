@@ -21,6 +21,28 @@
 //! [`token`] — the write boundary: a Low-integrity token derived from ours, which
 //! Windows enforces as "no write up" without any per-path ACL work.
 //!
+//! [`acl`] — what a container may touch: one merged entry per granted path.
+//!
+//! The sandbox's identity is a SID — an account's, or one capability SID per
+//! workspace — and [`acl`] is how it reaches anything: a grant per writable path,
+//! and a deny-read on what it must not see. An AppContainer profile was tried first
+//! and parked: a contained child could not start on a Windows Server runner, and the
+//! reference implementations isolate by account instead.
+//!
+//! # What is implemented
+//!
+//! [`job`] — the process-tree boundary: a job object with `KILL_ON_JOB_CLOSE`,
+//! kernel memory and cpu-time limits, and the accounting needed to say *why* a
+//! session ended.
+//!
+//! [`process`] — the pipe session's spawn: three pipes, the child's ends
+//! inherited under a handle list, plus the same token and job as a terminal.
+//!
+//! [`token`] — the write boundary: a Low-integrity token derived from ours, which
+//! Windows enforces as "no write up" without any per-path ACL work.
+//!
+//! [`acl`] — what a container may touch: one merged entry per granted path.
+//!
 //! [`appcontainer`] — the stricter boundary's profile and SID: a container owns
 //! nothing until an ACL grants it, which is what makes `read_only` and
 //! `writable_paths` mean something. The SID is applied when a process is created
@@ -37,7 +59,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 #[cfg(windows)]
-pub mod appcontainer;
+pub mod acl;
 
 #[cfg(windows)]
 pub mod job;
@@ -61,7 +83,7 @@ pub use pty::{Child, Command, CursorReport, Launch, Pty};
 pub use process::Spawned;
 
 #[cfg(windows)]
-pub use appcontainer::AppContainer;
+pub use acl::{Access, deny_read, grant, grant_with_ancestors};
 
 #[cfg(windows)]
 pub use token::{Integrity, Token};

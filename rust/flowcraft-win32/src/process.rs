@@ -24,8 +24,8 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::job::Error;
 use crate::pty::{
-    AttributeList, Child, Launch, clear_inherit, command_line, create_pipe, environment_block,
-    into_file, wide_path,
+    AttributeList, Child, DEFAULT_DESKTOP, Launch, clear_inherit, command_line, create_pipe,
+    environment_block, into_file, names_a_path, wide_path,
 };
 
 /// A started child and the session's ends of its three streams.
@@ -101,6 +101,13 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
 
     let mut info = STARTUPINFOEXW::default();
     info.StartupInfo.cb = u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+    // Named, not inherited: a restricted-token child with no desktop can fail to
+    // initialise with `STATUS_DLL_INIT_FAILED` (PowerShell is the usual report).
+    let desktop: Vec<u16> = DEFAULT_DESKTOP
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    info.StartupInfo.lpDesktop = desktop.as_ptr() as *mut u16;
     info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     info.StartupInfo.hStdInput = stdin_child.raw();
     info.StartupInfo.hStdOutput = stdout_child.raw();
@@ -112,7 +119,21 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
     let cwd = command.cwd.map(wide_path);
     let mut process = PROCESS_INFORMATION::default();
 
-    let application: *const u16 = std::ptr::null();
+    // Named only when the program carries a path; a bare name must keep the
+    // search path it was resolved with, or `cmd` stops meaning `cmd`.
+    let application_wide: Option<Vec<u16>> = names_a_path(command.program).then(|| {
+        command
+            .program
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect()
+    });
+    // The binding above must outlive the call: a pointer taken from a temporary Vec
+    // would dangle the moment the statement ended, which is a use-after-free that
+    // compiles.
+    let application: *const u16 = application_wide
+        .as_ref()
+        .map_or(std::ptr::null(), |wide| wide.as_ptr());
     let security: *const SECURITY_ATTRIBUTES = std::ptr::null();
     let environment_block = environment
         .as_ref()

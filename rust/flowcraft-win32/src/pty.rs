@@ -277,6 +277,13 @@ impl Pty {
         let mut info = STARTUPINFOEXW::default();
         info.StartupInfo.cb =
             u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+        // Named, not inherited: a restricted-token child with no desktop can fail to
+        // initialise with `STATUS_DLL_INIT_FAILED` (PowerShell is the usual report).
+        let desktop: Vec<u16> = DEFAULT_DESKTOP
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        info.StartupInfo.lpDesktop = desktop.as_ptr() as *mut u16;
         // No inherited standard handles: the child's are the console's. Leaving
         // this unset makes the child inherit ours instead, and every read and
         // write then bypasses the terminal entirely.
@@ -287,7 +294,21 @@ impl Pty {
         info.lpAttributeList = attributes.raw();
         let mut process = PROCESS_INFORMATION::default();
 
-        let application: *const u16 = std::ptr::null();
+        // Named only when the program carries a path; a bare name must keep the
+        // search path it was resolved with, or `cmd` stops meaning `cmd`.
+        let application_wide: Option<Vec<u16>> = names_a_path(command.program).then(|| {
+            command
+                .program
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        // The binding above must outlive the call: a pointer taken from a temporary Vec
+        // would dangle the moment the statement ended, which is a use-after-free that
+        // compiles.
+        let application: *const u16 = application_wide
+            .as_ref()
+            .map_or(std::ptr::null(), |wide| wide.as_ptr());
         let line = command_line.as_mut_ptr();
         let security: *const SECURITY_ATTRIBUTES = std::ptr::null();
         let environment_block = environment
@@ -671,6 +692,23 @@ impl Drop for AttributeList {
 /// Quoting follows the documented rules: an argument with a space or a quote is
 /// wrapped, backslashes before a quote are doubled, and a trailing backslash is
 /// doubled so it cannot escape the closing quote.
+/// Whether the program must be named explicitly instead of searched for.
+///
+/// `CreateProcess*` with `lpApplicationName = NULL` treats the command line's first
+/// token as the program and resolves a bare name through `PATH`. Naming the
+/// application *disables that search*, which is why a bare name (`cmd`) must stay
+/// unnamed — and why a name carrying a path is named here: a contained child has no
+/// search path of its own, so it needs the absolute path spelled out.
+pub(crate) fn names_a_path(program: &str) -> bool {
+    !program.is_empty() && (program.contains(['\\', '/']) || Path::new(program).is_absolute())
+}
+
+/// The desktop a child starts on when nothing else is said.
+///
+/// `winsta0\\default` is the interactive desktop. Choosing it explicitly is what
+/// keeps a restricted-token child from initialising without one.
+pub(crate) const DEFAULT_DESKTOP: &str = "winsta0\\default";
+
 pub(crate) fn command_line(command: &Command<'_>) -> Vec<u16> {
     let mut line = OsString::new();
     line.push(quote(command.program));
