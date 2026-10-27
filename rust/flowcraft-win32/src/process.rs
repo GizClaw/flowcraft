@@ -24,8 +24,8 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::job::Error;
 use crate::pty::{
-    AttributeList, Child, Launch, clear_inherit, command_line, create_pipe, environment_block,
-    into_file, names_a_path, wide_path,
+    AttributeList, Child, DEFAULT_DESKTOP, Launch, clear_inherit, command_line, create_pipe,
+    environment_block, into_file, names_a_path, wide_path,
 };
 
 /// A started child and the session's ends of its three streams.
@@ -80,7 +80,6 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
         command,
         job,
         token,
-        container,
     } = launch;
 
     // `create_pipe` returns `(read, write)` with both ends inheritable.
@@ -97,14 +96,18 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
     if let Some(job) = job {
         attributes.set_job(job.handle())?;
     }
-    if let Some(container) = container {
-        attributes.set_app_container(container)?;
-    }
     // Last, as the API requires.
     attributes.set_handle_list(&[stdin_child.raw(), stdout_child.raw(), stderr_child.raw()])?;
 
     let mut info = STARTUPINFOEXW::default();
     info.StartupInfo.cb = u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+    // Named, not inherited: a restricted-token child with no desktop can fail to
+    // initialise with `STATUS_DLL_INIT_FAILED` (PowerShell is the usual report).
+    let desktop: Vec<u16> = DEFAULT_DESKTOP
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    info.StartupInfo.lpDesktop = desktop.as_ptr() as *mut u16;
     info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     info.StartupInfo.hStdInput = stdin_child.raw();
     info.StartupInfo.hStdOutput = stdout_child.raw();
@@ -219,7 +222,6 @@ mod tests {
             },
             job: None,
             token: None,
-            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -245,7 +247,6 @@ mod tests {
             },
             job: None,
             token: None,
-            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -281,7 +282,6 @@ mod tests {
             },
             job: None,
             token: None,
-            container: None,
         })
         .expect("spawn");
         let mut stdin = spawned.take_stdin().expect("stdin");
@@ -312,7 +312,6 @@ mod tests {
             },
             job: Some(&job),
             token: None,
-            container: None,
         })
         .expect("spawn");
         // The child is in the job from its first instruction, so a terminate
@@ -349,7 +348,6 @@ mod tests {
             },
             job: None,
             token: Some(&token),
-            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -382,7 +380,6 @@ mod tests {
             },
             job: None,
             token: None,
-            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -460,7 +457,6 @@ mod tests {
             },
             job: None,
             token: None,
-            container: None,
         })
         .expect_err("a missing program must fail");
         assert!(error.code.is_some(), "{error:?}");

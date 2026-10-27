@@ -51,7 +51,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, STILL_ACTIVE,
     SetHandleInformation, TRUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::Security::{SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
@@ -61,9 +61,8 @@ use windows_sys::Win32::System::Threading::{
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::job::Error;
@@ -133,14 +132,6 @@ pub struct Launch<'a> {
     /// boundary; it travels through `CreateProcessAsUserW`, which is the only
     /// place a token can be applied.
     pub token: Option<&'a crate::Token>,
-    /// The container the child is created *in*.
-    ///
-    /// Not a token property: `SetTokenInformation(TokenAppContainerSid)` answers
-    /// `ERROR_INVALID_PARAMETER`, because a container is applied at creation
-    /// through `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`. With one, the child
-    /// owns nothing until an ACL grants its SID — reads included — which is the
-    /// boundary `write.read_only` and `writable_paths` name.
-    pub container: Option<&'a crate::AppContainer>,
 }
 
 /// How to start the child. Everything is explicit: the sandbox decides the
@@ -267,7 +258,6 @@ impl Pty {
             command,
             job,
             token,
-            container,
         } = launch;
         let mut attributes = AttributeList::new()?;
         let console = self.console;
@@ -278,9 +268,6 @@ impl Pty {
         if let Some(job) = job {
             attributes.set_job(job.handle())?;
         }
-        if let Some(container) = container {
-            attributes.set_app_container(container)?;
-        }
 
         let mut command_line = command_line(&command);
         let environment = command.env.map(environment_block);
@@ -289,6 +276,13 @@ impl Pty {
         let mut info = STARTUPINFOEXW::default();
         info.StartupInfo.cb =
             u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+        // Named, not inherited: a restricted-token child with no desktop can fail to
+        // initialise with `STATUS_DLL_INIT_FAILED` (PowerShell is the usual report).
+        let desktop: Vec<u16> = DEFAULT_DESKTOP
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        info.StartupInfo.lpDesktop = desktop.as_ptr() as *mut u16;
         // No inherited standard handles: the child's are the console's. Leaving
         // this unset makes the child inherit ours instead, and every read and
         // write then bypasses the terminal entirely.
@@ -550,19 +544,14 @@ pub(crate) struct AttributeList {
     /// The handles a child may inherit. Must be added last, after every other
     /// attribute, or `UpdateProcThreadAttribute` rejects it.
     handle_list: Vec<HANDLE>,
-    /// The container the child is created in. Boxed because the attribute points
-    /// at it: the address has to survive until `CreateProcessW`, and a field of a
-    /// struct the caller may move does not.
-    app_container: Option<Box<SECURITY_CAPABILITIES>>,
 }
 
 impl AttributeList {
     pub(crate) fn new() -> Result<Self, Error> {
-        // Room for every attribute this crate can add: the console, the job the
-        // tree is attached to, the container it is created in, and the inherited
-        // handle list. A list sized for fewer makes the extra
-        // `UpdateProcThreadAttribute` fail, so they are budgeted together.
-        const ATTRIBUTES: u32 = 4;
+        // Room for both attributes: the console, and the job the tree is attached
+        // to. A list sized for one makes the second `UpdateProcThreadAttribute`
+        // fail, so the two travel together here.
+        const ATTRIBUTES: u32 = 3;
         let mut size: usize = 0;
         // SAFETY: a null list with a valid size slot is the documented way to ask
         // for the required size.
@@ -596,7 +585,6 @@ impl AttributeList {
             storage,
             job_list: Vec::new(),
             handle_list: Vec::new(),
-            app_container: None,
         })
     }
 
@@ -664,46 +652,6 @@ impl AttributeList {
         Ok(())
     }
 
-    /// Create the child inside `container`, with no capabilities.
-    ///
-    /// The capabilities list is empty on purpose: what an AppContainer may reach
-    /// *by right* is network, libraries and the registry, and the sandbox grants
-    /// none. Everything the child touches is an ACL that names its SID.
-    pub(crate) fn set_app_container(
-        &mut self,
-        container: &crate::AppContainer,
-    ) -> Result<(), Error> {
-        let mut capabilities = Box::new(SECURITY_CAPABILITIES {
-            AppContainerSid: container.sid(),
-            Capabilities: std::ptr::null_mut(),
-            CapabilityCount: 0,
-            Reserved: 0,
-        });
-        let value = capabilities.as_mut() as *mut SECURITY_CAPABILITIES as *mut c_void;
-        let size = std::mem::size_of::<SECURITY_CAPABILITIES>();
-        self.app_container = Some(capabilities);
-        // SAFETY: `value` points at a boxed `SECURITY_CAPABILITIES` that lives
-        // until this list is dropped, `size` covers exactly that struct, and the
-        // SID it names is owned by `container`, which outlives the call.
-        let ok = unsafe {
-            UpdateProcThreadAttribute(
-                self.raw(),
-                0,
-                usize::try_from(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES).unwrap_or(0),
-                value,
-                size,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        if ok == 0 {
-            return Err(Error::last(
-                "sandbox: cannot create the child in an AppContainer",
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) fn set_pseudo_console(&mut self, console: HPCON) -> Result<(), Error> {
         // The handle *is* the value: for this one attribute `lpValue` is the
         // `HPCON` itself, not a pointer to it (Microsoft's own sample and the
@@ -753,6 +701,12 @@ impl Drop for AttributeList {
 pub(crate) fn names_a_path(program: &str) -> bool {
     !program.is_empty() && (program.contains(['\\', '/']) || Path::new(program).is_absolute())
 }
+
+/// The desktop a child starts on when nothing else is said.
+///
+/// `winsta0\\default` is the interactive desktop. Choosing it explicitly is what
+/// keeps a restricted-token child from initialising without one.
+pub(crate) const DEFAULT_DESKTOP: &str = "winsta0\\default";
 
 pub(crate) fn command_line(command: &Command<'_>) -> Vec<u16> {
     let mut line = OsString::new();
@@ -877,7 +831,6 @@ mod tests {
                 },
                 job: None,
                 token: None,
-                container: None,
             })
             .expect("spawn");
         assert!(child.pid() > 0);
@@ -927,7 +880,6 @@ mod tests {
                 },
                 job: None,
                 token: None,
-                container: None,
             })
             .expect("spawn");
         {
@@ -961,7 +913,6 @@ mod tests {
                 },
                 job: None,
                 token: None,
-                container: None,
             })
             .expect("spawn");
         let reader = std::thread::spawn(move || {
@@ -998,7 +949,6 @@ mod tests {
                 },
                 job: None,
                 token,
-                container: None,
             })
             .expect("spawn");
         let reader = std::thread::spawn(move || {
