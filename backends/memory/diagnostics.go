@@ -54,6 +54,18 @@ type LaneDiagnostics struct {
 	StoredProducer   string `json:"stored_producer,omitempty"`
 	Stored           bool   `json:"stored"`
 	Stale            bool   `json:"stale"`
+	// Shards counts the shards that hold state for the scope: one per
+	// conversation whose chat was indexed and one per dataset whose documents
+	// were. It is what a footprint reading is read against -- the lanes keep
+	// what they decoded of these, within their cache budget -- and a count
+	// that keeps growing on a scope whose conversations are not growing is the
+	// signal that something is writing shards nobody queries.
+	Shards int `json:"shards,omitempty"`
+	// Mixed reports that the scope's shards were written by more than one
+	// producer, so there is no single stored version to compare. Stored is
+	// true, StoredProducer is empty, and Stale is set: the state a read serves
+	// is a blend of producers, and Repair is what converges it.
+	Mixed bool `json:"mixed,omitempty"`
 	// OtherGenerations lists the storage names this lane's family holds state
 	// under for the scope, excluding the name the running lane reads. A lane
 	// whose storage name is derived from its producer identity forks one name
@@ -70,12 +82,12 @@ type LaneDiagnostics struct {
 }
 
 // Diagnostics reports the current derivation state. The call performs bounded
-// reads -- at most one pending item per cursor, one manifest and one name
-// listing per lane, one overlay document per scope, and one key-only scan per
-// ledger -- and does not mutate state. The overlay and the ledger are the reads
-// whose size follows what is stored rather than what is configured: the overlay
-// carries one entry per judged fact and the ledger one per forgotten item, so
-// each one's bound is itself.
+// reads -- at most one pending item per cursor, one manifest per shard and one
+// name listing per lane, one overlay document per scope, and one key-only scan
+// per ledger -- and does not mutate state. The overlay and the ledger are the
+// reads whose size follows what is stored rather than what is configured: the
+// overlay carries one entry per judged fact and the ledger one per forgotten
+// item, so each one's bound is itself.
 func (assembly *Assembly) Diagnostics(ctx context.Context) (Diagnostics, error) {
 	if assembly == nil {
 		return Diagnostics{}, errors.New("memory assembly: assembly is required")

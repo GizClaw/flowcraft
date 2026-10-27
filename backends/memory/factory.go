@@ -615,6 +615,7 @@ func collectVerifyEvidence(
 			}
 			if stored {
 				entry.StoredProducer = identity.Version
+				entry.Mixed = identity.Mixed
 			}
 		}
 		evidence.Projections = append(evidence.Projections, entry)
@@ -668,6 +669,8 @@ func buildLaneStatus(
 			if found {
 				status.Stored = true
 				status.StoredProducer = identity.Version
+				status.Shards = identity.Shards
+				status.Mixed = identity.Mixed
 				status.Stale = identity.Version != status.ExpectedProducer
 			}
 			// State under another name is what this lane's own manifest
