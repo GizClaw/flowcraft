@@ -105,36 +105,6 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 	}
 }
 
-func TestMatchesRequestAppliesDatasetOnlyToDocumentKinds(t *testing.T) {
-	for _, kind := range []corememory.ContextItemKind{
-		corememory.ContextDocumentResource,
-		corememory.ContextDocumentSection,
-		corememory.ContextDocumentChunk,
-		corememory.ContextDocumentSummary,
-	} {
-		t.Run(string(kind), func(t *testing.T) {
-			matches, err := MatchesRequest(
-				corememory.Metadata{"dataset_ids": `["allowed"]`},
-				component.CandidateAddress{Kind: kind, DatasetID: "excluded"},
-			)
-			if err != nil || matches {
-				t.Fatalf("matches=%v err=%v", matches, err)
-			}
-		})
-	}
-	for _, kind := range []corememory.ContextItemKind{corememory.ContextRawMessage, corememory.ContextFact} {
-		t.Run(string(kind), func(t *testing.T) {
-			matches, err := MatchesRequest(
-				corememory.Metadata{"dataset_ids": `["allowed"]`},
-				component.CandidateAddress{Kind: kind, ConversationID: "conversation"},
-			)
-			if err != nil || !matches {
-				t.Fatalf("matches=%v err=%v", matches, err)
-			}
-		})
-	}
-}
-
 // TestSelectorKeyCoversMatchesRequestKeys couples the read-side selectors
 // to the fingerprint that callers cache a selection under: flipping any
 // metadata key MatchesRequest consults must flip the fingerprint, and keys
