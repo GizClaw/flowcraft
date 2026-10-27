@@ -129,16 +129,35 @@ mod tests {
         std::fs::canonicalize(path).expect("canonicalize")
     }
 
+    /// The programmes are built in a temporary directory rather than named by
+    /// absolute path: a grant compares canonical paths, and `/usr/bin/sh` is a
+    /// symlink to `dash` on Debian while it does not exist at all on macOS, so a
+    /// distribution's layout would decide the answer.
+    #[cfg(unix)]
     #[test]
     fn commands_are_an_allow_list() {
-        let scope =
-            Scope::parse(&serde_json::json!({"commands": ["/usr/bin/sh", "/usr/bin/rg"]})).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = host(dir.path());
+        let sh = program(dir.path(), "sh");
+        let rg = program(dir.path(), "rg");
+        let rm = program(dir.path(), "rm");
+        let scope = Scope::parse(&serde_json::json!({"commands": [
+            sh.display().to_string(),
+            rg.display().to_string(),
+        ]}))
+        .expect("scope");
         scope
-            .allows_command(&planned(PathBuf::from("/usr/bin/sh"), None))
-            .unwrap();
+            .allows_command(&plan(
+                &SessionSpec::new(vec![sh.display().to_string()]),
+                &host,
+            ))
+            .expect("an allowed programme");
         assert_eq!(
             scope
-                .allows_command(&planned(PathBuf::from("/usr/bin/rm"), None))
+                .allows_command(&plan(
+                    &SessionSpec::new(vec![rm.display().to_string()]),
+                    &host,
+                ))
                 .unwrap_err()
                 .kind(),
             crate::error::ErrorKind::Forbidden

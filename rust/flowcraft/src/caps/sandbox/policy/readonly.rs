@@ -705,16 +705,29 @@ mod tests {
         assert!(matches!(classify(&planned), Verdict::Refuse(_)));
     }
 
+    /// The alias forwards to [`classify`], whose verdict needs a programme the host
+    /// policy can resolve — so the test builds one instead of naming `ls`, which
+    /// does not exist under the default path directories on Windows.
+    #[cfg(unix)]
     #[test]
     fn the_deprecated_alias_still_classifies() {
-        let spec = SessionSpec::new(vec!["ls".to_owned(), "-la".to_owned()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = host(dir.path());
+        let ls = program(dir.path(), "ls");
         #[allow(deprecated)]
-        let read_only = classify_read_only(&ExecRequest::from_spec(&spec));
-        assert!(read_only);
-        let spec = SessionSpec::new(vec!["rm".to_owned(), "-rf".to_owned()]);
+        let read_only = classify_read_only(&ExecRequest::with_host(
+            &SessionSpec::new(vec![ls.display().to_string()]),
+            &host,
+        ));
+        assert!(read_only, "a read-only programme classifies as one");
+
+        let rm = program(dir.path(), "rm");
         #[allow(deprecated)]
-        let read_only = classify_read_only(&ExecRequest::from_spec(&spec));
-        assert!(!read_only);
+        let read_only = classify_read_only(&ExecRequest::with_host(
+            &SessionSpec::new(vec![rm.display().to_string()]),
+            &host,
+        ));
+        assert!(!read_only, "and a writer does not");
     }
 
     /// A host policy whose only programme directory is `dir`.
