@@ -606,15 +606,24 @@ Two rules carry most of the design:
 
 ## Publishing
 
-Two packages, one version: `version` is written once, in
-`[workspace.package]`, and both packages read it.
+Three packages, one version: `version` is written once, in
+`[workspace.package]`, and every package reads it.
 
 ```bash
 cd rust
-cargo publish -p flowcraft --dry-run     # unpacks the package and rebuilds it
+cargo publish -p flowcraft-win32 --dry-run   # unpacks the package and rebuilds it
+cargo publish -p flowcraft-win32             # a dependency of `flowcraft`, so first
 cargo publish -p flowcraft
 cargo publish -p flowcraft-platformd
 ```
+
+`flowcraft-win32` is published even though it is empty off Windows, because
+`flowcraft` names it in a `cfg(windows)` dependency and a published crate may
+only depend on crates that are on the registry. It exists for one reason: the
+Win32 mechanisms (job objects, tokens, ConPTY) need `unsafe`, and `flowcraft`
+forbids it absolutely. One crate that may use `unsafe` — with
+`undocumented_unsafe_blocks` denied, so every block states its invariant — keeps
+that rule absolute everywhere else.
 
 `--dry-run` is the check that matters. It builds from the tarball, which is the
 only thing that proves the crate is self-contained — and it is why the wire
