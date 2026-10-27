@@ -9,7 +9,7 @@
 //! (`<random>.tmp` from an atomic write, the dotted files a keychain keeps beside
 //! its sealed values) never trigger: they are about to disappear. And a rebuild
 //! is expensive, so two reloads can never be closer than
-//! [`MIN_RELOAD_INTERVAL`], however the directory churns.
+//! `MIN_RELOAD_INTERVAL`, however the directory churns.
 
 use std::path::Path;
 use std::sync::Arc;
