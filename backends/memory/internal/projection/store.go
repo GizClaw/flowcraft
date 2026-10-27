@@ -29,6 +29,12 @@ const (
 	DefaultMaxSegments      = 64
 	DefaultMinDeltaBytes    = 4 << 20
 	DefaultCompactionRatio  = 2
+	// DefaultCacheBytes is the budget a store keeps decoded bases under when
+	// its lane configures none: 2 GiB, which holds the working set of the
+	// conversations one process serves -- a conversation's shard is a few
+	// megabytes of table -- while staying far below the footprint of keeping
+	// every table the process ever read.
+	DefaultCacheBytes int64 = 2 << 30
 )
 
 // Address names one projection state: a hard scope and one shard within it.
@@ -200,10 +206,35 @@ type TypedOptions[B, D any] struct {
 	// Zero keeps one, which is what a store without the bound kept; a partition
 	// the store does not hold is decoded again when it is next read.
 	ResidentBases int
+	// MaxBytes bounds the bytes of resident bases, weighed by BaseBytes. It is
+	// what a store of many partitions is bounded by: a count bound is a budget
+	// only while every base is the same size, and one conversation's table is
+	// not another's. Zero leaves the bound to ResidentBases.
+	MaxBytes int64
+	// BaseBytes weighs one decoded base for the byte bound. A lane that cannot
+	// say what a base costs -- or one that says zero -- is bounded by count.
+	BaseBytes     func(B) int64
 	Canonicalize  func(D) D
 	ValidateBase  func(B) error
 	ValidateDelta func(D) error
 	Apply         func(*B, D) error
+}
+
+// CacheStats is what one store keeps decoded: the bases it holds, the bytes
+// they are reckoned at, and what the reads did with them.
+//
+// A hit is a read served out of a base already materialized, a miss is one that
+// had to decode the active state off storage, and an uncached base is one read
+// and dropped because it alone exceeds the budget -- scanned, not held. The
+// counters describe the process that reports them: they start at zero and only
+// grow, so a caller reading a run subtracts two readings.
+type CacheStats struct {
+	Bases     int   `json:"bases"`
+	Bytes     int64 `json:"bytes"`
+	Hits      int64 `json:"hits"`
+	Misses    int64 `json:"misses"`
+	Evictions int64 `json:"evictions"`
+	Uncached  int64 `json:"uncached"`
 }
 
 // residentBase is one partition's materialized base, kept decoded.
@@ -220,6 +251,11 @@ type TypedOptions[B, D any] struct {
 type residentBase[B any] struct {
 	identity string
 	value    B
+	// bytes is what the base was weighed at when it was kept, which is what
+	// the budget counts. Weighting it again on every eviction would cost more
+	// than the memory it saves, and a base the store advances is re-weighed
+	// where it moves.
+	bytes int64
 	// used is the store's clock reading at the base's last read. The bound
 	// evicts the base read least recently, which is the one the caller is
 	// least likely to read again.
@@ -246,6 +282,13 @@ type Store[B, D any] struct {
 	cacheMu sync.Mutex
 	bases   map[string]*residentBase[B]
 	clock   int64
+	// residentBytes is the sum of the kept bases' weights, maintained as they
+	// are kept, advanced and dropped so the budget never recounts the cache.
+	residentBytes  int64
+	cacheHits      int64
+	cacheMisses    int64
+	cacheEvictions int64
+	cacheUncached  int64
 }
 
 type ApplyResult struct {
@@ -676,6 +719,9 @@ func (store *Store[B, D]) baseLocked(
 		var zero B
 		return zero, err
 	}
+	store.cacheMu.Lock()
+	store.cacheMisses++
+	store.cacheMu.Unlock()
 	store.keepLocked(key, active.Identity, value)
 	return value, nil
 }
@@ -699,11 +745,12 @@ func (store *Store[B, D]) residentLocked(key, identity string) (B, bool) {
 		return zero, false
 	}
 	if entry.identity != identity {
-		delete(store.bases, key)
+		store.dropLocked(key)
 		return zero, false
 	}
 	store.clock++
 	entry.used = store.clock
+	store.cacheHits++
 	return entry.value, true
 }
 
@@ -711,21 +758,26 @@ func (store *Store[B, D]) residentLocked(key, identity string) (B, bool) {
 // must be the store's to keep: a fresh decode, or a copy the store made for
 // itself -- never a value a caller still holds.
 //
-// The number of resident bases is bounded by the options, and the base read
-// least recently makes room: what a bound costs is a decode of the partition it
-// evicted, never a different answer.
+// What makes room is the base read least recently, dropped until the cache is
+// within its bound -- by bytes when the lane weighs its bases, else by count. A
+// base that alone exceeds the byte budget is not kept at all: keeping it would
+// evict every other base and still overshoot, so it is read, scanned, and
+// dropped. What a bound costs is a decode of the base it evicted, never a
+// different answer: what a reader is handed is the active state either way.
 func (store *Store[B, D]) keepLocked(key, identity string, value B) {
+	weight := store.weigh(value)
 	store.cacheMu.Lock()
 	defer store.cacheMu.Unlock()
 	if store.bases == nil {
 		store.bases = make(map[string]*residentBase[B])
 	}
-	delete(store.bases, key)
-	limit := store.options.ResidentBases
-	if limit < 1 {
-		limit = 1
+	store.dropLocked(key)
+	store.clock++
+	if limit := store.options.MaxBytes; limit > 0 && weight > limit {
+		store.cacheUncached++
+		return
 	}
-	for len(store.bases) >= limit {
+	for store.overBudgetLocked(weight) {
 		oldest, used := "", int64(0)
 		for candidate, entry := range store.bases {
 			if oldest == "" || entry.used < used {
@@ -735,17 +787,71 @@ func (store *Store[B, D]) keepLocked(key, identity string, value B) {
 		if oldest == "" {
 			break
 		}
-		delete(store.bases, oldest)
+		store.dropLocked(oldest)
+		store.cacheEvictions++
 	}
-	store.clock++
-	store.bases[key] = &residentBase[B]{identity: identity, value: value, used: store.clock}
+	store.bases[key] = &residentBase[B]{identity: identity, value: value, bytes: weight, used: store.clock}
+	store.residentBytes += weight
+}
+
+// overBudgetLocked reports whether keeping one more base of the given weight
+// would put the cache over its bound. A budget of bytes is what a store of
+// unevenly sized partitions is bounded by; the count bound is what a store of
+// bases the lane cannot weigh is left with, and it keeps at least one.
+func (store *Store[B, D]) overBudgetLocked(incoming int64) bool {
+	if limit := store.options.MaxBytes; limit > 0 && store.options.BaseBytes != nil {
+		return store.residentBytes+incoming > limit && len(store.bases) > 0
+	}
+	count := store.options.ResidentBases
+	if count < 1 {
+		count = 1
+	}
+	return len(store.bases) >= count
+}
+
+// weigh is what one base counts against the byte budget: the lane's own
+// reading of it, and zero when the lane gives none.
+func (store *Store[B, D]) weigh(value B) int64 {
+	if store.options.BaseBytes == nil {
+		return 0
+	}
+	return store.options.BaseBytes(value)
+}
+
+// dropLocked removes whatever the store keeps for a key and reports whether it
+// held anything.
+func (store *Store[B, D]) dropLocked(key string) bool {
+	entry, ok := store.bases[key]
+	if !ok {
+		return false
+	}
+	delete(store.bases, key)
+	store.residentBytes -= entry.bytes
+	return true
 }
 
 // forgetLocked drops whatever the store keeps for a key.
 func (store *Store[B, D]) forgetLocked(key string) {
 	store.cacheMu.Lock()
 	defer store.cacheMu.Unlock()
-	delete(store.bases, key)
+	store.dropLocked(key)
+}
+
+// Resident reports what the store keeps decoded: the bases, the bytes they are
+// reckoned at, and what the reads did with them. It reads the counters under
+// the cache lock and returns a value of its own, so a caller's reading cannot
+// be changed by a read that arrives after it.
+func (store *Store[B, D]) Resident() CacheStats {
+	store.cacheMu.Lock()
+	defer store.cacheMu.Unlock()
+	return CacheStats{
+		Bases:     len(store.bases),
+		Bytes:     store.residentBytes,
+		Hits:      store.cacheHits,
+		Misses:    store.cacheMisses,
+		Evictions: store.cacheEvictions,
+		Uncached:  store.cacheUncached,
+	}
 }
 
 // advanceLocked moves the resident base one delta forward instead of dropping
@@ -766,15 +872,20 @@ func (store *Store[B, D]) advanceLocked(key, previousIdentity, identity string, 
 		return
 	}
 	if entry.identity != previousIdentity {
-		delete(store.bases, key)
+		store.dropLocked(key)
 		return
 	}
 	if err := store.options.Apply(&entry.value, delta); err != nil {
-		delete(store.bases, key)
+		store.dropLocked(key)
 		return
 	}
 	store.clock++
 	entry.identity, entry.used = identity, store.clock
+	// The delta replaced some entries, so the base is not the one that was
+	// weighed: the budget counts the weight it has now.
+	store.residentBytes -= entry.bytes
+	entry.bytes = store.weigh(entry.value)
+	store.residentBytes += entry.bytes
 }
 
 func (store *Store[B, D]) materializeUncachedLocked(ctx context.Context, address Address, name string, active Manifest) (B, error) {

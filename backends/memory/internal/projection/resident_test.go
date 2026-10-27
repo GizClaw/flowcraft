@@ -146,6 +146,99 @@ func TestTypedStoreViewDoesNotMoveWithTheState(t *testing.T) {
 	}
 }
 
+// TestTypedStoreByteBudgetEvictsWhatDoesNotFit pins the bound a store of
+// unevenly sized partitions is held to. A count bound is a memory bound only
+// while every base is the same size; one conversation's table is not another's,
+// so the budget is in bytes and the base read least recently makes room. What
+// the bound costs is a decode of the base it evicted, never a different answer.
+func TestTypedStoreByteBudgetEvictsWhatDoesNotFit(t *testing.T) {
+	kvStore := countingKVFor(t)
+	// Two bases of an entry each, under a budget that holds one of them.
+	store := budgetedStore(t, kvStore, 3*testEntryBytes/2)
+	ctx := context.Background()
+	first := corememory.Scope{RuntimeID: "first"}
+	second := corememory.Scope{RuntimeID: "second"}
+	for _, scope := range []corememory.Scope{first, second} {
+		if err := store.FullRebuild(ctx, testAddress(scope), "index",
+			testBase{Entries: []testEntry{{ID: "a", Value: "one"}}}, "base"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := store.MaterializeView(ctx, testAddress(first), "index"); err != nil {
+		t.Fatal(err)
+	}
+	if resident := store.Resident(); resident.Bases != 1 || resident.Bytes != testEntryBytes {
+		t.Fatalf("after one read the store holds %+v, want the one base it fits", resident)
+	}
+	if _, _, err := store.MaterializeView(ctx, testAddress(second), "index"); err != nil {
+		t.Fatal(err)
+	}
+	resident := store.Resident()
+	if resident.Bases != 1 || resident.Bytes != testEntryBytes || resident.Evictions != 1 {
+		t.Fatalf("the second base did not replace the first: %+v", resident)
+	}
+	// The evicted base comes back from storage, and the answer is the one it
+	// held all along.
+	settled := kvStore.count()
+	if _, _, err := store.MaterializeView(ctx, testAddress(first), "index"); err != nil {
+		t.Fatal(err)
+	}
+	if reads := kvStore.count() - settled; reads == 0 {
+		t.Fatal("a base the budget evicted was served from memory")
+	}
+}
+
+// TestTypedStoreDoesNotHoldABaseLargerThanTheBudget pins the case a budget has
+// to survive: a table bigger than the whole bound, which a host serving one long
+// conversation meets. Holding it would evict everything else and still overshoot,
+// so it is read, scanned, and dropped -- and the reading says so.
+func TestTypedStoreDoesNotHoldABaseLargerThanTheBudget(t *testing.T) {
+	store := budgetedStore(t, countingKVFor(t), testEntryBytes)
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := store.FullRebuild(ctx, testAddress(scope), "index",
+		testBase{Entries: []testEntry{{ID: "a", Value: "one"}, {ID: "b", Value: "two"}}}, "base"); err != nil {
+		t.Fatal(err)
+	}
+	for read := 0; read < 2; read++ {
+		view, _, err := store.MaterializeView(ctx, testAddress(scope), "index")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(view.Entries) != 2 {
+			t.Fatalf("the read answered %d entries, want the whole base", len(view.Entries))
+		}
+	}
+	resident := store.Resident()
+	if resident.Bases != 0 || resident.Bytes != 0 {
+		t.Fatalf("a base larger than the budget was kept: %+v", resident)
+	}
+	if resident.Uncached != 2 || resident.Misses != 2 {
+		t.Fatalf("two reads of an oversized base = %+v, want two decodes", resident)
+	}
+}
+
+// TestTypedStoreReadsAreCountedAsHitsAndMisses pins what the counters answer: a
+// miss is a decode off storage and a hit is a base already held, so a reading of
+// a run says whether the queries paid for their tables or found them.
+func TestTypedStoreReadsAreCountedAsHitsAndMisses(t *testing.T) {
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 4096, MinDeltaBytes: 1 << 20})
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", testBase{}, "base"); err != nil {
+		t.Fatal(err)
+	}
+	for read := 0; read < 3; read++ {
+		if _, _, err := store.MaterializeView(ctx, testAddress(scope), "index"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resident := store.Resident()
+	if resident.Misses != 1 || resident.Hits != 2 {
+		t.Fatalf("three reads of one base = %+v, want one decode and two hits", resident)
+	}
+}
+
 // TestTypedStoreResidentBoundEvictsTheColdBase pins what the bound costs: the
 // partition it evicted is decoded again, never answered differently.
 func TestTypedStoreResidentBoundEvictsTheColdBase(t *testing.T) {

@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/backends/memory/component"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -40,20 +39,10 @@ func newTestStoreWith(
 		Thresholds:    thresholds,
 		ResidentBases: residentBases,
 		Canonicalize: func(delta EntryDelta[testEntry]) EntryDelta[testEntry] {
-			return CanonicalEntryDelta(delta, EntryKey[testEntry]{
-				ID: func(value testEntry) string { return value.ID },
-				Document: func(value testEntry) component.DocumentAddress {
-					return component.DocumentAddress{DatasetID: value.DatasetID, DocumentID: value.DocumentID}
-				},
-			})
+			return CanonicalEntryDelta(delta, testEntryKey())
 		},
 		Apply: func(base *testBase, delta EntryDelta[testEntry]) error {
-			base.Entries = ApplyEntryDelta(base.Entries, delta, EntryKey[testEntry]{
-				ID: func(value testEntry) string { return value.ID },
-				Document: func(value testEntry) component.DocumentAddress {
-					return component.DocumentAddress{DatasetID: value.DatasetID, DocumentID: value.DocumentID}
-				},
-			})
+			base.Entries = ApplyEntryDelta(base.Entries, delta, testEntryKey())
 			return nil
 		},
 	})
