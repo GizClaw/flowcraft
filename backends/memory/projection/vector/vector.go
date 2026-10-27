@@ -9,6 +9,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
@@ -32,6 +34,12 @@ const (
 	// this build's.
 	EncodingVersion         = "vector-base64-v1"
 	StorageAlgorithmVersion = projectionstore.StorageAlgorithmVersion
+	// rebuildShardConcurrency bounds how many shards a full rebuild embeds and
+	// publishes at a time. A shard is one conversation, and embedding it is one
+	// call per artifact on the multimodal shape several providers serve, so the
+	// bound is what keeps a repair from spending its whole run waiting on the
+	// provider one conversation at a time.
+	rebuildShardConcurrency = 8
 )
 
 // Embedder is the narrow inference surface the vector projection needs.
@@ -208,23 +216,89 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 	if err != nil {
 		return fmt.Errorf("vector projection: %w", err)
 	}
-	covered := make(map[string]struct{}, len(groups))
-	for _, group := range groups {
-		address := projectionstore.Address{Scope: request.Scope, Shard: group.Shard}
-		build, err := index.embedArtifacts(ctx, group.Artifacts)
-		if err != nil {
-			return err
-		}
-		if err := index.store.FullRebuild(ctx, address, index.storageProjection, build,
-			digestArtifacts(group.Artifacts)); err != nil {
-			return err
-		}
-		covered[group.Shard] = struct{}{}
+	covered, err := index.publishShards(ctx, request.Scope, groups)
+	if err != nil {
+		return err
 	}
 	// A rebuild replaces the lane for the scope, so a shard the artifact set no
 	// longer covers is state the canonical log no longer has: it has to stop
 	// being readable, or a deleted conversation keeps answering queries.
 	return index.dropUncoveredShards(ctx, request.Scope, covered)
+}
+
+// publishShards embeds and publishes every shard of one scope, rebuildShardConcurrency
+// of them in flight, and reports the shards it covered.
+//
+// A shard is one conversation's state, and embedding it costs one call per
+// artifact: the multimodal endpoint several providers serve fuses an item's
+// inputs into one vector per request, so a conversation's few hundred artifacts
+// are a few hundred round trips. A rebuild that published one shard at a time
+// therefore spent a repair waiting on the provider -- a scope of 300
+// conversations ran for most of a day at that bound -- while the same lane
+// applied deltas from many conversations at once during derivation. Publishing a
+// few shards at a time is what carries the lane's own read rate into the repair,
+// and it stays inside what one scope costs in memory, since a shard is a
+// conversation rather than the scope.
+//
+// A shard that fails stops the shards not yet started; the ones in flight are
+// left to finish, because each is published whole and a half-published shard is
+// not a state a reader can serve. The error reported is the first failure in
+// shard order, so a repair that fails twice reports the same one.
+func (index *Index) publishShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	groups []component.ShardGroup,
+) (map[string]struct{}, error) {
+	failures := make([]error, len(groups))
+	var (
+		wait   sync.WaitGroup
+		slots  = make(chan struct{}, min(len(groups), rebuildShardConcurrency))
+		halted atomic.Bool
+	)
+	for position, group := range groups {
+		if halted.Load() {
+			break
+		}
+		slots <- struct{}{}
+		wait.Add(1)
+		go func(position int, group component.ShardGroup) {
+			defer wait.Done()
+			defer func() { <-slots }()
+			if err := index.publishShard(ctx, scope, group); err != nil {
+				failures[position] = err
+				halted.Store(true)
+			}
+		}(position, group)
+	}
+	wait.Wait()
+	covered := make(map[string]struct{}, len(groups))
+	for position, err := range failures {
+		if err != nil {
+			return nil, err
+		}
+		covered[groups[position].Shard] = struct{}{}
+	}
+	return covered, nil
+}
+
+// publishShard embeds one shard's artifacts and publishes it whole. The error
+// names the shard, since a repair covers every shard of a scope and the failing
+// one is what an operator has to look at.
+func (index *Index) publishShard(
+	ctx context.Context,
+	scope corememory.Scope,
+	group component.ShardGroup,
+) error {
+	build, err := index.embedArtifacts(ctx, group.Artifacts)
+	if err != nil {
+		return fmt.Errorf("vector projection: shard %s: %w", group.Shard, err)
+	}
+	address := projectionstore.Address{Scope: scope, Shard: group.Shard}
+	if err := index.store.FullRebuild(ctx, address, index.storageProjection, build,
+		digestArtifacts(group.Artifacts)); err != nil {
+		return fmt.Errorf("vector projection: shard %s: %w", group.Shard, err)
+	}
+	return nil
 }
 
 // embedArtifacts builds one shard's table from its artifacts: one embed call
