@@ -101,7 +101,11 @@ impl Rule {
 /// not approve `/tmp/evil/git`, which is the whole reason an operator pins a
 /// path. A bare name still matches by base name, so `go *` approves
 /// `/usr/local/bin/go build`.
-fn names_match(rule: &str, command: &str) -> bool {
+///
+/// Shared with the judging layers: `allow_commands` and the grant scope compare
+/// a rule with the *planned* programme through the same function, so one
+/// spelling of "a rule names a command" exists in this crate.
+pub(crate) fn names_match(rule: &str, command: &str) -> bool {
     if rule == command {
         return true;
     }

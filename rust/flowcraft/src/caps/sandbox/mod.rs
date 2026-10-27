@@ -56,12 +56,14 @@ pub use contract::{
 pub use exec::{ExecResult, exec};
 pub use local::LocalRunner;
 pub use net::bridge;
+#[allow(deprecated)]
 pub use policy::{
     Allowlist, ApprovalRequest, Approver, ApproverFn, Chain, Decision, Escalation,
-    EscalationDecision, EscalationGate, EscalationRules, Escalator, ExecRequest, Layer,
-    LocalPolicy, Outcome, Predicate, RunnerRef, allow_commands, approval, classify_read_only,
-    command_patterns, compose_local, defaults, denial, interactive, net_non_default, normalise,
-    rule_for, workdir_outside_root,
+    EscalationDecision, EscalationGate, EscalationRules, Escalator, ExecRequest, HostPolicy, Layer,
+    LocalPolicy, Outcome, PlannedCommand, Predicate, Resolution, RunnerRef, Verdict,
+    allow_commands, allow_commands_with_host, approval, classify, classify_read_only,
+    command_patterns, compose_local, defaults, denial, harden_read_only, interactive,
+    net_non_default, normalise, rule_for, workdir_outside_root,
 };
 #[cfg(feature = "wire")]
 pub use remote::RemoteRunner;

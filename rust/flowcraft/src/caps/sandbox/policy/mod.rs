@@ -15,6 +15,7 @@
 pub mod allowlist;
 pub mod approval;
 pub mod escalation;
+pub mod plan;
 pub mod readonly;
 
 use std::sync::Arc;
@@ -28,14 +29,16 @@ use crate::caps::sandbox::contract::{Capabilities, Runner, Session, SessionInfo,
 pub use allowlist::{Allowlist, normalise, normalise_argv};
 pub use approval::{
     ApprovalRequest, Approver, ApproverFn, Decision, ExecRequest, LocalPolicy, Predicate,
-    allow_commands, approval, command_patterns, compose_local, defaults, interactive,
-    net_non_default, workdir_outside_root,
+    allow_commands, allow_commands_with_host, approval, command_patterns, compose_local, defaults,
+    interactive, net_non_default, workdir_outside_root,
 };
 pub use escalation::{
     Denial, Escalation, EscalationDecision, EscalationGate, EscalationRules, Escalator, Outcome,
     denial, rule_for,
 };
-pub use readonly::classify_read_only;
+pub use plan::{HostPolicy, PlannedCommand, Resolution};
+#[allow(deprecated)]
+pub use readonly::{Verdict, classify, classify_read_only, harden_read_only};
 
 /// A runner behind a chain.
 pub type RunnerRef = Arc<dyn Runner>;
@@ -93,6 +96,74 @@ impl Chain {
             current = layer(current);
         }
         current
+    }
+}
+
+#[cfg(test)]
+mod stub {
+    //! A runner for policy tests: it records the spec a layer passed on and then
+    //! refuses to start, so a test can assert on a decision without spawning.
+
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use crate::caps::sandbox::contract::{Capabilities, Runner, Session, SessionInfo, SessionSpec};
+    use crate::error::{Error, Result};
+    use crate::resource::BoxFuture;
+
+    #[derive(Default)]
+    pub(crate) struct Sink {
+        spec: Mutex<Option<SessionSpec>>,
+    }
+
+    impl Sink {
+        /// The spec the layer handed on, if it handed one on.
+        pub(crate) fn take(&self) -> Option<SessionSpec> {
+            self.spec.lock().expect("sink lock").take()
+        }
+    }
+
+    impl std::fmt::Debug for Sink {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("sandbox.Sink")
+        }
+    }
+
+    #[async_trait]
+    impl Runner for Sink {
+        fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
+            Box::pin(async {
+                Err(Error::internal(
+                    "sandbox: the test sink has no capabilities",
+                ))
+            })
+        }
+
+        async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
+            *self.spec.lock().expect("sink lock") = Some(spec);
+            Err(Error::internal("sandbox: the test sink does not spawn"))
+        }
+
+        async fn session(&self, id: &str) -> Result<Arc<dyn Session>> {
+            Err(Error::not_found(format!("sandbox: session {id:?}")))
+        }
+
+        async fn list(&self) -> Result<Vec<SessionInfo>> {
+            Ok(Vec::new())
+        }
+
+        async fn terminate(&self, _id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close_session(&self, _id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
     }
 }
 

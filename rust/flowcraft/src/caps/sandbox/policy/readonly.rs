@@ -1,55 +1,201 @@
 //! The read-only classifier: "may this be auto-approved without asking?".
 //!
-//! Deliberately conservative: `false` means **"not proven read-only"**, and the
-//! answer to that is to route the call to the approver — never to deny it and
-//! never to allow it. A false negative costs a prompt; a false positive costs the
-//! guarantee.
+//! Deliberately conservative: anything that is not *proven* read-only is
+//! [`Verdict::NotReadOnly`], and the answer to that is to route the call to the
+//! approver — never to allow it. A false negative costs a prompt; a false
+//! positive costs the guarantee.
 //!
-//! It pairs with the per-call write mode rather than replacing it:
+//! # Classification is half of a promise
 //!
-//! ```text
-//! if request.opts.write == WriteMode::ReadOnly && classify_read_only(&request) { Approve }
-//! ```
+//! A verdict of [`Verdict::ReadOnly`] is only worth something together with the
+//! rewrite [`harden_read_only`] performs: a command can read files and still run
+//! another programme (`LESSOPEN`, `GIT_PAGER`, `MANPAGER`, `PAGER`, a pager's
+//! open-file flag), so the same layer that classifies also strips those switches
+//! from the environment and hardens the argv (`git --no-pager -c
+//! core.fsmonitor=false`, `man -P cat`). Classification without hardening is
+//! still a string check.
+//!
+//! What is judged is never the caller's spelling: [`super::plan::plan`] has
+//! already turned `argv[0]` into the file that will be exec'd and recorded the
+//! effective environment, and [`classify`] decides about that. A command the plan
+//! cannot resolve, or whose argv names a programme the layer cannot replace, is
+//! [`Verdict::Refuse`]: an approver shown a hardened-but-different argv would be
+//! approving something that does not run.
 //!
 //! Commands that can run other programs or touch non-file state are excluded on
-//! purpose: `env`, `xargs`, `awk`, `tar`, interpreters, package managers, and
-//! also `date` / `hostname` (`date -s` and `hostname newname` change system state
-//! that no filesystem sandbox blocks).
+//! purpose: `env`, `xargs`, `awk`, `tar`, interpreters, package managers,
+//! `less`/`more` (a pager is an executor), and also `date` / `hostname` (`date
+//! -s` and `hostname newname` change system state that no filesystem sandbox
+//! blocks).
+
+use std::ffi::OsStr;
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::caps::sandbox::contract::SessionSpec;
+use crate::error::Error;
 
-use super::allowlist::normalise;
+use super::allowlist::normalise_argv;
 use super::approval::ExecRequest;
+use super::plan::{HostPolicy, PlannedCommand, plan};
+use super::{Layer, RunnerRef, guard};
+
+/// Environment variables that name a programme some tools run on their own.
+///
+/// A read-only command with one of these set is not read-only: the value is an
+/// argv this layer never sees.
+pub const EXECUTION_SWITCHES: &[&str] = &[
+    "BROWSER",
+    "GIT_EDITOR",
+    "GIT_PAGER",
+    "LESSKEY",
+    "LESSCLOSE",
+    "LESSOPEN",
+    "MANPAGER",
+    "MORE",
+    "PAGER",
+];
+
+/// What a command is, as far as an auto-approval may rely on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Proven read-only, and [`harden_read_only`] can remove every switch it
+    /// could still use to run something.
+    ReadOnly,
+    /// Not proven read-only: the call belongs in front of the approver.
+    NotReadOnly,
+    /// Not judgeable: the programme does not resolve, or its argv names a
+    /// programme this layer cannot replace with a reader. Not something an
+    /// approval may then allow.
+    Refuse(String),
+}
+
+/// Classify `planned`.
+#[must_use]
+pub fn classify(planned: &PlannedCommand) -> Verdict {
+    let Some(program) = planned.program() else {
+        return Verdict::Refuse(format!(
+            "sandbox: {:?} does not resolve to an executable file, so nothing can be proven read-only",
+            planned.argv0
+        ));
+    };
+    if normalise_argv(&planned.argv).first() != planned.argv.first() {
+        // The plan resolved the *wrapper*; the command the wrapper runs is
+        // resolved by the child's environment, which no verdict here covers.
+        return Verdict::NotReadOnly;
+    }
+    let base = program
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    let args = &planned.argv[1..];
+    match base {
+        "find" => verdict_of(find_is_read_only(args)),
+        "rg" | "ripgrep" => verdict_of(rg_is_read_only(args)),
+        "git" => git_verdict(args),
+        "man" => man_verdict(args),
+        "sed" => verdict_of(sed_is_read_only(args)),
+        "sort" => verdict_of(sort_is_read_only(args)),
+        other if is_read_only_base(other) => Verdict::ReadOnly,
+        _ => Verdict::NotReadOnly,
+    }
+}
+
+fn verdict_of(read_only: bool) -> Verdict {
+    if read_only {
+        Verdict::ReadOnly
+    } else {
+        Verdict::NotReadOnly
+    }
+}
 
 /// Whether `request` is a known read-only command.
+///
+/// Deprecated: a boolean cannot tell "not read-only" from "cannot judge", and it
+/// says nothing about the argv/env rewrite the answer now depends on. Judge the
+/// plan with [`classify`] and harden with [`harden_read_only`].
+#[deprecated(note = "judge the plan: `classify(&request.planned)`")]
 #[must_use]
 pub fn classify_read_only(request: &ExecRequest) -> bool {
-    classify_tokens(&request.tokens)
+    matches!(classify(&request.planned), Verdict::ReadOnly)
 }
 
-/// Whether `spec` is a known read-only command.
+/// A layer that hardens what it can prove read-only, and refuses what it cannot.
+///
+/// `ReadOnly` requests come back with the execution switches removed from
+/// [`super::approval::ExecRequest`]'s environment and with the argv hardened, and
+/// that is exactly what an auto-approval may then pass on. `NotReadOnly`
+/// requests are passed through untouched for the approver, and a [`Verdict::Refuse`]
+/// is a [`Error::policy_denied`] — never a silent approval.
 #[must_use]
-pub fn classify_spec(spec: &SessionSpec) -> bool {
-    classify_tokens(&normalise(spec))
+pub fn harden_read_only(host: HostPolicy) -> Layer {
+    Arc::new(move |inner: RunnerRef| {
+        let host = host.clone();
+        guard(
+            inner,
+            Arc::new(move |mut spec: SessionSpec| {
+                let host = host.clone();
+                Box::pin(async move {
+                    let planned = plan(&spec, &host);
+                    match classify(&planned) {
+                        Verdict::NotReadOnly => Ok(spec),
+                        Verdict::Refuse(reason) => Err(Error::policy_denied(reason)),
+                        Verdict::ReadOnly => {
+                            let stripped = harden(&mut spec, &planned);
+                            if !stripped.is_empty() {
+                                tracing::debug!(
+                                    program = %planned.program().map_or_else(String::new, |path| path.display().to_string()),
+                                    stripped = ?stripped,
+                                    "sandbox: hardened a read-only command"
+                                );
+                            }
+                            Ok(spec)
+                        }
+                    }
+                })
+            }),
+        )
+    })
 }
 
-fn classify_tokens(tokens: &[String]) -> bool {
-    let Some(program) = tokens.first() else {
-        return false;
-    };
-    let base = std::path::Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program.as_str());
-    let args = &tokens[1..];
-    match base {
-        "find" => find_is_read_only(args),
-        "rg" | "ripgrep" => rg_is_read_only(args),
-        "git" => git_is_read_only(args),
-        "sed" => sed_is_read_only(args),
-        "sort" => sort_is_read_only(args),
-        other => is_read_only_base(other),
+/// Remove the switches a read-only verdict promised to remove.
+///
+/// Returns the environment names it removed, for the audit log. Injection is the
+/// only thing a layer can *unset*: a variable the policy merely passes through
+/// (`EnvPolicy::allow == None` inherits everything) can only be shadowed, which
+/// is why the argv hardening has to make the remaining switches inert —
+/// `--no-pager` for git, `-P cat` for man.
+fn harden(spec: &mut SessionSpec, planned: &PlannedCommand) -> Vec<String> {
+    let mut stripped = Vec::new();
+    for name in EXECUTION_SWITCHES {
+        if spec.opts.env.inject.remove(*name).is_some() {
+            stripped.push((*name).to_owned());
+        }
+        if let Some(allow) = &mut spec.opts.env.allow
+            && allow.iter().any(|candidate| candidate == name)
+        {
+            allow.retain(|candidate| candidate != name);
+            stripped.push((*name).to_owned());
+        }
     }
+    let base = planned
+        .program()
+        .and_then(Path::file_name)
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    match base {
+        "git" => {
+            let _ = spec.argv.splice(
+                1..1,
+                ["--no-pager", "-c", "core.fsmonitor=false"].map(str::to_owned),
+            );
+        }
+        "man" if man_pager(&spec.argv[1..]) != Some("cat") => {
+            let _ = spec.argv.splice(1..1, ["-P", "cat"].map(str::to_owned));
+        }
+        _ => {}
+    }
+    stripped
 }
 
 /// Commands treated as read-only in every form.
@@ -79,11 +225,9 @@ fn is_read_only_base(base: &str) -> bool {
             | "head"
             | "hexdump"
             | "id"
-            | "less"
             | "ls"
             | "man"
             | "md5sum"
-            | "more"
             | "nl"
             | "od"
             | "printenv"
@@ -147,9 +291,7 @@ fn rg_is_read_only(args: &[String]) -> bool {
 /// Subcommands with a writing variant (`branch`, `tag`, `remote`, `config`,
 /// `stash`, `reflog`, `symbolic-ref`, ...) are absent on purpose: `symbolic-ref`
 /// rewrites `.git/HEAD`.
-fn git_is_read_only(args: &[String]) -> bool {
-    let mut subcommand: Option<&str> = None;
-    let mut rest: &[String] = &[];
+fn git_verdict(args: &[String]) -> Verdict {
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -160,7 +302,7 @@ fn git_is_read_only(args: &[String]) -> bool {
         {
             // `-c core.pager=…` / `core.fsmonitor` / `core.sshCommand` are run by
             // git on read-only subcommands, so no `-c` form is auto-approved.
-            return false;
+            return Verdict::NotReadOnly;
         }
         if arg.starts_with("--") {
             if matches!(
@@ -181,13 +323,32 @@ fn git_is_read_only(args: &[String]) -> bool {
             index += 1;
             continue;
         }
-        subcommand = Some(arg);
-        rest = &args[index + 1..];
         break;
+    }
+    let subcommand = args.get(index).map(String::as_str);
+    let rest: &[String] = if index < args.len() {
+        &args[index + 1..]
+    } else {
+        &[]
+    };
+    // `--paginate` is legal before or after the subcommand and re-enables the
+    // pager that hardening's `--no-pager` removes.
+    let pager = args
+        .iter()
+        .map(String::as_str)
+        .find(|arg| *arg == "--paginate")
+        .or_else(|| open_files_in_pager(subcommand, rest));
+    if let Some(flag) = pager {
+        // The pager is a programme of the caller's choosing, and no argv
+        // rewrite can replace an explicit open-file flag.
+        return Verdict::Refuse(format!(
+            "sandbox: `git {} {flag}` runs another programme as a pager",
+            subcommand.unwrap_or_default()
+        ));
     }
     // Bare `git` (or `git --version`) prints help/version.
     let Some(subcommand) = subcommand else {
-        return true;
+        return Verdict::ReadOnly;
     };
     let known = matches!(
         subcommand,
@@ -215,15 +376,71 @@ fn git_is_read_only(args: &[String]) -> bool {
             | "whatchanged"
     );
     if !known {
-        return false;
+        return Verdict::NotReadOnly;
     }
-    !rest.iter().any(|arg| {
+    let writes = rest.iter().any(|arg| {
         arg == "--output"
             || arg.starts_with("--output=")
             || ["--ext-diff", "--textconv", "--exec"]
                 .iter()
                 .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
-    })
+    });
+    verdict_of(!writes)
+}
+
+/// The open-files-in-pager flag a `git` argv names, when it names one.
+///
+/// `-O` is `git grep`'s open-files-in-pager flag; on `log`/`diff` the same
+/// spelling is an order *file*, which is data.
+fn open_files_in_pager<'a>(subcommand: Option<&str>, args: &'a [String]) -> Option<&'a str> {
+    if subcommand != Some("grep") {
+        return None;
+    }
+    args.iter()
+        .map(String::as_str)
+        .find(|arg| arg.starts_with("-O") || arg.starts_with("--open-files-in-pager"))
+}
+
+/// `man` is read-only only when its pager is a reader.
+///
+/// `-P pager` / `MANPAGER` / `PAGER` name a programme; `-H`/`--html` and `-B`
+/// open a browser, and `-X` runs gxditview. Anything but `cat` is refused, not
+/// referred: the approver would be shown the argv *after* hardening.
+fn man_verdict(args: &[String]) -> Verdict {
+    match man_pager(args) {
+        Some("cat") | None => {}
+        Some(pager) => {
+            return Verdict::Refuse(format!(
+                "sandbox: `man -P {pager}` runs another programme as a pager"
+            ));
+        }
+    }
+    if let Some(flag) = args
+        .iter()
+        .find(|arg| matches!(arg.as_str(), "-H" | "--html" | "-B" | "--browser" | "-X"))
+    {
+        return Verdict::Refuse(format!("sandbox: `man {flag}` runs another programme"));
+    }
+    Verdict::ReadOnly
+}
+
+/// The pager `man`'s argv asks for, if any (`-P cat`, `-Pcat`, `--pager=cat`).
+fn man_pager(args: &[String]) -> Option<&str> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "-P" || arg == "--pager" {
+            return Some(args.get(index + 1).map_or("", String::as_str));
+        }
+        if let Some(value) = arg.strip_prefix("--pager=") {
+            return Some(value);
+        }
+        if let Some(value) = arg.strip_prefix("-P").filter(|value| !value.is_empty()) {
+            return Some(value);
+        }
+        index += 1;
+    }
+    None
 }
 
 /// `sed` can edit in place, run a script file, or write/execute from a script
@@ -275,10 +492,33 @@ fn sort_is_read_only(args: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::caps::sandbox::contract::{ExecOptions, WriteMode};
+    use crate::caps::sandbox::policy::stub::Sink;
+    use std::path::PathBuf;
 
-    fn request(argv: &[&str]) -> ExecRequest {
-        let spec = SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect());
-        ExecRequest::from_spec(&spec)
+    /// A plan for `argv` whose programme resolves to `program`.
+    ///
+    /// Classification only reads the resolved path, so a synthetic one keeps
+    /// these tests independent of what the host has installed.
+    fn planned(program: &str, argv: &[&str], env: &[(&str, &str)]) -> PlannedCommand {
+        PlannedCommand {
+            argv0: argv.first().copied().unwrap_or_default().to_owned(),
+            argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+            resolution: super::super::plan::Resolution::Path {
+                program: PathBuf::from(program),
+                path_dir: Some(PathBuf::from("/usr/bin")),
+            },
+            env: env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+            injected: env.iter().map(|(name, _)| (*name).to_owned()).collect(),
+        }
+    }
+
+    fn verdict(argv: &[&str]) -> Verdict {
+        let program = format!("/usr/bin/{}", argv[0]);
+        classify(&planned(&program, argv, &[]))
     }
 
     #[test]
@@ -288,9 +528,10 @@ mod tests {
             vec!["cat", "file"],
             vec!["grep", "-n", "x", "f"],
             vec!["wc", "-l", "f"],
-            vec!["/bin/pwd"],
+            vec!["pwd"],
+            vec!["man", "ls"],
         ] {
-            assert!(classify_read_only(&request(&argv)), "{argv:?}");
+            assert_eq!(verdict(&argv), Verdict::ReadOnly, "{argv:?}");
         }
     }
 
@@ -300,61 +541,66 @@ mod tests {
             vec!["env", "FOO=1", "rm"],
             vec!["xargs", "rm"],
             vec!["awk", "BEGIN{system(\"rm x\")}"],
-            // A *simple* wrapped command is classified through the wrapper (see
-            // the dedicated test); a composite one is not.
+            // A *simple* wrapped command is not judged either: the plan resolved
+            // the wrapper, not the command it runs (see the dedicated test).
             vec!["sh", "-c", "ls && rm x"],
             vec!["tee", "f"],
             vec!["cp", "a", "b"],
             vec!["date", "-s", "now"],
             vec!["hostname", "newname"],
+            // A pager is an executor: `LESSOPEN`, `!cmd`, `-O`.
+            vec!["less", "f"],
+            vec!["more", "f"],
         ] {
-            assert!(!classify_read_only(&request(&argv)), "{argv:?}");
+            assert_eq!(verdict(&argv), Verdict::NotReadOnly, "{argv:?}");
         }
+    }
+
+    #[test]
+    fn a_wrapped_command_is_not_judged() {
+        // `sh -c 'ls -la'` executes `ls` from the child's PATH, which the plan
+        // never resolved, so there is no inode this verdict could be about.
+        assert_eq!(verdict(&["sh", "-c", "ls -la"]), Verdict::NotReadOnly);
     }
 
     #[test]
     fn find_with_a_writing_action_is_not_read_only() {
-        assert!(classify_read_only(&request(&[
-            "find", ".", "-name", "*.rs"
-        ])));
-        for action in ["-delete", "-exec", "-execdir", "-ok", "-fls"] {
-            assert!(
-                !classify_read_only(&request(&["find", ".", action, "x"])),
+        assert_eq!(verdict(&["find", ".", "-name", "*.rs"]), Verdict::ReadOnly);
+        for action in ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls"] {
+            assert_eq!(
+                verdict(&["find", ".", action, "x"]),
+                Verdict::NotReadOnly,
                 "{action}"
             );
         }
-        assert!(!classify_read_only(&request(&[
-            "find", ".", "-fprint", "out"
-        ])));
+        assert_eq!(
+            verdict(&["find", ".", "-fprint", "out"]),
+            Verdict::NotReadOnly
+        );
     }
 
     #[test]
     fn ripgrep_with_a_preprocessor_is_not_read_only() {
-        assert!(classify_read_only(&request(&["rg", "-n", "needle", "."])));
-        assert!(!classify_read_only(&request(&["rg", "--pre", "./x", "y"])));
-        assert!(!classify_read_only(&request(&["rg", "--generate", "man"])));
+        assert_eq!(verdict(&["rg", "-n", "needle", "."]), Verdict::ReadOnly);
+        assert_eq!(verdict(&["rg", "--pre", "./x", "y"]), Verdict::NotReadOnly);
+        assert_eq!(verdict(&["rg", "--generate", "man"]), Verdict::NotReadOnly);
         // The CVE-2025-54558 class: rg running another program or a decompressor.
-        assert!(!classify_read_only(&request(&[
-            "rg",
-            "--hostname-bin=./x",
-            "a",
-            "f"
-        ])));
-        assert!(!classify_read_only(&request(&["rg", "-z", "p", "f.zip"])));
-        assert!(!classify_read_only(&request(&[
-            "rg",
-            "--search-zip",
-            "p",
-            "f"
-        ])));
-        assert!(!classify_read_only(&request(&["rg", "-nz", "p", "f"])));
+        for argv in [
+            vec!["rg", "--hostname-bin=./x", "a", "f"],
+            vec!["rg", "-z", "p", "f.zip"],
+            vec!["rg", "--search-zip", "p", "f"],
+            vec!["rg", "-nz", "p", "f"],
+        ] {
+            assert_eq!(verdict(&argv), Verdict::NotReadOnly, "{argv:?}");
+        }
     }
 
     #[test]
     fn git_is_read_only_only_for_read_subcommands() {
         for sub in ["status", "log", "diff", "show", "rev-parse", "ls-files"] {
-            assert!(
-                classify_read_only(&request(&["git", sub])),
+            assert_eq!(
+                verdict(&["git", sub]),
+                Verdict::ReadOnly,
                 "git {sub} must classify as read-only"
             );
         }
@@ -362,49 +608,244 @@ mod tests {
             "push", "commit", "add", "checkout", "clean", "reset", "stash", "config", "branch",
             "tag", "remote", "fetch",
         ] {
-            assert!(
-                !classify_read_only(&request(&["git", sub])),
+            assert_eq!(
+                verdict(&["git", sub]),
+                Verdict::NotReadOnly,
                 "git {sub} must not"
             );
         }
-        assert!(!classify_read_only(&request(&["git", "log", "--output=f"])));
-        // A subcommand that writes, and options that run a program.
-        assert!(!classify_read_only(&request(&[
-            "git",
-            "symbolic-ref",
-            "HEAD",
-            "refs/heads/x"
-        ])));
-        assert!(!classify_read_only(&request(&[
-            "git",
-            "-c",
-            "core.pager=x",
-            "log"
-        ])));
-        assert!(!classify_read_only(&request(&[
-            "git",
-            "diff",
-            "--ext-diff"
-        ])));
-        assert!(!classify_read_only(&request(&["git", "log", "--textconv"])));
+        assert_eq!(verdict(&["git", "log", "--output=f"]), Verdict::NotReadOnly);
+        assert_eq!(
+            verdict(&["git", "symbolic-ref", "HEAD", "refs/heads/x"]),
+            Verdict::NotReadOnly
+        );
+        assert_eq!(
+            verdict(&["git", "-c", "core.pager=x", "log"]),
+            Verdict::NotReadOnly
+        );
+        assert_eq!(
+            verdict(&["git", "diff", "--ext-diff"]),
+            Verdict::NotReadOnly
+        );
+        assert_eq!(verdict(&["git", "log", "--textconv"]), Verdict::NotReadOnly);
         // A value-taking global option is skipped when locating the subcommand.
-        assert!(classify_read_only(&request(&["git", "-C", "d", "status"])));
+        assert_eq!(verdict(&["git", "-C", "d", "status"]), Verdict::ReadOnly);
+    }
+
+    #[test]
+    fn a_git_pager_option_is_refused_not_referred() {
+        // `-O` here opens files in a pager, and `--no-pager` cannot replace it:
+        // an approval would be for the hardened argv, which is not this one.
+        for argv in [
+            vec!["git", "grep", "-O", "sh", "x"],
+            vec!["git", "grep", "--open-files-in-pager", "sh", "x"],
+            vec!["git", "grep", "--open-files-in-pager=sh", "x"],
+            vec!["git", "log", "--paginate"],
+        ] {
+            assert!(
+                matches!(verdict(&argv), Verdict::Refuse(_)),
+                "{argv:?} must be refused"
+            );
+        }
+        // On `log`, `-O` is an order file: data, not a programme.
+        assert_eq!(
+            verdict(&["git", "log", "-O", "orderfile"]),
+            Verdict::ReadOnly
+        );
+    }
+
+    #[test]
+    fn a_man_pager_is_refused_unless_it_is_a_reader() {
+        assert_eq!(verdict(&["man", "ls"]), Verdict::ReadOnly);
+        assert_eq!(verdict(&["man", "-P", "cat", "ls"]), Verdict::ReadOnly);
+        for argv in [
+            vec!["man", "-P", "sh", "x"],
+            vec!["man", "-Psh", "x"],
+            vec!["man", "--pager=sh", "x"],
+            vec!["man", "-H", "ls"],
+            vec!["man", "--html", "ls"],
+        ] {
+            assert!(
+                matches!(verdict(&argv), Verdict::Refuse(_)),
+                "{argv:?} must be refused"
+            );
+        }
     }
 
     #[test]
     fn sort_to_a_file_is_not_read_only() {
-        assert!(classify_read_only(&request(&["sort", "-u", "f"])));
-        assert!(!classify_read_only(&request(&["sort", "-o", "out", "f"])));
-        assert!(!classify_read_only(&request(&[
-            "sort",
-            "--output=out",
-            "f"
-        ])));
+        assert_eq!(verdict(&["sort", "-u", "f"]), Verdict::ReadOnly);
+        assert_eq!(verdict(&["sort", "-o", "out", "f"]), Verdict::NotReadOnly);
+        assert_eq!(
+            verdict(&["sort", "--output=out", "f"]),
+            Verdict::NotReadOnly
+        );
     }
 
     #[test]
-    fn a_wrapped_simple_command_is_classified_through_the_wrapper() {
-        assert!(classify_read_only(&request(&["sh", "-c", "ls -la"])));
-        assert!(!classify_read_only(&request(&["sh", "-c", "ls; rm x"])));
+    fn sed_beyond_a_bounded_print_is_not_read_only() {
+        assert_eq!(verdict(&["sed", "-n", "1,2p", "f"]), Verdict::ReadOnly);
+        assert_eq!(verdict(&["sed", "-i", "s/a/b/", "f"]), Verdict::NotReadOnly);
+    }
+
+    #[test]
+    fn an_unresolved_programme_is_refused() {
+        // Never `NotReadOnly`: there is no inode to approve, and letting the
+        // call through would hand the executor a decision the plan could not
+        // make.
+        let planned = plan(
+            &SessionSpec::new(vec!["definitely-not-a-sandbox-programme".to_owned()]),
+            &HostPolicy::default(),
+        );
+        assert_eq!(planned.resolution, super::super::plan::Resolution::NotFound);
+        assert!(matches!(classify(&planned), Verdict::Refuse(_)));
+    }
+
+    #[test]
+    fn the_deprecated_alias_still_classifies() {
+        let spec = SessionSpec::new(vec!["ls".to_owned(), "-la".to_owned()]);
+        #[allow(deprecated)]
+        let read_only = classify_read_only(&ExecRequest::from_spec(&spec));
+        assert!(read_only);
+        let spec = SessionSpec::new(vec!["rm".to_owned(), "-rf".to_owned()]);
+        #[allow(deprecated)]
+        let read_only = classify_read_only(&ExecRequest::from_spec(&spec));
+        assert!(!read_only);
+    }
+
+    /// A host policy whose only programme directory is `dir`.
+    fn host(dir: &Path) -> HostPolicy {
+        HostPolicy {
+            path_dirs: vec![std::fs::canonicalize(dir).expect("canonicalize")],
+        }
+    }
+
+    #[cfg(unix)]
+    fn program(dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::canonicalize(path).expect("canonicalize")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_command_is_stripped_of_its_execution_switches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        program(dir.path(), "git");
+        let sink = Arc::new(Sink::default());
+        let runner = harden_read_only(host(dir.path()))(sink.clone());
+
+        let mut spec = SessionSpec::new(vec!["git".to_owned(), "log".to_owned()]);
+        spec.opts.write = WriteMode::ReadOnly;
+        for name in ["LESSOPEN", "GIT_PAGER", "PAGER"] {
+            spec.opts
+                .env
+                .inject
+                .insert(name.to_owned(), "sh /tmp/evil.sh".to_owned());
+        }
+        spec.opts
+            .env
+            .inject
+            .insert("RUN_ID".to_owned(), "7".to_owned());
+
+        // The sink refuses to start, so the layer's own decision is observable
+        // only through the spec it handed on.
+        let _ = runner.start(spec).await;
+        let hardened = sink.take().expect("the layer must pass the spec on");
+        assert_eq!(
+            hardened.argv,
+            [
+                "git".to_owned(),
+                "--no-pager".to_owned(),
+                "-c".to_owned(),
+                "core.fsmonitor=false".to_owned(),
+                "log".to_owned(),
+            ]
+        );
+        for name in ["LESSOPEN", "GIT_PAGER", "PAGER"] {
+            assert!(
+                !hardened.opts.env.inject.contains_key(name),
+                "{name} must be gone, not empty"
+            );
+        }
+        assert_eq!(
+            hardened.opts.env.inject.get("RUN_ID").map(String::as_str),
+            Some("7"),
+            "hardening removes switches, not the caller's context"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_man_pager_is_replaced_by_a_reader() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        program(dir.path(), "man");
+        let sink = Arc::new(Sink::default());
+        let runner = harden_read_only(host(dir.path()))(sink.clone());
+        let _ = runner
+            .start(SessionSpec::new(vec!["man".to_owned(), "ls".to_owned()]))
+            .await;
+        let hardened = sink.take().expect("the layer must pass the spec on");
+        assert_eq!(
+            hardened.argv,
+            [
+                "man".to_owned(),
+                "-P".to_owned(),
+                "cat".to_owned(),
+                "ls".to_owned(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_command_never_reaches_the_runner() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        program(dir.path(), "git");
+        let sink = Arc::new(Sink::default());
+        let runner = harden_read_only(host(dir.path()))(sink.clone());
+        let error = runner
+            .start(SessionSpec::new(vec![
+                "git".to_owned(),
+                "grep".to_owned(),
+                "-O".to_owned(),
+                "sh".to_owned(),
+                "x".to_owned(),
+            ]))
+            .await
+            .expect_err("refused");
+        assert_eq!(error.kind(), crate::error::ErrorKind::PolicyDenied);
+        assert!(sink.take().is_none(), "the runner must not be reached");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_is_not_read_only_is_passed_through_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        program(dir.path(), "git");
+        let sink = Arc::new(Sink::default());
+        let runner = harden_read_only(host(dir.path()))(sink.clone());
+        let mut spec = SessionSpec::new(vec!["git".to_owned(), "push".to_owned()]);
+        spec.opts
+            .env
+            .inject
+            .insert("GIT_PAGER".to_owned(), "cat".to_owned());
+        let _ = runner.start(spec.clone()).await;
+        let passed = sink.take().expect("the layer must pass the spec on");
+        assert_eq!(
+            passed, spec,
+            "an unproven command is the approver's, not this layer's"
+        );
+        // The write mode is not this layer's business either.
+        let mut write_only = SessionSpec::new(vec!["git".to_owned(), "push".to_owned()]);
+        write_only.opts = ExecOptions {
+            write: WriteMode::Workspace,
+            ..ExecOptions::default()
+        };
+        let _ = runner.start(write_only.clone()).await;
+        let passed = sink.take().expect("the layer must pass the spec on");
+        assert_eq!(passed.opts.write, WriteMode::Workspace);
     }
 }

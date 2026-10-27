@@ -25,6 +25,8 @@ use crate::caps::sandbox::contract::{
     Runner, Session, SessionInfo, SessionSpec, WriteModes,
 };
 use crate::caps::sandbox::journal::{Config as JournalConfig, Engine as Journal};
+use crate::caps::sandbox::policy::HostPolicy;
+use crate::caps::sandbox::policy::plan::plan;
 use crate::caps::sandbox::session::{DEFAULT_OUTPUT_LIMIT, Registry, Spawn, spawn};
 
 /// A runner that spawns processes on this host.
@@ -169,6 +171,18 @@ impl Runner for LocalRunner {
     }
 
     async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
+        // One plan per start, before any policy layer runs, so the audit log can
+        // say which file this call will actually exec and with which
+        // environment. The plan decides nothing here: the judging layers ask for
+        // their own copy.
+        let planned = plan(&spec, &HostPolicy::default());
+        tracing::debug!(
+            argv0 = %planned.argv0,
+            program = ?planned.program(),
+            resolution = ?planned.resolution,
+            env = planned.env.len(),
+            "sandbox: planned command"
+        );
         self.registry.start(spec, &self.spawner()).await
     }
 
