@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	summaryderive "github.com/GizClaw/flowcraft/backends/memory/derive/summary"
 	"github.com/GizClaw/flowcraft/backends/memory/forget"
-	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/knowledge"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
@@ -821,22 +820,17 @@ func (lane projectionLane) workerIndexer() worker.ProjectionIndexer {
 	return worker.ProjectionIndexer{Name: lane.Name, Indexer: lane.Indexer}
 }
 
-// cacheBytes is the budget each lane's store keeps decoded bases under. An
-// absent block leaves the store's own default in charge, which is the budget
-// the lane held before the knob existed; a configured budget replaces it.
-func cacheBytes(settings Settings) int64 {
-	if cache := settings.Lanes.Cache; cache != nil && cache.MaxBytes > 0 {
-		return cache.MaxBytes
-	}
-	return projectionstore.DefaultCacheBytes
-}
-
 func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
 	engine *inference.Assembly,
 ) ([]projectionLane, []fusion.Lane, *vector.Index, error) {
-	budget := cacheBytes(settings)
+	// What one lane's store may keep decoded. An absent block leaves the
+	// store's own budget in charge.
+	var budget int64
+	if cache := settings.Lanes.Cache; cache != nil {
+		budget = cache.MaxBytes
+	}
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
 		CacheBytes: budget,

@@ -42,7 +42,7 @@ type Config struct {
 	B          float64
 	Thresholds projectionstore.Thresholds
 	// CacheBytes bounds the tables the store behind this lane keeps decoded.
-	// Zero leaves the store's count bound in charge.
+	// Zero uses the store's default budget.
 	CacheBytes int64
 }
 

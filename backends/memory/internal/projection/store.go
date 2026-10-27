@@ -209,7 +209,8 @@ type TypedOptions[B, D any] struct {
 	// MaxBytes bounds the bytes of resident bases, weighed by BaseBytes. It is
 	// what a store of many partitions is bounded by: a count bound is a budget
 	// only while every base is the same size, and one conversation's table is
-	// not another's. Zero leaves the bound to ResidentBases.
+	// not another's. Zero keeps DefaultCacheBytes when the store weighs its
+	// bases, and leaves the bound to ResidentBases when it does not.
 	MaxBytes int64
 	// BaseBytes weighs one decoded base for the byte bound. A lane that cannot
 	// say what a base costs -- or one that says zero -- is bounded by count.
@@ -310,6 +311,12 @@ func NewTypedStore[B, D any](kv storage.Store, family string, options TypedOptio
 	}
 	if options.Apply == nil {
 		return nil, errors.New("projection: typed delta apply function is required")
+	}
+	if options.MaxBytes < 0 {
+		return nil, errors.New("projection: cache budget must not be negative")
+	}
+	if options.MaxBytes == 0 && options.BaseBytes != nil {
+		options.MaxBytes = DefaultCacheBytes
 	}
 	options.Thresholds = thresholds
 	if _, ok := kv.(storage.PutIfAbsentStore); !ok {

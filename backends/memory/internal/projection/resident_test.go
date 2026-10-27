@@ -218,6 +218,43 @@ func TestTypedStoreDoesNotHoldABaseLargerThanTheBudget(t *testing.T) {
 	}
 }
 
+// TestTypedStoreDefaultsToTheBuiltInBudget pins what a lane that names no
+// budget gets: a store that can weigh its bases keeps DefaultCacheBytes, so
+// constructing a lane directly is not a way into a one-base cache.
+func TestTypedStoreDefaultsToTheBuiltInBudget(t *testing.T) {
+	store := budgetedStore(t, countingKVFor(t), 0)
+	ctx := context.Background()
+	for _, runtime := range []string{"first", "second"} {
+		scope := corememory.Scope{RuntimeID: runtime}
+		if err := store.FullRebuild(ctx, testAddress(scope), "index",
+			testBase{Entries: []testEntry{{ID: "a", Value: "one"}}}, "base"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.MaterializeView(ctx, testAddress(scope), "index"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resident := store.Resident(); resident.Bases != 2 || resident.Evictions != 0 {
+		t.Fatalf("a store with no named budget held %+v, want both bases", resident)
+	}
+}
+
+// TestTypedStoreRejectsANegativeBudget pins that a budget is a bound or
+// nothing: a negative one is a configuration error, not an empty cache.
+func TestTypedStoreRejectsANegativeBudget(t *testing.T) {
+	_, err := NewTypedStore(countingKVFor(t), "test",
+		TypedOptions[testBase, EntryDelta[testEntry]]{
+			MaxBytes: -1,
+			BaseBytes: func(testBase) int64 {
+				return testEntryBytes
+			},
+			Apply: func(*testBase, EntryDelta[testEntry]) error { return nil },
+		})
+	if err == nil {
+		t.Fatal("a negative cache budget was accepted")
+	}
+}
+
 // TestTypedStoreReadsAreCountedAsHitsAndMisses pins what the counters answer: a
 // miss is a decode off storage and a hit is a base already held, so a reading of
 // a run says whether the queries paid for their tables or found them.
