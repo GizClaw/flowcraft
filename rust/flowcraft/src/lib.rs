@@ -42,6 +42,8 @@
 
 pub mod error;
 
+pub mod fs;
+
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 

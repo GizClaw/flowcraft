@@ -31,6 +31,7 @@ pub mod grant;
 pub mod handles;
 pub mod host;
 pub mod identity;
+pub mod net;
 pub mod platform;
 pub mod secret_provider;
 pub mod tls;

@@ -29,7 +29,11 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("root", &[]),
     ("caps", &[]),
     ("error", &[]),
-    ("telemetry", &["error"]),
+    // `fs` holds the two file modes that carry security meaning (a private file,
+    // a private directory). It sits on nothing: every layer that writes a
+    // credential or a log needs it, and it must not carry a policy of its own.
+    ("fs", &[]),
+    ("telemetry", &["error", "fs"]),
     ("proto", &[]),
     ("message", &["error", "proto"]),
     ("craft", &["error", "proto"]),
@@ -42,22 +46,22 @@ const LAYERS: &[(&str, &[&str])] = &[
     ),
     (
         "caps::workspace",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "fs"],
     ),
     (
         "caps::secret",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "fs"],
     ),
     (
         "caps::sandbox",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "fs"],
     ),
     (
         "caps::tool",
         // The tool contract speaks the conversation model (`message`), which is
         // one layer above the wire types it is generated from.
         &[
-            "error", "resource", "kernel", "client", "proto", "search", "message",
+            "error", "resource", "kernel", "client", "proto", "search", "message", "fs",
         ],
     ),
 ];
@@ -74,9 +78,13 @@ fn the_module_graph_is_one_way() {
 
     for (file, owner) in sources() {
         walked.insert(owner.clone());
-        let allowed = table
-            .get(owner.as_str())
-            .unwrap_or_else(|| panic!("{owner} ({}) is not in the layer table", file.display()));
+        let allowed = table.get(owner.as_str()).unwrap_or_else(|| {
+            panic!(
+                "{owner} ({}) is not in the layer table (have: {:?})",
+                file.display(),
+                table.keys().collect::<Vec<_>>()
+            )
+        });
         let text = strip_comments(&read(&file));
         for referenced in crate_roots(&text) {
             if referenced == owner || allowed.contains(referenced.as_str()) {
@@ -193,7 +201,9 @@ fn sources() -> Vec<(PathBuf, String)> {
                     Some(cap) if parts.len() > 2 => format!("caps::{cap}"),
                     _ => "caps".to_owned(),
                 },
-                other => other.to_owned(),
+                // A single-file module is a layer too (`src/fs.rs`); strip the
+                // extension so the table names it by module, not by file.
+                other => other.strip_suffix(".rs").unwrap_or(other).to_owned(),
             };
             Some((file, owner))
         })

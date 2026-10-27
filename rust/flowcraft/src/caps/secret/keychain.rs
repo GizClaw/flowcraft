@@ -28,7 +28,7 @@
 //! backend, and therefore one index lock.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -488,7 +488,9 @@ fn prepare_dir(dir: &Path) -> Result<PathBuf> {
             .map_err(|error| Error::internal(format!("secret keychain: resolve cwd: {error}")))?
             .join(dir)
     };
-    fs::create_dir_all(&absolute).map_err(|error| {
+    // Created owner-only from the start: a nested store would otherwise be
+    // listable until the `set_mode` below.
+    crate::fs::create_private_dir(&absolute).map_err(|error| {
         Error::validation(format!(
             "secret keychain: create store dir {}: {error}",
             absolute.display()
@@ -544,7 +546,7 @@ fn atomic_write(dir: &Path, path: &Path, data: &[u8], prefix: &str) -> Result<()
     let mut attempt = 0;
     let (temp, mut file) = loop {
         let temp = dir.join(format!("{prefix}-{}.tmp", random_hex(8)?));
-        match open_private_write(&temp) {
+        match crate::fs::private_file(&temp) {
             Ok(file) => break (temp, file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
                 attempt += 1;
@@ -572,21 +574,6 @@ fn atomic_write(dir: &Path, path: &Path, data: &[u8], prefix: &str) -> Result<()
             path.display()
         ))
     })
-}
-
-#[cfg(unix)]
-fn open_private_write(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_private_write(path: &Path) -> std::io::Result<std::fs::File> {
-    OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 /// Read the 32-byte key, minting it on first use.
@@ -621,7 +608,7 @@ fn mint_key(path: &Path) -> Result<[u8; KEY_LEN]> {
     SystemRandom::new()
         .fill(&mut key)
         .map_err(|_| Error::internal("secret keychain: generate key"))?;
-    let mut file = match open_private_write(path) {
+    let mut file = match crate::fs::private_file(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return read_key_retrying(path);
