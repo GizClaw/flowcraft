@@ -187,6 +187,12 @@ impl std::fmt::Debug for Guarded {
 
 #[async_trait]
 impl Runner for Guarded {
+    /// Forwarded, not swallowed: a chain that ate the counters would make every
+    /// deployment that uses a policy look idle on `/status`.
+    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        self.inner.stats()
+    }
+
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
         // A policy narrows what may run; it adds no enforcement, so it claims
         // exactly what its inner runner claims.

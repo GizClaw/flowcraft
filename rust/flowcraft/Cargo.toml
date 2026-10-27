@@ -66,6 +66,10 @@ sandbox = [
     "dep:nix",
     "dep:async-trait",
     "dep:notify",
+    # The loopback proxy credential: a real random source, and the Basic header a
+    # client library already sends when the proxy URL carries userinfo.
+    "dep:rand",
+    "dep:base64",
     "dep:flowcraft-win32",
     "dep:serde",
     "dep:serde_json",

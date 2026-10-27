@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use flowcraft::caps::sandbox::RunnerStats;
 use flowcraft::error::{Error, Result};
 use flowcraft::kernel::Platform;
 use flowcraft::logerr;
@@ -113,6 +114,25 @@ impl Supervisor {
             .entries()
             .into_iter()
             .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// The sandbox counters of the current generation, one per runner entry.
+    ///
+    /// Per entry rather than summed: the resource graph legitimately holds more
+    /// than one runner (a backend, and the policy/confinement chain composed over
+    /// it), and a sum would count the same sessions twice. An entry that is not a
+    /// runner, or a runner that does not report, is simply absent.
+    pub async fn sandbox_stats(&self) -> Vec<(String, RunnerStats)> {
+        let generation = self.current.read().await.clone();
+        generation
+            .built
+            .entries()
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let handle = value.downcast::<flowcraft::caps::sandbox::Handle>().ok()?;
+                handle.runner().stats().map(|stats| (name, stats))
+            })
             .collect()
     }
 

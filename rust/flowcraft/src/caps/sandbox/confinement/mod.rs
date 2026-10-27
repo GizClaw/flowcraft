@@ -20,6 +20,7 @@ mod seatbelt;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::resource::Kind;
@@ -31,6 +32,10 @@ use serde_json::Value;
 use crate::caps::sandbox::codes::{self, Code};
 use crate::caps::sandbox::journal::{Config as JournalConfig, Engine as Journal};
 use crate::caps::sandbox::net::proxy;
+use crate::caps::sandbox::net::{
+    DEFAULT_PROXY_IDLE_TIMEOUT, DEFAULT_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_MAX_LIFETIME,
+    ProxyLimits,
+};
 
 use crate::caps::sandbox::contract::{
     self, CONTRACT, Capabilities, Enforcement, Features, Handle, JournalCapabilities, KIND,
@@ -158,6 +163,8 @@ pub struct NetSettings {
     pub bridge: Option<PathBuf>,
     /// Send one audit record per decision to `tracing`.
     pub audit: bool,
+    /// The bounds the enforcement proxy holds every tunnel to.
+    pub proxy: ProxyLimits,
 }
 
 /// The resolved configuration of one confined runner.
@@ -416,6 +423,7 @@ impl ConfinedRunner {
                     policy: spec.opts.net.clone(),
                     listen,
                     audit,
+                    limits: self.config.net().proxy.clone(),
                 })
                 .await?,
             )
@@ -461,6 +469,10 @@ struct Prepared {
 
 #[async_trait]
 impl Runner for ConfinedRunner {
+    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        self.inner.stats()
+    }
+
     fn capabilities(&self) -> crate::resource::BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             let mut capabilities = self.config.sandbox.capabilities();
@@ -577,7 +589,7 @@ struct Settings {
     /// Attach a file journal (see `journal::Config`).
     #[serde(default)]
     journal: Option<Value>,
-    /// Network wiring: the bridge binary and the audit switch.
+    /// Network wiring: the bridge binary, the audit switch, and the proxy's bounds.
     #[serde(default)]
     net: NetInput,
 }
@@ -591,6 +603,64 @@ struct NetInput {
     /// Send one audit record per decision to `tracing`.
     #[serde(default)]
     audit: bool,
+    /// The bounds the enforcement proxy applies to live tunnels.
+    #[serde(default)]
+    proxy: ProxyInput,
+}
+
+/// The bounds of the enforcement proxy, in settings form.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyInput {
+    /// Tunnels and forwarded requests that may be live at once.
+    ///
+    /// Deliberately has no "unbounded": zero is refused, because an unbounded
+    /// proxy is the failure this bound exists to prevent.
+    #[serde(default = "default_proxy_max_connections")]
+    max_connections: usize,
+    /// Seconds a tunnel may go without a byte moving in either direction.
+    ///
+    /// `0` disables idle detection; the lifetime cap still applies.
+    #[serde(default = "default_proxy_idle_timeout_secs")]
+    idle_timeout_secs: u64,
+    /// Seconds a tunnel may stay open at all, however busy it is.
+    ///
+    /// `0` disables the cap. The default keeps "a client opens a tunnel and
+    /// walks away" from meaning "forever".
+    #[serde(default = "default_proxy_max_lifetime_secs")]
+    max_lifetime_secs: u64,
+}
+
+impl Default for ProxyInput {
+    fn default() -> Self {
+        Self {
+            max_connections: default_proxy_max_connections(),
+            idle_timeout_secs: default_proxy_idle_timeout_secs(),
+            max_lifetime_secs: default_proxy_max_lifetime_secs(),
+        }
+    }
+}
+
+impl ProxyInput {
+    fn limits(&self) -> ProxyLimits {
+        ProxyLimits {
+            max_connections: self.max_connections,
+            idle_timeout: Duration::from_secs(self.idle_timeout_secs),
+            max_lifetime: Duration::from_secs(self.max_lifetime_secs),
+        }
+    }
+}
+
+fn default_proxy_max_connections() -> usize {
+    DEFAULT_PROXY_MAX_CONNECTIONS
+}
+
+fn default_proxy_idle_timeout_secs() -> u64 {
+    DEFAULT_PROXY_IDLE_TIMEOUT.as_secs()
+}
+
+fn default_proxy_max_lifetime_secs() -> u64 {
+    DEFAULT_PROXY_MAX_LIFETIME.as_secs()
 }
 
 fn parse(value: &Value) -> Result<Settings> {
@@ -600,6 +670,18 @@ fn parse(value: &Value) -> Result<Settings> {
 fn check_common(settings: &Settings) -> Result<()> {
     if settings.root.trim().is_empty() {
         return Err(Error::validation("sandbox: settings.root is required"));
+    }
+    if settings.net.proxy.max_connections == 0 {
+        return Err(Error::validation(
+            "sandbox: net.proxy.max_connections must be positive: an unbounded proxy is the \
+             failure this bound exists to prevent",
+        ));
+    }
+    if settings.net.proxy.max_connections > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(Error::validation(format!(
+            "sandbox: net.proxy.max_connections exceeds the semaphore's maximum of {}",
+            tokio::sync::Semaphore::MAX_PERMITS
+        )));
     }
     if let Some(binary) = &settings.binary
         && binary.trim().is_empty()
@@ -685,6 +767,7 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
             net: NetSettings {
                 bridge: settings.net.bridge.clone(),
                 audit: settings.net.audit,
+                proxy: settings.net.proxy.limits(),
             },
         };
         if let Some(value) = &settings.journal {
@@ -778,6 +861,7 @@ mod tests {
         let with_bridge = SandboxConfig::new(Sandbox::Bwrap, dir.path()).with_net(NetSettings {
             bridge: Some(dir.path().join("flowcraftd")),
             audit: false,
+            ..NetSettings::default()
         });
         assert!(with_bridge.proxy_capable());
     }
@@ -981,5 +1065,31 @@ mod tests {
         assert_eq!(exit.code, Some(0), "the granted exception stays writable");
         assert!(target.exists());
         runner.close().await.expect("close");
+    }
+
+    #[test]
+    fn the_proxy_bounds_default_when_the_settings_omit_them() {
+        let settings: Settings =
+            parse(&serde_json::json!({"root": "/tmp"})).expect("settings without net");
+        assert_eq!(settings.net.proxy.limits(), ProxyLimits::default());
+        assert_eq!(
+            ProxyLimits::default(),
+            ProxyLimits {
+                max_connections: 256,
+                idle_timeout: Duration::from_secs(60),
+                max_lifetime: Duration::from_secs(1800),
+            },
+            "the defaults are the documented ones, not whatever zero would mean"
+        );
+    }
+
+    #[test]
+    fn a_zero_proxy_connection_cap_is_refused_rather_than_read_as_unbounded() {
+        let settings = serde_json::json!({
+            "root": "/tmp",
+            "net": {"proxy": {"max_connections": 0}},
+        });
+        let error = validate_seatbelt(&settings).expect_err("zero");
+        assert!(error.to_string().contains("max_connections"), "{error}");
     }
 }

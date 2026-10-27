@@ -51,9 +51,9 @@ pub(crate) fn plan(
     workdir: &Path,
     endpoint: Option<&Endpoint>,
 ) -> Result<Plan> {
-    let port = match (spec.opts.net.mode.uses_proxy(), endpoint) {
+    let target = match (spec.opts.net.mode.uses_proxy(), endpoint) {
         (false, _) => None,
-        (true, Some(Endpoint::Loopback(port))) => Some(*port),
+        (true, Some(Endpoint::Loopback { port, credential })) => Some((*port, credential.clone())),
         (true, Some(Endpoint::Unix(_))) => {
             return Err(Error::internal(
                 "sandbox/seatbelt: the proxy must listen on loopback, not a unix socket",
@@ -66,6 +66,7 @@ pub(crate) fn plan(
             )));
         }
     };
+    let port = target.as_ref().map(|(port, _)| *port);
     let mut argv = vec![
         config.binary().to_owned(),
         "-p".to_owned(),
@@ -73,7 +74,11 @@ pub(crate) fn plan(
         "--".to_owned(),
     ];
     argv.extend(spec.argv.iter().cloned());
-    let env = port.map_or_else(Vec::new, proxy::environment);
+    // The credential travels with the endpoint: a loopback listener grants
+    // nothing without it, and the profile above only opens the one port.
+    let env = target.map_or_else(Vec::new, |(port, credential)| {
+        proxy::environment(port, &credential)
+    });
     Ok(Plan {
         argv,
         // sandbox-exec inherits the working directory; the inner runner sets it.
@@ -283,11 +288,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut request = spec(&["true"]);
         request.opts.net.mode = NetMode::AllowList;
+        let credential = crate::caps::sandbox::net::proxy::Credential::generate();
         let plan = plan(
             &sandbox_config(dir.path()),
             &request,
             dir.path(),
-            Some(&Endpoint::Loopback(4321)),
+            Some(&Endpoint::Loopback {
+                port: 4321,
+                credential: credential.clone(),
+            }),
         )
         .expect("plan");
         let rendered = &plan.argv[2];
@@ -300,11 +309,14 @@ mod tests {
             rendered.contains("AF_SYSTEM"),
             "the platform sockets macOS needs for TLS must stay open: {rendered}"
         );
-        // The environment is injected by the runner: it knows the port.
+        // The environment is injected by the runner: it knows the port *and* the
+        // credential, and the credential has to be in the userinfo or the
+        // listener refuses the connection.
         let env: std::collections::BTreeMap<_, _> = plan.env.iter().cloned().collect();
+        let expected = format!("http://{}@127.0.0.1:4321", credential.userinfo());
         assert_eq!(
             env.get("HTTP_PROXY").map(String::as_str),
-            Some("http://127.0.0.1:4321")
+            Some(expected.as_str())
         );
         assert_eq!(env.get("NO_PROXY").map(String::as_str), Some(""));
     }

@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::resource::Kind;
@@ -27,16 +28,23 @@ use crate::caps::sandbox::contract::{
 use crate::caps::sandbox::journal::{Config as JournalConfig, Engine as Journal};
 use crate::caps::sandbox::policy::HostPolicy;
 use crate::caps::sandbox::policy::plan::plan;
-use crate::caps::sandbox::session::{DEFAULT_OUTPUT_LIMIT, Registry, Spawn, spawn};
+use crate::caps::sandbox::session::{
+    DEFAULT_EXIT_RETENTION_SECS, DEFAULT_MAX_SESSIONS, DEFAULT_MAX_TOTAL_LOG_BYTES,
+    DEFAULT_OUTPUT_LIMIT, Registry, SessionLimits, Spawn, spawn,
+};
 
 /// A runner that spawns processes on this host.
 pub struct LocalRunner {
-    registry: Registry,
+    /// The one session table, shared with every session's supervise tick: the
+    /// tick is what reclaims entries whose retention window has run out.
+    registry: Arc<Registry>,
     /// The filesystem boundary used to validate a working directory. There is
     /// no OS enforcement behind it (see [`Runner::capabilities`]), but it makes
     /// a `workdir` escape a refusal rather than a coincidence.
     root: Option<PathBuf>,
     default_output_limit: u64,
+    /// The bounds the session table enforces.
+    session_limits: SessionLimits,
     journal: Option<Arc<Journal>>,
     limits: Arc<crate::caps::sandbox::limits::Manager>,
 }
@@ -61,9 +69,10 @@ impl LocalRunner {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            registry: Registry::new(),
+            registry: Arc::new(Registry::new()),
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
+            session_limits: SessionLimits::default(),
             journal: None,
             // Probed once: creating and removing a control group is not something
             // to do per session, and the answer is a property of the host.
@@ -106,12 +115,21 @@ impl LocalRunner {
         self
     }
 
+    /// The bounds the session table enforces.
+    #[must_use]
+    pub(crate) fn with_session_limits(mut self, limits: SessionLimits) -> Self {
+        self.session_limits = limits;
+        self
+    }
+
     /// The spawn function the registry calls.
     fn spawner(&self) -> Spawn {
         let options = Arc::new(crate::caps::sandbox::session::SpawnOptions {
             root: self.root.clone(),
             default_output_limit: self.default_output_limit,
             limits: self.limits.clone(),
+            registry: Some(self.registry.clone()),
+            session_limits: self.session_limits.clone(),
         });
         Arc::new(move |spec: SessionSpec| {
             let options = options.clone();
@@ -122,6 +140,15 @@ impl LocalRunner {
 
 #[async_trait]
 impl Runner for LocalRunner {
+    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        let (ready, exited, log_bytes) = self.registry.stats();
+        Some(crate::caps::sandbox::contract::RunnerStats {
+            sessions_ready: ready,
+            sessions_exited: exited,
+            log_bytes,
+        })
+    }
+
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             let limits = self.limits.support();
@@ -183,7 +210,11 @@ impl Runner for LocalRunner {
             env = planned.env.len(),
             "sandbox: planned command"
         );
-        self.registry.start(spec, &self.spawner()).await
+        // The table bounds this start before it is admitted: a start that cannot
+        // fit is refused, never squeezed in by evicting work in progress.
+        self.registry
+            .start(spec, &self.spawner(), &self.session_limits)
+            .await
     }
 
     async fn session(&self, id: &str) -> Result<Arc<dyn Session>> {
@@ -225,10 +256,52 @@ struct Settings {
     root: String,
     #[serde(default)]
     max_output_bytes: Option<u64>,
+    /// Sessions listed at once, running and retained.
+    ///
+    /// `0` removes the bound, which is for a test harness and an explicit opt-in —
+    /// a deployment that sets it is choosing to be killable by a client that
+    /// starts sessions and never closes them.
+    #[serde(default = "default_max_sessions")]
+    max_sessions: usize,
+    /// Seconds an exited session stays listed, so its tail and exit status can
+    /// still be read.
+    ///
+    /// `0` reclaims an exited session as soon as the exit is observed.
+    #[serde(default = "default_exit_retention_secs")]
+    exit_retention_secs: u64,
+    /// Retained output across every session, in bytes.
+    ///
+    /// `0` removes the bound. A session over the budget is never truncated: the
+    /// output would then have a sequence gap nothing can explain, so a start that
+    /// cannot fit is refused instead.
+    #[serde(default = "default_max_total_log_bytes")]
+    max_total_log_bytes: u64,
     /// Attach a file journal. The subtree being present is the opt-in: an absent
     /// key costs nothing, and a typo fails the build.
     #[serde(default)]
     journal: Option<Value>,
+}
+
+fn default_max_sessions() -> usize {
+    DEFAULT_MAX_SESSIONS
+}
+
+fn default_exit_retention_secs() -> u64 {
+    DEFAULT_EXIT_RETENTION_SECS
+}
+
+fn default_max_total_log_bytes() -> u64 {
+    DEFAULT_MAX_TOTAL_LOG_BYTES
+}
+
+impl Settings {
+    fn session_limits(&self) -> SessionLimits {
+        SessionLimits {
+            max_sessions: self.max_sessions,
+            exit_retention: Duration::from_secs(self.exit_retention_secs),
+            max_total_log_bytes: self.max_total_log_bytes,
+        }
+    }
 }
 
 fn validate(value: &Value) -> Result<()> {
@@ -269,7 +342,8 @@ impl Factory for LocalFactory {
         Box::pin(async move {
             let settings: Settings = ctx.settings()?;
             let root = crate::caps::sandbox::confinement::path::resolve_root(&settings.root)?;
-            let mut runner = LocalRunner::at(root.clone());
+            let mut runner =
+                LocalRunner::at(root.clone()).with_session_limits(settings.session_limits());
             if let Some(limit) = settings.max_output_bytes {
                 runner = runner.with_output_limit(limit);
             }

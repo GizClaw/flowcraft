@@ -26,5 +26,8 @@ pub(crate) mod terminal;
 #[path = "terminal_windows.rs"]
 pub(crate) mod terminal;
 
-pub(crate) use registry::{Registry, Spawn};
+pub(crate) use registry::{
+    DEFAULT_EXIT_RETENTION_SECS, DEFAULT_MAX_SESSIONS, DEFAULT_MAX_TOTAL_LOG_BYTES, Registry,
+    SessionLimits, Spawn,
+};
 pub(crate) use spawn::{DEFAULT_OUTPUT_LIMIT, SpawnOptions, spawn};

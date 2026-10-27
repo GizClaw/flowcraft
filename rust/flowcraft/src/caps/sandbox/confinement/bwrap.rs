@@ -406,6 +406,7 @@ mod tests {
             sandbox_config(dir.path()).with_net(crate::caps::sandbox::confinement::NetSettings {
                 bridge: Some(bridge.clone()),
                 audit: false,
+                ..crate::caps::sandbox::confinement::NetSettings::default()
             });
         let mut request = spec(&["curl", "https://example.com"]);
         request.opts.net.mode = NetMode::AllowList;
