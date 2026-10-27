@@ -256,11 +256,11 @@ struct Shared {
 
 impl Shared {
     /// Decide one destination and record it.
-    fn decide(&self, host: &str, port: u16) -> super::matcher::Verdict {
+    async fn decide(&self, host: &str, port: u16) -> super::matcher::Verdict {
         // Resolve only when a rule needs an address; a hostname-only policy must
         // not pay for DNS on every request.
         let addrs = if self.matcher.has_ip_rules() || host.parse::<IpAddr>().is_ok() {
-            resolve(host, port)
+            resolve(host, port).await
         } else {
             None
         };
@@ -280,11 +280,15 @@ impl Shared {
 }
 
 /// Resolve a name, or report that it could not be done.
-fn resolve(host: &str, port: u16) -> Option<Vec<IpAddr>> {
+///
+/// `tokio::net::lookup_host` runs `getaddrinfo` on the blocking pool, which is
+/// what this needs: the sync version resolved *on a worker*, once per proxied
+/// request, whenever an IP rule or a literal address was involved.
+async fn resolve(host: &str, port: u16) -> Option<Vec<IpAddr>> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(vec![ip]);
     }
-    let addrs = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)).ok()?;
+    let addrs = tokio::net::lookup_host((host, port)).await.ok()?;
     let ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
     if ips.is_empty() { None } else { Some(ips) }
 }
@@ -376,7 +380,7 @@ where
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_authority(&target)?;
-        let Some(endpoint) = authorize(&shared, &host, port) else {
+        let Some(endpoint) = authorize(&shared, &host, port).await else {
             return deny(&mut stream, &shared, &host, port).await;
         };
         let tunnel = connect(endpoint).await;
@@ -417,7 +421,7 @@ where
             (host, port, target.clone())
         }
     };
-    let Some(endpoint) = authorize(&shared, &host, port) else {
+    let Some(endpoint) = authorize(&shared, &host, port).await else {
         return deny(&mut stream, &shared, &host, port).await;
     };
     let Ok(upstream) = connect(endpoint).await else {
@@ -469,8 +473,8 @@ struct Authorized {
     ip: Option<IpAddr>,
 }
 
-fn authorize(shared: &Shared, host: &str, port: u16) -> Option<Authorized> {
-    let verdict = shared.decide(host, port);
+async fn authorize(shared: &Shared, host: &str, port: u16) -> Option<Authorized> {
+    let verdict = shared.decide(host, port).await;
     if !verdict.allow {
         return None;
     }
@@ -635,7 +639,7 @@ where
     stream.read_exact(&mut port).await.map_err(Error::from)?;
     let port = u16::from_be_bytes(port);
 
-    let Some(target) = authorize(&shared, &host, port) else {
+    let Some(target) = authorize(&shared, &host, port).await else {
         // 0x02 = connection not allowed by ruleset.
         stream
             .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])

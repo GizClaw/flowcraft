@@ -26,10 +26,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["platform"]
 platform = ["telemetry", "proto", "search", "resource", "kernel", "client"]
 
+# The async/blocking boundary (`flowcraft::blocking`): one way to move
+# synchronous work off a worker. Every capability that does file, DNS or sleep
+# work needs it, so they imply it below.
+blocking = ["dep:tokio", "dep:tracing"]
+
 # One capability each. Only `workspace` builds without the control plane, so
 # `--no-default-features --features workspace` is the portable shape (no tonic,
 # no unix-domain sockets) that the Windows lane checks.
 workspace = [
+    "blocking",
     "resource",
     "dep:async-trait",
     "dep:cap-std",
@@ -41,6 +47,7 @@ workspace = [
     "dep:tracing",
 ]
 secret = [
+    "blocking",
     "resource",
     "dep:async-trait",
     "dep:ring",
@@ -50,6 +57,7 @@ secret = [
     "dep:tracing",
 ]
 sandbox = [
+    "blocking",
     "resource",
     # The unix mechanisms the runner owns. Naming them here keeps a host that
     # embeds another capability from compiling a pty stack or a cgroup reader.
@@ -68,6 +76,7 @@ sandbox = [
     "dep:tracing",
 ]
 tool = [
+    "blocking",
     "resource",
     "search",
     # The framework speaks the conversation model (`message`), but not the
@@ -130,6 +139,7 @@ resource = [
 ]
 kernel = [
     "resource",
+    "blocking",
     "dep:base64",
     "dep:ed25519-dalek",
     "dep:rustls",

@@ -35,6 +35,8 @@ fn check_text(path: &Path) -> Result<()> {
 }
 
 /// Resolve a configured root: absolute, canonical, and a directory.
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn resolve_root(raw: &str) -> Result<PathBuf> {
     if raw.trim().is_empty() {
         return Err(Error::validation("sandbox: settings.root is required"));
@@ -80,6 +82,8 @@ pub(crate) fn within(root: &Path, path: &Path) -> bool {
 /// A workdir that does not exist yet still resolves predictably; only the part
 /// that exists can be checked for symlink escapes, which is exactly the part an
 /// attacker would use.
+// Reached only from inside a `blocking::run` closure: this *is* the boundary.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn resolve_existing_prefix(path: &Path) -> Result<PathBuf> {
     let mut missing: Vec<std::ffi::OsString> = Vec::new();
     let mut current = path.to_path_buf();
@@ -141,6 +145,8 @@ fn traversal(path: &Path, detail: &str) -> Error {
 /// On macOS `/var` and `/tmp` are symlinks, so a root spelled with the symlinked
 /// prefix would reject every resolved child path. Doing it here means a caller
 /// that constructs a runner directly cannot end up with false refusals.
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn real_root(root: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(root).map_err(|error| {
         Error::not_found(format!(
@@ -186,6 +192,8 @@ pub(crate) fn resolve_workdir(root: &Path, dir: Option<&Path>) -> Result<PathBuf
 /// exception outside the root is the whole point of the setting). Every entry
 /// must exist, and an entry that is the root itself is only an error when the
 /// root is pinned read-only — it would be silently redundant otherwise.
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn resolve_writable(
     root: &Path,
     paths: &[String],

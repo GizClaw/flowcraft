@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! Installing the pipeline is process-global, so this file holds exactly one
 //! test: an integration test binary is its own process, and a second `install`

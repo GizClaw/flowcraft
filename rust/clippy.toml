@@ -1,0 +1,25 @@
+# The async/blocking boundary, in one executable place (see
+# `flowcraft/src/blocking.rs` and `docs/…/blocking`).
+#
+# `async fn` promises not to block the thread it runs on. These are the calls
+# that break that promise; the fix is `flowcraft::blocking::run` (synchronous
+# work onto the blocking pool) or `tokio::fs` (already there).
+#
+# Three places may still call them, and each says so with
+# `#[allow(clippy::disallowed_methods)]` and a comment naming which one it is:
+#
+#   1. a capability's *synchronous* builder (`BuildCtx::from_*`, `*::new`,
+#      `*::open`) — there is no executor to block during assembly;
+#   2. `#[cfg(test)]` — a test may do whatever is shortest;
+#   3. code already inside a `blocking::run` closure — that *is* the boundary.
+#
+# A module-level `#![allow]` defeats the point; that is why the exemptions are
+# per-function and documented.
+disallowed-methods = [
+    { path = "std::fs::read", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::write", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::read_to_string", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::symlink_metadata", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::canonicalize", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::thread::sleep", reason = "async boundary: use tokio::time::sleep" },
+]

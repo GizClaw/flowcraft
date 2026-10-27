@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use crate::blocking;
+
 use crate::error::{Error, Result};
 use crate::resource::Kind;
 use crate::resource::{BoxFuture, BuildCtx, Factory, Phase, Spec};
@@ -110,6 +112,8 @@ pub struct DirStore {
 
 impl DirStore {
     /// Open the provider over `root`, which must exist.
+    // Assembly: there is no executor to block while a capability is being built.
+    #[allow(clippy::disallowed_methods)]
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
         let metadata = std::fs::metadata(root).map_err(|error| {
@@ -143,78 +147,92 @@ impl DirStore {
 #[async_trait]
 impl Store for DirStore {
     async fn lookup(&self, name: &str) -> Result<Option<String>> {
-        if name.trim().is_empty() {
-            return Err(Error::validation("secret file: secret name is empty"));
-        }
-        if name != name.trim() {
-            return Err(Error::validation(format!(
-                "secret file: secret name {name:?} has surrounding whitespace"
-            )));
-        }
-        let relative = Path::new(name);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(Error::validation(format!(
-                "secret file: secret name {name:?} must be a relative path without '..'"
-            )));
-        }
-        let path = self.root.join(relative);
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(Error::internal(format!(
-                    "secret file: stat {name:?}: {error}"
-                )));
-            }
-        };
-        if metadata.file_type().is_symlink() {
-            return Err(Error::validation(format!(
-                "secret file: {name:?} is a symlink"
-            )));
-        }
-        if !metadata.is_file() {
-            return Err(Error::validation(format!(
-                "secret file: {name:?} is not a regular file"
-            )));
-        }
-        if metadata.len() > MAX_BYTES {
-            return Err(Error::validation(format!(
-                "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
-                metadata.len()
-            )));
-        }
-        let real = std::fs::canonicalize(&path)
-            .map_err(|error| Error::internal(format!("secret file: resolve {name:?}: {error}")))?;
-        if !real.starts_with(&self.root) {
-            return Err(Error::validation(format!(
-                "secret file: {name:?} escapes the root"
-            )));
-        }
-        let data = match std::fs::read(&real) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(Error::internal(format!(
-                    "secret file: read {name:?}: {error}"
-                )));
-            }
-        };
-        if data.len() as u64 > MAX_BYTES {
-            return Err(Error::validation(format!(
-                "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
-                data.len()
-            )));
-        }
-        let text = String::from_utf8(data)
-            .map_err(|_| Error::internal(format!("secret file: {name:?} is not UTF-8")))?;
-        // Mirror docker/k8s conventions: strip trailing newlines so an API key
-        // written by `echo` or `printf` works.
-        Ok(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
+        // Three syscalls behind a `stat`, a `canonicalize` and a `read`: on a
+        // slow or network-backed directory this is the difference between a
+        // lookup and a stalled executor.
+        let root = self.root.clone();
+        let name = name.to_owned();
+        blocking::run("secret.file.lookup", move || read_secret(&root, &name)).await
     }
+}
+
+/// The synchronous body of [`DirStore::lookup`]: validation, then three
+/// syscalls. Kept as a free function so the blocking closure owns nothing but a
+/// path and a name.
+// Reached only from inside a `blocking::run` closure: this *is* the boundary.
+#[allow(clippy::disallowed_methods)]
+fn read_secret(root: &Path, name: &str) -> Result<Option<String>> {
+    if name.trim().is_empty() {
+        return Err(Error::validation("secret file: secret name is empty"));
+    }
+    if name != name.trim() {
+        return Err(Error::validation(format!(
+            "secret file: secret name {name:?} has surrounding whitespace"
+        )));
+    }
+    let relative = Path::new(name);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(Error::validation(format!(
+            "secret file: secret name {name:?} must be a relative path without '..'"
+        )));
+    }
+    let path = root.join(relative);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(Error::internal(format!(
+                "secret file: stat {name:?}: {error}"
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(Error::validation(format!(
+            "secret file: {name:?} is a symlink"
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(Error::validation(format!(
+            "secret file: {name:?} is not a regular file"
+        )));
+    }
+    if metadata.len() > MAX_BYTES {
+        return Err(Error::validation(format!(
+            "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
+            metadata.len()
+        )));
+    }
+    let real = std::fs::canonicalize(&path)
+        .map_err(|error| Error::internal(format!("secret file: resolve {name:?}: {error}")))?;
+    if !real.starts_with(root) {
+        return Err(Error::validation(format!(
+            "secret file: {name:?} escapes the root"
+        )));
+    }
+    let data = match std::fs::read(&real) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(Error::internal(format!(
+                "secret file: read {name:?}: {error}"
+            )));
+        }
+    };
+    if data.len() as u64 > MAX_BYTES {
+        return Err(Error::validation(format!(
+            "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
+            data.len()
+        )));
+    }
+    let text = String::from_utf8(data)
+        .map_err(|_| Error::internal(format!("secret file: {name:?} is not UTF-8")))?;
+    // Mirror docker/k8s conventions: strip trailing newlines so an API key
+    // written by `echo` or `printf` works.
+    Ok(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
 }
 
 /// The `secret.Store/file` factory.

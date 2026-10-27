@@ -83,6 +83,8 @@ impl LocalWorkspace {
     /// # Errors
     ///
     /// Fails when the directory cannot be created, canonicalized, or opened.
+    // Assembly: there is no executor to block while a capability is being built.
+    #[allow(clippy::disallowed_methods)]
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         create_root(&root)?;

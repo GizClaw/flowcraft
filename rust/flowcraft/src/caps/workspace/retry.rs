@@ -41,6 +41,9 @@ fn is_sharing_violation(error: &io::Error) -> bool {
 ///
 /// The last error is returned as it came from the filesystem, so a caller sees
 /// what actually failed rather than a synthesized "gave up".
+// A synchronous helper by contract: every caller is already on the blocking
+// pool (or in assembly).
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn retry_when<T, P, F>(attempts: u32, mut transient: P, mut op: F) -> io::Result<T>
 where
     P: FnMut(&io::Error) -> bool,

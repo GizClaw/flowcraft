@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! Deployment-secret assembly: store ids, the default store, lazy references,
 //! the encrypted backend, and host-injected stores.

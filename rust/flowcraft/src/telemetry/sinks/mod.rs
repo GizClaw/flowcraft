@@ -51,6 +51,9 @@ impl Spill {
     }
 
     /// Write the ring next to the log, at most once a minute.
+    // A `tracing` sink is called synchronously from the emitting thread; it
+    // cannot await, so the only alternative would be a second thread.
+    #[allow(clippy::disallowed_methods)]
     fn maybe_write(&self, ring: &ring::Shared) {
         let Ok(mut last) = self.last.lock() else {
             return;

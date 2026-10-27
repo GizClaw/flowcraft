@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! Rotation: a change under the bootstrap secret directory reloads the graph.
 

@@ -286,6 +286,9 @@ async fn wait_for_signals(supervisor: &Supervisor) {
 /// moment later and reports the real error, through a pipeline that is already
 /// running. This is a peek, not a validation.
 #[must_use]
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 pub fn peek_log(path: &str) -> Option<flowcraft::kernel::config::LogConfig> {
     let bytes = std::fs::read(path).ok()?;
     let config = Config::parse(&bytes).ok()?;
@@ -308,6 +311,9 @@ fn platform_from(config: Config) -> Result<Platform> {
     Platform::with_secrets(config, std::sync::Arc::new(Chain::new(providers)))
 }
 
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 fn read(path: &str) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|error| Error::not_found(format!("cannot read {path}: {error}")))
 }
@@ -413,6 +419,9 @@ pub async fn craft_stub(
 
 /// The server half of a `dns` stub: certificate, key, and an optional client CA
 /// that makes the listener mutual TLS.
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 fn stub_tls(serve: &StubServe) -> Result<tonic::transport::ServerTlsConfig> {
     use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
@@ -614,6 +623,9 @@ pub async fn call(
 }
 
 /// The token to present, if this transport needs one.
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 fn admin_token(client: &AdminClient, target: &Target) -> Result<Option<String>> {
     if let Some(token) = &client.token {
         return Ok(Some(token.trim().to_owned()));
@@ -637,6 +649,9 @@ fn admin_token(client: &AdminClient, target: &Target) -> Result<Option<String>> 
 }
 
 /// The TLS client a `dns` admin target needs: verify the daemon against `--ca`.
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 fn admin_client_tls(
     client: &AdminClient,
     address: &str,
@@ -781,6 +796,9 @@ pub async fn diag(client: &AdminClient, out: &str) -> Result<()> {
     Ok(())
 }
 
+// One-shot CLI (`flowcraftd <verb>`): the process has this one job and exits,
+// so there is no other task on the executor for a blocking call to starve.
+#[allow(clippy::disallowed_methods)]
 fn write_bundle(directory: &std::path::Path, name: &str, contents: &str) -> Result<()> {
     let path = directory.join(name);
     std::fs::write(&path, contents)

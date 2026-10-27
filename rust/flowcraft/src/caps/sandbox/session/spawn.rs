@@ -402,7 +402,7 @@ pub(crate) fn environment(
 
 /// Validate the policy this backend can actually enforce, and resolve the
 /// working directory against the runner root when there is one.
-fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
+async fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
     if spec.argv.is_empty() {
         return Err(codes::validation(Code::ArgvEmpty, "sandbox: argv is empty"));
     }
@@ -436,11 +436,15 @@ fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
         Some(root) => {
             // Containment is checked twice (lexically, then through symlinks) by
             // the shared resolver, so `local`, `bwrap` and `seatbelt` cannot
-            // disagree about what "inside the root" means.
-            let resolved = crate::caps::sandbox::confinement::path::resolve_workdir(
-                root,
-                spec.opts.workdir.as_deref(),
-            )?;
+            // disagree about what "inside the root" means. The resolver is three
+            // syscalls (`canonicalize`, a stat chain, a `is_dir`), so it runs on
+            // the blocking pool, not on this worker.
+            let root = root.clone();
+            let workdir = spec.opts.workdir.clone();
+            let resolved = crate::blocking::run("sandbox.workdir", move || {
+                crate::caps::sandbox::confinement::path::resolve_workdir(&root, workdir.as_deref())
+            })
+            .await?;
             spec.opts.workdir = Some(resolved);
         }
         None => {
@@ -486,7 +490,7 @@ pub(crate) async fn spawn(
     mut spec: SessionSpec,
     options: &SpawnOptions,
 ) -> Result<Arc<dyn Session>> {
-    validate_spec(&mut spec, options)?;
+    validate_spec(&mut spec, options).await?;
     // A pty is a different session shape (merged stream, resize, no stdin EOF),
     // so it has its own implementation rather than a flag here.
     if spec.tty {

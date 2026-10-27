@@ -281,6 +281,8 @@ fn user_path() -> Option<PathBuf> {
     }
 }
 
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn read(path: &Path) -> Result<Document> {
     let bytes = std::fs::read(path)?;
     let document: Document = serde_json::from_slice(&bytes).map_err(|error| {
