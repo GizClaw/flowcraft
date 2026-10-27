@@ -458,9 +458,11 @@ async fn settings_are_expanded_from_the_environment() {
     registry
         .register(traced_factory::<Traced>(source, &log))
         .expect("register");
+    // `PATH` is set on every platform this crate builds for; `HOME` is unix
+    // spelling, and the Windows runner does not set it.
     let deployment = document(&[(
         "src",
-        json!({"kind": "test.Source", "settings": {"root": "${env:HOME}"}}),
+        json!({"kind": "test.Source", "settings": {"root": "${env:PATH}"}}),
     )]);
     let built = Builder::new(Arc::new(registry))
         .with_resolver(flowcraft::resource::Resolver::new())
