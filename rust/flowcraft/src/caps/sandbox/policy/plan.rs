@@ -130,6 +130,14 @@ impl PlannedCommand {
     /// caller spelled outside those directories has to be pinned; that is what
     /// keeps `["git"]` from approving `/tmp/x/git`.
     #[must_use]
+    // Exempt from the async/blocking gate (`clippy.toml`), with the argument
+    // stated rather than implied: the gate exists for calls that dominate a
+    // request — a secret lookup, a proxied connection, a journal event. A plan is
+    // one resolution per **start**, on the path that is about to fork and exec,
+    // and it costs at most `path_dirs.len() + 1` stats. Moving those to the
+    // blocking pool would buy a worker a few microseconds and cost a thread hop
+    // per session start.
+    #[allow(clippy::disallowed_methods)]
     pub fn names(&self, rule: &str) -> bool {
         if rule.is_empty() {
             return false;
@@ -163,6 +171,14 @@ pub fn plan(spec: &SessionSpec, host: &HostPolicy) -> PlannedCommand {
 }
 
 /// Resolve `argv[0]`: a spelled path as given, a bare name from `host`.
+// Exempt from the async/blocking gate (`clippy.toml`), with the argument
+// stated rather than implied: the gate exists for calls that dominate a
+// request — a secret lookup, a proxied connection, a journal event. A plan is
+// one resolution per **start**, on the path that is about to fork and exec,
+// and it costs at most `path_dirs.len() + 1` stats. Moving those to the
+// blocking pool would buy a worker a few microseconds and cost a thread hop
+// per session start.
+#[allow(clippy::disallowed_methods)]
 fn resolve(argv0: &str, workdir: Option<&Path>, host: &HostPolicy) -> Resolution {
     let spelled = Path::new(argv0);
     if spelled.is_absolute() {
@@ -196,6 +212,14 @@ fn resolve(argv0: &str, workdir: Option<&Path>, host: &HostPolicy) -> Resolution
 }
 
 /// Resolve a path the caller spelled.
+// Exempt from the async/blocking gate (`clippy.toml`), with the argument
+// stated rather than implied: the gate exists for calls that dominate a
+// request — a secret lookup, a proxied connection, a journal event. A plan is
+// one resolution per **start**, on the path that is about to fork and exec,
+// and it costs at most `path_dirs.len() + 1` stats. Moving those to the
+// blocking pool would buy a worker a few microseconds and cost a thread hop
+// per session start.
+#[allow(clippy::disallowed_methods)]
 fn inspect(path: &Path, host: &HostPolicy) -> Resolution {
     match std::fs::canonicalize(path) {
         Ok(program) if is_executable(&program) => {
