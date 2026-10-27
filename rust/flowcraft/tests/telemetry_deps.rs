@@ -13,6 +13,12 @@
 //! workspace happens to unify to. Since every layer is a module of one crate
 //! now, this is the only place that distinction can be asserted: `dep:` entries
 //! in the feature table are the crate boundary.
+//!
+//! It runs **without** `--offline` on purpose: the `otlp` closure is one the
+//! build deliberately does not use, so on a cold cache its manifests are not
+//! there and an offline resolution fails with "failed to download". Fetching is a
+//! no-op once cached; opting out of resolution is what this test is for, not
+//! opting out of the network.
 
 use std::process::Command;
 
@@ -27,7 +33,6 @@ fn tree(features: &[&str]) -> String {
             "normal",
             "--prefix",
             "none",
-            "--offline",
         ])
         .args(features)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
