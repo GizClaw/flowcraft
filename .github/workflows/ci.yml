@@ -563,6 +563,9 @@ jobs:
           workspaces: rust
       - name: Clippy for the local-only shape
         working-directory: rust
+        # PowerShell is the default shell on Windows and does not continue a
+        # command with a trailing backslash.
+        shell: bash
         run: |
           cargo clippy -p flowcraft --all-targets \
             --no-default-features --features workspace -- -D warnings
@@ -585,17 +588,36 @@ jobs:
       # cannot use the `workspace`-only shape above: its endpoints are gRPC over
       # the kernel's transport, which is a unix socket on unix and a `dns` target
       # elsewhere. Two steps, because the two halves fail for different reasons.
-      - name: Compile the sandbox capability
+      # The Win32 mechanisms on their own: job creation, limits, accounting, and
+      # what the kernel reports when a cap ended the tree.
+      - name: Windows job objects
         working-directory: rust
-        run: cargo check -p flowcraft --all-targets --features sandbox,wire
+        run: cargo test -p flowcraft-win32
+      # A control experiment before the implementation it guards: if the reference
+      # ConPTY backend cannot reach a pseudo console on this runner, a failure in
+      # ours says nothing about our code.
+      - name: ConPTY control (reference backend)
+        working-directory: rust
+        run: >
+          cargo test -p flowcraft --features sandbox,wire
+          --test sandbox_win_conpty_control
+      # The session semantics only a job object can provide: a terminate that
+      # reaches descendants, and a cap reported as a budget rather than as a
+      # mystery exit code.
+      - name: Sandbox sessions on Windows
+        working-directory: rust
+        run: >
+          cargo test -p flowcraft --features sandbox,wire
+          --test sandbox_windows
       # The semantics that must hold on every platform: matching, folding,
       # cursors, the scope checks, the error codes, and the plan/argv builders.
       # Everything left out of this list needs a platform mechanism the crate does
       # not have on Windows yet, and each reason is named here rather than left
       # implicit — the list may only shrink:
       #
-      #   caps::sandbox::session::spawn, session::terminal  a pty and a process
-      #       group (signals) — ConPTY + job objects, Windows plan W1/W2
+      #   caps::sandbox::session::spawn                     its fixtures run a
+      #       POSIX shell; the mechanism itself is `flowcraft-win32` and is
+      #       covered by the two suites above
       #   caps::sandbox::local, exec                        need a POSIX shell to
       #       run (`sh -c`); the Windows fixtures are part of W2
       #   caps::sandbox::net::proxy, net::bridge            TCP proxy tests pass
@@ -618,6 +640,7 @@ jobs:
             caps::sandbox::codes \
             caps::sandbox::session::log \
             caps::sandbox::session::registry \
+            caps::sandbox::session::terminal \
             caps::sandbox::policy::allowlist \
             caps::sandbox::policy::readonly \
             caps::sandbox::journal::ring \
