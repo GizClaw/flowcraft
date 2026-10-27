@@ -293,6 +293,26 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if len(shards) == 0 {
 		return []component.Candidate{}, nil
 	}
+	// A plan of one shard is materialized once and both passes read it, so no
+	// write can land between the statistics and the scoring; a plan of several
+	// shards re-reads them because holding them all is the memory the shards
+	// exist to bound. Each shard is read atomically either way.
+	var (
+		single      snapshot
+		singleFound bool
+	)
+	if len(shards) == 1 {
+		single, singleFound, err = index.materialize(ctx, request.Scope, shards[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	load := func(shard string) (snapshot, bool, error) {
+		if len(shards) == 1 {
+			return single, singleFound, nil
+		}
+		return index.materialize(ctx, request.Scope, shard)
+	}
 	// Pass 1 accumulates the scoring set's statistics: how many records the
 	// selector admits and how many of them link each entity. Both are
 	// properties of the set, not of one shard, so they have to be counted
@@ -302,7 +322,7 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	documents := 0
 	frequency := make(map[string]int)
 	for _, shard := range shards {
-		build, found, err := index.materialize(ctx, request.Scope, shard)
+		build, found, err := load(shard)
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +354,7 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	// is the one a single table holding every planned shard would produce.
 	collected := make([][]component.Candidate, 0, len(shards))
 	for _, shard := range shards {
-		build, found, err := index.materialize(ctx, request.Scope, shard)
+		build, found, err := load(shard)
 		if err != nil {
 			return nil, err
 		}

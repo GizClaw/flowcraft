@@ -288,7 +288,11 @@ read, the merge is over the same scoring set a single table would have given
 it, and nothing is truncated to bound the fan-out. It is the expensive path by
 construction -- it reads what the scope holds -- and BM25 pays it in two passes
 (set statistics first, then per-shard scoring) so the memory it needs is a term
-table and a top-k heap rather than the whole corpus.
+table and a top-k heap rather than the whole corpus. A plan of one shard is
+read once and scored from that reading, so a conversation query is atomic the
+way a single-table read was; only a plan of several shards settles the set
+statistics first and re-reads for scoring, where a write that lands between the
+two passes can weigh a record against statistics that did not count it.
 
 ## Derivation generations
 

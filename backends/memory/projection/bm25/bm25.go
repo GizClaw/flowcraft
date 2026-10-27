@@ -313,6 +313,28 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if len(shards) == 0 {
 		return []component.Candidate{}, nil
 	}
+	// A plan of one shard is materialized once and both passes read it: one
+	// table fits the budget by construction, and scoring that table is the
+	// read a single-table lane gave -- no write can land between the
+	// statistics and the scoring. A plan of several shards cannot hold them
+	// all (that is the memory the shards bound), so the passes re-read each
+	// shard, and every shard is still read atomically on its own.
+	var (
+		single      snapshot
+		singleFound bool
+	)
+	if len(shards) == 1 {
+		single, singleFound, err = index.materialize(ctx, request.Scope, shards[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	load := func(shard string) (snapshot, bool, error) {
+		if len(shards) == 1 {
+			return single, singleFound, nil
+		}
+		return index.materialize(ctx, request.Scope, shard)
+	}
 	// Pass 1 accumulates the statistics of the whole scoring set: how many
 	// records the selector admits, how long they are together, and how many of
 	// them contain each term. BM25's document frequencies and average length
@@ -326,7 +348,7 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	k1, b := index.k1, index.b
 	stamped := false
 	for _, shard := range shards {
-		build, found, err := index.materialize(ctx, request.Scope, shard)
+		build, found, err := load(shard)
 		if err != nil {
 			return nil, err
 		}
@@ -374,7 +396,7 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	// would produce: same scores, same order, same truncation.
 	collected := make([][]component.Candidate, 0, len(shards))
 	for _, shard := range shards {
-		build, found, err := index.materialize(ctx, request.Scope, shard)
+		build, found, err := load(shard)
 		if err != nil {
 			return nil, err
 		}
