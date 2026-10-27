@@ -412,6 +412,13 @@ func (settings Settings) anchorObservedAt() bool {
 	return settings.ObservedAtAnchor == nil || *settings.ObservedAtAnchor
 }
 
+// selectorSemantics names what a request's selectors mean in this build. It is
+// stamped into the retrieval summary because the summary is what two runs are
+// compared by: a run whose selectors narrowed differently produced its
+// candidates by another rule, and the reading is not comparable however equal
+// the weights were.
+const selectorSemantics = "strict-v1"
+
 // retrievalSummary renders the retrieval-side configuration -- lane weights and
 // fusion, the bm25 parameters, source quotes and rerank -- as one stable JSON
 // object with defaults applied. The derivation policy digest covers what
@@ -434,11 +441,15 @@ func (settings Settings) retrievalSummary() (string, error) {
 		served = &settings.Profile
 	}
 	encoded, err := json.Marshal(struct {
-		Lanes     LanesSettings     `json:"lanes"`
-		BM25      BM25Settings      `json:"bm25"`
-		Retrieval RetrievalSettings `json:"retrieval"`
-		Profile   *ProfileSettings  `json:"profile,omitempty"`
-	}{Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval, Profile: served})
+		Lanes             LanesSettings     `json:"lanes"`
+		BM25              BM25Settings      `json:"bm25"`
+		Retrieval         RetrievalSettings `json:"retrieval"`
+		Profile           *ProfileSettings  `json:"profile,omitempty"`
+		SelectorSemantics string            `json:"selector_semantics"`
+	}{
+		Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval, Profile: served,
+		SelectorSemantics: selectorSemantics,
+	})
 	if err != nil {
 		return "", fmt.Errorf("retrieval summary: %w", err)
 	}

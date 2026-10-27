@@ -10,6 +10,22 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
 )
 
+// TestRetrievalSummaryNamesTheSelectorSemantics pins the one part of the
+// summary that is not configuration: what a selector means. Two runs are
+// compared by their summaries, so a run whose selectors narrowed by another
+// rule must not look like this one however its weights were set.
+func TestRetrievalSummaryNamesTheSelectorSemantics(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	summary, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, `"selector_semantics":"strict-v1"`) {
+		t.Fatalf("summary does not name the selector semantics: %s", summary)
+	}
+}
+
 // TestCompactionSettingsTravelFromConfigurationToTheLanesAndTheFootprint pins
 // the compaction policy's three surfaces: the configured fields are what the
 // lanes run with, a field left at zero stays the store's default instead of
@@ -98,9 +114,11 @@ func TestProfileSettingsTravelWithTheBlock(t *testing.T) {
 
 // TestRetrievalSummaryRendersTheResolvedSettings pins the fingerprint value the
 // derivation policy digest does not cover: lane weights and fusion, the bm25
-// parameters, source quotes and rerank, as the settings resolved them. The
-// exact strings are the point -- a knob added to Lanes, BM25 or Retrieval
-// changes this output, and this test then has to be updated on purpose.
+// parameters, source quotes and rerank, as the settings resolved them, and the
+// selectors' semantics closing the object -- not configuration, but what the
+// rest of it meant. The exact strings are the point -- a knob added to Lanes,
+// BM25 or Retrieval changes this output, and this test then has to be updated
+// on purpose.
 func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	settings := Settings{}
 	settings.applyDefaults()
@@ -108,7 +126,7 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"lanes":{"vector":{"weight":1},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"rrf"},"bm25":{},"retrieval":{}}`
+	want := `{"lanes":{"vector":{"weight":1},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"rrf"},"bm25":{},"retrieval":{},"selector_semantics":"strict-v1"}`
 	if summary != want {
 		t.Fatalf("default summary = %s, want %s", summary, want)
 	}
@@ -122,7 +140,7 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","cache":{"max_bytes":1073741824}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","cache":{"max_bytes":1073741824}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true},"selector_semantics":"strict-v1"}`
 	if summary != want {
 		t.Fatalf("tuned summary = %s, want %s", summary, want)
 	}
@@ -202,7 +220,7 @@ func TestAssemblyStampsTheRetrievalSummary(t *testing.T) {
   "retrieval": {"source_quotes": 3, "rerank": true}
 }`)
 	t.Cleanup(func() { _ = assembly.Close() })
-	want := `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want := `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true},"selector_semantics":"strict-v1"}`
 	if got := assembly.RetrievalSummary(); got != want {
 		t.Fatalf("RetrievalSummary() = %s, want %s", got, want)
 	}

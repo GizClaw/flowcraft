@@ -255,6 +255,41 @@ With the workspace driver all state lives under the bound workspace:
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
 
+## Query selectors
+
+A query names what it wants to read with two selectors, and each one decides
+which kinds of state it can reach: a named selector narrows its own family, and
+the other family does not pass at all.
+
+| Request | Reads |
+| --- | --- |
+| `conversation_id` only | that conversation's messages and facts |
+| `dataset_ids` only | those datasets' documents |
+| both | both of the above |
+| neither | every shard in the scope (global recall) |
+
+The shard plan is the same rule seen from storage: a conversation request reads
+`c:<id>` (plus `d:<id>` for each dataset it names), and a request with no
+selector reads all of them. The two axes used to be independent -- a request
+that named only a conversation also read every document in the scope, because
+the dataset axis was the absent one and nothing about documents was narrowed.
+A caller that chats and queries a knowledge base therefore names `dataset_ids`
+on the request; seeing the library by accident is no longer a read a request
+gets. The semantics are stamped into the retrieval summary as
+`selector_semantics: strict-v1`, so two runs are comparable only when their
+selectors meant the same thing.
+
+Summaries and the resident profile block are not projection state: a summary
+request narrows by its own per-conversation manifest and the profile block is
+served whole, so neither takes part in the plan.
+
+A global recall is exact rather than approximate: every shard in the scope is
+read, the merge is over the same scoring set a single table would have given
+it, and nothing is truncated to bound the fan-out. It is the expensive path by
+construction -- it reads what the scope holds -- and BM25 pays it in two passes
+(set statistics first, then per-shard scoring) so the memory it needs is a term
+table and a top-k heap rather than the whole corpus.
+
 ## Derivation generations
 
 Everything derived from one conversation belongs to a **generation**, whose
