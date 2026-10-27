@@ -2,7 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # `main` is what ships; `rewrite/rust-platform` is where the Rust platform
+    # lands first, so a pull request into it must not be the one place without CI.
+    branches: [main, rewrite/rust-platform]
   workflow_dispatch:
     inputs:
       base_sha:
