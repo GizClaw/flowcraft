@@ -299,7 +299,20 @@ impl Pty {
         info.lpAttributeList = attributes.raw();
         let mut process = PROCESS_INFORMATION::default();
 
-        let application: *const u16 = std::ptr::null();
+        // The application is named explicitly, not searched from the command
+        // line: `CreateProcessAsUserW` does not resolve it the way
+        // `CreateProcessW` does, and a contained token has no profile to
+        // search with — the symptom is ERROR_FILE_NOT_FOUND on a path that
+        // exists.
+        let application_wide: Vec<u16> = command
+            .program
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // The binding above must outlive the call: a pointer taken from a temporary
+        // Vec would dangle the moment the statement ended, which is a use-after-free
+        // that compiles.
+        let application: *const u16 = application_wide.as_ptr();
         let line = command_line.as_mut_ptr();
         let security: *const SECURITY_ATTRIBUTES = std::ptr::null();
         let environment_block = environment
