@@ -99,11 +99,12 @@ mod tests {
 
     #[tokio::test]
     async fn reads_an_existing_variable_through_the_prefix() {
-        // `HOME` is set in every supported test environment.
+        // `PATH` is the variable every platform this crate builds for sets;
+        // `HOME` is unix spelling and Windows leaves it unset.
         let store = EnvStore::new("");
-        assert!(store.lookup("HOME").await.unwrap().is_some());
+        assert!(store.lookup("PATH").await.unwrap().is_some());
         let store = EnvStore::new("FLOWCRAFT_TEST_");
-        assert_eq!(store.lookup("HOME").await.unwrap(), None);
+        assert_eq!(store.lookup("PATH").await.unwrap(), None);
     }
 
     #[tokio::test]
