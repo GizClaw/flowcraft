@@ -258,6 +258,17 @@ mod tests {
         // ancestors are granted rather than just `bin`.
         crate::acl::grant_with_ancestors(&bin, &container, crate::Access::Read)
             .expect("grant tools");
+        // The walk's first hop is the volume root. Desktop Windows grants
+        // `ALL APPLICATION PACKAGES` read and execute on `C:\` by default; a Server
+        // image may not, and the loader then reports "not found" at the first hop —
+        // which is the failure this experiment separates from "a container cannot be
+        // started at all".
+        crate::acl::grant(
+            std::path::Path::new(r"C:\"),
+            &container,
+            crate::Access::Read,
+        )
+        .expect("grant the volume root");
         crate::acl::grant(&writable, &container, crate::Access::ReadWrite)
             .expect("grant workspace");
 
