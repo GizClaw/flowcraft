@@ -23,17 +23,25 @@
 //! dialling direct. `proxy` mode without an upstream is a deny-list proxy, which
 //! is what it does today.
 
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
+use super::ProxyLimits;
 use super::matcher::Matcher;
 use crate::caps::sandbox::contract::{NetMode, NetPolicy};
 
@@ -131,6 +139,8 @@ pub(crate) struct Config {
     pub(crate) policy: NetPolicy,
     pub(crate) listen: Listen,
     pub(crate) audit: Option<Audit>,
+    /// The bounds every live tunnel is held to; see [`ProxyLimits`].
+    pub(crate) limits: ProxyLimits,
 }
 
 impl std::fmt::Debug for Config {
@@ -138,6 +148,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("sandbox.ProxyConfig")
             .field("mode", &self.policy.mode)
             .field("listen", &self.listen)
+            .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
 }
@@ -184,10 +195,16 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
     let matcher = Matcher::new(&config.policy)?;
     let mode = config.policy.mode;
     let audit = config.audit;
+    let limits = config.limits;
     let shared = Arc::new(Shared {
         matcher,
         mode,
         audit,
+        // Exactly the configured slots. Zero refuses every connection, which is
+        // the fail-closed reading of a limit that settings validation rejects; it
+        // is never "unbounded".
+        permits: Arc::new(Semaphore::new(limits.max_connections)),
+        limits,
     });
 
     match config.listen {
@@ -252,9 +269,21 @@ struct Shared {
     matcher: Matcher,
     mode: NetMode,
     audit: Option<Audit>,
+    /// One permit per live forwarded connection. Refusing to hand one out is what
+    /// keeps a burst of connections from growing the task set without bound.
+    permits: Arc<Semaphore>,
+    limits: ProxyLimits,
 }
 
 impl Shared {
+    /// Take a slot for one live tunnel, or report that none is free.
+    ///
+    /// `try_acquire` rather than `acquire`: a connection over the cap is refused
+    /// now, because waiting would turn a latency problem into a memory problem.
+    fn reserve(&self) -> Option<OwnedSemaphorePermit> {
+        self.permits.clone().try_acquire_owned().ok()
+    }
+
     /// Decide one destination and record it.
     fn decide(&self, host: &str, port: u16) -> super::matcher::Verdict {
         // Resolve only when a rule needs an address; a hostname-only policy must
@@ -379,6 +408,14 @@ where
         let Some(endpoint) = authorize(&shared, &host, port) else {
             return deny(&mut stream, &shared, &host, port).await;
         };
+        let Some(_permit) = shared.reserve() else {
+            return fail(
+                &mut stream,
+                503,
+                "the proxy is at its connection limit; retry shortly",
+            )
+            .await;
+        };
         let tunnel = connect(endpoint).await;
         let Ok(tunnel) = tunnel else {
             return fail(
@@ -392,7 +429,7 @@ where
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
             .map_err(Error::from)?;
-        return splice(stream, tunnel).await;
+        return splice(stream, tunnel, &shared.limits).await;
     }
 
     // Plain HTTP: absolute-form carries the target, origin-form needs `Host`.
@@ -419,6 +456,14 @@ where
     };
     let Some(endpoint) = authorize(&shared, &host, port) else {
         return deny(&mut stream, &shared, &host, port).await;
+    };
+    let Some(_permit) = shared.reserve() else {
+        return fail(
+            &mut stream,
+            503,
+            "the proxy is at its connection limit; retry shortly",
+        )
+        .await;
     };
     let Ok(upstream) = connect(endpoint).await else {
         return fail(
@@ -459,7 +504,7 @@ where
         .write_all(rewritten.as_bytes())
         .await
         .map_err(Error::from)?;
-    splice(stream, upstream).await
+    splice(stream, upstream, &shared.limits).await
 }
 
 /// The dial target a decision authorises.
@@ -516,13 +561,13 @@ where
     S: AsyncWrite + Unpin,
 {
     let body = format!("{message}\n");
+    let status = match code {
+        403 => "Forbidden",
+        503 => "Service Unavailable",
+        _ => "Bad Gateway",
+    };
     let head = format!(
-        "HTTP/1.1 {code} {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        if code == 403 {
-            "Forbidden"
-        } else {
-            "Bad Gateway"
-        },
+        "HTTP/1.1 {code} {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -532,14 +577,177 @@ where
     stream.shutdown().await.map_err(Error::from)
 }
 
-/// Copy both directions until either side closes.
-async fn splice<A, B>(mut client: A, mut upstream: B) -> Result<()>
+/// Copy both directions until the tunnel ends or outlives one of its bounds.
+///
+/// `copy_bidirectional` only knows when the copies finish, not whether they are
+/// making progress, so the idle and lifetime bounds are enforced by watching
+/// [`Observed`]: a tunnel that moves no bytes for `idle_timeout`, or stays open
+/// for `max_lifetime` however busy it is, has both directions closed.
+async fn splice<A, B>(client: A, upstream: B, limits: &ProxyLimits) -> Result<()>
 where
     A: AsyncRead + AsyncWrite + Unpin + Send,
     B: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
-    Ok(())
+    // `copy_bidirectional` has no idle notion: it bounds how much is copied, not
+    // the gap between bytes, so `timeout(max_lifetime, copy_bidirectional(..))`
+    // would kill a long-poll tunnel that is idle by design but alive. The
+    // wrapper records when a byte last moved — in either direction, since every
+    // byte is a completed read on one side — and the two bounds are *raced*
+    // against the copy rather than wrapped around it.
+    let activity = Arc::new(Activity::new());
+    let mut client = Observed {
+        inner: client,
+        activity: Arc::clone(&activity),
+    };
+    let mut upstream = Observed {
+        inner: upstream,
+        activity: Arc::clone(&activity),
+    };
+    let copy = tokio::io::copy_bidirectional(&mut client, &mut upstream);
+    tokio::select! {
+        copied = copy => {
+            // A reset is the client's own business; anything else is worth a
+            // line, because it ended a tunnel the caller expected to work.
+            if let Err(error) = copied
+                && error.kind() != std::io::ErrorKind::ConnectionReset
+            {
+                tracing::debug!(%error, "sandbox: proxy tunnel ended early");
+            }
+            Ok(())
+        }
+        bound = bound_exceeded(Arc::clone(&activity), limits) => {
+            // Returning drops both halves, which closes both directions: leaving
+            // one half-closed would keep a descriptor alive past the tunnel.
+            match bound {
+                Bound::Idle => tracing::debug!(
+                    idle_secs = limits.idle_timeout.as_secs(),
+                    "sandbox: proxy tunnel closed after an idle period"
+                ),
+                Bound::Lifetime => tracing::debug!(
+                    lifetime_secs = limits.max_lifetime.as_secs(),
+                    "sandbox: proxy tunnel closed at its lifetime cap"
+                ),
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Why a splice stopped, where it stopped itself rather than the client.
+#[derive(Debug, Clone, Copy)]
+enum Bound {
+    Idle,
+    Lifetime,
+}
+
+/// What the two time bounds count: when the tunnel opened, and when a byte last
+/// moved through it.
+///
+/// The offsets are milliseconds from `opened` because an `Instant` does not fit
+/// an atomic, and the clock is the tokio one so a paused test clock measures the
+/// same time the watchdog waits on.
+struct Activity {
+    opened: Instant,
+    last_millis: AtomicU64,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Self {
+            opened: Instant::now(),
+            last_millis: AtomicU64::new(0),
+        }
+    }
+
+    /// A byte moved: every byte in either direction is a completed read on one
+    /// side, so the read path is the only place that has to touch this.
+    fn touch(&self) {
+        let millis = self.opened.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        self.last_millis.store(millis, Ordering::Relaxed);
+    }
+
+    fn last(&self) -> Instant {
+        self.opened + Duration::from_millis(self.last_millis.load(Ordering::Relaxed))
+    }
+}
+
+/// Resolves when the tunnel has been quiet for `idle_timeout` or open for
+/// `max_lifetime`, whichever comes first.
+///
+/// The deadline is recomputed on every wake-up, so a byte that lands while the
+/// watchdog sleeps refreshes the idle deadline without restarting a task. A
+/// disabled bound (`0`) is left out of the comparison; with both disabled this
+/// never resolves, because only the client ending the tunnel can.
+async fn bound_exceeded(activity: Arc<Activity>, limits: &ProxyLimits) -> Bound {
+    loop {
+        let now = Instant::now();
+        let idle_at =
+            (!limits.idle_timeout.is_zero()).then(|| activity.last() + limits.idle_timeout);
+        let lifetime_at =
+            (!limits.max_lifetime.is_zero()).then(|| activity.opened + limits.max_lifetime);
+        let next = match (idle_at, lifetime_at) {
+            (Some(idle), Some(lifetime)) => {
+                if lifetime < idle {
+                    (lifetime, Bound::Lifetime)
+                } else {
+                    (idle, Bound::Idle)
+                }
+            }
+            (Some(idle), None) => (idle, Bound::Idle),
+            (None, Some(lifetime)) => (lifetime, Bound::Lifetime),
+            (None, None) => return std::future::pending().await,
+        };
+        if next.0 <= now {
+            return next.1;
+        }
+        tokio::time::sleep_until(next.0).await;
+    }
+}
+
+/// A stream that records when a byte last moved through it.
+///
+/// Wrapping both ends is what gives `copy_bidirectional` an idle notion: the
+/// copies keep their existing half-close behaviour, and the wrapper is the only
+/// place that knows they are still making progress.
+struct Observed<S> {
+    inner: S,
+    activity: Arc<Activity>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Observed<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &poll
+            && buf.filled().len() > before
+        {
+            this.activity.touch();
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Observed<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
 }
 
 /// `host:port`, `host`, `[::1]:80`.
@@ -643,6 +851,15 @@ where
             .map_err(Error::from)?;
         return Ok(());
     };
+    let Some(_permit) = shared.reserve() else {
+        // 0x01 = general SOCKS server failure: the protocol has no "busy" code,
+        // and 0x02 would misreport a policy denial as the reason.
+        stream
+            .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .map_err(Error::from)?;
+        return Ok(());
+    };
     let Ok(upstream) = connect(target).await else {
         stream
             .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -654,7 +871,7 @@ where
         .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
         .await
         .map_err(Error::from)?;
-    splice(stream, upstream).await
+    splice(stream, upstream, &shared.limits).await
 }
 
 #[cfg(test)]
@@ -761,6 +978,7 @@ mod tests {
                 policy,
                 listen: Listen::Loopback,
                 audit: None,
+                limits: ProxyLimits::default(),
             }))
             .expect_err("not implemented");
         assert_eq!(error.kind(), crate::error::ErrorKind::NotAvailable);
@@ -775,7 +993,8 @@ mod tests {
         }
     }
 
-    /// A loopback server that echoes a fixed greeting, so a tunnel is observable.
+    /// A loopback server that echoes everything it reads, so a tunnel is
+    /// observable for as long as the client keeps it busy.
     async fn echo() -> (u16, JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -783,13 +1002,77 @@ mod tests {
             while let Ok((mut stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
                     let mut buffer = [0u8; 64];
-                    if let Ok(read) = stream.read(&mut buffer).await {
-                        let _ = stream.write_all(&buffer[..read]).await;
+                    while let Ok(read) = stream.read(&mut buffer).await {
+                        if read == 0 || stream.write_all(&buffer[..read]).await.is_err() {
+                            break;
+                        }
                     }
                 });
             }
         });
         (port, handle)
+    }
+
+    fn allow_loopback(port: u16) -> NetPolicy {
+        policy(
+            NetMode::AllowList,
+            vec![NetRule {
+                action: NetAction::Allow,
+                host: "127.0.0.1".to_owned(),
+                port,
+                reason: None,
+            }],
+        )
+    }
+
+    async fn proxy_with(policy: NetPolicy, limits: ProxyLimits) -> Proxy {
+        start(Config {
+            policy,
+            listen: Listen::Loopback,
+            audit: None,
+            limits,
+        })
+        .await
+        .expect("proxy")
+    }
+
+    /// Open a `CONNECT` tunnel, or report that the proxy refused it with a 503.
+    async fn tunnel(proxy_port: u16, port: u16) -> Option<TcpStream> {
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        client.write_all(request.as_bytes()).await.expect("write");
+        let mut head = vec![0u8; 39];
+        client.read_exact(&mut head).await.expect("head");
+        let head = String::from_utf8_lossy(&head).into_owned();
+        if head.starts_with("HTTP/1.1 200") {
+            Some(client)
+        } else {
+            assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+            None
+        }
+    }
+
+    /// Run a SOCKS5 `CONNECT` and return the client plus the reply code.
+    async fn socks5_connect(proxy_port: u16, port: u16) -> (TcpStream, u8) {
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        client
+            .write_all(&[0x05, 0x01, 0x00])
+            .await
+            .expect("greeting");
+        let mut method = [0u8; 2];
+        client.read_exact(&mut method).await.expect("method");
+        assert_eq!(method, [0x05, 0x00]);
+        let mut request = vec![0x05, 0x01, 0x00, 0x01];
+        request.extend_from_slice(&[127, 0, 0, 1]);
+        request.extend_from_slice(&port.to_be_bytes());
+        client.write_all(&request).await.expect("request");
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await.expect("reply");
+        (client, reply[1])
     }
 
     #[tokio::test]
@@ -807,6 +1090,7 @@ mod tests {
             ),
             listen: Listen::Loopback,
             audit: None,
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
@@ -851,6 +1135,7 @@ mod tests {
             audit: Some(Arc::new(move |decision: &Decision| {
                 recorded.lock().expect("lock").push(decision.clone());
             })),
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
@@ -898,6 +1183,7 @@ mod tests {
             policy: policy(NetMode::Proxy, vec![]),
             listen: Listen::Loopback,
             audit: None,
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
@@ -936,6 +1222,7 @@ mod tests {
             ),
             listen: Listen::Loopback,
             audit: None,
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
@@ -974,6 +1261,7 @@ mod tests {
             policy: policy(NetMode::AllowList, vec![]),
             listen: Listen::Loopback,
             audit: None,
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
@@ -998,6 +1286,222 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connection_over_the_concurrency_cap_is_refused_at_once() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                max_connections: 2,
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+
+        // The first `max_connections` tunnels are accepted and carry bytes.
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut client = tunnel(proxy_port, port).await.expect("under the cap");
+            client.write_all(b"ping").await.expect("write");
+            let mut echoed = [0u8; 4];
+            client.read_exact(&mut echoed).await.expect("echo");
+            assert_eq!(&echoed, b"ping");
+            held.push(client);
+        }
+
+        // The next one is refused now rather than parked. `tunnel` asserts the
+        // 200 head, so this one is read whole to see the 503.
+        let mut refused = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        refused.write_all(request.as_bytes()).await.expect("write");
+        let mut response = String::new();
+        refused.read_to_string(&mut response).await.expect("read");
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+
+        // A refusal is not a teardown: the tunnels already holding slots work.
+        held[0].write_all(b"pong").await.expect("write");
+        let mut echoed = [0u8; 4];
+        held[0].read_exact(&mut echoed).await.expect("echo");
+        assert_eq!(&echoed, b"pong");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_socks5_handshake_over_the_concurrency_cap_is_refused_in_the_protocol() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                max_connections: 1,
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+
+        let (held, code) = socks5_connect(proxy_port, port).await;
+        assert_eq!(code, 0x00, "the first tunnel fits");
+        let (_, code) = socks5_connect(proxy_port, port).await;
+        assert_eq!(
+            code, 0x01,
+            "a capacity refusal is a general SOCKS5 failure, not a policy denial"
+        );
+        drop(held);
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_does_not_keep_its_slot() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                max_connections: 1,
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+
+        // Fill the only slot, then refuse one that never held a permit.
+        let held = tunnel(proxy_port, port).await.expect("first tunnel");
+        let mut refused = TcpStream::connect(("127.0.0.1", proxy_port))
+            .await
+            .expect("connect");
+        let request = format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        refused.write_all(request.as_bytes()).await.expect("write");
+        let mut response = String::new();
+        refused.read_to_string(&mut response).await.expect("read");
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        drop((held, refused));
+
+        // Closing the two connections releases the one permit; a refusal must
+        // not have kept a slot of its own, or this never gets in.
+        let mut accepted = None;
+        for _ in 0..100 {
+            if let Some(client) = tunnel(proxy_port, port).await {
+                accepted = Some(client);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            accepted.is_some(),
+            "a refused connection must not leak the permit it never held"
+        );
+        proxy.shutdown().await;
+    }
+
+    /// Real durations, not a paused clock: a paused tokio clock auto-advances
+    /// whenever the runtime has nothing to poll, and a real `TcpStream` makes it
+    /// idle between round trips — so a 60 s bound would fire after a few
+    /// milliseconds of wall time. The bound is about ordering, not about how long
+    /// the test waits, so 100 ms says the same thing and cannot flake.
+    #[tokio::test]
+    async fn an_idle_tunnel_is_closed_after_the_idle_timeout() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                idle_timeout: Duration::from_millis(100),
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+
+        // Fresh, the tunnel carries bytes.
+        client.write_all(b"ping").await.expect("write");
+        let mut echoed = [0u8; 4];
+        client.read_exact(&mut echoed).await.expect("echo");
+        assert_eq!(&echoed, b"ping");
+
+        // Then it moves nothing, and the idle bound closes both directions.
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(120), client.read(&mut byte)).await;
+        match read {
+            Ok(Ok(0)) | Ok(Err(_)) => {}
+            other => panic!("the idle tunnel must be closed: {other:?}"),
+        }
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_that_keeps_sending_is_not_closed_by_the_idle_timeout() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                idle_timeout: Duration::from_millis(300),
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+
+        // A byte every 50 ms for 400 ms: longer than the 300 ms idle bound, in
+        // gaps far shorter than it. A long-poll or SSE tunnel looks like this; a
+        // `timeout(idle, copy_bidirectional)` would have killed it at 300 ms.
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            client.write_all(b"x").await.expect("write");
+            let mut echoed = [0u8; 1];
+            client
+                .read_exact(&mut echoed)
+                .await
+                .expect("a tunnel that keeps sending must stay open");
+        }
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_busy_tunnel_is_closed_at_the_lifetime_cap() {
+        let (port, _server) = echo().await;
+        let proxy = proxy_with(
+            allow_loopback(port),
+            ProxyLimits {
+                max_lifetime: Duration::from_millis(200),
+                idle_timeout: Duration::from_secs(30),
+                ..ProxyLimits::default()
+            },
+        )
+        .await;
+        let proxy_port = proxy.endpoint().port().expect("port");
+        let mut client = tunnel(proxy_port, port).await.expect("tunnel");
+        let opened = Instant::now();
+
+        // Busy the whole time: never idle (30 s bound, 50 ms gaps), and still
+        // ended by the lifetime cap, because "busy forever" is still "never ends".
+        let mut closed = false;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if client.write_all(b"x").await.is_err() {
+                closed = true;
+                break;
+            }
+            let mut echoed = [0u8; 1];
+            if client.read_exact(&mut echoed).await.is_err() {
+                closed = true;
+                break;
+            }
+        }
+        assert!(
+            closed,
+            "a tunnel must not outlive max_lifetime just by staying busy"
+        );
+        assert!(
+            opened.elapsed() >= Duration::from_millis(200),
+            "the cap must not fire early: {:?}",
+            opened.elapsed()
+        );
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn a_unix_endpoint_is_bound_and_removed_on_shutdown() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("proxy.sock");
@@ -1005,6 +1509,7 @@ mod tests {
             policy: policy(NetMode::Proxy, vec![]),
             listen: Listen::Unix(path.clone()),
             audit: None,
+            limits: ProxyLimits::default(),
         })
         .await
         .expect("proxy");
