@@ -21,7 +21,6 @@ proto/
     ├── workspace/v1/workspace.proto
     ├── sandbox/v1/sandbox.proto
     ├── secret/v1/secret.proto
-    ├── checkpoint/v1/checkpoint.proto
     └── tool/v1/tool.proto         # a capability crafts/plugins provide
 ```
 

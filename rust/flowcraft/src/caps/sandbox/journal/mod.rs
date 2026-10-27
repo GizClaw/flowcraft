@@ -352,13 +352,19 @@ impl Engine {
                         let Some(mut folded) = fold.apply(raw) else {
                             continue;
                         };
-                        folded.path = relative(&root, &folded.path);
-                        folded.old_path = folded.old_path.map(|path| relative(&root, &path));
                         if !allows(&ops, folded.op) {
                             // Filtered: never an event, so never a gap either.
                             continue;
                         }
+                        // Identity first, from the *host* path. It used to run
+                        // after the rewrite below, which left a root-relative
+                        // path to be resolved against the process working
+                        // directory: `dev`/`ino`/`size` were therefore almost
+                        // always absent, and they are protocol fields the peer
+                        // needs to recognise a file by (device, inode).
                         let (dev, ino, size) = identity(Path::new(&folded.path));
+                        folded.path = relative(&root, &folded.path);
+                        folded.old_path = folded.old_path.map(|path| relative(&root, &path));
                         if let Ok(mut ring) = task_ring.lock() {
                             ring.push(
                                 folded.op,
@@ -559,6 +565,44 @@ mod tests {
         );
         let creates = ops.iter().filter(|op| **op == FileOp::Create).count();
         assert_eq!(creates, 1, "created and written is one create: {ops:?}");
+    }
+
+    /// `dev`/`ino`/`size` are protocol fields: a peer uses them to recognise
+    /// "this is the same file, renamed". They were computed from the
+    /// root-relative path, which resolved against the process working directory
+    /// and so was almost always absent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_created_file_carries_its_filesystem_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical");
+        let journal = Engine::open(&root, &Config::default()).expect("journal");
+        std::fs::write(root.join("identity.txt"), b"x").expect("write");
+
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            let batch = journal.read(0, 64).await.expect("read");
+            seen.extend(batch.events);
+            if seen.iter().any(|event| event.op == FileOp::Create) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        journal.close().await.expect("close");
+
+        let created = seen
+            .iter()
+            .find(|event| event.op == FileOp::Create)
+            .unwrap_or_else(|| panic!("no create in {seen:?}"));
+        assert!(
+            created.dev.is_some(),
+            "device is a protocol field: {created:?}"
+        );
+        assert!(
+            created.ino.is_some(),
+            "inode is a protocol field: {created:?}"
+        );
+        assert_eq!(created.size, Some(1), "the size at the time: {created:?}");
     }
 
     #[tokio::test]

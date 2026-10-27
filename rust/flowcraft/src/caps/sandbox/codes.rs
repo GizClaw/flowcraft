@@ -114,9 +114,11 @@ pub(crate) fn conflict(code: Code, message: impl Into<String>) -> Error {
 
 /// The grant does not allow the action.
 ///
-/// Only the grant-scope check and the unix terminate path call it, so a provider
-/// built off unix without `wire` legitimately has no caller.
-#[cfg_attr(not(any(unix, feature = "wire")), allow(dead_code))]
+/// The one caller is the grant-scope check, which is a `wire` item. A
+/// `sandbox`-without-`wire` build therefore has this function and no caller, by
+/// design rather than by accident — the capability is a provider there, and a
+/// provider has no grant scope to check.
+#[cfg_attr(not(feature = "wire"), allow(dead_code))]
 pub(crate) fn forbidden(code: Code, message: impl Into<String>) -> Error {
     Error::coded(ErrorKind::Forbidden, DOMAIN, code.as_str(), message)
 }

@@ -27,7 +27,7 @@ use std::time::Instant;
 use flowcraft::error::{Error, Result};
 use flowcraft::kernel::Target;
 use flowcraft::logerr;
-use http_body_util::{BodyExt as _, Full};
+use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
 use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode, header};
@@ -293,13 +293,11 @@ async fn answer(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let body = request
-        .into_body()
-        .collect()
-        .await
-        .map(|body| body.to_bytes())
-        .unwrap_or_default();
 
+    // Authenticate before the body is touched, and route before it is read:
+    // `collect()` on an unbounded body is an allocation primitive, and this
+    // surface answers callers that have not proven anything yet. Both checks
+    // below are header-only, so a refused request costs a header parse.
     if !guard.allows(presented.as_deref()) {
         return Ok(reply(
             StatusCode::UNAUTHORIZED,
@@ -322,12 +320,25 @@ async fn answer(
         ));
     };
 
-    let mut request = json!({ "command": command });
+    let mut command_request = json!({ "command": command });
     if command == "revoke" {
-        // The only verb with an argument, and only one: the session.
+        // The only verb with an argument, and the only one whose body is read
+        // at all: `revoke` takes one session id.
+        let body = match read_limited(request.into_body()).await {
+            Ok(body) => body,
+            Err(status) => {
+                return Ok(reply(
+                    status,
+                    json!({
+                        "ok": false,
+                        "error": format!("admin: request body refused ({status})"),
+                    }),
+                ));
+            }
+        };
         let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         if let Some(session) = parsed.get("session") {
-            request["session"] = session.clone();
+            command_request["session"] = session.clone();
         }
     }
 
@@ -335,8 +346,32 @@ async fn answer(
     // share a trace, so "who asked for the reload" and "what the reload did"
     // stop being two unrelated stories.
     let span = tracing::info_span!("admin", flowcraft.command = command);
-    let response = dispatch(&request, state).instrument(span).await;
+    let response = dispatch(&command_request, state).instrument(span).await;
     Ok(reply(StatusCode::OK, response))
+}
+
+/// The most of a request body the admin surface will read.
+///
+/// `revoke` sends one session id, so this is generous by three orders of
+/// magnitude. The bound exists because a request that is refused *before* it is
+/// authenticated must not be able to make the daemon allocate: an unbounded
+/// `collect()` is an OOM primitive reachable without a token.
+const MAX_ADMIN_BODY: usize = 64 * 1024;
+
+/// Read one body under [`MAX_ADMIN_BODY`].
+///
+/// Returned as a status because the caller turns it into the same JSON shape as
+/// every other refusal; an oversized body is `413`, a broken one `400`.
+async fn read_limited<B>(body: B) -> std::result::Result<Bytes, StatusCode>
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    match Limited::new(body, MAX_ADMIN_BODY).collect().await {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(error) if error.is::<LengthLimitError>() => Err(StatusCode::PAYLOAD_TOO_LARGE),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
+    }
 }
 
 /// The verb a method and path name, or `None` when the path is not one.
@@ -547,5 +582,25 @@ mod tests {
         assert!(peer_allowed(1000, 1000));
         assert!(peer_allowed(0, 1000));
         assert!(!peer_allowed(1001, 1000));
+    }
+
+    /// The bound is what makes an unauthenticated caller unable to make the
+    /// daemon allocate: without it, `collect()` buffers whatever arrives.
+    #[tokio::test]
+    async fn a_body_over_the_bound_is_refused() {
+        let body = Full::new(Bytes::from(vec![b'x'; MAX_ADMIN_BODY + 1]));
+        assert_eq!(
+            read_limited(body).await.expect_err("oversized"),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_within_the_bound_is_returned_whole() {
+        let body = Full::new(Bytes::from_static(b"{\"session\":\"s-1\"}"));
+        assert_eq!(
+            read_limited(body).await.expect("read"),
+            Bytes::from_static(b"{\"session\":\"s-1\"}")
+        );
     }
 }

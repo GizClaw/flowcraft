@@ -8,13 +8,16 @@
 //!
 //! The pty itself comes from [`flowcraft_win32::Pty`], not `portable-pty`, because
 //! the confinement phases need to own `CreateProcess`: the token (W3) and the app
-//! container (W4) are attached at creation time, and this phase needs
-//! `CREATE_NEW_PROCESS_GROUP` so a console event can address the tree.
+//! container (W4) are attached at creation time, and so is the job — a descendant
+//! forked before an after-the-fact assignment would be outside both the caps and
+//! `terminate`.
 //!
 //! Ctrl-C is a byte, not a call: `GenerateConsoleCtrlEvent` only reaches a group
 //! attached to the *caller's* console, and the child's console is a pseudo one.
 //! Writing `0x03` is what a keyboard does, and the console host turns it into
-//! `CTRL_C_EVENT` for the foreground group.
+//! `CTRL_C_EVENT` for the foreground group. That is also why the spawn sets no
+//! `CREATE_NEW_PROCESS_GROUP`: the flag exists to make a group addressable by a
+//! console event, and no console event can reach this one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

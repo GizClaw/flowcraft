@@ -249,10 +249,11 @@ impl Pty {
     /// (a pty tree is stopped by its job, and Ctrl-C is a byte), and an extended
     /// startup info so the console and the job travel as attributes.
     ///
-    /// (Historical note: `CREATE_NEW_PROCESS_GROUP` is *not* used — a console
-    /// event cannot address a pseudo console anyway.)
-    /// it makes the child the root of a group that a console event can address,
-    /// and it is the flag a library that owns spawning cannot be given.
+    /// (Historical note: `CREATE_NEW_PROCESS_GROUP` is *not* used. It would make
+    /// the child the root of a group that `GenerateConsoleCtrlEvent` could
+    /// address, but an event cannot reach a process attached to a pseudo console,
+    /// so the flag would buy nothing: Ctrl-C arrives as the byte `0x03`, and the
+    /// tree is stopped through its job rather than through a console event.)
     pub fn spawn(&mut self, launch: Launch<'_>) -> Result<Child, Error> {
         let Launch {
             command,

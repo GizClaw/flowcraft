@@ -6,12 +6,17 @@
 //! what makes "close the session" mean "nothing it started is still running":
 //! the job carries `KILL_ON_JOB_CLOSE`.
 //!
-//! Membership is inherited, so assigning the leader right after the spawn covers
-//! everything it forks. The one honest gap: a grandchild forked between `spawn`
-//! and the assignment is outside the job until it forks again. `CreateProcess`
-//! with `CREATE_SUSPENDED` would close that window and needs a creation flag the
-//! tokio spawn path does not expose; it is tracked as W1's follow-up rather than
-//! papered over.
+//! Membership is inherited, and the job is attached at creation time
+//! (`PROC_THREAD_ATTRIBUTE_JOB_LIST` in [`flowcraft_win32::process::spawn`] and
+//! [`flowcraft_win32::Pty::spawn`]), so there is no window in which the tree is
+//! outside the caps or outside `terminate`.
+//!
+//! What is decided *here* is policy: the cpu budget a `cpu_millicores` ceiling
+//! implies over a timeout, and the contract's vocabulary for a spent cap. How to
+//! ask whether a cap is spent belongs to the job itself
+//! ([`flowcraft_win32::Job::exceeded`]) — that answer is built on Win32
+//! accounting semantics, which is exactly the kind of knowledge this file could
+//! not own and could not test.
 
 use std::time::Duration;
 
@@ -22,8 +27,6 @@ use crate::error::{Error, Result};
 #[derive(Clone)]
 pub(crate) struct SessionJob {
     job: flowcraft_win32::Job,
-    /// What was asked for, so the counters can be compared against it.
-    limits: flowcraft_win32::Limits,
 }
 
 impl std::fmt::Debug for SessionJob {
@@ -45,10 +48,7 @@ impl SessionJob {
             cpu_budget: budget(limits, timeout)?,
         };
         let job = flowcraft_win32::Job::create(wanted).map_err(map)?;
-        Ok(Self {
-            job,
-            limits: wanted,
-        })
+        Ok(Self { job })
     }
 
     /// The job itself, for the one caller that attaches a child at creation
@@ -64,40 +64,22 @@ impl SessionJob {
 
     /// Whether the tree has spent its budget.
     ///
-    /// Two sources, in order of authority. The kernel's violation record is the
-    /// direct answer, but on this platform the legacy
-    /// `JobObjectLimitViolationInformation` query answers zeroed, so the counters
-    /// are what the answer is really built on: a tree whose cpu time has reached
-    /// the budget, or whose peak commit has reached the ceiling, is over it.
-    ///
-    /// A memory ceiling is subtler than cpu time: `JobMemoryLimit` makes
-    /// allocations fail past the ceiling rather than killing the tree, so a
-    /// program that never gives up has to be ended here, which is what makes the
-    /// contract's "over the cap ends the session" true on Windows too.
+    /// The question — "did this hit the cap or did it exit?" — is the job's to
+    /// answer, because the answer is built on Win32 accounting semantics: the
+    /// kernel's violation record answers zeroed on some hosts, `JobMemoryLimit`
+    /// makes allocations fail rather than killing the tree, and the fields a
+    /// caller asked for are not necessarily the ones in force. All of that lives
+    /// in [`flowcraft_win32::Job::exceeded`]; what is left here is the sandbox's
+    /// vocabulary for it.
     pub(crate) fn violation(&self) -> Option<ExitReason> {
-        match self.job.violation() {
-            Ok(Some(_)) => return Some(ExitReason::BudgetExceeded),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(%error, "sandbox: the job's violation state is unavailable");
-            }
-        }
-        let usage = match self.job.usage() {
-            Ok(usage) => usage,
+        match self.job.exceeded() {
+            Ok(Some(_)) => Some(ExitReason::BudgetExceeded),
+            Ok(None) => None,
             Err(error) => {
                 tracing::debug!(%error, "sandbox: the job's accounting is unavailable");
-                return None;
+                None
             }
-        };
-        let cpu_spent = self
-            .limits
-            .cpu_budget
-            .is_some_and(|budget| usage.user_time >= budget);
-        let memory_spent = self
-            .limits
-            .memory_bytes
-            .is_some_and(|cap| usage.peak_memory >= cap);
-        (cpu_spent || memory_spent).then_some(ExitReason::BudgetExceeded)
+        }
     }
 }
 

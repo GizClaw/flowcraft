@@ -34,6 +34,13 @@ pub const MARKER: &str = "$secret";
 /// How long a resolved value is reused by default.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(60);
 
+/// How long a *missing* name is remembered by default.
+///
+/// A minute is a long time to hide a secret that was created while the daemon
+/// was running, and a missing name is cheap to re-ask; a second keeps a hot
+/// loop over a still-missing secret from hammering the store.
+pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(1);
+
 /// How many names one store's cache holds by default.
 pub const DEFAULT_CAPACITY: usize = 256;
 
@@ -278,6 +285,7 @@ impl std::fmt::Debug for TableState {
 pub struct SecretTable {
     state: RwLock<TableState>,
     ttl: Duration,
+    negative_ttl: Duration,
     capacity: usize,
 }
 
@@ -306,6 +314,7 @@ impl SecretTable {
         Self {
             state: RwLock::new(TableState::default()),
             ttl: DEFAULT_TTL,
+            negative_ttl: DEFAULT_NEGATIVE_TTL,
             capacity: DEFAULT_CAPACITY,
         }
     }
@@ -327,6 +336,19 @@ impl SecretTable {
     #[must_use]
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = ttl;
+        self
+    }
+
+    /// Change how long a *missing* name is remembered.
+    ///
+    /// A miss is a hint, not an answer: a secret created after a failed lookup
+    /// (a rotation, another process, a management call this table never saw)
+    /// must not stay invisible for the full [`Self::with_ttl`] window. The
+    /// effective window is `min(ttl, negative_ttl)`, so this can only ever
+    /// shorten what the value policy already allowed.
+    #[must_use]
+    pub fn with_negative_ttl(mut self, negative_ttl: Duration) -> Self {
+        self.negative_ttl = negative_ttl;
         self
     }
 
@@ -529,6 +551,13 @@ impl SecretTable {
         let Ok(mut state) = self.state.write() else {
             return;
         };
+        // A negative entry expires sooner: see `with_negative_ttl`. `min` keeps
+        // this from ever outliving a positive entry under the same policy.
+        let ttl = if found {
+            self.ttl
+        } else {
+            self.ttl.min(self.negative_ttl)
+        };
         let entries = state.cache.entry(store.to_owned()).or_default();
         if !entries.contains_key(name) && entries.len() >= self.capacity {
             // Evict the entry closest to expiry: a live one is the cheapest to
@@ -546,7 +575,7 @@ impl SecretTable {
             CacheEntry {
                 value: value.to_owned(),
                 found,
-                expires: now + self.ttl,
+                expires: now + ttl,
             },
         );
     }
@@ -741,6 +770,41 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(table.resolve("s", "token").await.unwrap(), "s1");
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// A miss is a hint, not an answer.
+    ///
+    /// Regression: a missing name used to be cached for the full (default
+    /// minute-long) TTL, so a secret created by a rotation or by a management
+    /// call this table never saw stayed invisible long after it existed.
+    #[tokio::test]
+    async fn a_missing_name_is_remembered_for_the_shorter_window() {
+        #[derive(Debug)]
+        struct Late(std::sync::atomic::AtomicUsize);
+
+        #[async_trait]
+        impl SecretStore for Late {
+            async fn lookup(&self, name: &str) -> Result<Option<String>> {
+                let seen = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Missing the first time it is asked, present afterwards.
+                Ok((seen > 0 && name == "late").then(|| "now".to_owned()))
+            }
+        }
+
+        let store = Arc::new(Late(std::sync::atomic::AtomicUsize::new(0)));
+        let table = SecretTable::new()
+            .with_ttl(Duration::from_secs(60))
+            .with_negative_ttl(Duration::from_millis(10));
+        table.attach("s", None, true, store.clone()).unwrap();
+
+        assert!(table.resolve("s", "late").await.is_err());
+        // The cached miss still answers, without re-asking the store.
+        assert!(table.resolve("s", "late").await.is_err());
+        assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(table.resolve("s", "late").await.unwrap(), "now");
+        assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
