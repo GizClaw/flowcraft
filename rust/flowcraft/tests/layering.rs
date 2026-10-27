@@ -34,7 +34,11 @@ const LAYERS: &[(&str, &[&str])] = &[
     // only layer that moves synchronous work off a worker, so nothing below it
     // may depend on it and every capability above it may.
     ("blocking", &["error"]),
-    ("telemetry", &["error"]),
+    // `fs` holds the two file modes that carry security meaning (a private file,
+    // a private directory). It sits on nothing: every layer that writes a
+    // credential or a log needs it, and it must not carry a policy of its own.
+    ("fs", &[]),
+    ("telemetry", &["error", "fs"]),
     ("proto", &[]),
     ("message", &["error", "proto"]),
     ("craft", &["error", "proto"]),
@@ -50,22 +54,28 @@ const LAYERS: &[(&str, &[&str])] = &[
     ),
     (
         "caps::workspace",
-        &["error", "resource", "kernel", "client", "proto", "blocking"],
+        &[
+            "error", "resource", "kernel", "client", "proto", "fs", "blocking",
+        ],
     ),
     (
         "caps::secret",
-        &["error", "resource", "kernel", "client", "proto", "blocking"],
+        &[
+            "error", "resource", "kernel", "client", "proto", "fs", "blocking",
+        ],
     ),
     (
         "caps::sandbox",
-        &["error", "resource", "kernel", "client", "proto", "blocking"],
+        &[
+            "error", "resource", "kernel", "client", "proto", "fs", "blocking",
+        ],
     ),
     (
         "caps::tool",
         // The tool contract speaks the conversation model (`message`), which is
         // one layer above the wire types it is generated from.
         &[
-            "error", "resource", "kernel", "client", "proto", "search", "message", "blocking",
+            "error", "resource", "kernel", "client", "proto", "search", "message", "fs", "blocking",
         ],
     ),
 ];
@@ -205,8 +215,9 @@ fn sources() -> Vec<(PathBuf, String)> {
                     Some(cap) if parts.len() > 2 => format!("caps::{cap}"),
                     _ => "caps".to_owned(),
                 },
-                // A single-file module is a layer too (`src/blocking.rs`); strip
-                // the extension so the table names it by module, not by file.
+                // A single-file module is a layer too (`src/fs.rs`,
+                // `src/blocking.rs`); strip the extension so the table names it
+                // by module, not by file.
                 other => other.strip_suffix(".rs").unwrap_or(other).to_owned(),
             };
             Some((file, owner))

@@ -528,25 +528,34 @@ pub fn mint_token() -> String {
 }
 
 /// Write the token where `ctl` will look for it, owner-only on unix.
-// Assembly / one-shot CLI: there is no executor to block.
-#[allow(clippy::disallowed_methods)]
+///
+/// The mode is part of the `open`, not a `set_permissions` afterwards: this file
+/// is a bearer credential for the admin socket, and a create-then-chmod leaves a
+/// window in which it exists with the process umask. `create_new` also means a
+/// stale token from an earlier run is replaced deliberately (see below) rather
+/// than raced.
 pub fn write_token(path: &std::path::Path, token: &str) -> Result<()> {
+    use std::io::Write as _;
+
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        flowcraft::fs::create_private_dir(parent)?;
+    }
+    // A previous run's token is useless from here on: remove it first, so the
+    // exclusive create below cannot fail on a leftover file.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(Error::internal(format!(
+                "admin token file {path:?}: {error}"
+            )));
         }
     }
-    std::fs::write(path, format!("{token}\n"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let mut file = flowcraft::fs::private_file(path)?;
+    file.write_all(format!("{token}\n").as_bytes())?;
+    file.sync_all()?;
     Ok(())
 }
 

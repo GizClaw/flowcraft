@@ -189,14 +189,10 @@ fn rotated(path: &Path, index: u32) -> PathBuf {
 }
 
 fn open_private(path: &Path) -> std::io::Result<File> {
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // A log file can carry paths and tenant names; it is not world-readable.
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(file)
+    // A log file can carry paths and tenant names, and rotation re-opens it: a
+    // create-then-`chmod` reopens the window on every rotation, which is why the
+    // mode now belongs to the `open` itself.
+    crate::fs::private_append(path)
 }
 
 fn remove_if_present(path: &Path) -> std::io::Result<()> {

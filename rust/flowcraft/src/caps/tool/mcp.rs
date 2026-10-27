@@ -102,6 +102,22 @@ pub struct ServerSpec {
     /// `30s`). Optional servers never block.
     #[serde(default)]
     pub connect_timeout: Option<String>,
+    /// Allow a plaintext (`http://` / `ws://`) URL to a **loopback** host.
+    ///
+    /// Off by default, and refused for anything that is not loopback: a remote
+    /// target carries grants and tool results, and this used to be checked only
+    /// for `platform.yaml` targets — a capability's settings never reached that
+    /// rule at all (`S7`).
+    #[serde(default)]
+    pub allow_insecure: bool,
+    /// Hand the daemon's whole environment to a stdio server.
+    ///
+    /// Off by default: a spawned MCP server is a separate program with whatever
+    /// its author wrote in it, and inheriting the daemon's environment hands it
+    /// every credential the deployment happened to export. `env` above is the
+    /// allow-list that replaces it.
+    #[serde(default)]
+    pub inherit_host_env: bool,
 }
 
 fn default_true() -> bool {
@@ -205,6 +221,33 @@ impl ServerSpec {
                         "mcp: servers[{index}] ({}): command/args/env are stdio fields, not http",
                         self.name
                     )));
+                }
+                // The same rule `platform.yaml` targets follow, in one place:
+                // `crate::kernel::net`.
+                crate::kernel::net::require_secure_target(&self.url, self.allow_insecure).map_err(
+                    |error| {
+                        Error::validation(format!(
+                            "mcp: servers[{index}] ({}): {}",
+                            self.name,
+                            error.message()
+                        ))
+                    },
+                )?;
+                if self.inherit_host_env {
+                    return Err(Error::validation(format!(
+                        "mcp: servers[{index}] ({}): inherit_host_env is a stdio setting, not http",
+                        self.name
+                    )));
+                }
+                // A header name is later parsed by `http`; refusing it here means
+                // a bad name fails the build instead of the first call.
+                for name in self.headers.keys() {
+                    http::HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+                        Error::validation(format!(
+                            "mcp: servers[{index}] ({}): invalid header name {name:?}: {error}",
+                            self.name
+                        ))
+                    })?;
                 }
             }
             "" => {
@@ -540,6 +583,12 @@ async fn connect_server(spec: &ServerSpec) -> Result<RunningService<RoleClient, 
         TRANSPORT_STDIO => {
             let mut command = tokio::process::Command::new(&spec.command);
             command.args(&spec.args);
+            // `env_clear` unless the deployment asked otherwise: a stdio server
+            // is a third-party program, and an inherited environment hands it
+            // every credential the daemon was started with.
+            if !spec.inherit_host_env {
+                command.env_clear();
+            }
             for (name, value) in &spec.env {
                 command.env(name, value);
             }
@@ -999,6 +1048,80 @@ mod tests {
         }))
         .expect("settings");
         settings.validate().expect("valid");
+    }
+
+    /// The rule that was missing entirely: an `http://` MCP target used to be
+    /// accepted, because the "a remote target requires tls" check only ever ran
+    /// over `platform.yaml` (`S7`).
+    #[test]
+    fn a_plaintext_http_target_is_refused_unless_loopback_and_opted_in() {
+        let refused = |url: &str, extra: serde_json::Value| {
+            let mut server = serde_json::json!({"name": "x", "transport": "http", "url": url});
+            if let Some(object) = extra.as_object() {
+                for (key, value) in object {
+                    server[key] = value.clone();
+                }
+            }
+            let settings: Settings =
+                serde_json::from_value(serde_json::json!({ "servers": [server] }))
+                    .expect("settings");
+            settings.validate().expect_err("refused").to_string()
+        };
+
+        let error = refused("http://api.example.com/mcp", serde_json::Value::Null);
+        assert!(error.contains("requires tls"), "{error}");
+        let error = refused(
+            "http://api.example.com/mcp",
+            serde_json::json!({"allow_insecure": true}),
+        );
+        assert!(error.contains("only applies to a loopback host"), "{error}");
+        let error = refused("ftp://api.example.com/mcp", serde_json::Value::Null);
+        assert!(error.contains("does not speak"), "{error}");
+
+        // Loopback plus the opt-in is the one plaintext shape that is allowed.
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "name": "x", "transport": "http",
+                "url": "http://127.0.0.1:8080/mcp", "allow_insecure": true,
+            }]
+        }))
+        .expect("settings");
+        settings.validate().expect("loopback opt-in");
+    }
+
+    /// A header name is parsed by `http` at call time; a bad one fails the build.
+    #[test]
+    fn an_invalid_header_name_fails_validation() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "name": "x", "transport": "http", "url": "https://x/mcp",
+                "headers": {"not a header": "v"},
+            }]
+        }))
+        .expect("settings");
+        let error = settings.validate().expect_err("refused").to_string();
+        assert!(error.contains("invalid header name"), "{error}");
+    }
+
+    /// `inherit_host_env` is stdio-only, and off by default.
+    #[test]
+    fn the_host_environment_is_not_inherited_by_default() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{"name": "fs", "transport": "stdio", "command": "server"}]
+        }))
+        .expect("settings");
+        assert!(!settings.servers[0].inherit_host_env, "default off");
+        assert!(!settings.servers[0].allow_insecure, "default off");
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "name": "x", "transport": "http", "url": "https://x/mcp",
+                "inherit_host_env": true,
+            }]
+        }))
+        .expect("settings");
+        let error = settings.validate().expect_err("refused").to_string();
+        assert!(error.contains("stdio setting"), "{error}");
     }
 
     #[test]

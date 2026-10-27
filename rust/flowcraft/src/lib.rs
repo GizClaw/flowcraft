@@ -50,6 +50,8 @@ pub mod error;
 #[cfg(feature = "blocking")]
 pub mod blocking;
 
+pub mod fs;
+
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 
