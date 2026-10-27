@@ -731,8 +731,9 @@ mod tests {
             assert!(!capabilities.policy.net.allow_list, "{sandbox:?}");
             assert!(!capabilities.policy.memory_cap, "{sandbox:?}");
             // A pty is inherited by the wrapper, so confinement keeps whatever
-            // the platform can provide. Asserting `true` would pin a mechanism;
-            // this asserts the inheritance, which is the actual claim.
+            // the platform can provide. Asserting `true` pins a mechanism; this
+            // asserts the inheritance, which is the actual claim — and it is what
+            // a host without a pty backend (Windows, today) reports.
             assert_eq!(
                 capabilities.features.tty,
                 crate::caps::sandbox::session::terminal::available(),
