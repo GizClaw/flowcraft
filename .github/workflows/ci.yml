@@ -561,6 +561,8 @@ jobs:
           workspaces: rust
       - name: Clippy for the local-only shape
         working-directory: rust
+        # A trailing backslash is bash syntax; the Windows default is PowerShell.
+        shell: bash
         run: |
           cargo clippy -p flowcraft --all-targets \
             --no-default-features --features workspace -- -D warnings
@@ -573,6 +575,8 @@ jobs:
       # that lands.
       - name: Compile the other provider shapes and the daemon
         working-directory: rust
+        # Same reason: `for …; do …; done` and `\` continuations are bash.
+        shell: bash
         run: |
           for shape in secret tool sandbox caps; do
             cargo check -p flowcraft --all-targets \
