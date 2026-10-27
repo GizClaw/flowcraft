@@ -25,6 +25,11 @@
 //! appends its version (`flowcraft.foo.v2` → `foo_v2`) so two versions can be
 //! served side by side during a migration.
 
+// Exempt from the async/blocking gate (`rust/clippy.toml`): a synchronous
+// repository tool with no executor to starve — the first of the three documented
+// cases.
+#![allow(clippy::disallowed_methods)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
