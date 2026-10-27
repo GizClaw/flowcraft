@@ -27,9 +27,10 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::{
-    DuplicateTokenEx, GetTokenInformation, SecurityImpersonation, SetTokenInformation,
-    TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL,
-    TOKEN_QUERY, TokenIntegrityLevel, TokenPrimary,
+    DuplicateTokenEx, GetTokenInformation, SECURITY_CAPABILITIES, SecurityImpersonation,
+    SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenAppContainerSid, TokenIntegrityLevel,
+    TokenIsAppContainer, TokenPrimary,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -118,8 +119,8 @@ const TOKEN_ACCESS: u32 =
     TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT;
 
 impl Token {
-    /// Derive a token at `level` from this process's own token.
-    pub fn derive(level: Integrity) -> Result<Self, Error> {
+    /// A primary token equal to this process's own, before any restriction.
+    fn duplicate() -> Result<Self, Error> {
         let mut process: HANDLE = std::ptr::null_mut();
         // SAFETY: the pseudo-handle is always valid and the out-pointer is live.
         let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ACCESS, &mut process) };
@@ -144,9 +145,145 @@ impl Token {
         if ok == 0 {
             return Err(Error::last("sandbox: DuplicateTokenEx failed"));
         }
-        let token = Self { handle: token };
+        Ok(Self { handle: token })
+    }
+
+    /// Derive a token at `level` from this process's own token.
+    pub fn derive(level: Integrity) -> Result<Self, Error> {
+        let token = Self::duplicate()?;
         token.set_integrity(level)?;
         Ok(token)
+    }
+
+    /// Derive a token that runs inside `container`, with no capabilities.
+    ///
+    /// Capabilities are what an AppContainer may reach *by right* — network,
+    /// libraries, the registry — and the sandbox grants none: everything the child
+    /// touches is an ACL that names its SID. The token is still a duplicate of
+    /// ours, which is what keeps `CreateProcessAsUser` unelevated.
+    pub fn app_container(container: &crate::AppContainer) -> Result<Self, Error> {
+        let token = Self::duplicate()?;
+        let capabilities = SECURITY_CAPABILITIES {
+            AppContainerSid: container.sid(),
+            Capabilities: std::ptr::null_mut(),
+            CapabilityCount: 0,
+            Reserved: 0,
+        };
+        // SAFETY: the token handle is live and owned here; the buffer is a
+        // `SECURITY_CAPABILITIES` whose size is passed with it, and Win32 copies
+        // what it needs during the call — the SID it points at outlives it,
+        // because `container` owns it.
+        let ok = unsafe {
+            SetTokenInformation(
+                token.handle,
+                TokenAppContainerSid,
+                &capabilities as *const SECURITY_CAPABILITIES as *const c_void,
+                std::mem::size_of::<SECURITY_CAPABILITIES>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(Error::last(
+                "sandbox: SetTokenInformation(TokenAppContainerSid) failed",
+            ));
+        }
+        Ok(token)
+    }
+
+    /// The AppContainer SID on this token, as `S-1-15-2-…`.
+    ///
+    /// Diagnostics and tests: the enforcement path takes the SID from the
+    /// [`crate::AppContainer`] that minted it, and never asks the token back.
+    pub fn app_container_sid(&self) -> Result<String, Error> {
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::TOKEN_APPCONTAINER_INFORMATION;
+
+        // `TokenAppContainerSid` answers with a struct whose SID points into the
+        // caller's buffer, so the buffer has to be big enough for the SID too: ask
+        // for the size with a null buffer first, which is the documented shape.
+        let mut needed: u32 = 0;
+        // SAFETY: a live token and a live size slot; the null buffer is what makes
+        // the call report the required length instead of writing.
+        unsafe {
+            GetTokenInformation(
+                self.handle,
+                TokenAppContainerSid,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            );
+        }
+        if needed == 0 {
+            return Err(Error::last(
+                "sandbox: the token carries no AppContainer SID",
+            ));
+        }
+        // Eight-byte units so the SID inside the buffer is aligned.
+        let mut buffer = vec![0u64; needed.div_ceil(8) as usize];
+        // SAFETY: the buffer is at least `needed` bytes and lives across the call.
+        let ok = unsafe {
+            GetTokenInformation(
+                self.handle,
+                TokenAppContainerSid,
+                buffer.as_mut_ptr() as *mut c_void,
+                needed,
+                &mut needed,
+            )
+        };
+        if ok == 0 {
+            return Err(Error::last("sandbox: GetTokenInformation failed"));
+        }
+        // SAFETY: the call succeeded, so Win32 wrote a `TOKEN_APPCONTAINER_INFORMATION`
+        // at the buffer's start.
+        let sid = unsafe {
+            (*buffer.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>()).TokenAppContainer
+        };
+        if sid.is_null() {
+            return Err(Error::internal("sandbox: the token's SID is null"));
+        }
+
+        let mut raw: *mut u16 = std::ptr::null_mut();
+        // SAFETY: `sid` points into `buffer`, which is alive; `raw` is a live
+        // out-pointer that Win32 allocates.
+        let ok = unsafe { ConvertSidToStringSidW(sid, &mut raw) };
+        if ok == 0 {
+            return Err(Error::last("sandbox: ConvertSidToStringSidW failed"));
+        }
+        let mut units = Vec::new();
+        let mut index = 0isize;
+        // SAFETY: Win32 returned a NUL-terminated wide string; the loop stops at
+        // the terminator.
+        unsafe {
+            while *raw.offset(index) != 0 {
+                units.push(*raw.offset(index));
+                index += 1;
+            }
+            windows_sys::Win32::Foundation::LocalFree(raw as *mut c_void);
+        }
+        String::from_utf16(&units)
+            .map_err(|_| Error::internal("sandbox: the SID is not valid UTF-16"))
+    }
+
+    /// Whether this token runs inside an AppContainer.
+    ///
+    /// The capability layer reports what it enforces, so it asks the token rather
+    /// than remembering what it asked for.
+    pub fn is_app_container(&self) -> Result<bool, Error> {
+        let mut value: u32 = 0;
+        let mut written: u32 = 0;
+        // SAFETY: a live token, a four-byte out-value, and the size of that value.
+        let ok = unsafe {
+            GetTokenInformation(
+                self.handle,
+                TokenIsAppContainer,
+                &mut value as *mut u32 as *mut c_void,
+                std::mem::size_of::<u32>() as u32,
+                &mut written,
+            )
+        };
+        if ok == 0 {
+            return Err(Error::last("sandbox: GetTokenInformation failed"));
+        }
+        Ok(value != 0)
     }
 
     /// The integrity level currently on this token.

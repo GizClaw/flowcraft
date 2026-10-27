@@ -19,7 +19,12 @@
 //! inherited under a handle list, plus the same token and job as a terminal.
 //!
 //! [`token`] — the write boundary: a Low-integrity token derived from ours, which
-//! Windows enforces as "no write up" without any per-path ACL work.
+//! Windows enforces as "no write up" without any per-path ACL work, and the
+//! AppContainer variant that owns nothing instead.
+//!
+//! [`appcontainer`] — the stricter boundary: a profile whose SID grants nothing
+//! until an ACL says so, which is what makes `read_only` and `writable_paths`
+//! mean something.
 //!
 //! [`pty`] — the terminal: a ConPTY with the two pipes that carry its traffic,
 //! the process creation that attaches a child to it with the flags and (from W3)
@@ -28,6 +33,9 @@
 
 #![deny(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+#[cfg(windows)]
+pub mod appcontainer;
 
 #[cfg(windows)]
 pub mod job;
@@ -49,6 +57,9 @@ pub use pty::{Child, Command, CursorReport, Launch, Pty};
 
 #[cfg(windows)]
 pub use process::Spawned;
+
+#[cfg(windows)]
+pub use appcontainer::AppContainer;
 
 #[cfg(windows)]
 pub use token::{Integrity, Token};
