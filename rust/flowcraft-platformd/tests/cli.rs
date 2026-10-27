@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! CLI and end-to-end tests for the daemon.
 

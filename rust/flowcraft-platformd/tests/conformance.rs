@@ -1,7 +1,8 @@
 //! These drive unix-domain sockets and a POSIX shell; a Windows host has
 //! neither in this crate yet, so the file is unix-only rather than untested.
 #![cfg(unix)]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! The craft ABI conformance suite, plus the platform's contract enforcement.
 //!

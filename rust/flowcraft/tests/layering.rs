@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! Pins the module graph documented in `rust/README.md`.
 //!
@@ -29,35 +30,42 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("root", &[]),
     ("caps", &[]),
     ("error", &[]),
+    // The async/blocking boundary sits directly on the error taxonomy: it is the
+    // only layer that moves synchronous work off a worker, so nothing below it
+    // may depend on it and every capability above it may.
+    ("blocking", &["error"]),
     ("telemetry", &["error"]),
     ("proto", &[]),
     ("message", &["error", "proto"]),
     ("craft", &["error", "proto"]),
     ("search", &["error"]),
     ("resource", &["error", "logerr"]),
-    ("kernel", &["error", "telemetry", "resource", "logerr"]),
+    (
+        "kernel",
+        &["error", "telemetry", "resource", "blocking", "logerr"],
+    ),
     (
         "client",
         &["error", "telemetry", "proto", "kernel", "craft"],
     ),
     (
         "caps::workspace",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "blocking"],
     ),
     (
         "caps::secret",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "blocking"],
     ),
     (
         "caps::sandbox",
-        &["error", "resource", "kernel", "client", "proto"],
+        &["error", "resource", "kernel", "client", "proto", "blocking"],
     ),
     (
         "caps::tool",
         // The tool contract speaks the conversation model (`message`), which is
         // one layer above the wire types it is generated from.
         &[
-            "error", "resource", "kernel", "client", "proto", "search", "message",
+            "error", "resource", "kernel", "client", "proto", "search", "message", "blocking",
         ],
     ),
 ];
@@ -74,9 +82,13 @@ fn the_module_graph_is_one_way() {
 
     for (file, owner) in sources() {
         walked.insert(owner.clone());
-        let allowed = table
-            .get(owner.as_str())
-            .unwrap_or_else(|| panic!("{owner} ({}) is not in the layer table", file.display()));
+        let allowed = table.get(owner.as_str()).unwrap_or_else(|| {
+            panic!(
+                "{owner} ({}) is not in the layer table (have: {:?})",
+                file.display(),
+                table.keys().collect::<Vec<_>>()
+            )
+        });
         let text = strip_comments(&read(&file));
         for referenced in crate_roots(&text) {
             if referenced == owner || allowed.contains(referenced.as_str()) {
@@ -193,7 +205,9 @@ fn sources() -> Vec<(PathBuf, String)> {
                     Some(cap) if parts.len() > 2 => format!("caps::{cap}"),
                     _ => "caps".to_owned(),
                 },
-                other => other.to_owned(),
+                // A single-file module is a layer too (`src/blocking.rs`); strip
+                // the extension so the table names it by module, not by file.
+                other => other.strip_suffix(".rs").unwrap_or(other).to_owned(),
             };
             Some((file, owner))
         })

@@ -1,4 +1,5 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test may reach the filesystem directly: it has no executor to starve.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 //! End-to-end: a `tool.Registry` resource merges a capability source and feeds
 //! a `tool.Endpoint`, which a remote client calls over a real unix socket.

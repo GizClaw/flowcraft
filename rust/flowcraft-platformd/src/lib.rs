@@ -1,7 +1,10 @@
 //! `flowcraft-platformd` internals, exposed so tests can drive the same
 //! assembly the binary uses.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)
+)]
 pub mod abi;
 pub mod admin;
 pub mod assembly;

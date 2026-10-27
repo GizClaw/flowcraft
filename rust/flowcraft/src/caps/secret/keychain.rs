@@ -33,6 +33,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+use crate::blocking;
 use crate::error::{Error, Result};
 use crate::resource::Kind;
 use crate::resource::{BoxFuture, BuildCtx, Factory, Phase, Spec};
@@ -82,6 +83,8 @@ fn backends() -> &'static Mutex<BTreeMap<StoreKey, Arc<FileBackend>>> {
     BACKENDS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn store_key(dir: &Path) -> Result<StoreKey> {
     fs::canonicalize(dir)
         .map_err(|error| Error::internal(format!("secret keychain: resolve store dir: {error}")))
@@ -130,10 +133,16 @@ impl std::fmt::Debug for Keychain {
     }
 }
 
+// The store's methods are `async` and its implementation is synchronous: every
+// call lands on the blocking pool through `blocking::run`. A sealed-file read is
+// two syscalls on a slow disk, and doing it on a worker is what makes one
+// lookup stall every other task the executor was going to run.
 #[async_trait]
 impl Store for Keychain {
     async fn lookup(&self, name: &str) -> Result<Option<String>> {
-        self.backend.get(name)
+        let backend = Arc::clone(&self.backend);
+        let name = name.to_owned();
+        blocking::run("secret.keychain.lookup", move || backend.get(&name)).await
     }
 
     fn mutable(&self) -> Option<&dyn Mutable> {
@@ -144,15 +153,28 @@ impl Store for Keychain {
 #[async_trait]
 impl Mutable for Keychain {
     async fn set(&self, name: &str, value: &str) -> Result<()> {
-        self.backend.set(name, value.as_bytes())
+        let backend = Arc::clone(&self.backend);
+        let name = name.to_owned();
+        let value = value.to_owned();
+        blocking::run("secret.keychain.set", move || {
+            backend.set(&name, value.as_bytes())
+        })
+        .await
     }
 
     async fn delete(&self, name: &str) -> Result<()> {
-        self.backend.delete(name)
+        let backend = Arc::clone(&self.backend);
+        let name = name.to_owned();
+        blocking::run("secret.keychain.delete", move || backend.delete(&name)).await
     }
 
     async fn delete_prefix(&self, prefix: &str) -> Result<()> {
-        self.backend.delete_prefix(prefix)
+        let backend = Arc::clone(&self.backend);
+        let prefix = prefix.to_owned();
+        blocking::run("secret.keychain.delete_prefix", move || {
+            backend.delete_prefix(&prefix)
+        })
+        .await
     }
 
     fn available(&self) -> bool {
@@ -307,6 +329,9 @@ impl FileBackend {
         self.dir.join(hex(sum.as_ref()))
     }
 
+    // Reached only from inside a `blocking::run` closure: this *is* the boundary.
+
+    #[allow(clippy::disallowed_methods)]
     fn get(&self, name: &str) -> Result<Option<String>> {
         validate_name(name)?;
         let path = self.path(name);
@@ -441,6 +466,8 @@ impl FileBackend {
     /// A missing index is a fresh store. An index that exists but cannot be read
     /// or decoded is an error, never an empty list: rewriting from empty would
     /// orphan every secret it still names.
+    // Reached only from inside a `blocking::run` closure: this *is* the boundary.
+    #[allow(clippy::disallowed_methods)]
     fn read_accounts(&self) -> Result<Vec<String>> {
         let path = self.dir.join(ACCOUNTS_FILE);
         let raw = match fs::read(&path) {
@@ -475,6 +502,8 @@ fn validate_name(name: &str) -> Result<()> {
 }
 
 /// Resolve, create, and secure the store directory.
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn prepare_dir(dir: &Path) -> Result<PathBuf> {
     if dir.as_os_str().is_empty() {
         return Err(Error::validation(
@@ -595,6 +624,8 @@ fn open_private_write(path: &Path) -> std::io::Result<std::fs::File> {
 /// winner; the loser waits out the winner's write instead of reading a
 /// half-written key. A store that already holds sealed secrets never mints a
 /// key: it fails closed.
+// Assembly: there is no executor to block while a capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn load_or_create_key(dir: &Path) -> Result<[u8; KEY_LEN]> {
     let path = dir.join(KEY_FILE);
     match fs::read(&path) {
@@ -650,6 +681,9 @@ fn mint_key(path: &Path) -> Result<[u8; KEY_LEN]> {
 }
 
 /// Read a key a concurrent first run may still be writing.
+// Assembly: the first-run key mint is a build step, and the retry sleep must
+// not run on a worker either.
+#[allow(clippy::disallowed_methods)]
 fn read_key_retrying(path: &Path) -> Result<[u8; KEY_LEN]> {
     let mut last = String::from("key file is unreadable");
     for _ in 0..KEY_READ_ATTEMPTS {

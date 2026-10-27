@@ -528,6 +528,8 @@ pub fn mint_token() -> String {
 }
 
 /// Write the token where `ctl` will look for it, owner-only on unix.
+// Assembly / one-shot CLI: there is no executor to block.
+#[allow(clippy::disallowed_methods)]
 pub fn write_token(path: &std::path::Path, token: &str) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()

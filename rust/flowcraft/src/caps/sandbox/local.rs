@@ -74,6 +74,8 @@ impl LocalRunner {
     /// The root is canonicalized when it exists (see [`SandboxConfig::new`]),
     /// so containment is compared between real paths.
     #[must_use]
+    // Assembly: there is no executor to block while a capability is being built.
+    #[allow(clippy::disallowed_methods)]
     pub fn at(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         Self {

@@ -247,7 +247,12 @@ async fn build_from(
     paths: &[PathBuf],
     base_dir: Option<&Path>,
 ) -> Result<Built> {
-    let deployment = load_deployment(paths)?;
+    // Reading and merging the layers is file I/O plus a sync `saphyr` parse, on
+    // the reload path that holds `reload_gate`: exactly what must not run on a
+    // worker.
+    let layers = paths.to_vec();
+    let deployment =
+        flowcraft::blocking::run("platformd.layers", move || load_deployment(&layers)).await?;
     if deployment.runtime.is_some() {
         // The Go side reads `runtime:`; the Rust platform keeps host settings in
         // platform.yaml. Accept the field (documents are shared) but say so.
@@ -260,6 +265,11 @@ async fn build_from(
 }
 
 /// Read each layer from disk, in order.
+///
+/// Synchronous on purpose: its callers are [`load_deployment`], which the daemon
+/// only ever reaches through [`flowcraft::blocking::run`], and the one-shot CLI,
+/// which has no executor to block.
+#[allow(clippy::disallowed_methods)]
 pub fn read_layers(paths: &[PathBuf]) -> Result<Vec<Layer>> {
     let mut layers = Vec::with_capacity(paths.len());
     for path in paths {

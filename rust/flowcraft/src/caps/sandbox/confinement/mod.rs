@@ -191,6 +191,8 @@ impl SandboxConfig {
     /// symlinked path (`/var/...` on macOS) still gets containment checks
     /// against the same spelling the resolver produces.
     #[must_use]
+    // Assembly: there is no executor to block while a capability is being built.
+    #[allow(clippy::disallowed_methods)]
     pub fn new(sandbox: Sandbox, root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let root = std::fs::canonicalize(&root).unwrap_or(root);
@@ -219,6 +221,8 @@ impl SandboxConfig {
     /// resolved vnode path, so a symlinked spelling (`/var/...` on macOS) would
     /// silently grant nothing.
     #[must_use]
+    // Assembly: there is no executor to block while a capability is being built.
+    #[allow(clippy::disallowed_methods)]
     pub fn with_writable(mut self, paths: Vec<PathBuf>) -> Self {
         self.writable = paths
             .into_iter()
@@ -341,7 +345,14 @@ impl ConfinedRunner {
             return Err(codes::validation(Code::ArgvEmpty, "sandbox: argv is empty"));
         }
         spec.opts.net.validate()?;
-        let workdir = path::resolve_workdir(&self.config.root, spec.opts.workdir.as_deref())?;
+        // A canonicalize plus a symlink-aware stat chain, once per session start:
+        // on the blocking pool, because `prepare` runs on a worker.
+        let root = self.config.root.clone();
+        let declared = spec.opts.workdir.clone();
+        let workdir = crate::blocking::run("sandbox.workdir", move || {
+            path::resolve_workdir(&root, declared.as_deref())
+        })
+        .await?;
 
         let proxied = spec.opts.net.mode.uses_proxy();
         if proxied {

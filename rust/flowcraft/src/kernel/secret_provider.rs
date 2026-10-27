@@ -110,6 +110,9 @@ impl FileProvider {
 }
 
 impl SecretProvider for FileProvider {
+    // Assembly: there is no executor to block while a capability is being built.
+
+    #[allow(clippy::disallowed_methods)]
     fn lookup(&self, name: &str) -> Result<Option<Vec<u8>>> {
         let path = self.path(name)?;
         let metadata = match std::fs::symlink_metadata(&path) {

@@ -32,7 +32,7 @@ use serde_json::Value;
 
 use crate::caps::sandbox::contract::JournalCapabilities;
 
-pub(crate) use fold::{Fold, RawEvent, RawKind};
+pub(crate) use fold::{Fold, Folded, RawEvent, RawKind};
 use ring::Ring;
 pub(crate) use source::Incoming;
 
@@ -300,6 +300,17 @@ pub(crate) fn capabilities(budget: usize) -> JournalCapabilities {
     }
 }
 
+/// How many queued source events one identity batch stats.
+const IDENTITY_BATCH: usize = 64;
+
+/// One item of a folded burst, in source order.
+enum Pending {
+    /// A folded operation, awaiting its filesystem identity.
+    Event(Folded),
+    /// A lost-events notice, which must keep its place in the sequence.
+    Gap(GapReason),
+}
+
 /// The journal of one runner.
 pub(crate) struct Engine {
     ring: Arc<Mutex<Ring>>,
@@ -347,40 +358,90 @@ impl Engine {
         tokio::spawn(async move {
             let mut fold = Fold::new();
             while let Some(incoming) = receiver.recv().await {
-                match incoming {
-                    Incoming::Event(raw) => {
-                        let Some(mut folded) = fold.apply(raw) else {
-                            continue;
-                        };
-                        if !allows(&ops, folded.op) {
-                            // Filtered: never an event, so never a gap either.
-                            continue;
-                        }
-                        // Identity first, from the *host* path. It used to run
-                        // after the rewrite below, which left a root-relative
-                        // path to be resolved against the process working
-                        // directory: `dev`/`ino`/`size` were therefore almost
-                        // always absent, and they are protocol fields the peer
-                        // needs to recognise a file by (device, inode).
-                        let (dev, ino, size) = identity(Path::new(&folded.path));
-                        folded.path = relative(&root, &folded.path);
-                        folded.old_path = folded.old_path.map(|path| relative(&root, &path));
-                        if let Ok(mut ring) = task_ring.lock() {
-                            ring.push(
-                                folded.op,
-                                folded.path,
-                                folded.old_path,
-                                folded.is_dir,
-                                now_nanos(),
-                                dev,
-                                ino,
-                                size,
-                            );
-                        }
+                // Drain what else is already queued: a `cargo build` delivers
+                // events in bursts, and the identity stat below is one syscall
+                // per event. One thread hop per burst instead of per event.
+                let mut burst = Vec::with_capacity(IDENTITY_BATCH);
+                burst.push(incoming);
+                while burst.len() < IDENTITY_BATCH {
+                    match receiver.try_recv() {
+                        Ok(next) => burst.push(next),
+                        Err(_) => break,
                     }
-                    Incoming::Gap(reason) => {
-                        if let Ok(mut ring) = task_ring.lock() {
-                            ring.gap(reason);
+                }
+
+                // Fold in order (cheap, in-process), then stat the whole burst
+                // on the blocking pool. `Pending` keeps gaps in their place: a
+                // gap that arrives between two events must stay between them.
+                let mut pendings: Vec<Pending> = Vec::with_capacity(burst.len());
+                let mut host_paths: Vec<PathBuf> = Vec::with_capacity(burst.len());
+                for incoming in burst {
+                    match incoming {
+                        Incoming::Event(raw) => {
+                            let Some(folded) = fold.apply(raw) else {
+                                continue;
+                            };
+                            if !allows(&ops, folded.op) {
+                                // Filtered: never an event, so never a gap either.
+                                continue;
+                            }
+                            host_paths.push(PathBuf::from(&folded.path));
+                            pendings.push(Pending::Event(folded));
+                        }
+                        Incoming::Gap(reason) => pendings.push(Pending::Gap(reason)),
+                    }
+                }
+                if pendings.is_empty() {
+                    continue;
+                }
+                // Identity from the *host* path, and before the rewrite below:
+                // the rewrite makes the path root-relative, which is not a path
+                // this process can stat (it resolved against the working
+                // directory, so `dev`/`ino` were almost always absent — and they
+                // are protocol fields the peer needs to recognise a file).
+                let identities = match crate::blocking::run("sandbox.journal.identity", move || {
+                    Ok(host_paths
+                        .iter()
+                        .map(|path| identity(path))
+                        .collect::<Vec<_>>())
+                })
+                .await
+                {
+                    Ok(identities) => identities,
+                    Err(error) => {
+                        // A lost batch is not cosmetic: `dev`/`ino` are protocol
+                        // fields, so a peer silently stops recognising renames.
+                        // The events still arrive — without them — and the next
+                        // batch tries again, which is why this is a warning and
+                        // not a gap.
+                        tracing::warn!(%error, "sandbox: journal identity batch failed");
+                        Vec::new()
+                    }
+                };
+                let mut identities = identities.into_iter();
+                for pending in pendings {
+                    match pending {
+                        Pending::Event(mut folded) => {
+                            let (dev, ino, size) = identities.next().unwrap_or((None, None, None));
+                            folded.path = relative(&root, &folded.path);
+                            folded.old_path = folded.old_path.map(|path| relative(&root, &path));
+                            if let Ok(mut ring) = task_ring.lock() {
+                                ring.push(
+                                    folded.op,
+                                    folded.path,
+                                    folded.old_path,
+                                    folded.is_dir,
+                                    now_nanos(),
+                                    dev,
+                                    ino,
+                                    size,
+                                );
+                            }
+                        }
+                        Pending::Gap(reason) => {
+                            if let Ok(mut ring) = task_ring.lock() {
+                                ring.gap(reason);
+                            }
                         }
                     }
                 }
@@ -422,6 +483,8 @@ fn relative(root: &Path, path: &str) -> String {
 }
 
 /// Filesystem identity for one path, when it still exists.
+// Reached only from inside a `blocking::run` closure: this *is* the boundary.
+#[allow(clippy::disallowed_methods)]
 fn identity(path: &Path) -> (Option<u64>, Option<u64>, Option<i64>) {
     #[cfg(unix)]
     {

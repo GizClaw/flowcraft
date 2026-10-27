@@ -38,9 +38,17 @@
 //! `make rust-proto-gen` regenerates them from `proto/` at the repository root,
 //! which stays the single source of truth shared with the Go SDK.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// Tests are exempt from the async/blocking gate (see `clippy.toml`): a test may
+// read a fixture with `std::fs` directly instead of standing up a runtime.
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)
+)]
 
 pub mod error;
+
+#[cfg(feature = "blocking")]
+pub mod blocking;
 
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
