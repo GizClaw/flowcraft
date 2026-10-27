@@ -217,7 +217,7 @@ mod tests {
             token: None,
             container,
         })
-        .expect("spawn");
+        .unwrap_or_else(|error| panic!("spawn (container: {}): {error}", container.is_some()));
         // Our ends of the three pipes must go, or the child blocks writing.
         drop(spawned.take_stdin());
         drop(spawned.take_stdout());
@@ -249,8 +249,12 @@ mod tests {
         let program = bin.join("cmd.exe");
         std::fs::copy(&comspec, &program).expect("copy cmd.exe");
 
-        // The tools are readable, the workspace is writable, and `readonly` is
-        // deliberately left ungranted — that is the third case, not an omission.
+        // The *path to* a grant has to be granted too: opening
+        // `<root>/bin/cmd.exe` walks `root` first, so a container that was only
+        // granted the leaf cannot open it — which is what `ERROR_FILE_NOT_FOUND`
+        // was. Read on the root inherits down, and inheritance of *read* leaves
+        // `readonly` unwritable, which is the case this test needs.
+        crate::acl::grant(&root, &container, crate::Access::Read).expect("grant the root");
         crate::acl::grant(&bin, &container, crate::Access::Read).expect("grant tools");
         crate::acl::grant(&writable, &container, crate::Access::ReadWrite)
             .expect("grant workspace");

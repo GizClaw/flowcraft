@@ -226,18 +226,25 @@ mod tests {
             entries
         };
 
-        let granted_entries = entries(&granted);
+        // Compared by value, not by pointer: `GetExplicitEntriesFromAclW` hands back
+        // copies of the trustee SIDs inside its own allocation, so a pointer
+        // comparison can only ever be false.
+        let names = |entry: &EXPLICIT_ACCESS_W| -> bool {
+            // SAFETY: `ptstrName` holds a SID for `TRUSTEE_IS_SID`, and both SIDs are
+            // live for the duration of the call.
+            unsafe {
+                windows_sys::Win32::Security::EqualSid(
+                    entry.Trustee.ptstrName.cast(),
+                    container.sid(),
+                ) != 0
+            }
+        };
         assert!(
-            granted_entries
-                .iter()
-                .any(|entry| entry.Trustee.ptstrName == container.sid() as *mut u16),
+            entries(&granted).iter().any(names),
             "the granted directory must carry an entry for the container"
         );
-        let other_entries = entries(&other);
         assert!(
-            other_entries
-                .iter()
-                .all(|entry| entry.Trustee.ptstrName != container.sid() as *mut u16),
+            !entries(&other).iter().any(names),
             "a directory that was not granted must not carry one"
         );
 
