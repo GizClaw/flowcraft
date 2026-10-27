@@ -254,8 +254,10 @@ mod tests {
         // granted the leaf cannot open it — which is what `ERROR_FILE_NOT_FOUND`
         // was. Read on the root inherits down, and inheritance of *read* leaves
         // `readonly` unwritable, which is the case this test needs.
-        crate::acl::grant(&root, &container, crate::Access::Read).expect("grant the root");
-        crate::acl::grant(&bin, &container, crate::Access::Read).expect("grant tools");
+        // The tools need the walk to them to be traversable too, which is why the
+        // ancestors are granted rather than just `bin`.
+        crate::acl::grant_with_ancestors(&bin, &container, crate::Access::Read)
+            .expect("grant tools");
         crate::acl::grant(&writable, &container, crate::Access::ReadWrite)
             .expect("grant workspace");
 

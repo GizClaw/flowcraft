@@ -139,6 +139,33 @@ pub fn grant(path: &Path, container: &AppContainer, access: Access) -> Result<()
     Ok(())
 }
 
+/// Grant `path`, and read on every ancestor the walk to it passes through.
+///
+/// A grant on a leaf is not enough, and the symptom misleads: opening
+/// `C:\a\b\c.exe` walks `a` and `b` first, and a container that was granted only
+/// `b` is refused where the walk starts — which the image loader reports as
+/// `ERROR_FILE_NOT_FOUND` on a path that plainly exists. Read on an ancestor
+/// inherits *read* down, so it cannot widen a write grant that was not asked for;
+/// permission on the drive root itself is left untouched.
+pub fn grant_with_ancestors(
+    path: &Path,
+    container: &AppContainer,
+    access: Access,
+) -> Result<(), Error> {
+    grant(path, container, access)?;
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        // Stop before the volume root: `C:\` is not a directory this crate should
+        // rewrite the ACL of.
+        if dir.parent().is_none() {
+            break;
+        }
+        grant(dir, container, Access::Read)?;
+        current = dir.parent();
+    }
+    Ok(())
+}
+
 /// A buffer Win32 allocated for us, freed exactly once.
 struct Descriptor(PSECURITY_DESCRIPTOR);
 

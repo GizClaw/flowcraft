@@ -66,7 +66,7 @@ pub use pty::{Child, Command, CursorReport, Launch, Pty};
 pub use process::Spawned;
 
 #[cfg(windows)]
-pub use acl::{Access, grant};
+pub use acl::{Access, grant, grant_with_ancestors};
 
 #[cfg(windows)]
 pub use appcontainer::AppContainer;
