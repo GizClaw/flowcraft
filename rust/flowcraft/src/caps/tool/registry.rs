@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use crate::error::{Error, Result};
 use crate::proto::message as msg;
@@ -39,8 +39,21 @@ pub trait Catalog: Send + Sync {
     /// The tool registered under `name`.
     fn get(&self, name: &str) -> Option<Arc<dyn Tool>>;
 
-    /// Every tool definition, sorted by name.
-    fn definitions(&self) -> Vec<msg::ToolDefinition>;
+    /// Every tool definition, sorted by name, as one immutable snapshot.
+    ///
+    /// Returning a shared slice rather than a fresh `Vec` is what makes the
+    /// per-round read paths allocation-free: the visibility computation and the
+    /// `tool_search` index both derive from this value, and both would otherwise
+    /// copy every definition (name + description + schema) on every call.
+    ///
+    /// A catalog whose contents are stable must return the **same** `Arc` for
+    /// the same contents: callers use [`Arc::ptr_eq`] as their cache key. A
+    /// freshly allocated slice per call is still correct, it just forgoes the
+    /// reuse. An invariant worth stating because it is easy to break: a
+    /// `Tool::definition` must be stable between two calls that return the same
+    /// snapshot (a lazy tool that finishes loading is a *change*, and must
+    /// produce a new snapshot — see `LazyProxy::ensure_loaded`).
+    fn definitions(&self) -> Arc<[msg::ToolDefinition]>;
 }
 
 /// A deferred loader: builds the real tool on first use.
@@ -167,6 +180,18 @@ struct Inner {
     tools: BTreeMap<String, Arc<dyn Tool>>,
     order: Vec<String>,
     closed: bool,
+    /// Bumped by every change to what `definitions` would return: `add`,
+    /// `remove`, and a lazy tool finishing its first load (a change even though
+    /// nothing was registered). Under the write lock, so the value a snapshot is
+    /// built at cannot move while it is being built.
+    revisions: u64,
+}
+
+impl Inner {
+    /// Announce that the definitions may have changed.
+    fn touch(&mut self) {
+        self.revisions = self.revisions.wrapping_add(1);
+    }
 }
 
 /// Aggregates tools from many sources.
@@ -177,6 +202,8 @@ pub struct Registry {
     inner: Arc<RwLock<Inner>>,
     conflict: ConflictPolicy,
     sources: Vec<Arc<dyn Source>>,
+    /// The definitions built at `Inner::revisions`, kept until the next change.
+    snapshot: Mutex<Option<(u64, Arc<[msg::ToolDefinition]>)>>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -189,14 +216,19 @@ impl std::fmt::Debug for Registry {
 }
 
 impl Registry {
+    fn bare(conflict: ConflictPolicy, sources: Vec<Arc<dyn Source>>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(Inner::default())),
+            conflict,
+            sources,
+            snapshot: Mutex::new(None),
+        }
+    }
+
     /// An empty registry.
     #[must_use]
     pub fn empty() -> Arc<Self> {
-        Arc::new(Self {
-            inner: Arc::new(RwLock::new(Inner::default())),
-            conflict: ConflictPolicy::Error,
-            sources: Vec::new(),
-        })
+        Arc::new(Self::bare(ConflictPolicy::Error, Vec::new()))
     }
 
     /// Build a registry from sources in order, then hand each source its
@@ -205,17 +237,16 @@ impl Registry {
         sources: &[Arc<dyn Source>],
         conflict: ConflictPolicy,
     ) -> Result<Arc<Self>> {
-        let registry = Arc::new(Self {
-            inner: Arc::new(RwLock::new(Inner::default())),
-            conflict,
-            sources: sources.to_vec(),
-        });
+        let registry = Arc::new(Self::bare(conflict, sources.to_vec()));
         for source in sources {
             for tool in source.tools().await? {
                 registry.add(tool)?;
             }
             for lazy in source.lazy_tools() {
-                registry.add(Arc::new(LazyProxy::new(lazy)))?;
+                registry.add(Arc::new(LazyProxy::new(
+                    lazy,
+                    Arc::downgrade(&registry.inner),
+                )))?;
             }
         }
         let registrar = registry.registrar();
@@ -247,18 +278,17 @@ impl Registry {
             && inner.tools.remove(name).is_some()
         {
             inner.order.retain(|existing| existing != name);
+            inner.touch();
         }
     }
 
     /// The registered tool names, sorted.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
+        // `tools` is a `BTreeMap`, so its keys are already sorted: no `order`
+        // copy and no sort.
         match self.inner.read() {
-            Ok(inner) => {
-                let mut names = inner.order.clone();
-                names.sort();
-                names
-            }
+            Ok(inner) => inner.tools.keys().cloned().collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -330,12 +360,14 @@ fn add(inner: &mut Inner, conflict: ConflictPolicy, tool: Arc<dyn Tool>) -> Resu
             ))),
             ConflictPolicy::Overwrite => {
                 entry.insert(tool);
+                inner.touch();
                 Ok(())
             }
         },
         std::collections::btree_map::Entry::Vacant(entry) => {
             inner.order.push(entry.key().clone());
             entry.insert(tool);
+            inner.touch();
             Ok(())
         }
     }
@@ -346,18 +378,28 @@ impl Catalog for Registry {
         self.inner.read().ok()?.tools.get(name).cloned()
     }
 
-    fn definitions(&self) -> Vec<msg::ToolDefinition> {
+    fn definitions(&self) -> Arc<[msg::ToolDefinition]> {
+        // One read guard covers both the revision and the tools it describes, so
+        // a writer cannot slip between the two. `tools` is a `BTreeMap`, so
+        // `values()` is already sorted by name.
         let Ok(inner) = self.inner.read() else {
-            return Vec::new();
+            return Vec::new().into();
         };
-        let mut out: Vec<msg::ToolDefinition> = inner
-            .order
-            .iter()
-            .filter_map(|name| inner.tools.get(name))
-            .map(|tool| tool.definition())
-            .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
+        let revision = inner.revisions;
+        if let Ok(cache) = self.snapshot.lock()
+            && let Some((at, snapshot)) = cache.as_ref()
+            && *at == revision
+        {
+            return Arc::clone(snapshot);
+        }
+        // Built under the read guard: a mutation cannot interleave, so the
+        // revision published below describes exactly these definitions.
+        let built: Arc<[msg::ToolDefinition]> =
+            inner.tools.values().map(|tool| tool.definition()).collect();
+        if let Ok(mut cache) = self.snapshot.lock() {
+            *cache = Some((revision, Arc::clone(&built)));
+        }
+        built
     }
 }
 
@@ -385,26 +427,47 @@ impl Registrar for RegistrarHandle {
             && inner.tools.remove(name).is_some()
         {
             inner.order.retain(|existing| existing != name);
+            inner.touch();
         }
     }
 }
 
 /// The registry entry for a [`LazyTool`]: serves the placeholder until the
 /// first load, then the real tool.
+///
+/// The upgrade is a *definition change*, not a registration: without telling the
+/// registry, a cached snapshot would serve the placeholder forever (the tool is
+/// loaded, the model still sees “deferred”). Hence the back-pointer to `Inner`.
 struct LazyProxy {
     spec: LazyTool,
     loaded: OnceLock<Arc<dyn Tool>>,
     guard: tokio::sync::Mutex<()>,
     closed: AtomicBool,
+    registry: Weak<RwLock<Inner>>,
 }
 
 impl LazyProxy {
-    fn new(spec: LazyTool) -> Self {
+    fn new(spec: LazyTool, registry: Weak<RwLock<Inner>>) -> Self {
         Self {
             spec,
             loaded: OnceLock::new(),
             guard: tokio::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
+            registry,
+        }
+    }
+
+    /// Tell the registry that this tool's definition changed.
+    ///
+    /// Happens under the write lock (the same one `add`/`remove` take), so a
+    /// snapshot being built right now either already includes the real
+    /// definition or will be rebuilt next time.
+    fn announce(&self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        if let Ok(mut inner) = registry.write() {
+            inner.touch();
         }
     }
 }
@@ -460,6 +523,9 @@ impl Tool for LazyProxy {
         }
         let tool = (self.spec.load)().await?;
         let _ = self.loaded.set(tool);
+        // The placeholder is no longer what `definition()` returns: a cached
+        // snapshot would be wrong from here on.
+        self.announce();
         Ok(())
     }
 }
@@ -598,6 +664,48 @@ mod tests {
             .expect("build");
         registry.close().expect("close");
         assert_eq!(*calls.lock().expect("lock"), vec!["b", "a"]);
+    }
+
+    /// The snapshot cache is keyed by `Inner::revisions`, and a lazy load is a
+    /// change that registers nothing. Without the announcement the placeholder
+    /// would be served forever — the loaded tool would be invisible to the model.
+    #[tokio::test]
+    async fn a_loaded_lazy_tool_replaces_its_placeholder_in_the_snapshot() {
+        let mut source = StaticSource::new();
+        source.push_lazy(
+            LazyTool::new(
+                "lazy",
+                definition("lazy", "placeholder"),
+                Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Arc::new(FuncTool::new(
+                            definition("lazy", "real"),
+                            Arc::new(|_context, _| Ok(text_content("ok"))),
+                        )) as Arc<dyn Tool>)
+                    })
+                }),
+            )
+            .expect("lazy"),
+        );
+        let registry = Registry::from_sources(&[Arc::new(source)], ConflictPolicy::Error)
+            .await
+            .expect("build");
+
+        // Prime the cache with the placeholder.
+        let before = registry.definitions();
+        assert_eq!(before[0].description, "placeholder");
+        assert!(Arc::ptr_eq(&before, &registry.definitions()));
+
+        registry
+            .get("lazy")
+            .expect("registered")
+            .ensure_loaded()
+            .await
+            .expect("load");
+
+        let after = registry.definitions();
+        assert_eq!(after[0].description, "real");
+        assert!(!Arc::ptr_eq(&before, &after));
     }
 
     #[tokio::test]

@@ -120,20 +120,22 @@ impl DynamicSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn visible_set(
+    /// The tools that reach the model this round, borrowed from `snapshot`.
+    ///
+    /// Borrowed rather than owned: the caller decides whether it needs owned
+    /// definitions (a wire list does, a round's visibility check does not), and
+    /// only the ones that survive the budget are worth copying.
+    fn visible_set<'a>(
         &self,
+        snapshot: &'a [msg::ToolDefinition],
         policy: &Policy,
         state: &crate::caps::tool::state::Snapshot,
-    ) -> Vec<Candidate> {
-        let definitions = self.catalog.definitions();
-        let sizes: BTreeMap<String, i64> = definitions
+    ) -> Vec<Candidate<'a>> {
+        let sizes = pool_sizes(snapshot, state);
+        let candidates: Vec<Candidate<'a>> = snapshot
             .iter()
-            .map(|definition| (definition.name.clone(), definition_bytes(definition)))
-            .collect();
-        let candidates: Vec<Candidate> = definitions
-            .into_iter()
             .map(|definition| Candidate {
-                name: definition.name.clone(),
+                name: definition.name.as_str(),
                 exposure: policy.exposure_of(&definition.name),
                 definition,
             })
@@ -196,14 +198,37 @@ impl Catalog for DynamicSession {
         self.catalog.get(name)
     }
 
-    fn definitions(&self) -> Vec<msg::ToolDefinition> {
+    fn definitions(&self) -> Arc<[msg::ToolDefinition]> {
         let state = self.state().snapshot();
-        let policy = self.policy.clone();
-        self.visible_set(&policy, &state)
+        let definitions = self.catalog.definitions();
+        // Only the survivors are copied out of the shared snapshot: a catalog of
+        // 500 tools narrowed to a 30-tool budget clones 30 definitions, not 500.
+        self.visible_set(&definitions, &self.policy, &state)
             .into_iter()
-            .map(|candidate| candidate.definition)
+            .map(|candidate| candidate.definition.clone())
             .collect()
     }
+}
+
+/// Definition sizes for the names the pool fit can consult.
+///
+/// `fit_discovery_pool` only ever looks up `state.discovered`, so building the
+/// map for the whole catalog was pure overhead on every round. The snapshot is
+/// sorted by name, so each lookup is a binary search.
+fn pool_sizes(
+    snapshot: &[msg::ToolDefinition],
+    state: &crate::caps::tool::state::Snapshot,
+) -> BTreeMap<String, i64> {
+    state
+        .discovered
+        .keys()
+        .filter_map(|name| {
+            snapshot
+                .binary_search_by(|definition| definition.name.as_str().cmp(name))
+                .ok()
+                .map(|at| (name.clone(), definition_bytes(&snapshot[at])))
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -237,9 +262,11 @@ impl Session for DynamicSession {
             Vec::new()
         };
         let visible: BTreeSet<String> = if changed {
-            self.visible_set(&self.policy.clone(), &state.snapshot())
+            let snapshot = state.snapshot();
+            let definitions = self.catalog.definitions();
+            self.visible_set(&definitions, &self.policy, &snapshot)
                 .into_iter()
-                .map(|candidate| candidate.name)
+                .map(|candidate| candidate.name.to_owned())
                 .collect()
         } else {
             BTreeSet::new()
@@ -314,7 +341,10 @@ impl Session for DynamicSession {
 
     async fn load(&self) -> Result<()> {
         let mut first: Option<Error> = None;
-        for definition in self.catalog.definitions() {
+        // The snapshot is shared: only the names are read here, nothing is copied
+        // out of it.
+        let definitions = self.catalog.definitions();
+        for definition in definitions.iter() {
             if let Some(tool) = self.catalog.get(&definition.name)
                 && let Err(error) = tool.ensure_loaded().await
                 && first.is_none()
@@ -348,10 +378,12 @@ impl Session for DynamicSession {
 impl DynamicSession {
     fn rank(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let definitions = self.catalog.definitions();
+        // Only the searchable tools are copied out: the filter used to run after
+        // the whole catalog had already been cloned.
         let docs: Vec<(String, String)> = definitions
-            .into_iter()
+            .iter()
             .filter(|definition| self.policy.exposure_of(&definition.name).searchable())
-            .map(|definition| (definition.name, definition.description))
+            .map(|definition| (definition.name.clone(), definition.description.clone()))
             .collect();
         let mut limit = if limit == 0 {
             DEFAULT_SEARCH_LIMIT
@@ -383,7 +415,7 @@ impl Catalog for StaticSession {
         self.catalog.get(name)
     }
 
-    fn definitions(&self) -> Vec<msg::ToolDefinition> {
+    fn definitions(&self) -> Arc<[msg::ToolDefinition]> {
         self.catalog.definitions()
     }
 }

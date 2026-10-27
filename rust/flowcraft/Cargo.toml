@@ -243,6 +243,12 @@ portable-pty.workspace = true
 # leaves the process default ambiguous.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde_json.workspace = true
+# The allocation-budget gate (`tests/allocation_budget.rs`). A copy that is merely
+# unnecessary leaves no trace in behaviour, so the only honest regression test
+# counts allocations. This crate forbids `unsafe_code`, so the counting allocator
+# lives in a dependency instead of here (a hand-written one needs
+# `unsafe impl GlobalAlloc`); only the `#[global_allocator]` static is local.
+stats_alloc = "0.1"
 tempfile = "3"
 tokio.workspace = true
 tracing-subscriber.workspace = true
@@ -320,6 +326,13 @@ required-features = ["resource"]
 # gate does not run at all.
 [[test]]
 name = "layering"
+
+# The allocation budget: a copy that is merely unnecessary leaves no trace in
+# behaviour, so the regression gate counts allocations (see the test's module
+# comment). One test only — the counter is process-wide.
+[[test]]
+name = "allocation_budget"
+required-features = ["tool"]
 
 [[test]]
 name = "telemetry_deps"

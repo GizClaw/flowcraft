@@ -142,7 +142,9 @@ impl std::fmt::Debug for RegistrySource {
 #[async_trait]
 impl ToolSource for RegistrySource {
     async fn list(&self) -> Result<Vec<msg::ToolDefinition>> {
-        Ok(self.registry.definitions())
+        // The wire hands ownership of its own copy: the shared snapshot stays
+        // shared here.
+        Ok(self.registry.definitions().to_vec())
     }
 
     async fn execute(&self, name: &str, arguments: &str) -> Result<msg::Content> {
