@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/backends/checkpoint
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.9.1-0.20261026121819-4fab8fbd7309
+	github.com/GizClaw/flowcraft/core v0.10.0
 	modernc.org/sqlite v1.59.0
 )
 
