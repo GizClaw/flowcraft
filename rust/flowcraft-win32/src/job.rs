@@ -37,14 +37,6 @@ impl Error {
         }
     }
 
-    /// A failure this crate detected itself, with no Win32 code behind it.
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
-        Self {
-            code: None,
-            message: message.into(),
-        }
-    }
-
     pub(crate) fn last(message: impl Into<String>) -> Self {
         Self {
             code: std::io::Error::last_os_error()

@@ -21,9 +21,11 @@
 //!   what its ACLs allow and nothing else — no network, no user's files, no
 //!   registry hive beyond its own.
 //!
-//! The token itself is built in [`crate::token`], next to the integrity variant, so
-//! that a child is always started from a token this module and the spawn path agree
-//! on.
+//! The SID does **not** travel on the token: `SetTokenInformation(TokenAppContainerSid)`
+//! answers `ERROR_INVALID_PARAMETER`, because an AppContainer is applied when the
+//! process is created (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), not by
+//! rewriting a token afterwards. That attribute list is the next piece of W4; this
+//! module is the profile and the SID it hands to it.
 
 use std::ptr::null_mut;
 
@@ -177,7 +179,6 @@ pub(crate) fn wide(text: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::token::Integrity;
 
     /// A name unique to this process, so two runs and two tests cannot share a
     /// profile by accident.
@@ -197,29 +198,6 @@ mod tests {
             sid_string(first.sid()),
             sid_string(again.sid()),
             "the same name must derive the same SID"
-        );
-        AppContainer::delete(&name).expect("delete profile");
-    }
-
-    #[test]
-    fn the_derived_token_reports_the_container_it_runs_in() {
-        let name = name("token");
-        let container = AppContainer::open(&name).expect("create profile");
-        let plain = crate::Token::derive(Integrity::Low).expect("low token");
-        assert!(!plain.is_app_container().expect("query plain"));
-
-        let token = crate::Token::app_container(&container).expect("app container token");
-        assert!(
-            token.is_app_container().expect("query container"),
-            "a token built for an AppContainer must say so"
-        );
-        // The SID travels with the token: reading it back is what
-        // `SetTokenInformation(TokenAppContainerSid)` promises, and a token that
-        // merely claims the flag without the SID would not restrict anything.
-        assert_eq!(
-            token.app_container_sid().expect("token sid"),
-            sid_string(container.sid()),
-            "the token must carry the profile's SID"
         );
         AppContainer::delete(&name).expect("delete profile");
     }

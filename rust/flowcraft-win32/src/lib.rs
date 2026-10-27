@@ -19,12 +19,14 @@
 //! inherited under a handle list, plus the same token and job as a terminal.
 //!
 //! [`token`] — the write boundary: a Low-integrity token derived from ours, which
-//! Windows enforces as "no write up" without any per-path ACL work, and the
-//! AppContainer variant that owns nothing instead.
+//! Windows enforces as "no write up" without any per-path ACL work.
 //!
-//! [`appcontainer`] — the stricter boundary: a profile whose SID grants nothing
-//! until an ACL says so, which is what makes `read_only` and `writable_paths`
-//! mean something.
+//! [`appcontainer`] — the stricter boundary's profile and SID: a container owns
+//! nothing until an ACL grants it, which is what makes `read_only` and
+//! `writable_paths` mean something. The SID is applied when a process is created
+//! (a `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` entry), never by rewriting a
+//! token — `SetTokenInformation(TokenAppContainerSid)` refuses, and a Windows lane
+//! caught it.
 //!
 //! [`pty`] — the terminal: a ConPTY with the two pipes that carry its traffic,
 //! the process creation that attaches a child to it with the flags and (from W3)
