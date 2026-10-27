@@ -299,20 +299,21 @@ impl Pty {
         info.lpAttributeList = attributes.raw();
         let mut process = PROCESS_INFORMATION::default();
 
-        // The application is named explicitly, not searched from the command
-        // line: `CreateProcessAsUserW` does not resolve it the way
-        // `CreateProcessW` does, and a contained token has no profile to
-        // search with — the symptom is ERROR_FILE_NOT_FOUND on a path that
-        // exists.
-        let application_wide: Vec<u16> = command
-            .program
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        // The binding above must outlive the call: a pointer taken from a temporary
-        // Vec would dangle the moment the statement ended, which is a use-after-free
-        // that compiles.
-        let application: *const u16 = application_wide.as_ptr();
+        // Named only when the program carries a path; a bare name must keep the
+        // search path it was resolved with, or `cmd` stops meaning `cmd`.
+        let application_wide: Option<Vec<u16>> = names_a_path(command.program).then(|| {
+            command
+                .program
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        // The binding above must outlive the call: a pointer taken from a temporary Vec
+        // would dangle the moment the statement ended, which is a use-after-free that
+        // compiles.
+        let application: *const u16 = application_wide
+            .as_ref()
+            .map_or(std::ptr::null(), |wide| wide.as_ptr());
         let line = command_line.as_mut_ptr();
         let security: *const SECURITY_ATTRIBUTES = std::ptr::null();
         let environment_block = environment
@@ -742,6 +743,17 @@ impl Drop for AttributeList {
 /// Quoting follows the documented rules: an argument with a space or a quote is
 /// wrapped, backslashes before a quote are doubled, and a trailing backslash is
 /// doubled so it cannot escape the closing quote.
+/// Whether the program must be named explicitly instead of searched for.
+///
+/// `CreateProcess*` with `lpApplicationName = NULL` treats the command line's first
+/// token as the program and resolves a bare name through `PATH`. Naming the
+/// application *disables that search*, which is why a bare name (`cmd`) must stay
+/// unnamed — and why a name carrying a path is named here: a contained child has no
+/// search path of its own, so it needs the absolute path spelled out.
+pub(crate) fn names_a_path(program: &str) -> bool {
+    !program.is_empty() && (program.contains(['\\', '/']) || Path::new(program).is_absolute())
+}
+
 pub(crate) fn command_line(command: &Command<'_>) -> Vec<u16> {
     let mut line = OsString::new();
     line.push(quote(command.program));
