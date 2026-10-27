@@ -30,6 +30,7 @@ use crate::caps::sandbox::contract::{
 };
 use crate::caps::sandbox::limits::{Armed, Manager};
 use crate::caps::sandbox::session::log::Log;
+use crate::caps::sandbox::session::registry::{Registry, SessionLimits, Started};
 
 /// Output retained when the spec declares no bound (10 MiB, as the Go side).
 pub(crate) const DEFAULT_OUTPUT_LIMIT: u64 = 10 * 1024 * 1024;
@@ -53,6 +54,14 @@ pub(crate) struct SpawnOptions {
     pub(crate) default_output_limit: u64,
     /// What this host can enforce for cpu and memory.
     pub(crate) limits: std::sync::Arc<Manager>,
+    /// The table this session is listed in.
+    ///
+    /// Its supervise tick is what reclaims expired entries, so the table needs no
+    /// task of its own; `None` is for a caller that spawns without a table (the
+    /// unit tests of this module).
+    pub(crate) registry: Option<Arc<Registry>>,
+    /// The bounds that table enforces.
+    pub(crate) session_limits: SessionLimits,
 }
 
 /// How long a `SIGTERM` gets before the group is killed outright.
@@ -482,10 +491,7 @@ fn apply_env(command: &mut Command, policy: &EnvPolicy) {
 }
 
 /// Spawn one pipe-backed session.
-pub(crate) async fn spawn(
-    mut spec: SessionSpec,
-    options: &SpawnOptions,
-) -> Result<Arc<dyn Session>> {
+pub(crate) async fn spawn(mut spec: SessionSpec, options: &SpawnOptions) -> Result<Started> {
     validate_spec(&mut spec, options)?;
     // A pty is a different session shape (merged stream, resize, no stdin EOF),
     // so it has its own implementation rather than a flag here.
@@ -751,22 +757,42 @@ pub(crate) async fn spawn(
     if !wants_stdin {
         session.close_input().await?;
     }
-    if spec.opts.timeout.is_some() || armed.is_some() {
-        // Detached on purpose: the task ends by itself once the exit is
-        // published (it observes `exited`), and it is the only owner of `armed`,
-        // so nothing else may cancel it mid-release.
-        supervise(session.clone(), spec.opts.timeout, armed);
+    // Detached on purpose: the task ends by itself once the exit is published
+    // (it observes `exited`), and it is the only owner of `armed`, so nothing
+    // else may cancel it mid-release. It always runs where a table exists,
+    // because the table's sweep rides on this tick.
+    if spec.opts.timeout.is_some() || armed.is_some() || options.registry.is_some() {
+        supervise(
+            session.clone(),
+            spec.opts.timeout,
+            armed,
+            options.registry.clone(),
+            options.session_limits.clone(),
+        );
     }
 
-    Ok(session)
+    Ok(Started { session, log })
 }
 
-/// Watch one session's deadline and resource budgets.
+/// Watch one session's deadline and resource budgets, and drive the table's
+/// sweep.
 ///
-/// One task for both, because they answer the same question ("should this stop,
-/// and why") and a session that is killed twice must keep the first reason:
-/// [`ProcessSession::stop`] only records a reason the first time.
-fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed: Option<Armed>) {
+/// One task for all three, because they answer the same question ("should this
+/// stop, and why") on the same cadence, and a session that is killed twice must
+/// keep the first reason: [`ProcessSession::stop`] only records a reason the first
+/// time.
+///
+/// The table has no task of its own: this tick is what reclaims entries whose
+/// retention window has run out. It therefore outlives the process, which is the
+/// point — an exited session is still listed, and something has to notice when it
+/// stops being owed to anyone.
+fn supervise(
+    session: Arc<ProcessSession>,
+    timeout: Option<Duration>,
+    mut armed: Option<Armed>,
+    registry: Option<Arc<Registry>>,
+    session_limits: SessionLimits,
+) {
     tokio::spawn(async move {
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         let mut exited = session.exited.clone();
@@ -776,7 +802,7 @@ fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed:
                 if let Some(armed) = armed.take() {
                     armed.close();
                 }
-                return;
+                break;
             }
 
             // Windows caps are kernel settings on the session's job, not an armed
@@ -784,7 +810,10 @@ fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed:
             #[cfg(windows)]
             if let Some(reason) = session.violation() {
                 let _ = session.stop(reason).await;
-                return;
+                if let Some(armed) = armed.take() {
+                    armed.close();
+                }
+                break;
             }
 
             if let Some(limits) = &mut armed {
@@ -795,7 +824,7 @@ fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed:
                         if let Some(armed) = armed.take() {
                             armed.close();
                         }
-                        return;
+                        break;
                     }
                     Ok(None) => {}
                     // Accounting is gone: kill it rather than run it unguarded.
@@ -805,7 +834,7 @@ fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed:
                         if let Some(armed) = armed.take() {
                             armed.close();
                         }
-                        return;
+                        break;
                     }
                 }
             }
@@ -817,13 +846,27 @@ fn supervise(session: Arc<ProcessSession>, timeout: Option<Duration>, mut armed:
                 if let Some(armed) = armed.take() {
                     armed.close();
                 }
-                return;
+                break;
             }
 
             tokio::select! {
                 _ = tokio::time::sleep(SUPERVISE_TICK) => {}
                 _ = exited.changed() => {}
             }
+            if let Some(registry) = &registry {
+                registry.sweep(std::time::Instant::now(), &session_limits);
+            }
+        }
+
+        // Only the table is left to maintain. The tick stops the moment this
+        // session's entry is reclaimed, so the number of live ticks never exceeds
+        // the number of listed sessions.
+        let Some(registry) = registry else {
+            return;
+        };
+        while registry.holds(&session.id) {
+            tokio::time::sleep(SUPERVISE_TICK).await;
+            registry.sweep(std::time::Instant::now(), &session_limits);
         }
     });
 }
@@ -851,11 +894,19 @@ mod tests {
         SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect())
     }
 
+    /// Spawn one session and hand back just the handle: what these tests are
+    /// about is the session, not the table that would list it.
+    async fn spawn_session(spec: SessionSpec, options: &SpawnOptions) -> Result<Arc<dyn Session>> {
+        Ok(spawn(spec, options).await?.session)
+    }
+
     fn options() -> SpawnOptions {
         SpawnOptions {
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
             limits: std::sync::Arc::new(Manager::probe()),
+            registry: None,
+            session_limits: SessionLimits::default(),
         }
     }
 
@@ -876,7 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn runs_a_command_and_reports_output_and_exit() {
-        let session = spawn(spec(&["sh", "-c", "echo hello; exit 3"]), &options())
+        let session = spawn_session(spec(&["sh", "-c", "echo hello; exit 3"]), &options())
             .await
             .unwrap();
         let exit = session.wait().await.unwrap();
@@ -888,7 +939,7 @@ mod tests {
 
     #[tokio::test]
     async fn stderr_is_a_separate_stream() {
-        let session = spawn(spec(&["sh", "-c", "echo out; echo err 1>&2"]), &options())
+        let session = spawn_session(spec(&["sh", "-c", "echo out; echo err 1>&2"]), &options())
             .await
             .unwrap();
         session.wait().await.unwrap();
@@ -918,7 +969,7 @@ mod tests {
     async fn stdin_is_delivered_and_can_be_closed() {
         let mut start = spec(&["cat"]);
         start.stdin = true;
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.write(b"ping\n").await.unwrap();
         session.close_input().await.unwrap();
         let exit = session.wait().await.unwrap();
@@ -929,7 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_input_without_stdin_is_a_no_op() {
-        let session = spawn(spec(&["true"]), &options()).await.unwrap();
+        let session = spawn_session(spec(&["true"]), &options()).await.unwrap();
         session.close_input().await.unwrap();
         session.wait().await.unwrap();
         session.close().await.unwrap();
@@ -937,7 +988,9 @@ mod tests {
 
     #[tokio::test]
     async fn writing_without_an_input_side_is_not_available() {
-        let session = spawn(spec(&["sleep", "5"]), &options()).await.unwrap();
+        let session = spawn_session(spec(&["sleep", "5"]), &options())
+            .await
+            .unwrap();
         let error = session.write(b"x").await.expect_err("no stdin");
         assert_eq!(error.kind(), crate::error::ErrorKind::NotAvailable);
         session.close().await.unwrap();
@@ -951,7 +1004,7 @@ mod tests {
             .env
             .inject
             .insert("SECRET".to_owned(), "s3cr3t".to_owned());
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "s3cr3t");
         session.close().await.unwrap();
@@ -963,7 +1016,7 @@ mod tests {
         // (`HOME`) must be absent in the child.
         let mut start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
         start.opts.env.allow = Some(Vec::new());
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "missing");
         session.close().await.unwrap();
@@ -975,7 +1028,7 @@ mod tests {
         // filter runs: `HOME` would have been inherited if it did not.
         let mut start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
         start.opts.env.allow = Some(vec!["FLOWCRAFT_TEST_ABSENT".to_owned()]);
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, "missing");
         session.close().await.unwrap();
@@ -985,7 +1038,7 @@ mod tests {
     async fn a_none_allow_list_inherits_the_host_environment() {
         let expected = std::env::var("HOME").unwrap_or_else(|_| "missing".to_owned());
         let start = spec(&["sh", "-c", "printf '%s' \"${HOME:-missing}\""]);
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         assert_eq!(read_all(&session).await, expected);
         session.close().await.unwrap();
@@ -995,7 +1048,7 @@ mod tests {
     async fn timeouts_are_classified_not_merely_killed() {
         let mut start = spec(&["sleep", "30"]);
         start.opts.timeout = Some(Duration::from_millis(100));
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         let exit = session.wait().await.unwrap();
         assert_eq!(exit.reason, ExitReason::TimedOut);
         assert_eq!(
@@ -1007,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminate_is_a_graceful_signal_first() {
-        let session = spawn(
+        let session = spawn_session(
             spec(&[
                 "sh",
                 "-c",
@@ -1031,7 +1084,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminate_escalates_when_the_child_ignores_sigterm() {
-        let session = spawn(
+        let session = spawn_session(
             spec(&["sh", "-c", "trap '' TERM; while :; do sleep 0.05; done"]),
             &options(),
         )
@@ -1055,7 +1108,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signaled_exit_is_classified() {
-        let session = spawn(spec(&["sh", "-c", "kill -TERM $$"]), &options())
+        let session = spawn_session(spec(&["sh", "-c", "kill -TERM $$"]), &options())
             .await
             .unwrap();
         let exit = session.wait().await.unwrap();
@@ -1066,7 +1119,9 @@ mod tests {
 
     #[tokio::test]
     async fn closing_releases_every_later_call() {
-        let session = spawn(spec(&["sleep", "30"]), &options()).await.unwrap();
+        let session = spawn_session(spec(&["sleep", "30"]), &options())
+            .await
+            .unwrap();
         session.close().await.unwrap();
         for error in [
             session.read(0, 16).await.err().unwrap(),
@@ -1085,21 +1140,25 @@ mod tests {
         let mut net = spec(&["true"]);
         net.opts.net.mode = crate::caps::sandbox::contract::NetMode::DenyAll;
         assert_eq!(
-            spawn(net, &options()).await.err().unwrap().kind(),
+            spawn_session(net, &options()).await.err().unwrap().kind(),
             crate::error::ErrorKind::NotAvailable
         );
 
         let mut write = spec(&["true"]);
         write.opts.write = crate::caps::sandbox::contract::WriteMode::ReadOnly;
         assert_eq!(
-            spawn(write, &options()).await.err().unwrap().kind(),
+            spawn_session(write, &options()).await.err().unwrap().kind(),
             crate::error::ErrorKind::NotAvailable
         );
 
         let mut memory = spec(&["true"]);
         memory.opts.limits.memory_bytes = Some(1024);
         assert_eq!(
-            spawn(memory, &options()).await.err().unwrap().kind(),
+            spawn_session(memory, &options())
+                .await
+                .err()
+                .unwrap()
+                .kind(),
             crate::error::ErrorKind::NotAvailable
         );
 
@@ -1109,7 +1168,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_command_is_not_found() {
-        let error = spawn(spec(&["flowcraft-command-that-does-not-exist"]), &options())
+        let error = spawn_session(spec(&["flowcraft-command-that-does-not-exist"]), &options())
             .await
             .expect_err("not found");
         assert_eq!(error.kind(), crate::error::ErrorKind::NotFound);
@@ -1119,7 +1178,7 @@ mod tests {
     async fn output_is_bounded_and_reports_a_gap() {
         let mut start = spec(&["sh", "-c", "yes x | head -c 200000"]);
         start.opts.limits.max_output_bytes = Some(64);
-        let session = spawn(start, &options()).await.unwrap();
+        let session = spawn_session(start, &options()).await.unwrap();
         session.wait().await.unwrap();
         // The retained window is tiny, so an early cursor is a gap rather than
         // a silent hole.

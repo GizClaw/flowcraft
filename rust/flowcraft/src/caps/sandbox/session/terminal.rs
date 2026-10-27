@@ -30,6 +30,7 @@ use crate::caps::sandbox::contract::{
     Stream,
 };
 use crate::caps::sandbox::session::log::Log;
+use crate::caps::sandbox::session::registry::Started;
 use crate::caps::sandbox::session::spawn::{DEFAULT_OUTPUT_LIMIT, SpawnOptions, TERMINATE_GRACE};
 
 /// Whether this build can provide a pty.
@@ -275,7 +276,7 @@ impl Session for PtySession {
 }
 
 /// Spawn a pty session.
-pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<Arc<dyn Session>> {
+pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<Started> {
     let (rows, cols) = spec.window();
     let pty = native_pty_system();
     let pair = pty
@@ -374,7 +375,7 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
             signal: true,
             events: true,
         },
-        log,
+        log: log.clone(),
         master: Mutex::new(pair.master),
         writer: Arc::new(Mutex::new(Some(writer))),
         killer: Mutex::new(killer),
@@ -396,7 +397,7 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
             *slot = Some(handle);
         }
     }
-    Ok(session)
+    Ok(Started { session, log })
 }
 
 /// Classify a pty exit.

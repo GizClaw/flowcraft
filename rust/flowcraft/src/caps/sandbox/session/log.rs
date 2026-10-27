@@ -16,6 +16,7 @@
 //! guaranteed to wake it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,9 +55,20 @@ struct State {
     version: u64,
     exit: Option<ExitStatus>,
     closed: bool,
+    /// Closed by the table rather than by a client: the process had already
+    /// exited and its retention window ran out.
+    reclaimed: bool,
 }
 
 impl State {
+    /// The refusal a client is owed in this state.
+    fn closed_error(&self) -> Error {
+        if self.reclaimed {
+            reclaimed_error()
+        } else {
+            closed_error()
+        }
+    }
     /// The first retained cursor: anything after it can be replayed.
     fn retained(&self) -> u64 {
         self.records
@@ -116,6 +128,9 @@ pub(crate) struct Log {
     state: Mutex<State>,
     revisions: watch::Sender<u64>,
     events: broadcast::Sender<Event>,
+    /// Set once a `read` has answered `eof`: the reader is owed nothing more, so
+    /// the table may reclaim the session ahead of its retention window.
+    consumed: AtomicBool,
 }
 
 fn poisoned() -> Error {
@@ -124,6 +139,18 @@ fn poisoned() -> Error {
 
 fn closed_error() -> Error {
     Error::closed("sandbox: session is closed")
+}
+
+/// The refusal a read owes a client whose session the table reclaimed.
+///
+/// The two cases are the same state and different stories: "closed" means this
+/// handle was closed under the caller, "reclaimed" means the session ended and
+/// the retention window afterwards ran out.
+fn reclaimed_error() -> Error {
+    Error::closed(
+        "sandbox: the session exited and its output was reclaimed after the retention window; \
+         raise sessions.exit_retention_secs to keep it longer",
+    )
 }
 
 impl Log {
@@ -140,10 +167,30 @@ impl Log {
                 version: 0,
                 exit: None,
                 closed: false,
+                reclaimed: false,
             }),
             revisions,
             events,
+            consumed: AtomicBool::new(false),
         }
+    }
+
+    /// Retained bytes: what this log still owes a reader.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.lock().map(|state| state.total).unwrap_or(0)
+    }
+
+    /// Whether a reader has already been handed the whole stream.
+    ///
+    /// Set by [`Log::read`] when it answers `eof`, so it means "the last byte was
+    /// delivered", not "the process exited".
+    pub(crate) fn consumed(&self) -> bool {
+        self.consumed.load(Ordering::Acquire)
+    }
+
+    /// Record that a reader reached the end of the stream.
+    pub(crate) fn mark_consumed(&self) {
+        self.consumed.store(true, Ordering::Release);
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
@@ -208,6 +255,19 @@ impl Log {
 
     /// Mark the log closed: readers and watchers are released.
     pub(crate) fn close(&self) {
+        self.shut(false);
+    }
+
+    /// Mark the log closed because the table reclaimed the session.
+    ///
+    /// Distinct from [`Log::close`] so a client that comes back for more than it
+    /// read is told the session was reclaimed, and not left believing it is
+    /// looking at a session that stalled.
+    pub(crate) fn reclaim(&self) {
+        self.shut(true);
+    }
+
+    fn shut(&self, reclaimed: bool) {
         let Ok(mut state) = self.lock() else {
             return;
         };
@@ -216,6 +276,7 @@ impl Log {
         }
         let seq = state.next_seq;
         state.closed = true;
+        state.reclaimed |= reclaimed;
         self.publish(&mut state, Some(Event::Closed { seq }));
     }
 
@@ -235,7 +296,7 @@ impl Log {
             let version = {
                 let state = self.lock()?;
                 if state.closed {
-                    return Err(closed_error());
+                    return Err(state.closed_error());
                 }
                 let retained = state.retained();
                 if retained > after_seq {
@@ -251,6 +312,12 @@ impl Log {
                 }
                 let collected = state.collect(after_seq, max_bytes);
                 if !collected.chunks.is_empty() || collected.eof {
+                    if collected.eof {
+                        // The whole stream has been handed over: nothing is owed
+                        // to this reader, which is what lets the table reclaim
+                        // the session before its retention window ends.
+                        self.mark_consumed();
+                    }
                     return Ok(collected);
                 }
                 state.version
@@ -268,7 +335,7 @@ impl Log {
         let (replay, snapshot, finished) = {
             let state = self.lock()?;
             if state.closed {
-                return Err(closed_error());
+                return Err(state.closed_error());
             }
             let mut replay = Vec::with_capacity(state.records.len());
             let mut end = state.next_seq;

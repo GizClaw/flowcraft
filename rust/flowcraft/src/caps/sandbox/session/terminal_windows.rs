@@ -33,6 +33,7 @@ use crate::caps::sandbox::contract::{
 };
 use crate::caps::sandbox::session::job::SessionJob;
 use crate::caps::sandbox::session::log::Log;
+use crate::caps::sandbox::session::registry::Started;
 use crate::caps::sandbox::session::spawn::{SpawnOptions, TERMINATE_GRACE};
 use crate::error::{Error, Result};
 
@@ -248,7 +249,7 @@ impl Session for PtySession {
 }
 
 /// Spawn a pty session.
-pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<Arc<dyn Session>> {
+pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<Started> {
     if !available() {
         return Err(codes::unavailable(
             Code::TtyUnsupported,
@@ -399,7 +400,7 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
             signal: true,
             events: true,
         },
-        log,
+        log: log.clone(),
         pty: Mutex::new(Some(pty)),
         writer,
         job: Some(job),
@@ -441,7 +442,7 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
             *slot = Some(handle);
         }
     }
-    Ok(session)
+    Ok(Started { session, log })
 }
 
 // The environment policy is shared with the pipe path (`session::spawn`): both

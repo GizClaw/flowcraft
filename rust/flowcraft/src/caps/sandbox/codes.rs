@@ -46,6 +46,8 @@ pub enum Code {
     CommandNotAllowed,
     /// The requested timeout is above the grant's ceiling.
     TimeoutExceedsGrant,
+    /// The runner's session table or output budget is spent.
+    SessionLimit,
 }
 
 impl Code {
@@ -53,7 +55,7 @@ impl Code {
     ///
     /// A new code must be added here: the snapshot test iterates this list, so a
     /// spelling that never reaches a peer cannot hide.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::ArgvEmpty,
         Self::TtyUnsupported,
         Self::NetModeUnsupported,
@@ -65,6 +67,7 @@ impl Code {
         Self::SessionNotFound,
         Self::CommandNotAllowed,
         Self::TimeoutExceedsGrant,
+        Self::SessionLimit,
     ];
 
     /// The stable wire spelling.
@@ -82,6 +85,7 @@ impl Code {
             Self::SessionNotFound => "session_not_found",
             Self::CommandNotAllowed => "command_not_allowed",
             Self::TimeoutExceedsGrant => "timeout_exceeds_grant",
+            Self::SessionLimit => "session_limit",
         }
     }
 }
@@ -110,6 +114,12 @@ pub(crate) fn not_found(code: Code, message: impl Into<String>) -> Error {
 /// The action conflicts with current state.
 pub(crate) fn conflict(code: Code, message: impl Into<String>) -> Error {
     Error::coded(ErrorKind::Conflict, DOMAIN, code.as_str(), message)
+}
+
+/// A quota is spent: the runner's own resources cannot admit the request, and
+/// nothing about the request is wrong.
+pub(crate) fn exhausted(code: Code, message: impl Into<String>) -> Error {
+    Error::coded(ErrorKind::BudgetExceeded, DOMAIN, code.as_str(), message)
 }
 
 /// The grant does not allow the action.
@@ -144,6 +154,7 @@ mod tests {
                 "session_not_found",
                 "command_not_allowed",
                 "timeout_exceeds_grant",
+                "session_limit",
             ]
         );
         let mut unique = spellings.clone();
@@ -176,6 +187,10 @@ mod tests {
         assert_eq!(
             validation(Code::ArgvEmpty, "empty").kind(),
             ErrorKind::Validation
+        );
+        assert_eq!(
+            exhausted(Code::SessionLimit, "full").kind(),
+            ErrorKind::BudgetExceeded
         );
     }
 }
