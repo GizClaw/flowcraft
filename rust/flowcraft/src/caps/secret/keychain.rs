@@ -327,21 +327,48 @@ impl FileBackend {
             )));
         }
         let key = self.pinned_key()?;
-        let plain = open(&key, name, &raw)?;
+        let (plain, legacy) = open(&key, name, &raw)?;
+        if legacy {
+            // The file was sealed before the account name became additional
+            // authenticated data. It opened, so the value is authentic for this
+            // name — re-bind it now, so the fallback stays a one-time migration
+            // instead of a permanent downgrade path that any file in this
+            // directory can walk through. A failed re-wrap must not fail the
+            // read: the value is already recovered, and the next read retries.
+            self.rebind(&key, name, &plain);
+        }
         Ok(Some(String::from_utf8(plain).map_err(|_| {
             Error::internal(format!("secret keychain: {name:?} is not UTF-8"))
         })?))
     }
 
+    /// Re-seal a legacy value under the name-binding AAD.
+    fn rebind(&self, key: &[u8; KEY_LEN], name: &str, plain: &[u8]) {
+        let outcome = seal(key, name, plain)
+            .and_then(|sealed| atomic_write(&self.dir, &self.path(name), &sealed, ".sealed"));
+        if let Err(error) = outcome {
+            tracing::warn!(
+                %error,
+                "secret keychain: could not re-wrap a legacy sealed file; the read still succeeded"
+            );
+        }
+    }
+
     fn set(&self, name: &str, value: &[u8]) -> Result<()> {
         validate_name(name)?;
+        // The index is updated *before* the value is published. The other order
+        // leaves a sealed file that no enumeration can see (`delete_prefix` walks
+        // the index), so a failed index write would orphan a secret permanently.
+        // This order's failure mode is a name without a value, which reads as
+        // `NotFound` and is repaired by the next `set`.
+        self.add_account(name)?;
         let key = self.pinned_key()?;
         let sealed = seal(&key, name, value)?;
         atomic_write(&self.dir, &self.path(name), &sealed, ".sealed")?;
         // The pin is released after the write, not after the encryption: see
         // `pinned_key`.
         drop(key);
-        self.add_account(name)
+        Ok(())
     }
 
     fn delete(&self, name: &str) -> Result<()> {
@@ -693,6 +720,14 @@ fn decode_key(raw: &[u8]) -> Result<[u8; KEY_LEN]> {
 }
 
 fn seal(key: &[u8; KEY_LEN], name: &str, plain: &[u8]) -> Result<Vec<u8>> {
+    seal_with_aad(key, name.as_bytes(), plain)
+}
+
+/// Seal `plain` with an explicit additional-authenticated-data value.
+///
+/// The name is the AAD in production; the empty string reconstructs the
+/// pre-name-binding format, which only the migration test needs.
+fn seal_with_aad(key: &[u8; KEY_LEN], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>> {
     let sealing = LessSafeKey::new(
         UnboundKey::new(&AES_256_GCM, key)
             .map_err(|_| Error::internal("secret keychain: invalid key"))?,
@@ -707,13 +742,18 @@ fn seal(key: &[u8; KEY_LEN], name: &str, plain: &[u8]) -> Result<Vec<u8>> {
     out.extend_from_slice(&nonce_bytes);
     let mut body = plain.to_vec();
     sealing
-        .seal_in_place_append_tag(nonce, Aad::from(name.as_bytes()), &mut body)
+        .seal_in_place_append_tag(nonce, Aad::from(aad), &mut body)
         .map_err(|_| Error::internal("secret keychain: encrypt"))?;
     out.extend_from_slice(&body);
     Ok(out)
 }
 
-fn open(key: &[u8; KEY_LEN], name: &str, raw: &[u8]) -> Result<Vec<u8>> {
+/// Decrypt one sealed file, and say whether it predates the name binding.
+///
+/// The second value is what makes the compatibility path a migration instead of
+/// a permanent hole: the caller re-seals a legacy file on the first successful
+/// read (see [`FileBackend::rebind`]).
+fn open(key: &[u8; KEY_LEN], name: &str, raw: &[u8]) -> Result<(Vec<u8>, bool)> {
     let body = raw
         .strip_prefix(MAGIC)
         .ok_or_else(|| Error::validation("secret keychain: missing seal prefix"))?;
@@ -735,10 +775,10 @@ fn open(key: &[u8; KEY_LEN], name: &str, raw: &[u8]) -> Result<Vec<u8>> {
         Aad::from(name.as_bytes()),
         &mut buffer,
     ) {
-        return Ok(plain.to_vec());
+        return Ok((plain.to_vec(), false));
     }
     // Files sealed before the name binding existed carry no additional data.
-    // They are accepted so an existing store keeps working, and the next write
+    // They are accepted so an existing store keeps working, and the caller
     // rewrites them bound.
     let mut buffer = sealed.to_vec();
     if let Ok(plain) = opening.open_in_place(
@@ -746,7 +786,7 @@ fn open(key: &[u8; KEY_LEN], name: &str, raw: &[u8]) -> Result<Vec<u8>> {
         Aad::empty(),
         &mut buffer,
     ) {
-        return Ok(plain.to_vec());
+        return Ok((plain.to_vec(), true));
     }
     Err(Error::internal(format!(
         "secret keychain: decrypt {name:?}: authentication failed"
@@ -936,26 +976,37 @@ mod tests {
         assert!(error.to_string().contains("authentication"), "{error}");
     }
 
+    /// The pre-binding format opens once, and the read re-binds it.
+    ///
+    /// Accepting the legacy format forever would keep a downgrade path alive:
+    /// any unbound file in the store directory would open under *any* account
+    /// name. So the first successful read re-seals it under the name, and the
+    /// fallback is spent on that file.
     #[tokio::test]
-    async fn a_file_sealed_without_the_name_still_opens() {
+    async fn a_file_sealed_without_the_name_opens_once_and_is_rebound() {
         let root = dir();
         let store = store(root.path());
         let key = *store.backend.pinned_key().unwrap();
         // The pre-binding format: no additional data.
-        let sealing = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap());
-        let nonce_bytes = [7u8; NONCE_LEN];
-        let mut body = b"legacy".to_vec();
-        sealing
-            .seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(nonce_bytes),
-                Aad::empty(),
-                &mut body,
-            )
-            .unwrap();
-        let mut raw = MAGIC.to_vec();
-        raw.extend_from_slice(&nonce_bytes);
-        raw.extend_from_slice(&body);
-        fs::write(store.backend.path("legacy"), raw).unwrap();
+        let legacy = seal_with_aad(&key, b"", b"legacy").unwrap();
+        fs::write(store.backend.path("legacy"), &legacy).unwrap();
+
+        assert_eq!(store.lookup("legacy").await.unwrap(), Some("legacy".into()));
+
+        // The read re-sealed it: the file opens under its own name, and no
+        // longer under any other.
+        let rebound = fs::read(store.backend.path("legacy")).unwrap();
+        assert!(open(&key, "legacy", &rebound).is_ok());
+        assert!(
+            open(&key, "other", &rebound).is_err(),
+            "a rebound file must not open under a different account name"
+        );
+        // The legacy bytes themselves were the hole this closed.
+        assert!(
+            open(&key, "other", &legacy).is_ok(),
+            "the pre-binding format is not name-bound, which is why it is migrated"
+        );
+        // The migration is invisible to the caller.
         assert_eq!(store.lookup("legacy").await.unwrap(), Some("legacy".into()));
     }
 

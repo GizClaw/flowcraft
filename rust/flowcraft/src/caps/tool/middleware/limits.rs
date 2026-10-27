@@ -201,7 +201,8 @@ pub fn truncate(options: TruncateOptions) -> Result<Middleware> {
                     return result;
                 }
                 let text = result_text(&result);
-                if text.chars().count() <= options.max_chars {
+                let count = text.chars().count();
+                if count <= options.max_chars {
                     return result;
                 }
                 let pointer = spill(&options, &result.call_id, &text).await;
@@ -211,10 +212,18 @@ pub fn truncate(options: TruncateOptions) -> Result<Middleware> {
                 };
                 let head_len = options.max_chars / 2;
                 let tail_len = options.max_chars - head_len;
+                // Head and tail are taken in runes without materialising the
+                // whole text: `Vec<char>` over a 100 MB output is 400 MB of
+                // transient allocation for what is a suffix scan. `count >
+                // max_chars >= tail_len >= 1`, so the `nth` below always exists
+                // and the byte index is a character boundary.
                 let head: String = text.chars().take(head_len).collect();
-                let tail_source: Vec<char> = text.chars().collect();
-                let tail: String = tail_source[tail_source.len() - tail_len..].iter().collect();
-                let excerpt = format!("{head}{marker}{tail}");
+                let tail_start = text
+                    .char_indices()
+                    .rev()
+                    .nth(tail_len - 1)
+                    .map_or(0, |(index, _)| index);
+                let excerpt = format!("{head}{marker}{}", &text[tail_start..]);
                 if let Some(content) = result.content.as_mut() {
                     crate::message::replace_text(content, excerpt);
                 }
@@ -238,7 +247,14 @@ async fn spill(options: &TruncateOptions, call_id: &str, text: &str) -> Option<S
     Some(shown)
 }
 
-/// Keep a call id usable as a file name.
+/// Keep a call id usable as a file name, and injective.
+///
+/// Replacing unsafe characters is not a one-to-one mapping (`a/b` and `a_b` both
+/// become `a_b`), and two calls that share one spill file silently overwrite
+/// each other's output. A hash of the *original* id keeps the name distinct and
+/// stable, and the length cap keeps it inside `NAME_MAX` on every host — a
+/// 10 KB id used to make `spill` fail outright, which silently dropped the
+/// pointer.
 fn sanitize(call_id: &str) -> String {
     let name: String = call_id
         .chars()
@@ -250,11 +266,23 @@ fn sanitize(call_id: &str) -> String {
             }
         })
         .collect();
-    if name.trim_matches('_').is_empty() {
-        "call".to_owned()
+    let stem = if name.trim_matches('_').is_empty() {
+        "call"
     } else {
-        name
+        name.as_str()
+    };
+    let stem: String = stem.chars().take(96).collect();
+    format!("{stem}-{:016x}", fnv1a(call_id.as_bytes()))
+}
+
+/// FNV-1a, so a spill name is reproducible across processes and releases.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    hash
 }
 
 #[cfg(test)]
@@ -375,8 +403,12 @@ mod tests {
         .await;
         let text = result_text(&result);
         assert!(text.contains("full output"), "{text:?}");
-        let spilled = std::fs::read_to_string(dir.path().join("call-1.output")).expect("spill");
-        assert_eq!(spilled, body);
+        let spilled = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "output"))
+            .expect("a spill file");
+        assert_eq!(std::fs::read_to_string(spilled).expect("spill"), body);
     }
 
     #[tokio::test]
@@ -415,7 +447,22 @@ mod tests {
 
     #[test]
     fn a_call_id_becomes_a_safe_file_name() {
-        assert_eq!(sanitize("a/b c"), "a_b_c");
-        assert_eq!(sanitize("___"), "call");
+        // Unsafe characters are replaced, and the name keeps a hash of the id.
+        for id in ["a/b c", "call-1", "___", ""] {
+            let name = sanitize(id);
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')),
+                "{name:?} is not a safe file name"
+            );
+            assert!(name.len() <= 96 + 17, "{name:?} is too long");
+        }
+        assert!(sanitize("___").starts_with("call-"));
+        // Sanitising is not injective on its own; the hash is what keeps two
+        // calls from sharing (and overwriting) one spill file.
+        assert_ne!(sanitize("a/b"), sanitize("a_b"));
+        assert_eq!(sanitize("a/b"), sanitize("a/b"), "stable across calls");
+        // A pathological id stays inside NAME_MAX instead of failing the spill.
+        assert!(sanitize(&"x".repeat(10_000)).len() <= 96 + 17);
     }
 }

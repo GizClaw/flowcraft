@@ -168,6 +168,13 @@ struct Pacer {
     next: Mutex<Instant>,
 }
 
+/// The longest interval one rate-limit slot may impose.
+///
+/// A rate slow enough to mean more than an hour per call is a configuration
+/// mistake; capping it bounds the sleep without ever making the limiter looser
+/// than the tool asked for.
+const MAX_INTERVAL: Duration = Duration::from_secs(3600);
+
 impl Pacer {
     fn reserve(&self) -> Duration {
         let Ok(mut next) = self.next.lock() else {
@@ -193,12 +200,31 @@ fn pacer_for(
     }
     let pacer = catalog.get(name).and_then(|tool| {
         let rate = tool.metadata().rate_limit;
-        (rate > 0.0).then(|| {
-            Arc::new(Pacer {
-                interval: Duration::from_secs_f64(1.0 / rate),
-                next: Mutex::new(Instant::now()),
-            })
-        })
+        // Anything that is not a finite positive rate is not a claim: NaN, an
+        // infinity, zero and negatives all mean "no pacing".
+        if !rate.is_finite() || rate <= 0.0 {
+            return None;
+        }
+        let seconds = 1.0 / rate;
+        // `Duration::from_secs_f64` panics on an overflowing value, and a tool
+        // that declares a rate of `1e-300` is a metadata mistake rather than a
+        // reason to take the daemon down. Cap instead, which keeps the limiter
+        // honest: a caller is never paced *faster* than it asked for.
+        let interval = if seconds.is_finite() && seconds <= MAX_INTERVAL.as_secs_f64() {
+            Duration::from_secs_f64(seconds)
+        } else {
+            tracing::warn!(
+                tool = name,
+                rate,
+                max_secs = MAX_INTERVAL.as_secs(),
+                "tool rate limit is slower than the cap; using the cap"
+            );
+            MAX_INTERVAL
+        };
+        Some(Arc::new(Pacer {
+            interval,
+            next: Mutex::new(Instant::now()),
+        }))
     });
     map.insert(name.to_owned(), pacer.clone());
     pacer
@@ -312,5 +338,76 @@ mod tests {
         assert!(concurrency(0).is_err());
         let chain = concurrency(2).expect("limiter")(ok());
         assert!(!chain(CallContext::default(), call("a")).await.is_error);
+    }
+
+    /// A tool's declared rate is host-supplied metadata, so the limiter must
+    /// survive anything it can hand over: `Duration::from_secs_f64` panics on an
+    /// overflowing value, and a panic here would sit inside the call path.
+    #[tokio::test]
+    async fn an_absurd_rate_is_capped_instead_of_panicking() {
+        for rate in [1e-300, f64::MIN_POSITIVE / 4.0, 1e-12] {
+            let pacer = pacer(rate).expect("a capped pacer");
+            assert_eq!(
+                pacer.interval, MAX_INTERVAL,
+                "rate {rate} must be capped, not panicked on"
+            );
+        }
+        // Not a claim at all: NaN fails `> 0.0`, and so do zero and negatives.
+        for rate in [f64::NAN, 0.0, -1.0] {
+            assert!(pacer(rate).is_none(), "rate {rate} must not pace");
+        }
+        // A rate that fits keeps exactly its interval.
+        assert_eq!(
+            pacer(4.0).expect("paced").interval,
+            Duration::from_millis(250)
+        );
+    }
+
+    /// Build a pacer for a tool that declares `rate`.
+    fn pacer(rate: f64) -> Option<Arc<Pacer>> {
+        struct Stub(f64);
+
+        #[async_trait::async_trait]
+        impl crate::caps::tool::callable::Tool for Stub {
+            fn definition(&self) -> msg::ToolDefinition {
+                msg::ToolDefinition {
+                    name: "paced".to_owned(),
+                    description: String::new(),
+                    input_schema: Vec::new(),
+                }
+            }
+
+            async fn execute(
+                &self,
+                _context: &CallContext,
+                _arguments: &str,
+            ) -> Result<msg::Content> {
+                Ok(text_content("ok"))
+            }
+
+            fn metadata(&self) -> crate::caps::tool::callable::ToolMeta {
+                crate::caps::tool::callable::ToolMeta {
+                    rate_limit: self.0,
+                    ..crate::caps::tool::callable::ToolMeta::default()
+                }
+            }
+        }
+
+        struct One(Arc<Stub>);
+
+        impl Catalog for One {
+            fn get(&self, name: &str) -> Option<Arc<dyn crate::caps::tool::callable::Tool>> {
+                (name == "paced")
+                    .then(|| self.0.clone() as Arc<dyn crate::caps::tool::callable::Tool>)
+            }
+
+            fn definitions(&self) -> Vec<msg::ToolDefinition> {
+                Vec::new()
+            }
+        }
+
+        let catalog: Arc<dyn Catalog> = Arc::new(One(Arc::new(Stub(rate))));
+        let pacers = Mutex::new(BTreeMap::new());
+        pacer_for(&pacers, &catalog, "paced")
     }
 }

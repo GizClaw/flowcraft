@@ -317,27 +317,35 @@ where
 }
 
 /// Read one head, keeping the bytes already consumed.
+///
+/// Read in chunks rather than a byte at a time: the old loop spent one syscall
+/// per byte, and the length of this head is whatever the client chooses to send.
+/// The terminator test compares the last four bytes (O(1), independent of how
+/// much has accumulated), so a terminator split across two reads is still found.
 async fn read_head<S>(stream: &mut S, buffered: Vec<u8>) -> Result<Vec<u8>>
 where
     S: AsyncRead + Unpin,
 {
     let mut head = buffered;
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") && !head.ends_with(b"\n\n") {
+    let mut chunk = [0u8; 1024];
+    loop {
+        if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
+            return Ok(head);
+        }
         if head.len() >= MAX_HEAD {
             return Err(Error::validation(
                 "sandbox: proxy request head is too large",
             ));
         }
-        let read = stream.read(&mut byte).await.map_err(Error::from)?;
+        let want = (MAX_HEAD - head.len()).min(chunk.len());
+        let read = stream.read(&mut chunk[..want]).await.map_err(Error::from)?;
         if read == 0 {
             return Err(Error::validation(
                 "sandbox: proxy request head is truncated",
             ));
         }
-        head.push(byte[0]);
+        head.extend_from_slice(&chunk[..read]);
     }
-    Ok(head)
 }
 
 /// Split a head into its request line and header lines.
@@ -679,6 +687,48 @@ mod tests {
         assert_eq!(header(&headers, "host"), Some("example.com"));
         assert_eq!(header(&headers, "HOST"), Some("example.com"));
         assert_eq!(header(&headers, "missing"), None);
+    }
+
+    /// The head is read in chunks now, so the two boundaries that matter are a
+    /// terminator split across the dispatcher's byte and the first read, and one
+    /// split across two reads.
+    #[tokio::test]
+    async fn a_head_split_across_reads_is_still_found() {
+        // `\r\n\r` arrives with the byte the dispatcher consumed, `\n` with the
+        // next read: a 4-byte terminator straddling the boundary.
+        let buffered = b"CONNECT example.com:443 HTTP/1.1\r\n\r".to_vec();
+        let mut reader: &[u8] = b"\n";
+        let head = read_head(&mut reader, buffered).await.expect("head");
+        assert!(
+            head.ends_with(b"\r\n\r\n"),
+            "{:?}",
+            String::from_utf8_lossy(&head)
+        );
+
+        // The bare-LF terminator takes the other branch.
+        let buffered = b"GET / HTTP/1.1\n".to_vec();
+        let mut reader: &[u8] = b"\n";
+        assert!(read_head(&mut reader, buffered).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_unterminated_head_is_bounded_and_reported() {
+        // Truncated: the peer closed before the head ended.
+        let mut reader: &[u8] = b"";
+        let error = read_head(&mut reader, b"GET / HTTP/1.1\r\n".to_vec())
+            .await
+            .expect_err("truncated");
+        assert!(error.to_string().contains("truncated"), "{error}");
+
+        // Unbounded: the peer keeps sending. The loop must stop at the cap
+        // instead of growing, which is also what keeps a client from choosing
+        // the allocation size.
+        let flood = vec![b'A'; MAX_HEAD + 64];
+        let mut reader: &[u8] = &flood;
+        let error = read_head(&mut reader, b"G".to_vec())
+            .await
+            .expect_err("too large");
+        assert!(error.to_string().contains("too large"), "{error}");
     }
 
     #[test]
