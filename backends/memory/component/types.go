@@ -198,8 +198,18 @@ func (address DocumentAddress) Key() string { return address.DatasetID + "\x00" 
 
 // ProjectionDelta mutates only changed projection records. DeleteDocuments
 // removes every active item belonging to each qualified tombstoned document.
+//
+// Shard names the one shard the delta writes to. A delta is always addressed,
+// never mixed: every upsert it carries belongs to that address family and the
+// ids it deletes are ids of that shard, which is what lets the store route a
+// delete without an id-to-shard catalog. The caller knows the address -- it is
+// processing one conversation's commit or one document event -- so saying it
+// is cheaper and stricter than making the store infer it from the upserts,
+// and a delete-only delta (a retired generation) has no upsert to infer from.
 type ProjectionDelta struct {
-	Scope              corememory.Scope
+	Scope corememory.Scope
+	// Shard is required for every delta, including one that only deletes.
+	Shard              string
 	Projection         string
 	Upserts            []Artifact
 	DeleteIDs          []string
@@ -208,6 +218,38 @@ type ProjectionDelta struct {
 	ActiveIDs          []string
 	SourceRevision     string
 	SourceDigest       string
+}
+
+// ValidateShard checks that the delta names one shard and that everything it
+// carries belongs to it. A delta spanning two addresses is refused: its
+// deletes would have to reach a shard the delta does not name.
+func (delta ProjectionDelta) ValidateShard() error {
+	if strings.TrimSpace(delta.Shard) == "" {
+		return errors.New("memory component: projection delta shard is required")
+	}
+	for _, artifact := range delta.Upserts {
+		shard, err := ShardForAddress(AddressFromArtifact(artifact))
+		if err != nil {
+			return fmt.Errorf("memory component: projection delta artifact %q: %w", artifact.ID, err)
+		}
+		if shard != delta.Shard {
+			return fmt.Errorf("memory component: projection delta writes artifact %q to shard %q, not %q",
+				artifact.ID, shard, delta.Shard)
+		}
+	}
+	for _, addresses := range [][]DocumentAddress{delta.DeleteDocuments, delta.ReconcileDocuments} {
+		for _, address := range addresses {
+			shard, err := DatasetShard(address.DatasetID)
+			if err != nil {
+				return fmt.Errorf("memory component: projection delta document %q: %w", address.DocumentID, err)
+			}
+			if shard != delta.Shard {
+				return fmt.Errorf("memory component: projection delta writes document %q of %q to shard %q, not %q",
+					address.DocumentID, address.DatasetID, shard, delta.Shard)
+			}
+		}
+	}
+	return nil
 }
 
 func (delta ProjectionDelta) ValidateDocumentAddresses() error {

@@ -182,7 +182,7 @@ func TestShardPlanRoutesExactlyWhatTheSelectorMatches(t *testing.T) {
 			t.Fatalf("ShardsFor(%v).All = %v, global = %v", metadata, plan.All, selector.Global())
 		}
 		for _, address := range table {
-			shard, err := ShardForAddress(address)
+			shard, err := component.ShardForAddress(address)
 			if err != nil {
 				t.Fatalf("ShardForAddress(%+v): %v", address, err)
 			}
@@ -190,47 +190,6 @@ func TestShardPlanRoutesExactlyWhatTheSelectorMatches(t *testing.T) {
 				t.Fatalf("selector %v, address %+v: matches=%v but plan %+v holds %q",
 					metadata, address, matched, plan, shard)
 			}
-		}
-	}
-}
-
-// TestShardForAddressAgreesWithValidate keeps the two switches that group
-// kinds from drifting apart: a kind the address validation accepts has exactly
-// one shard, one the validation rejects (profile) has none, and the shard
-// carries the id the kind is addressed by.
-func TestShardForAddressAgreesWithValidate(t *testing.T) {
-	for _, kind := range allKinds {
-		address := component.CandidateAddress{
-			Kind: kind, ConversationID: "c1", DatasetID: "d1", DocumentID: "doc", ItemID: "item",
-		}
-		validated := address.Validate() == nil
-		shard, err := ShardForAddress(address)
-		if validated != (err == nil) {
-			t.Fatalf("%s: Validate err = %v, ShardForAddress err = %v", kind, address.Validate(), err)
-		}
-		if err != nil {
-			continue
-		}
-		switch kind {
-		case corememory.ContextRawMessage, corememory.ContextFact, corememory.ContextSummary:
-			if want, _ := ConversationShard("c1"); shard != want {
-				t.Fatalf("%s lives in %q, want %q", kind, shard, want)
-			}
-		default:
-			if want, _ := DatasetShard("d1"); shard != want {
-				t.Fatalf("%s lives in %q, want %q", kind, shard, want)
-			}
-		}
-	}
-	for _, address := range []component.CandidateAddress{
-		{},
-		{Kind: corememory.ContextProfile, ConversationID: "c1", ItemID: "profile"},
-		{Kind: corememory.ContextFact},
-		{Kind: corememory.ContextDocumentChunk, DocumentID: "doc"},
-		{Kind: "unknown", ConversationID: "c1"},
-	} {
-		if _, err := ShardForAddress(address); err == nil {
-			t.Errorf("ShardForAddress(%+v) named a shard for an address without one", address)
 		}
 	}
 }

@@ -10,55 +10,6 @@ import (
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
 
-// A shard is the smallest candidate set a read has to touch: one
-// conversation's chat records, or one dataset's documents. It is a storage
-// concept that sits below Scope, which stays the hard partition, and it is
-// derived from the address a write already carries — there is no id-to-shard
-// catalog, and no catch-all shard for records whose address cannot be
-// computed. Those are rejected, so a write failure is visible instead of
-// landing in a shard no selector can ever name.
-const (
-	// ShardConversationPrefix marks a shard that holds one conversation's chat
-	// records: raw_message, fact and summary.
-	ShardConversationPrefix = "c:"
-	// ShardDatasetPrefix marks a shard that holds one dataset's documents: the
-	// four document kinds.
-	ShardDatasetPrefix = "d:"
-)
-
-// ConversationShard returns the shard holding one conversation's chat records.
-func ConversationShard(conversationID string) (string, error) {
-	if conversationID == "" {
-		return "", errors.New("projection: conversation shard needs a conversation_id")
-	}
-	return ShardConversationPrefix + conversationID, nil
-}
-
-// DatasetShard returns the shard holding one dataset's documents.
-func DatasetShard(datasetID string) (string, error) {
-	if datasetID == "" {
-		return "", errors.New("projection: dataset shard needs a dataset_id")
-	}
-	return ShardDatasetPrefix + datasetID, nil
-}
-
-// ShardForAddress names the shard one candidate address belongs to. The kind
-// groups here are exactly the groups CandidateAddress.Validate accepts, and
-// the test that keeps them in step fails if either side learns a new kind
-// alone: a kind the address validation rejects (profile) has no shard, and a
-// kind it accepts must have one.
-func ShardForAddress(address component.CandidateAddress) (string, error) {
-	switch address.Kind {
-	case corememory.ContextRawMessage, corememory.ContextFact, corememory.ContextSummary:
-		return ConversationShard(address.ConversationID)
-	case corememory.ContextDocumentResource, corememory.ContextDocumentSection,
-		corememory.ContextDocumentChunk, corememory.ContextDocumentSummary:
-		return DatasetShard(address.DatasetID)
-	default:
-		return "", fmt.Errorf("projection: unsupported candidate address kind %q", address.Kind)
-	}
-}
-
 // ShardPlan is the set of shards one request can read from. All means the
 // request narrows nothing: the plan is every shard in the scope, and a reader
 // enumerates them instead of taking the list from here.
@@ -90,23 +41,23 @@ func (plan ShardPlan) Holds(shard string) bool {
 	return false
 }
 
-// Plan returns the shards this selector can read from, in a stable order:
-// the conversation shard first when chat is selectable, then the dataset
-// shards sorted.
+// Plan returns the shards this selector can read from, in a stable order: the
+// conversation shard first when chat is selectable, then the dataset shards
+// sorted.
 func (selector Selector) Plan() (ShardPlan, error) {
 	if selector.Global() {
 		return ShardPlan{All: true}, nil
 	}
 	var plan ShardPlan
 	if selector.conversation != "" {
-		shard, err := ConversationShard(selector.conversation)
+		shard, err := component.ConversationShard(selector.conversation)
 		if err != nil {
 			return ShardPlan{}, err
 		}
 		plan.Shards = append(plan.Shards, shard)
 	}
 	for _, datasetID := range selector.Datasets() {
-		shard, err := DatasetShard(datasetID)
+		shard, err := component.DatasetShard(datasetID)
 		if err != nil {
 			return ShardPlan{}, err
 		}
@@ -143,12 +94,12 @@ func ShardSegment(shard string) (string, error) {
 // is not one: the storage scan uses it to tell a shard directory from a
 // sibling it does not own.
 func ParseShardSegment(segment string) (string, error) {
-	var prefix string
+	var kind string
 	switch {
 	case strings.HasPrefix(segment, "c_"):
-		prefix = ShardConversationPrefix
+		kind = "c"
 	case strings.HasPrefix(segment, "d_"):
-		prefix = ShardDatasetPrefix
+		kind = "d"
 	default:
 		return "", fmt.Errorf("projection: %q is not a shard segment", segment)
 	}
@@ -156,22 +107,22 @@ func ParseShardSegment(segment string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("projection: decode shard segment %q: %w", segment, err)
 	}
-	if prefix == ShardConversationPrefix {
-		return ConversationShard(string(decoded))
+	if kind == "c" {
+		return component.ConversationShard(string(decoded))
 	}
-	return DatasetShard(string(decoded))
+	return component.DatasetShard(string(decoded))
 }
 
 func splitShard(shard string) (string, string, error) {
 	switch {
-	case strings.HasPrefix(shard, ShardConversationPrefix):
-		id := strings.TrimPrefix(shard, ShardConversationPrefix)
+	case strings.HasPrefix(shard, component.ShardConversationPrefix):
+		id := strings.TrimPrefix(shard, component.ShardConversationPrefix)
 		if id == "" {
 			return "", "", errors.New("projection: conversation shard needs a conversation_id")
 		}
 		return "c_", id, nil
-	case strings.HasPrefix(shard, ShardDatasetPrefix):
-		id := strings.TrimPrefix(shard, ShardDatasetPrefix)
+	case strings.HasPrefix(shard, component.ShardDatasetPrefix):
+		id := strings.TrimPrefix(shard, component.ShardDatasetPrefix)
 		if id == "" {
 			return "", "", errors.New("projection: dataset shard needs a dataset_id")
 		}

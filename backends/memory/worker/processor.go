@@ -508,19 +508,20 @@ func (processor *Processor) convergeGeneration(
 		sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
 	}
 	sort.Strings(stale)
+	shard, err := component.ConversationShard(conversationID)
+	if err != nil {
+		return fmt.Errorf("memory worker: converge: %w", err)
+	}
 	delta := component.ProjectionDelta{
-		Scope: scope, Projection: processor.projection,
+		Scope: scope, Shard: shard, Projection: processor.projection,
 		Upserts: artifacts, DeleteIDs: stale,
 		SourceRevision: "generation:" + processor.policyDigest,
 	}
 	if len(artifacts) > 0 {
 		delta.SourceDigest = projectionSourceDigest(artifacts)
 	}
-	for _, lane := range processor.indexers {
-		if err := lane.Indexer.ApplyDelta(ctx, delta); err != nil {
-			return fmt.Errorf("memory worker: converge %q with the published generation: %w", lane.Name, err)
-		}
-		processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
+	if err := processor.applyDelta(ctx, delta, "converge with the published generation"); err != nil {
+		return err
 	}
 	processor.bump(func(stats *Stats) { stats.GenerationConvergences++ })
 	return nil
@@ -604,16 +605,17 @@ func (processor *Processor) PurgeGenerations(
 	if len(stale) == 0 {
 		return 0, nil
 	}
+	shard, err := component.ConversationShard(conversationID)
+	if err != nil {
+		return 0, fmt.Errorf("memory worker: purge: %w", err)
+	}
 	delta := component.ProjectionDelta{
-		Scope: scope, Projection: processor.projection,
+		Scope: scope, Shard: shard, Projection: processor.projection,
 		DeleteIDs:      stale,
 		SourceRevision: "retire:" + strings.Join(names, ","),
 	}
-	for _, lane := range processor.indexers {
-		if err := lane.Indexer.ApplyDelta(ctx, delta); err != nil {
-			return 0, fmt.Errorf("memory worker: purge %q: %w", lane.Name, err)
-		}
-		processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
+	if err := processor.applyDelta(ctx, delta, "purge"); err != nil {
+		return 0, err
 	}
 	return len(stale), nil
 }
@@ -707,14 +709,15 @@ func (processor *Processor) scanConversation(ctx context.Context, scope corememo
 			if err != nil {
 				return processed, err
 			}
-			for _, lane := range processor.indexers {
-				if err := lane.Indexer.ApplyDelta(ctx, component.ProjectionDelta{
-					Scope: commit.Scope, Projection: processor.projection,
-					Upserts: artifacts, SourceRevision: commit.ID,
-				}); err != nil {
-					return processed, fmt.Errorf("memory worker: index %q: %w", lane.Name, err)
-				}
-				processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
+			shard, err := component.ConversationShard(conversationID)
+			if err != nil {
+				return processed, fmt.Errorf("memory worker: index: %w", err)
+			}
+			if err := processor.applyDelta(ctx, component.ProjectionDelta{
+				Scope: commit.Scope, Shard: shard, Projection: processor.projection,
+				Upserts: artifacts, SourceRevision: commit.ID,
+			}, "index"); err != nil {
+				return processed, err
 			}
 			cursor = commit.Version
 			if err := processor.checkpoints.SaveWatermark(ctx, SourceWatermark{
@@ -874,17 +877,32 @@ func (processor *Processor) applyKnowledgeDelta(
 	artifacts []component.Artifact,
 	activeIDs []string,
 ) error {
+	shard, err := component.DatasetShard(event.DatasetID)
+	if err != nil {
+		return fmt.Errorf("memory worker: index document: %w", err)
+	}
 	delta := component.ProjectionDelta{
-		Scope: event.Scope, Projection: processor.projection,
+		Scope: event.Scope, Shard: shard, Projection: processor.projection,
 		Upserts:            artifacts,
 		ReconcileDocuments: []component.DocumentAddress{{DatasetID: event.DatasetID, DocumentID: event.DocumentID}},
 		ActiveIDs:          activeIDs,
 		SourceRevision:     "document-event:" + event.ID,
 		SourceDigest:       projectionSourceDigest(artifacts),
 	}
+	return processor.applyDelta(ctx, delta, "index")
+}
+
+// applyDelta validates that the delta is addressed to one shard and hands it
+// to every lane. Every projection write goes through here, so a delta that
+// spans two addresses -- which no caller builds today, and which the store
+// could not route -- is refused before any lane sees it.
+func (processor *Processor) applyDelta(ctx context.Context, delta component.ProjectionDelta, action string) error {
+	if err := delta.ValidateShard(); err != nil {
+		return fmt.Errorf("memory worker: %w", err)
+	}
 	for _, lane := range processor.indexers {
 		if err := lane.Indexer.ApplyDelta(ctx, delta); err != nil {
-			return fmt.Errorf("memory worker: index %q: %w", lane.Name, err)
+			return fmt.Errorf("memory worker: %s %q: %w", action, lane.Name, err)
 		}
 		processor.bump(func(stats *Stats) { stats.IndexDeltasApplied++ })
 	}
