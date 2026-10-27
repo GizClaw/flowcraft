@@ -279,6 +279,19 @@ impl MemoryIssuer {
             .check(now, &claims.jti, &claims.sub)
     }
 
+    /// How many revocations this issuer is still honouring.
+    ///
+    /// The number an operator watches after a revoke storm: it is bounded by
+    /// expiry, and a reading that keeps growing means the expiry bookkeeping is
+    /// wrong rather than that the traffic is heavy.
+    #[must_use]
+    pub fn revoked(&self) -> usize {
+        match self.revocations.lock() {
+            Ok(revocations) => revocations.grants.len() + revocations.sessions.len(),
+            Err(_) => 0,
+        }
+    }
+
     /// The second a revocation of something this issuer cannot look up may be
     /// dropped at: the default lifetime, or the longest grant ever minted here,
     /// whichever is later.

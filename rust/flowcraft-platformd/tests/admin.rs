@@ -145,6 +145,14 @@ async fn status_reload_drain_and_revoke() {
     assert_eq!(status["crafts"][0], "demo");
     assert_eq!(status["endpoints"], 1);
     assert_eq!(status["entries"][0], "local");
+    // The bounds next to the readings that approach them. This fixture has no
+    // sandbox runner, so the list is empty and the grant table is present — the
+    // shape an operator's dashboard reads either way.
+    assert_eq!(status["sandbox"]["grants_revoked"], 0);
+    assert!(
+        status["sandbox"]["runners"].is_array(),
+        "the runner list must exist even when empty: {status}"
+    );
 
     let reloaded = send(&fixture.socket, json!({"command": "reload"})).await;
     assert_eq!(reloaded["ok"], true, "{reloaded}");

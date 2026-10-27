@@ -50,8 +50,8 @@ pub use confinement::{BwrapFactory, ConfinedRunner, Sandbox, SandboxConfig, Seat
 pub use contract::{
     CONTRACT, Capabilities, Chunk, Enforcement, EnvPolicy, Event, EventStream, ExecOptions,
     ExitReason, ExitStatus, Features, Handle, JournalCapabilities, KIND, NetAction, NetMode,
-    NetModes, NetPolicy, NetRule, ReadResult, ResourceLimits, Runner, Session, SessionFeatures,
-    SessionInfo, SessionSpec, Signal, Stream, WriteMode, WriteModes,
+    NetModes, NetPolicy, NetRule, ReadResult, ResourceLimits, Runner, RunnerStats, Session,
+    SessionFeatures, SessionInfo, SessionSpec, Signal, Stream, WriteMode, WriteModes,
 };
 pub use exec::{ExecResult, exec};
 pub use local::LocalRunner;

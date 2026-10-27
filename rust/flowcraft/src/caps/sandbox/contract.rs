@@ -553,6 +553,20 @@ pub struct SessionFeatures {
 /// wire's `Features`).
 pub type Features = SessionFeatures;
 
+/// What a runner is holding right now.
+///
+/// The numbers an operator needs to see a bound approaching *before* a start is
+/// refused: a limit with no reading is a limit nobody can plan against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct RunnerStats {
+    /// Sessions that are running, or still being started.
+    pub sessions_ready: usize,
+    /// Exited sessions still listed so their tail can be collected.
+    pub sessions_exited: usize,
+    /// Retained output across every listed session, in bytes.
+    pub log_bytes: u64,
+}
+
 /// One pushed session event.
 ///
 /// An enum rather than a struct with a type tag: the payload only exists for
@@ -793,6 +807,19 @@ pub trait Runner: Send + Sync + std::fmt::Debug {
     /// Release one session: terminate it if it still runs, free its output, and
     /// forget it so it disappears from [`list`](Runner::list).
     async fn close_session(&self, id: &str) -> Result<()>;
+
+    /// What this runner is holding, for the daemon's status surface.
+    ///
+    /// Synchronous and cheap by design: it is read on every `/status`, and a
+    /// counter that needs an await would make the check as expensive as the work
+    /// it describes.
+    ///
+    /// `None` means **not reported**, which is not the same statement as zero: a
+    /// remote runner has no local table to count, and a default of zeros would
+    /// make it look idle.
+    fn stats(&self) -> Option<RunnerStats> {
+        None
+    }
 
     /// Open the file journal of this runner.
     ///

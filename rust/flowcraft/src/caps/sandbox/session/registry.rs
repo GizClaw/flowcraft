@@ -532,6 +532,32 @@ impl Registry {
     /// own. A pty session has no supervise tick: its entry is reclaimed by the
     /// next sweep from any other session or start, which bounds the table but can
     /// leave an exited pty entry listed for longer than its window.
+    /// `(ready, exited, retained bytes)` for the status surface.
+    ///
+    /// One lock, one pass: a caller that asked three times could see three
+    /// different tables, which is exactly the reading an operator would
+    /// mis-trust.
+    pub(crate) fn stats(&self) -> (usize, usize, u64) {
+        let Ok(entries) = self.entries.lock() else {
+            return (0, 0, 0);
+        };
+        let mut ready = 0;
+        let mut exited = 0;
+        for entry in entries.values() {
+            match entry {
+                Entry::Pending { .. } => ready += 1,
+                Entry::Ready(ready_entry) => {
+                    if ready_entry.exited_at.is_some() {
+                        exited += 1;
+                    } else {
+                        ready += 1;
+                    }
+                }
+            }
+        }
+        (ready, exited, log_bytes(&entries))
+    }
+
     pub(crate) fn sweep(&self, now: Instant, limits: &SessionLimits) {
         let Ok(mut entries) = self.entries.lock() else {
             return;

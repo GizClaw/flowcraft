@@ -55,6 +55,16 @@ impl Platform {
         Self::assemble(config, secrets, issuer)
     }
 
+    /// How many grant revocations the issuer is still honouring.
+    ///
+    /// Sampled by the daemon's `/status`: the table is pruned by expiry, so the
+    /// reading should reach a plateau, and a number that climbs without bound is
+    /// the observable symptom of a pruning bug.
+    #[must_use]
+    pub fn revoked_grants(&self) -> usize {
+        self.issuer.revoked()
+    }
+
     fn assemble(
         config: Config,
         secrets: Arc<dyn SecretProvider>,

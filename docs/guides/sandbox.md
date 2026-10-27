@@ -494,4 +494,49 @@ side closed before the child exits. It is separate from `SessionSpec.Stdin`,
 which declares a streaming input side for `Start`. An empty slice is the same
 as omitting it — neither buys the child a pipe.
 
+## Capacity planning (Rust runner)
+
+Every bound below is a *refusal*, never a squeeze: a session or a tunnel that
+cannot fit is rejected with a stable code, so a deployment sees the limit in an
+error rather than in degraded behaviour.
+
+| Setting | Default | What it bounds |
+| --- | --- | --- |
+| `sessions.max_sessions` | 64 | Sessions listed at once — running **and** exited-but-retained. `0` removes the bound (test harnesses and deliberate opt-in only). |
+| `sessions.exit_retention_secs` | 300 | How long an exited session stays readable so its tail and exit status can still be collected. `0` reclaims it as soon as the exit is observed. |
+| `sessions.max_total_log_bytes` | 268435456 (256 MiB) | Retained output across every session. Per-session `max_output_bytes` multiplies, so 64 × 10 MiB is 640 MiB without this second gate. |
+| `net.proxy.max_connections` | 256 | Tunnels and forwarded requests live at once. Over it the connection is refused at once (`503`, or a SOCKS5 general failure) instead of being queued. Zero is rejected by validation. |
+| `net.proxy.idle_timeout_secs` | 60 | How long a tunnel may go with no byte moving in either direction. `0` disables it. |
+| `net.proxy.max_lifetime_secs` | 1800 | How long a tunnel may stay open at all, however busy. `0` disables it. |
+
+Three rules make those numbers usable:
+
+- **a running session is never the price of admitting new work.** Eviction only
+  considers an exited entry — preferring one whose output has already been read
+  to the end, then the oldest exit — and refuses the new start if nothing can go
+  (`session_limit`);
+- **the output budget never truncates a live session.** Truncating would open a
+  sequence gap on a stream that promises none, so an exited entry goes first;
+- **a loopback proxy listener demands a credential** (in the `HTTP_PROXY` /
+  `ALL_PROXY` userinfo it hands the sandbox). A unix listener inside its own
+  network namespace does not need one; a shared host stack does.
+
+Read the live values from `flowcraftd` admin `/status`:
+
+```json
+{
+  "sandbox": {
+    "runners": [
+      {"entry": "sandbox.Runner/local", "sessions": {"ready": 2, "exited": 1}, "log_bytes": 40960}
+    ],
+    "grants_revoked": 3
+  }
+}
+```
+
+`runners` is a list rather than a total on purpose: the resource graph may hold a
+backend and the chain composed over it, and a sum would count the same sessions
+twice. `grants_revoked` is pruned by expiry, so it should plateau — a number that
+climbs without bound is the symptom of a pruning bug, not of heavy traffic.
+
 See [workspace.md](workspace.md) for state storage.

@@ -458,6 +458,10 @@ struct Prepared {
 
 #[async_trait]
 impl Runner for ConfinedRunner {
+    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        self.inner.stats()
+    }
+
     fn capabilities(&self) -> crate::resource::BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             let mut capabilities = self.config.sandbox.capabilities();

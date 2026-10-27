@@ -136,6 +136,15 @@ impl LocalRunner {
 
 #[async_trait]
 impl Runner for LocalRunner {
+    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        let (ready, exited, log_bytes) = self.registry.stats();
+        Some(crate::caps::sandbox::contract::RunnerStats {
+            sessions_ready: ready,
+            sessions_exited: exited,
+            log_bytes,
+        })
+    }
+
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {
         Box::pin(async move {
             let limits = self.limits.support();

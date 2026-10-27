@@ -422,11 +422,35 @@ async fn dispatch(request: &Value, state: &AdminState) -> Value {
         Some("status") => {
             let generation = state.supervisor.generation().await;
             let entries = state.supervisor.entries().await;
+            // The bounds each runner enforces, next to what it is holding: a
+            // limit nobody can read is a limit nobody can plan against.
+            let runners: Vec<Value> = state
+                .supervisor
+                .sandbox_stats()
+                .await
+                .into_iter()
+                .map(|(entry, stats)| {
+                    json!({
+                        "entry": entry,
+                        "sessions": {
+                            "ready": stats.sessions_ready,
+                            "exited": stats.sessions_exited,
+                        },
+                        "log_bytes": stats.log_bytes,
+                    })
+                })
+                .collect();
             json!({
                 "ok": true,
                 "ready": state.ready.load(Ordering::SeqCst),
                 "generation": generation,
                 "entries": entries,
+                "sandbox": {
+                    "runners": runners,
+                    // Pruned by expiry, so this should plateau: a number that
+                    // climbs without bound is the symptom of a pruning bug.
+                    "grants_revoked": state.supervisor.platform().revoked_grants(),
+                },
                 "crafts": state.crafts,
                 "endpoints": state.endpoints,
                 "uptime_secs": state.started_at.elapsed().as_secs(),
