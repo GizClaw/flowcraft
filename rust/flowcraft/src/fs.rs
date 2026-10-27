@@ -174,11 +174,21 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// The mode, for a failure message. Defined on every target so the assertions
+    /// above compile where modes do not exist (they are guarded by
+    /// [`private_mode_ok`] returning `None`).
     fn mode_of(path: &Path) -> u32 {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::metadata(path)
-            .map(|metadata| metadata.permissions().mode() & 0o777)
-            .unwrap_or(0)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(path)
+                .map(|metadata| metadata.permissions().mode() & 0o777)
+                .unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            0
+        }
     }
 }
