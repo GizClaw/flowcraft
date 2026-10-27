@@ -10,6 +10,46 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
 )
 
+// TestCompactionSettingsTravelFromConfigurationToTheLanesAndTheFootprint pins
+// the compaction policy's three surfaces: the configured fields are what the
+// lanes run with, a field left at zero stays the store's default instead of
+// becoming a trigger on every commit, a negative one is rejected, and the block
+// is part of the retrieval summary so two deployments that compact differently
+// do not share a fingerprint.
+func TestCompactionSettingsTravelFromConfigurationToTheLanesAndTheFootprint(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if thresholds := laneThresholds(settings); thresholds.MaxSegments != 0 ||
+		thresholds.MinDeltaBytes != 0 || thresholds.Ratio != 0 {
+		t.Fatalf("a deployment with no policy resolved to %+v, want the store's defaults", thresholds)
+	}
+	settings.Lanes.Compaction = &CompactionSettings{MaxSegments: 8, MinDeltaBytes: 1 << 20, Ratio: 4}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	thresholds := laneThresholds(settings)
+	if thresholds.MaxSegments != 8 || thresholds.MinDeltaBytes != 1<<20 || thresholds.Ratio != 4 {
+		t.Fatalf("thresholds = %+v", thresholds)
+	}
+	summary, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, `"compaction":{"max_segments":8,"min_delta_bytes":1048576,"ratio":4}`) {
+		t.Fatalf("the policy is not in the footprint: %s", summary)
+	}
+	for name, compaction := range map[string]*CompactionSettings{
+		"max_segments":    {MaxSegments: -1},
+		"min_delta_bytes": {MinDeltaBytes: -1},
+		"ratio":           {Ratio: -1},
+	} {
+		settings.Lanes.Compaction = compaction
+		if err := settings.Validate(); err == nil || !strings.Contains(err.Error(), "lanes.compaction") {
+			t.Fatalf("%s: a negative value was accepted: %v", name, err)
+		}
+	}
+}
+
 // TestProfileSettingsTravelWithTheBlock pins the three things the block's
 // configuration decides: the settings resolve to the module's defaults, the
 // bound is checked against the module's ceiling, and the footprint names the

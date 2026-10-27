@@ -820,6 +820,19 @@ func (lane projectionLane) workerIndexer() worker.ProjectionIndexer {
 	return worker.ProjectionIndexer{Name: lane.Name, Indexer: lane.Indexer}
 }
 
+// laneThresholds is the compaction policy every lane runs with: the configured
+// fields, with the store's own defaults standing in for the ones left at zero.
+// The three lanes alias the store's type, so one value configures all of them.
+func laneThresholds(settings Settings) bm25.Thresholds {
+	var thresholds bm25.Thresholds
+	if compaction := settings.Lanes.Compaction; compaction != nil {
+		thresholds.MaxSegments = compaction.MaxSegments
+		thresholds.MinDeltaBytes = compaction.MinDeltaBytes
+		thresholds.Ratio = compaction.Ratio
+	}
+	return thresholds
+}
+
 func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
@@ -831,15 +844,16 @@ func buildProjections(
 	if cache := settings.Lanes.Cache; cache != nil {
 		budget = cache.MaxBytes
 	}
+	thresholds := laneThresholds(settings)
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
-		CacheBytes: budget,
+		CacheBytes: budget, Thresholds: thresholds,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	entityIndex, err := entity.New(entity.Config{
-		KV: kvStore, Projection: settings.Projection, CacheBytes: budget,
+		KV: kvStore, Projection: settings.Projection, CacheBytes: budget, Thresholds: thresholds,
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -857,7 +871,7 @@ func buildProjections(
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
-		CacheBytes: budget,
+		CacheBytes: budget, Thresholds: thresholds,
 	})
 	if err != nil {
 		return nil, nil, nil, err

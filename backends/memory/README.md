@@ -128,6 +128,7 @@ lanes:
   fusion: rrf
   cache:
     max_bytes: 2147483648
+  compaction: {max_segments: 64, min_delta_bytes: 4194304, ratio: 2}
 retrieval:
   rerank: false
 observed_at_anchor: true
@@ -580,6 +581,22 @@ A budget never changes what a query sees: it decides what the lane keeps after
 reading it, and what a bound costs is a decode of the base it evicted. The
 readout is `vector.Stats.Resident` -- tables, bytes, hits, misses, evictions,
 and uncached reads.
+
+## Projection compaction
+
+A delta appends a segment; a compaction folds the base and every segment into
+a new base. When that happens is `lanes.compaction`: a shard compacts once its
+segment count exceeds `max_segments`, or once the bytes appended since its base
+reach the larger of `min_delta_bytes` and `base_bytes / ratio`. The byte
+trigger is a share of the base rather than a fixed size because a fixed one is
+wrong at both ends -- it rewrites a 10 MB conversation shard on a fraction of a
+percent of its size, and it lets a large shard accumulate a rewrite-sized
+segment set. At the defaults (64 segments, 4 MiB, base/2), a conversation
+compacts after roughly its own size in deltas, which keeps the write
+amplification geometric in what it stores instead of linear in how often it
+writes. The policy changes how often a lane writes a base, never what a query
+reads, and it is part of the retrieval summary so two deployments that compact
+differently do not share a retrieval fingerprint.
 
 ## Projection storage reclamation
 

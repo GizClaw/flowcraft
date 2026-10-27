@@ -251,6 +251,15 @@ type LanesSettings struct {
 	// retrieval, one budget per lane. Absent, each store keeps up to its
 	// built-in budget (2 GiB).
 	Cache *CacheSettings `json:"cache,omitempty"`
+	// Compaction decides when a lane folds a shard's segments into its base
+	// instead of appending another segment. The byte trigger is a share of
+	// the base rather than a fixed size, so a small shard compacts after a
+	// few commits and a large one does not pay a rewrite every few. It
+	// changes write amplification, not what a query reads.
+	//
+	// Absent, each store's own policy applies (64 segments, 4 MiB floor,
+	// base/2); a field left at zero takes the same default.
+	Compaction *CompactionSettings `json:"compaction,omitempty"`
 }
 
 // CacheSettings bounds the decoded projection state one lane keeps resident.
@@ -267,6 +276,21 @@ type CacheSettings struct {
 	// reading has to be read against: two runs of the same deployment that
 	// differ in it hold different amounts of the same state.
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+}
+
+// CompactionSettings decides when a lane rewrites a shard's base.
+type CompactionSettings struct {
+	// MaxSegments folds the segments into the base once there are this many,
+	// whatever their bytes: a read replays every segment, so the count is
+	// bounded on its own.
+	MaxSegments int `json:"max_segments,omitempty"`
+	// MinDeltaBytes floors the byte trigger, so a shard whose base is small
+	// still appends a few commits before it rewrites.
+	MinDeltaBytes int64 `json:"min_delta_bytes,omitempty"`
+	// Ratio makes the byte trigger relative to the base: the segments compact
+	// once the bytes appended since the base reach base_bytes / Ratio. A
+	// larger ratio rewrites less often and reads more segments.
+	Ratio int `json:"ratio,omitempty"`
 }
 
 // ProfileSettings configures the resident profile block: the bounded lines
@@ -454,6 +478,10 @@ func (settings Settings) Validate() error {
 	}
 	if cache := settings.Lanes.Cache; cache != nil && cache.MaxBytes < 0 {
 		return errors.New("lanes.cache.max_bytes must not be negative")
+	}
+	if compaction := settings.Lanes.Compaction; compaction != nil &&
+		(compaction.MaxSegments < 0 || compaction.MinDeltaBytes < 0 || compaction.Ratio < 0) {
+		return errors.New("lanes.compaction fields must not be negative")
 	}
 	if settings.Derive.Concurrency < 0 {
 		return errors.New("derive.concurrency must not be negative")
