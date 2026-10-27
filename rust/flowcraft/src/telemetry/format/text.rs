@@ -71,7 +71,7 @@ impl Text {
         write_level(&mut line, record.level, self.ansi);
         if self.targets {
             line.push(' ');
-            line.push_str(&record.target);
+            line.push_str(record.target);
         }
         line.push(' ');
         escape_into(&mut line, &record.message);
@@ -194,7 +194,7 @@ mod tests {
         Record {
             at: UNIX_EPOCH,
             level: Level::INFO,
-            target: "flowcraft_platformd".to_owned(),
+            target: "flowcraft_platformd",
             message: message.to_owned(),
             trace: None,
             fields: vec![

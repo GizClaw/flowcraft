@@ -67,7 +67,7 @@ impl Json {
         line.push_str(",\"level\":");
         write_string(&mut line, level_name(record.level));
         line.push_str(",\"target\":");
-        write_string(&mut line, &record.target);
+        write_string(&mut line, record.target);
         line.push_str(",\"msg\":");
         write_string(&mut line, &record.message);
         for (key, value) in self.resource.fields() {
@@ -160,7 +160,7 @@ mod tests {
         Record {
             at: UNIX_EPOCH,
             level: Level::WARN,
-            target: "flowcraft_platformd::hosting".to_owned(),
+            target: "flowcraft_platformd::hosting",
             message: "craft grant renewal failed".to_owned(),
             trace: None,
             fields: vec![

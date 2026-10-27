@@ -29,7 +29,7 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 use flowcraft::caps::tool::{
     Budget, CallContext, Catalog, ConflictPolicy, DynamicSession, Exposure, FuncTool, Policy,
-    Registry, StaticSource, Tool,
+    Registry, SearchHit, Session, StaticSource, Tool,
 };
 use flowcraft::message::text_content;
 use flowcraft::proto::message as msg;
@@ -121,7 +121,69 @@ async fn the_caches_hold_their_budgets() {
     // (3) A mutation publishes a new snapshot: (1) must never serve stale tools.
     registry.add(tool(TOOLS + 1)).expect("add");
     let after = registry.definitions();
-    assert!(!Arc::ptr_eq(&second, &after), "a mutation must publish a new snapshot");
+    assert!(
+        !Arc::ptr_eq(&second, &after),
+        "a mutation must publish a new snapshot"
+    );
     assert_eq!(after.len(), TOOLS + 1);
-    assert!(after.iter().any(|definition| definition.name == format!("tool-{:04}", TOOLS + 1)));
+    assert!(
+        after
+            .iter()
+            .any(|definition| definition.name == format!("tool-{:04}", TOOLS + 1))
+    );
+
+    // (4) A repeated query reuses the search index. Building it tokenizes every
+    // searchable tool, so a second search that rebuilt it would pay the whole
+    // corpus price again — that is the P2-2 defect.
+    let hit = |hits: &[SearchHit], name: &str| hits.iter().any(|hit| hit.name == name);
+    let searchable = Policy {
+        // Only `direct` and `deferred` are searchable.
+        default: Exposure::Direct,
+        ..Policy::default()
+    };
+    let session = DynamicSession::new(registry.clone(), searchable.clone()).expect("session");
+    // Warm: this call builds the index (nothing measured).
+    assert!(hit(
+        &session.search("tool-0999", 32).await.expect("search"),
+        "tool-0999"
+    ));
+    let region = Region::new(GLOBAL);
+    let again = session.search("tool-0999", 32).await.expect("search");
+    let warm = region.change();
+    assert!(hit(&again, "tool-0999"));
+
+    // The control: a session that has never searched must index the corpus
+    // first, and that build is what a per-query index would pay every time.
+    let cold = DynamicSession::new(registry.clone(), searchable).expect("session");
+    let region = Region::new(GLOBAL);
+    let cold_hits = cold.search("tool-0999", 32).await.expect("search");
+    let cold_change = region.change();
+    assert!(hit(&cold_hits, "tool-0999"));
+    assert!(
+        warm.allocations * 4 < cold_change.allocations,
+        "reusing the index saved little: warm {:?} vs cold {:?}",
+        warm,
+        cold_change
+    );
+
+    // (5) And a mutation invalidates it, or a tool registered after a search
+    // would never be findable.
+    assert!(
+        !hit(&session.search("zebra", 8).await.expect("search"), "zebra"),
+        "zebra is not registered yet"
+    );
+    registry
+        .add(Arc::new(FuncTool::new(
+            msg::ToolDefinition {
+                name: "zebra".to_owned(),
+                description: "stripes, black and white".to_owned(),
+                input_schema: br#"{"type":"object"}"#.to_vec(),
+            },
+            Arc::new(|_context: &CallContext, _arguments: &str| Ok(text_content("ok"))),
+        )))
+        .expect("add");
+    assert!(
+        hit(&session.search("zebra", 8).await.expect("search"), "zebra"),
+        "a catalog change must rebuild the index"
+    );
 }

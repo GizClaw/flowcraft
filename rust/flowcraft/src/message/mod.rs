@@ -19,7 +19,8 @@ mod text;
 mod validate;
 
 pub use text::{
-    definition_bytes, first_text, for_each_text, replace_text, text_content, text_message, text_of,
+    definition_bytes, first_text, for_each_text, replace_text, text_chars, text_content,
+    text_message, text_of,
 };
 pub use validate::{
     validate_arguments, validate_content, validate_definition, validate_delta, validate_message,

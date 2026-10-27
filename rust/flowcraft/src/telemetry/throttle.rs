@@ -70,8 +70,11 @@ pub struct Throttle {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Key {
     level: Level,
-    target: String,
+    /// A tracing target: `&'static str`, so keying on it clones nothing.
+    target: &'static str,
+    /// Owned: the comparison is on the recorded text.
     message: String,
+    /// Most records have none.
     kind: Option<String>,
 }
 
@@ -102,7 +105,7 @@ impl Throttle {
         }
         let key = Key {
             level: record.level,
-            target: record.target.clone(),
+            target: record.target,
             message: record.message.clone(),
             kind: field(record, crate::telemetry::attrs::attr::ERROR_KIND),
         };
@@ -110,7 +113,16 @@ impl Throttle {
             return Some(0);
         };
         if keys.len() > MAX_KEYS {
-            keys.clear();
+            // Evict what carries no information first — a window that has closed
+            // is indistinguishable from an absent entry — and only then, if the
+            // table is still full, drop everything. Clearing unconditionally (as
+            // this did) throws away live counts during the storm that made the
+            // table grow.
+            let window = self.policy.window;
+            keys.retain(|_, entry| entry.start.elapsed() < window);
+            if keys.len() > MAX_KEYS {
+                keys.clear();
+            }
         }
         let policy = self.policy;
         let window = keys.entry(key).or_insert_with(|| Window {
@@ -156,7 +168,7 @@ mod tests {
         Record {
             at: std::time::SystemTime::now(),
             level,
-            target: "flowcraft_platformd::hosting".to_owned(),
+            target: "flowcraft_platformd::hosting",
             message: message.to_owned(),
             trace: None,
             fields: Vec::new(),

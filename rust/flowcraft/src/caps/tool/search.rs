@@ -19,46 +19,100 @@ pub struct SearchHit {
 /// Used when `tool_search` omits `limit`.
 pub const DEFAULT_SEARCH_LIMIT: usize = 8;
 
-/// Rank catalog entries against a query.
+/// A catalog indexed once, searchable many times.
+///
+/// The split between "build" and "query" is the point of this type. A catalog's
+/// documents only change when the catalog does, while a query arrives on every
+/// `tool_search` call: keeping the two in one function (`bm25_search`) meant the
+/// tokenizing, the term-frequency maps and the inverted index were rebuilt for
+/// every query — tens of thousands of small allocations for a catalog of a few
+/// hundred tools.
+#[derive(Debug)]
+pub struct CatalogIndex {
+    /// The documents, sorted by name, so a hit needs no separate lookup to name
+    /// itself.
+    docs: Vec<(String, String)>,
+    /// `None` for an empty catalog: `bm25` rejects an empty corpus, and there is
+    /// nothing to search anyway.
+    index: Option<bm25::Index>,
+}
+
+impl CatalogIndex {
+    /// Index `docs` (name, description).
+    pub fn new(mut docs: Vec<(String, String)>) -> Result<Self> {
+        if docs.is_empty() {
+            return Ok(Self { docs, index: None });
+        }
+        // One order for both uses below: `bm25` wants a deterministic corpus so
+        // ties break by name, and `description` binary-searches `docs`.
+        docs.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let indexed: Vec<bm25::TermDoc> = docs
+            .iter()
+            .map(|(name, description)| bm25::TermDoc {
+                id: name.clone(),
+                name: frequencies(catalog_terms(name)),
+                text: frequencies(catalog_terms(description)),
+            })
+            .collect();
+        Ok(Self {
+            docs,
+            index: Some(bm25::Index::from_terms(&indexed)?),
+        })
+    }
+
+    /// The indexed documents, sorted by name.
+    #[must_use]
+    pub fn docs(&self) -> &[(String, String)] {
+        &self.docs
+    }
+
+    /// Rank the indexed documents against `query`. `limit == 0` means the
+    /// default.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let Some(index) = self.index.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let query_terms = catalog_terms(query);
+        if query_terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = if limit == 0 {
+            DEFAULT_SEARCH_LIMIT
+        } else {
+            limit
+        };
+        Ok(index
+            .search_terms(&query_terms, limit)
+            .into_iter()
+            .map(|hit| SearchHit {
+                description: self
+                    .description(&hit.id)
+                    .map(|description| description.trim().to_owned())
+                    .unwrap_or_default(),
+                name: hit.id,
+                score: hit.score,
+            })
+            .collect())
+    }
+
+    fn description(&self, name: &str) -> Option<&str> {
+        self.docs
+            .binary_search_by(|(candidate, _)| candidate.as_str().cmp(name))
+            .ok()
+            .map(|at| self.docs[at].1.as_str())
+    }
+}
+
+/// Rank catalog entries against a query, indexing them first.
+///
+/// Convenience for a one-shot search over a document set that is about to be
+/// discarded: it is [`CatalogIndex::new`] followed by [`CatalogIndex::search`].
+/// A caller that searches the same catalog more than once wants the index.
 ///
 /// Documents are indexed by name, so ties break by name. `limit == 0` means the
 /// default.
 pub fn bm25_search(docs: &[(String, String)], query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    let query_terms = catalog_terms(query);
-    if docs.is_empty() || query_terms.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut indexed: Vec<bm25::TermDoc> = docs
-        .iter()
-        .map(|(name, description)| bm25::TermDoc {
-            id: name.clone(),
-            name: frequencies(catalog_terms(name)),
-            text: frequencies(catalog_terms(description)),
-        })
-        .collect();
-    indexed.sort_by(|a, b| a.id.cmp(&b.id));
-    let index = bm25::Index::from_terms(&indexed)?;
-    let limit = if limit == 0 {
-        DEFAULT_SEARCH_LIMIT
-    } else {
-        limit
-    };
-    let descriptions: std::collections::HashMap<&str, &str> = docs
-        .iter()
-        .map(|(name, description)| (name.as_str(), description.as_str()))
-        .collect();
-    Ok(index
-        .search_terms(&query_terms, limit)
-        .into_iter()
-        .map(|hit| SearchHit {
-            description: descriptions
-                .get(hit.id.as_str())
-                .map(|description| description.trim().to_owned())
-                .unwrap_or_default(),
-            name: hit.id,
-            score: hit.score,
-        })
-        .collect())
+    CatalogIndex::new(docs.to_vec())?.search(query, limit)
 }
 
 /// Tokenize, then drop single-rune ASCII terms.

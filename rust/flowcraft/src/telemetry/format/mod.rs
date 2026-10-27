@@ -39,7 +39,9 @@ pub(crate) struct Field {
 pub(crate) struct Record {
     pub(crate) at: SystemTime,
     pub(crate) level: Level,
-    pub(crate) target: String,
+    /// A tracing `target` is a `&'static str` by construction, so storing it as
+    /// an owned `String` allocated once per record for no reason.
+    pub(crate) target: &'static str,
     pub(crate) message: String,
     pub(crate) fields: Vec<Field>,
     /// `trace_id` and `span_id` of the context the record was emitted in.
@@ -72,7 +74,7 @@ pub(crate) fn collect(event: &Event<'_>, redact: bool) -> Record {
     Record {
         at: SystemTime::now(),
         level: *metadata.level(),
-        target: metadata.target().to_owned(),
+        target: metadata.target(),
         message: visitor.message,
         fields: visitor.fields,
         #[cfg(feature = "otel")]

@@ -200,11 +200,17 @@ pub fn truncate(options: TruncateOptions) -> Result<Middleware> {
                 if result.is_error {
                     return result;
                 }
-                let text = result_text(&result);
-                let count = text.chars().count();
+                // Count before concatenating: a result that fits must cost one
+                // pass over its parts, not one full copy of them. Only a result
+                // that is actually being cut needs the joined text.
+                let count = result
+                    .content
+                    .as_ref()
+                    .map_or(0, crate::message::text_chars);
                 if count <= options.max_chars {
                     return result;
                 }
+                let text = result_text(&result);
                 let pointer = spill(&options, &result.call_id, &text).await;
                 let marker = match pointer {
                     Some(shown) => format!("{TRUNCATE_MARKER_PREFIX}{shown}]"),

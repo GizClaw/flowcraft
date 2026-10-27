@@ -175,22 +175,18 @@ impl Log {
             return;
         }
         let seq = state.next_seq;
+        // One copy, shared by the retained record and the broadcast event: they
+        // are the same bytes, and a watcher must not pay for a second one.
+        let data: Arc<[u8]> = Arc::from(data);
         state.records.push_back(Record {
             seq,
             stream,
-            data: Arc::from(data),
+            data: Arc::clone(&data),
         });
         state.total += data.len() as u64;
         state.next_seq += data.len() as u64;
         state.trim();
-        self.publish(
-            &mut state,
-            Some(Event::Output {
-                seq,
-                stream,
-                data: data.to_vec(),
-            }),
-        );
+        self.publish(&mut state, Some(Event::Output { seq, stream, data }));
     }
 
     /// Mark the stream complete.
@@ -277,7 +273,9 @@ impl Log {
                 replay.push(Event::Output {
                     seq: record.seq,
                     stream: record.stream,
-                    data: record.data.to_vec(),
+                    // The replay shares the retained bytes instead of copying
+                    // the whole ring, once per subscriber.
+                    data: Arc::clone(&record.data),
                 });
             }
             (replay, end, state.exit.clone())
@@ -455,7 +453,7 @@ mod tests {
             Event::Output {
                 seq: 0,
                 stream: Stream::Stdout,
-                data: b"before".to_vec()
+                data: b"before".to_vec().into()
             }
         );
         log.push(Stream::Stdout, b"after");

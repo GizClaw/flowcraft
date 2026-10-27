@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use crate::caps::tool::callable::Tool;
 use crate::caps::tool::exposure::{Exposure, Policy};
 use crate::caps::tool::registry::Catalog;
-use crate::caps::tool::search::{DEFAULT_SEARCH_LIMIT, SearchHit, bm25_search};
+use crate::caps::tool::search::{CatalogIndex, DEFAULT_SEARCH_LIMIT, SearchHit};
 use crate::caps::tool::state::{DiscoveredEntry, SessionState};
 use crate::caps::tool::visibility::{Candidate, fit_discovery_pool, visible_candidates};
 use crate::message::definition_bytes;
@@ -94,6 +94,23 @@ pub struct DynamicSession {
     catalog: Arc<dyn Catalog>,
     policy: Policy,
     state: Mutex<SessionState>,
+    /// The search index, valid for exactly one catalog snapshot.
+    ///
+    /// A query arrives per `tool_search` call while the catalog only changes
+    /// when the registry does, so indexing per query repeated work on the hot
+    /// path: tokenizing, term frequencies and the inverted index for every
+    /// searchable tool, on every call. The key is the snapshot itself
+    /// (`Arc::ptr_eq`): `Catalog::definitions` is documented to return the same
+    /// `Arc` for unchanged contents, which is precisely "the index is still
+    /// right".
+    rank: Mutex<Option<RankCache>>,
+}
+
+/// The index built for one catalog snapshot.
+struct RankCache {
+    /// The snapshot the index was built from: the cache key.
+    snapshot: Arc<[msg::ToolDefinition]>,
+    index: Arc<CatalogIndex>,
 }
 
 impl DynamicSession {
@@ -105,6 +122,7 @@ impl DynamicSession {
             catalog,
             policy,
             state: Mutex::new(SessionState::default()),
+            rank: Mutex::new(None),
         })
     }
 
@@ -378,13 +396,6 @@ impl Session for DynamicSession {
 impl DynamicSession {
     fn rank(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let definitions = self.catalog.definitions();
-        // Only the searchable tools are copied out: the filter used to run after
-        // the whole catalog had already been cloned.
-        let docs: Vec<(String, String)> = definitions
-            .iter()
-            .filter(|definition| self.policy.exposure_of(&definition.name).searchable())
-            .map(|definition| (definition.name.clone(), definition.description.clone()))
-            .collect();
         let mut limit = if limit == 0 {
             DEFAULT_SEARCH_LIMIT
         } else {
@@ -393,7 +404,29 @@ impl DynamicSession {
         if self.policy.discovery.max_tools > 0 {
             limit = limit.min(self.policy.discovery.max_tools);
         }
-        bm25_search(&docs, query, limit)
+        // A hit is the common case: the catalog does not change between rounds.
+        if let Ok(cache) = self.rank.lock()
+            && let Some(cache) = cache.as_ref()
+            && Arc::ptr_eq(&cache.snapshot, &definitions)
+        {
+            return cache.index.search(query, limit);
+        }
+        // Only the searchable tools are copied out: the filter used to run after
+        // the whole catalog had already been cloned.
+        let docs: Vec<(String, String)> = definitions
+            .iter()
+            .filter(|definition| self.policy.exposure_of(&definition.name).searchable())
+            .map(|definition| (definition.name.clone(), definition.description.clone()))
+            .collect();
+        let index = Arc::new(CatalogIndex::new(docs)?);
+        let hits = index.search(query, limit);
+        if let Ok(mut cache) = self.rank.lock() {
+            *cache = Some(RankCache {
+                snapshot: definitions,
+                index,
+            });
+        }
+        hits
     }
 }
 
