@@ -89,6 +89,13 @@ impl Platform {
         self.issuer.clone()
     }
 
+    /// The bootstrap secret provider: endpoint TLS material and a craft's
+    /// pre-shared token resolve against the same source.
+    #[must_use]
+    pub fn secrets(&self) -> Arc<dyn SecretProvider> {
+        self.secrets.clone()
+    }
+
     /// The listener factory, injectable as an endpoint dependency.
     #[must_use]
     pub fn endpoint_host(&self) -> Arc<EndpointHost> {

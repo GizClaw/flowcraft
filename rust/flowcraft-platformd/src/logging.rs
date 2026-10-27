@@ -451,13 +451,13 @@ mod tests {
     #[test]
     fn an_explicit_level_beats_the_shorthand() {
         let settings = LogSettings {
-            level: Some("flowcraft_kernel=trace".to_owned()),
+            level: Some("flowcraft::kernel=trace".to_owned()),
             verbose: true,
             ..LogSettings::default()
         };
         assert_eq!(
             directives_for(Profile::Service, &settings, None),
-            "flowcraft_kernel=trace"
+            "flowcraft::kernel=trace"
         );
         assert!(settings.provides_directives());
     }

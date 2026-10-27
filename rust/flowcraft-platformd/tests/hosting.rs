@@ -1,3 +1,6 @@
+//! These spawn crafts on unix sockets and a POSIX shell; a Windows host has
+//! neither in this crate yet, so the file is unix-only rather than untested.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Hosted crafts: config validation, grant minting, and process lifecycle.
@@ -37,7 +40,9 @@ fn config(dir: &std::path::Path, argv: Vec<String>) -> Config {
             "demo".to_owned(),
             CraftConfig {
                 argv,
-                socket: craft_socket.display().to_string(),
+                target: format!("unix://{}", craft_socket.display()),
+                tls: None,
+                token: String::new(),
                 tenant: String::new(),
                 grants: vec![CraftGrant {
                     capability: "workspace.Workspace/v1".to_owned(),
@@ -166,7 +171,7 @@ async fn an_external_craft_is_connected_but_not_owned() {
     let mut config = config(dir.path(), Vec::new());
     let craft = config.crafts.get_mut("demo").expect("demo");
     craft.supervisor = "external".to_owned();
-    craft.socket = socket.display().to_string();
+    craft.target = format!("unix://{}", socket.display());
     config.validate().expect("valid config");
     let platform = Arc::new(Platform::new(config).expect("platform"));
 
@@ -206,7 +211,7 @@ async fn a_systemd_craft_is_started_and_stopped_through_its_unit() {
     let mut config = config(dir.path(), Vec::new());
     let craft = config.crafts.get_mut("demo").expect("demo");
     craft.supervisor = "systemd".to_owned();
-    craft.socket = socket.display().to_string();
+    craft.target = format!("unix://{}", socket.display());
     craft.systemctl = shim.display().to_string();
     config.validate().expect("valid config");
     let platform = Arc::new(Platform::new(config).expect("platform"));

@@ -14,5 +14,5 @@ pub mod grpc;
 pub mod trace;
 pub mod wire;
 
-pub use craft::CraftClient;
+pub use craft::{CraftClient, CraftSession};
 pub use wire::Wire;

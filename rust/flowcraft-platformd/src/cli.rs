@@ -65,8 +65,8 @@ pub enum Command {
     },
     /// Send one command to a running daemon's admin socket.
     Ctl {
-        /// Admin socket path.
-        socket: String,
+        /// How to reach the daemon.
+        client: crate::commands::AdminClient,
         /// `status`, `reload`, `drain`, `crafts`, or `revoke`.
         command: String,
         /// Session to revoke, for `revoke`.
@@ -74,8 +74,14 @@ pub enum Command {
     },
     /// Serve a minimal `craft.Craft/v1` endpoint (development aid).
     CraftStub {
-        /// Socket to listen on.
-        socket: String,
+        /// Target to listen on: `unix:///abs/path` or `dns:///host:port`.
+        target: String,
+        /// Server certificate chain (PEM path), for a `dns` target.
+        tls_cert: Option<String>,
+        /// Server private key (PEM path), for a `dns` target.
+        tls_key: Option<String>,
+        /// Client CA bundle (PEM path), to require mutual TLS.
+        tls_client_ca: Option<String>,
         /// Craft name reported by Describe.
         name: String,
         /// Append a line on every Renew (tests).
@@ -91,8 +97,8 @@ pub enum Command {
     },
     /// Write a support bundle for a running daemon.
     Diag {
-        /// Admin socket path.
-        socket: String,
+        /// How to reach the daemon.
+        client: crate::commands::AdminClient,
         /// Directory the bundle is written into.
         out: String,
     },
@@ -145,7 +151,13 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
                 .ok_or_else(|| usage("ctl needs a command: status|reload|drain|crafts|revoke"))?;
             Ok((
                 Command::Ctl {
-                    socket,
+                    client: crate::commands::AdminClient {
+                        target: socket,
+                        ca: flags.ca,
+                        server_name: flags.server_name,
+                        token_file: flags.token_file,
+                        token: flags.token,
+                    },
                     command,
                     session: flags.session,
                 },
@@ -154,12 +166,25 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
         }
         "craft-stub" => {
             let flags = Flags::parse(rest)?;
-            let socket = flags
-                .socket
-                .ok_or_else(|| usage("craft-stub needs --socket <path>"))?;
+            // `--socket <path>` stays accepted, and a bare path counts as
+            // `unix://`: every fixture and script writes it that way.
+            let target = flags
+                .target
+                .or(flags.socket)
+                .map(|target| {
+                    if target.contains("://") {
+                        target
+                    } else {
+                        format!("unix://{target}")
+                    }
+                })
+                .ok_or_else(|| usage("craft-stub needs --target <unix://|dns://>"))?;
             Ok((
                 Command::CraftStub {
-                    socket,
+                    target,
+                    tls_cert: flags.tls_cert,
+                    tls_key: flags.tls_key,
+                    tls_client_ca: flags.tls_client_ca,
                     name: flags.name.unwrap_or_else(|| "stub".to_owned()),
                     renew_log: flags.renew_log,
                     token: flags.token,
@@ -176,7 +201,19 @@ pub fn parse(args: &[String]) -> Result<(Command, LogSettings)> {
                 .socket
                 .ok_or_else(|| usage("diag needs --socket <path>"))?;
             let out = flags.out.ok_or_else(|| usage("diag needs --out <dir>"))?;
-            Ok((Command::Diag { socket, out }, flags.log))
+            Ok((
+                Command::Diag {
+                    client: crate::commands::AdminClient {
+                        target: socket,
+                        ca: flags.ca,
+                        server_name: flags.server_name,
+                        token_file: flags.token_file,
+                        token: flags.token,
+                    },
+                    out,
+                },
+                flags.log,
+            ))
         }
         "serve" => {
             let flags = Flags::parse(rest)?;
@@ -203,6 +240,13 @@ struct Flags {
     config: Option<String>,
     deploys: Vec<String>,
     socket: Option<String>,
+    target: Option<String>,
+    ca: Option<String>,
+    server_name: Option<String>,
+    token_file: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_client_ca: Option<String>,
     name: Option<String>,
     session: Option<String>,
     out: Option<String>,
@@ -237,6 +281,34 @@ impl Flags {
                 }
                 "--name" => {
                     flags.name = Some(value(args, index, "--name")?);
+                    index += 2;
+                }
+                "--ca" => {
+                    flags.ca = Some(value(args, index, "--ca")?);
+                    index += 2;
+                }
+                "--server-name" => {
+                    flags.server_name = Some(value(args, index, "--server-name")?);
+                    index += 2;
+                }
+                "--token-file" => {
+                    flags.token_file = Some(value(args, index, "--token-file")?);
+                    index += 2;
+                }
+                "--target" => {
+                    flags.target = Some(value(args, index, "--target")?);
+                    index += 2;
+                }
+                "--tls-cert" => {
+                    flags.tls_cert = Some(value(args, index, "--tls-cert")?);
+                    index += 2;
+                }
+                "--tls-key" => {
+                    flags.tls_key = Some(value(args, index, "--tls-key")?);
+                    index += 2;
+                }
+                "--tls-client-ca" => {
+                    flags.tls_client_ca = Some(value(args, index, "--tls-client-ca")?);
                     index += 2;
                 }
                 "--token" => {
@@ -319,8 +391,8 @@ fn value(args: &[String], index: usize, flag: &str) -> Result<String> {
 /// The usage text.
 #[must_use]
 pub const fn usage_text() -> &'static str {
-    "usage:\n  flowcraftd serve --config <platform.yaml> --deploy <deploy.yaml> [--deploy <overlay.yaml>]...\n  flowcraftd check [--config <platform.yaml>] --deploy <deploy.yaml> [--deploy <overlay.yaml>]... [--json]\n  flowcraftd craft-stub --socket <path> [--name <name>]
-  flowcraftd ctl --socket <path> <status|reload|drain|crafts|revoke> [--session <id>]\n  flowcraftd diag --socket <path> --out <dir>\n  flowcraftd catalog [--json]\n  flowcraftd version\n\nlog flags (any command):\n  --log-level <directives>  tracing filter syntax, e.g. \"info,flowcraft_kernel=debug\"\n  --log-format <text|json>  one record per line\n  --log-file <path>         also write to a rotating file\n  --log-ring                keep recent output in memory for `diag`\n  --profile <service|client|cli>  override the shape the command implies\n  -v, --verbose             shorthand for --log-level debug\n  -q, --quiet               warnings and errors only\n  RUST_LOG overrides --log-level"
+    "usage:\n  flowcraftd serve --config <platform.yaml> --deploy <deploy.yaml> [--deploy <overlay.yaml>]...\n  flowcraftd check [--config <platform.yaml>] --deploy <deploy.yaml> [--deploy <overlay.yaml>]... [--json]\n  flowcraftd craft-stub --target <unix://path|dns://host:port> [--name <name>] [--tls-cert <pem> --tls-key <pem>]
+  flowcraftd ctl --socket <unix://path|dns://host:port> <status|reload|drain|crafts|revoke> [--session <id>] [--ca <pem> --token-file <path>]\n  flowcraftd diag --socket <unix://path|dns://host:port> --out <dir> [--ca <pem> --token-file <path>]\n  flowcraftd catalog [--json]\n  flowcraftd version\n\nlog flags (any command):\n  --log-level <directives>  tracing filter syntax, e.g. \"info,flowcraft::kernel=debug\"\n  --log-format <text|json>  one record per line\n  --log-file <path>         also write to a rotating file\n  --log-ring                keep recent output in memory for `diag`\n  --profile <service|client|cli>  override the shape the command implies\n  -v, --verbose             shorthand for --log-level debug\n  -q, --quiet               warnings and errors only\n  RUST_LOG overrides --log-level"
 }
 
 fn usage(message: impl std::fmt::Display) -> Error {

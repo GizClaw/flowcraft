@@ -1,3 +1,6 @@
+//! These drive unix-domain sockets and a POSIX shell; a Windows host has
+//! neither in this crate yet, so the file is unix-only rather than untested.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! The craft ABI conformance suite, plus the platform's contract enforcement.
@@ -180,7 +183,9 @@ async fn hosted(socket: &Path, extra: &[&str]) -> Result<HostedCrafts, flowcraft
             "demo".to_owned(),
             flowcraft::kernel::CraftConfig {
                 argv: hosted_stub_argv(socket, extra),
-                socket: socket.display().to_string(),
+                target: format!("unix://{}", socket.display()),
+                tls: None,
+                token: String::new(),
                 tenant: "t".to_owned(),
                 grants: Vec::new(),
                 env: BTreeMap::from([support::identity_env()]),

@@ -32,7 +32,9 @@ fn config(dir: &std::path::Path) -> Config {
                     "--name".to_owned(),
                     "demo".to_owned(),
                 ],
-                socket: socket.display().to_string(),
+                target: format!("unix://{}", socket.display()),
+                tls: None,
+                token: String::new(),
                 tenant: String::new(),
                 grants: Vec::new(),
                 // The child must not touch the identity of the machine

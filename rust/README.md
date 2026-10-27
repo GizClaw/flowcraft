@@ -12,8 +12,8 @@ checkpoint store. Endpoints are unix sockets by
 default and TLS/mTLS over TCP when a `dns://` target is configured. `SIGHUP`
 reloads the deployment as a new generation; a bad document never disturbs the
 running one, and new TLS material is picked up by the reload. `craft.Craft/v1`
-is the ABI to the craft sidecars that run the agent loop, and `admin.sock` is the
-operator surface. `${secret:...}` resolves
+is the ABI to the craft sidecars that run the agent loop, and `admin.sock` (or a
+TLS listener with a token) is the operator surface. `${secret:...}` resolves
 against a `secret.Store` built in the same deployment graph. Everything else is
 listed under [Not implemented yet](#not-implemented-yet).
 
@@ -114,20 +114,27 @@ plane (`make rust-windows-check`, plus the `rust-windows` CI lane).
 
 ### Platform support
 
-The kernel's transport is unix-domain sockets, so the platform as a whole is
-unix-only. One capability is portable in isolation, and it is the one whose
-provider is most likely to be reused: `--no-default-features --features
-workspace` drops `wire` (the endpoint, the remote client and the grant scope) and
-leaves the provider, its decorators and the helper operations — a shape with no
-control-plane dependency that builds for a Windows target.
+The kernel's transport is a unix-domain socket on unix and a `dns://` target
+(TCP + TLS) everywhere else; on a host that cannot serve a unix socket, `bind`
+refuses that endpoint instead of quietly serving it somewhere else. The
+capabilities are split along the same line, so the *provider* shapes are
+portable:
 
-`make rust-windows-check` cross-compiles it locally (it needs the
-`x86_64-pc-windows-gnu` target and a mingw gcc), which is the fast feedback loop;
-the `rust-windows` CI lane runs the same shape on a Windows host, so the
-`cfg(windows)` branches — the sharing-violation retry, the refusal to replace a
-directory with `MoveFileEx` — are executed, not merely compiled. That is still
-not a Windows support claim: the daemon, its transport and the other capabilities
-remain unix-only.
+| shape | Windows target |
+| --- | --- |
+| `--no-default-features --features workspace` | builds — the `cfg(windows)` sharing-violation retry and `MoveFileEx` refusal are exercised |
+| `--features secret` / `tool` / `sandbox` alone | builds — provider only: no endpoint server, no remote client, no grant scope |
+| `--features caps` (the `wire` shapes) | builds — endpoints exist, but `sandbox` selects no confinement backend off unix, and `tty: true` is refused rather than served |
+| `flowcraft-platformd` | builds — endpoints at `dns` targets, crafts at `unix` or `dns` targets, and an admin surface that is HTTP over either. What it cannot do there yet: select a sandbox backend, and run its socket-based integration tests |
+
+`make rust-windows-check` cross-compiles every shape in that table except the
+daemon (it needs the `x86_64-pc-windows-gnu` target and a mingw gcc, which `ring`
+requires even for `cargo check`); the `rust-windows` CI lane runs the workspace
+shape's tests on a real host, so the `cfg(windows)` branches — the
+sharing-violation retry, the refusal to replace a directory with `MoveFileEx` —
+are executed, not merely compiled. That is still not a Windows support claim for
+the *platform*: without a confinement backend and a sandbox runner, a Windows
+host can embed the providers but not serve the capabilities.
 
 ## Quickstart
 
@@ -196,6 +203,12 @@ log:
   craft_stdio: ""             # "" = capture for `exec`, inherit for `systemd`
   throttle_per_minute: 60     # cap for repeated warnings/errors; 0 disables
 ```
+
+Where the file lands matters more than its format. On unix it is created `0600`
+and its rotations inherit that. On Windows the file inherits the ACL of its
+directory, so put it under `%LOCALAPPDATA%\FlowCraft` (per-user, as the identity
+file already is) and leave `%ProgramData%` to an administrator who will tighten
+the ACL — a record can carry paths, tenant names and endpoint names.
 
 The profile follows the command, so an operator command stays quiet by default:
 
@@ -367,13 +380,13 @@ Two rules carry most of the design:
 | ABI enforcement: version negotiation, envelope types, capability namespaces, bootstrap token, 0600 sockets | ✅ |
 | ABI conformance suite (`tests/conformance.rs`, reusable against any craft) | ✅ |
 | `ExecSupervisor`: spawn a craft, wait for its socket, open a session, stop it | ✅ |
-| `flowcraftd craft-stub`: a minimal craft for development and tests | ✅ |
+| `flowcraftd craft-stub`: a minimal craft for development and tests, served on a unix socket or a `dns` target with TLS (`--target`, `--tls-cert`/`--tls-key`) | ✅ |
 | Hosted crafts: `crafts:` config, per-craft grants, start/stop lifecycle | ✅ |
 | Craft supervisors: `exec` (own the process), `external` (connect only), `systemd` (unit) | ✅ |
 | Host-level preflight: unknown endpoints and capability mismatches fail `check` | ✅ |
 | Layered deployment documents: repeated `--deploy`, later layers win | ✅ |
 | `entries:` surfaced: `serve` logs them, admin `status` reports them | ✅ |
-| Admin socket + `flowcraftd ctl`: status / reload / drain / crafts / revoke, owner-only | ✅ |
+| Admin surface (HTTP): `flowcraftd ctl` / `diag` over a unix socket, or over TCP + TLS with a bearer token; status / reload / drain / crafts / revoke | ✅ |
 | Drain: readiness off and no new grants minted; existing leases keep working | ✅ |
 | Sandbox confinement: `bwrap` (Linux) and `seatbelt` (macOS) process wrappers, with the enforcement proxy | ✅ |
 | Graceful drain: listeners stop accepting and finish in-flight requests on shutdown | ✅ |
@@ -447,11 +460,20 @@ Two rules carry most of the design:
 - **Shutdown drains.** A listener stops accepting and waits for in-flight
   requests (`serve_with_incoming_shutdown`), bounded by a 10s grace; only then
   does the process exit. Reload takes the same path for the generation it
-  replaces.- **The admin surface is a socket, not a port.** `admin.sock` is owner-only
-  (0700 directory, 0600 socket) and speaks one JSON line per request. `drain`
-  clears readiness without tearing anything down, `reload` is the same path
-  `SIGHUP` takes, and `revoke` takes a session id. A failure to bind the admin
-  socket warns and continues: it is an operator convenience, not a dependency.
+  replaces.- **The admin surface is HTTP, and the transport decides who may call it.**
+  `listen.admin` names either `unix:///abs/path` — directory `0700`, socket
+  `0600`, plus the kernel's peer credentials, so only this uid or root, and no
+  secret is involved — or `dns:///host:port` for a host without unix sockets,
+  which requires `admin_tls` (TLS is mandatory there; a client CA is refused
+  because a caller is identified by the token rather than by a certificate) and
+  `admin_token_file`, a bearer token the daemon rewrites on every start and
+  `ctl --token-file` reads. Six verbs over routes — `GET /status`, `POST
+  /reload`, `POST /drain`, `GET /crafts`, `POST /revoke`, `GET /diag` — with
+  `ok` in the body as the business answer and the HTTP status speaking only
+  about the request. `drain` clears readiness without tearing anything down,
+  `reload` is the same path `SIGHUP` takes, and `revoke` takes a session id. A
+  failure to bind the admin surface warns and continues: it is an operator
+  convenience, not a dependency.
 - **Preflight is split in two on purpose.** The resource kernel checks types,
   dependencies, and cycles; the daemon checks what only the host knows — whether
   a `settings.endpoint` name resolves and whether that endpoint serves the
@@ -478,6 +500,15 @@ Two rules carry most of the design:
   `event_types` (`x-` is the extension escape hatch). The platform never
   parses extension bytes; it validates the envelope, routes, replays, and
   audits.
+- **A craft child gets an empty environment plus an allow-list.** The child runs
+  with the daemon's uid, so anything in the daemon's environment is something the
+  craft can read — the bootstrap secrets when the host configures them as
+  `FLOWCRAFT_SECRET_*`, this process's identity path, another craft's token. It
+  now starts from `env_clear` and inherits only what a program needs to start
+  (`PATH`, `HOME`, locale, `TMPDIR`, and the Windows equivalents);
+  `crafts.<name>.env` is the sanctioned way to hand it a value. The
+  dynamic-loader variables stay out on purpose: they are an injection vector,
+  not a need.
 - **Every call after Describe carries a bootstrap token.** The platform mints
   one per craft, hands it to `exec` through the environment, and sends it as
   `x-flowcraft-craft-token`; the socket is chmod 0600 and its directory 0700,
@@ -497,6 +528,12 @@ Two rules carry most of the design:
   shutdown, and never fails the reload, because the swap already happened.
   `platform.yaml` changes still require a restart, because endpoints, TLS, and
   grant policy are kernel state.
+- **A TLS listener pins the rustls provider, and the library does it.** A
+  workspace-wide build unifies `ring` (tonic's `tls-ring`) with `aws_lc_rs`
+  (pulled in through `rmcp` and the OTLP exporter), and rustls then refuses to
+  choose between two complete providers — the first listener or channel panics.
+  `kernel::tls::install_provider` installs `ring` once, from `server`, `client`,
+  and `flowcraftd`'s `main`, so a host that forgets cannot hit it.
 - **TLS material never enters a document.** A `tls` block holds
   `${secret:...}` references only; the bytes come from the host's bootstrap
   provider (environment or a directory). The kernel refuses inline PEM at

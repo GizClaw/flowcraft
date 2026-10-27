@@ -13,6 +13,11 @@ fn main() -> ExitCode {
     // anything else looks at argv, and it exits the process when it applies.
     let _ = flowcraft::caps::sandbox::net::bridge::run_if_invoked();
 
+    // Before anything binds a TLS listener or opens a TLS channel: the
+    // dependency graph unifies both rustls providers, and rustls will not pick
+    // one by itself (see `kernel::tls::install_provider`).
+    flowcraft::kernel::tls::install_provider();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(args) {
         Ok(code) => code,
@@ -162,17 +167,20 @@ fn run(args: Vec<String>) -> Result<ExitCode, Failure> {
             }
         }
         cli::Command::Ctl {
-            socket,
+            client,
             command,
             session,
         } => {
             runtime_of(&runtime)?
-                .block_on(commands::ctl(&socket, &command, session.as_deref()))
+                .block_on(commands::ctl(&client, &command, session.as_deref()))
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }
         cli::Command::CraftStub {
-            socket,
+            target,
+            tls_cert,
+            tls_key,
+            tls_client_ca,
             name,
             renew_log,
             token,
@@ -182,7 +190,12 @@ fn run(args: Vec<String>) -> Result<ExitCode, Failure> {
         } => {
             runtime_of(&runtime)?
                 .block_on(commands::craft_stub(
-                    &socket,
+                    &commands::StubServe {
+                        target,
+                        cert: tls_cert,
+                        key: tls_key,
+                        client_ca: tls_client_ca,
+                    },
                     &name,
                     renew_log.as_deref(),
                     token.as_deref(),
@@ -193,9 +206,9 @@ fn run(args: Vec<String>) -> Result<ExitCode, Failure> {
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::Diag { socket, out } => {
+        cli::Command::Diag { client, out } => {
             runtime_of(&runtime)?
-                .block_on(commands::diag(&socket, &out))
+                .block_on(commands::diag(&client, &out))
                 .map_err(Failure::new)?;
             Ok(ExitCode::SUCCESS)
         }

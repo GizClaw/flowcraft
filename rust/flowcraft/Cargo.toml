@@ -37,51 +37,42 @@ workspace = [
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
+    "dep:tokio-stream",
     "dep:tracing",
 ]
 secret = [
     "resource",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     "dep:async-trait",
     "dep:ring",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
-    "dep:tokio-stream",
-    "dep:tonic",
     "dep:tracing",
 ]
 sandbox = [
     "resource",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     # The unix mechanisms the runner owns. Naming them here keeps a host that
     # embeds another capability from compiling a pty stack or a cgroup reader.
     "dep:portable-pty",
     "dep:cgroups-rs",
+    "dep:nix",
     "dep:async-trait",
     "dep:notify",
     "dep:flowcraft-win32",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
+    # The session output log is a stream; that is the provider's own interface,
+    # not the transport's.
     "dep:tokio-stream",
-    "dep:tonic",
     "dep:tracing",
 ]
 tool = [
     "resource",
     "search",
+    # The framework speaks the conversation model (`message`), but not the
+    # transport: the endpoint and the remote client are behind `wire`.
     "message",
-    "kernel",
-    "client",
-    "proto",
-    "wire",
     "dep:async-trait",
     "dep:base64",
     "dep:futures-util",
@@ -92,7 +83,7 @@ tool = [
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
-    "dep:tonic",
+    "dep:tokio-stream",
     "dep:tracing",
 ]
 # Every built-in capability, endpoint servers and remote clients included.
@@ -123,6 +114,10 @@ proto = ["dep:prost", "dep:tonic", "dep:tonic-prost"]
 # an argument object), text parts, and the small helpers. It sits above `proto`
 # because it is a contract, not wire plumbing.
 message = ["proto", "dep:serde_json"]
+# The craft side of `flowcraft.craft/v1`: the handler a craft implements and the
+# gRPC adapter that serves it. Above `proto` and below the platform: a craft is
+# not a capability, so this layer knows nothing about grants or listeners.
+craft = ["proto", "dep:async-trait", "dep:futures-util"]
 search = []
 resource = [
     "otel",
@@ -137,6 +132,7 @@ kernel = [
     "resource",
     "dep:base64",
     "dep:ed25519-dalek",
+    "dep:rustls",
     "dep:globset",
     "dep:http",
     "dep:hyper-util",
@@ -153,6 +149,7 @@ kernel = [
 client = [
     "kernel",
     "proto",
+    "craft",
     "dep:bytes",
     "dep:http",
     "dep:hyper-util",
@@ -190,6 +187,10 @@ prost = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 regex = { version = "1", optional = true }
 ring = { workspace = true, optional = true }
+# rustls is reached through tonic, but the provider has to be *pinned* here: a
+# workspace-wide build unifies `ring` (tonic) with `aws_lc_rs` (rmcp → reqwest),
+# and rustls then refuses to guess. See `kernel::tls::install_provider`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 rmcp = { version = "3.7", default-features = false, features = [
     "client",
     "transport-child-process",
@@ -275,15 +276,15 @@ required-features = ["workspace", "wire"]
 
 [[test]]
 name = "secret_roundtrip"
-required-features = ["secret"]
+required-features = ["secret", "wire"]
 
 [[test]]
 name = "sandbox_conformance"
-required-features = ["sandbox"]
+required-features = ["sandbox", "wire"]
 
 [[test]]
 name = "sandbox_roundtrip"
-required-features = ["sandbox"]
+required-features = ["sandbox", "wire"]
 
 # The Windows session semantics: job objects are the only mechanism that can
 # keep them, so the fixtures here are `cfg(windows)` and the target is empty
@@ -300,11 +301,11 @@ required-features = ["sandbox"]
 
 [[test]]
 name = "tool_registry"
-required-features = ["tool"]
+required-features = ["tool", "wire"]
 
 [[test]]
 name = "tool_roundtrip"
-required-features = ["tool"]
+required-features = ["tool", "wire"]
 
 [[test]]
 name = "kernel_trace"

@@ -1,5 +1,11 @@
-//! Craft supervision: start a craft process, wait for its socket, and speak
+//! Craft supervision: start or reach a craft, wait for it to answer, and speak
 //! the `craft.Craft/v1` ABI.
+//!
+//! A craft has three bearers — built in, a child of this host, or a process that
+//! owns its lifecycle somewhere on the network — and only the last two are
+//! supervised here. The unix-socket steps (removing a stale file, creating its
+//! directory, narrowing its mode) are conditional on the target being a socket;
+//! everything else is common, because the ABI is.
 //!
 //! The platform owns the session and the grants; the craft owns its agent loop
 //! and internal graph. Nothing here parses a craft payload.
@@ -15,16 +21,20 @@ use flowcraft::error::{Error, Result};
 use flowcraft::kernel::Target;
 use flowcraft::proto::craft as pb;
 use tokio::process::{Child, Command};
+use tonic::transport::ClientTlsConfig;
 
 /// How to launch one craft.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CraftSpec {
     /// Craft name (also the instance id sent to `Start`).
     pub name: String,
     /// `argv[0]` plus arguments.
     pub argv: Vec<String>,
-    /// The socket the craft will serve on.
-    pub socket: PathBuf,
+    /// Where the craft serves: a unix socket on this host, or a `dns` target.
+    pub target: Target,
+    /// Client TLS material, built from bootstrap secrets. Only a `dns` target
+    /// has any; a unix socket refuses TLS the same way an endpoint does.
+    pub tls: Option<ClientTlsConfig>,
     /// Extra environment.
     pub env: BTreeMap<String, String>,
     /// How long to wait for the socket to appear.
@@ -39,14 +49,25 @@ pub struct CraftSpec {
     pub stdio: flowcraft::kernel::config::CraftStdio,
 }
 
+impl std::fmt::Debug for CraftSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CraftSpec")
+            .field("name", &self.name)
+            .field("target", &self.target)
+            .field("tls", &self.tls.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl CraftSpec {
-    /// A spec for an executable that serves `socket`.
+    /// A spec for a craft that serves `target`.
     #[must_use]
-    pub fn new(name: impl Into<String>, argv: Vec<String>, socket: impl Into<PathBuf>) -> Self {
+    pub fn new(name: impl Into<String>, argv: Vec<String>, target: Target) -> Self {
         Self {
             name: name.into(),
             argv,
-            socket: socket.into(),
+            target,
+            tls: None,
             env: BTreeMap::new(),
             ready_timeout: Duration::from_secs(10),
             unit: None,
@@ -57,9 +78,21 @@ impl CraftSpec {
             stdio: flowcraft::kernel::config::CraftStdio::Inherit,
         }
     }
+
+    /// The socket path, when this craft is reached over one.
+    ///
+    /// Everything a unix socket needs — removing a stale file, creating its
+    /// directory, narrowing its mode — is conditional on this.
+    fn unix_path(&self) -> Option<&Path> {
+        match &self.target {
+            Target::Unix(path) => Some(path),
+            Target::Dns(_) => None,
+        }
+    }
 }
 
 /// Make the craft socket owner-only, and its directory too.
+#[cfg(unix)]
 pub fn secure_socket(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -75,6 +108,16 @@ pub fn secure_socket(path: &Path) -> Result<()> {
             path.display()
         ))),
     }
+}
+
+/// A unix socket is a unix mechanism: elsewhere a craft target is a `dns`
+/// address, and there is no file to narrow.
+#[cfg(not(unix))]
+pub fn secure_socket(path: &Path) -> Result<()> {
+    Err(Error::not_available(format!(
+        "craft target {}: a unix socket requires unix",
+        path.display()
+    )))
 }
 
 /// A started craft with an open session.
@@ -200,15 +243,28 @@ impl CraftSupervisor for ExecSupervisor {
         if spec.argv.is_empty() {
             return Err(Error::validation("craft: argv is empty"));
         }
-        if spec.socket.exists() {
-            std::fs::remove_file(&spec.socket)?;
-        }
-        if let Some(parent) = spec.socket.parent() {
-            std::fs::create_dir_all(parent)?;
+        // A socket left behind by a crashed child is ours to replace; a `dns`
+        // target has no file, and its address is the host's argv to choose.
+        if let Some(path) = spec.unix_path() {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
 
         let mut command = Command::new(&spec.argv[0]);
         command.args(&spec.argv[1..]);
+        // A craft is a separate program, not a separate trust domain: it runs
+        // with this daemon's uid, so anything in the daemon's environment is
+        // something the craft can read. That includes the bootstrap secrets when
+        // the host configured them through `FLOWCRAFT_SECRET_*`, and the identity
+        // path of this process. So the child starts from nothing and gets this
+        // list plus `crafts.<name>.env` — the sanctioned place to hand it a
+        // value.
+        command.env_clear();
+        command.envs(inherited_environment());
         command.envs(&spec.env);
         if let Some(token) = &spec.token {
             command.env("FLOWCRAFT_CRAFT_TOKEN", token);
@@ -230,17 +286,19 @@ impl CraftSupervisor for ExecSupervisor {
         })?;
         crate::craft_stdio::attach(&spec.name, &mut child, spec.stdio);
 
-        if let Err(error) = wait_for_socket(&spec.socket, spec.ready_timeout).await {
+        if let Err(error) = wait_for_target(&spec.target, spec.ready_timeout).await {
             let _ = child.kill().await;
             return Err(error);
         }
-        if let Err(error) = secure_socket(&spec.socket) {
+        if let Some(path) = spec.unix_path()
+            && let Err(error) = secure_socket(path)
+        {
             let _ = child.kill().await;
             return Err(error);
         }
         let client = match CraftClient::connect_with_token(
-            &Target::Unix(spec.socket.clone()),
-            None,
+            &spec.target,
+            spec.tls.clone(),
             spec.token.as_deref(),
         )
         .await
@@ -302,16 +360,71 @@ impl CraftSupervisor for ExecSupervisor {
     }
 }
 
-async fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
+/// The environment a craft child inherits.
+///
+/// Only what a program needs to start at all: where to find its own tools, where
+/// "home" is, how to spell paths and messages, and where to put temporaries. An
+/// allow-list rather than a deny-list because the failure mode of the wrong
+/// choice is a leak, and the failure mode of a missing entry is a loud one — a
+/// craft that cannot find a library says so on its first line of output.
+///
+/// Deliberately absent: anything named `FLOWCRAFT_*` (bootstrap secrets, the
+/// identity path, another craft's token), and the dynamic-loader variables
+/// (`LD_PRELOAD`, `DYLD_*`), which are an injection vector rather than a need.
+fn inherited_environment() -> Vec<(String, String)> {
+    #[cfg(windows)]
+    const NAMES: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "COMSPEC",
+    ];
+    #[cfg(not(windows))]
+    const NAMES: &[&str] = &[
+        "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM",
+    ];
+
+    NAMES
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| ((*name).to_owned(), value))
+        })
+        .collect()
+}
+
+async fn wait_for_target(target: &Target, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if tokio::net::UnixStream::connect(path).await.is_ok() {
+        let ready = match target {
+            #[cfg(unix)]
+            Target::Unix(path) => tokio::net::UnixStream::connect(path).await.is_ok(),
+            #[cfg(not(unix))]
+            Target::Unix(path) => {
+                return Err(Error::not_available(format!(
+                    "craft target {}: a unix socket requires unix; use a dns target",
+                    path.display()
+                )));
+            }
+            // A `dns` craft owns its lifecycle, so "ready" is "the port answers":
+            // the handshake happens once, in `connect`.
+            Target::Dns(address) => tokio::net::TcpStream::connect(address).await.is_ok(),
+        };
+        if ready {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::not_available(format!(
-                "craft did not listen on {} within {timeout:?}",
-                path.display()
+                "craft did not answer at {} within {timeout:?}",
+                target.as_uri()
             )));
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -336,14 +449,13 @@ impl ExternalSupervisor {
 #[async_trait]
 impl CraftSupervisor for ExternalSupervisor {
     async fn start(&self, spec: &CraftSpec, grants: Vec<pb::Grant>) -> Result<CraftHandle> {
-        wait_for_socket(&spec.socket, spec.ready_timeout).await?;
-        secure_socket(&spec.socket)?;
-        let client = CraftClient::connect_with_token(
-            &Target::Unix(spec.socket.clone()),
-            None,
-            spec.token.as_deref(),
-        )
-        .await?;
+        wait_for_target(&spec.target, spec.ready_timeout).await?;
+        if let Some(path) = spec.unix_path() {
+            secure_socket(path)?;
+        }
+        let client =
+            CraftClient::connect_with_token(&spec.target, spec.tls.clone(), spec.token.as_deref())
+                .await?;
         let info = client.describe().await?;
         crate::abi::validate_info(&info)?;
         let started = client
@@ -437,18 +549,20 @@ impl CraftSupervisor for SystemdSupervisor {
             .clone()
             .unwrap_or_else(|| format!("flowcraft-{}.service", spec.name));
         self.systemctl(&["start", &unit]).await?;
-        let ready = wait_for_socket(&spec.socket, spec.ready_timeout).await;
+        let ready = wait_for_target(&spec.target, spec.ready_timeout).await;
         if let Err(error) = ready {
             let _ = self.systemctl(&["stop", &unit]).await;
             return Err(error);
         }
-        if let Err(error) = secure_socket(&spec.socket) {
+        if let Some(path) = spec.unix_path()
+            && let Err(error) = secure_socket(path)
+        {
             let _ = self.systemctl(&["stop", &unit]).await;
             return Err(error);
         }
         let client = match CraftClient::connect_with_token(
-            &Target::Unix(spec.socket.clone()),
-            None,
+            &spec.target,
+            spec.tls.clone(),
             spec.token.as_deref(),
         )
         .await

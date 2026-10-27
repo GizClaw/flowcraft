@@ -16,11 +16,28 @@ use crate::error::{Error, Result};
 use crate::kernel::config::TlsConfig;
 use crate::kernel::secret_provider::{SecretProvider, resolve};
 
+/// Pin the process-wide rustls provider.
+///
+/// A workspace-wide build unifies `ring` (what tonic's `tls-ring` enables) with
+/// `aws_lc_rs` (what the MCP client and the OTLP exporter pull in through
+/// reqwest), and rustls refuses to choose between two complete providers: the
+/// first TLS listener or channel panics instead. Both are fine; this crate's
+/// configurations are built for `ring`, so that is the one to install.
+///
+/// Idempotent, and a host that installed its own provider first keeps it.
+pub fn install_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Build the server side, or `None` when the block is empty.
 pub fn server(config: &TlsConfig, secrets: &dyn SecretProvider) -> Result<Option<ServerTlsConfig>> {
     if is_empty(config) {
         return Ok(None);
     }
+    install_provider();
     let cert = resolve("tls.cert", &config.cert, secrets)?
         .ok_or_else(|| Error::validation("tls.cert is required when tls is configured"))?;
     let key = resolve("tls.key", &config.key, secrets)?
@@ -37,6 +54,7 @@ pub fn client(config: &TlsConfig, secrets: &dyn SecretProvider) -> Result<Option
     if is_empty(config) {
         return Ok(None);
     }
+    install_provider();
     let mut client = ClientTlsConfig::new();
     if let Some(ca) = resolve("tls.ca", &config.ca, secrets)? {
         client = client.ca_certificate(Certificate::from_pem(ca));
