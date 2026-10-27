@@ -138,7 +138,15 @@ impl Runner for LocalRunner {
                     // child runs it can chdir anywhere, so this is not a
                     // filesystem boundary.
                     filesystem_bounds: false,
-                    write: WriteModes::default(),
+                    write: WriteModes {
+                        // A local runner's writable area is the whole filesystem,
+                        // so there is no "workspace" to narrow to.
+                        workspace: false,
+                        // Windows honours a read-only call with a Low-integrity
+                        // token, which the kernel enforces as no-write-up; unix has
+                        // no mechanism here, so it keeps refusing.
+                        read_only: cfg!(windows),
+                    },
                 },
                 features: Features {
                     tty: crate::caps::sandbox::session::terminal::available(),
@@ -314,7 +322,13 @@ mod tests {
         assert!(capabilities.policy.env_allow_list);
         assert!(!capabilities.policy.filesystem_bounds);
         assert_eq!(capabilities.policy.net, NetModes::default());
-        assert_eq!(capabilities.policy.write, WriteModes::default());
+        assert_eq!(
+            capabilities.policy.write,
+            WriteModes {
+                workspace: false,
+                read_only: cfg!(windows),
+            }
+        );
         assert_eq!(
             capabilities.features.tty,
             crate::caps::sandbox::session::terminal::available()

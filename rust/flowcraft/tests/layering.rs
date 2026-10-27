@@ -120,12 +120,19 @@ fn the_daemon_is_the_only_dependent_of_the_library() {
     names.sort();
     assert_eq!(
         names,
-        ["flowcraft", "flowcraft-platformd", "flowcraft-proto-gen"],
+        [
+            "flowcraft",
+            "flowcraft-platformd",
+            "flowcraft-proto-gen",
+            "flowcraft-win32",
+        ],
         "a new workspace member needs a deliberate decision, not an accident"
     );
 
     // The published surface is what `cargo publish` can reach: everything else
-    // must say `publish = false`, or it becomes a third crate on crates.io.
+    // must say `publish = false`. `flowcraft-win32` is the third published crate
+    // because `flowcraft` cannot depend on something that is not on the registry;
+    // it exists so `unsafe_code = "forbid"` can stay absolute in `flowcraft`.
     let mut published: Vec<&str> = Vec::new();
     for package in packages {
         let name = package["name"].as_str().expect("package name");
@@ -145,17 +152,25 @@ fn the_daemon_is_the_only_dependent_of_the_library() {
                 dep_name != "flowcraft" || name == "flowcraft-platformd",
                 "{name} depends on the library; only the daemon may"
             );
+            // Only the two packages that must name another may: the daemon
+            // depends on the library, and the library depends on the Win32
+            // crate on Windows.
+            let allowed = match dep_name {
+                "flowcraft-platformd" => true,
+                "flowcraft-win32" => name == "flowcraft",
+                other => !other.starts_with("flowcraft-"),
+            };
             assert!(
-                !dep_name.starts_with("flowcraft-") || dep_name == "flowcraft-platformd",
-                "the split crates are gone; {name} still names {dep_name}"
+                allowed,
+                "{name} depends on {dep_name}; the split crates are gone"
             );
         }
     }
     published.sort_unstable();
     assert_eq!(
         published,
-        ["flowcraft", "flowcraft-platformd"],
-        "only two packages may be publishable"
+        ["flowcraft", "flowcraft-platformd", "flowcraft-win32"],
+        "three packages are publishable, in this order: win32, library, daemon"
     );
 }
 

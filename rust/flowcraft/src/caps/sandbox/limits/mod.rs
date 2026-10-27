@@ -18,14 +18,40 @@
 //!
 //! `disk_bytes` is rejected everywhere: no local backend has a quota mechanism.
 
+/// What a host without the mechanism has to say about it.
+#[cfg(target_os = "linux")]
+const MEMORY_UNSUPPORTED: &str =
+    "sandbox: memory limits need a writable cgroup v2 hierarchy, which is not available here";
+#[cfg(target_os = "windows")]
+const MEMORY_UNSUPPORTED: &str =
+    "sandbox: memory limits need a job object, which this host refused to create";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+const MEMORY_UNSUPPORTED: &str = "sandbox: memory limits have no mechanism on this platform";
+
+#[cfg(target_os = "linux")]
+const CPU_UNSUPPORTED: &str =
+    "sandbox: cpu limits need a writable cgroup v2 hierarchy, which is not available here";
+#[cfg(target_os = "windows")]
+const CPU_UNSUPPORTED: &str =
+    "sandbox: cpu limits need a job object, which this host refused to create";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+const CPU_UNSUPPORTED: &str = "sandbox: cpu limits have no mechanism on this platform";
+
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(target_os = "linux")]
 use cgroup as backend;
 
-#[cfg(not(target_os = "linux"))]
+// Windows enforces the caps through the session's job object, so its backend only
+// answers the probe; see `session::job`.
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+use windows as backend;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod none;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use none as backend;
 
 use std::time::Duration;
@@ -82,7 +108,7 @@ impl Manager {
         if limits.memory_bytes.is_some() && !support.memory {
             return Err(codes::unavailable(
                 Code::LimitsUnsupported,
-                "sandbox: memory limits need a writable cgroup v2 hierarchy, which is not available here",
+                MEMORY_UNSUPPORTED,
             ));
         }
         if limits.cpu_millicores.is_some() {
@@ -94,10 +120,7 @@ impl Manager {
                 ));
             }
             if !support.cpu {
-                return Err(codes::unavailable(
-                    Code::LimitsUnsupported,
-                    "sandbox: cpu limits need a writable cgroup v2 hierarchy, which is not available here",
-                ));
+                return Err(codes::unavailable(Code::LimitsUnsupported, CPU_UNSUPPORTED));
             }
         }
         Ok(())

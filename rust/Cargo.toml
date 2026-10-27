@@ -12,7 +12,7 @@
 
 [workspace]
 resolver = "3"
-members = ["flowcraft", "flowcraft-platformd", "tools/proto-gen"]
+members = ["flowcraft", "flowcraft-win32", "flowcraft-platformd", "tools/proto-gen"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,7 @@ repository = "https://github.com/GizClaw/flowcraft"
 
 [workspace.dependencies]
 flowcraft = { path = "flowcraft", version = "0.1.0" }
+flowcraft-win32 = { path = "flowcraft-win32", version = "0.1.0" }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tower = { version = "0.5", features = ["util"] }
@@ -43,6 +44,7 @@ notify = "8"
 http = "1"
 portable-pty = "0.9"
 prost = "0.14"
+windows-sys = "0.60"
 rand = "0.8"
 ring = "0.17"
 saphyr = "0.2.2"

@@ -438,6 +438,8 @@ fn new_salt() -> String {
 
 /// FNV-1a, stable across releases and platforms.
 ///
+/// Unix-only: the principal it feeds is the one place a name is hashed.
+///
 /// The goal is not secrecy against an attacker holding the salt — it is that a
 /// name never travels. A digest that changes with a dependency upgrade would
 /// break correlation, which is worse than a non-cryptographic hash.

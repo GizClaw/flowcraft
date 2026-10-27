@@ -261,13 +261,15 @@ mod tests {
         assert!(error.to_string().contains("not usable"), "{error}");
     }
 
+    // A symlink is the mechanism under test, and Windows has none without a
+    // privilege, so there is nothing to assert there.
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_bootstrap_secret_is_refused() {
-        #[cfg(unix)]
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("pem"), b"pem").unwrap();
         {
-            let dir = tempfile::tempdir().unwrap();
-            let outside = tempfile::tempdir().unwrap();
-            std::fs::write(outside.path().join("pem"), b"pem").unwrap();
             std::os::unix::fs::symlink(outside.path().join("pem"), dir.path().join("link.pem"))
                 .unwrap();
             let provider = FileProvider::new(dir.path()).unwrap();
