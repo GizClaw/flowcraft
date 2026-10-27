@@ -316,6 +316,49 @@ impl Job {
         Ok(None)
     }
 
+    /// Which cap the tree has spent, if any.
+    ///
+    /// The question a supervisor asks every tick, answered here because the
+    /// answer is a property of this primitive and not of its caller.
+    ///
+    /// Two sources, in order of authority. [`Job::violation`] is the direct one,
+    /// but the legacy `JobObjectLimitViolationInformation` query answers zeroed on
+    /// some hosts, so the counters are what the answer is really built on: a tree
+    /// whose cpu time has reached the budget in force, or whose peak commit has
+    /// reached the ceiling in force, is over it. An error from `violation` is not
+    /// returned — the counters answer the same question, so failing the call over
+    /// the weaker source would lose information rather than report it.
+    ///
+    /// The comparison is against [`Job::limits`], what the kernel currently has
+    /// installed, not against what was requested: `SetInformationJobObject`
+    /// silently ignores a field whose flag is missing, so the two differ.
+    ///
+    /// `JobMemoryLimit` is subtler than cpu time — it makes allocations fail past
+    /// the ceiling rather than killing the tree, so a program that never gives up
+    /// is never ended by the kernel at all. This is the query that lets the caller
+    /// end it, which is what makes "over the cap ends the session" true for memory
+    /// as well.
+    pub fn exceeded(&self) -> Result<Option<Violation>, Error> {
+        if let Ok(Some(violation)) = self.violation() {
+            return Ok(Some(violation));
+        }
+        let limits = self.limits()?;
+        let usage = self.usage()?;
+        if limits
+            .cpu_budget
+            .is_some_and(|budget| usage.user_time >= budget)
+        {
+            return Ok(Some(Violation::Time));
+        }
+        if limits
+            .memory_bytes
+            .is_some_and(|cap| usage.peak_memory >= cap)
+        {
+            return Ok(Some(Violation::Memory));
+        }
+        Ok(None)
+    }
+
     fn query(
         &self,
         class: JOBOBJECTINFOCLASS,
@@ -497,6 +540,40 @@ mod tests {
         assert!(
             usage.user_time >= budget,
             "the tree must have spent its budget: {usage:?}"
+        );
+    }
+
+    #[test]
+    fn a_spent_cpu_budget_is_named_by_the_job_itself() {
+        let budget = Duration::from_millis(50);
+        let job = Job::create(Limits {
+            memory_bytes: None,
+            cpu_budget: Some(budget),
+        })
+        .expect("create");
+        // Nothing is assigned yet, so nothing can be over the cap — and the answer
+        // must come from the counters rather than from a record that was never set.
+        assert_eq!(job.exceeded().expect("exceeded"), None, "fresh job");
+
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "for /L %i in (1,1,200000) do @echo x >NUL"])
+            .spawn()
+            .expect("spawn");
+        job.assign(child.id()).expect("assign");
+        let started = std::time::Instant::now();
+        let _ = child.wait();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the budget did not end the tree: {:?}",
+            started.elapsed()
+        );
+        // Only a cpu budget was installed, so naming `Time` is the whole claim:
+        // a caller no longer has to compare counters against limits itself.
+        assert_eq!(
+            job.exceeded().expect("exceeded"),
+            Some(Violation::Time),
+            "a spent cpu budget must be named by the job: {:?}",
+            job.usage().expect("usage")
         );
     }
 
