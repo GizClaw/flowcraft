@@ -68,26 +68,23 @@ const KEY_READ_STEP: std::time::Duration = std::time::Duration::from_millis(2);
 /// The process-wide set of open stores.
 static BACKENDS: OnceLock<Mutex<BTreeMap<StoreKey, Arc<FileBackend>>>> = OnceLock::new();
 
-#[cfg(unix)]
-type StoreKey = (u64, u64);
-#[cfg(not(unix))]
+/// The identity of a store directory.
+///
+/// The canonical path, not `(dev, ino)`: an inode number is reused the moment a
+/// directory is removed, and the backend map outlives any one store, so a stale
+/// entry keyed by inode would be handed to the *next* directory that happened to
+/// land on the same number — with a path that no longer exists. Canonicalizing
+/// keeps the reason the device pair was chosen (two spellings of one directory,
+/// symlinks included, must share one backend) without the reuse hazard.
 type StoreKey = PathBuf;
 
 fn backends() -> &'static Mutex<BTreeMap<StoreKey, Arc<FileBackend>>> {
     BACKENDS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-#[cfg(unix)]
 fn store_key(dir: &Path) -> Result<StoreKey> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = fs::metadata(dir)
-        .map_err(|error| Error::internal(format!("secret keychain: inspect store dir: {error}")))?;
-    Ok((metadata.dev(), metadata.ino()))
-}
-
-#[cfg(not(unix))]
-fn store_key(dir: &Path) -> Result<StoreKey> {
-    Ok(dir.to_path_buf())
+    fs::canonicalize(dir)
+        .map_err(|error| Error::internal(format!("secret keychain: resolve store dir: {error}")))
 }
 
 /// The `keychain` store.

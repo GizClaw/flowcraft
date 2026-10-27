@@ -54,7 +54,8 @@ const LAYERS: &[(&str, &[&str])] = &[
     ),
     (
         "caps::tool",
-        // The tool contract speaks the conversation model (`message`).
+        // The tool contract speaks the conversation model (`message`), which is
+        // one layer above the wire types it is generated from.
         &[
             "error", "resource", "kernel", "client", "proto", "search", "message",
         ],
