@@ -578,6 +578,7 @@ jobs:
       # that lands.
       - name: Compile the other provider shapes and the daemon
         working-directory: rust
+        shell: bash
         run: |
           for shape in secret tool sandbox caps; do
             cargo check -p flowcraft --all-targets \
