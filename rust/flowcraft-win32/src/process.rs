@@ -80,6 +80,7 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
         command,
         job,
         token,
+        container,
     } = launch;
 
     // `create_pipe` returns `(read, write)` with both ends inheritable.
@@ -95,6 +96,9 @@ pub fn spawn(launch: Launch<'_>) -> Result<Spawned, Error> {
     let mut attributes = AttributeList::new()?;
     if let Some(job) = job {
         attributes.set_job(job.handle())?;
+    }
+    if let Some(container) = container {
+        attributes.set_app_container(container)?;
     }
     // Last, as the API requires.
     attributes.set_handle_list(&[stdin_child.raw(), stdout_child.raw(), stderr_child.raw()])?;
@@ -201,6 +205,7 @@ mod tests {
             },
             job: None,
             token: None,
+            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -226,6 +231,7 @@ mod tests {
             },
             job: None,
             token: None,
+            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -261,6 +267,7 @@ mod tests {
             },
             job: None,
             token: None,
+            container: None,
         })
         .expect("spawn");
         let mut stdin = spawned.take_stdin().expect("stdin");
@@ -291,6 +298,7 @@ mod tests {
             },
             job: Some(&job),
             token: None,
+            container: None,
         })
         .expect("spawn");
         // The child is in the job from its first instruction, so a terminate
@@ -327,6 +335,7 @@ mod tests {
             },
             job: None,
             token: Some(&token),
+            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -359,6 +368,7 @@ mod tests {
             },
             job: None,
             token: None,
+            container: None,
         })
         .expect("spawn");
         let mut stdout = spawned.take_stdout().expect("stdout");
@@ -436,6 +446,7 @@ mod tests {
             },
             job: None,
             token: None,
+            container: None,
         })
         .expect_err("a missing program must fail");
         assert!(error.code.is_some(), "{error:?}");

@@ -585,6 +585,10 @@ pub(crate) async fn spawn(
             },
             job: job.as_ref().map(|job| job.job()),
             token: token.as_ref(),
+            // The container attribute exists in `flowcraft-win32`; a session does
+            // not use it yet, because a containerised child could not read the
+            // workspace it is asked to work in until the ACL grants land.
+            container: None,
         })
         .map_err(|error| Error::not_available(format!("sandbox: {error}")))?;
         let pid = Some(spawned.child().pid());

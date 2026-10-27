@@ -281,6 +281,8 @@ pub(crate) async fn spawn(spec: SessionSpec, options: &SpawnOptions) -> Result<A
             },
             job: Some(job.job()),
             token: token.as_ref(),
+            // See `spawn.rs`: the attribute is available, the grants are not.
+            container: None,
         })
         .map_err(|error| {
             Error::not_available(format!(

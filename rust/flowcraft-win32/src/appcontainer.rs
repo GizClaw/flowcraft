@@ -202,6 +202,65 @@ mod tests {
         AppContainer::delete(&name).expect("delete profile");
     }
 
+    /// Run one `cmd /c` script, optionally inside a container, and answer its
+    /// exit code.
+    fn run(container: Option<&AppContainer>, script: &str) -> i32 {
+        let comspec =
+            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_owned());
+        let args = vec!["/c".to_owned(), script.to_owned()];
+        let mut spawned = crate::process::spawn(crate::Launch {
+            command: crate::Command {
+                program: &comspec,
+                args: &args,
+                cwd: None,
+                env: None,
+            },
+            job: None,
+            token: None,
+            container,
+        })
+        .expect("spawn");
+        // Our ends of the three pipes must go, or the child blocks writing.
+        drop(spawned.take_stdin());
+        drop(spawned.take_stdout());
+        drop(spawned.take_stderr());
+        spawned.into_child().wait().expect("wait") as i32
+    }
+
+    /// The property W4 exists for: a contained child owns nothing it was not
+    /// granted, so a write to the daemon's own temp directory is refused.
+    ///
+    /// The control is the same command without a container — if that failed too,
+    /// the test would be proving something about `cmd`, not about the boundary.
+    #[test]
+    fn a_contained_child_cannot_write_outside_the_container() {
+        let name = name("write");
+        let container = AppContainer::open(&name).expect("create profile");
+        let dir = std::env::temp_dir().join(format!("flowcraft.ac.{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let probe = dir.join("probe.txt");
+        let script = format!("echo hello > \"{}\"", probe.display());
+
+        let _ = std::fs::remove_file(&probe);
+        let plain = run(None, &script);
+        assert_eq!(plain, 0, "the control must be able to write");
+        assert!(probe.exists(), "the control must have written the file");
+
+        std::fs::remove_file(&probe).expect("remove probe");
+        let contained = run(Some(&container), &script);
+        assert_ne!(
+            contained, 0,
+            "a contained child must not write to a path its SID was not granted"
+        );
+        assert!(
+            !probe.exists(),
+            "the contained child must not have created the file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        AppContainer::delete(&name).expect("delete profile");
+    }
+
     /// A SID as `S-1-15-2-…`, read back through Win32 rather than compared as
     /// bytes: the representation is variable-length.
     fn sid_string(sid: PSID) -> String {
