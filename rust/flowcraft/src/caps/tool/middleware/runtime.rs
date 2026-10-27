@@ -401,8 +401,8 @@ mod tests {
                     .then(|| self.0.clone() as Arc<dyn crate::caps::tool::callable::Tool>)
             }
 
-            fn definitions(&self) -> Vec<msg::ToolDefinition> {
-                Vec::new()
+            fn definitions(&self) -> Arc<[msg::ToolDefinition]> {
+                Arc::from(Vec::new())
             }
         }
 

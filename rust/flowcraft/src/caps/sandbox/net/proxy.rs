@@ -449,24 +449,26 @@ async fn resolve(host: &str, port: u16) -> Option<Vec<IpAddr>> {
 async fn serve_tcp(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await.map_err(Error::from)?;
-    dispatch(stream, first.to_vec(), shared).await
+    // Passed by value: the byte is one byte, and a `Vec` here was a heap
+    // allocation per connection for it.
+    dispatch(stream, first[0], shared).await
 }
 
 #[cfg(unix)]
 async fn serve_unix(mut stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await.map_err(Error::from)?;
-    dispatch(stream, first.to_vec(), shared).await
+    dispatch(stream, first[0], shared).await
 }
 
-async fn dispatch<S>(stream: S, buffered: Vec<u8>, shared: Arc<Shared>) -> Result<()>
+async fn dispatch<S>(stream: S, first: u8, shared: Arc<Shared>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    if buffered.first() == Some(&0x05) {
-        return socks5(stream, buffered, shared).await;
+    if first == 0x05 {
+        return socks5(stream, first, shared).await;
     }
-    http(stream, buffered, shared).await
+    http(stream, first, shared).await
 }
 
 /// Read one head, keeping the bytes already consumed.
@@ -475,11 +477,15 @@ where
 /// per byte, and the length of this head is whatever the client chooses to send.
 /// The terminator test compares the last four bytes (O(1), independent of how
 /// much has accumulated), so a terminator split across two reads is still found.
-async fn read_head<S>(stream: &mut S, buffered: Vec<u8>) -> Result<Vec<u8>>
+async fn read_head<S>(stream: &mut S, buffered: u8) -> Result<Vec<u8>>
 where
     S: AsyncRead + Unpin,
 {
-    let mut head = buffered;
+    // Room for the cap up front: a head that grows by `extend_from_slice` would
+    // otherwise reallocate on every read. This is the only allocation a proxy
+    // connection makes for its head.
+    let mut head = Vec::with_capacity(MAX_HEAD.min(8192));
+    head.push(buffered);
     let mut chunk = [0u8; 1024];
     loop {
         if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
@@ -516,11 +522,11 @@ fn header<'a>(headers: &[&'a str], name: &str) -> Option<&'a str> {
     })
 }
 
-async fn http<S>(mut stream: S, buffered: Vec<u8>, shared: Arc<Shared>) -> Result<()>
+async fn http<S>(mut stream: S, first: u8, shared: Arc<Shared>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let head = read_head(&mut stream, buffered).await?;
+    let head = read_head(&mut stream, first).await?;
     let (request, headers) = parse_head(&head)
         .ok_or_else(|| Error::validation("sandbox: proxy request has no request line"))?;
     // Authentication before authorization: a caller that has not proven it may
@@ -915,22 +921,28 @@ fn split_authority(raw: &str) -> Result<(String, u16)> {
 }
 
 /// The SOCKS5 half: no authentication, `CONNECT` only.
-async fn socks5<S>(mut stream: S, buffered: Vec<u8>, shared: Arc<Shared>) -> Result<()>
+async fn socks5<S>(mut stream: S, first: u8, shared: Arc<Shared>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     // Greeting: VER, NMETHODS, METHODS...
-    let mut greeting = buffered;
-    let mut byte = [0u8; 1];
-    while greeting.len() < 2 {
-        stream.read_exact(&mut byte).await.map_err(Error::from)?;
-        greeting.push(byte[0]);
-    }
+    //
+    // Two reads, not one per byte: the dispatcher already consumed VER, so this
+    // reads NMETHODS and then the whole method list at once.
+    let mut greeting = Vec::with_capacity(2 + 255);
+    greeting.push(first);
+    let mut methods_count = [0u8; 1];
+    stream
+        .read_exact(&mut methods_count)
+        .await
+        .map_err(Error::from)?;
+    greeting.push(methods_count[0]);
     let methods = usize::from(greeting[1]);
-    while greeting.len() < 2 + methods {
-        stream.read_exact(&mut byte).await.map_err(Error::from)?;
-        greeting.push(byte[0]);
-    }
+    // One read for the whole method list, not one syscall per byte: the length is
+    // `NMETHODS`, which is the client's choice.
+    let mut offered = vec![0u8; methods];
+    stream.read_exact(&mut offered).await.map_err(Error::from)?;
+    greeting.extend_from_slice(&offered);
     // With a credential the only acceptable method is username/password
     // (RFC 1929, `0x02`); without one it is "no authentication" (`0x00`). A
     // listener that offered both would let a client pick the weaker one.
@@ -1078,16 +1090,41 @@ mod tests {
         assert_eq!(header(&headers, "missing"), None);
     }
 
-    /// The head is read in chunks now, so the two boundaries that matter are a
-    /// terminator split across the dispatcher's byte and the first read, and one
-    /// split across two reads.
+    /// A reader that hands out one byte per poll: the shape that makes a
+    /// terminator straddle two reads.
+    struct Trickle(std::collections::VecDeque<u8>);
+
+    impl tokio::io::AsyncRead for Trickle {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if let Some(byte) = self.0.pop_front() {
+                buffer.put_slice(&[byte]);
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// The head is read in chunks now, so the boundaries that matter are the
+    /// terminator arriving in one read, and the same terminator split across
+    /// several.
     #[tokio::test]
     async fn a_head_split_across_reads_is_still_found() {
-        // `\r\n\r` arrives with the byte the dispatcher consumed, `\n` with the
-        // next read: a 4-byte terminator straddling the boundary.
-        let buffered = b"CONNECT example.com:443 HTTP/1.1\r\n\r".to_vec();
-        let mut reader: &[u8] = b"\n";
-        let head = read_head(&mut reader, buffered).await.expect("head");
+        // One read: the four-byte terminator arrives whole.
+        let mut reader: &[u8] = b"\r\n\r\n";
+        let head = read_head(&mut reader, b' ').await.expect("head");
+        assert!(
+            head.ends_with(b"\r\n\r\n"),
+            "{:?}",
+            String::from_utf8_lossy(&head)
+        );
+
+        // One byte per read: the same terminator straddles four of them, and the
+        // dispatcher's byte is the first of the four.
+        let mut reader = Trickle(b"\r\n\r\n".to_vec().into());
+        let head = read_head(&mut reader, b'\r').await.expect("head");
         assert!(
             head.ends_with(b"\r\n\r\n"),
             "{:?}",
@@ -1095,18 +1132,15 @@ mod tests {
         );
 
         // The bare-LF terminator takes the other branch.
-        let buffered = b"GET / HTTP/1.1\n".to_vec();
         let mut reader: &[u8] = b"\n";
-        assert!(read_head(&mut reader, buffered).await.is_ok());
+        assert!(read_head(&mut reader, b'\n').await.is_ok());
     }
 
     #[tokio::test]
     async fn an_unterminated_head_is_bounded_and_reported() {
         // Truncated: the peer closed before the head ended.
         let mut reader: &[u8] = b"";
-        let error = read_head(&mut reader, b"GET / HTTP/1.1\r\n".to_vec())
-            .await
-            .expect_err("truncated");
+        let error = read_head(&mut reader, b'G').await.expect_err("truncated");
         assert!(error.to_string().contains("truncated"), "{error}");
 
         // Unbounded: the peer keeps sending. The loop must stop at the cap
@@ -1114,9 +1148,7 @@ mod tests {
         // the allocation size.
         let flood = vec![b'A'; MAX_HEAD + 64];
         let mut reader: &[u8] = &flood;
-        let error = read_head(&mut reader, b"G".to_vec())
-            .await
-            .expect_err("too large");
+        let error = read_head(&mut reader, b'G').await.expect_err("too large");
         assert!(error.to_string().contains("too large"), "{error}");
     }
 

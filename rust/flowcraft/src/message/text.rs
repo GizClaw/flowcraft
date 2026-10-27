@@ -44,6 +44,33 @@ pub fn text_of(content: &msg::Content) -> String {
         .collect()
 }
 
+/// How many characters [`text_of`] would produce, without producing it.
+///
+/// The distinction matters on the return path of every tool call: truncation has
+/// to know whether the text fits, and concatenating the parts only to count them
+/// copies the whole payload — a 100 MB output copied to answer "does this exceed
+/// 10 MB?".
+#[must_use]
+pub fn text_chars(content: &msg::Content) -> usize {
+    content
+        .parts
+        .iter()
+        .filter_map(|part| match part.kind.as_ref() {
+            Some(msg::part::Kind::Text(text)) => Some(&text.text),
+            _ => None,
+        })
+        .map(|text| {
+            // `chars().count()` walks the string; the length of an ASCII string
+            // is the answer, and most tool output is ASCII.
+            if text.is_ascii() {
+                text.len()
+            } else {
+                text.chars().count()
+            }
+        })
+        .sum()
+}
+
 /// The first text part, for a one-line summary of a value that may hold several.
 #[must_use]
 pub fn first_text(content: &msg::Content) -> Option<&str> {

@@ -580,7 +580,12 @@ pub enum Event {
         /// Which stream it came from.
         stream: Stream,
         /// Payload.
-        data: Vec<u8>,
+        ///
+        /// Shared rather than owned: one chunk is handed to every watcher, and
+        /// to the retained record that a later `read` or `watch` replays. A
+        /// `Vec` here meant a copy per subscriber per chunk, on data the log had
+        /// already copied once.
+        data: Arc<[u8]>,
     },
     /// The process ended; `seq` is the completion cursor.
     Exited {

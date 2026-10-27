@@ -10,12 +10,17 @@ use crate::caps::tool::state::{DiscoveredEntry, Snapshot};
 use crate::message::definition_bytes;
 
 /// One registry tool paired with its exposure for the computation.
-#[derive(Debug, Clone)]
-pub struct Candidate {
+///
+/// Borrowed, not owned: the computation runs over the catalog's shared snapshot
+/// on every round, and copying every definition (name + description + schema)
+/// into the candidate list was this module's largest recurring allocation. Only
+/// the definitions that survive the budget are cloned, by the caller.
+#[derive(Debug, Clone, Copy)]
+pub struct Candidate<'a> {
     /// Tool name.
-    pub name: String,
+    pub name: &'a str,
     /// The definition the model would see.
-    pub definition: msg::ToolDefinition,
+    pub definition: &'a msg::ToolDefinition,
     /// The exposure this tool was registered with.
     pub exposure: Exposure,
 }
@@ -25,13 +30,13 @@ pub struct Candidate {
 ///
 /// The computation never mutates the session or the policy.
 #[must_use]
-pub fn visible_candidates(
-    candidates: Vec<Candidate>,
+pub fn visible_candidates<'a>(
+    candidates: Vec<Candidate<'a>>,
     state: &Snapshot,
     policy: &Policy,
-) -> Vec<Candidate> {
+) -> Vec<Candidate<'a>> {
     let budget = policy.budget;
-    let mut visible: Vec<Candidate> = candidates
+    let mut visible: Vec<Candidate<'a>> = candidates
         .into_iter()
         .filter(|candidate| include(candidate, state))
         .collect();
@@ -45,7 +50,7 @@ pub fn visible_candidates(
     let mut kept = Vec::with_capacity(visible.len());
     let mut total: i64 = 0;
     for (index, candidate) in visible.into_iter().enumerate() {
-        let size = definition_bytes(&candidate.definition);
+        let size = definition_bytes(candidate.definition);
         if total + size > budget.max_bytes && index > 0 {
             // Skip the entry that does not fit instead of stopping: one
             // oversized definition must not starve every smaller candidate
@@ -56,7 +61,7 @@ pub fn visible_candidates(
         kept.push(candidate);
     }
 
-    kept.sort_by(|a, b| a.name.cmp(&b.name));
+    kept.sort_by(|a, b| a.name.cmp(b.name));
     kept
 }
 
@@ -108,9 +113,9 @@ pub fn fit_discovery_pool(
     out
 }
 
-fn include(candidate: &Candidate, state: &Snapshot) -> bool {
-    let required = state.is_required(&candidate.name);
-    let discovered = state.is_discovered(&candidate.name);
+fn include(candidate: &Candidate<'_>, state: &Snapshot) -> bool {
+    let required = state.is_required(candidate.name);
+    let discovered = state.is_discovered(candidate.name);
     match candidate.exposure {
         Exposure::Always => true,
         Exposure::Direct | Exposure::Deferred => required || discovered,
@@ -118,20 +123,20 @@ fn include(candidate: &Candidate, state: &Snapshot) -> bool {
     }
 }
 
-fn less_priority(a: &Candidate, b: &Candidate, state: &Snapshot) -> std::cmp::Ordering {
+fn less_priority(a: &Candidate<'_>, b: &Candidate<'_>, state: &Snapshot) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     match a.exposure.rank().cmp(&b.exposure.rank()) {
         Ordering::Equal => {}
         other => return other,
     }
-    match state.is_required(&a.name).cmp(&state.is_required(&b.name)) {
+    match state.is_required(a.name).cmp(&state.is_required(b.name)) {
         Ordering::Equal => {}
         // Required first.
         other => return other.reverse(),
     }
-    let left = state.discovered.get(&a.name);
-    let right = state.discovered.get(&b.name);
+    let left = state.discovered.get(a.name);
+    let right = state.discovered.get(b.name);
     match (left, right) {
         (Some(le), Some(re)) => {
             match re.last_use.cmp(&le.last_use) {
@@ -162,7 +167,7 @@ fn less_priority(a: &Candidate, b: &Candidate, state: &Snapshot) -> std::cmp::Or
             Ordering::Greater
         };
     }
-    a.name.cmp(&b.name)
+    a.name.cmp(b.name)
 }
 
 /// The effective per-round budget, for callers that need the numbers.
@@ -183,10 +188,23 @@ mod tests {
         }
     }
 
-    fn candidate(name: &str, exposure: Exposure) -> Candidate {
+    /// Every definition the tests below refer to, alive for the whole test.
+    fn definitions(names: &[&str]) -> Vec<msg::ToolDefinition> {
+        names.iter().map(|name| definition(name)).collect()
+    }
+
+    fn candidate<'a>(
+        definitions: &'a [msg::ToolDefinition],
+        name: &str,
+        exposure: Exposure,
+    ) -> Candidate<'a> {
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.name == name)
+            .expect("the candidate was built from these definitions");
         Candidate {
-            name: name.to_owned(),
-            definition: definition(name),
+            name: definition.name.as_str(),
+            definition,
             exposure,
         }
     }
@@ -202,17 +220,18 @@ mod tests {
 
     #[test]
     fn always_is_visible_and_deferred_is_not() {
+        let defs = definitions(&["always", "deferred"]);
         let state = Snapshot::default();
         let visible = visible_candidates(
             vec![
-                candidate("always", Exposure::Always),
-                candidate("deferred", Exposure::Deferred),
+                candidate(&defs, "always", Exposure::Always),
+                candidate(&defs, "deferred", Exposure::Deferred),
             ],
             &state,
             &policy(Budget::default()),
         );
         assert_eq!(
-            visible.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            visible.iter().map(|c| c.name).collect::<Vec<_>>(),
             vec!["always"]
         );
     }
@@ -231,30 +250,32 @@ mod tests {
         entry.seq = 2;
         state.discovered.insert("deferred".to_owned(), entry);
 
+        let defs = definitions(&["hidden", "direct", "deferred"]);
         let visible = visible_candidates(
             vec![
-                candidate("hidden", Exposure::Hidden),
-                candidate("direct", Exposure::Direct),
-                candidate("deferred", Exposure::Deferred),
+                candidate(&defs, "hidden", Exposure::Hidden),
+                candidate(&defs, "direct", Exposure::Direct),
+                candidate(&defs, "deferred", Exposure::Deferred),
             ],
             &state,
             &policy(Budget::default()),
         );
-        let names: Vec<&str> = visible.iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = visible.iter().map(|c| c.name).collect();
         assert_eq!(names, vec!["deferred", "direct", "hidden"]);
     }
 
     #[test]
     fn the_budget_caps_definitions_and_bytes() {
+        let defs = definitions(&["a", "b", "c"]);
         let first = policy(Budget {
             max_definitions: 2,
             max_bytes: 16 * 1024,
         });
         let visible = visible_candidates(
             vec![
-                candidate("a", Exposure::Always),
-                candidate("b", Exposure::Always),
-                candidate("c", Exposure::Always),
+                candidate(&defs, "a", Exposure::Always),
+                candidate(&defs, "b", Exposure::Always),
+                candidate(&defs, "c", Exposure::Always),
             ],
             &Snapshot::default(),
             &first,
@@ -267,8 +288,8 @@ mod tests {
         });
         let visible = visible_candidates(
             vec![
-                candidate("a", Exposure::Always),
-                candidate("b", Exposure::Always),
+                candidate(&defs, "a", Exposure::Always),
+                candidate(&defs, "b", Exposure::Always),
             ],
             &Snapshot::default(),
             &second,
@@ -279,10 +300,15 @@ mod tests {
 
     #[test]
     fn tool_search_wins_ties() {
+        let defs = definitions(&["a", crate::caps::tool::tool_search::TOOL_NAME]);
         let visible = visible_candidates(
             vec![
-                candidate("a", Exposure::Always),
-                candidate(crate::caps::tool::tool_search::TOOL_NAME, Exposure::Always),
+                candidate(&defs, "a", Exposure::Always),
+                candidate(
+                    &defs,
+                    crate::caps::tool::tool_search::TOOL_NAME,
+                    Exposure::Always,
+                ),
             ],
             &Snapshot::default(),
             &policy(Budget {

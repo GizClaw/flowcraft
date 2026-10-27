@@ -471,7 +471,9 @@ pub(crate) fn event_to_proto(event: &Event) -> pb::Event {
             seq: i64::try_from(*seq).unwrap_or(i64::MAX),
             r#type: "output".to_owned(),
             stream: stream.as_str().to_owned(),
-            data: data.clone(),
+            // The one copy prost forces: its field is a `Vec`. Everything before
+            // this point shared the bytes.
+            data: data.to_vec(),
             exit: None,
         },
         Event::Exited { seq, exit } => pb::Event {
@@ -505,7 +507,7 @@ pub(crate) fn event_from_proto(event: pb::Event) -> Result<Event> {
         "output" => Ok(Event::Output {
             seq,
             stream: Stream::parse(&event.stream)?,
-            data: event.data,
+            data: event.data.into(),
         }),
         "exited" => Ok(Event::Exited {
             seq,
@@ -750,7 +752,7 @@ mod tests {
             Event::Output {
                 seq: 7,
                 stream: Stream::Stderr,
-                data: b"x".to_vec(),
+                data: b"x".to_vec().into(),
             },
             Event::Exited {
                 seq: 9,

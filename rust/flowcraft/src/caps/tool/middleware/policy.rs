@@ -83,12 +83,17 @@ pub fn redact_patterns(patterns: &[&str]) -> Result<Middleware> {
 }
 
 /// One audited call: what was asked, what came back, and how long it took.
-#[derive(Debug, Clone)]
-pub struct AuditRecord {
+///
+/// Borrowed, because the sink is on the return path of every call: a record that
+/// owned its fields made `audit` deep-copy the result (`result.clone()`), which
+/// for a tool returning a media payload is megabytes per call, to hand it to a
+/// sink that usually only reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct AuditRecord<'a> {
     /// The call.
-    pub call: msg::ToolCall,
+    pub call: &'a msg::ToolCall,
     /// The result.
-    pub result: msg::ToolResult,
+    pub result: &'a msg::ToolResult,
     /// Time spent in the inner chain.
     pub duration: Duration,
 }
@@ -97,7 +102,10 @@ pub struct AuditRecord {
 /// must not block meaningfully; audit never breaks execution.
 pub trait AuditSink: Send + Sync {
     /// Record one call.
-    fn record(&self, record: &AuditRecord);
+    ///
+    /// The record borrows: a sink that needs to keep it must copy what it needs,
+    /// which is the only place a copy can still be justified.
+    fn record(&self, record: AuditRecord<'_>);
 }
 
 /// Report every call and its outcome to the sink.
@@ -109,10 +117,13 @@ pub fn audit(sink: Arc<dyn AuditSink>) -> Middleware {
             let sink = sink.clone();
             Box::pin(async move {
                 let started = Instant::now();
+                // `call` is moved into `next`, so the copy the sink sees is the
+                // one that cannot be avoided. `result` stays here and is only
+                // borrowed.
                 let result = next(context, call.clone()).await;
-                sink.record(&AuditRecord {
-                    call,
-                    result: result.clone(),
+                sink.record(AuditRecord {
+                    call: &call,
+                    result: &result,
                     duration: started.elapsed(),
                 });
                 result
@@ -135,25 +146,49 @@ pub fn audit_redacted(sink: Arc<dyn AuditSink>, rules: Vec<RedactRule>) -> Middl
             Box::pin(async move {
                 let started = Instant::now();
                 let result = next(context, call.clone()).await;
-                let mut redacted = AuditRecord {
-                    call,
-                    result: result.clone(),
+                // A copy is only made where a rule changes something: with no
+                // match the record borrows the originals, which is the common
+                // case for a payload nothing in the rule set mentions.
+                let redacted_call = redact_call(&rules, &call);
+                let redacted_result = redact_result(&rules, &result);
+                sink.record(AuditRecord {
+                    call: redacted_call.as_ref().unwrap_or(&call),
+                    result: redacted_result.as_ref().unwrap_or(&result),
                     duration: started.elapsed(),
-                };
-                let arguments = String::from_utf8_lossy(&redacted.call.arguments).into_owned();
-                redacted.call.arguments = redact_bytes(&rules, &arguments).into_bytes();
-                if let Some(content) = redacted.result.content.as_mut() {
-                    for_each_text(content, |text| {
-                        for rule in rules.iter() {
-                            text.text = rule.apply(&text.text);
-                        }
-                    });
-                }
-                sink.record(&redacted);
+                });
                 result
             })
         })
     })
+}
+
+/// A copy of `call` with its arguments redacted, or `None` when nothing matched.
+fn redact_call(rules: &[RedactRule], call: &msg::ToolCall) -> Option<msg::ToolCall> {
+    let arguments = String::from_utf8_lossy(&call.arguments);
+    let redacted = redact_bytes(rules, &arguments);
+    if redacted == arguments {
+        return None;
+    }
+    let mut call = call.clone();
+    call.arguments = redacted.into_bytes();
+    Some(call)
+}
+
+/// A copy of `result` with its text redacted, or `None` when nothing matched.
+fn redact_result(rules: &[RedactRule], result: &msg::ToolResult) -> Option<msg::ToolResult> {
+    // Redact on a clone and report whether anything moved, so "no match" costs
+    // one clone of the content and never touches the bytes.
+    let mut redacted = result.clone();
+    let content = redacted.content.as_mut()?;
+    let mut changed = false;
+    for_each_text(content, |text| {
+        let next = redact_bytes(rules, &text.text);
+        if next != text.text {
+            text.text = next;
+            changed = true;
+        }
+    });
+    changed.then_some(redacted)
 }
 
 fn redact_bytes(rules: &[RedactRule], text: &str) -> String {
@@ -236,14 +271,69 @@ mod tests {
         assert_eq!(super::super::result_text(&output), "token=[REDACTED]");
     }
 
-    struct Collector(std::sync::Mutex<Vec<AuditRecord>>);
+    /// What a sink kept: the borrowed record has to be copied, which is the one
+    /// place a copy is still the sink's own choice.
+    struct Seen {
+        call: msg::ToolCall,
+        result: msg::ToolResult,
+        duration: Duration,
+    }
+
+    struct Collector(std::sync::Mutex<Vec<Seen>>);
 
     impl AuditSink for Collector {
-        fn record(&self, record: &AuditRecord) {
+        fn record(&self, record: AuditRecord<'_>) {
             if let Ok(mut records) = self.0.lock() {
-                records.push(record.clone());
+                records.push(Seen {
+                    call: record.call.clone(),
+                    result: record.result.clone(),
+                    duration: record.duration,
+                });
             }
         }
+    }
+
+    /// The record is a view: `Copy` over two references is the compile-time proof
+    /// that `audit` hands the sink the result it is about to return, and the
+    /// size assertion is the proof that no payload travels inside it. A record
+    /// that owned its fields would have made `audit` deep-copy every result.
+    #[test]
+    fn an_audit_record_is_a_view_not_a_copy() {
+        let call = call("echo");
+        let result = result("payload");
+        let record = AuditRecord {
+            call: &call,
+            result: &result,
+            duration: Duration::ZERO,
+        };
+        let copied = record;
+        assert!(std::ptr::eq(copied.call, &call));
+        assert!(std::ptr::eq(copied.result, &result));
+        assert!(
+            std::mem::size_of::<AuditRecord<'_>>() < 128,
+            "the record must not carry the payload: {}",
+            std::mem::size_of::<AuditRecord<'_>>()
+        );
+    }
+
+    /// A rule set that matches nothing leaves both fields borrowed as they are,
+    /// so the record the sink sees is the original result.
+    #[tokio::test]
+    async fn audit_redacted_records_the_originals_when_no_rule_matches() {
+        let sink = Arc::new(Collector(std::sync::Mutex::new(Vec::new())));
+        let chain = audit_redacted(sink.clone(), vec![RedactRule::new("absent").expect("rule")])(
+            ok(result("token=secret")),
+        );
+        let output = chain(CallContext::default(), call("echo")).await;
+        assert_eq!(super::super::result_text(&output), "token=secret");
+        let records = sink.0.lock().expect("records");
+        assert_eq!(records.len(), 1);
+        // Nothing was redacted, so nothing was rewritten either.
+        assert_eq!(
+            super::super::result_text(&records[0].result),
+            "token=secret"
+        );
+        assert!(String::from_utf8_lossy(&records[0].call.arguments).contains("secret"));
     }
 
     #[tokio::test]
@@ -261,6 +351,13 @@ mod tests {
         assert_eq!(
             super::super::result_text(&records[0].result),
             "token=[REDACTED]"
+        );
+        // The record carries the timing of the inner chain, unchanged by the
+        // borrowing.
+        assert!(
+            records[0].duration < Duration::from_secs(60),
+            "{:?}",
+            records[0].duration
         );
     }
 
