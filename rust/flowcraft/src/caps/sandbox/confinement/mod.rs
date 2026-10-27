@@ -478,6 +478,19 @@ impl Runner for ConfinedRunner {
     }
 
     async fn start(&self, spec: SessionSpec) -> Result<Arc<dyn Session>> {
+        // Plan the caller's command before `prepare` replaces it with the
+        // sandbox wrapper, so the audit log names what was asked for rather than
+        // the `bwrap`/`sandbox-exec` argv that runs instead.
+        let planned = crate::caps::sandbox::policy::plan::plan(
+            &spec,
+            &crate::caps::sandbox::policy::HostPolicy::default(),
+        );
+        tracing::debug!(
+            argv0 = %planned.argv0,
+            program = ?planned.program(),
+            resolution = ?planned.resolution,
+            "sandbox: planned confined command"
+        );
         let prepared = self.prepare(spec).await?;
         let session = match self.inner.start(prepared.spec).await {
             Ok(session) => session,

@@ -17,6 +17,7 @@ use crate::error::{Error, Result};
 use async_trait::async_trait;
 
 use super::allowlist::{Allowlist, normalise};
+use super::plan::{self, HostPolicy, PlannedCommand};
 use super::{Layer, RunnerRef, guard};
 use crate::caps::sandbox::contract::{ExecOptions, NetMode, SessionSpec, WriteMode};
 
@@ -24,6 +25,12 @@ use crate::caps::sandbox::contract::{ExecOptions, NetMode, SessionSpec, WriteMod
 ///
 /// A snapshot rather than the live spec, so a predicate can inspect what will
 /// run but cannot rewrite it: only the layers may tighten a request.
+///
+/// The snapshot carries two accounts of the same call, and they are not
+/// interchangeable: [`Self::command`] and [`Self::args`] are what the caller
+/// *wrote* (display, audit, prompts), while [`Self::planned`] is what will
+/// actually be *executed* — the resolved file and the environment it gets. A
+/// predicate may only conclude from the plan.
 #[derive(Debug, Clone)]
 pub struct ExecRequest {
     /// The programme as written.
@@ -37,13 +44,29 @@ pub struct ExecRequest {
     /// Whether the child gets an input side.
     pub stdin: bool,
     /// The normalised tokens a rule is matched against.
+    ///
+    /// Kept for display and for allowlist rules, which match a token prefix.
+    #[deprecated(note = "judge the plan: `normalised_tokens()` / `planned`")]
     pub tokens: Vec<String>,
+    /// What the executor will run.
+    pub planned: PlannedCommand,
 }
 
 impl ExecRequest {
-    /// Snapshot `spec`.
+    /// Snapshot `spec`, resolving `argv[0]` against the default host policy.
+    ///
+    /// The plan is computed here and nowhere else, so every predicate and
+    /// approver of one check judges the same resolution.
     #[must_use]
+    #[allow(deprecated)]
     pub fn from_spec(spec: &SessionSpec) -> Self {
+        Self::with_host(spec, &HostPolicy::default())
+    }
+
+    /// Snapshot `spec`, resolving `argv[0]` against `host`.
+    #[must_use]
+    #[allow(deprecated)]
+    pub fn with_host(spec: &SessionSpec, host: &HostPolicy) -> Self {
         Self {
             command: spec.argv.first().cloned().unwrap_or_default(),
             args: spec.argv.iter().skip(1).cloned().collect(),
@@ -51,7 +74,15 @@ impl ExecRequest {
             tty: spec.tty,
             stdin: spec.wants_stdin(),
             tokens: normalise(spec),
+            planned: plan::plan(spec, host),
         }
+    }
+
+    /// The normalised tokens a rule is matched against.
+    #[must_use]
+    #[allow(deprecated)]
+    pub fn normalised_tokens(&self) -> &[String] {
+        &self.tokens
     }
 
     /// The full command line.
@@ -283,12 +314,30 @@ pub fn interactive() -> Arc<dyn Predicate> {
 // Layers
 // ---------------------------------------------------------------------------
 
-/// Refuse every command whose name is not in `allowed`.
+/// Refuse every command the host's own PATH does not resolve to an allowed
+/// programme.
 ///
-/// The name is matched literally and by base name, so `/usr/bin/git` is allowed
-/// by `git`. It sits closest to the backend: approval cannot bypass it.
+/// The rule is compared with the **planned** programme
+/// ([`PlannedCommand::names`]): a rule containing `/` is a pinned path, a bare
+/// rule names a programme the host's PATH resolves, and neither ever looks at
+/// the command as the caller spelled it. So `git` approves the host's `git`,
+/// while `/tmp/x/git` — a binary the caller dropped somewhere — is refused, even
+/// though its base name is `git`.
+///
+/// It sits closest to the backend: approval cannot bypass it.
 #[must_use]
 pub fn allow_commands(allowed: impl IntoIterator<Item = String>) -> Layer {
+    allow_commands_with_host(allowed, HostPolicy::default())
+}
+
+/// [`allow_commands`] for a host whose programme directories are not the
+/// default (a deployment with its own `path_dirs`, or a test with a temporary
+/// one).
+#[must_use]
+pub fn allow_commands_with_host(
+    allowed: impl IntoIterator<Item = String>,
+    host: HostPolicy,
+) -> Layer {
     let allowed: BTreeSet<String> = allowed
         .into_iter()
         .map(|name| name.trim().to_owned())
@@ -296,25 +345,31 @@ pub fn allow_commands(allowed: impl IntoIterator<Item = String>) -> Layer {
         .collect();
     Arc::new(move |inner| {
         let allowed = allowed.clone();
+        let host = host.clone();
         guard(
             inner,
             Arc::new(move |spec: SessionSpec| {
                 let allowed = allowed.clone();
+                let host = host.clone();
                 Box::pin(async move {
-                    let Some(program) = spec.argv.first() else {
+                    if spec.argv.is_empty() {
                         return Err(Error::validation("sandbox: argv is empty"));
-                    };
-                    let base = std::path::Path::new(program)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(program);
-                    if allowed.contains(program) || allowed.contains(base) {
-                        Ok(spec)
-                    } else {
-                        Err(Error::policy_denied(format!(
-                            "sandbox: {program:?} is not in the command allow-list"
-                        )))
                     }
+                    let planned = plan::plan(&spec, &host);
+                    let Some(program) = planned.program() else {
+                        return Err(Error::policy_denied(format!(
+                            "sandbox: {:?} does not resolve to an executable file, so no rule can approve it",
+                            planned.argv0
+                        )));
+                    };
+                    if allowed.iter().any(|rule| planned.names(rule)) {
+                        return Ok(spec);
+                    }
+                    Err(Error::policy_denied(format!(
+                        "sandbox: {:?} ({}) is not in the command allow-list",
+                        planned.argv0,
+                        program.display()
+                    )))
                 })
             }),
         )
@@ -401,7 +456,7 @@ pub fn approval(
                 Box::pin(async move {
                     let request = ExecRequest::from_spec(&spec);
                     if let Some(list) = &allowlist
-                        && list.allows(&request.tokens)
+                        && list.allows(request.normalised_tokens())
                     {
                         return Ok(spec);
                     }
@@ -502,6 +557,8 @@ pub fn compose_local(backend: RunnerRef, policy: LocalPolicy) -> RunnerRef {
 mod tests {
     use super::*;
     use crate::caps::sandbox::local::LocalRunner;
+    use crate::caps::sandbox::policy::stub::Sink;
+    use std::ffi::OsStr;
     use std::sync::Mutex;
 
     fn spec(argv: &[&str]) -> SessionSpec {
@@ -801,5 +858,126 @@ mod tests {
     #[test]
     fn an_empty_pattern_is_rejected() {
         assert!(command_patterns([" ".to_owned()]).is_err());
+    }
+
+    /// A host policy whose only programme directory is `dir`.
+    fn host(dir: &std::path::Path) -> HostPolicy {
+        HostPolicy {
+            path_dirs: vec![std::fs::canonicalize(dir).expect("canonicalize")],
+        }
+    }
+
+    /// A fake `dir/name` executable; returns its canonical path.
+    #[cfg(unix)]
+    fn program(dir: &std::path::Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::canonicalize(path).expect("canonicalize")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_command_gate_judges_the_planned_programme() {
+        let host_dir = tempfile::tempdir().expect("tempdir");
+        let smuggled_dir = tempfile::tempdir().expect("tempdir");
+        let real = program(host_dir.path(), "git");
+        let smuggled = program(smuggled_dir.path(), "git");
+        let sink = Arc::new(Sink::default());
+        let runner =
+            allow_commands_with_host(["git".to_owned()], host(host_dir.path()))(sink.clone());
+
+        // A bare name that the *host* resolves is allowed, whatever the request's
+        // PATH points at.
+        let mut allowed = spec(&["git", "status"]);
+        allowed
+            .opts
+            .env
+            .inject
+            .insert("PATH".to_owned(), smuggled_dir.path().display().to_string());
+        let _ = runner.start(allowed).await;
+        assert!(
+            sink.take().is_some(),
+            "the gate must pass a host programme on to the backend"
+        );
+
+        // A binary the caller dropped somewhere is refused although its base
+        // name is `git`.
+        let error = runner
+            .start(spec(&[smuggled.to_str().expect("utf8"), "status"]))
+            .await
+            .expect_err("refused");
+        assert_eq!(error.kind(), crate::error::ErrorKind::PolicyDenied);
+        assert!(error.to_string().contains("allow-list"), "{error}");
+        assert!(sink.take().is_none(), "the backend must not be reached");
+
+        // The same file spelt the way the host spells it is the same file.
+        let _ = runner
+            .start(spec(&[real.to_str().expect("utf8"), "status"]))
+            .await;
+        assert!(
+            sink.take().is_some(),
+            "a pinned rule and a host rule must agree about one file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_programme_that_does_not_resolve_is_refused() {
+        let sink = Arc::new(Sink::default());
+        let runner = allow_commands(["ls".to_owned()])(sink.clone());
+        let error = runner
+            .start(spec(&["definitely-not-a-sandbox-programme"]))
+            .await
+            .expect_err("refused");
+        assert_eq!(error.kind(), crate::error::ErrorKind::PolicyDenied);
+        assert!(error.to_string().contains("does not resolve"), "{error}");
+        assert!(
+            sink.take().is_none(),
+            "an unresolved programme must never fall through to exec"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_predicate_and_the_approver_judge_one_plan() {
+        let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+
+        struct Watcher(Arc<Mutex<Vec<PathBuf>>>);
+        impl Predicate for Watcher {
+            fn matches(&self, request: &ExecRequest) -> Option<String> {
+                if let Some(program) = request.planned.program() {
+                    self.0.lock().unwrap().push(program.to_path_buf());
+                }
+                Some("watched".to_owned())
+            }
+        }
+
+        let recorded = seen.clone();
+        let approver = Arc::new(ApproverFn::new(move |request: &ApprovalRequest| {
+            if let Some(program) = request.exec.planned.program() {
+                recorded.lock().unwrap().push(program.to_path_buf());
+            }
+            Decision::Deny
+        }));
+        let chain = super::super::Chain::of([approval(
+            Some(approver),
+            None,
+            vec![Arc::new(Watcher(seen.clone()))],
+        )]);
+        let runner = chain.around(Arc::new(LocalRunner::new()));
+        let _ = runner.start(spec(&["git", "status"])).await;
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 2, "one predicate, one approver");
+        assert_eq!(
+            recorded[0], recorded[1],
+            "the predicate and the approver must see the same resolution"
+        );
+        assert_eq!(
+            recorded[0].file_name().and_then(OsStr::to_str),
+            Some("git"),
+            "and it must be the resolved file, not the spelling"
+        );
+        runner.close().await.expect("close");
     }
 }

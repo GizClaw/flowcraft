@@ -27,6 +27,8 @@ use tonic::{Request, Response, Status};
 
 use crate::caps::sandbox::contract::{self, CONTRACT, Capabilities, Handle};
 use crate::caps::sandbox::journal::Journal;
+use crate::caps::sandbox::policy::HostPolicy;
+use crate::caps::sandbox::policy::plan::plan;
 use crate::caps::sandbox::scope::Scope;
 use crate::caps::sandbox::wire;
 
@@ -276,7 +278,11 @@ impl sandbox_server::Sandbox for Service {
             .clone()
             .ok_or_else(|| Status::invalid_argument("sandbox: spec is required"))?;
         let mut spec = wire::spec_from_proto(raw).map_err(status)?;
-        scope.allows_command(&spec.argv).map_err(status)?;
+        // The grant judges the command the executor will run, so the plan comes
+        // first: `spec.argv[0]` is a spelling the caller controls, and the
+        // grant's rules are not about spellings.
+        let planned = plan(&spec, &HostPolicy::default());
+        scope.allows_command(&planned).map_err(status)?;
         spec.opts.timeout = scope.timeout(spec.opts.timeout).map_err(status)?;
         spec.opts.limits.max_output_bytes = scope.output_limit(spec.opts.limits.max_output_bytes);
         let session = self.runner.start(spec).await.map_err(status)?;
