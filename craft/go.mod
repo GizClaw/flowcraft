@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/craft
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.9.1-0.20261020100346-8df888c56ddb
+	github.com/GizClaw/flowcraft/core v0.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk/log v0.21.0

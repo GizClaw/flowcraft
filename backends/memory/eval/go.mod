@@ -4,8 +4,8 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/backends/memory v0.0.0
-	github.com/GizClaw/flowcraft/core v0.9.0
-	github.com/GizClaw/flowcraft/driver v0.0.0-20261020093813-2b4c1f4be97e
+	github.com/GizClaw/flowcraft/core v0.10.0
+	github.com/GizClaw/flowcraft/driver v0.0.0-20261027014744-6e9b4a2ff574
 	github.com/reiver/go-porterstemmer v1.0.1
 )
 
