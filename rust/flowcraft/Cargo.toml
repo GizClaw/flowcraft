@@ -291,6 +291,12 @@ required-features = ["kernel"]
 name = "resource_kernel"
 required-features = ["resource"]
 
+# The module graph: scans `src/` and compares each module's `crate::` paths with
+# the table in the test. `autotests = false`, so a missing entry here means the
+# gate does not run at all.
+[[test]]
+name = "layering"
+
 [[test]]
 name = "telemetry_deps"
 required-features = ["telemetry"]
