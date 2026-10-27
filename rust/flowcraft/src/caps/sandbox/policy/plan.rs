@@ -129,6 +129,12 @@ impl PlannedCommand {
     /// belongs to a host programme directory ([`Self::path_dir`]). A path the
     /// caller spelled outside those directories has to be pinned; that is what
     /// keeps `["git"]` from approving `/tmp/x/git`.
+    ///
+    /// Both of the names a host programme has count for a bare rule: the one the
+    /// caller wrote and the one the file is called. `/usr/bin/sh` is a symlink to
+    /// `dash` on Debian, so the resolved name alone would make `["sh"]` mean
+    /// different things on different distributions — and the containment check
+    /// above is what carries the security argument, not the spelling.
     #[must_use]
     // Exempt from the async/blocking gate (`clippy.toml`), with the argument
     // stated rather than implied: the gate exists for calls that dominate a
@@ -149,7 +155,7 @@ impl PlannedCommand {
             let pinned = std::fs::canonicalize(rule).unwrap_or_else(|_| PathBuf::from(rule));
             return names_match(&pinned.to_string_lossy(), program);
         }
-        self.path_dir().is_some() && names_match(rule, program)
+        self.path_dir().is_some() && (names_match(rule, program) || names_match(rule, &self.argv0))
     }
 }
 
@@ -405,6 +411,36 @@ mod tests {
         );
         assert!(!planned.names("git"), "a bare rule must not follow a path");
         assert!(planned.names(elsewhere.path().join("git").to_str().unwrap()));
+    }
+
+    /// Debian's `/usr/bin/sh` is a symlink to `dash`, macOS's is not. A bare rule
+    /// has to mean the same thing on both, or a grant written as `["sh"]` silently
+    /// stops approving the shell on one distribution — which is exactly how this
+    /// failed in CI, on the one platform the author does not run.
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_rule_names_the_programme_the_host_resolved() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dash = dir.path().join("dash");
+        std::fs::write(&dash, "#!/bin/sh\nexit 0\n").expect("write");
+        std::fs::set_permissions(&dash, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::os::unix::fs::symlink(&dash, dir.path().join("sh")).expect("symlink");
+
+        let host = host(dir.path());
+        let planned = plan(&SessionSpec::new(vec!["sh".to_owned()]), &host);
+        let resolved = planned
+            .program()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        assert_eq!(resolved, "dash", "the plan follows the symlink");
+
+        // The name the caller wrote and the name the file has both name it.
+        assert!(planned.names("sh"), "the written name still matches");
+        assert!(planned.names("dash"), "and so does the resolved one");
+        assert!(!planned.names("rm"), "but nothing else does");
     }
 
     #[cfg(unix)]
