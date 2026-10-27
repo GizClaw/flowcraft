@@ -174,7 +174,7 @@ func TestUnreadableLaneStateFailsTheRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture builds no vector lane")
 	}
-	if stats.SnapshotErrors != 1 || stats.SnapshotHits != 0 || stats.SnapshotMisses != 0 {
+	if stats.ShardErrors != 1 || stats.ShardLoads != 0 {
 		t.Fatalf("the failed read was not counted apart from hits and loads: %+v", stats)
 	}
 }

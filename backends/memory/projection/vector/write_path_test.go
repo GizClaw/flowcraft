@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
@@ -14,13 +13,10 @@ import (
 )
 
 // recordingStore counts the reads of stored state -- a lane's bases and
-// segments -- and can hold the first of them open for a while, so a test can
-// tell a table the lane decoded again from one it already had, and can keep a
-// background load running while it writes.
+// segments -- so a test can tell a table the store decoded again from one it
+// already held.
 type recordingStore struct {
 	storage.Store
-	delay time.Duration
-	once  sync.Once
 	mu    sync.Mutex
 	reads int
 }
@@ -30,9 +26,6 @@ func (recorder *recordingStore) Get(ctx context.Context, key string) ([]byte, er
 		recorder.mu.Lock()
 		recorder.reads++
 		recorder.mu.Unlock()
-		if recorder.delay > 0 {
-			recorder.once.Do(func() { time.Sleep(recorder.delay) })
-		}
 	}
 	return recorder.Store.Get(ctx, key)
 }
@@ -51,13 +44,13 @@ func (recorder *recordingStore) count() int {
 	return recorder.reads
 }
 
-func recordingKVFor(t *testing.T, delay time.Duration) *recordingStore {
+func recordingKVFor(t *testing.T) *recordingStore {
 	t.Helper()
 	kvStore, err := storage.NewWorkspaceKV(newTestWorkspace(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &recordingStore{Store: kvStore, delay: delay}
+	return &recordingStore{Store: kvStore}
 }
 
 // TestDeltaAppliesShareOneDecodedBase is the derivation's cost pinned: a pass
@@ -69,7 +62,7 @@ func recordingKVFor(t *testing.T, delay time.Duration) *recordingStore {
 // only read left is the one that fills it.
 func TestDeltaAppliesShareOneDecodedBase(t *testing.T) {
 	ctx := context.Background()
-	kvStore := recordingKVFor(t, 0)
+	kvStore := recordingKVFor(t)
 	runtime, model := fakeRuntime(t)
 	index, err := New(Config{KV: kvStore, Runtime: runtime, Model: model, Projection: "facts"})
 	if err != nil {
@@ -104,46 +97,4 @@ func TestDeltaAppliesShareOneDecodedBase(t *testing.T) {
 	if len(results) != deltas {
 		t.Fatalf("the store holds %d entries, want %d", len(results), deltas)
 	}
-}
-
-// TestWarmUpIsCoalescedPerShard pins the other half of the write path's cost: a
-// warm-up per write, when a derivation writes once per commit, is a run of
-// loads standing in for each other. One load runs at a time, and the writes
-// that arrive during it ask for one more rather than one each.
-func TestWarmUpIsCoalescedPerShard(t *testing.T) {
-	ctx := context.Background()
-	kvStore := recordingKVFor(t, 150*time.Millisecond)
-	runtime, model := fakeRuntime(t)
-	index, err := New(Config{KV: kvStore, Runtime: runtime, Model: model, Projection: "facts"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
-	if err := index.Rebuild(ctx, component.ProjectionRequest{
-		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// The rebuild's warm-up is the load the delay holds open: every ask below
-	// lands while it runs, and one of them is the load it owes.
-	for ask := 0; ask < 5; ask++ {
-		index.warmSnapshots(ctx, addressOf(scope, shardOf("conversation")))
-	}
-	waitForStats(t, index, "the coalesced warm-ups settling", func(stats Stats) bool {
-		return stats.WarmHits+stats.WarmMisses+stats.WarmErrors >= 2
-	})
-	settled := index.Stats()
-	if loads := settled.WarmHits + settled.WarmMisses + settled.WarmErrors; loads != 2 {
-		t.Fatalf("six asks ran %d loads, want 2", loads)
-	}
-	// The partition is free again: the next write warms it on its own.
-	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
-		Scope: scope, Shard: shardOf("conversation"), Projection: "facts",
-		Upserts: []component.Artifact{vectorArtifact("b", "alpha again")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitForStats(t, index, "the write after the coalesced run warming its shard", func(stats Stats) bool {
-		return stats.WarmHits+stats.WarmMisses+stats.WarmErrors >= 3
-	})
 }

@@ -30,37 +30,56 @@ type reading struct {
 	Workers          int               `json:"workers"`
 	Cold             []coldReading     `json:"cold,omitempty"`
 	Hot              *hotReading       `json:"hot,omitempty"`
-	Footprint        vector.Footprint  `json:"footprint"`
-	// Evictions and UncachedLoads explain a footprint below what the scopes
-	// read would hold: the lane dropped tables to stay within its bounds, or
-	// read tables too large to keep. They are absolute -- what the pass left --
-	// because the reading of a bound is the state it ends in.
-	Evictions       int64  `json:"evictions"`
-	UncachedLoads   int64  `json:"uncached_loads"`
-	HeapBeforeBytes uint64 `json:"heap_before_bytes"`
-	HeapAfterBytes  uint64 `json:"heap_after_bytes"`
-	RSSBeforeBytes  uint64 `json:"rss_before_bytes"`
-	RSSAfterBytes   uint64 `json:"rss_after_bytes"`
+	// Resident is what the lane's store kept decoded when the run ended: the
+	// tables, the bytes they are reckoned at, and what the reads did with
+	// them. It is absolute -- what the pass left -- because the reading of a
+	// budget is the state it ends in.
+	Resident        residentReading `json:"resident"`
+	HeapBeforeBytes uint64          `json:"heap_before_bytes"`
+	HeapAfterBytes  uint64          `json:"heap_after_bytes"`
+	RSSBeforeBytes  uint64          `json:"rss_before_bytes"`
+	RSSAfterBytes   uint64          `json:"rss_after_bytes"`
 }
 
-// coldReading is one conversation's first query: the query that pays for the
-// scope's table when nothing has warmed it. The load columns are the query's
-// own; the warm columns are what the deployment's writes paid beside it, and
-// the two together are the scope's first read. Scans and Embeds say whether
-// the question was then served by the lane or only read its table, which is
-// what a row whose counts are below one has to be read as.
+// residentReading is what the lane's store kept decoded, copied out of the
+// lane's own type so the archive names the fields it publishes.
+type residentReading struct {
+	Bases     int   `json:"bases"`
+	Bytes     int64 `json:"bytes"`
+	Hits      int64 `json:"hits"`
+	Misses    int64 `json:"misses"`
+	Evictions int64 `json:"evictions"`
+	Uncached  int64 `json:"uncached"`
+}
+
+func residentOf(stats vector.Stats) residentReading {
+	return residentReading{
+		Bases:     stats.Resident.Bases,
+		Bytes:     stats.Resident.Bytes,
+		Hits:      stats.Resident.Hits,
+		Misses:    stats.Resident.Misses,
+		Evictions: stats.Resident.Evictions,
+		Uncached:  stats.Resident.Uncached,
+	}
+}
+
+// coldReading is one conversation's first query: the query that pays to read
+// the shard it names out of storage. ShardLoads is how many tables the query
+// materialized and Decodes how many of them the store had to decode rather
+// than finding decoded; BytesAdded is the payload those tables added to what
+// the store keeps. Scans and Embeds say whether the question was then served
+// by the lane or only read its table, which is what a row whose counts are
+// below one has to be read as.
 type coldReading struct {
-	ConversationID   string        `json:"conversation_id"`
-	Latency          time.Duration `json:"latency_ns"`
-	SnapshotLoad     time.Duration `json:"snapshot_load_ns"`
-	SnapshotMisses   int64         `json:"snapshot_misses"`
-	WarmLoad         time.Duration `json:"warm_load_ns"`
-	WarmMisses       int64         `json:"warm_misses"`
-	EntriesAdded     int           `json:"entries_added"`
-	VectorBytesAdded int64         `json:"vector_bytes_added"`
-	HeapDeltaBytes   int64         `json:"heap_delta_bytes"`
-	Scans            int64         `json:"scans"`
-	Embeds           int64         `json:"embeds"`
+	ConversationID string        `json:"conversation_id"`
+	Latency        time.Duration `json:"latency_ns"`
+	ShardLoad      time.Duration `json:"shard_load_ns"`
+	ShardLoads     int64         `json:"shard_loads"`
+	Decodes        int64         `json:"decodes"`
+	BytesAdded     int64         `json:"bytes_added"`
+	HeapDeltaBytes int64         `json:"heap_delta_bytes"`
+	Scans          int64         `json:"scans"`
+	Embeds         int64         `json:"embeds"`
 }
 
 // hotReading is the concurrent pass over every question, measured as the delta
@@ -95,17 +114,20 @@ type stageReading struct {
 	Count int           `json:"count"`
 }
 
-// vectorPhase is the delta of two lane readings: what one pass did.
+// vectorPhase is the delta of two lane readings: what one pass did. ShardLoads
+// and ShardLoad are the tables the pass materialized and what reading them
+// cost; Hits, Decodes, Evictions and Uncached are the store's account of those
+// reads -- found decoded, decoded off storage, dropped to stay within the
+// budget, and read-and-dropped because one table alone exceeded it.
 type vectorPhase struct {
 	Queries        int64         `json:"queries"`
-	SnapshotHits   int64         `json:"snapshot_hits"`
-	SnapshotMisses int64         `json:"snapshot_misses"`
-	SnapshotErrors int64         `json:"snapshot_errors"`
-	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
-	WarmHits       int64         `json:"warm_hits"`
-	WarmMisses     int64         `json:"warm_misses"`
-	WarmErrors     int64         `json:"warm_errors"`
-	WarmLoad       time.Duration `json:"warm_load_ns"`
+	ShardLoads     int64         `json:"shard_loads"`
+	ShardErrors    int64         `json:"shard_errors"`
+	ShardLoad      time.Duration `json:"shard_load_ns"`
+	Hits           int64         `json:"hits"`
+	Decodes        int64         `json:"decodes"`
+	Evictions      int64         `json:"evictions"`
+	Uncached       int64         `json:"uncached"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
 	Scans          int64         `json:"scans"`
@@ -146,19 +168,18 @@ type projectionPoint struct {
 	Sort            time.Duration `json:"sort_ns"`
 }
 
-// phaseDelta subtracts two lane readings. The footprint is not part of the
+// phaseDelta subtracts two lane readings. The resident state is not part of the
 // phase: it is an absolute, reported once at the end.
 func phaseDelta(before, after vector.Stats) vectorPhase {
 	return vectorPhase{
 		Queries:        after.Queries - before.Queries,
-		SnapshotHits:   after.SnapshotHits - before.SnapshotHits,
-		SnapshotMisses: after.SnapshotMisses - before.SnapshotMisses,
-		SnapshotErrors: after.SnapshotErrors - before.SnapshotErrors,
-		SnapshotLoad:   after.SnapshotLoad - before.SnapshotLoad,
-		WarmHits:       after.WarmHits - before.WarmHits,
-		WarmMisses:     after.WarmMisses - before.WarmMisses,
-		WarmErrors:     after.WarmErrors - before.WarmErrors,
-		WarmLoad:       after.WarmLoad - before.WarmLoad,
+		ShardLoads:     after.ShardLoads - before.ShardLoads,
+		ShardErrors:    after.ShardErrors - before.ShardErrors,
+		ShardLoad:      after.ShardLoadTotal - before.ShardLoadTotal,
+		Hits:           after.Resident.Hits - before.Resident.Hits,
+		Decodes:        after.Resident.Misses - before.Resident.Misses,
+		Evictions:      after.Resident.Evictions - before.Resident.Evictions,
+		Uncached:       after.Resident.Uncached - before.Resident.Uncached,
 		Embeds:         after.Embeds - before.Embeds,
 		EmbedTotal:     after.EmbedTotal - before.EmbedTotal,
 		Scans:          after.Scans - before.Scans,
@@ -195,8 +216,8 @@ func certify(phase vectorPhase, questions int) certification {
 	if phase.Embeds != phase.Queries {
 		reasons = append(reasons, fmt.Sprintf("embeds %d != queries %d", phase.Embeds, phase.Queries))
 	}
-	if phase.SnapshotErrors != 0 {
-		reasons = append(reasons, fmt.Sprintf("snapshot errors %d", phase.SnapshotErrors))
+	if phase.ShardErrors != 0 {
+		reasons = append(reasons, fmt.Sprintf("shard errors %d", phase.ShardErrors))
 	}
 	return certification{Certified: len(reasons) == 0, Reasons: reasons}
 }
@@ -269,7 +290,7 @@ func computeShares(phase vectorPhase, stages map[string]stageReading, contextSum
 		ScanOfLane:    share(phase.ScanTotal, lane),
 		SortOfLane:    share(phase.SortTotal, lane),
 		EmbedOfLane:   share(phase.EmbedTotal, lane),
-		LoadOfLane:    share(phase.SnapshotLoad, lane),
+		LoadOfLane:    share(phase.ShardLoad, lane),
 		ScanOfSearch:  share(phase.ScanTotal, search),
 		ScanOfContext: share(phase.ScanTotal, contextSum),
 	}
@@ -279,7 +300,7 @@ func computeShares(phase vectorPhase, stages map[string]stageReading, contextSum
 // did not have: the scan is linear in the table, and the ordering is the work
 // of the limit the scan asked for -- the offer of one score per admitted entry
 // is part of the per-entry slope -- so it does not grow with the table.
-func projections(phase vectorPhase, entriesPerShard, dimensions int) []projectionPoint {
+func projections(phase vectorPhase, entriesPerShard int) []projectionPoint {
 	points := make([]projectionPoint, 0, 4)
 	if phase.EntriesScanned <= 0 || entriesPerShard <= 0 {
 		return points

@@ -36,23 +36,20 @@ func renderCold(w io.Writer, readings []coldReading) {
 		return
 	}
 	printf(w, "cold pass (%d scopes, the first question of each, sequential)\n", len(readings))
-	printf(w, "  %-14s %10s %10s %7s %10s %7s %8s %10s %10s %6s %6s\n",
-		"conversation", "latency", "load", "misses", "warm", "warms", "entries", "vector", "heap+d", "scans", "embeds")
+	printf(w, "  %-14s %10s %10s %6s %8s %10s %10s %6s %6s\n",
+		"conversation", "latency", "load", "shards", "decodes", "resident+", "heap+d", "scans", "embeds")
 	loads := make([]time.Duration, 0, len(readings))
-	warms := make([]time.Duration, 0, len(readings))
 	for _, reading := range readings {
-		loads = append(loads, reading.SnapshotLoad)
-		warms = append(warms, reading.WarmLoad)
-		printf(w, "  %-14s %10s %10s %7d %10s %7d %8d %10s %10s %6d %6d\n",
-			reading.ConversationID, duration(reading.Latency), duration(reading.SnapshotLoad),
-			reading.SnapshotMisses, duration(reading.WarmLoad), reading.WarmMisses,
-			reading.EntriesAdded, megabytes(reading.VectorBytesAdded),
+		loads = append(loads, reading.ShardLoad)
+		printf(w, "  %-14s %10s %10s %6d %8d %10s %10s %6d %6d\n",
+			reading.ConversationID, duration(reading.Latency), duration(reading.ShardLoad),
+			reading.ShardLoads, reading.Decodes, megabytes(reading.BytesAdded),
 			megabytes(reading.HeapDeltaBytes), reading.Scans, reading.Embeds)
 	}
-	printf(w, "  median load %s, median warm %s\n", duration(median(loads)), duration(median(warms)))
-	printf(w, "  note: load is the question's own materialization (misses counts the questions that paid\n")
-	printf(w, "        it); warm is what the deployment's writes -- including the replay of a store it\n")
-	printf(w, "        already holds -- paid beside it, so a first question can find the table resident\n")
+	printf(w, "  median load %s\n", duration(median(loads)))
+	printf(w, "  note: load is the question's own materialization of the shard it names, and decodes\n")
+	printf(w, "        counts the questions that paid a decode rather than finding the table decoded;\n")
+	printf(w, "        resident+ is the payload those tables added to what the store keeps.\n")
 	printf(w, "        scans/embeds say whether the question was then served by the lane: a row with 0\n")
 	printf(w, "        scans or 0 embeds read a table the lane did not answer with\n\n")
 }
@@ -73,9 +70,10 @@ func renderHot(w io.Writer, hot *hotReading) {
 	}
 	phase := hot.Vector
 	line(w, "  vector lane phases")
-	printf(w, "    load   %10s  hits=%d loads=%d errors=%d  (warm %s, %d misses, %d errors)\n",
-		duration(phase.SnapshotLoad), phase.SnapshotHits, phase.SnapshotMisses, phase.SnapshotErrors,
-		duration(phase.WarmLoad), phase.WarmMisses, phase.WarmErrors)
+	printf(w, "    load   %10s  tables=%d errors=%d\n",
+		duration(phase.ShardLoad), phase.ShardLoads, phase.ShardErrors)
+	printf(w, "           store: %d hits, %d decodes, %d evictions, %d uncached\n",
+		phase.Hits, phase.Decodes, phase.Evictions, phase.Uncached)
 	printf(w, "    embed  %10s  n=%d  mean %s\n",
 		duration(phase.EmbedTotal), phase.Embeds, duration(hot.MeanEmbed))
 	printf(w, "    scan   %10s  = walk %s + cosine %s\n",
@@ -113,16 +111,17 @@ func renderHot(w io.Writer, hot *hotReading) {
 		float64(hot.MeanEmbed)/float64(time.Millisecond))
 }
 
-func renderFootprint(w io.Writer, reading reading) {
-	footprint := reading.Footprint
-	line(w, "footprint (resident materialized tables, after the passes)")
-	printf(w, "  shards %d  entries %d  dimensions %d  vector payload %s\n",
-		footprint.Shards, footprint.Entries, footprint.Dimensions, megabytes(footprint.VectorBytes))
-	if reading.Evictions > 0 || reading.UncachedLoads > 0 {
-		// A footprint below what the shards read would hold is explained here,
-		// and the configured bounds are in the retrieval summary above.
-		printf(w, "  bounds: %d tables evicted, %d reads of a table too large to keep\n",
-			reading.Evictions, reading.UncachedLoads)
+func renderResident(w io.Writer, reading reading) {
+	resident := reading.Resident
+	line(w, "resident (tables the lane's store kept decoded, after the passes)")
+	printf(w, "  tables %d  payload %s  hits %d  decodes %d  evictions %d  uncached %d\n",
+		resident.Bases, megabytes(resident.Bytes), resident.Hits, resident.Misses,
+		resident.Evictions, resident.Uncached)
+	if resident.Evictions > 0 || resident.Uncached > 0 {
+		// A resident state below what the shards read would hold is explained
+		// here, and the configured budget is in the retrieval summary above.
+		printf(w, "  budget: %d tables evicted, %d reads of a table too large to keep\n",
+			resident.Evictions, resident.Uncached)
 	}
 	printf(w, "  live heap %s → %s (delta %s)\n",
 		megabytes(int64(reading.HeapBeforeBytes)), megabytes(int64(reading.HeapAfterBytes)),
@@ -131,8 +130,9 @@ func renderFootprint(w io.Writer, reading reading) {
 		printf(w, "  rss %s → %s\n",
 			megabytes(int64(reading.RSSBeforeBytes)), megabytes(int64(reading.RSSAfterBytes)))
 	}
-	printf(w, "  note: the payload counts vector bytes alone; entry addresses, metadata, and text sit on\n")
-	printf(w, "        top of it, so the heap delta is the reading to quote for a resident table\n")
+	printf(w, "  note: the payload counts the tables' vector bytes alone, the term the budget weighs;\n")
+	printf(w, "        entry addresses, metadata, and text sit on top of it, so the heap delta is the\n")
+	printf(w, "        reading to quote for a resident table\n")
 }
 
 func duration(value time.Duration) string {

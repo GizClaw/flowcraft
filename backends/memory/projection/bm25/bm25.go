@@ -41,6 +41,9 @@ type Config struct {
 	K1         float64
 	B          float64
 	Thresholds projectionstore.Thresholds
+	// CacheBytes bounds the tables the store behind this lane keeps decoded.
+	// Zero leaves the store's count bound in charge.
+	CacheBytes int64
 }
 
 type Index struct {
@@ -126,6 +129,8 @@ func New(config Config) (*Index, error) {
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[doc]]{
 			ProducerVersion: producerVersion(k1, b),
 			Thresholds:      config.Thresholds,
+			MaxBytes:        config.CacheBytes,
+			BaseBytes:       tableBytes,
 			Canonicalize: func(delta projectionstore.EntryDelta[doc]) projectionstore.EntryDelta[doc] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -494,6 +499,32 @@ func recomputeAverage(build *snapshot) {
 	if len(build.Documents) > 0 {
 		build.AverageLength = float64(totalLength) / float64(len(build.Documents))
 	}
+}
+
+const (
+	// postingBytes is what one stored posting costs beyond the term's own text:
+	// the map entry, the count, and the header the string is held under.
+	postingBytes = 24
+	// documentBytes is what one document costs beyond its postings: its id, its
+	// content digest, its source reference, and its address.
+	documentBytes = 200
+)
+
+// tableBytes weighs one table for the store's cache budget. A BM25 base is a
+// document per entry and a count per distinct term, so the weight is the
+// postings' text plus a fixed cost each, and a fixed cost per document. The
+// constants are estimates of the Go runtime's own overhead, not a measurement
+// of it: a budget is a bound on what the lane holds, and an estimate that
+// tracks the postings is what makes one table twice another's size count twice.
+func tableBytes(build snapshot) int64 {
+	weight := int64(0)
+	for _, document := range build.Documents {
+		weight += documentBytes
+		for term := range document.Terms {
+			weight += int64(len(term)) + postingBytes
+		}
+	}
+	return weight
 }
 
 func bm25EntryKey() projectionstore.EntryKey[doc] {

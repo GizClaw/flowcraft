@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	summaryderive "github.com/GizClaw/flowcraft/backends/memory/derive/summary"
 	"github.com/GizClaw/flowcraft/backends/memory/forget"
+	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/chat"
 	"github.com/GizClaw/flowcraft/backends/memory/lines/knowledge"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
@@ -55,19 +56,6 @@ type factoryOptions struct {
 	clock          func() time.Time
 	deriver        component.Deriver
 	deriverVersion string
-}
-
-// vectorCacheLimits maps the configured bounds onto the lane's own. An absent
-// block is no bound: the lane keeps every shard's table it reads, which is what
-// it did before the bounds existed.
-func vectorCacheLimits(settings *VectorCacheSettings) vector.CacheLimits {
-	if settings == nil {
-		return vector.CacheLimits{}
-	}
-	return vector.CacheLimits{
-		Shards:  settings.MaxCachedShards,
-		Entries: settings.MaxEntriesPerShard,
-	}
 }
 
 // deriverPolicy is the policy contribution of a caller-supplied deriver. The
@@ -833,18 +821,32 @@ func (lane projectionLane) workerIndexer() worker.ProjectionIndexer {
 	return worker.ProjectionIndexer{Name: lane.Name, Indexer: lane.Indexer}
 }
 
+// cacheBytes is the budget each lane's store keeps decoded bases under. An
+// absent block leaves the store's own default in charge, which is the budget
+// the lane held before the knob existed; a configured budget replaces it.
+func cacheBytes(settings Settings) int64 {
+	if cache := settings.Lanes.Cache; cache != nil && cache.MaxBytes > 0 {
+		return cache.MaxBytes
+	}
+	return projectionstore.DefaultCacheBytes
+}
+
 func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
 	engine *inference.Assembly,
 ) ([]projectionLane, []fusion.Lane, *vector.Index, error) {
+	budget := cacheBytes(settings)
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
+		CacheBytes: budget,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	entityIndex, err := entity.New(entity.Config{KV: kvStore, Projection: settings.Projection})
+	entityIndex, err := entity.New(entity.Config{
+		KV: kvStore, Projection: settings.Projection, CacheBytes: budget,
+	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -861,7 +863,7 @@ func buildProjections(
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
-		Limits: vectorCacheLimits(settings.Lanes.VectorCache),
+		CacheBytes: budget,
 	})
 	if err != nil {
 		return nil, nil, nil, err

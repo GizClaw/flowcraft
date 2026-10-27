@@ -52,6 +52,9 @@ type Config struct {
 	KV         storage.Store
 	Projection string
 	Thresholds projectionstore.Thresholds
+	// CacheBytes bounds the tables the store behind this lane keeps decoded.
+	// Zero leaves the store's count bound in charge.
+	CacheBytes int64
 }
 
 type Index struct {
@@ -107,6 +110,8 @@ func New(config Config) (*Index, error) {
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			ProducerVersion: AlgorithmVersion,
 			Thresholds:      config.Thresholds,
+			MaxBytes:        config.CacheBytes,
+			BaseBytes:       tableBytes,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -617,6 +622,30 @@ func validateSnapshot(build snapshot) error {
 		}
 	}
 	return nil
+}
+
+const (
+	// entityKeyBytes is what one normalized entity key costs beyond its text:
+	// the slice slot, the string header, and the entry it sits in.
+	entityKeyBytes = 32
+	// entryBytes is what one entry costs beyond its keys: its id, its source
+	// reference, and its address.
+	entryBytes = 200
+)
+
+// tableBytes weighs one table for the store's cache budget: the normalized keys
+// the lane matches against, which is what makes one table larger than another,
+// plus a fixed cost per entry for the identity around them. The constants are
+// estimates of the runtime's own overhead, not a measurement of it.
+func tableBytes(build snapshot) int64 {
+	weight := int64(0)
+	for _, item := range build.Entries {
+		weight += entryBytes
+		for _, value := range item.Entities {
+			weight += int64(len(value)) + entityKeyBytes
+		}
+	}
+	return weight
 }
 
 func entityEntryKey() projectionstore.EntryKey[entry] {

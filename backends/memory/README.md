@@ -126,6 +126,8 @@ chunk:
   overlap_runes: 160
 lanes:
   fusion: rrf
+  cache:
+    max_bytes: 2147483648
 retrieval:
   rerank: false
 observed_at_anchor: true
@@ -562,6 +564,22 @@ size, the facts of the active generation and the chunks of the active builds are
 read whole (that is the shape their readers offer), and the artifact set is
 handed to every lane as it is rather than cloned per lane -- `ProjectionRequest`
 documents `Artifacts` as read-only for that reason.
+
+## Projection residency
+
+One store keeps each lane's decoded state, and the lanes hold none of their own:
+a query asks the store for the shard tables it needs, and the store answers from
+the bases it has decoded or decodes the active state and keeps the result.
+Because a conversation's table is not another's, the bound is in bytes rather
+than in tables: `lanes.cache.max_bytes` (2 GiB by default) is what one lane's
+store may keep decoded, weighed by the lane's own reading of a table -- the
+vector payload for the embedding lane, the postings for BM25, the normalized
+keys for the entity lane. The base read least recently makes room, and one base
+larger than the whole budget is read, scanned, and dropped rather than held.
+A budget never changes what a query sees: it decides what the lane keeps after
+reading it, and what a bound costs is a decode of the base it evicted. The
+readout is `vector.Stats.Resident` -- tables, bytes, hits, misses, evictions,
+and uncached reads.
 
 ## Projection storage reclamation
 

@@ -653,8 +653,9 @@ Reads only: no model call, no derivation, no write.
 
 ## Reading the vector lane
 
-The vector lane serves by an exact scan: it materializes the scope's table,
-embeds the query, walks every entry a filter admits, and sorts what it scored.
+The vector lane serves by an exact scan: it materializes the table of each shard
+the request names, embeds the query, walks every entry a filter admits, and
+sorts what it scored.
 Which of those terms dominates decides whether an approximate index could be
 worth its loss of determinism, and `memory-vector-readout` answers it by running
 the retrieval arm against a live deployment and reading the lane's own counters
@@ -672,9 +673,9 @@ deploy document names, so the reading describes that derivation. What it
 reports:
 
 - a **cold pass**: the first question of each scope, sequentially — the question
-  itself (`latency`, and the table it had to materialize: `load`, `misses`,
-  `entries`) beside the warm the deployment's own writes paid (`warm`,
-  `warms`);
+  itself (`latency`, and the shard tables it had to materialize: `load`,
+  `shards`) and whether the store had them decoded (`decodes`) or paid to
+  decode them (`resident+`, the payload they added to what the store keeps);
 - a **hot pass**: every question the library holds, with `-workers`, attributed
   by the delta of two lane readings taken around it;
 - the **phases** inside the lane — table load, query embed, scan (the walk over
@@ -685,8 +686,11 @@ reports:
   not have (the scan is linear in entries, the sort n log n), read against this
   run's mean query embed — the term an approximate index would remove against
   the one it would not;
-- the **footprint**: the resident materialized tables (scopes, entries,
-  dimensions, vector payload) with the process's heap and RSS before and after.
+- the **resident state**: the tables the lane's store kept decoded, the payload
+  they are reckoned at, and the store's own account of the reads — `hits` found
+  decoded, `decodes` materialized off storage, `evictions` dropped to stay
+  within the budget, `uncached` read and dropped because one table alone
+  exceeded it — with the process's heap and RSS before and after.
 
 The control store's reading (9,324 entries per scope, 2,048 dimensions, the
 documented budget, 1,540 questions, 4 workers on a 4-vCPU host) says the
@@ -710,8 +714,8 @@ state exists but cannot be read is not a lane that found nothing: the request
 fails instead of being answered from the remaining lanes (issue #651), so a
 pass that lost a lane stops the run, naming the lane and the read that failed:
 the error is rendered down its chain, because a memory error states only its
-kind and capability. `snapshot_errors` and `warm_errors` count the lookups that
-returned an error, apart from the hits and the loads.
+kind and capability. `shard_errors` counts the lookups that returned an error,
+apart from the loads the lane served.
 
 ## Module dependency
 

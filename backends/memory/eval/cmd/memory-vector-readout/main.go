@@ -155,10 +155,9 @@ func run() error {
 		renderHot(os.Stdout, hot)
 	}
 	final, _ := memory.VectorLaneStats()
-	reading.Footprint = final.Footprint
-	reading.Evictions, reading.UncachedLoads = final.Evictions, final.UncachedLoads
+	reading.Resident = residentOf(final)
 	reading.HeapAfterBytes, reading.RSSAfterBytes = liveMemory()
-	renderFootprint(os.Stdout, reading)
+	renderResident(os.Stdout, reading)
 
 	if options.out != "" {
 		encoded, err := json.MarshalIndent(reading, "", "  ")
@@ -294,17 +293,15 @@ func coldPass(
 		after, _ := memory.VectorLaneStats()
 		heapAfter, _ := liveMemory()
 		readings = append(readings, coldReading{
-			ConversationID:   scenario.ConversationID,
-			Latency:          latency,
-			SnapshotLoad:     after.SnapshotLoad - before.SnapshotLoad,
-			SnapshotMisses:   after.SnapshotMisses - before.SnapshotMisses,
-			WarmLoad:         after.WarmLoad - before.WarmLoad,
-			WarmMisses:       after.WarmMisses - before.WarmMisses,
-			EntriesAdded:     after.Footprint.Entries - before.Footprint.Entries,
-			VectorBytesAdded: after.Footprint.VectorBytes - before.Footprint.VectorBytes,
-			HeapDeltaBytes:   deltaBytes(heapAfter, heapBefore),
-			Scans:            after.Scans - before.Scans,
-			Embeds:           after.Embeds - before.Embeds,
+			ConversationID: scenario.ConversationID,
+			Latency:        latency,
+			ShardLoad:      after.ShardLoadTotal - before.ShardLoadTotal,
+			ShardLoads:     after.ShardLoads - before.ShardLoads,
+			Decodes:        after.Resident.Misses - before.Resident.Misses,
+			BytesAdded:     after.Resident.Bytes - before.Resident.Bytes,
+			HeapDeltaBytes: deltaBytes(heapAfter, heapBefore),
+			Scans:          after.Scans - before.Scans,
+			Embeds:         after.Embeds - before.Embeds,
 		})
 	}
 	return readings, nil
@@ -366,9 +363,12 @@ func hotPass(
 	for _, latency := range latencies {
 		contextSum += latency
 	}
+	// What one query scans is one shard's table -- the shard the request names
+	// -- so the measured per-question scan is the table size the projection
+	// scales from.
 	entriesPerShard := 0
-	if statsAfter.Footprint.Shards > 0 {
-		entriesPerShard = statsAfter.Footprint.Entries / statsAfter.Footprint.Shards
+	if phase.Queries > 0 {
+		entriesPerShard = int(phase.EntriesScanned / phase.Queries)
 	}
 	reading := &hotReading{
 		Questions:  len(items),
@@ -378,7 +378,7 @@ func hotPass(
 		Stages:     stages,
 		Vector:     phase,
 		Shares:     computeShares(phase, stages, contextSum),
-		Projection: projections(phase, entriesPerShard, statsAfter.Footprint.Dimensions),
+		Projection: projections(phase, entriesPerShard),
 		// The pass states whether its own numbers describe the lane; the
 		// renderer prints it and the archive keeps it.
 		Certification: certify(phase, len(items)),

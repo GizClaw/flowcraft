@@ -3,37 +3,32 @@ package vector
 import (
 	"sync/atomic"
 	"time"
+
+	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 )
 
-// Stats is a point-in-time reading of one Index: what the lane has served, and
-// which vector tables it currently holds resident. It exists for diagnostics --
-// a harness reads it to attribute latency inside the lane and to size the
-// cache -- and reading it never changes what the lane serves.
+// Stats is a point-in-time reading of one Index: what the lane has served and
+// what it paid to read the state it served. It exists for diagnostics -- a
+// harness reads it to attribute latency inside the lane -- and reading it never
+// changes what the lane serves.
 //
-// Serving-path counters and warm counters are apart on purpose. A background
-// warm pays the same read a query would, but a reader attributing a query's
-// latency must not see the warm's time as the query's: a write (and a replay
-// of state a store already holds) starts one warm per scope, and the lane
-// serves the queries between them.
+// The lane keeps no table of its own: every planned shard is materialized for
+// the query that named it and dropped when the query returns, so the only
+// resident copy of a table is the store's decoded base. ShardLoads and
+// ShardLoadTotal count the materializations a query paid for; a read served
+// out of the store's kept base is a load with a cheap duration, not a hit the
+// lane can attribute.
 type Stats struct {
-	Queries        int64 `json:"queries"`
-	SnapshotHits   int64 `json:"snapshot_hits"`
-	SnapshotMisses int64 `json:"snapshot_misses"`
-	// SnapshotErrors counts the lookups that returned an error instead of a
-	// table. A lookup that failed is neither a hit nor a load: the lane went
-	// looking for a table and came back without one, which a reader must not
-	// read as "the scope holds nothing" -- a scope that was never indexed
-	// reports storage.ErrNotFound here, and a state that cannot be read
-	// reports why.
-	SnapshotErrors int64         `json:"snapshot_errors"`
-	SnapshotLoad   time.Duration `json:"snapshot_load_ns"`
-	WarmHits       int64         `json:"warm_hits"`
-	WarmMisses     int64         `json:"warm_misses"`
-	// WarmErrors counts the background warms that returned an error. A warm
-	// that failed is why a later query pays a load of its own, so it is
-	// counted rather than dropped.
-	WarmErrors     int64         `json:"warm_errors"`
-	WarmLoad       time.Duration `json:"warm_load_ns"`
+	Queries int64 `json:"queries"`
+	// ShardLoads counts the shard tables a query materialized.
+	ShardLoads int64 `json:"shard_loads"`
+	// ShardErrors counts the lookups that returned an error instead of a table.
+	// A lookup that failed is not a load: the lane went looking for a table and
+	// came back without one, which a reader must not read as "the scope holds
+	// nothing" -- a shard that was never written reports storage.ErrNotFound
+	// here, and a state that cannot be read reports why.
+	ShardErrors    int64         `json:"shard_errors"`
+	ShardLoadTotal time.Duration `json:"shard_load_ns"`
 	Embeds         int64         `json:"embeds"`
 	EmbedTotal     time.Duration `json:"embed_ns"`
 	Scans          int64         `json:"scans"`
@@ -42,83 +37,43 @@ type Stats struct {
 	SortTotal      time.Duration `json:"sort_ns"`
 	EntriesScanned int64         `json:"entries_scanned"`
 	EntriesScored  int64         `json:"entries_scored"`
-	// Evictions counts the resident tables dropped to keep their number within
-	// max_cached_shards: the shard read least recently goes first. A lane with
-	// no bound never evicts.
-	Evictions int64 `json:"evictions"`
-	// UncachedLoads counts the reads served from a table larger than
-	// max_entries_per_shard. Such a table is materialized, scanned, and
-	// dropped: the lane trades its residency for the read. A lane with no bound
-	// never refuses one.
-	UncachedLoads int64     `json:"uncached_loads"`
-	Footprint     Footprint `json:"footprint"`
-}
-
-// Footprint is the resident state of the lane: one materialized vector table
-// per shard read or written since the last invalidation, less the ones the
-// bounds dropped. VectorBytes counts the vector payload alone (dimensions
-// times four bytes per entry); entry addresses, metadata, and text sit on top
-// of it and are not counted here.
-type Footprint struct {
-	Shards      int   `json:"shards"`
-	Entries     int   `json:"entries"`
-	Dimensions  int   `json:"dimensions"`
-	VectorBytes int64 `json:"vector_bytes"`
+	// Resident is what the store behind the lane keeps decoded: the number of
+	// tables held, the bytes they are reckoned at, and the reads that found
+	// them (hits), had to decode them (misses), and paid for the bound
+	// (evictions, uncached). It is the lane's footprint, reported by the one
+	// component that holds one.
+	Resident projectionstore.CacheStats `json:"resident"`
 }
 
 // statsState is the counter block an Index mutates while serving. One write
 // per recorded phase keeps the serving path free of shared locks beyond the
 // atomics themselves.
 type statsState struct {
-	queries      atomic.Int64
-	snapshotHits atomic.Int64
-	snapshotMiss atomic.Int64
-	snapshotErr  atomic.Int64
-	loadNanos    atomic.Int64
-	warmHits     atomic.Int64
-	warmMiss     atomic.Int64
-	warmErr      atomic.Int64
-	warmNanos    atomic.Int64
-	embeds       atomic.Int64
-	embedNanos   atomic.Int64
-	scans        atomic.Int64
-	scanNanos    atomic.Int64
-	scoreNanos   atomic.Int64
-	sortNanos    atomic.Int64
-	scanned      atomic.Int64
-	scored       atomic.Int64
+	queries    atomic.Int64
+	shardLoads atomic.Int64
+	shardErr   atomic.Int64
+	loadNanos  atomic.Int64
+	embeds     atomic.Int64
+	embedNanos atomic.Int64
+	scans      atomic.Int64
+	scanNanos  atomic.Int64
+	scoreNanos atomic.Int64
+	sortNanos  atomic.Int64
+	scanned    atomic.Int64
+	scored     atomic.Int64
 }
 
 func (state *statsState) recordQuery() { state.queries.Add(1) }
 
-// recordSnapshotLoad adds one table lookup a query paid. loaded is true when
-// the table was materialized off the store instead of served from the cache;
-// failed is true when the lookup returned an error, which is counted apart
-// from both.
-func (state *statsState) recordSnapshotLoad(elapsed time.Duration, loaded, failed bool) {
+// recordShardLoad adds one table lookup a query paid; failed is true when the
+// lookup returned an error, which is counted apart from a load.
+func (state *statsState) recordShardLoad(elapsed time.Duration, failed bool) {
 	state.loadNanos.Add(int64(elapsed))
-	switch {
-	case failed:
-		state.snapshotErr.Add(1)
-	case loaded:
-		state.snapshotMiss.Add(1)
-	default:
-		state.snapshotHits.Add(1)
+	if failed {
+		state.shardErr.Add(1)
+		return
 	}
-}
-
-// recordWarmLoad adds one background warm. It stays out of the serving-path
-// counters above so that a query's own load is what those report.
-func (state *statsState) recordWarmLoad(elapsed time.Duration, loaded, failed bool) {
-	state.warmNanos.Add(int64(elapsed))
-	switch {
-	case failed:
-		state.warmErr.Add(1)
-	case loaded:
-		state.warmMiss.Add(1)
-	default:
-		state.warmHits.Add(1)
-	}
+	state.shardLoads.Add(1)
 }
 
 func (state *statsState) recordEmbed(elapsed time.Duration) {
@@ -141,15 +96,9 @@ func (index *Index) recordQuery() {
 	}
 }
 
-func (index *Index) recordSnapshotLoad(elapsed time.Duration, loaded, failed bool) {
+func (index *Index) recordShardLoad(elapsed time.Duration, failed bool) {
 	if index != nil && index.stats != nil {
-		index.stats.recordSnapshotLoad(elapsed, loaded, failed)
-	}
-}
-
-func (index *Index) recordWarmLoad(elapsed time.Duration, loaded, failed bool) {
-	if index != nil && index.stats != nil {
-		index.stats.recordWarmLoad(elapsed, loaded, failed)
+		index.stats.recordShardLoad(elapsed, failed)
 	}
 }
 
@@ -165,40 +114,26 @@ func (index *Index) recordScan(report scanReport) {
 	}
 }
 
-// Stats returns the lane's cumulative counters and the tables it holds
-// resident. The counters describe this process: they start at zero and only
-// grow while the lane serves.
+// Stats returns the lane's cumulative counters. They describe this process:
+// they start at zero and only grow while the lane serves.
 func (index *Index) Stats() Stats {
-	if index == nil {
+	if index == nil || index.stats == nil {
 		return Stats{}
 	}
-	index.snapshotMu.RLock()
-	out := Stats{
-		Evictions:     index.cache.evictions,
-		UncachedLoads: index.cache.uncached,
-		Footprint:     index.cache.footprint(),
-	}
-	index.snapshotMu.RUnlock()
 	state := index.stats
-	if state == nil {
-		return out
+	return Stats{
+		Queries:        state.queries.Load(),
+		ShardLoads:     state.shardLoads.Load(),
+		ShardErrors:    state.shardErr.Load(),
+		ShardLoadTotal: time.Duration(state.loadNanos.Load()),
+		Embeds:         state.embeds.Load(),
+		EmbedTotal:     time.Duration(state.embedNanos.Load()),
+		Scans:          state.scans.Load(),
+		ScanTotal:      time.Duration(state.scanNanos.Load()),
+		ScoreTotal:     time.Duration(state.scoreNanos.Load()),
+		SortTotal:      time.Duration(state.sortNanos.Load()),
+		EntriesScanned: state.scanned.Load(),
+		EntriesScored:  state.scored.Load(),
+		Resident:       index.store.Resident(),
 	}
-	out.Queries = state.queries.Load()
-	out.SnapshotHits = state.snapshotHits.Load()
-	out.SnapshotMisses = state.snapshotMiss.Load()
-	out.SnapshotErrors = state.snapshotErr.Load()
-	out.SnapshotLoad = time.Duration(state.loadNanos.Load())
-	out.WarmHits = state.warmHits.Load()
-	out.WarmMisses = state.warmMiss.Load()
-	out.WarmErrors = state.warmErr.Load()
-	out.WarmLoad = time.Duration(state.warmNanos.Load())
-	out.Embeds = state.embeds.Load()
-	out.EmbedTotal = time.Duration(state.embedNanos.Load())
-	out.Scans = state.scans.Load()
-	out.ScanTotal = time.Duration(state.scanNanos.Load())
-	out.ScoreTotal = time.Duration(state.scoreNanos.Load())
-	out.SortTotal = time.Duration(state.sortNanos.Load())
-	out.EntriesScanned = state.scanned.Load()
-	out.EntriesScored = state.scored.Load()
-	return out
 }

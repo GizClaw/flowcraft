@@ -9,8 +9,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
@@ -52,24 +50,9 @@ type Config struct {
 	Model      model.ModelRef
 	Projection string
 	Thresholds projectionstore.Thresholds
-	// Limits bounds the tables the lane keeps resident. The zero value keeps
-	// every shard's table the lane reads, which is what the lane always did.
-	Limits CacheLimits
-}
-
-// CacheLimits bounds the resident tables: how many shard tables may be held,
-// and how large one may be. A zero field is no bound.
-//
-// The shard bound also bounds the bases the store keeps decoded, and the two
-// are one copy per shard: a lane's table shares its entries with the base it was
-// materialized from. A derivation that fans out across conversations wants the
-// bound at least as wide as the fan-out -- an unbounded lane keeps every table,
-// but the store it shares them with keeps one base unless it is told to keep
-// more, and the delta of a shard the store dropped decodes that shard's base
-// again.
-type CacheLimits struct {
-	Shards  int
-	Entries int
+	// CacheBytes bounds the tables the store behind this lane keeps decoded.
+	// Zero leaves the store's count bound in charge.
+	CacheBytes int64
 }
 
 type Index struct {
@@ -83,216 +66,10 @@ type Index struct {
 	// projection a generation is written to, so a stored version can only
 	// match its own generation's; the stamp records which producer wrote it.
 	producerVersion string
-	// snapshotMu guards the tables the lane keeps resident. Loading a table
-	// per query meant reading every entry through the workspace store's single
-	// mutex, which dominated retrieval latency under concurrency (measured:
-	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). A write drops
-	// the written scope's table, so a query can only see an up-to-date one.
-	snapshotMu sync.RWMutex
-	cache      tableCache
-	// warmMu guards warming: the partitions a warm-up is in flight for, and the
-	// ones a write asked to warm again while it ran. See warmSnapshots.
-	warmMu  sync.Mutex
-	warming map[string]bool
 	// stats accumulates the phase counters Stats() publishes. It is written on
 	// the serving path with atomics only, so no reader can perturb what the
 	// lane serves.
 	stats *statsState
-}
-
-// tableCache holds the materialized tables the lane keeps resident, bounded by
-// CacheLimits. The bounds are about memory, not about what a query sees: a
-// table this cache does not hold is read again, and the scope's page it is
-// read from is the scope's own, so nothing here can change a result.
-//
-// The scope bound evicts by recency -- the table read least recently goes
-// first, which is the one a host is least likely to read again. The per-scope
-// entry bound refuses a table outright: a scope whose table is too large to
-// keep is read and scanned per query instead, trading the memory for the read
-// (measured on the eval store: one 9324-entry, 2048-dimension table is 72.8MB
-// of vector payload, and materializing it costs 9.6s locally).
-type tableCache struct {
-	limits CacheLimits
-	// tables is keyed by the scope's partition, which is what its projection
-	// state is stored under: a scope's runtime, tenant, and agent.
-	tables map[string]*residentTable
-	// clock orders the tables by recency. Every read takes the next reading,
-	// so no two tables share one and an eviction cannot depend on map order.
-	clock     atomic.Int64
-	evictions int64
-	uncached  int64
-}
-
-// residentTable is one table the cache holds and when it was last read.
-type residentTable struct {
-	build snapshot
-	// used is the cache clock reading at the table's last read. It is read and
-	// written under the cache lock, and atomic because a hit records its
-	// recency while holding only the read side of it.
-	used atomic.Int64
-}
-
-// lookup returns the resident table for a partition, and records the read.
-func (cache *tableCache) lookup(key string) (snapshot, bool) {
-	entry, ok := cache.tables[key]
-	if !ok {
-		return snapshot{}, false
-	}
-	entry.used.Store(cache.clock.Add(1))
-	return entry.build, true
-}
-
-// store keeps a table if the bounds allow it. A table larger than the
-// per-shard bound is not kept at all: it is counted, and the next query reads
-// it again.
-func (cache *tableCache) store(key string, build snapshot) {
-	if cache.limits.Entries > 0 && len(build.Entries) > cache.limits.Entries {
-		cache.uncached++
-		return
-	}
-	if cache.tables == nil {
-		cache.tables = make(map[string]*residentTable)
-	}
-	for cache.limits.Shards > 0 && len(cache.tables) >= cache.limits.Shards {
-		oldest := cache.oldest()
-		if oldest == "" {
-			break
-		}
-		delete(cache.tables, oldest)
-		cache.evictions++
-	}
-	entry := &residentTable{build: build}
-	entry.used.Store(cache.clock.Add(1))
-	cache.tables[key] = entry
-}
-
-// drop forgets one partition's table.
-func (cache *tableCache) drop(key string) { delete(cache.tables, key) }
-
-// oldest names the table read least recently.
-func (cache *tableCache) oldest() string {
-	oldest, when := "", int64(0)
-	for key, entry := range cache.tables {
-		used := entry.used.Load()
-		if oldest == "" || used < when {
-			oldest, when = key, used
-		}
-	}
-	return oldest
-}
-
-// footprint sizes the tables the cache holds. Dimensions reports the largest
-// table's width, which is the width of every table a lane serves: one index is
-// bound to one embedding model.
-func (cache *tableCache) footprint() Footprint {
-	out := Footprint{Shards: len(cache.tables)}
-	for _, entry := range cache.tables {
-		out.Entries += len(entry.build.Entries)
-		if entry.build.Dimensions > out.Dimensions {
-			out.Dimensions = entry.build.Dimensions
-		}
-		out.VectorBytes += int64(len(entry.build.Entries)) * int64(entry.build.Dimensions) * 4
-	}
-	return out
-}
-
-// cachedSnapshot returns one shard's vector table, loading it once per write
-// epoch instead of once per query. loaded reports whether the table was
-// materialized off the store rather than served from the cache.
-//
-// The table is addressed like the state it was built from: a conversation's
-// table is the table of that conversation's shard, so a write to one
-// conversation neither evicts nor invalidates another's.
-func (index *Index) cachedSnapshot(ctx context.Context, address projectionstore.Address) (snapshot, bool, error) {
-	key := tableKey(address)
-	index.snapshotMu.RLock()
-	cached, ok := index.cache.lookup(key)
-	index.snapshotMu.RUnlock()
-	if ok {
-		return cached, false, nil
-	}
-	build, err := index.readSnapshot(ctx, address)
-	if err != nil {
-		return snapshot{}, false, err
-	}
-	index.snapshotMu.Lock()
-	index.cache.store(key, build)
-	index.snapshotMu.Unlock()
-	return build, true, nil
-}
-
-// tableKey names one shard's table in the lane's own cache: the partition, the
-// shard, and the storage name the table was read under. A lane generation bump
-// moves the storage name, so a table of the previous generation can never be
-// served as this one's.
-func tableKey(address projectionstore.Address) string {
-	return address.Scope.HardPartitionKey() + "\x00" + address.Shard
-}
-
-// warmSnapshots loads the scope's table in the background so the first query
-// does not pay for it. Deferred before invalidateScope, so the written scope's
-// table is dropped first and then repopulated. The read is counted apart from the
-// serving path -- a query's load has to stay the query's own -- but it pays
-// the same materialization, so a reading that adds the two sees the whole
-// scope's first read.
-//
-// One write asks for one warm-up, and a derivation writes once per commit, so
-// the asks for one partition are coalesced: a load runs at a time, and a write
-// that arrives while it runs marks the partition as owed another one instead of
-// starting a second load. Both the store's base and the lane's table are one
-// copy per partition either way; what the coalescing removes is the run of
-// loads standing in for each other.
-func (index *Index) warmSnapshots(ctx context.Context, address projectionstore.Address) {
-	// The warm keeps running after the write that triggered it returns, so the
-	// read must not inherit the caller's cancellation; dropping only the
-	// cancellation keeps the write's span on the warm-up's load.
-	readCtx := context.WithoutCancel(ctx)
-	key := tableKey(address)
-	index.warmMu.Lock()
-	if _, running := index.warming[key]; running {
-		index.warming[key] = true
-		index.warmMu.Unlock()
-		return
-	}
-	if index.warming == nil {
-		index.warming = make(map[string]bool)
-	}
-	index.warming[key] = false
-	index.warmMu.Unlock()
-	go func() {
-		for {
-			started := time.Now()
-			_, loaded, err := index.cachedSnapshot(readCtx, address)
-			// A warm that failed is recorded too: it is the reason a later
-			// query pays a load of its own, and a warm nobody can see is how a
-			// state that cannot be read stayed invisible.
-			index.recordWarmLoad(time.Since(started), loaded, err != nil)
-			index.warmMu.Lock()
-			owed := index.warming[key]
-			if !owed {
-				delete(index.warming, key)
-				index.warmMu.Unlock()
-				return
-			}
-			index.warming[key] = false
-			index.warmMu.Unlock()
-		}
-	}()
-}
-
-// invalidateShard drops one shard's cached table; called on a write to that
-// shard, and by the tests that model one. A write changes exactly the state it
-// wrote -- one conversation's chat records or one dataset's documents -- so a
-// table another shard holds is not what the write could stale.
-//
-// Dropping every table on any write is what the lane did before, and it made a
-// derivation of one conversation evict the tables of the others, which the next
-// query of each paid to materialize (measured: 9.6s locally and 14.0s on the
-// eval host for the 9324-entry table, per scope, per process).
-func (index *Index) invalidateShard(address projectionstore.Address) {
-	index.snapshotMu.Lock()
-	index.cache.drop(tableKey(address))
-	index.snapshotMu.Unlock()
 }
 
 // AuditDigests independently recomputes and validates active projection digests.
@@ -351,8 +128,9 @@ func New(config Config) (*Index, error) {
 	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			ProducerVersion: generationIdentity(config.Model),
-			ResidentBases:   config.Limits.Shards,
 			Thresholds:      config.Thresholds,
+			MaxBytes:        config.CacheBytes,
+			BaseBytes:       tableBytes,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -376,7 +154,6 @@ func New(config Config) (*Index, error) {
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
 		producerVersion:   generationIdentity(config.Model),
-		cache:             tableCache{limits: config.Limits},
 		stats:             &statsState{},
 	}, nil
 }
@@ -443,8 +220,6 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 			return err
 		}
 		covered[group.Shard] = struct{}{}
-		index.invalidateShard(address)
-		index.warmSnapshots(ctx, address)
 	}
 	// A rebuild replaces the lane for the scope, so a shard the artifact set no
 	// longer covers is state the canonical log no longer has: it has to stop
@@ -499,23 +274,14 @@ func (index *Index) dropUncoveredShards(
 	scope corememory.Scope,
 	covered map[string]struct{},
 ) error {
-	dropped, err := index.store.PruneShards(ctx, scope, index.storageProjection, covered)
-	if err != nil {
+	if _, err := index.store.PruneShards(ctx, scope, index.storageProjection, covered); err != nil {
 		return fmt.Errorf("vector projection: %w", err)
-	}
-	for _, shard := range dropped {
-		index.invalidateShard(projectionstore.Address{Scope: scope, Shard: shard})
 	}
 	return nil
 }
 
 func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDelta) error {
-	// Warm the shard's table after the write instead of leaving the first query
-	// to pay the materialization (measured: the cold query cost up to 22s while
-	// warm queries sat at ~0.6s).
 	address := projectionstore.Address{Scope: delta.Scope, Shard: delta.Shard}
-	defer index.warmSnapshots(ctx, address)
-	defer index.invalidateShard(address)
 	if err := delta.ValidateDocumentAddresses(); err != nil {
 		return fmt.Errorf("vector projection: %w", err)
 	}
@@ -670,8 +436,8 @@ func (index *Index) scanShards(
 	for _, shard := range shards {
 		address := projectionstore.Address{Scope: scope, Shard: shard}
 		loadStarted := time.Now()
-		build, loaded, err := index.cachedSnapshot(ctx, address)
-		index.recordSnapshotLoad(time.Since(loadStarted), loaded, err != nil)
+		build, err := index.readSnapshot(ctx, address)
+		index.recordShardLoad(time.Since(loadStarted), err != nil)
 		if err != nil {
 			if errdefs.IsNotFound(err) {
 				// A shard the plan names that was never written holds
@@ -715,13 +481,13 @@ func (index *Index) readSnapshot(ctx context.Context, address projectionstore.Ad
 	return build, nil
 }
 
-// fillNorms computes every entry's L2 norm once per materialized table, so a
-// query scores with a stored norm instead of recomputing one per entry per
-// query. The norm is half of one cosine's floating-point work, and it is the
-// half that depends on the entry alone: measured on a 9324-entry table, the
-// cosine phase of a query was 7.2µs per scored entry, of which the norm was
-// the vector-shaped part. The cost moves to the table's own load, where it is
-// paid once per scope per write epoch instead of once per query.
+// fillNorms computes every entry's L2 norm once per materialized table, so the
+// scan scores with a stored norm instead of recomputing one per entry. The lane
+// holds no table of its own, so this is paid per query: on a table of the size
+// one shard holds -- a conversation's 800-odd entries at 2048 dimensions -- it
+// is about 1.7M multiply-adds, one millisecond, against a scan that reads every
+// one of those entries. A second copy of the norms, kept resident to save that
+// millisecond, would be the memory this lane is built not to hold.
 //
 // A vector that has no norm is rejected here, with the entry named: the
 // materialized state passed the lane's base validation, so this is the same
@@ -1035,6 +801,16 @@ func recomputeDimensions(build *snapshot) error {
 		}
 	}
 	return nil
+}
+
+// tableBytes weighs one table for the store's cache budget: its vector payload,
+// four bytes per dimension per entry. That is the term that dominates a table
+// and the one a host serving many conversations has to bound -- a measured
+// 9324-entry, 2048-dimension table is 72.8MB of payload -- and it is the only
+// term counted here: entry identity, addresses and metadata sit on top, so a
+// budget sized in payload under-counts what the cache really holds.
+func tableBytes(build snapshot) int64 {
+	return int64(len(build.Entries)) * int64(build.Dimensions) * 4
 }
 
 func vectorEntryKey() projectionstore.EntryKey[entry] {
