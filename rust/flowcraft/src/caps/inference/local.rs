@@ -15,7 +15,22 @@
 //!     base_url: https://api.openai.com
 //!     api_key: ${secret:openai.key} # literal or a resolver reference
 //!     max_output_tokens: 4096       # ceiling applied to a request that asks none
+//!
+//! tiers:                            # which model a named class runs against, in order
+//!   standard: [gpt-5, gpt-5-mini]   # a name, or `{model: gpt-5}`
+//! retry:
+//!   max_attempts: 2                 # per target, including the first
+//!   seed_ms: 100                    # first backoff, doubled per attempt
+//!   cap_ms: 2000
+//!   fallback_on_retry_exhausted: false
+//!   max_total_attempts: 0           # 0 = no cap across targets
+//! breaker:
+//!   threshold: 3                    # consecutive failures that open a target
+//!   cooldown_ms: 30000
 //! ```
+//!
+//! A tier may only name a model the same document declares: a table that promises a class
+//! is a promise the deployment can serve, and the build refuses a name it cannot.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -83,6 +98,18 @@ fn default_timeout() -> u64 {
 #[serde(deny_unknown_fields)]
 struct Settings {
     models: Vec<ModelSettings>,
+    /// Routing tiers, by name, in the deployment's order.
+    ///
+    /// Declared here rather than in the adapter because the order is the operator's: a
+    /// provider that ranked its own models would be choosing what the deployment bought.
+    #[serde(default)]
+    tiers: BTreeMap<String, Vec<crate::inference::route::Target>>,
+    /// Retry behaviour, defaulting to one attempt.
+    #[serde(default)]
+    retry: crate::inference::route::RetryPolicy,
+    /// Breaker behaviour.
+    #[serde(default)]
+    breaker: crate::inference::route::BreakerPolicy,
 }
 
 /// One model, resolved and ready to call.
@@ -106,6 +133,7 @@ pub struct Model {
 pub struct Local {
     models: BTreeMap<String, Model>,
     transport: Arc<dyn Transport>,
+    routing: crate::inference::route::Policy,
 }
 
 impl std::fmt::Debug for Local {
@@ -120,7 +148,38 @@ impl Local {
     /// A provider over an explicit transport, for a caller that brings its own client.
     #[must_use]
     pub fn with_transport(models: BTreeMap<String, Model>, transport: Arc<dyn Transport>) -> Self {
-        Self { models, transport }
+        Self {
+            models,
+            transport,
+            routing: crate::inference::route::Policy::default(),
+        }
+    }
+
+    /// The routing table this deployment declared.
+    ///
+    /// A host that brings its own transport can still take the tiers from here: routing is a
+    /// decision about the operator's order, and the transport has no opinion about it.
+    #[must_use]
+    pub fn routing(&self) -> &crate::inference::route::Policy {
+        &self.routing
+    }
+
+    /// Route a call through this deployment's table.
+    ///
+    /// [`Local`] is a [`crate::inference::route::Generator`] over its own models, so the
+    /// table it declares is the table it can serve — and a tier that names a model this
+    /// deployment does not declare is refused at build time, not discovered at 3 a.m.
+    pub async fn route(
+        &self,
+        choice: crate::inference::route::Choice,
+        request: crate::inference::request::GenerateRequest,
+        ledger: &mut crate::inference::ledger::Ledger,
+    ) -> Result<crate::inference::pipeline::Generation> {
+        let route = crate::inference::route::Route::with_clock(
+            self.routing.clone(),
+            Box::new(std::time::Instant::now),
+        );
+        route.generate(self, choice, request, ledger).await
     }
 
     /// The model a request names, or `NotFound`: an undeclared model is a deployment the
@@ -313,7 +372,15 @@ impl Factory for LocalFactory {
                 Arc::new(HttpTransport::plain())
             };
             Ok(Arc::new(crate::caps::inference::contract::Handle::new(
-                Arc::new(Local::with_transport(models, transport)),
+                Arc::new(Local {
+                    models,
+                    transport,
+                    routing: crate::inference::route::Policy {
+                        tiers: settings.tiers,
+                        retry: settings.retry,
+                        breaker: settings.breaker,
+                    },
+                }),
             )))
         })
     }
@@ -333,6 +400,15 @@ fn system_roots() -> Result<tokio_rustls::rustls::RootCertStore> {
         ));
     }
     Ok(roots)
+}
+
+/// Routing drives a provider through this one call, so a deployment's table and the models
+/// it can serve cannot disagree: both are the same [`Local`].
+#[async_trait::async_trait]
+impl crate::inference::route::Generator for Local {
+    async fn generate(&self, request: GenerateRequest) -> Result<Generation> {
+        <Self as Inference>::generate(self, request).await
+    }
 }
 
 fn validate(value: &serde_json::Value) -> Result<()> {
@@ -385,6 +461,55 @@ fn validate(value: &serde_json::Value) -> Result<()> {
             )));
         }
     }
+    validate_tiers(&settings)?;
+    Ok(())
+}
+
+/// A tier is a promise the deployment can serve: every name in it must be a declared model,
+/// and a name repeated in one tier is a retry budget spent twice on the same provider.
+fn validate_tiers(settings: &Settings) -> Result<()> {
+    let declared: std::collections::BTreeSet<&str> = settings
+        .models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect();
+    for (tier, targets) in &settings.tiers {
+        if tier.trim().is_empty() {
+            return Err(Error::validation(
+                "inference: a tier name must not be empty",
+            ));
+        }
+        if targets.is_empty() {
+            return Err(Error::validation(format!(
+                "inference: tier {tier:?} declares no target"
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for target in targets {
+            if !declared.contains(target.model.as_str()) {
+                return Err(Error::validation(format!(
+                    "inference: tier {tier:?} names model {:?}, which models: does not declare",
+                    target.model
+                )));
+            }
+            if !seen.insert(target.model.as_str()) {
+                return Err(Error::validation(format!(
+                    "inference: tier {tier:?} names model {:?} twice",
+                    target.model
+                )));
+            }
+        }
+    }
+    if settings.retry.max_attempts > 1 && settings.retry.seed > settings.retry.cap {
+        return Err(Error::validation(
+            "inference: retry.seed_ms must not exceed retry.cap_ms",
+        ));
+    }
+    if settings.breaker.cooldown.is_zero() && settings.breaker.threshold > 0 {
+        return Err(Error::validation(
+            "inference: breaker.cooldown_ms must be positive when breaker.threshold is set",
+        ));
+    }
     Ok(())
 }
 
@@ -397,6 +522,99 @@ mod tests {
 
     fn settings(models: serde_json::Value) -> serde_json::Value {
         json!({ "models": models })
+    }
+
+    fn one_model(name: &str) -> serde_json::Value {
+        json!([{
+            "name": name,
+            "provider": "openai",
+            "api": "response",
+            "base_url": "https://api.openai.com",
+        }])
+    }
+
+    /// The tier order is the deployment's, and it is read as written — not sorted, not
+    /// deduplicated, not reinterpreted.
+    #[test]
+    fn a_tier_is_read_in_the_declared_order() {
+        let value = json!({
+            "models": [{
+                "name": "gpt-5",
+                "provider": "openai",
+                "api": "response",
+                "base_url": "https://api.openai.com",
+            }, {
+                "name": "gpt-5-mini",
+                "provider": "openai",
+                "api": "response",
+                "base_url": "https://api.openai.com",
+            }],
+            "tiers": {
+                "standard": ["gpt-5-mini", {"model": "gpt-5"}],
+            },
+            "retry": {"max_attempts": 2, "seed_ms": 10, "cap_ms": 100},
+            "breaker": {"threshold": 2, "cooldown_ms": 500},
+        });
+        validate(&value).expect("a well-formed table");
+        let settings: Settings = crate::resource::settings(&value).expect("parse");
+        let standard = &settings.tiers["standard"];
+        assert_eq!(
+            standard
+                .iter()
+                .map(|target| target.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5-mini", "gpt-5"],
+            "the short and the long spelling mean the same target, in the same place"
+        );
+        assert_eq!(settings.retry.max_attempts, 2);
+        assert_eq!(settings.retry.seed, std::time::Duration::from_millis(10));
+        assert_eq!(settings.retry.cap, std::time::Duration::from_millis(100));
+        assert_eq!(settings.breaker.threshold, 2);
+        assert_eq!(
+            settings.breaker.cooldown,
+            std::time::Duration::from_millis(500)
+        );
+    }
+
+    /// A tier that names a model the deployment never bought is the failure this validation
+    /// exists for: the runtime would otherwise discover it as a call to nowhere.
+    #[test]
+    fn a_tier_naming_an_undeclared_model_is_refused() {
+        let value = json!({
+            "models": one_model("gpt-5"),
+            "tiers": {"standard": ["gpt-5", "claude"]},
+        });
+        let error = validate(&value).expect_err("claude is not declared");
+        assert_eq!(error.kind(), crate::error::ErrorKind::Validation);
+        assert!(error.message().contains("claude"), "{}", error.message());
+    }
+
+    #[test]
+    fn a_tier_listing_one_model_twice_is_refused() {
+        let value = json!({
+            "models": one_model("gpt-5"),
+            "tiers": {"standard": ["gpt-5", "gpt-5"]},
+        });
+        let error = validate(&value).expect_err("a repeated target");
+        assert!(error.message().contains("twice"), "{}", error.message());
+    }
+
+    #[test]
+    fn an_empty_tier_and_a_backwards_backoff_are_refused() {
+        let empty = json!({
+            "models": one_model("gpt-5"),
+            "tiers": {"standard": []},
+        });
+        assert!(
+            validate(&empty).is_err(),
+            "an empty tier has nothing to serve"
+        );
+        let backwards = json!({
+            "models": one_model("gpt-5"),
+            "retry": {"max_attempts": 2, "seed_ms": 500, "cap_ms": 100},
+        });
+        let error = validate(&backwards).expect_err("seed above cap");
+        assert!(error.message().contains("seed_ms"), "{}", error.message());
     }
 
     fn request(model: &str) -> GenerateRequest {

@@ -24,6 +24,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+
 use crate::error::{Error, ErrorKind, Result};
 use crate::inference::ledger::{Ledger, Outcome, Phase};
 use crate::inference::pipeline::Generation;
@@ -63,8 +65,47 @@ pub struct Target {
     pub model: String,
 }
 
+/// A tier entry in the deployment document: a name, or a mapping that has room to grow.
+///
+/// Both spellings are accepted because the short one is what a tier is nine times out of
+/// ten, and the long one exists so that a per-target tunable can be added without a second
+/// document grammar for the same list.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TargetRepr {
+    Name(String),
+    Named {
+        /// The model.
+        model: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for Target {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(match TargetRepr::deserialize(deserializer)? {
+            TargetRepr::Name(model) | TargetRepr::Named { model } => Self {
+                model: model.trim().to_owned(),
+            },
+        })
+    }
+}
+
+/// A duration written as milliseconds, which is what a YAML deployment says.
+mod millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        Ok(Duration::from_millis(u64::deserialize(deserializer)?))
+    }
+}
+
 /// How many times, and how far apart.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct RetryPolicy {
     /// Attempts per target, including the first. Zero is read as one.
     pub max_attempts: u32,
@@ -76,8 +117,10 @@ pub struct RetryPolicy {
     /// A cap on the attempts one call may spend across every target. Zero is no cap.
     pub max_total_attempts: u32,
     /// The first delay; doubled per attempt.
+    #[serde(with = "millis", rename = "seed_ms")]
     pub seed: Duration,
     /// The longest delay.
+    #[serde(with = "millis", rename = "cap_ms")]
     pub cap: Duration,
 }
 
@@ -127,11 +170,13 @@ impl RetryPolicy {
 }
 
 /// When a target is taken out of rotation, and for how long.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct BreakerPolicy {
     /// Consecutive failures that open the breaker.
     pub threshold: u32,
     /// How long it stays open before one attempt is allowed through.
+    #[serde(with = "millis", rename = "cooldown_ms")]
     pub cooldown: Duration,
 }
 
@@ -145,7 +190,8 @@ impl Default for BreakerPolicy {
 }
 
 /// The deployment's routing table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Policy {
     /// Tiers, in the deployment's order.
     pub tiers: BTreeMap<String, Vec<Target>>,
