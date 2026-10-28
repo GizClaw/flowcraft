@@ -106,8 +106,7 @@ mod tests {
             argv0: program.display().to_string(),
             argv: vec![program.display().to_string()],
             resolution: Resolution::Path { program, path_dir },
-            env: Vec::new(),
-            injected: Vec::new(),
+            env: crate::caps::sandbox::contract::EnvPolicy::default(),
         }
     }
 

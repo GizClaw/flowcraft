@@ -562,11 +562,15 @@ mod tests {
                 program: PathBuf::from(program),
                 path_dir: Some(PathBuf::from("/usr/bin")),
             },
-            env: env
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect(),
-            injected: env.iter().map(|(name, _)| (*name).to_owned()).collect(),
+            // The policy the test asked for: injected values are what the
+            // classifier reads, and injection needs no host lookup.
+            env: crate::caps::sandbox::contract::EnvPolicy {
+                allow: Some(Vec::new()),
+                inject: env
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                    .collect(),
+            },
         }
     }
 

@@ -18,7 +18,6 @@
 //! share ([`super::approval`], [`super::readonly`], the grant scope in
 //! [`crate::caps::sandbox::scope`]) and the audit log's account of a start.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::caps::sandbox::contract::{EnvPolicy, SessionSpec};
@@ -60,17 +59,15 @@ pub struct PlannedCommand {
     pub argv: Vec<String>,
     /// What will be exec'd.
     pub resolution: Resolution,
-    /// The environment the child will be given, sorted by name: what
-    /// [`EnvPolicy::allow`] passes through, overlaid with [`EnvPolicy::inject`].
+    /// The policy the child's environment comes from, kept as the policy rather
+    /// than as its result.
     ///
-    /// `EnvPolicy::allow == None` inherits the host environment, so the list is
-    /// then the daemon's own environment — the values the child starts from.
-    pub env: Vec<(String, String)>,
-    /// The names in [`Self::env`] that `EnvPolicy::inject` sets.
-    ///
-    /// Only these can be *removed* by a later layer; an inherited variable can
-    /// only be shadowed, so the distinction decides what hardening can promise.
-    pub injected: Vec<String>,
+    /// Materializing it would copy the daemon's **whole environment** on every
+    /// plan — and several layers plan on one start — to answer one `len()` in a
+    /// debug line and a handful of lookups in the read-only classifier. Those are
+    /// served by [`Self::env_var`] instead, and an inherited variable is answered
+    /// from the process environment at the moment it is asked for.
+    pub env: EnvPolicy,
 }
 
 impl PlannedCommand {
@@ -92,13 +89,31 @@ impl PlannedCommand {
         }
     }
 
-    /// The value the child will see for `name`.
+    /// The value the child will see for `name`, if it will see one.
+    ///
+    /// The same three rules `spawn` applies when it builds the child's environment,
+    /// asked one variable at a time: injection wins, inheritance is possible only
+    /// when the policy allows the whole environment, and a name the policy does not
+    /// list is not passed.
     #[must_use]
-    pub fn env_var(&self, name: &str) -> Option<&str> {
-        self.env
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.as_str())
+    pub fn env_var(&self, name: &str) -> Option<String> {
+        if let Some(value) = self.env.inject.get(name) {
+            return Some(value.clone());
+        }
+        let passed = match &self.env.allow {
+            None => true,
+            Some(names) => names.iter().any(|allowed| allowed == name),
+        };
+        if !passed {
+            return None;
+        }
+        std::env::var(name).ok()
+    }
+
+    /// Whether the child inherits the daemon's environment.
+    #[must_use]
+    pub fn inherits_host_env(&self) -> bool {
+        self.env.inherits_host()
     }
 
     /// Whether a rule names this command.
@@ -151,8 +166,7 @@ pub fn plan(spec: &SessionSpec, host: &HostPolicy) -> PlannedCommand {
     let argv0 = argv.first().cloned().unwrap_or_default();
     PlannedCommand {
         resolution: resolve(&argv0, spec.opts.workdir.as_deref(), host),
-        injected: spec.opts.env.inject.keys().cloned().collect(),
-        env: effective_env(&spec.opts.env),
+        env: spec.opts.env.clone(),
         argv0,
         argv,
     }
@@ -237,34 +251,6 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
-/// The environment the child will see, mirroring how the spawn applies
-/// [`EnvPolicy`].
-fn effective_env(policy: &EnvPolicy) -> Vec<(String, String)> {
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
-    match &policy.allow {
-        // `vars_os`, not `vars`: a non-unicode variable in the daemon's own
-        // environment must not panic a start.
-        None => {
-            for (name, value) in std::env::vars_os() {
-                if let (Ok(name), Ok(value)) = (name.into_string(), value.into_string()) {
-                    env.insert(name, value);
-                }
-            }
-        }
-        Some(names) => {
-            for name in names {
-                if let Ok(value) = std::env::var(name) {
-                    env.insert(name.clone(), value);
-                }
-            }
-        }
-    }
-    for (name, value) in &policy.inject {
-        env.insert(name.clone(), value.clone());
-    }
-    env.into_iter().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,8 +285,7 @@ mod tests {
             argv0: "git".to_owned(),
             argv: vec!["git".to_owned()],
             resolution: Resolution::Path { program, path_dir },
-            env: Vec::new(),
-            injected: Vec::new(),
+            env: crate::caps::sandbox::contract::EnvPolicy::default(),
         }
     }
 
@@ -464,15 +449,14 @@ mod tests {
             argv0: "git".to_owned(),
             argv: vec!["git".to_owned()],
             resolution: Resolution::NotFound,
-            env: Vec::new(),
-            injected: Vec::new(),
+            env: crate::caps::sandbox::contract::EnvPolicy::default(),
         };
         assert!(!planned.names("git"));
         assert!(!planned.names("/usr/bin/git"));
     }
 
     #[test]
-    fn the_plan_records_the_environment_the_child_will_get() {
+    fn the_plan_answers_the_environment_the_child_will_get() {
         let mut spec = SessionSpec::new(vec!["true".to_owned()]);
         spec.opts.env.allow = Some(Vec::new());
         spec.opts
@@ -480,8 +464,10 @@ mod tests {
             .inject
             .insert("GIT_PAGER".to_owned(), "sh".to_owned());
         let planned = plan(&spec, &HostPolicy::default());
-        assert_eq!(planned.env_var("GIT_PAGER"), Some("sh"));
-        assert_eq!(planned.injected, ["GIT_PAGER".to_owned()]);
+        assert_eq!(planned.env_var("GIT_PAGER"), Some("sh".to_owned()));
+        // Injection is still distinguishable from inheritance: only the former can
+        // be *removed* by a hardening layer.
+        assert!(planned.env.inject.contains_key("GIT_PAGER"));
     }
 
     #[test]
@@ -492,7 +478,17 @@ mod tests {
         let mut spec = SessionSpec::new(vec!["true".to_owned()]);
         spec.opts.env.allow = Some(vec![name.to_owned()]);
         let planned = plan(&spec, &HostPolicy::default());
-        assert!(planned.injected.is_empty());
-        assert_eq!(planned.env_var(name), std::env::var(name).ok().as_deref());
+        assert!(planned.env.inject.is_empty());
+        assert_eq!(planned.env_var(name), std::env::var(name).ok());
+    }
+
+    /// A name the policy does not allow is not passed, whatever the daemon's own
+    /// environment holds.
+    #[test]
+    fn a_variable_outside_the_allow_list_is_not_passed() {
+        let mut spec = SessionSpec::new(vec!["true".to_owned()]);
+        spec.opts.env.allow = Some(vec!["HOME".to_owned()]);
+        let planned = plan(&spec, &HostPolicy::default());
+        assert_eq!(planned.env_var("PATH"), None);
     }
 }

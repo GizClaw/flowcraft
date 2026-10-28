@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use async_trait::async_trait;
 
-use super::allowlist::{Allowlist, normalise};
+use super::allowlist::{Allowlist, normalise_argv};
 use super::plan::{self, HostPolicy, PlannedCommand};
 use super::{Layer, RunnerRef, guard};
 use crate::caps::sandbox::contract::{ExecOptions, NetMode, SessionSpec, WriteMode};
@@ -43,13 +43,14 @@ pub struct ExecRequest {
     pub tty: bool,
     /// Whether the child gets an input side.
     pub stdin: bool,
-    /// The normalised tokens a rule is matched against.
-    ///
-    /// Kept for display and for allowlist rules, which match a token prefix.
-    #[deprecated(note = "judge the plan: `normalised_tokens()` / `planned`")]
-    pub tokens: Vec<String>,
     /// What the executor will run.
     pub planned: PlannedCommand,
+    /// The normalised tokens an allowlist rule matches, computed on first ask.
+    ///
+    /// Tokenising means shell unwrapping and a split, and it is only ever needed
+    /// when a allowlist is configured — computing it eagerly for every start was
+    /// work nobody read.
+    tokens: std::sync::OnceLock<Vec<String>>,
 }
 
 impl ExecRequest {
@@ -73,16 +74,18 @@ impl ExecRequest {
             opts: spec.opts.clone(),
             tty: spec.tty,
             stdin: spec.wants_stdin(),
-            tokens: normalise(spec),
+            tokens: std::sync::OnceLock::new(),
             planned: plan::plan(spec, host),
         }
     }
 
     /// The normalised tokens a rule is matched against.
+    ///
+    /// Computed once, on the first call, from the argv this request was built from.
     #[must_use]
-    #[allow(deprecated)]
     pub fn normalised_tokens(&self) -> &[String] {
-        &self.tokens
+        self.tokens
+            .get_or_init(|| normalise_argv(&self.planned.argv))
     }
 
     /// The full command line.

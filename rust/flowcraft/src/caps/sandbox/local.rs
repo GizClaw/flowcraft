@@ -234,7 +234,7 @@ impl Runner for LocalRunner {
             argv0 = %planned.argv0,
             program = ?planned.program(),
             resolution = ?planned.resolution,
-            env = planned.env.len(),
+            inherits_env = planned.inherits_host_env(),
             "sandbox: planned command"
         );
         // The table bounds this start before it is admitted: a start that cannot
