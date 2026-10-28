@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::StreamExt as _;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper::body::Bytes;
@@ -23,7 +24,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 use crate::error::{Error, Result};
-use crate::inference::transport::Transport;
+use crate::inference::transport::{ByteStream, Transport};
 
 /// Performs provider requests over HTTP/1.1.
 #[derive(Clone, Default)]
@@ -63,9 +64,20 @@ impl std::fmt::Debug for HttpTransport {
     }
 }
 
-#[async_trait]
-impl Transport for HttpTransport {
-    async fn post_json(&self, url: &str, headers: &[(&str, &str)], body: &Value) -> Result<Value> {
+impl HttpTransport {
+    /// Send one request and hand back the response head plus its body stream.
+    ///
+    /// Both shapes go through here: a unary call collects the body, a streaming one
+    /// hands the stream over. The connection is per call (a pool is a later
+    /// optimization, and a pool around a handshake that can fail is a place to hide a
+    /// failure).
+    async fn exchange(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+        accept: &str,
+    ) -> Result<hyper::Response<hyper::body::Incoming>> {
         let Target {
             secure,
             host,
@@ -91,7 +103,7 @@ impl Transport for HttpTransport {
             .uri(&path)
             .header("host", authority)
             .header("content-type", "application/json")
-            .header("accept", "application/json");
+            .header("accept", accept);
         let mut request = request;
         for (name, value) in headers {
             request = request.header(*name, *value);
@@ -128,6 +140,16 @@ impl Transport for HttpTransport {
             }
             None => send(stream, request).await?,
         };
+        Ok(response)
+    }
+}
+
+#[async_trait]
+impl Transport for HttpTransport {
+    async fn post_json(&self, url: &str, headers: &[(&str, &str)], body: &Value) -> Result<Value> {
+        let response = self
+            .exchange(url, headers, body, "application/json")
+            .await?;
         let (parts, body) = response.into_parts();
         let bytes = body
             .collect()
@@ -146,6 +168,43 @@ impl Transport for HttpTransport {
         }
         serde_json::from_slice(&bytes)
             .map_err(|error| Error::internal(format!("inference: the answer is not JSON: {error}")))
+    }
+
+    async fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+    ) -> Result<ByteStream> {
+        let response = self
+            .exchange(url, headers, body, "text/event-stream")
+            .await?;
+        let (parts, body) = response.into_parts();
+        if !parts.status.is_success() {
+            // A refusal is not a stream: read it, so the caller sees the provider's own
+            // words instead of an empty event stream that ends without a terminal event
+            // (which would be reported as a truncation — the wrong diagnosis).
+            let bytes = body
+                .collect()
+                .await
+                .map_err(|error| {
+                    Error::not_available(format!("inference: read the refusal: {error}"))
+                })?
+                .to_bytes();
+            let text = String::from_utf8_lossy(&bytes);
+            let excerpt: String = text.chars().take(400).collect();
+            return Err(Error::not_available(format!(
+                "inference: {url} answered {}: {excerpt}",
+                parts.status
+            )));
+        }
+        Ok(Box::pin(body.into_data_stream().map(
+            |chunk: std::result::Result<Bytes, hyper::Error>| {
+                chunk.map_err(|error| {
+                    Error::not_available(format!("inference: read the stream: {error}"))
+                })
+            },
+        )))
     }
 }
 
@@ -349,6 +408,69 @@ mod tests {
         assert!(Target::parse("api.example.com").is_err());
         // A credential in a URL is a credential in a log.
         assert!(Target::parse("https://user:pass@api.example.com/x").is_err());
+    }
+
+    /// The two halves of streaming, joined: a real socket, a real event stream, and the
+    /// semantic layer on top of it.
+    #[tokio::test]
+    async fn a_streaming_answer_reaches_the_event_layer() {
+        use crate::inference::stream::{GenerateEvent, events};
+        use futures_util::StreamExt as _;
+
+        // A server that writes SSE frames with a delay between them: the client must not
+        // wait for the end of the body to produce events.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).await.expect("read");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .expect("head");
+            for frame in [
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"he\"}\r\n\r\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\r\n\r\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\r\n\r\n",
+            ] {
+                let body = format!("{:x}\r\n{frame}\r\n", frame.len());
+                stream.write_all(body.as_bytes()).await.expect("chunk");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            stream.write_all(b"0\r\n\r\n").await.expect("end");
+        });
+
+        let transport = HttpTransport::plain();
+        let bytes = transport
+            .post_stream(
+                &format!("http://127.0.0.1:{port}/v1/responses"),
+                &[("authorization", "Bearer x")],
+                &serde_json::json!({"model": "gpt-5", "stream": true}),
+            )
+            .await
+            .expect("stream");
+        let collected: Vec<_> = events(bytes).collect().await;
+        server.await.expect("server");
+
+        let mut texts = Vec::new();
+        let mut finished = None;
+        for event in collected {
+            match event.expect("no error") {
+                GenerateEvent::Delta(text) => texts.push(text),
+                GenerateEvent::Finish(response) => finished = Some(response),
+            }
+        }
+        assert_eq!(texts, ["he", "llo"]);
+        assert_eq!(
+            finished.expect("a terminal event").usage.total_tokens,
+            2,
+            "the terminal event carries the usage"
+        );
     }
 
     /// A secure endpoint with no trust store is refused before a socket is opened: the
