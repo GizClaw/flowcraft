@@ -2,6 +2,7 @@ package maintain
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,34 @@ type stubReclaimer struct {
 func (stub *stubReclaimer) ReclaimSuperseded(context.Context, corememory.Scope) (component.ReclaimResult, error) {
 	stub.calls++
 	return stub.result, stub.err
+}
+
+// stubLegacyReclaimer is a lane that also sweeps the layouts this build does
+// not read: the second half of ReclaimProjections, which a lane opts into by
+// implementing the interface rather than by being registered.
+type stubLegacyReclaimer struct {
+	stubReclaimer
+	legacy      component.LegacyReclaimResult
+	legacyErr   error
+	legacyCalls int
+}
+
+func (stub *stubLegacyReclaimer) ReclaimLegacyLayouts(
+	context.Context,
+	corememory.Scope,
+) (component.LegacyReclaimResult, error) {
+	stub.legacyCalls++
+	return stub.legacy, stub.legacyErr
+}
+
+// assertReclaim compares a sweep result field by field: the reported legacy
+// layouts are a slice, so the struct is not comparable.
+func assertReclaim(t *testing.T, got, want ReclaimResult) {
+	t.Helper()
+	if got.Lanes != want.Lanes || got.Bases != want.Bases || got.Segments != want.Segments ||
+		got.LegacyKeys != want.LegacyKeys || !slices.Equal(got.LegacyLayouts, want.LegacyLayouts) {
+		t.Fatalf("sweep result = %+v, want %+v", got, want)
+	}
 }
 
 func reclaimService(t *testing.T) (*Service, corememory.Scope) {
@@ -60,7 +89,12 @@ func reclaimService(t *testing.T) (*Service, corememory.Scope) {
 func TestReclaimProjectionsSweepsWithoutThePass(t *testing.T) {
 	ctx := context.Background()
 	service, scope := reclaimService(t)
-	bm25 := &stubReclaimer{result: component.ReclaimResult{Bases: 4, Segments: 6}}
+	bm25 := &stubLegacyReclaimer{
+		stubReclaimer: stubReclaimer{result: component.ReclaimResult{Bases: 4, Segments: 6}},
+		legacy: component.LegacyReclaimResult{
+			Layouts: []component.LegacyLayout{{Version: "v2", Keys: 3}}, Keys: 3,
+		},
+	}
 	entity := &stubReclaimer{}
 	service.Projections = []ProjectionReclaimer{
 		{Name: "bm25", Reclaimer: bm25},
@@ -74,11 +108,16 @@ func TestReclaimProjectionsSweepsWithoutThePass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != (ReclaimResult{Lanes: 2, Bases: 4, Segments: 6}) {
-		t.Fatalf("sweep result = %+v", result)
-	}
+	assertReclaim(t, result, ReclaimResult{
+		Lanes: 2, Bases: 4, Segments: 6, LegacyKeys: 3, LegacyLayouts: []string{"v2"},
+	})
 	if bm25.calls != 1 || entity.calls != 1 {
 		t.Fatalf("lane sweeps = %d and %d, want one each", bm25.calls, entity.calls)
+	}
+	// The legacy half is the lane's own opt-in: entity implements only the
+	// manifest sweep, so it is not swept twice.
+	if bm25.legacyCalls != 1 {
+		t.Fatalf("bm25 legacy sweeps = %d, want one", bm25.legacyCalls)
 	}
 	status, err := service.Store.Status(ctx, scope)
 	if err != nil {
@@ -98,9 +137,7 @@ func TestReclaimProjectionsSweepsWithoutThePass(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "entity") {
 		t.Fatalf("sweep error = %v, want the lane named", err)
 	}
-	if failed != (ReclaimResult{Lanes: 1, Bases: 1}) {
-		t.Fatalf("failed sweep reported %+v, want the lane it swept", failed)
-	}
+	assertReclaim(t, failed, ReclaimResult{Lanes: 1, Bases: 1})
 }
 
 // TestRunScopeReclaimsEveryLanesSupersededObjects pins the pass's second sweep:

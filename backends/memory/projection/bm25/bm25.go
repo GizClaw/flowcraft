@@ -186,6 +186,15 @@ func (index *Index) ReclaimSuperseded(
 	return index.store.Reclaim(ctx, scope, index.projection)
 }
 
+// ReclaimLegacyLayouts removes the state this lane's family holds for one scope
+// under a projection layout this build does not read.
+func (index *Index) ReclaimLegacyLayouts(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.LegacyReclaimResult, error) {
+	return index.store.ReclaimLegacyLayouts(ctx, scope)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	if err := index.validateRequest(request); err != nil {
 		return err

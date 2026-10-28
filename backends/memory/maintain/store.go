@@ -735,6 +735,14 @@ type ReclaimResult struct {
 	// names.
 	Bases    int `json:"bases"`
 	Segments int `json:"segments"`
+	// LegacyKeys counts the keys removed from projection layouts this build
+	// does not read, and LegacyLayouts names the versions they were under.
+	//
+	// The lanes of one family share a layout version and every family is
+	// swept, so a version appears once however many families held a tree
+	// under it; the key count is the sum over families.
+	LegacyKeys    int      `json:"legacy_keys"`
+	LegacyLayouts []string `json:"legacy_layouts,omitempty"`
 }
 
 // ReclaimProjections sweeps every registered lane of one scope and reports
@@ -747,6 +755,12 @@ type ReclaimResult struct {
 // then serve. A sweep costs one key listing per lane and writes nothing, which
 // is what makes it safe on a store no pass is due on, and what lets a host run
 // it before a pass rather than only beside one.
+//
+// Each lane sweeps twice: what its active manifest stopped naming inside the
+// layout this build writes, and the whole tree of the layouts it does not read
+// (see component.LegacyLayoutReclaimer). The layout sweep runs second, so a
+// failure in the sweep this build can still audit leaves the one it cannot
+// read for the retry.
 //
 // The lanes sweep in order and the counts describe the lanes that already
 // swept when one fails: the sweep deletes as it goes, so a failure leaves the
@@ -776,6 +790,20 @@ func (service *Service) ReclaimProjections(
 		result.Lanes++
 		result.Bases += reclaimed.Bases
 		result.Segments += reclaimed.Segments
+		legacy, ok := lane.Reclaimer.(component.LegacyLayoutReclaimer)
+		if !ok {
+			continue
+		}
+		dropped, err := legacy.ReclaimLegacyLayouts(ctx, scope)
+		if err != nil {
+			return result, fmt.Errorf("maintain: reclaim %s projection layout: %w", lane.Name, err)
+		}
+		result.LegacyKeys += dropped.Keys
+		for _, layout := range dropped.Layouts {
+			if !slices.Contains(result.LegacyLayouts, layout.Version) {
+				result.LegacyLayouts = append(result.LegacyLayouts, layout.Version)
+			}
+		}
 	}
 	return result, nil
 }

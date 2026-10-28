@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"path"
 	"strings"
 	"testing"
@@ -33,6 +34,69 @@ func laneBases(t *testing.T, ws workspace.Workspace, family string) int {
 		}
 	}
 	return bases
+}
+
+// TestReclaimProjectionsDropsAScopeTreeNoBuildReads is the layout half of the
+// sweep, at the level a host calls it: a workspace an earlier build filled
+// holds a layout this build does not read, no manifest of the lanes can name
+// it, and its own sweeps cannot reach it. The host asks for the storage back
+// and the lanes report what they gave up -- and the scope beside it keeps its
+// own tree, because the partition is the only address both layouts share.
+func TestReclaimProjectionsDropsAScopeTreeNoBuildReads(t *testing.T) {
+	ctx := context.Background()
+	assembly, ws, _ := assemblyWithSupersededLane(t)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The tree an earlier layout wrote is the tree this one did, at the same
+	// address under another version segment: projections/<family>/<version>/
+	// partitions/<runtime>/<tenant>/<agent>/... So the key is taken from the
+	// state the assembly just published and only the segment that names the
+	// layout is moved. The tenant segment is moved too for the scope beside it,
+	// which is the one the sweep must not reach.
+	keys, err := kvStore.Keys(ctx, path.Join("projections", "bm25", "v3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("the assembly published no bm25 key to base the legacy tree on")
+	}
+	rewrite := func(key string, mutate func([]string)) string {
+		segments := strings.Split(key, "/")
+		if len(segments) < 7 {
+			t.Fatalf("key %q is not below a scope partition", key)
+		}
+		mutate(segments)
+		return strings.Join(segments, "/")
+	}
+	legacy := rewrite(keys[0], func(segments []string) { segments[2] = "v2" })
+	theirs := rewrite(keys[0], func(segments []string) {
+		segments[2] = "v2"
+		segments[5] = "k_someone-else"
+	})
+	for _, key := range []string{legacy, theirs} {
+		if err := kvStore.Put(ctx, key, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := assembly.ReclaimProjections(ctx, testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LegacyKeys != 1 {
+		t.Fatalf("swept %d legacy keys, want the one the v2 tree held: %+v", result.LegacyKeys, result)
+	}
+	if len(result.LegacyLayouts) != 1 || result.LegacyLayouts[0] != "v2" {
+		t.Fatalf("legacy layouts = %v, want [v2] once however many lanes held a tree", result.LegacyLayouts)
+	}
+	if _, err := kvStore.Get(ctx, legacy); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("the legacy key is still there: %v", err)
+	}
+	if _, err := kvStore.Get(ctx, theirs); err != nil {
+		t.Fatalf("the sweep reached another scope: %v", err)
+	}
 }
 
 // assemblyWithSupersededLane builds an assembly whose bm25 lane holds two

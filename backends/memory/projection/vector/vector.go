@@ -208,6 +208,17 @@ func (index *Index) ReclaimSuperseded(
 	return index.store.Reclaim(ctx, scope, index.storageProjection)
 }
 
+// ReclaimLegacyLayouts removes the state this lane's family holds for one scope
+// under a projection layout this build does not read. The layout is a segment
+// above the generation name, so a build that bumped it left a whole tree the
+// lane's own manifest cannot report and ReclaimSuperseded cannot reach.
+func (index *Index) ReclaimLegacyLayouts(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.LegacyReclaimResult, error) {
+	return index.store.ReclaimLegacyLayouts(ctx, scope)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	if err := index.validateRequest(request); err != nil {
 		return err

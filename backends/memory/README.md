@@ -666,7 +666,8 @@ authority -- a rebuild writes again what a sweep removed:
   build filled, and what an eval run's `-maintain` pass reports on its own log.
 - **Per scope, without the pass.** `Assembly.ReclaimProjections` runs the same
   sweep over every registered lane of one scope and reports a
-  `ReclaimResult` (lanes swept, bases, segments). It is the pass's sweep with
+  `ReclaimResult` (lanes swept, bases, segments, legacy keys). It is the pass's
+  sweep with
   nothing of the pass: no facts are listed, no overlay or profile block is
   written, so a host reclaiming a workspace an earlier build filled does not
   pay for judgments it is not making — and a workspace a report was measured on
@@ -675,9 +676,24 @@ authority -- a rebuild writes again what a sweep removed:
 - **Per lane, when a host has to.** `component.Reclaimer` is the lane-side
   entry point (`ReclaimSuperseded`), implemented by the bm25, entity, and vector
   lanes; it delegates to the projection store's `Reclaim`.
+- **The layouts this build does not read.** Each lane sweeps a second time, for
+  a tree no sweep above can reach: the one an earlier projection layout left
+  under the same scope (`component.LegacyLayoutReclaimer`). A layout is a
+  segment of every key — `projections/<family>/<version>/partitions/...` — so a
+  build that bumps it writes a tree beside the old one and reads only its own:
+  the lanes name keys inside the version they write, and `OtherStoredNames`
+  lists names inside it too, so the tree under the replaced version is storage
+  no caller can name. The sweep deletes the scope's own partition under each
+  listed version and reports it as `ReclaimResult.LegacyKeys` /
+  `.LegacyLayouts` (`memory-eval -reclaim` prints both). A version that is not
+  listed is left alone, which is the guarantee a rollback needs: the list names
+  the versions this build has decided no build in it can read, and a rollback
+  to one of those rebuilds from canonical state like any other layout change.
 
-The sweep is scoped to the name the lane reads, and to keys under `bases/` and
-`segments/`. Another name of the same family is another projection — the vector
+The manifest sweep is scoped to the name the lane reads, and to keys under
+`bases/` and `segments/`: it deletes what it can compare against a manifest,
+which is why the layout sweep is a separate half rather than a wider prefix.
+Another name of the same family is another projection — the vector
 lane names its storage after the embedding model it was built with — and a
 deployment still serving that generation, or a rollback to it, reads what a
 sweep would delete; `LaneDiagnostics.OtherGenerations` reports it instead of

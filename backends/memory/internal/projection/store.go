@@ -1314,13 +1314,6 @@ func (store *Store[B, D]) shardRoot(address Address, name string) string {
 	return path.Join(store.root(address.Scope, name), "shards", segment)
 }
 
-// indexesPrefix is the area every index name of one family and scope lives
-// under, the parent of one lane's root.
-func (store *Store[B, D]) indexesPrefix(scope corememory.Scope) string {
-	return path.Join("projections", store.Family, "v3", "partitions", encode(scope.RuntimeID),
-		encode(scope.UserID), encode(scope.AgentID), "indexes")
-}
-
 func (store *Store[B, D]) activePath(address Address, name string) string {
 	return path.Join(store.shardRoot(address, name), "active.json")
 }

@@ -79,8 +79,9 @@ func main() {
 		"run one maintenance pass per scope after the derivation: it saves the read-path overlay and fills the profile block")
 	reclaim := flag.Bool("reclaim", false,
 		"sweep every registered scope's projection lanes and exit: the bases and segments a compaction or a rebuild "+
-			"superseded, which no manifest names. It is the sweep a maintenance pass runs beside the overlay, without "+
-			"the pass, so it judges nothing and writes nothing -- it is what shrinks a workspace an earlier build filled")
+			"superseded, which no manifest names, plus the whole tree of a projection layout this build does not read "+
+			"and no sweep of a lane can reach. It is the sweep a maintenance pass runs beside the overlay, without "+
+			"the pass, so it judges nothing and writes only deletes -- it is what shrinks a workspace an earlier build filled")
 	rebuildLanes := flag.String("rebuild-lanes", "",
 		"rebuild projection lanes from canonical state and exit: one repair per scope the workspace's catalog holds. "+
 			"The value names the lanes (bm25, entity, vector); an empty value rebuilds every lane whose rebuild needs "+
@@ -1104,14 +1105,16 @@ func reclaimScopes(deployPath string, recentItems int) {
 	for _, scope := range scopes {
 		result, err := deployment.Memory.ReclaimProjections(ctx, scope)
 		must(err)
-		fmt.Printf("reclaim: scope=%s lanes=%d bases=%d segments=%d\n",
-			scope.String(), result.Lanes, result.Bases, result.Segments)
+		fmt.Printf("reclaim: scope=%s lanes=%d bases=%d segments=%d legacy_keys=%d legacy_layouts=%s\n",
+			scope.String(), result.Lanes, result.Bases, result.Segments,
+			result.LegacyKeys, strings.Join(result.LegacyLayouts, ","))
 		total.Lanes += result.Lanes
 		total.Bases += result.Bases
 		total.Segments += result.Segments
+		total.LegacyKeys += result.LegacyKeys
 	}
-	fmt.Printf("reclaim: scopes=%d objects=%d (bases=%d segments=%d) elapsed=%s\n",
-		len(scopes), total.Bases+total.Segments, total.Bases, total.Segments,
+	fmt.Printf("reclaim: scopes=%d objects=%d (bases=%d segments=%d legacy_keys=%d) elapsed=%s\n",
+		len(scopes), total.Bases+total.Segments, total.Bases, total.Segments, total.LegacyKeys,
 		time.Since(started).Round(time.Millisecond))
 }
 

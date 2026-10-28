@@ -186,6 +186,51 @@ type Reclaimer interface {
 	ReclaimSuperseded(context.Context, corememory.Scope) (ReclaimResult, error)
 }
 
+// LegacyLayout names one projection layout version a scope still holds state
+// under, together with the number of keys a sweep removed from it.
+type LegacyLayout struct {
+	Version string `json:"version"`
+	Keys    int    `json:"keys"`
+}
+
+// LegacyReclaimResult reports what one lane's legacy-layout sweep removed.
+//
+// It counts keys rather than bases and segments because a layout this build
+// does not read is not one whose object types it knows: the sweep deletes a
+// subtree, not the artifacts of a protocol it can parse.
+type LegacyReclaimResult struct {
+	// Layouts lists the versions the sweep found state under, in the order it
+	// swept them, with the keys it removed from each.
+	Layouts []LegacyLayout `json:"layouts,omitempty"`
+	// Keys counts the keys removed across versions.
+	Keys int `json:"keys"`
+}
+
+// Empty reports whether the sweep found nothing to remove.
+func (result LegacyReclaimResult) Empty() bool { return result.Keys == 0 }
+
+// LegacyLayoutReclaimer reclaims the state a lane's family holds under a
+// projection layout this build does not read.
+//
+// A layout is a segment of every key the family writes, so a build that bumps
+// it leaves the tree of the version it replaced behind: the lanes of this build
+// read the one layout they write, and every sweep of a lane stops at its own
+// root inside that layout. This is the sweep that reaches the others, and it is
+// the only one that deletes state no build in this tree can read.
+//
+// It is separate from Reclaimer because the two answer different questions.
+// ReclaimSuperseded keeps what a manifest names, so it deletes only what a
+// rebuild could publish again under the same layout; a lane that skipped a
+// legacy version would leave a tree that a rollback to an earlier build still
+// serves. A host calls this one when it has decided no rollback is coming.
+type LegacyLayoutReclaimer interface {
+	// ReclaimLegacyLayouts removes one scope's state under every layout
+	// version this build does not read, and reports what it removed. It is
+	// idempotent -- a retried sweep finds less to remove -- and it touches no
+	// other scope, because the partition is the same in every version.
+	ReclaimLegacyLayouts(context.Context, corememory.Scope) (LegacyReclaimResult, error)
+}
+
 // DocumentAddress qualifies a document within one hard scope.
 type DocumentAddress struct {
 	DatasetID  string `json:"dataset_id"`
