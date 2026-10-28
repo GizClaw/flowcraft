@@ -496,15 +496,21 @@ as omitting it — neither buys the child a pipe.
 
 ## Capacity planning (Rust runner)
 
-Every bound below is a *refusal*, never a squeeze: a session or a tunnel that
-cannot fit is rejected with a stable code, so a deployment sees the limit in an
-error rather than in degraded behaviour.
+The Rust platform is a separate implementation (`rust/flowcraft/src/caps/sandbox`)
+and takes these from **its own** settings, not from the Go ones. Every bound is a
+*refusal*, never a squeeze: a session or a tunnel that cannot fit is rejected with
+a stable code, so a deployment sees the limit in an error rather than in degraded
+behaviour.
+
+The session limits are flat keys on the runner's settings (`sandbox.Runner/local`,
+and the same three on the confined backends); the proxy limits are nested under
+`net.proxy` and exist only where the backend starts the enforcement proxy.
 
 | Setting | Default | What it bounds |
 | --- | --- | --- |
-| `sessions.max_sessions` | 64 | Sessions listed at once — running **and** exited-but-retained. `0` removes the bound (test harnesses and deliberate opt-in only). |
-| `sessions.exit_retention_secs` | 300 | How long an exited session stays readable so its tail and exit status can still be collected. `0` reclaims it as soon as the exit is observed. |
-| `sessions.max_total_log_bytes` | 268435456 (256 MiB) | Retained output across every session. Per-session `max_output_bytes` multiplies, so 64 × 10 MiB is 640 MiB without this second gate. |
+| `max_sessions` | 64 | Sessions listed at once — running **and** exited-but-retained. `0` removes the bound (test harnesses and deliberate opt-in only). |
+| `exit_retention_secs` | 300 | How long an exited session stays readable so its tail and exit status can still be collected. `0` reclaims it as soon as the exit is observed. |
+| `max_total_log_bytes` | 268435456 (256 MiB) | Retained output across every session. Per-session `max_output_bytes` multiplies, so 64 × 10 MiB is 640 MiB without this second gate. |
 | `net.proxy.max_connections` | 256 | Tunnels and forwarded requests live at once. Over it the connection is refused at once (`503`, or a SOCKS5 general failure) instead of being queued. Zero is rejected by validation. |
 | `net.proxy.idle_timeout_secs` | 60 | How long a tunnel may go with no byte moving in either direction. `0` disables it. |
 | `net.proxy.max_lifetime_secs` | 1800 | How long a tunnel may stay open at all, however busy. `0` disables it. |

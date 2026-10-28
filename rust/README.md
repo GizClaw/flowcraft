@@ -27,6 +27,9 @@ rust/
   rust-toolchain.toml        pinned toolchain (1.93)
   flowcraft/                 the library — everything a consumer depends on
     src/lib.rs               module map and the feature table
+    src/blocking.rs          the async/blocking boundary: `run()` onto the pool
+    src/fs.rs                the two file modes that carry security meaning
+    src/net.rs               the remote-target rule (tls, loopback opt-in)
     src/error/               error taxonomy: stable kinds + status mapping
     src/telemetry/           telemetry pipeline: field vocabulary, text/JSON
                              rendering, the stderr split, the subscriber host
@@ -69,14 +72,18 @@ reaches for and compares them to the table below.
 
 ```text
 error                leaf, always compiled (its only dependency is `thiserror`)
-telemetry            → error
+blocking             → error                     the only way off a worker
+fs                   → (nothing)                 private files and directories
+net                  → error                     the remote-target rule
+telemetry            → error, fs
 proto                leaf (generated, committed)
 message              → error, proto
 search               → error
 resource             → error, telemetry
 kernel               → error, telemetry, resource
 client               → error, telemetry, proto, kernel
-caps::*              → error, resource, kernel, client, proto (+ search in tool)
+caps::*              → error, resource, kernel, client, proto, fs, blocking
+                       (+ net in tool, + search in tool)
 flowcraft-platformd  → flowcraft (features = ["caps"])
 ```
 
