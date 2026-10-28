@@ -154,6 +154,10 @@ inference = [
     "dep:futures-util",
     "dep:serde",
     "dep:serde_json",
+    # Routing sleeps between retries. A timer, not a socket stack: this is the one runtime
+    # facility the vocabulary and the route need, and `dep:` keeps it out of a build that
+    # only wants the field vocabulary.
+    "dep:tokio",
 ]
 
 # The HTTP transport for an inference driver. Separate from `inference` on purpose: the

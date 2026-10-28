@@ -13,6 +13,7 @@ pub mod model;
 pub mod openai;
 pub mod pipeline;
 pub mod request;
+pub mod route;
 #[cfg(feature = "inference-http")]
 pub mod stream;
 pub mod transport;
