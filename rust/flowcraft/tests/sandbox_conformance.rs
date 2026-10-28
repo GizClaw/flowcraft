@@ -103,20 +103,22 @@ async fn suite(backend: &str, runner: Arc<dyn Runner>) {
 /// total is `None` there. A zero would read as "an empty table", which is a
 /// different statement.
 ///
-/// The counts are `>= 1` rather than exact: earlier steps leave exited sessions
-/// behind (that is the retention window doing its job), so the table has history.
+/// The session is long-running on purpose: `echo` finishes before a `List` round
+/// trip, so a short command would make "counted as running" a race that passes on a
+/// fast machine and fails on a loaded one.
 async fn stats_reflect_the_table(backend: &str, runner: &dyn Runner) {
     let session = runner
-        .start(support::spec(&["sh", "-c", "echo counted"]))
+        .start(support::spec(&["sleep", "30"]))
         .await
         .expect("start");
     runner.refresh_stats().await.expect("refresh");
     let running = runner.stats().expect("stats");
     assert!(
         running.sessions_ready >= 1,
-        "{backend}: a started session is counted as running: {running:?}"
+        "{backend}: a live session is counted as running: {running:?}"
     );
 
+    session.terminate().await.expect("terminate");
     session.wait().await.expect("wait");
     runner.refresh_stats().await.expect("refresh");
     let exited = runner.stats().expect("stats");
