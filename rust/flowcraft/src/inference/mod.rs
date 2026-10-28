@@ -6,6 +6,8 @@
 //! implements the compile/execute contract without the control plane.
 
 pub mod active;
+#[cfg(feature = "inference-http")]
+pub mod http;
 pub mod ledger;
 pub mod model;
 pub mod openai;
@@ -15,6 +17,8 @@ pub mod transport;
 pub mod usage;
 
 pub use active::active_fields;
+#[cfg(feature = "inference-http")]
+pub use http::HttpTransport;
 pub use ledger::{Attempt, Ledger, Outcome, Phase, Trigger};
 pub use model::{CompileReport, Decision, Disposition, FieldId, Operation};
 pub use pipeline::{Driver, Generation, generate};

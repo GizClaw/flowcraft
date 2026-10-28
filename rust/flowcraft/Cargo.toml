@@ -144,6 +144,21 @@ search = []
 # `resource` and without protobuf — a caller that only needs to name a model compiles
 # this and nothing else.
 inference = ["dep:serde", "dep:serde_json", "proto"]
+
+# The HTTP transport for an inference driver. Separate from `inference` on purpose: the
+# vocabulary and the pipeline are useful to a caller that only names a model, and pulling
+# hyper, rustls and a socket stack into *that* build is exactly what the split exists to
+# avoid.
+inference-http = [
+    "inference",
+    "dep:bytes",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rustls",
+    "dep:tokio",
+    "dep:tokio-rustls",
+]
 resource = [
     "otel",
     "dep:async-trait",
@@ -203,7 +218,13 @@ ed25519-dalek = { workspace = true, optional = true }
 futures-util = { version = "0.3", optional = true }
 globset = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+http-body-util = { version = "0.1", optional = true }
 hyper-util = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = [
+    "ring",
+    "tls12",
+] }
 notify = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-appender-tracing = { workspace = true, optional = true }
