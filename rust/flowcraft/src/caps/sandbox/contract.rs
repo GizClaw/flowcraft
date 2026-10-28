@@ -670,12 +670,7 @@ pub struct RunnerStats {
     /// Exited sessions still listed so their tail can be collected.
     pub sessions_exited: usize,
     /// Retained output across every listed session, in bytes.
-    ///
-    /// `None` for a runner that cannot answer: a remote one would need a counter
-    /// RPC for it, and the wire contract is shared with the Go SDK, so adding one
-    /// is a decision rather than a detail. The session counts are derivable from
-    /// `List`, which every implementation already serves.
-    pub log_bytes: Option<u64>,
+    pub log_bytes: u64,
 }
 
 /// One pushed session event.
@@ -936,27 +931,15 @@ pub trait Runner: Send + Sync + std::fmt::Debug {
         HostPolicy::default()
     }
 
-    /// Refresh whatever [`stats`](Runner::stats) reports.
-    ///
-    /// A no-op for a runner that owns its table; a remote one has to ask its
-    /// server, and `stats` cannot — it is synchronous on purpose, because `/status`
-    /// reads it on every poll and an awaiting counter would make the reading as
-    /// expensive as the work it describes. The daemon calls this before it reads,
-    /// so a failed refresh leaves the previous values rather than an error.
-    async fn refresh_stats(&self) -> Result<()> {
-        Ok(())
-    }
-
     /// What this runner is holding, for the daemon's status surface.
     ///
-    /// Synchronous and cheap by design: it is read on every `/status`, and a
-    /// counter that needs an await would make the check as expensive as the work
-    /// it describes.
+    /// Asynchronous because a remote runner's table is on the other side of a
+    /// connection: one round trip per `/status` poll is the honest cost of a
+    /// number that is otherwise made up. A runner that owns its table answers
+    /// without suspending.
     ///
-    /// `None` means **not reported**, which is not the same statement as zero: a
-    /// remote runner has no local table to count, and a default of zeros would
-    /// make it look idle.
-    fn stats(&self) -> Option<RunnerStats> {
+    /// `None` means **not reported**, which is not the same statement as zero.
+    async fn stats(&self) -> Option<RunnerStats> {
         None
     }
 

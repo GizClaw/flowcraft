@@ -426,6 +426,18 @@ impl sandbox_server::Sandbox for Service {
         Ok(Response::new(pb::TerminateSessionResponse {}))
     }
 
+    /// The runner's own counters, for a peer's `/status`.
+    async fn stats(
+        &self,
+        request: Request<pb::StatsRequest>,
+    ) -> std::result::Result<Response<pb::StatsResponse>, Status> {
+        let (_, _) = self.scope(&request)?;
+        let stats = self.runner.stats().await.ok_or_else(|| {
+            Status::unimplemented("sandbox: this runner does not report counters")
+        })?;
+        Ok(Response::new(wire::stats_to_proto(&stats)))
+    }
+
     async fn list(
         &self,
         request: Request<pb::ListRequest>,

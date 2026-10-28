@@ -38,6 +38,9 @@ service Sandbox {
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
   rpc TerminateSession(TerminateSessionRequest) returns (TerminateSessionResponse);
   rpc List(ListRequest) returns (ListResponse);
+  // What the runner is holding now: the counters the runner's own bounds are
+  // measured against. A limit nobody can read is a limit nobody can plan against.
+  rpc Stats(StatsRequest) returns (StatsResponse);
   rpc Terminate(TerminateRequest) returns (TerminateResponse);
   rpc CloseRunner(CloseRunnerRequest) returns (CloseRunnerResponse);
   rpc OpenJournal(OpenJournalRequest) returns (OpenJournalResponse);
@@ -206,6 +209,16 @@ message TerminateSessionResponse {}
 
 message ListRequest {}
 message ListResponse { repeated SessionInfo sessions = 1; }
+
+message StatsRequest {}
+message StatsResponse {
+  // Sessions listed at once — running, or exited and still retained so a client
+  // can collect their tail.
+  uint64 sessions_ready = 1;
+  uint64 sessions_exited = 2;
+  // Retained output across every listed session, in bytes.
+  uint64 log_bytes = 3;
+}
 
 message SessionInfo {
   string id = 1;

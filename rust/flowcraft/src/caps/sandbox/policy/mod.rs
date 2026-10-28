@@ -193,14 +193,10 @@ impl Runner for Guarded {
         self.inner.host_policy()
     }
 
-    async fn refresh_stats(&self) -> Result<()> {
-        self.inner.refresh_stats().await
-    }
-
     /// Forwarded, not swallowed: a chain that ate the counters would make every
     /// deployment that uses a policy look idle on `/status`.
-    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
-        self.inner.stats()
+    async fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+        self.inner.stats().await
     }
 
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {

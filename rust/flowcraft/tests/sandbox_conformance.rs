@@ -98,47 +98,54 @@ async fn suite(backend: &str, runner: Arc<dyn Runner>) {
 
 /// The counters `/status` shows, over every backend.
 ///
-/// A runner that owns its table answers synchronously; one that has to ask a peer
-/// refreshes first, and derives the counts from `List` — which is why the byte
-/// total is `None` there. A zero would read as "an empty table", which is a
-/// different statement.
-///
-/// The session is long-running on purpose: `echo` finishes before a `List` round
-/// trip, so a short command would make "counted as running" a race that passes on a
-/// fast machine and fails on a loaded one.
+/// The session is long-running on purpose: `echo` finishes before a round trip, so
+/// a short command would make "counted as running" a race that passes on a fast
+/// machine and fails on a loaded one.
 async fn stats_reflect_the_table(backend: &str, runner: &dyn Runner) {
+    // Output *and* a live process: the counts need one, `log_bytes` needs the other,
+    // and a bare `sleep` writes nothing — it would report zero bytes.
     let session = runner
-        .start(support::spec(&["sleep", "30"]))
+        .start(support::spec(&["sh", "-c", "echo counted; sleep 30"]))
         .await
         .expect("start");
-    runner.refresh_stats().await.expect("refresh");
-    let running = runner.stats().expect("stats");
+    let running = runner.stats().await.expect("stats");
     assert!(
         running.sessions_ready >= 1,
         "{backend}: a live session is counted as running: {running:?}"
     );
 
+    // Wait for the first byte to *land in the log* before terminating: a killed
+    // shell has produced nothing yet, and the byte count below would be zero for a
+    // reason that has nothing to do with the wire.
+    let mut text = String::new();
+    let mut cursor = 0;
+    for _ in 0..64 {
+        let read = session.read(cursor, 64 * 1024).await.expect("read");
+        for chunk in &read.chunks {
+            text.push_str(&String::from_utf8_lossy(&chunk.data));
+        }
+        cursor = read.next_seq;
+        if text.contains("counted") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        text.contains("counted"),
+        "{backend}: output arrived: {text:?}"
+    );
+
     session.terminate().await.expect("terminate");
     session.wait().await.expect("wait");
-    runner.refresh_stats().await.expect("refresh");
-    let exited = runner.stats().expect("stats");
+    let exited = runner.stats().await.expect("stats");
     assert!(
         exited.sessions_exited >= 1,
         "{backend}: an exited session is retained and counted: {exited:?}"
     );
-
-    if backend == "remote" {
-        assert_eq!(
-            exited.log_bytes, None,
-            "{backend}: a remote runner cannot answer retained bytes without a \
-             counter RPC, and must not report zero instead"
-        );
-    } else {
-        assert!(
-            exited.log_bytes.is_some(),
-            "{backend}: a local runner knows its retained bytes: {exited:?}"
-        );
-    }
+    assert!(
+        exited.log_bytes > 0,
+        "{backend}: the retained output is on the wire: {exited:?}"
+    );
     session.close().await.expect("close");
 }
 

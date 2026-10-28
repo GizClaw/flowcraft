@@ -285,6 +285,20 @@ pub struct ListResponse {
     #[prost(message, repeated, tag = "1")]
     pub sessions: ::prost::alloc::vec::Vec<SessionInfo>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StatsRequest {}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StatsResponse {
+    /// Sessions listed at once — running, or exited and still retained so a client
+    /// can collect their tail.
+    #[prost(uint64, tag = "1")]
+    pub sessions_ready: u64,
+    #[prost(uint64, tag = "2")]
+    pub sessions_exited: u64,
+    /// Retained output across every listed session, in bytes.
+    #[prost(uint64, tag = "3")]
+    pub log_bytes: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SessionInfo {
     #[prost(string, tag = "1")]
@@ -758,6 +772,29 @@ pub mod sandbox_client {
                 .insert(GrpcMethod::new("flowcraft.sandbox.v1.Sandbox", "List"));
             self.inner.unary(req, path, codec).await
         }
+        /// What the runner is holding now: the counters the runner's own bounds are
+        /// measured against. A limit nobody can read is a limit nobody can plan against.
+        pub async fn stats(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StatsRequest>,
+        ) -> std::result::Result<tonic::Response<super::StatsResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/flowcraft.sandbox.v1.Sandbox/Stats",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("flowcraft.sandbox.v1.Sandbox", "Stats"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn terminate(
             &mut self,
             request: impl tonic::IntoRequest<super::TerminateRequest>,
@@ -959,6 +996,12 @@ pub mod sandbox_server {
             &self,
             request: tonic::Request<super::ListRequest>,
         ) -> std::result::Result<tonic::Response<super::ListResponse>, tonic::Status>;
+        /// What the runner is holding now: the counters the runner's own bounds are
+        /// measured against. A limit nobody can read is a limit nobody can plan against.
+        async fn stats(
+            &self,
+            request: tonic::Request<super::StatsRequest>,
+        ) -> std::result::Result<tonic::Response<super::StatsResponse>, tonic::Status>;
         async fn terminate(
             &self,
             request: tonic::Request<super::TerminateRequest>,
@@ -1602,6 +1645,49 @@ pub mod sandbox_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/flowcraft.sandbox.v1.Sandbox/Stats" => {
+                    #[allow(non_camel_case_types)]
+                    struct StatsSvc<T: Sandbox>(pub Arc<T>);
+                    impl<T: Sandbox> tonic::server::UnaryService<super::StatsRequest>
+                    for StatsSvc<T> {
+                        type Response = super::StatsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StatsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Sandbox>::stats(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StatsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

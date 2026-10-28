@@ -29,8 +29,8 @@ use crate::proto::sandbox as pb;
 use crate::caps::sandbox::contract::{
     Capabilities, Chunk, Enforcement, EnvPolicy, Event, ExitReason, ExitStatus,
     JournalCapabilities, NetAction, NetMode, NetModes, NetPolicy, NetRule, ReadResult,
-    ResourceLimits, SessionFeatures, SessionInfo, SessionSpec, Signal, Stream, WriteMode,
-    WriteModes,
+    ResourceLimits, RunnerStats, SessionFeatures, SessionInfo, SessionSpec, Signal, Stream,
+    WriteMode, WriteModes,
 };
 use crate::caps::sandbox::journal::{Batch, FileOp, Gap, GapReason, WriteEvent};
 
@@ -535,6 +535,26 @@ pub(crate) fn info_to_proto(info: &SessionInfo) -> pb::SessionInfo {
         started_at_unix_nano: i64::try_from(info.started_at_unix_nano).unwrap_or(i64::MAX),
         running: info.running,
         exit: info.exit.as_ref().map(exit_to_proto),
+    }
+}
+
+/// Encode the runner's counters.
+#[must_use]
+pub(crate) fn stats_to_proto(stats: &RunnerStats) -> pb::StatsResponse {
+    pb::StatsResponse {
+        sessions_ready: u64::try_from(stats.sessions_ready).unwrap_or(u64::MAX),
+        sessions_exited: u64::try_from(stats.sessions_exited).unwrap_or(u64::MAX),
+        log_bytes: stats.log_bytes,
+    }
+}
+
+/// Decode the runner's counters.
+#[must_use]
+pub(crate) fn stats_from_proto(stats: pb::StatsResponse) -> RunnerStats {
+    RunnerStats {
+        sessions_ready: usize::try_from(stats.sessions_ready).unwrap_or(usize::MAX),
+        sessions_exited: usize::try_from(stats.sessions_exited).unwrap_or(usize::MAX),
+        log_bytes: stats.log_bytes,
     }
 }
 

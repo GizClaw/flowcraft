@@ -51,8 +51,6 @@ pub struct RemoteRunner {
     wire: Arc<Wire>,
     capabilities: std::sync::Mutex<Option<Capabilities>>,
     sessions: AsyncMutex<BTreeMap<String, SessionRef>>,
-    /// The counters of the last refresh, for the synchronous `stats()`.
-    stats: std::sync::Mutex<Option<RunnerStats>>,
 }
 
 /// One session of a remote runner.
@@ -111,35 +109,22 @@ impl RemoteRunner {
             wire: Arc::new(Wire::open(provider, endpoint, CONTRACT, tenant, scope).await?),
             capabilities: std::sync::Mutex::new(None),
             sessions: AsyncMutex::new(BTreeMap::new()),
-            stats: std::sync::Mutex::new(None),
         })
     }
 }
 
 #[async_trait]
 impl Runner for RemoteRunner {
-    /// Ask the server, by listing: the session counts are derivable from what
-    /// `List` already returns, and the wire contract needs no new RPC for them.
-    ///
-    /// A failed refresh keeps the previous reading — `/status` is a monitoring
-    /// surface, and an unreachable peer should look stale rather than empty.
-    async fn refresh_stats(&self) -> Result<()> {
-        let sessions = self.list().await?;
-        let ready = sessions.iter().filter(|session| session.running).count();
-        let exited = sessions.len().saturating_sub(ready);
-        if let Ok(mut stats) = self.stats.lock() {
-            *stats = Some(RunnerStats {
-                sessions_ready: ready,
-                sessions_exited: exited,
-                // Not on the wire: see `RunnerStats::log_bytes`.
-                log_bytes: None,
-            });
-        }
-        Ok(())
-    }
-
-    fn stats(&self) -> Option<RunnerStats> {
-        self.stats.lock().ok().and_then(|stats| *stats)
+    /// Ask the peer. `None` when it does not answer — an old server answers
+    /// `Unimplemented`, which is "not reported" rather than "zero", so `/status`
+    /// shows nothing instead of an idle table.
+    async fn stats(&self) -> Option<RunnerStats> {
+        let mut client = SandboxClient::new(self.wire.channel().await.ok()?);
+        let response = client
+            .stats(self.wire.request(pb::StatsRequest {}).await.ok()?)
+            .await
+            .ok()?;
+        Some(wire::stats_from_proto(response.into_inner()))
     }
 
     fn capabilities(&self) -> BoxFuture<'_, Result<Capabilities>> {

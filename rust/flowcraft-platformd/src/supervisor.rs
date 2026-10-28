@@ -131,14 +131,12 @@ impl Supervisor {
                 continue;
             };
             let runner = handle.runner();
-            // A runner that owns its table answers without doing anything; one that
-            // has to ask a peer does it here, so `stats()` stays synchronous and a
-            // failed refresh leaves the previous reading rather than an empty one.
-            if let Err(error) = runner.refresh_stats().await {
-                tracing::debug!(%error, runner = name, "sandbox: could not refresh the counters");
-            }
-            if let Some(stats) = runner.stats() {
-                out.push((name, stats));
+            // A runner that owns its table answers without suspending; one whose
+            // table is on the other side of a connection spends one round trip
+            // here, which is the honest cost of the number.
+            match runner.stats().await {
+                Some(stats) => out.push((name, stats)),
+                None => tracing::debug!(runner = name, "sandbox: the runner reported no counters"),
             }
         }
         out

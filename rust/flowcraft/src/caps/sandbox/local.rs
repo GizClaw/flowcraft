@@ -167,12 +167,12 @@ impl Runner for LocalRunner {
         self.host.clone()
     }
 
-    fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
+    async fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
         let (ready, exited, log_bytes) = self.registry.stats();
         Some(crate::caps::sandbox::contract::RunnerStats {
             sessions_ready: ready,
             sessions_exited: exited,
-            log_bytes: Some(log_bytes),
+            log_bytes,
         })
     }
 
