@@ -819,6 +819,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sse-stream",
  "stats_alloc",
  "tempfile",
  "thiserror 2.0.21",

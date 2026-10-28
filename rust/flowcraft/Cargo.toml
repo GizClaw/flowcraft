@@ -152,10 +152,12 @@ inference = ["dep:serde", "dep:serde_json", "proto"]
 inference-http = [
     "inference",
     "dep:bytes",
+    "dep:futures-util",
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
     "dep:rustls",
+    "dep:sse-stream",
     "dep:tokio",
     "dep:tokio-rustls",
 ]
@@ -221,6 +223,9 @@ http = { workspace = true, optional = true }
 hyper = { version = "1", features = ["client", "http1"], optional = true }
 http-body-util = { version = "0.1", optional = true }
 hyper-util = { workspace = true, optional = true }
+# The SSE parser for streaming generation. Already in the workspace through `rmcp`, so
+# picking it over hand-writing one costs a dependency edge that is already paid.
+sse-stream = { version = "0.2", optional = true }
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = [
     "ring",
     "tls12",

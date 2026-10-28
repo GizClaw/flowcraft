@@ -13,6 +13,8 @@ pub mod model;
 pub mod openai;
 pub mod pipeline;
 pub mod request;
+#[cfg(feature = "inference-http")]
+pub mod stream;
 pub mod transport;
 pub mod usage;
 
@@ -25,5 +27,7 @@ pub use pipeline::{Driver, Generation, generate};
 pub use request::{
     Compiled, FinishReason, GenerateRequest, GenerateResponse, TextFormat, TextIntent, ToolChoice,
 };
+#[cfg(feature = "inference-http")]
+pub use stream::{GenerateEvent, events};
 pub use transport::Transport;
 pub use usage::{Money, Usage};
