@@ -815,6 +815,7 @@ dependencies = [
  "ring",
  "rmcp",
  "rustls",
+ "rustls-native-certs",
  "saphyr",
  "serde",
  "serde_json",

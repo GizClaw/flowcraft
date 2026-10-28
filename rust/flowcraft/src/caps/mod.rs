@@ -19,5 +19,8 @@ pub mod secret;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 
+#[cfg(feature = "caps-inference")]
+pub mod inference;
+
 #[cfg(feature = "tool")]
 pub mod tool;

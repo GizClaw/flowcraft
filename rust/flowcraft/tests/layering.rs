@@ -74,6 +74,12 @@ const LAYERS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "caps::inference",
+        // The capability composes the inference layer (vocabulary, pipeline, transport), and
+        // speaks the wire types its endpoint will serve.
+        &["error", "resource", "inference", "proto"],
+    ),
+    (
         "caps::sandbox",
         &[
             "error", "resource", "kernel", "client", "proto", "fs", "blocking",

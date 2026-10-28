@@ -149,6 +149,19 @@ inference = ["dep:serde", "dep:serde_json", "proto"]
 # vocabulary and the pipeline are useful to a caller that only names a model, and pulling
 # hyper, rustls and a socket stack into *that* build is exactly what the split exists to
 # avoid.
+# The inference capability: the deployment's model table served over the pipeline, with an
+# HTTP transport. Its own feature so a host that only wants the vocabulary or the pipeline
+# does not link a capability, and a host that wants the capability gets the client it needs.
+caps-inference = [
+    "inference-http",
+    "resource",
+    "dep:async-trait",
+    "dep:rustls-native-certs",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+]
 inference-http = [
     "inference",
     "dep:bytes",
@@ -225,6 +238,7 @@ http-body-util = { version = "0.1", optional = true }
 hyper-util = { workspace = true, optional = true }
 # The SSE parser for streaming generation. Already in the workspace through `rmcp`, so
 # picking it over hand-writing one costs a dependency edge that is already paid.
+rustls-native-certs = { version = "0.8", optional = true }
 sse-stream = { version = "0.2", optional = true }
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = [
     "ring",
