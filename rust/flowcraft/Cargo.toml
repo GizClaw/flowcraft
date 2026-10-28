@@ -31,6 +31,11 @@ platform = ["telemetry", "proto", "search", "resource", "kernel", "client"]
 # work needs it, so they imply it below.
 blocking = ["dep:tokio", "dep:tracing"]
 
+# `fs::PrivateDir`: a directory handle whose resolution cannot leave it. One
+# capability needs it today (the secret store's file provider), so it is opt-in
+# rather than a dependency every consumer of `telemetry` would carry.
+private-dir = ["dep:cap-std"]
+
 # One capability each. Only `workspace` builds without the control plane, so
 # `--no-default-features --features workspace` is the portable shape (no tonic,
 # no unix-domain sockets) that the Windows lane checks.
@@ -49,6 +54,8 @@ workspace = [
 secret = [
     "blocking",
     "resource",
+    # The file provider's read boundary: a directory handle, not a path check.
+    "private-dir",
     "dep:async-trait",
     "dep:ring",
     "dep:serde",

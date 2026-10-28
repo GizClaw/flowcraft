@@ -9,7 +9,13 @@
 //!   of the `open` call, and the name must be claimed atomically
 //!   (`create_new`) so two writers cannot share one file.
 //! - **a private directory**: the mode must be set at creation, or a nested
-//!   store is world-listable until the first `set_permissions`.
+//!   store is world-listable until the first `set_permissions`;
+//! - **reading out of one**: `check then read` is not a boundary. A path-based
+//!   check (`symlink_metadata` → `canonicalize` → `read`) can be raced by
+//!   swapping a parent directory for a symlink between the check and the use, and
+//!   then the read lands wherever the attacker pointed it. [`PrivateDir`] holds
+//!   an open handle on the directory instead, so every resolution is relative to
+//!   that handle and cannot leave it.
 //!
 //! This module deliberately returns `io::Result` instead of the crate's `Error`:
 //! the callers have their own vocabulary for a failed write (`secret keychain:
@@ -110,6 +116,118 @@ pub fn private_mode_ok(path: &Path) -> Option<bool> {
     }
 }
 
+/// A directory handle that cannot be talked out of its root.
+///
+/// The difference from `std::fs` is the *handle*: the root is opened once, and
+/// every lookup is resolved from that open directory. A path check can be raced
+/// — swap a parent for a symlink between `canonicalize` and `read`, and the read
+/// follows it — while a resolution that starts at the handle has nothing to swap:
+/// the worst a race can do is redirect to another file *inside* the directory,
+/// which the caller could have asked for by name anyway.
+///
+/// Behind [`feature = "private-dir"`] because the mechanism (`cap-std`) is not
+/// free and only the secret store needs it today; the two earlier functions in
+/// this module are `std` and always compiled.
+#[cfg(feature = "private-dir")]
+#[derive(Clone)]
+pub struct PrivateDir {
+    root: std::sync::Arc<std::path::PathBuf>,
+    dir: std::sync::Arc<cap_std::fs::Dir>,
+}
+
+/// Why a private read produced no value.
+#[cfg(feature = "private-dir")]
+#[derive(Debug)]
+pub enum ReadFailure {
+    /// The name is not in the directory.
+    Missing,
+    /// The entry is a symlink. A private directory refuses to follow one, so a
+    /// `secret` cannot be smuggled in by linking to something else.
+    Symlink,
+    /// The entry exists but is not a regular file.
+    NotAFile,
+    /// The file is larger than the caller's bound.
+    TooLarge(u64),
+    /// The name resolves outside the directory.
+    Escapes,
+    /// Anything else the filesystem said.
+    Io(std::io::Error),
+}
+
+#[cfg(feature = "private-dir")]
+impl std::fmt::Debug for PrivateDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("fs.PrivateDir")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "private-dir")]
+impl PrivateDir {
+    /// Open `root` as the handle every read is resolved from.
+    pub fn open(root: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self {
+            root: std::sync::Arc::new(root.to_path_buf()),
+            dir: std::sync::Arc::new(cap_std::fs::Dir::open_ambient_dir(
+                root,
+                cap_std::ambient_authority(),
+            )?),
+        })
+    }
+
+    /// The root this handle was opened on.
+    #[must_use]
+    pub fn root(&self) -> &std::path::Path {
+        self.root.as_path()
+    }
+
+    /// Read `name` out of the directory, refusing a symlink and bounding the size.
+    ///
+    /// The size bound is enforced while reading, not from a `stat` taken before
+    /// it, so a file that grows between the two cannot get past it.
+    pub fn read(&self, name: &str, max_bytes: u64) -> Result<Vec<u8>, ReadFailure> {
+        use std::io::Read as _;
+
+        let metadata = match self.dir.symlink_metadata(name) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ReadFailure::Missing);
+            }
+            Err(error) => return Err(ReadFailure::Io(error)),
+        };
+        if metadata.is_symlink() {
+            return Err(ReadFailure::Symlink);
+        }
+        if !metadata.is_file() {
+            return Err(ReadFailure::NotAFile);
+        }
+        // From here on the resolution starts at the handle: no path can escape it,
+        // whatever happens to the directories in between.
+        let file = match self.dir.open(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ReadFailure::Missing);
+            }
+            // `cap-std` reports "this would leave the directory" as a permission
+            // error, which is the one case worth distinguishing by kind.
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(ReadFailure::Escapes);
+            }
+            Err(error) => return Err(ReadFailure::Io(error)),
+        };
+        let mut data = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut data)
+            .map_err(ReadFailure::Io)?;
+        let length = data.len() as u64;
+        if length > max_bytes {
+            return Err(ReadFailure::TooLarge(length));
+        }
+        Ok(data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +271,55 @@ mod tests {
         if let Some(ok) = private_mode_ok(&path) {
             assert!(ok, "the file is {:o}", mode_of(&path));
         }
+    }
+
+    /// The handle refuses what the path-based reader used to check by hand.
+    #[cfg(all(unix, feature = "private-dir"))]
+    #[test]
+    fn a_private_read_refuses_a_symlink_and_bounds_the_size() {
+        use crate::fs::ReadFailure;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let dir = PrivateDir::open(home.path()).expect("open");
+        std::fs::write(home.path().join("plain"), b"value").expect("write");
+
+        assert_eq!(dir.read("plain", 1024).expect("read"), b"value");
+        assert!(matches!(
+            dir.read("absent", 1024).expect_err("missing"),
+            ReadFailure::Missing
+        ));
+
+        // A symlink, wherever it points, is not a secret: following one is how a
+        // store gets read out of a directory it never opened.
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("secret"), b"nope").expect("write");
+        std::os::unix::fs::symlink(outside.path().join("secret"), home.path().join("link"))
+            .expect("symlink");
+        assert!(matches!(
+            dir.read("link", 1024).expect_err("symlink"),
+            ReadFailure::Symlink
+        ));
+
+        // The size bound is enforced while reading, not from the `stat` above it.
+        assert!(matches!(
+            dir.read("plain", 2).expect_err("too large"),
+            ReadFailure::TooLarge(_)
+        ));
+    }
+
+    #[cfg(all(unix, feature = "private-dir"))]
+    #[test]
+    fn a_private_read_cannot_leave_its_directory() {
+        use crate::fs::ReadFailure;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let dir = PrivateDir::open(home.path()).expect("open");
+        // `..` is not a spelling the handle honours, and a nested symlinked
+        // directory is refused at the entry itself.
+        assert!(matches!(
+            dir.read("../escape", 1024).expect_err("traversal"),
+            ReadFailure::Escapes | ReadFailure::Missing | ReadFailure::Io(_)
+        ));
     }
 
     #[test]

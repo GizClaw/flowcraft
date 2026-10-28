@@ -108,6 +108,9 @@ fn parse(text: &str) -> Result<BTreeMap<String, String>> {
 #[derive(Debug)]
 pub struct DirStore {
     root: PathBuf,
+    /// An open handle on `root`: every read resolves from here, so a directory
+    /// swapped for a symlink between a check and the read cannot redirect it.
+    dir: crate::fs::PrivateDir,
 }
 
 impl DirStore {
@@ -134,7 +137,13 @@ impl DirStore {
                 root.display()
             ))
         })?;
-        Ok(Self { root })
+        let dir = crate::fs::PrivateDir::open(&root).map_err(|error| {
+            Error::validation(format!(
+                "secret file: open root {}: {error}",
+                root.display()
+            ))
+        })?;
+        Ok(Self { root, dir })
     }
 
     /// The base directory.
@@ -147,21 +156,66 @@ impl DirStore {
 #[async_trait]
 impl Store for DirStore {
     async fn lookup(&self, name: &str) -> Result<Option<String>> {
-        // Three syscalls behind a `stat`, a `canonicalize` and a `read`: on a
-        // slow or network-backed directory this is the difference between a
-        // lookup and a stalled executor.
-        let root = self.root.clone();
+        // Validation is policy and stays here; the read is one syscall path
+        // against an open handle, which is what makes it unfollowable.
+        validate_name(name)?;
+        // On the blocking pool: a sealed read behind a network-backed directory is
+        // the difference between a lookup and a stalled executor.
+        let dir = self.dir.clone();
         let name = name.to_owned();
-        blocking::run("secret.file.lookup", move || read_secret(&root, &name)).await
+        blocking::run("secret.file.lookup", move || read_secret(&dir, &name)).await
     }
 }
 
-/// The synchronous body of [`DirStore::lookup`]: validation, then three
-/// syscalls. Kept as a free function so the blocking closure owns nothing but a
-/// path and a name.
-// Reached only from inside a `blocking::run` closure: this *is* the boundary.
-#[allow(clippy::disallowed_methods)]
-fn read_secret(root: &Path, name: &str) -> Result<Option<String>> {
+/// The synchronous body of [`DirStore::lookup`]: one confined read.
+///
+/// Kept as a free function so the blocking closure owns a handle and a name and
+/// nothing else.
+fn read_secret(dir: &crate::fs::PrivateDir, name: &str) -> Result<Option<String>> {
+    use crate::fs::ReadFailure;
+
+    let data = match dir.read(name, MAX_BYTES) {
+        Ok(data) => data,
+        Err(ReadFailure::Missing) => return Ok(None),
+        Err(ReadFailure::Symlink) => {
+            return Err(Error::validation(format!(
+                "secret file: {name:?} is a symlink"
+            )));
+        }
+        Err(ReadFailure::NotAFile) => {
+            return Err(Error::validation(format!(
+                "secret file: {name:?} is not a regular file"
+            )));
+        }
+        Err(ReadFailure::TooLarge(length)) => {
+            return Err(Error::validation(format!(
+                "secret file: {name:?} is {length} bytes, over the {MAX_BYTES}-byte limit"
+            )));
+        }
+        Err(ReadFailure::Escapes) => {
+            return Err(Error::validation(format!(
+                "secret file: {name:?} escapes the root"
+            )));
+        }
+        Err(ReadFailure::Io(error)) => {
+            return Err(Error::internal(format!(
+                "secret file: read {name:?}: {error}"
+            )));
+        }
+    };
+    let text = String::from_utf8(data)
+        .map_err(|_| Error::internal(format!("secret file: {name:?} is not UTF-8")))?;
+    // Mirror docker/k8s conventions: strip trailing newlines so an API key
+    // written by `echo` or `printf` works.
+    Ok(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
+}
+
+/// Reject a name that is not a plain relative path.
+///
+/// Policy, not mechanics: the handle would refuse `..` on its own (it cannot
+/// leave the root), but a name that *looks* like a traversal is a caller bug worth
+/// reporting rather than silently resolving.
+fn validate_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
         return Err(Error::validation("secret file: secret name is empty"));
     }
@@ -180,59 +234,7 @@ fn read_secret(root: &Path, name: &str) -> Result<Option<String>> {
             "secret file: secret name {name:?} must be a relative path without '..'"
         )));
     }
-    let path = root.join(relative);
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(Error::internal(format!(
-                "secret file: stat {name:?}: {error}"
-            )));
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        return Err(Error::validation(format!(
-            "secret file: {name:?} is a symlink"
-        )));
-    }
-    if !metadata.is_file() {
-        return Err(Error::validation(format!(
-            "secret file: {name:?} is not a regular file"
-        )));
-    }
-    if metadata.len() > MAX_BYTES {
-        return Err(Error::validation(format!(
-            "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
-            metadata.len()
-        )));
-    }
-    let real = std::fs::canonicalize(&path)
-        .map_err(|error| Error::internal(format!("secret file: resolve {name:?}: {error}")))?;
-    if !real.starts_with(root) {
-        return Err(Error::validation(format!(
-            "secret file: {name:?} escapes the root"
-        )));
-    }
-    let data = match std::fs::read(&real) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(Error::internal(format!(
-                "secret file: read {name:?}: {error}"
-            )));
-        }
-    };
-    if data.len() as u64 > MAX_BYTES {
-        return Err(Error::validation(format!(
-            "secret file: {name:?} is {} bytes, over the {MAX_BYTES}-byte limit",
-            data.len()
-        )));
-    }
-    let text = String::from_utf8(data)
-        .map_err(|_| Error::internal(format!("secret file: {name:?} is not UTF-8")))?;
-    // Mirror docker/k8s conventions: strip trailing newlines so an API key
-    // written by `echo` or `printf` works.
-    Ok(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
+    Ok(())
 }
 
 /// The `secret.Store/file` factory.
@@ -336,6 +338,46 @@ mod tests {
             Some("nested".into())
         );
         assert_eq!(store.lookup("missing").await.unwrap(), None);
+    }
+
+    /// The reason this store holds a handle instead of a path.
+    ///
+    /// The path-based version checked `canonicalize(root/name)` against the root and
+    /// then read that path — two separate resolutions, so a swap *between* them
+    /// decided where the read landed. It was fail-closed in the easy direction (a
+    /// swap before the check is detected, as this test would have shown by
+    /// refusing), but the window between check and use was unclosable from the
+    /// outside.
+    ///
+    /// A handle has no such window: the root is opened once, and swapping its
+    /// *name* changes nothing. This test is therefore about the invariant, not about
+    /// a race it could replay — a reader of the source should see that no path is
+    /// resolved twice.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_replaced_root_does_not_redirect_a_read() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("store");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("token"), b"inside\n").unwrap();
+
+        let outside = home.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("token"), b"outside\n").unwrap();
+
+        let store = DirStore::open(&root).unwrap();
+        // The attack the path-based version could not survive: the store's own
+        // directory is moved aside and a symlink to an attacker directory takes its
+        // place, between "open" and "read".
+        std::fs::rename(&root, home.path().join("moved")).unwrap();
+        std::os::unix::fs::symlink(&outside, &root).unwrap();
+
+        let value = store.lookup("token").await.expect("lookup");
+        assert_eq!(
+            value.as_deref(),
+            Some("inside"),
+            "the read must come from the directory that was opened, not from its name"
+        );
     }
 
     #[tokio::test]
