@@ -36,6 +36,13 @@ import (
 // then" read needs and what the similarity rule never recorded.
 const AlgorithmVersion = "maintain-v4"
 
+// DefaultSimilarityThreshold is the token Jaccard similarity two facts about
+// the same entity need before the older one counts as superseded. It is
+// exported because a reading has to measure the threshold the pass ships
+// rather than a copy of it: a tool that hardcodes 0.5 measures itself the day
+// the default moves.
+const DefaultSimilarityThreshold = 0.5
+
 // Config tunes one maintenance pass.
 type Config struct {
 	// SimilarityThreshold is the token Jaccard similarity two facts about the
@@ -66,7 +73,7 @@ type Config struct {
 
 func (config Config) withDefaults() Config {
 	if config.SimilarityThreshold == 0 {
-		config.SimilarityThreshold = 0.5
+		config.SimilarityThreshold = DefaultSimilarityThreshold
 	}
 	if config.SupersedeFactor == 0 {
 		config.SupersedeFactor = 0.5

@@ -119,6 +119,40 @@ func (index relationIndex) classOf(predicate string) (string, bool) {
 	return class, ok
 }
 
+// Vocabulary is a Relations compiled into the shape the pass matches with: the
+// fold and the lookup, built once and asked about many predicates.
+//
+// It exists so a reader outside this package -- a measurement tool, a host
+// diagnostic -- can ask the shipped vocabulary what it thinks of one predicate
+// without writing a second copy of the fold. A copy would be the one thing this
+// package cannot afford: canonicalVocabulary is where a vocabulary's meaning is
+// defined, and a reader that folds differently measures itself rather than the
+// pass.
+type Vocabulary struct {
+	index relationIndex
+}
+
+// NewVocabulary compiles relations the way the pass reads them: nil is
+// DefaultRelations, and an empty non-nil map recognizes nothing.
+func NewVocabulary(relations Relations) Vocabulary {
+	if relations == nil {
+		relations = DefaultRelations()
+	}
+	return Vocabulary{index: newRelationIndex(relations)}
+}
+
+// ClassOf reports the class a predicate states under this vocabulary, and
+// whether the vocabulary recognizes it at all.
+func (vocabulary Vocabulary) ClassOf(predicate string) (string, bool) {
+	return vocabulary.index.classOf(predicate)
+}
+
+// Digest is the vocabulary's identity: the value the pass stamps into
+// ProducerVersion, so a reading can say which vocabulary it measured.
+func (vocabulary Vocabulary) Digest() string {
+	return vocabulary.index.digest
+}
+
 // canonicalVocabulary folds a vocabulary into the sorted entries both the
 // matching and the stamp are built from, and reports the entries it could not
 // use: a class without a name, a phrase that folds to nothing, or a phrase a
