@@ -319,6 +319,12 @@ struct Settings {
     /// cannot fit is refused instead.
     #[serde(default = "default_max_total_log_bytes")]
     max_total_log_bytes: u64,
+    /// The approval chain, as a document describes it (see `policy::settings`).
+    ///
+    /// Absent installs none: every call goes straight to the backend, which is what
+    /// every deployment did before this key existed.
+    #[serde(default)]
+    policy: Option<crate::caps::sandbox::policy::PolicySettings>,
     /// Attach a file journal. The subtree being present is the opt-in: an absent
     /// key costs nothing, and a typo fails the build.
     #[serde(default)]
@@ -366,6 +372,9 @@ fn validate(value: &Value) -> Result<()> {
         crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
     }
     settings.host_policy()?;
+    if let Some(policy) = &settings.policy {
+        policy.validate()?;
+    }
     if let Some(journal) = &settings.journal {
         JournalConfig::parse(journal)?;
     }
@@ -408,7 +417,15 @@ impl Factory for LocalFactory {
                 let journal = Journal::open(&root, &config)?;
                 runner = runner.with_journal(journal);
             }
-            Ok(Arc::new(Handle::new(Arc::new(runner))))
+            // The chain wraps what the deployment built, so it judges the runner it
+            // actually has: the same host policy, the same root.
+            let host = settings.host_policy()?;
+            let backend: crate::caps::sandbox::policy::RunnerRef = Arc::new(runner);
+            let backend = match &settings.policy {
+                Some(policy) => policy.around(backend, host, Some(&root))?,
+                None => backend,
+            };
+            Ok(Arc::new(Handle::new(backend)))
         })
     }
 }

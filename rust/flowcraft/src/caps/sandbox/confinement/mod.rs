@@ -611,6 +611,9 @@ struct Settings {
     /// forwards nothing.
     #[serde(default)]
     env_allow: Option<Vec<String>>,
+    /// The approval chain, as a document describes it (see `policy::settings`).
+    #[serde(default)]
+    policy: Option<crate::caps::sandbox::policy::PolicySettings>,
     /// Attach a file journal (see `journal::Config`).
     #[serde(default)]
     journal: Option<Value>,
@@ -719,6 +722,9 @@ fn check_common(settings: &Settings) -> Result<()> {
         crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
     }
     crate::caps::sandbox::contract::host_policy_from(settings.command_path_dirs.as_deref())?;
+    if let Some(policy) = &settings.policy {
+        policy.validate()?;
+    }
     for (index, path) in settings.writable_paths.iter().enumerate() {
         if path.trim().is_empty() {
             return Err(Error::validation(format!(
@@ -810,7 +816,19 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
             config = config.with_journal(Journal::open(&root, &journal_config)?);
         }
         let runner = ConfinedRunner::new(config);
-        Ok(Arc::new(Handle::new(Arc::new(runner))))
+        // The chain judges what the deployment built: same host policy, same root.
+        let backend: crate::caps::sandbox::policy::RunnerRef = Arc::new(runner);
+        let backend = match &settings.policy {
+            Some(policy) => policy.around(
+                backend,
+                crate::caps::sandbox::contract::host_policy_from(
+                    settings.command_path_dirs.as_deref(),
+                )?,
+                Some(&root),
+            )?,
+            None => backend,
+        };
+        Ok(Arc::new(Handle::new(backend)))
     })
 }
 

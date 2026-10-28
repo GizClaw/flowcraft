@@ -60,8 +60,8 @@ pub use net::bridge;
 pub use policy::{
     Allowlist, ApprovalRequest, Approver, ApproverFn, Chain, Decision, Escalation,
     EscalationDecision, EscalationGate, EscalationRules, Escalator, ExecRequest, HostPolicy, Layer,
-    LocalPolicy, Outcome, PlannedCommand, Predicate, Resolution, RunnerRef, Verdict,
-    allow_commands, allow_commands_with_host, approval, classify, classify_read_only,
+    LocalPolicy, Outcome, PlannedCommand, PolicySettings, Predicate, Resolution, RunnerRef,
+    Verdict, allow_commands, allow_commands_with_host, approval, classify, classify_read_only,
     command_patterns, compose_local, defaults, denial, harden_read_only, interactive,
     net_non_default, normalise, rule_for, workdir_outside_root,
 };

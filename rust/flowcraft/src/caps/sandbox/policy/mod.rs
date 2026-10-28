@@ -17,6 +17,7 @@ pub mod approval;
 pub mod escalation;
 pub mod plan;
 pub mod readonly;
+pub mod settings;
 
 use std::sync::Arc;
 
@@ -39,6 +40,7 @@ pub use escalation::{
 pub use plan::{HostPolicy, PlannedCommand, Resolution};
 #[allow(deprecated)]
 pub use readonly::{Verdict, classify, classify_read_only, harden_read_only};
+pub use settings::PolicySettings;
 
 /// A runner behind a chain.
 pub type RunnerRef = Arc<dyn Runner>;
