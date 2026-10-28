@@ -13,9 +13,12 @@
 //! - **reading out of one**: `check then read` is not a boundary. A path-based
 //!   check (`symlink_metadata` → `canonicalize` → `read`) can be raced by
 //!   swapping a parent directory for a symlink between the check and the use, and
-//!   then the read lands wherever the attacker pointed it. [`PrivateDir`] holds
-//!   an open handle on the directory instead, so every resolution is relative to
-//!   that handle and cannot leave it.
+//!   then the read lands wherever the attacker pointed it. `PrivateDir` (below,
+//!   behind the `private-dir` feature) holds an open handle on the directory
+//!   instead, so every resolution is relative to that handle and cannot leave it.
+//!   It is named rather than linked because this module documentation is built
+//!   without that feature too, and a link to an item that is not compiled is a
+//!   documentation error.
 //!
 //! This module deliberately returns `io::Result` instead of the crate's `Error`:
 //! the callers have their own vocabulary for a failed write (`secret keychain:
@@ -125,7 +128,7 @@ pub fn private_mode_ok(path: &Path) -> Option<bool> {
 /// the worst a race can do is redirect to another file *inside* the directory,
 /// which the caller could have asked for by name anyway.
 ///
-/// Behind [`feature = "private-dir"`] because the mechanism (`cap-std`) is not
+/// Behind the `private-dir` feature because the mechanism (`cap-std`) is not
 /// free and only the secret store needs it today; the two earlier functions in
 /// this module are `std` and always compiled.
 #[cfg(feature = "private-dir")]
