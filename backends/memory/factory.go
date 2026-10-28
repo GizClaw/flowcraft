@@ -241,6 +241,20 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	// a pass with its own stamp wrote, so the service that plans and the store
 	// that serves have to name the same pass.
 	maintainConfig := maintain.Config{}
+	if !settings.Maintain.Arbiter.isZero() {
+		// The arbiter is the pass's third rule, so it is configured with the
+		// pass and stamped into its overlay: the store serves only the
+		// judgments of a pass that names the same arbiter, which is why a
+		// deployment cannot switch models without the scope's overlay being
+		// re-judged.
+		maintainConfig.Arbiter = &maintain.DecisionArbiter{
+			Decisions: engine,
+			Model:     settings.Maintain.Arbiter.ref(),
+			Threshold: settings.Maintain.Arbiter.Threshold,
+			Batch:     settings.Maintain.Arbiter.Batch,
+		}
+		maintainConfig.ArbiterBudget = settings.Maintain.Arbiter.Budget
+	}
 	// The receipt store is shared by the two halves of the reinforcement
 	// loop: the retrieval provider writes a receipt after it packs a result,
 	// and the maintenance pass reads them back to tell a fact that keeps
@@ -476,9 +490,9 @@ func resolveInference(in resource.Input, settings Settings) (*inference.Assembly
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
-	if (!settings.Generate.isZero() || !settings.Embed.isZero()) && engine == nil {
+	if (!settings.Generate.isZero() || !settings.Embed.isZero() || !settings.Maintain.Arbiter.isZero()) && engine == nil {
 		return nil, errdefs.Validationf(
-			"memory config: dependency %q is required when generate or embed models are configured", "inference")
+			"memory config: dependency %q is required when generate, embed, or arbiter models are configured", "inference")
 	}
 	return engine, nil
 }

@@ -717,6 +717,45 @@ the error is rendered down its chain, because a memory error states only its
 kind and capability. `shard_errors` counts the lookups that returned an error,
 apart from the loads the lane served.
 
+## Reading the supersede rules
+
+`memory-relation-zh` measures the two rules a maintenance pass ships with,
+against a Chinese corpus, without a model and without a workspace:
+
+```bash
+go run ./cmd/memory-relation-zh          # human-readable
+go run ./cmd/memory-relation-zh -json    # for a diff between two builds
+```
+
+It classifies a 31-phrase inventory of Chinese predicates against
+`maintain.Vocabulary` (the same fold the pass uses, exported for this), scores
+three negative phrases per class, and applies the similarity rule at
+`maintain.DefaultSimilarityThreshold` over 13 two-turn scenarios — ten updates
+and three pairs that can hold at once. The English control pairs are there to
+show the table is not broken. What it reads at the time of writing: 0/31
+predicates classified, 0/8 negative predicates misclassified, and 0/10 updates
+above the threshold (the highest is 0.292). It measures the rules, not the
+extractor: a predicate the model never writes is a predicate the rule never
+sees.
+
+The live halves answer the rest, and both need `OPENAI_API_KEY` (the decision
+surface is the one this lane asks; the extraction models are the deployment's
+own):
+
+```bash
+MEMORY_EVAL_LIVE=1 go test ./cmd/memory-relation-zh/ -run TestLiveArbiter -v
+MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -run TestArbiterJudges -v
+```
+
+`TestLiveArbiterOnTheRelationCorpus` scores the maintenance arbiter against the
+same 13 labelled pairs: 10/10 updates called replaced, 0/3 controls, 4127
+tokens for the batch (about 320 a pair). `TestArbiterJudgesDerivedChineseTurns`
+is the whole path — the deployment's own extractor writes the facts, the pass
+proposes the pairs, the arbiter judges them, and the overlay is what the pass
+wrote: on two conversations it proposes both pairs, finds the update at 0.94,
+and leaves the control current. It asserts the finding's reason is the arbiter,
+which is the same statement as neither shipped rule deciding the pair.
+
 ## Module dependency
 
 `backends/memory` is not tagged yet: it is workspace-only for now, so `go.mod`
@@ -781,6 +820,7 @@ stays offline and free).
 | `TestCoIngestedConversationsDoNotChangeRetrieval` | does the two-phase schedule change recall |
 | `TestRejudgeStoredAnswersWithLenientJudge` | re-grade a stored report with the other judge style |
 | `TestIngestTagsDatasetTurns` | does ingest tag every committed message with its dataset turn, and does a re-ingest repair a store that predates that tagging |
+| `TestArbiterJudgesDerivedChineseTurns` | does the maintenance arbiter reach real derived Chinese facts: are the pairs proposed, is the update found, is the control left current |
 
 The three retrieval probes read the same workspace the runner does and match
 evidence the way the report does, so they need one that carries dataset turn ids

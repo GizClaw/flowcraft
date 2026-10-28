@@ -83,6 +83,12 @@ type Settings struct {
 	// schedule (how many conversations of a scope are derived at once), never
 	// what is derived, so it stays out of the policy digest.
 	Derive DeriveSettings `json:"derive,omitempty"`
+	// Maintain tunes the maintenance pass a host schedules over the scope's
+	// facts. Maintenance reads facts and writes a read-path overlay; it never
+	// derives anything, so nothing here belongs to the derivation policy
+	// digest -- the overlay carries its own stamp, and changing this
+	// invalidates exactly that stamp and nothing else.
+	Maintain MaintainSettings `json:"maintain,omitempty"`
 	// Interval is the derivation scan period; "0" disables the background
 	// runner while keeping RunOnce available.
 	Interval string `json:"interval,omitempty"`
@@ -159,6 +165,75 @@ type ScopeSettings struct {
 	RuntimeID string `json:"runtime_id"`
 	UserID    string `json:"user_id,omitempty"`
 	AgentID   string `json:"agent_id,omitempty"`
+}
+
+// MaintainSettings tunes the maintenance pass.
+type MaintainSettings struct {
+	// Arbiter, when set, decides the supersede pairs the pass's own rules
+	// cannot: the pair whose predicates the relation vocabulary does not
+	// recognize, and whose texts share too few tokens for the similarity
+	// rule. Absent leaves the pass with those two rules, which is the
+	// default and the only shape that needs no model.
+	Arbiter ArbiterSettings `json:"arbiter,omitempty"`
+}
+
+// ArbiterSettings names the model the arbiter asks and the bounds of the
+// question. The model has to be declared with the decision operation on its
+// provider: the inference assembly routes by what the deployment says the
+// model serves, so a generate-only model fails at the call rather than
+// answering a request it was not built for.
+type ArbiterSettings struct {
+	Provider string `json:"provider,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	// Threshold is the probability of "replaced" a pair needs before the pass
+	// makes a finding (default 0.75). A finding penalizes a fact that may
+	// still be true, and the pass cannot tell: the threshold is how much
+	// certainty the deployment charges for that.
+	Threshold float64 `json:"threshold,omitempty"`
+	// Batch caps how many pairs one call carries (default 200, the OpenAI
+	// wire's own per-call limit).
+	Batch int `json:"batch,omitempty"`
+	// Budget caps how many pairs one maintenance pass puts to the arbiter
+	// (default 1000). The pairs it leaves out are reported as skipped and
+	// judged by a later pass.
+	Budget int `json:"budget,omitempty"`
+}
+
+func (settings ArbiterSettings) isZero() bool {
+	return settings.Provider == "" && settings.Name == "" && settings.Profile == ""
+}
+
+func (settings ArbiterSettings) validate() error {
+	if settings.isZero() {
+		if settings.Threshold != 0 || settings.Batch != 0 || settings.Budget != 0 {
+			return errors.New("maintain.arbiter.threshold, batch, and budget require provider and name")
+		}
+		return nil
+	}
+	if strings.TrimSpace(settings.Provider) == "" {
+		return errors.New("maintain.arbiter.provider is required")
+	}
+	if strings.TrimSpace(settings.Name) == "" {
+		return errors.New("maintain.arbiter.name is required")
+	}
+	if settings.Threshold < 0 || settings.Threshold > 1 || math.IsNaN(settings.Threshold) {
+		return fmt.Errorf("maintain.arbiter.threshold %v is outside [0,1]", settings.Threshold)
+	}
+	if settings.Batch < 0 {
+		return errors.New("maintain.arbiter.batch must not be negative")
+	}
+	if settings.Budget < 0 {
+		return errors.New("maintain.arbiter.budget must not be negative")
+	}
+	return nil
+}
+
+func (settings ArbiterSettings) ref() model.ModelRef {
+	return model.ModelRef{
+		ID:      model.ModelID{Provider: settings.Provider, Name: settings.Name},
+		Profile: settings.Profile,
+	}
 }
 
 // RecentSettings bounds the recent-message lane when a request does not
@@ -528,6 +603,9 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Derive.Trigger.Batch < 0 {
 		return errors.New("derive.trigger.batch must not be negative")
+	}
+	if err := settings.Maintain.Arbiter.validate(); err != nil {
+		return err
 	}
 	switch chat.FactStrategy(settings.Fact.Strategy) {
 	case chat.StrategyNone, chat.StrategySimple, chat.StrategyRich:

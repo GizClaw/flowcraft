@@ -126,6 +126,8 @@ chunk:
   overlap_runes: 160
 document:
   max_runes: 1000000
+maintain:
+  arbiter: {provider: openai, name: gpt-6-luna, threshold: 0.75, budget: 1000}
 lanes:
   fusion: rrf
   cache:
@@ -220,6 +222,31 @@ The agent side binds the assembly through the `core/memory/hook` factories
 Turn commits are idempotent per `IdempotencyKey`: retries must reuse the key
 of the original turn. Do not re-commit historical transcript under a new key
 — it is appended as new messages. The agent hooks use the run id as that key.
+
+`maintain.arbiter` turns on the maintenance pass's third rule: the pairs its
+own two rules leave current are put to a decision model, one choice question
+per pair, and an answer of `replaced` at or above the threshold becomes a
+finding. Absent — the default — the pass judges exactly what it judged before
+and stamps the overlay exactly as before, so turning the arbiter off keeps the
+overlay a scope already has and turning it on re-judges the scope: the model,
+the question wording and the threshold are in the stamp beside the tuning and
+the vocabulary, the same discipline the vocabulary is digested under.
+
+The model has to be declared with the `decision` operation on its provider.
+The workload routes by what the deployment says a model serves, so a
+generate-only model fails at the call rather than answering a request it was
+not built for; a deployment that configures an arbiter without an `inference`
+assembly is refused where the document is read. The call is the platform's
+`DecisionRequest`, not a bespoke prompt: `threshold` (default 0.75) is the
+probability of `replaced` a finding needs, `batch` (default 200) is the OpenAI
+wire's own per-call limit on questions, and `budget` (default 1000) caps the
+pairs one pass pays for — the pairs it leaves out are counted
+(`Plan.ArbiterSkipped`) and judged by a later pass, because the budget bounds
+cost rather than judgment and so stays out of the stamp. A pair the arbiter
+declines, or answers below the threshold, leaves the older fact current: a
+missed update costs one stale value, a wrong one penalizes a fact that is still
+true until the next pass. On this project's Chinese corpus a pass costs about
+320 tokens a pair (`eval/cmd/memory-relation-zh`).
 
 ## Storage layout
 
@@ -862,10 +889,11 @@ conversations that changed judges what a whole pass would judge them to be;
 decay is always recomputed from the pass's own clock, so a conversation a
 partial pass leaves behind keeps the factors the last whole pass measured.
 
-### Supersede: two rules, one window
+### Supersede: three rules, one window
 
 A fact is superseded when a newer fact of its conversation replaces it, and the
-pass decides that two ways. The similarity rule reads the texts: facts sharing
+pass decides that with two rules of its own, plus a third a deployment can turn
+on. The similarity rule reads the texts: facts sharing
 an entity whose token overlap reaches the threshold are restatements of one
 claim, and the older one is the earlier restatement. The relation rule reads the
 predicate the extractor wrote: two facts stating the same single-valued relation
@@ -898,7 +926,31 @@ The vocabulary is part of what the pass is, so it is digested into the overlay's
 stamp beside the tuning: the same facts judged under another vocabulary are
 another pass's judgments, and this deployment serves only its own.
 
-Both rules write one kind of overlay entry, and both carry the window the older
+The third rule is the one a deployment opts into (`maintain.arbiter`). Both
+shipped rules are bounded by what their authors could write down — the
+vocabulary by its phrases, the similarity rule by shared tokens — and the pairs
+that matter are the ones where that bound bites: a Chinese deployment has no
+phrase in the vocabulary at all (0 of 31 Chinese predicates are classified), and
+"住在柏林" → "搬到了上海" scores 0.29 against a threshold of 0.5, so an update
+stated with new wording is one both rules miss. The arbiter puts those pairs to
+a model and asks the business question — does the newer statement make the older
+one out of date — rather than asking which relation the two share, which is the
+vocabulary's vocabulary and not the model's. It proposes only pairs it can name
+a subject for, and only pairs the rules left current: sharing a subject is the
+one thing the pass reads without a model, and a pair the rules already decided
+is not a question. The finding records the probability it was judged with and
+the reason `arbiter`, so a reader can tell a rule, which can be re-applied, from
+an estimate, which cannot.
+
+One limit is worth stating: the arbiter is asked whether the older statement is
+still current, so a pair whose statements both carry a date is answered
+both-current — "on 3 May 2018, 郑凯 lived in Berlin" is a record of that day, and
+a record does not stop being true. That is the honest answer to the question
+asked, and it is why the pair has to be read as two statements about now for a
+finding to be made. Deciding what a dated pair means for a read path that never
+time-travels is a design question this rule does not settle.
+
+All three rules write one kind of overlay entry, and all three carry the window the older
 fact was current over. `ValidAt` is the superseded fact's own date — its event
 time, or when the fact was created if the turn stated none — and `InvalidAt` is
 the superseding fact's date, which is the same key the pass ordered the pair by,

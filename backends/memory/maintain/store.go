@@ -47,6 +47,16 @@ type Overlay struct {
 	// says which of the two the entry means; the finding itself
 	// (maintain.Supersede) carries the reason and the evidence.
 	Relation string `json:"relation,omitempty"`
+	// Reason names the evidence the entry was judged on: relation, similarity,
+	// or arbiter (see the Reason constants). Relation alone could not say it
+	// once a model could judge a pair, because a model's finding names no
+	// relation.
+	Reason string `json:"reason,omitempty"`
+	// Confidence is the arbiter's probability for an entry it judged, and
+	// zero for one the pass's own rules decided. It is recorded so a host can
+	// explain a penalty, and so a threshold change can be read against what
+	// the earlier threshold accepted.
+	Confidence float64 `json:"confidence,omitempty"`
 	// ValidAt and InvalidAt are the window the item was current over: dated
 	// from ValidAt, replaced at InvalidAt. A host answering "what did we know
 	// at time T" reads the entry and compares T against them; the read path
@@ -461,6 +471,8 @@ func (store *Store) entries(plan Plan) (map[string]map[string]Overlay, int, erro
 		put(entry.Conversation, key, func(current *Overlay) {
 			current.SupersededBy = entry.SupersededBy
 			current.Relation = entry.Relation
+			current.Reason = entry.Reason
+			current.Confidence = entry.Confidence
 			current.ValidAt = entry.ValidAt
 			current.InvalidAt = entry.InvalidAt
 			if current.Factor == 0 || current.Factor > defaultSupersedeFactor {
@@ -911,11 +923,18 @@ func (service *Service) run(
 		}
 		conversations[fact.ConversationID] = append(conversations[fact.ConversationID], fact)
 	}
-	plan, err := DetectWithRecalls(scope, conversations, now, service.Config, receipts)
+	plan, pairs, err := detect(scope, conversations, now, service.Config, receipts)
 	if err != nil {
 		return empty, err
 	}
 	plan.IgnoredOverlay = status.Stale && status.Entries > 0
+	// The arbiter is asked after the rules and before anything is saved: its
+	// findings are part of the same judgment, and the overlay is written once.
+	// A call that fails leaves the rules' findings to be published -- the read
+	// path applies what the pass decided, and the arbiter's silence is
+	// reported to the caller rather than passed off as a judgment that the
+	// older facts are all current.
+	arbiterErr := adjudicate(ctx, &plan, pairs, service.Config.Arbiter)
 	if judged == nil {
 		err = service.Store.Save(ctx, plan)
 	} else {
@@ -944,6 +963,13 @@ func (service *Service) run(
 	plan.ReclaimedProjectionObjects += reclaimed.Bases + reclaimed.Segments
 	if err := service.fillProfiles(ctx, scope, conversations, plan, now); err != nil {
 		return plan, err
+	}
+	// Reported last, so a pass that could not reach the arbiter still
+	// reclaims, still fills the blocks, and still publishes what its rules
+	// found; the caller learns the arbiter's half is missing from the plan it
+	// gets back.
+	if arbiterErr != nil {
+		return plan, fmt.Errorf("maintain: adjudicate: %w", arbiterErr)
 	}
 	return plan, nil
 }
