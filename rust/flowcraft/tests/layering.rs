@@ -51,7 +51,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     // The inference vocabulary: words a compiler, a driver and an audit record agree
     // on. It sits above `error` and below the capability that composes it, and it
     // deliberately carries no wire or runtime dependency.
-    ("inference", &["error"]),
+    ("inference", &["error", "proto"]),
     ("resource", &["error", "logerr"]),
     (
         "kernel",
