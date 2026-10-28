@@ -60,7 +60,10 @@ pub type EventStream = std::pin::Pin<Box<dyn Stream<Item = Result<GenerateEvent>
 #[async_trait]
 pub trait Inference: Send + Sync {
     /// What this provider serves, and how many models it was given.
-    fn capabilities(&self) -> Capabilities;
+    ///
+    /// Asynchronous because a remote provider's answer is on the other side of a
+    /// connection: a local one answers without suspending.
+    fn capabilities(&self) -> crate::resource::BoxFuture<'_, Result<Capabilities>>;
 
     /// The catalogue, from the deployment document.
     async fn models(&self) -> Result<Vec<ModelDescriptor>>;

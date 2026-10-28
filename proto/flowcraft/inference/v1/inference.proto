@@ -21,6 +21,9 @@ option go_package = "github.com/GizClaw/flowcraft/core/inference/v1;inferencev1"
 // Content is *not* redefined: `flowcraft.message.v1` already carries messages, parts,
 // tool definitions and deltas, and a second copy of that vocabulary is how the two drift.
 service Inference {
+  // What the provider serves: the operations it answers, whether it streams, and how many
+  // models the deployment gave it. A caller learns this without spending a call.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Models(ModelsRequest) returns (ModelsResponse);
   rpc Explain(ExplainRequest) returns (ExplainResponse);
   rpc Generate(GenerateRequest) returns (GenerateResponse);
@@ -329,6 +332,18 @@ message Finish {
 }
 
 // ── catalogue and explain ───────────────────────────────────────────────────────
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  // The workloads it answers ("generate", "embed", …).
+  repeated string operations = 1;
+  // Whether it can answer a streaming request. A caller that asked for a stream from a
+  // provider without one gets `NotAvailable`, not a one-event stream.
+  bool streams = 2;
+  // How many models the deployment declared.
+  uint64 models = 3;
+}
 
 message ModelsRequest {}
 

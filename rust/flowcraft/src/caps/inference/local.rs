@@ -154,12 +154,15 @@ impl Local {
 
 #[async_trait]
 impl Inference for Local {
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            operations: vec![Operation::Generate],
-            streams: true,
-            models: self.models.len(),
-        }
+    fn capabilities(&self) -> crate::resource::BoxFuture<'_, Result<Capabilities>> {
+        let models = self.models.len();
+        Box::pin(async move {
+            Ok(Capabilities {
+                operations: vec![Operation::Generate],
+                streams: true,
+                models,
+            })
+        })
     }
 
     async fn models(&self) -> Result<Vec<ModelDescriptor>> {
@@ -223,7 +226,7 @@ impl Inference for Local {
 
     async fn generate_stream(&self, request: GenerateRequest) -> Result<EventStream> {
         let model = self.model(&request.model)?;
-        if !self.capabilities().streams {
+        if !self.capabilities().await?.streams {
             return Err(Error::not_available(
                 "inference: this provider cannot stream",
             ));
@@ -466,8 +469,10 @@ mod tests {
         let models = local.models().await.expect("models");
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "gpt-5");
-        assert_eq!(local.capabilities().models, 1);
-        assert_eq!(local.capabilities().operations, vec![Operation::Generate]);
+        let capabilities = local.capabilities().await.expect("capabilities");
+        assert_eq!(capabilities.models, 1);
+        assert_eq!(capabilities.operations, vec![Operation::Generate]);
+        assert!(capabilities.streams);
     }
 
     /// `Explain` compiles and stops: it must not spend a call.

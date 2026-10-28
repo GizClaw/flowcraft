@@ -192,6 +192,25 @@ impl Service {
 
 #[tonic::async_trait]
 impl inference_server::Inference for Service {
+    async fn describe(
+        &self,
+        request: Request<pb::DescribeRequest>,
+    ) -> std::result::Result<Response<pb::DescribeResponse>, Status> {
+        // A grant is still required: what a provider serves is not public just because it
+        // is a declaration.
+        let _scope = self.scope(&request)?;
+        let capabilities = self.provider.capabilities().await.map_err(status)?;
+        Ok(Response::new(pb::DescribeResponse {
+            operations: capabilities
+                .operations
+                .iter()
+                .map(|operation| operation.as_str().to_owned())
+                .collect(),
+            streams: capabilities.streams,
+            models: u64::try_from(capabilities.models).unwrap_or(u64::MAX),
+        }))
+    }
+
     async fn models(
         &self,
         request: Request<pb::ModelsRequest>,

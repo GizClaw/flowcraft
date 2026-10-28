@@ -330,6 +330,21 @@ pub struct Finish {
     pub response: ::core::option::Option<GenerateResponse>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DescribeRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DescribeResponse {
+    /// The workloads it answers ("generate", "embed", …).
+    #[prost(string, repeated, tag = "1")]
+    pub operations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Whether it can answer a streaming request. A caller that asked for a stream from a
+    /// provider without one gets `NotAvailable`, not a one-event stream.
+    #[prost(bool, tag = "2")]
+    pub streams: bool,
+    /// How many models the deployment declared.
+    #[prost(uint64, tag = "3")]
+    pub models: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ModelsRequest {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ModelsResponse {
@@ -928,6 +943,32 @@ pub mod inference_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// What the provider serves: the operations it answers, whether it streams, and how many
+        /// models the deployment gave it. A caller learns this without spending a call.
+        pub async fn describe(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DescribeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DescribeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/flowcraft.inference.v1.Inference/Describe",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("flowcraft.inference.v1.Inference", "Describe"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn models(
             &mut self,
             request: impl tonic::IntoRequest<super::ModelsRequest>,
@@ -1038,6 +1079,15 @@ pub mod inference_server {
     /// Generated trait containing gRPC methods that should be implemented for use with InferenceServer.
     #[async_trait]
     pub trait Inference: std::marker::Send + std::marker::Sync + 'static {
+        /// What the provider serves: the operations it answers, whether it streams, and how many
+        /// models the deployment gave it. A caller learns this without spending a call.
+        async fn describe(
+            &self,
+            request: tonic::Request<super::DescribeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DescribeResponse>,
+            tonic::Status,
+        >;
         async fn models(
             &self,
             request: tonic::Request<super::ModelsRequest>,
@@ -1157,6 +1207,51 @@ pub mod inference_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
+                "/flowcraft.inference.v1.Inference/Describe" => {
+                    #[allow(non_camel_case_types)]
+                    struct DescribeSvc<T: Inference>(pub Arc<T>);
+                    impl<
+                        T: Inference,
+                    > tonic::server::UnaryService<super::DescribeRequest>
+                    for DescribeSvc<T> {
+                        type Response = super::DescribeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DescribeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Inference>::describe(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DescribeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/flowcraft.inference.v1.Inference/Models" => {
                     #[allow(non_camel_case_types)]
                     struct ModelsSvc<T: Inference>(pub Arc<T>);
