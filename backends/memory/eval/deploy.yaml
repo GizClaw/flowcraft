@@ -156,4 +156,13 @@ resources:
       # number, the exact activities of a trip) only exist in the turn it came
       # from. Pull one source message along with each fact hit so the answer
       # model sees the wording the conversation actually used.
+      # What one lane keeps decoded, in bytes. The store's own budget is 2 GiB,
+      # and this assembly owns three cached lanes (bm25, entity, vector), so
+      # leaving it unset asks for 6 GiB of residency: measured at 7.6 GB peak
+      # RSS on the hard LongMemEval variant, against a 4 GB gate. A shard is a
+      # few megabytes of table, read and dropped rather than kept, so 256 MiB
+      # per lane is enough -- measured at 3.0 GB peak RSS with recall and
+      # answers identical to the 2 GiB runs (three runs, n=500, 474-475 hits).
+      lanes:
+        cache: {max_bytes: 268435456}
       retrieval: {source_quotes: 3}
