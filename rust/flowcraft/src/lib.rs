@@ -69,6 +69,9 @@ pub mod craft;
 #[cfg(feature = "search")]
 pub mod search;
 
+#[cfg(feature = "inference")]
+pub mod inference;
+
 #[cfg(feature = "resource")]
 pub mod resource;
 

@@ -139,6 +139,11 @@ message = ["proto", "dep:serde_json"]
 # not a capability, so this layer knows nothing about grants or listeners.
 craft = ["proto", "dep:async-trait", "dep:futures-util"]
 search = []
+
+# The inference vocabulary: what a canonical request is made of. Deliberately below
+# `resource` and without protobuf — a caller that only needs to name a model compiles
+# this and nothing else.
+inference = ["dep:serde"]
 resource = [
     "otel",
     "dep:async-trait",
