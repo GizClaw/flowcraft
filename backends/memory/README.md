@@ -209,8 +209,10 @@ With the workspace driver all state lives under the bound workspace:
   recovery.
 - `storage/v1/kv/...` — current values, the scope catalog, and document
   latest-revision pointers.
-- `views/fact/v2/...` — derived facts per generation, plus each conversation's
-  published-generation pointer.
+- `views/fact/v2/...` — derived facts per generation, each conversation's
+  published-generation pointer, and the canonical-identity area of every
+  generation (`generations/<generation>/hashes/<canonical hash>/<fact id>`):
+  which fact of that generation holds a claim.
 - `views/summary/v1/...` — immutable summary records, the active record
   catalog, and the manifest bookmark of every generation that published one.
 - `maintain/v2/overlay/...` — one control record per scope: the stamp of the
@@ -321,6 +323,25 @@ it replaces:
   visible and the next pass retries, so the lanes never describe a generation
   readers cannot resolve -- which is what makes re-derivation converge instead
   of leaving the two generations side by side in the lanes.
+- A fact's canonical identity is indexed beside it, inside the generation
+  (`hashes/<canonical hash>/<fact id>`), because it is the question every add
+  asks: is this text already a fact here. A claim derived twice merges into the
+  fact holding it instead of writing a second one. The area answers the
+  question by name, so an add no longer lists the generation and reads back
+  every fact it listed -- on the workspace substrate an add into a 1600-fact
+  generation took 676 ms before the area and 6.3 ms after
+  (`BenchmarkAddDistinctFact`), and a 1600-fact derivation pass holds ~155
+  facts/s instead of falling with the corpus (`BenchmarkDeriveFacts`).
+  - The entry is written before the fact it names: an entry without its fact is
+    dropped by the next lookup that reads it, while a fact without its entry
+    would be invisible once the area reports itself complete.
+  - The area carries a marker key that says a build maintaining it populated
+    it. A generation written before the area existed has none, so its first add
+    scans once, records every identity it finds, and only then marks the area;
+    every add after that trusts an absent identity instead of rescanning.
+  - Retirement drops the area with the generation, so an identity cannot
+    outlive the fact that holds it, and a replacement generation cannot inherit
+    one.
 - Projected facts are addressed by conversation: a fact id is a content address
   shared by every conversation that derived the same text, and a lane is
   partitioned by scope, so the lane entry carries the conversation and
