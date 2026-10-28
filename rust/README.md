@@ -371,9 +371,9 @@ Two rules carry most of the design:
 | Secret writes: `Mutable` (set/delete/delete-prefix) and the app-side keychain `Manager` | ✅ |
 | Sandbox: local runner, byte-cursor output with replay and gaps, SIGTERM→grace→SIGKILL, six exit reasons | ✅ |
 | Sandbox sessions: blocking `read`, `write`, `close_input`, `resize`, `signal`, `watch`, `close`, per-session features | ✅ |
-| Sandbox pty: ConPTY is not wired yet; unix ptys are (merged stream, resize, Ctrl-C as `0x03`) | ⚠️ |
+| Sandbox pty: merged stream, resize, no stdin EOF, Ctrl-C as the byte `0x03` — `portable-pty` on unix, `CreatePseudoConsole` on Windows | ✅ |
 | Sandbox write boundary: `root` + `writable_paths` + `readonly_root`, symlink-safe containment, `bwrap`/`seatbelt` profiles | ✅ |
-| Sandbox limits: cgroup v2 memory ceiling and cpu budget (probed; elsewhere reported as unavailable) | ✅ |
+| Sandbox limits: cgroup v2 memory ceiling and cpu budget, job-object caps on Windows (both probed; a host with neither reports unavailable rather than passing silently) | ✅ |
 | Sandbox policy: allow-list with shell unwrapping, approval predicates, tightening defaults, read-only classifier, escalation | ✅ |
 | Sandbox network: deny-all, allow-list/proxy via the enforcement proxy (terminates CONNECT + HTTP + SOCKS5 for the child; upstream chaining is not implemented), bwrap bridge | ✅ |
 | Sandbox file journal: net-state folding, retention ring with gaps, three RPCs, remote reader | ✅ |
@@ -404,11 +404,19 @@ Two rules carry most of the design:
 
 1. **Packaging** — static musl builds, a systemd unit, a distroless image, and
    Helm. The binary already runs under a service manager by hand.
-2. **Windows** — the library is feature-split so it *builds* there, but no Windows
-   provider exists yet: no job objects, no ConPTY, no token-based write
-   confinement, no AppContainer. `Capabilities` reports the gap honestly (a
-   `tty` request on Windows is `NotAvailable`, not an empty session). The planned
-   phases are in the local Windows working note.
+2. **Windows — the parked part, and the coverage.** The mechanisms are there and
+   the lane exercises them: a Low-IL token for the write boundary (`token.rs`), a
+   job object for the tree and its caps (`job.rs`), `CreatePseudoConsole` for the
+   pty (`pty.rs`), and DACL grants by SID (`acl.rs`). `Capabilities` reports what
+   the host actually provides, so a `tty` request there is honoured rather than
+   refused.
+   What is deliberately absent is **AppContainer**: a contained child could not
+   start on a Windows Server runner, so the identity route became "a SID plus
+   DACL grants" and `appcontainer.rs` (with `Launch::container`) was deleted
+   rather than left half-wired — the evidence is in the local Windows working
+   note. What remains is coverage, not mechanism: the enforcement proxy's bridge
+   and the journal watcher are still outside the platform-independent list, which
+   names every exclusion and its reason.
 3. **Upstream proxy chaining** — a `sandbox` net policy with `proxy: http://…`
    is refused at build time rather than silently dialling direct. `allow_list`
    and `proxy` mode work as a deny-list proxy with the enforcement proxy.

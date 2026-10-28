@@ -18,8 +18,10 @@ pub(crate) mod spawn;
 #[cfg(windows)]
 pub(crate) mod job;
 
-// A pty is a platform mechanism: the unix one is `portable-pty`, the Windows one
-// is planned (W2) and is a stub that reports itself unavailable.
+// A pty is a platform mechanism: `portable-pty` on unix, `flowcraft_win32::Pty`
+// (`CreatePseudoConsole`) on Windows. Two implementations of one interface, chosen
+// by `terminal::available()` so `Capabilities` cannot advertise a terminal the
+// host does not have.
 #[cfg(unix)]
 pub(crate) mod terminal;
 #[cfg(not(unix))]
