@@ -779,30 +779,44 @@ func (processor *Processor) processDocumentStream(ctx context.Context, scope cor
 	} else if found {
 		cursor = watermark.Cursor
 	}
+	// A refusal is reported, not retried in place: the ceiling it names is a
+	// property of the document, so the same pass would reach the same answer
+	// forever, and every later document of the scope would wait behind it.
+	var refused []error
 	for {
 		events, err := processor.documents.ListEvents(ctx, scope, docsource.ListEventOptions{
 			AfterOutboxSeq: cursor, Limit: processor.pageSize,
 		})
 		if err != nil {
-			return fmt.Errorf("memory worker: list document events: %w", err)
+			return errors.Join(append(refused, fmt.Errorf("memory worker: list document events: %w", err))...)
 		}
 		if len(events) == 0 {
-			return nil
+			return errors.Join(refused...)
 		}
 		for _, event := range events {
 			if err := processor.processKnowledge(ctx, event); err != nil {
-				return err
+				if !errors.Is(err, knowledge.ErrDocumentTooLarge) {
+					return errors.Join(append(refused, err)...)
+				}
+				// The document was stored before the ceiling it now exceeds
+				// existed -- an older build wrote it, or a deployment lowered
+				// the limit since. Its previous build stays active, so readers
+				// keep what the last policy it fit under derived; a document
+				// that never fit has no build and no lane entries, which is
+				// what a rebuild from canonical state sees as well.
+				processor.bump(func(stats *Stats) { stats.DocumentsRefused++ })
+				refused = append(refused, fmt.Errorf("memory worker: document %q refused: %w", event.ID, err))
 			}
 			cursor = event.OutboxSeq
 			if err := processor.checkpoints.SaveWatermark(ctx, SourceWatermark{
 				Scope: event.Scope, StreamKind: streamKindDocuments, StreamID: documentStreamID,
 				PolicyDigest: processor.policyDigest, Cursor: cursor,
 			}); err != nil {
-				return err
+				return errors.Join(append(refused, err)...)
 			}
 		}
 		if len(events) < processor.pageSize {
-			return nil
+			return errors.Join(refused...)
 		}
 	}
 }

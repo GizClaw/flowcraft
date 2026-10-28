@@ -8,7 +8,51 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
+	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
+
+// TestDocumentCeilingStaysUnderTheContract pins the document ceiling's four
+// surfaces: an unnamed limit resolves to the contract's, a deployment may set a
+// tighter one, one above the contract is a config error rather than a clamp,
+// and the limit stays out of the derivation policy digest -- it refuses input,
+// it does not change what a document derives to, so lowering it must not ask a
+// workspace to re-derive.
+func TestDocumentCeilingStaysUnderTheContract(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if settings.Document.MaxRunes != corememory.MaxDocumentRunes {
+		t.Fatalf("unnamed document ceiling = %d, want the contract's %d",
+			settings.Document.MaxRunes, corememory.MaxDocumentRunes)
+	}
+	digest := func() string {
+		t.Helper()
+		value, err := policyDigest(settings, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	before := digest()
+	settings.Document.MaxRunes = 1024
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("a tighter document ceiling was rejected: %v", err)
+	}
+	if after := digest(); after != before {
+		t.Fatalf("the document ceiling moved the policy digest: %s -> %s", before, after)
+	}
+	for name, value := range map[string]int{
+		"above the contract": corememory.MaxDocumentRunes + 1,
+		"zero":               0,
+		"negative":           -1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings.Document.MaxRunes = value
+			if err := settings.Validate(); err == nil {
+				t.Fatalf("document.max_runes %d was accepted", value)
+			}
+		})
+	}
+}
 
 // TestRetrievalSummaryNamesTheSelectorSemantics pins the one part of the
 // summary that is not configuration: what a selector means. Two runs are

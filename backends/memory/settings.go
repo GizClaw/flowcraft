@@ -61,6 +61,7 @@ type Settings struct {
 	Summary    SummarySettings   `json:"summary,omitempty"`
 	Profile    ProfileSettings   `json:"profile,omitempty"`
 	Chunk      ChunkSettings     `json:"chunk,omitempty"`
+	Document   DocumentSettings  `json:"document,omitempty"`
 	Lanes      LanesSettings     `json:"lanes,omitempty"`
 	Retrieval  RetrievalSettings `json:"retrieval,omitempty"`
 	Projection string            `json:"projection,omitempty"`
@@ -218,6 +219,19 @@ type ChunkSummarySettings struct {
 	Document bool `json:"document,omitempty"`
 	Sections bool `json:"sections,omitempty"`
 	MaxRunes int  `json:"max_runes,omitempty"`
+}
+
+// DocumentSettings bounds the text one document may carry.
+type DocumentSettings struct {
+	// MaxRunes is the text a put accepts and the text a derivation will
+	// build. Absent takes the contract ceiling. A value above that ceiling is
+	// a config error rather than a clamp: the contract refuses such a document
+	// anyway, so naming a larger limit only hides which bound binds.
+	//
+	// It is not part of the derivation policy digest. It refuses input; it
+	// does not change what a document derives to, so lowering it leaves a
+	// workspace's derived state comparable instead of asking for a re-derive.
+	MaxRunes int `json:"max_runes,omitempty"`
 }
 
 // LaneSettings configures one retrieval lane.
@@ -386,6 +400,9 @@ func (settings *Settings) applyDefaults() {
 		if settings.Chunk.OverlapRunes == 0 {
 			settings.Chunk.OverlapRunes = 160
 		}
+	}
+	if settings.Document.MaxRunes == 0 {
+		settings.Document.MaxRunes = corememory.MaxDocumentRunes
 	}
 	if settings.Lanes.Vector.Weight == 0 {
 		settings.Lanes.Vector.Weight = 1
@@ -583,6 +600,9 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Chunk.MaxRunes > knowledge.MaxChunkRunes {
 		return fmt.Errorf("chunk.max_runes must not exceed %d", knowledge.MaxChunkRunes)
+	}
+	if settings.Document.MaxRunes <= 0 || settings.Document.MaxRunes > corememory.MaxDocumentRunes {
+		return fmt.Errorf("document.max_runes must be positive and must not exceed %d", corememory.MaxDocumentRunes)
 	}
 	// The block's bound holds whether or not it is served: a block store
 	// written under one setting and read under another must not be the place

@@ -30,14 +30,18 @@ import (
 // append-only Log, a KV store, a scope catalog, derived views, projection
 // lanes, and the derivation worker.
 type Assembly struct {
-	messages         *msgsource.MessageStore
-	documents        *docsource.DocumentStore
-	docViews         *docview.DocumentViewStore
-	facts            *factview.FactStore
-	summaries        *summaryview.SummaryStore
-	catalog          *sources.ScopeCatalog
-	scopes           []corememory.Scope
-	recent           RecentSettings
+	messages  *msgsource.MessageStore
+	documents *docsource.DocumentStore
+	docViews  *docview.DocumentViewStore
+	facts     *factview.FactStore
+	summaries *summaryview.SummaryStore
+	catalog   *sources.ScopeCatalog
+	scopes    []corememory.Scope
+	recent    RecentSettings
+	// documentMaxRunes is the text a put accepts, below the contract ceiling
+	// the document carries on its own. It is a refusal at the write boundary,
+	// not a derivation knob, so it is not in the policy digest.
+	documentMaxRunes int
 	retrievalSummary string
 	provider         *retrieval.Provider
 	processor        *worker.Processor
@@ -111,6 +115,7 @@ func newAssembly(
 	catalog *sources.ScopeCatalog,
 	scopes []corememory.Scope,
 	recent RecentSettings,
+	documentMaxRunes int,
 	retrievalSummary string,
 	provider *retrieval.Provider,
 	processor *worker.Processor,
@@ -153,7 +158,8 @@ func newAssembly(
 		catalog: catalog,
 		scopes:  append([]corememory.Scope(nil), scopes...),
 		recent:  recent, retrievalSummary: retrievalSummary,
-		provider: provider, processor: processor,
+		documentMaxRunes: documentMaxRunes,
+		provider:         provider, processor: processor,
 		maintain: maintainService,
 		interval: interval, clock: clock,
 		metrics:         newAssemblyMetrics(),
@@ -844,6 +850,18 @@ func (assembly *Assembly) PutDocument(ctx context.Context, document corememory.D
 	}
 	if err := document.Validate(); err != nil {
 		return err
+	}
+	// The deployment's ceiling is the contract's unless it says otherwise, and
+	// it is checked before the document is cloned or stored: a payload nobody
+	// meant to ingest costs a count, not a copy.
+	limit := assembly.documentMaxRunes
+	if limit <= 0 {
+		limit = corememory.MaxDocumentRunes
+	}
+	if runes := corememory.DocumentTextRunes(document.Content); runes > limit {
+		return corememory.NewError(corememory.KindInvalidRequest, "document", fmt.Errorf(
+			"memory: document text is %d runes, above this deployment's %d-rune ceiling",
+			runes, limit))
 	}
 	document = document.Clone()
 	if err := assembly.catalog.Register(ctx, document.Scope); err != nil {

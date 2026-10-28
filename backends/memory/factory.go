@@ -206,6 +206,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 			Sections: settings.Chunk.Summary.Sections,
 			MaxRunes: settings.Chunk.Summary.MaxRunes,
 		},
+		MaxDocumentRunes: settings.Document.MaxRunes,
 	})
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: knowledge chunker: %w", err))
@@ -436,6 +437,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	}
 	assembly, err := newAssembly(
 		messages, documents, documentViews, facts, summaries, catalog, seeds, settings.Recent,
+		settings.Document.MaxRunes,
 		retrievalSummary,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),

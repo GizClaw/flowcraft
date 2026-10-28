@@ -124,6 +124,8 @@ summary:
 chunk:
   max_runes: 1600
   overlap_runes: 160
+document:
+  max_runes: 1000000
 lanes:
   fusion: rrf
   cache:
@@ -182,6 +184,36 @@ fact:
   max_facts: 16
   quota: true
 ```
+
+`document.max_runes` bounds the text one document may carry. Absent, it is the
+contract's ceiling (`memory.MaxDocumentRunes`, one million runes), and a value
+above that ceiling is a config error rather than a clamp: the contract refuses
+such a document anyway, so naming a larger limit only hides which bound binds.
+
+A document is derived from its runes -- joined, split into sections, cut into
+chunks, and every section and chunk becomes an item the build publishes -- so an
+input nobody bounded is a build nobody can finish. `PutDocument` refuses one
+above the limit as `KindInvalidRequest` before it clones, stores, or records
+work for anything, and the knowledge line refuses it again at derivation: a
+document written by an older build, or before this deployment lowered its limit,
+is still in the canonical log, and no write gate runs at re-derivation. That
+second refusal is reported rather than retried in place -- the pass counts it
+(`worker.DocumentsRefused`), steps the document stream's cursor past the
+document, and returns the refusal -- because the ceiling is a property of the
+document, and holding the cursor on it would stop every later document of the
+scope from ever being derived. The refused document keeps the build it last
+published, since nothing replaces it; one that never fit has no build and no
+lane entries, which is what a rebuild from canonical state sees as well. The
+setting stays out of the derivation policy digest: it refuses input, it does not
+change what a document derives to.
+
+The ceiling bounds the text, which is the part that is amplified. Media that
+rides along in a document is stored as provenance and never derived, so it is
+not part of the build and not part of this bound; an upload face bounds those
+where the payload exists once. The knowledge line bounds the build itself as
+well, at `knowledge.MaxDocumentArtifacts` sections and chunks: a document whose
+structure multiplies into items is refused the same way, whether it is a heading
+per line or a chunk size no one meant.
 
 The agent side binds the assembly through the `core/memory/hook` factories
 (`memory.context` under `hook.prepare`, `memory.turn` under `hook.commit`).
