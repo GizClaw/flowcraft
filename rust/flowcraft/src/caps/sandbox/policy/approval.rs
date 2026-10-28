@@ -145,6 +145,78 @@ pub struct ApprovalRequest {
     pub reason: String,
 }
 
+/// An approver that asks a configured program.
+///
+/// The deployment names one command line; it receives the call as one JSON line on
+/// stdin and answers with one JSON line on stdout — `{"decision": "allow"}` or
+/// `{"decision": "deny"}`. Anything else (a non-zero exit, a deadline, a missing
+/// program, unparseable output) is an error, and [`approval`] treats an error as a
+/// refusal, so a broken questioner can only ever say no.
+///
+/// This is the "ask someone" half the platform was missing: a script can prompt in a
+/// terminal, call a chat webhook, or gate on a CI check — the sandbox does not have
+/// to know which.
+pub struct CommandApprover {
+    ask: super::ask::Ask,
+}
+
+impl std::fmt::Debug for CommandApprover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("sandbox.CommandApprover")
+            .field("command", &self.ask.argv())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the program is asked. One flat object, because the answer has to be
+/// readable by whatever the operator wrote in `sh`.
+#[derive(serde::Serialize)]
+struct ApprovalPayload<'a> {
+    command: &'a str,
+    args: &'a [String],
+    reason: &'a str,
+    tty: bool,
+    stdin: bool,
+    write: &'a str,
+    net: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct ApprovalAnswer {
+    decision: String,
+}
+
+impl CommandApprover {
+    /// Ask `ask` for every flagged call.
+    #[must_use]
+    pub fn new(ask: super::ask::Ask) -> Self {
+        Self { ask }
+    }
+}
+
+#[async_trait]
+impl Approver for CommandApprover {
+    async fn approve(&self, request: ApprovalRequest) -> Result<Decision> {
+        let payload = ApprovalPayload {
+            command: &request.exec.command,
+            args: &request.exec.args,
+            reason: &request.reason,
+            tty: request.exec.tty,
+            stdin: request.exec.stdin,
+            write: request.exec.opts.write.as_str(),
+            net: request.exec.opts.net.mode.as_str(),
+        };
+        let answer: ApprovalAnswer = self.ask.ask(&payload).await?;
+        match answer.decision.trim() {
+            "allow" => Ok(Decision::Allow),
+            "deny" => Ok(Decision::Deny),
+            other => Err(Error::policy_denied(format!(
+                "sandbox: the approver answered {other:?}, expected \"allow\" or \"deny\""
+            ))),
+        }
+    }
+}
+
 /// Decides a boundary-crossing call.
 #[async_trait]
 pub trait Approver: Send + Sync {

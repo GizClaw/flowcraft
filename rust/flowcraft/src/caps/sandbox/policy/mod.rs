@@ -14,6 +14,7 @@
 
 pub mod allowlist;
 pub mod approval;
+pub mod ask;
 pub mod escalation;
 pub mod plan;
 pub mod readonly;
@@ -33,6 +34,7 @@ pub use approval::{
     allow_commands, allow_commands_with_host, approval, command_patterns, compose_local, defaults,
     interactive, net_non_default, workdir_outside_root,
 };
+pub use ask::Ask;
 pub use escalation::{
     Denial, Escalation, EscalationDecision, EscalationGate, EscalationRules, Escalator, Outcome,
     denial, rule_for,

@@ -117,6 +117,82 @@ pub struct Denial {
     pub excerpt: String,
 }
 
+/// An escalator that asks a configured program.
+///
+/// The deployment names one command line; it receives the refusal as one JSON line
+/// on stdin and answers with one JSON line on stdout —
+/// `{"allow": true, "remember": false}`. Anything else (a non-zero exit, a deadline,
+/// a missing program, unparseable output) is an error, and [`Escalation::exec`]
+/// keeps the confined result, so a broken questioner can only ever say no.
+///
+/// `remember` is honoured for the answer it is: [`Escalation`] has no store of its
+/// own, so a program that wants "always allow this rule" keeps that state itself and
+/// simply answers `{"allow": true}` next time.
+pub struct CommandEscalator {
+    ask: super::ask::Ask,
+}
+
+impl std::fmt::Debug for CommandEscalator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("sandbox.CommandEscalator")
+            .field("command", &self.ask.argv())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(serde::Serialize)]
+struct EscalationPayload<'a> {
+    command: &'a str,
+    rule: &'a str,
+    reason: &'a str,
+    detail: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct EscalationAnswer {
+    allow: bool,
+    #[serde(default)]
+    remember: bool,
+}
+
+impl CommandEscalator {
+    /// Ask `ask` about every recognised refusal.
+    #[must_use]
+    pub fn new(ask: super::ask::Ask) -> Self {
+        Self { ask }
+    }
+}
+
+#[async_trait]
+impl Escalator for CommandEscalator {
+    async fn escalate(&self, request: EscalationRequest) -> Result<EscalationDecision> {
+        let payload = EscalationPayload {
+            command: &request.command,
+            rule: &request.rule,
+            reason: &request.reason,
+            detail: &request.detail,
+        };
+        let answer: EscalationAnswer = self.ask.ask(&payload).await?;
+        Ok(EscalationDecision {
+            allow: answer.allow,
+            remember: answer.remember,
+        })
+    }
+}
+
+/// "Escalation is offerable here", for a backend that has a confine to leave.
+///
+/// The gate exists so a deployment that never configured an escalator cannot start
+/// prompting; a confined runner is exactly the place where leaving is a meaningful
+/// question.
+pub struct Confined;
+
+impl EscalationGate for Confined {
+    fn escalation_available(&self) -> bool {
+        true
+    }
+}
+
 /// Recognise a sandbox refusal in captured output.
 ///
 /// Both streams are searched: the shells that phrase a refusal disagree about

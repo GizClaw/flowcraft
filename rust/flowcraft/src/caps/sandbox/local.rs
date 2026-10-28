@@ -374,6 +374,12 @@ fn validate(value: &Value) -> Result<()> {
     settings.host_policy()?;
     if let Some(policy) = &settings.policy {
         policy.validate()?;
+        if policy.escalation.is_some() {
+            return Err(Error::validation(
+                "sandbox/local: policy.escalation is only meaningful for a confined backend \
+                 (bwrap, seatbelt); this runner has no boundary to leave",
+            ));
+        }
     }
     if let Some(journal) = &settings.journal {
         JournalConfig::parse(journal)?;
@@ -434,6 +440,22 @@ impl Factory for LocalFactory {
 mod tests {
     use super::*;
     use crate::caps::sandbox::contract::ExitReason;
+
+    /// A local runner has no boundary, so it must not accept an escalation: the
+    /// question "may this leave the confine?" has no meaning here, and a document
+    /// that asks it has a mistake worth reporting at build time.
+    #[test]
+    fn an_escalation_on_a_local_runner_is_a_build_error() {
+        let settings = serde_json::json!({
+            "root": "/tmp",
+            "policy": {"escalation": {"command": ["/bin/true"]}},
+        });
+        let error = validate(&settings).expect_err("refused");
+        assert!(
+            error.to_string().contains("no boundary to leave"),
+            "{error}"
+        );
+    }
 
     /// `env_allow` is the deployment's half of an environment policy, so a name
     /// that is not a variable name has to fail at build time rather than silently
