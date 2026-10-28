@@ -45,6 +45,8 @@ pub struct LocalRunner {
     default_output_limit: u64,
     /// The bounds the session table enforces.
     session_limits: SessionLimits,
+    /// Narrows every session's environment to these names (see `Settings`).
+    env_allow: Option<Vec<String>>,
     journal: Option<Arc<Journal>>,
     limits: Arc<crate::caps::sandbox::limits::Manager>,
 }
@@ -73,6 +75,7 @@ impl LocalRunner {
             root: None,
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
             session_limits: SessionLimits::default(),
+            env_allow: None,
             journal: None,
             // Probed once: creating and removing a control group is not something
             // to do per session, and the answer is a property of the host.
@@ -122,6 +125,15 @@ impl LocalRunner {
         self
     }
 
+    /// Narrow every session's environment to these host variable names.
+    ///
+    /// `None` leaves the contract's default (inherit); `Some(&[])` forwards nothing.
+    #[must_use]
+    pub fn with_env_allow(mut self, names: Option<Vec<String>>) -> Self {
+        self.env_allow = names;
+        self
+    }
+
     /// The spawn function the registry calls.
     fn spawner(&self) -> Spawn {
         let options = Arc::new(crate::caps::sandbox::session::SpawnOptions {
@@ -130,6 +142,7 @@ impl LocalRunner {
             limits: self.limits.clone(),
             registry: Some(self.registry.clone()),
             session_limits: self.session_limits.clone(),
+            env_allow: self.env_allow.clone(),
         });
         Arc::new(move |spec: SessionSpec| {
             let options = options.clone();
@@ -269,6 +282,14 @@ struct Settings {
     /// `0` reclaims an exited session as soon as the exit is observed.
     #[serde(default = "default_exit_retention_secs")]
     exit_retention_secs: u64,
+    /// Which host variables a session may inherit, by name.
+    ///
+    /// Absent leaves today's contract alone: the child inherits the daemon's whole
+    /// environment. Present narrows every request to this list — an **empty** list
+    /// forwards nothing (not even `PATH`), which is the strictest a deployment can
+    /// ask for and usually needs `PATH` added back.
+    #[serde(default)]
+    env_allow: Option<Vec<String>>,
     /// Retained output across every session, in bytes.
     ///
     /// `0` removes the bound. A session over the budget is never truncated: the
@@ -314,6 +335,9 @@ fn validate(value: &Value) -> Result<()> {
             "sandbox/local: max_output_bytes must be positive",
         ));
     }
+    if let Some(names) = &settings.env_allow {
+        crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
+    }
     if let Some(journal) = &settings.journal {
         JournalConfig::parse(journal)?;
     }
@@ -342,8 +366,9 @@ impl Factory for LocalFactory {
         Box::pin(async move {
             let settings: Settings = ctx.settings()?;
             let root = crate::caps::sandbox::confinement::path::resolve_root(&settings.root)?;
-            let mut runner =
-                LocalRunner::at(root.clone()).with_session_limits(settings.session_limits());
+            let mut runner = LocalRunner::at(root.clone())
+                .with_session_limits(settings.session_limits())
+                .with_env_allow(settings.env_allow.clone());
             if let Some(limit) = settings.max_output_bytes {
                 runner = runner.with_output_limit(limit);
             }
@@ -363,6 +388,29 @@ impl Factory for LocalFactory {
 mod tests {
     use super::*;
     use crate::caps::sandbox::contract::ExitReason;
+
+    /// `env_allow` is the deployment's half of an environment policy, so a name
+    /// that is not a variable name has to fail at build time rather than silently
+    /// forward nothing.
+    #[test]
+    fn a_settings_name_that_is_not_a_variable_is_refused() {
+        for name in ["", "A=B", " HOME"] {
+            let settings = serde_json::json!({
+                "root": "/tmp",
+                "env_allow": [name],
+            });
+            let error = validate(&settings).expect_err("refused");
+            assert!(
+                error.to_string().contains("not a variable name"),
+                "{name:?}: {error}"
+            );
+        }
+        let settings = serde_json::json!({
+            "root": "/tmp",
+            "env_allow": ["PATH", "HOME"],
+        });
+        validate(&settings).expect("valid names");
+    }
 
     fn spec(argv: &[&str]) -> SessionSpec {
         SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect())

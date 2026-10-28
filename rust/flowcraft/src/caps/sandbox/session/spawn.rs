@@ -62,6 +62,11 @@ pub(crate) struct SpawnOptions {
     pub(crate) registry: Option<Arc<Registry>>,
     /// The bounds that table enforces.
     pub(crate) session_limits: SessionLimits,
+    /// Which host variables a session may inherit, from the deployment's settings.
+    ///
+    /// `None` leaves the caller's policy alone (and therefore inherits, unless the
+    /// caller said otherwise); `Some(list)` narrows every request to that list.
+    pub(crate) env_allow: Option<Vec<String>>,
 }
 
 /// How long a `SIGTERM` gets before the group is killed outright.
@@ -409,6 +414,22 @@ pub(crate) fn environment(
     Some(env)
 }
 
+/// Tell the operator, once, that sessions inherit the daemon's environment.
+///
+/// Once per process: this fires on the first start, and a per-session warning
+/// would be noise in exactly the deployments that are the busiest. The fix is a
+/// settings key, so the message names it.
+fn warn_once_inherited_env() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "sandbox: sessions inherit the daemon's environment; set `env_allow` on the \
+             runner to forward only the variables the workload needs"
+        );
+    });
+}
+
 /// Validate the policy this backend can actually enforce, and resolve the
 /// working directory against the runner root when there is one.
 async fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result<()> {
@@ -437,6 +458,16 @@ async fn validate_spec(spec: &mut SessionSpec, options: &SpawnOptions) -> Result
             Code::WriteModeUnsupported,
             "sandbox: the local runner has no filesystem boundary, so a read-only root cannot be enforced",
         ));
+    }
+    // Environment: the deployment narrows what a caller asked to forward. A
+    // provider can only tighten here — the request is the caller's, and this is
+    // the boundary's half of it.
+    spec.opts.env.tighten(options.env_allow.as_deref());
+    if spec.opts.env.inherits_host() {
+        // Worth exactly one line per process: a child that inherits the daemon's
+        // environment gets every credential the deployment happened to export, and
+        // nothing in a default deployment says so out loud.
+        warn_once_inherited_env();
     }
     // Resource caps: the platform decides what it can enforce, and a request it
     // cannot honour is refused rather than silently ignored.
@@ -914,6 +945,7 @@ mod tests {
             limits: std::sync::Arc::new(Manager::probe()),
             registry: None,
             session_limits: SessionLimits::default(),
+            env_allow: None,
         }
     }
 
@@ -1000,6 +1032,36 @@ mod tests {
             .unwrap();
         let error = session.write(b"x").await.expect_err("no stdin");
         assert_eq!(error.kind(), crate::error::ErrorKind::NotAvailable);
+        session.close().await.unwrap();
+    }
+
+    /// The deployment's half of the environment: it may only narrow, and a session
+    /// that asked for nothing gets exactly the narrowed list — not the daemon's
+    /// whole environment, which is the contract's default and the reason the review
+    /// flagged this as fail-open.
+    #[tokio::test]
+    async fn the_runner_narrows_what_a_session_may_inherit() {
+        let mut widened = options();
+        widened.env_allow = Some(vec!["PATH".to_owned()]);
+
+        let mut start = spec(&[
+            "sh",
+            "-c",
+            "printf '%s/%s' \"${HOME:-missing}\" \"${SECRET:-missing}\"",
+        ]);
+        start
+            .opts
+            .env
+            .inject
+            .insert("SECRET".to_owned(), "s3cr3t".to_owned());
+        let session = spawn_session(start, &widened).await.unwrap();
+        session.wait().await.unwrap();
+        assert_eq!(
+            read_all(&session).await,
+            "missing/s3cr3t",
+            "an inherited variable the deployment did not list must not reach the child, \
+             while an injected one still does"
+        );
         session.close().await.unwrap();
     }
 

@@ -178,6 +178,8 @@ pub struct SandboxConfig {
     extra_flags: Vec<String>,
     journal: Option<Arc<Journal>>,
     net: NetSettings,
+    /// Which host variables a session may inherit; see the local runner's settings.
+    env_allow: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for SandboxConfig {
@@ -212,6 +214,7 @@ impl SandboxConfig {
             extra_flags: Vec::new(),
             journal: None,
             net: NetSettings::default(),
+            env_allow: None,
         }
     }
 
@@ -339,8 +342,9 @@ impl ConfinedRunner {
     pub fn new(config: SandboxConfig) -> Self {
         Self {
             // The wrapper resolves the workdir, so the inner runner must not
-            // re-check it against a root it does not have.
-            inner: LocalRunner::new(),
+            // re-check it against a root it does not have. The environment policy
+            // is the deployment's, so it travels with the configuration.
+            inner: LocalRunner::new().with_env_allow(config.env_allow.clone()),
             config,
         }
     }
@@ -586,6 +590,13 @@ struct Settings {
     /// Extra wrapper flags (`bwrap` only).
     #[serde(default)]
     extra_flags: Vec<String>,
+    /// Which host variables a session may inherit, by name.
+    ///
+    /// Absent keeps the contract's default (the child inherits the daemon's whole
+    /// environment); present narrows every request to this list, and an empty list
+    /// forwards nothing.
+    #[serde(default)]
+    env_allow: Option<Vec<String>>,
     /// Attach a file journal (see `journal::Config`).
     #[serde(default)]
     journal: Option<Value>,
@@ -690,6 +701,9 @@ fn check_common(settings: &Settings) -> Result<()> {
             "sandbox: settings.binary must not be empty",
         ));
     }
+    if let Some(names) = &settings.env_allow {
+        crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
+    }
     for (index, path) in settings.writable_paths.iter().enumerate() {
         if path.trim().is_empty() {
             return Err(Error::validation(format!(
@@ -769,6 +783,7 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
                 audit: settings.net.audit,
                 proxy: settings.net.proxy.limits(),
             },
+            env_allow: settings.env_allow.clone(),
         };
         if let Some(value) = &settings.journal {
             // A deployment that asked for a journal must not end up with a

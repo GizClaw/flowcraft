@@ -282,6 +282,56 @@ pub struct EnvPolicy {
     pub inject: BTreeMap<String, String>,
 }
 
+impl EnvPolicy {
+    /// Narrow `allow` with the provider's policy.
+    ///
+    /// A provider may only tighten: a caller that asked for less keeps less, a
+    /// caller that asked for nothing (or for everything, by leaving it unset) is
+    /// bounded by what the deployment configured. Injection is untouched — adding
+    /// a variable is not a narrowing, so it is not a provider's move here.
+    ///
+    /// The order of the caller's list is preserved, because the resulting list is
+    /// what a human reads in a `Debug` print or an audit record.
+    pub fn tighten(&mut self, provider: Option<&[String]>) {
+        let Some(provider) = provider else {
+            return;
+        };
+        self.allow = Some(match self.allow.take() {
+            None => provider.to_vec(),
+            Some(requested) => requested
+                .into_iter()
+                .filter(|name| provider.iter().any(|allowed| allowed == name))
+                .collect(),
+        });
+    }
+
+    /// Check a provider's list of names it will forward.
+    ///
+    /// A name that is empty or carries `=` would be silently ignored by the child's
+    /// environment lookup, so a deployment that meant to forward a credential and
+    /// mistyped it learns at build time instead of at the first failed call.
+    pub fn validate_allow_names(names: &[String]) -> Result<()> {
+        for (index, name) in names.iter().enumerate() {
+            if name.is_empty() || name.contains('=') || name.trim() != name {
+                return Err(Error::validation(format!(
+                    "sandbox: env_allow[{index}] {name:?} is not a variable name"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the child inherits the daemon's whole environment.
+    ///
+    /// `true` is the contract's default and the one a deployment should think
+    /// about: everything the daemon was started with — including whatever is in
+    /// its environment — reaches the child.
+    #[must_use]
+    pub fn inherits_host(&self) -> bool {
+        self.allow.is_none()
+    }
+}
+
 /// Per-start options.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecOptions {
@@ -877,6 +927,71 @@ impl std::ops::Deref for Handle {
 impl Resource for Handle {
     fn shutdown(self: Arc<Self>) -> crate::resource::BoxFuture<'static, Result<()>> {
         Box::pin(async move { self.0.close().await })
+    }
+}
+
+#[cfg(test)]
+mod env_policy_tests {
+    use super::*;
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn policy(allow: Option<&[&str]>) -> EnvPolicy {
+        EnvPolicy {
+            allow: allow.map(names),
+            inject: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_provider_without_a_policy_leaves_the_request_alone() {
+        let mut requested = policy(Some(&["HOME"]));
+        requested.tighten(None);
+        assert_eq!(requested.allow, Some(vec!["HOME".to_owned()]));
+    }
+
+    #[test]
+    fn a_request_that_asked_for_everything_is_bounded_by_the_provider() {
+        let mut requested = policy(None);
+        assert!(requested.inherits_host());
+        requested.tighten(Some(&names(&["PATH", "HOME"])));
+        assert_eq!(
+            requested.allow,
+            Some(vec!["PATH".to_owned(), "HOME".to_owned()])
+        );
+        assert!(!requested.inherits_host());
+    }
+
+    #[test]
+    fn a_request_that_asked_for_less_stays_bounded_both_ways() {
+        let mut requested = policy(Some(&["HOME", "SECRET"]));
+        requested.tighten(Some(&names(&["HOME", "PATH"])));
+        assert_eq!(
+            requested.allow,
+            Some(vec!["HOME".to_owned()]),
+            "the intersection, in the caller's order"
+        );
+        // An empty provider list is the strictest deployment there is.
+        let mut requested = policy(Some(&["HOME"]));
+        requested.tighten(Some(&[]));
+        assert_eq!(requested.allow, Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_variable_name_is_refused() {
+        for names in [
+            vec![String::new()],
+            vec!["A=B".to_owned()],
+            vec![" HOME".to_owned()],
+        ] {
+            assert!(
+                EnvPolicy::validate_allow_names(&names).is_err(),
+                "{names:?} must be refused"
+            );
+        }
+        assert!(EnvPolicy::validate_allow_names(&["PATH".to_owned()]).is_ok());
     }
 }
 

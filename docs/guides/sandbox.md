@@ -515,6 +515,14 @@ and the same three on the confined backends); the proxy limits are nested under
 | `net.proxy.idle_timeout_secs` | 60 | How long a tunnel may go with no byte moving in either direction. `0` disables it. |
 | `net.proxy.max_lifetime_secs` | 1800 | How long a tunnel may stay open at all, however busy. `0` disables it. |
 
+One more setting is not a bound but a boundary: `env_allow` lists the host
+variables a session may inherit, by name. Absent, the child inherits the daemon's
+**whole** environment — the contract's default, and the one a deployment should
+think about, because whatever the daemon was started with reaches every command it
+runs. Present, it narrows every request to that list and can only narrow: a
+caller that asked for less keeps less, and an empty list forwards nothing (not
+even `PATH`). The Rust runner warns once per process when a session inherits.
+
 Three rules make those numbers usable:
 
 - **a running session is never the price of admitting new work.** Eviction only
