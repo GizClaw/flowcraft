@@ -1,0 +1,65 @@
+---
+# Host configuration for the capability example: one endpoint per capability.
+remote:
+  mode: strict
+  allow_targets:
+    - "unix:///tmp/flowcraft/*"
+  endpoints:
+    workspace-dev:
+      target: "unix:///tmp/flowcraft/workspace.sock"
+      capabilities: ["workspace.Workspace/v1"]
+    secrets-dev:
+      target: "unix:///tmp/flowcraft/secrets.sock"
+      capabilities: ["secret.Store/v1"]
+    sandbox-dev:
+      target: "unix:///tmp/flowcraft/sandbox.sock"
+      capabilities: ["sandbox.Runner/v1"]
+    tools-dev:
+      target: "unix:///tmp/flowcraft/tools.sock"
+      capabilities: ["tool.ToolSource/v1"]
+# Bootstrap secrets for endpoint TLS. These are host-owned and must be
+# available before any resource is built:
+#   bootstrap:
+#     dir: /etc/flowcraft/secrets      # ${secret:remote/ca} -> <dir>/remote/ca
+#     # watch: true                    # default when dir is set: a change reloads
+#     env_prefix: FLOWCRAFT_SECRET_    # ${secret:API_KEY} -> $FLOWCRAFT_SECRET_API_KEY
+#
+# TLS is configured per endpoint and applies in both directions: the server
+# half uses cert/key/client_ca, the client half uses ca/client_cert/client_key
+# and server_name. A `dns://` target without tls is rejected at startup.
+#
+#   endpoints:
+#     sandbox-farm:
+#       target: "dns:///sandbox.internal:443"
+#       capabilities: ["sandbox.Runner/v1"]
+#       tls:
+#         cert: "${secret:sandbox/server-cert.pem}"
+#         key: "${secret:sandbox/server-key.pem}"
+#         client_ca: "${secret:ca.pem}"
+#         ca: "${secret:ca.pem}"
+#         client_cert: "${secret:sandbox/client-cert.pem}"
+#         client_key: "${secret:sandbox/client-key.pem}"
+#         server_name: sandbox.internal
+# Crafts this daemon hosts. Each one is launched as a child process, gets a
+# session and the grants listed here, and survives `SIGHUP` (a craft's argv or
+# grants change with a restart, not a reload).
+#
+# Need a craft to point at? `flowcraftd craft-stub --socket <path>` serves the
+# ABI with a canned response, which is enough to watch the lifecycle:
+#
+#   crafts:
+#     demo:
+#       argv: ["/usr/local/bin/flowcraftd", "craft-stub", "--socket", "/tmp/flowcraft/craft.sock"]
+#       socket: /tmp/flowcraft/craft.sock
+#       grants:
+#         - capability: workspace.Workspace/v1
+#           endpoint: workspace-dev
+#           scope: {root: repos, write: true}
+#       # supervisor: exec (default, this daemon owns the process),
+#       #             external (already running), or systemd (a unit).
+#       supervisor: exec
+#       env:
+#         RUST_LOG: info
+#       ready_timeout_secs: 10
+grants:
+  ttl_secs: 900

@@ -1,0 +1,37 @@
+[package]
+name = "flowcraft-win32"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Win32 mechanisms the sandbox needs: job objects today, tokens and app containers next."
+
+# Deliberately outside the workspace lints: `unsafe_code = "forbid"` is the rule
+# for the platform crate, and this crate exists so that rule can stay absolute.
+# Unsafe is allowed here and documented instead: every block names the invariant
+# it relies on, and `undocumented_unsafe_blocks` makes an unannotated one a lint
+# failure rather than a matter of review attention.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }

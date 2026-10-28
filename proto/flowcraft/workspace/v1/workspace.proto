@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package flowcraft.workspace.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/workspace/v1;workspacev1";
+
+// Workspace is the file-plane capability served by a platform endpoint. The
+// host is the client; every call carries a session grant in the
+// "authorization: Bearer <token>" metadata.
+service Workspace {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc Read(ReadRequest) returns (ReadResponse);
+  rpc ReadLimited(ReadLimitedRequest) returns (ReadLimitedResponse);
+  rpc Write(WriteRequest) returns (WriteResponse);
+  rpc Append(AppendRequest) returns (AppendResponse);
+  rpc Rename(RenameRequest) returns (RenameResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc RemoveAll(RemoveAllRequest) returns (RemoveAllResponse);
+  rpc Stat(StatRequest) returns (StatResponse);
+  rpc Exists(ExistsRequest) returns (ExistsResponse);
+  rpc List(ListRequest) returns (ListResponse);
+}
+
+message DescribeRequest {}
+message DescribeResponse {
+  bool atomic_rename = 1;
+  bool read_after_write = 2;
+  bool durable_on_write = 3;
+  bool distributed = 4;
+}
+
+message ReadRequest { string path = 1; }
+message ReadResponse { bytes data = 1; }
+
+// ReadLimited is the bounded form of Read: the payload never exceeds
+// `max_bytes`, and a larger file is refused with INVALID_ARGUMENT rather than
+// transferred. It exists so a caller's byte cap survives the process boundary —
+// a plain Read followed by a length check has already materialized the bytes,
+// which is the allocation the cap is there to prevent.
+message ReadLimitedRequest {
+  string path = 1;
+  uint64 max_bytes = 2;
+}
+message ReadLimitedResponse { bytes data = 1; }
+
+message WriteRequest { string path = 1; bytes data = 2; }
+message WriteResponse {}
+
+message AppendRequest { string path = 1; bytes data = 2; }
+message AppendResponse {}
+
+message RenameRequest { string src = 1; string dst = 2; }
+message RenameResponse {}
+
+message DeleteRequest { string path = 1; }
+message DeleteResponse {}
+
+message RemoveAllRequest { string path = 1; }
+message RemoveAllResponse {}
+
+message StatRequest { string path = 1; }
+message StatResponse {
+  string name = 1;
+  int64 size = 2;
+  uint32 mode = 3;
+  int64 mod_time_unix_nano = 4;
+  bool is_dir = 5;
+}
+
+message ExistsRequest { string path = 1; }
+message ExistsResponse { bool exists = 1; }
+
+message ListRequest { string dir = 1; }
+message ListResponse { repeated Entry entries = 1; }
+message Entry {
+  string name = 1;
+  bool is_dir = 2;
+  uint32 mode = 3;
+  int64 size = 4;
+  int64 mod_time_unix_nano = 5;
+}

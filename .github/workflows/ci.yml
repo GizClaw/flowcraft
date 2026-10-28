@@ -2,7 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # `main` is what ships; `rewrite/rust-platform` is where the Rust platform
+    # lands first, so a pull request into it must not be the one place without CI.
+    branches: [main, rewrite/rust-platform]
   workflow_dispatch:
     inputs:
       base_sha:
@@ -462,10 +464,216 @@ jobs:
         working-directory: core/sandbox
         run: go test -count=1 -race -timeout 300s ./...
 
+  rust:
+    name: Rust platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust/ pins its toolchain in rust-toolchain.toml; read it here instead of
+      # repeating the version, so a bump touches one file and cannot drift.
+      - name: Read the pinned toolchain
+        id: toolchain
+        run: |
+          channel=$(grep '^channel' rust/rust-toolchain.toml | cut -d'"' -f2)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The Rust wire bindings are committed, so no build here needs protoc; the
+      # binary is only required by the drift gate, which regenerates them from
+      # proto/ and fails if they moved. The checked-in tree stays the single
+      # source of truth for both stacks, the way `make proto-check` holds the Go
+      # stubs to it.
+      - name: Install protoc and the Windows cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler gcc-mingw-w64-x86-64
+      - name: Format check
+        working-directory: rust
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Wire bindings are not stale
+        run: make rust-proto-check
+      # Two shapes are documented: `platform` (the composition plane, which is
+      # the default) and `workspace` alone without the `wire` feature — the
+      # provider a Windows host builds. A link or a `cfg`-gated item that
+      # resolves in one and not the other is a doc warning, so both are gated.
+      - name: Docs
+        working-directory: rust
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc -p flowcraft --no-deps
+          cargo doc -p flowcraft --no-deps \
+            --no-default-features --features workspace
+          cargo doc -p flowcraft-platformd --no-deps
+      # Every provider shape must compile for a Windows target: the kernel's
+      # unix assumptions are `cfg(unix)` now, so a host elsewhere binds `dns://`
+      # targets over TCP and refuses a unix target at bind time. The matrix lives
+      # in `make rust-windows-check`. It needs the mingw C compiler installed
+      # above, because `ring` (through tonic and rustls) compiles C for the
+      # target even under `cargo check`.
+      - name: Windows shapes compile
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          make rust-windows-check
+      - name: Test
+        working-directory: rust
+        run: cargo test --workspace
+
+  # The kernel's transport is unix-domain sockets, so the platform itself is
+  # unix-only. The workspace capability is not:
+  # `--no-default-features --features workspace` keeps the provider and drops
+  # the `wire` feature (endpoint, remote client, grant scope), so it has no
+  # control-plane dependency — and it has `cfg(windows)` branches worth more
+  # than a compile check: the sharing-violation retry and the refusal to
+  # replace a directory with `MoveFileEx`. This lane runs that shape on a real
+  # Windows host, so those branches execute instead of merely compiling.
+  #
+  # It is a separate runner rather than a cross-compile on ubuntu because the
+  # interesting part is behaviour: what Windows does when a directory is in the
+  # way, and what `ERROR_SHARING_VIOLATION` looks like to `std`. `make
+  # rust-windows-check` does the cheap cross-compile for a feed-back loop without
+  # a Windows machine. No protoc: the bindings are committed, and this shape
+  # does not even compile the `proto` module.
+  rust-windows:
+    name: Rust platform (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the pinned toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(grep '^channel' rust/rust-toolchain.toml | cut -d'"' -f2)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Clippy for the local-only shape
+        working-directory: rust
+        # A trailing backslash is bash syntax; the Windows default is PowerShell.
+        shell: bash
+        run: |
+          cargo clippy -p flowcraft --all-targets \
+            --no-default-features --features workspace -- -D warnings
+      - name: Test the local-only shape
+        working-directory: rust
+        run: cargo test -p flowcraft --no-default-features --features workspace
+      # The other providers and the daemon compile here too. Their tests are
+      # compiled but not run yet: a few of them spawn `sh`, and the sandbox has no
+      # Windows backend to select. Running them is the point of this lane once
+      # that lands.
+      - name: Compile the other provider shapes and the daemon
+        working-directory: rust
+        # Same reason: `for …; do …; done` and `\` continuations are bash.
+        shell: bash
+        run: |
+          for shape in secret tool sandbox caps; do
+            cargo check -p flowcraft --all-targets \
+              --no-default-features --features "$shape"
+          done
+          cargo check -p flowcraft-platformd --all-targets
+      # The sandbox capability needs the control plane (kernel/client/wire), so it
+      # cannot use the `workspace`-only shape above: its endpoints are gRPC over
+      # the kernel's transport, which is a unix socket on unix and a `dns` target
+      # elsewhere. Two steps, because the two halves fail for different reasons.
+      # The Win32 mechanisms on their own: job creation, limits, accounting, and
+      # what the kernel reports when a cap ended the tree.
+      - name: Windows job objects
+        working-directory: rust
+        run: cargo test -p flowcraft-win32
+      # A control experiment before the implementation it guards: if the reference
+      # ConPTY backend cannot reach a pseudo console on this runner, a failure in
+      # ours says nothing about our code.
+      - name: ConPTY control (reference backend)
+        working-directory: rust
+        run: >
+          cargo test -p flowcraft --features sandbox,wire
+          --test sandbox_win_conpty_control
+      # The session semantics only a job object can provide: a terminate that
+      # reaches descendants, and a cap reported as a budget rather than as a
+      # mystery exit code.
+      - name: Sandbox sessions on Windows
+        working-directory: rust
+        run: >
+          cargo test -p flowcraft --features sandbox,wire
+          --test sandbox_windows
+      # The semantics that must hold on every platform: matching, folding,
+      # cursors, the scope checks, the error codes, and the plan/argv builders.
+      # Everything left out of this list needs a platform mechanism the crate does
+      # not have on Windows yet, and each reason is named here rather than left
+      # implicit — the list may only shrink:
+      #
+      #   caps::sandbox::session::spawn                     its fixtures run a
+      #       POSIX shell; the mechanism itself is `flowcraft-win32` and is
+      #       covered by the two suites above
+      #   caps::sandbox::local, exec                        need a POSIX shell to
+      #       run (`sh -c`); the Windows fixtures are part of W2
+      #   caps::sandbox::net::proxy, net::bridge            TCP proxy tests pass
+      #       off-unix, but the bridge forwards to a unix socket, and one proxy
+      #       test binds one
+      #   caps::sandbox::journal::tests                     a watcher on a real
+      #       tree; `notify` supports Windows, so this is the first candidate to
+      #       move into the list once the lane proves it
+      #   caps::sandbox::policy::{approval, escalation, tests}
+      #                                                     assert through a live
+      #       `LocalRunner`, i.e. a POSIX shell
+      - name: Test the platform-independent sandbox semantics
+        working-directory: rust
+        shell: bash
+        run: |
+          cargo test -p flowcraft --lib --features sandbox,wire -- \
+            caps::sandbox::wire \
+            caps::sandbox::contract \
+            caps::sandbox::scope \
+            caps::sandbox::codes \
+            caps::sandbox::session::log \
+            caps::sandbox::session::registry \
+            caps::sandbox::session::terminal \
+            caps::sandbox::policy::allowlist \
+            caps::sandbox::policy::readonly \
+            caps::sandbox::journal::ring \
+            caps::sandbox::journal::fold \
+            caps::sandbox::journal::source \
+            caps::sandbox::net::pattern \
+            caps::sandbox::net::matcher \
+            caps::sandbox::limits::tests \
+            caps::sandbox::confinement::bwrap \
+            caps::sandbox::confinement::seatbelt \
+            caps::sandbox::confinement::path \
+            caps::sandbox::confinement::tests
+
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, check-consumers, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-craft-windows, test-sandbox-windows, test-sandbox-macos]
+    needs:
+      - release-intent
+      - gofmt
+      - check-consumers
+      - compute-matrix
+      - lint
+      - test
+      - rust
+      - rust-windows
+      - test-memory-postgres
+      - test-memory-windows
+      - test-sandbox-bwrap
+      - test-core-windows
+      - test-craft-windows
+      - test-sandbox-windows
+      - test-sandbox-macos
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -477,6 +685,8 @@ jobs:
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \
             "${{ needs.test.result }}" \
+            "${{ needs.rust.result }}" \
+            "${{ needs.rust-windows.result }}" \
             "${{ needs.test-memory-postgres.result }}" \
             "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \

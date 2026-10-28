@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+package flowcraft.craft.v1;
+
+option go_package = "github.com/GizClaw/flowcraft/core/craft/v1;craftv1";
+
+import "flowcraft/message/v1/message.proto";
+
+// Craft is the platform-to-craft ABI. The craft runs the agent loop; the
+// platform owns the session, the grants, and the capability endpoints.
+//
+// This file is the contract both sides code against: the Go craft SDK
+// implements the server, and the platform (Rust) is the client. It is
+// deliberately narrow — everything craft-specific stays behind RunEvent
+// payloads, so the platform never parses a craft's internal resource graph.
+service Craft {
+  // Identify the craft: name, version, what it requires and provides.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+
+  // Open one session and hand it the grants it may use.
+  rpc Start(StartRequest) returns (StartResponse);
+
+  // Execute one turn. Server-streaming with application-level credit: the
+  // caller sends a credit budget and may extend it with Steer.
+  rpc Run(RunRequest) returns (stream RunEvent);
+
+  // Feed the running turn (user input, a mid-run correction).
+  rpc Steer(SteerRequest) returns (SteerResponse);
+
+  // Renew the session's grants before they expire.
+  rpc Renew(RenewRequest) returns (RenewResponse);
+
+  // Stop the running turn without closing the session.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Close the session and release everything it owns.
+  rpc Close(CloseRequest) returns (CloseResponse);
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  CraftInfo info = 1;
+}
+
+message CraftInfo {
+  // Application-defined name.
+  string name = 1;
+  // Application version.
+  string version = 2;
+  // Capabilities this craft consumes, e.g. "workspace.Workspace/v1".
+  repeated string requires = 3;
+  // Capabilities this craft offers. Private only: "<vendor>.<craft>.<thing>/vN",
+  // never a platform capability name.
+  repeated string provides = 4;
+  // "single" (one tenant per instance) or "shared".
+  string tenancy = 5;
+
+  // The lifecycle ABI this craft implements, e.g. "flowcraft.craft/v1".
+  // The platform refuses to start a craft whose version it does not support.
+  string abi_version = 6;
+  // Every ABI version the craft can serve. When set, `abi_version` must be
+  // one of them and the platform picks an intersecting one.
+  repeated string abi_versions = 7;
+
+  // Business envelope types accepted on RunRequest.input. Each entry is a
+  // dotted name; "x-" prefixed types are always allowed as extensions.
+  repeated string input_types = 8;
+  // Business envelope types the craft may emit in RunEvent.payload.
+  repeated string event_types = 9;
+}
+
+message StartRequest {
+  // Instance id chosen by the platform.
+  string instance = 1;
+  // Tenant the session belongs to.
+  string tenant = 2;
+  // The grants the craft may present to capability endpoints.
+  repeated Grant grants = 3;
+}
+
+message Grant {
+  // Capability this grant is for.
+  string capability = 1;
+  // Endpoint target the craft should dial.
+  string endpoint = 2;
+  // Short-lived bearer token.
+  string token = 3;
+  // Unix seconds.
+  int64 expires_at_unix = 4;
+  // Capability-specific limits, JSON.
+  bytes scope = 5;
+}
+
+message StartResponse {
+  // Session id used by every later call.
+  string session = 1;
+  // Grants actually in force (the platform may narrow what was requested).
+  repeated Grant grants = 2;
+}
+
+message RunRequest {
+  string session = 1;
+  // What the caller asks the craft to do. A conversation message is typed
+  // (`flowcraft.message.v1.Message`); anything craft-private goes through
+  // `Extension`, whose `type` must be declared in CraftInfo.input_types or
+  // start with "x-".
+  Envelope input = 2;
+  // How many events the caller is prepared to buffer.
+  int64 credit = 3;
+}
+
+message RunEvent {
+  int64 seq = 1;
+  // "delta", "message", "credit", "done", "error".
+  string type = 2;
+  // For "delta" and "message": a typed envelope. For the others it is empty.
+  Envelope payload = 3;
+  // Set when type == "error".
+  string error = 4;
+  // Remaining credit, when type == "credit".
+  int64 credit = 5;
+}
+
+// Envelope is the typed business payload of a run or a steer.
+//
+// The platform knows two conversation shapes — a complete message and a
+// streaming delta — and carries everything else opaquely through Extension.
+// That is the whole point of the envelope: a platform-vocabulary payload is
+// schema-checked against `flowcraft.message.v1`, while a craft's private
+// payload cannot drift from a schema it never declared.
+message Envelope {
+  oneof body {
+    flowcraft.message.v1.Message message = 1;
+    flowcraft.message.v1.Delta delta = 2;
+    Extension extension = 3;
+  }
+}
+
+// Extension is a craft-private payload. `type` must be declared in
+// CraftInfo.input_types / event_types, or start with "x-".
+message Extension {
+  string type = 1;
+  bytes data = 2;
+}
+
+message RenewRequest {
+  string session = 1;
+  // Freshly minted grants, replacing the previous set.
+  repeated Grant grants = 2;
+}
+
+message RenewResponse {
+  // The grants the craft now holds.
+  repeated Grant grants = 1;
+}
+
+message SteerRequest {
+  string session = 1;
+  // Same envelope as RunRequest.input.
+  Envelope payload = 2;
+}
+
+message SteerResponse {}
+
+message CancelRequest {
+  string session = 1;
+  string reason = 2;
+}
+
+message CancelResponse {}
+
+message CloseRequest {
+  string session = 1;
+}
+
+message CloseResponse {}

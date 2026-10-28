@@ -1,0 +1,88 @@
+# FlowCraft platform in Rust — workspace root.
+#
+# Two packages, two audiences:
+#   flowcraft          the library: contracts, composition, control plane,
+#                      capabilities. Everything a consumer depends on.
+#   flowcraft-platformd the daemon: `flowcraftd`, the single delivered binary,
+#                      plus the supervisor/admin surface only it needs.
+#
+# Inside `flowcraft` the module graph is one-way:
+#   error → telemetry → resource → kernel → client → caps → (daemon)
+# and `tests/layering.rs` pins it.
+
+[workspace]
+resolver = "3"
+members = ["flowcraft", "flowcraft-win32", "flowcraft-platformd", "tools/proto-gen"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Not 1.85: the dependency tree already needs more (rmcp 3.7 wants 1.88,
+# process-wrap 1.87). A published `rust-version` is a promise cargo enforces, so
+# it names the floor that actually builds.
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/GizClaw/flowcraft"
+
+
+[workspace.dependencies]
+flowcraft = { path = "flowcraft", version = "0.1.0" }
+flowcraft-win32 = { path = "flowcraft-win32", version = "0.1.0" }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tower = { version = "0.5", features = ["util"] }
+
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+cap-std = "4"
+cgroups-rs = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+globset = "0.4"
+nix = { version = "0.31", features = ["signal"] }
+notify = "8"
+http = "1"
+portable-pty = "0.9"
+prost = "0.14"
+windows-sys = "0.60"
+rand = "0.8"
+ring = "0.17"
+saphyr = "0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "io-util",
+    "fs",
+    "process",
+] }
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.27", default-features = false, features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.27", default-features = false, features = ["trace", "logs"] }
+tracing-opentelemetry = { version = "0.28", default-features = false }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = [
+    "http-proto",
+    "reqwest-client",
+    "logs",
+] }
+opentelemetry-appender-tracing = { version = "0.27", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+future_not_send = "warn"

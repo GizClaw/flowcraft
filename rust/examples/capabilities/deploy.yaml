@@ -1,0 +1,171 @@
+---
+# Four capabilities, plus the secret store that feeds `${secret:...}`.
+#
+# `host` and `grants` are injected for every `*.Endpoint` resource, `endpoints`
+# for every remote client. Nothing here names the listener factory.
+version: v1
+
+resources:
+  # Pre phase: built before everything else, so `${secret:...}` can resolve.
+  #
+  # `default: true` is what a NAME-only `${secret:demo/workspace}` resolves
+  # through; `id` is what `${secret:demo.NAME}` would address. At most one store
+  # per deployment may be the default.
+  secrets:
+    kind: secret.Store
+    impl: memory
+    settings:
+      default: true
+      values:
+        demo/workspace: /tmp/flowcraft/data
+
+  # The workspace root comes from the deployment secret store.
+  workspace:
+    kind: workspace.Workspace
+    impl: local
+    settings:
+      root: "${secret:demo/workspace}"
+
+  # A policy over the provider: reads are deny-only, writes allow-only, and
+  # `mandatory_deny` wins over both. It is its own resource, not a setting, so
+  # the same rules wrap any provider and the endpoint cannot tell the difference.
+  # An invalid pattern fails `check`, not the first call that hits the rule.
+  workspace-policy:
+    kind: workspace.Workspace
+    impl: scoped
+    deps:
+      workspace: workspace
+    settings:
+      # `**/secrets/**`, not `secrets/**`: the policy sits *below* the view, so
+      # it sees the prefixed path (`run-1/secrets/…`) and an anchored rule would
+      # never match. A leading `**` makes the rule layer-independent.
+      deny_read: ["**/secrets/**"]
+      allow_write: ["**"]
+      mandatory_deny: ["**/.env"]
+
+  # A prefixed view over the policy. Every caller of the endpoint below is
+  # confined to one subtree by a name mapping, so the grant's scope and the
+  # provider's root stay independent of per-run layout.
+  workspace-view:
+    kind: workspace.Workspace
+    impl: sub
+    deps:
+      workspace: workspace-policy
+    settings:
+      prefix: run-1
+
+  workspace-endpoint:
+    kind: workspace.Endpoint
+    impl: grpc
+    # Serve the view: the policy and the prefix apply to every remote call.
+    deps:
+      workspace: workspace-view
+    settings:
+      endpoint: workspace-dev
+
+  workspace-client:
+    kind: workspace.Workspace
+    impl: remote
+    deps:
+      endpoints: endpoints
+    settings:
+      endpoint: workspace-dev
+      scope:
+        root: repos
+        write: true
+
+  secrets-endpoint:
+    kind: secret.Endpoint
+    impl: grpc
+    deps:
+      store: secrets
+    settings:
+      endpoint: secrets-dev
+
+  secrets-client:
+    kind: secret.Store
+    impl: remote
+    deps:
+      endpoints: endpoints
+    settings:
+      endpoint: secrets-dev
+      scope:
+        prefix: demo/
+
+  sandbox:
+    kind: sandbox.Runner
+    impl: local
+    settings:
+      # The filesystem boundary every session's workdir is resolved against.
+      root: .
+
+  sandbox-endpoint:
+    kind: sandbox.Endpoint
+    impl: grpc
+    deps:
+      runner: sandbox
+    settings:
+      endpoint: sandbox-dev
+
+  sandbox-client:
+    kind: sandbox.Runner
+    impl: remote
+    deps:
+      endpoints: endpoints
+    settings:
+      endpoint: sandbox-dev
+      scope:
+        commands: [sh, git, rg]
+        max_timeout_secs: 120
+        max_output_bytes: 65536
+
+  # An MCP tool source. `required: false` keeps the example runnable when the
+  # server binary is absent: the source is skipped instead of failing the build.
+  # Remove it (or make it required) in a real deployment.
+  mcp-tools:
+    kind: tool.Source
+    impl: mcp
+    settings:
+      servers:
+        - name: files
+          transport: stdio
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/flowcraft/data"]
+          prefix: fs__
+          required: false
+          resources: true
+
+  # A registry merges many tool sources; `tool.*` dep keys are the source order
+  # `conflict: overwrite` uses. Its output is a tool.ToolSource, so the endpoint
+  # below can consume it directly.
+  tools:
+    kind: tool.Registry
+    impl: memory
+    deps:
+      tool.mcp: mcp-tools
+    settings:
+      conflict: error
+
+  tools-endpoint:
+    kind: tool.Endpoint
+    impl: grpc
+    deps:
+      source: tools
+    settings:
+      endpoint: tools-dev
+
+  tools-client:
+    kind: tool.Source
+    impl: remote
+    deps:
+      endpoints: endpoints
+    settings:
+      endpoint: tools-dev
+      scope:
+        allow: ["fs__read_file", "fs__list_resources", "fs__read_resource"]
+        max_calls: 100
+
+entries:
+  - workspace
+  - sandbox
+  - tools

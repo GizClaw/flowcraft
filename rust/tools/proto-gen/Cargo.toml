@@ -1,0 +1,22 @@
+[package]
+name = "flowcraft-proto-gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# A repository tool: it reads `proto/` from outside the package, so it must never
+# be published. The published surface stays `flowcraft` and `flowcraft-platformd`,
+# and `flowcraft/tests/layering.rs` asserts that.
+publish = false
+description = "Regenerates the committed Rust wire bindings from proto/ (repository tool, not published)."
+
+[[bin]]
+name = "gen-proto"
+path = "src/main.rs"
+
+[dependencies]
+tonic-prost-build.workspace = true
+
+[lints]
+workspace = true

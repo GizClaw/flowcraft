@@ -1,0 +1,26 @@
+---
+# The wire contracts.
+#
+# Proto files live here, not inside a language module: they are shared by the
+# Rust platform and the Go SDK, and a proto owned by one module silently
+# inherits that module's release cadence. `buf` is optional tooling — the
+# Makefile targets fail with an install hint when it is missing.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  # Service names are part of the wire (the gRPC path is
+  # /flowcraft.<area>.v1.<Service>/<Rpc>), so they cannot be renamed to satisfy
+  # the "…Service" naming rule without breaking every client.
+  except:
+    - SERVICE_SUFFIX
+    # Server-streaming RPCs return their payload type directly
+    # (`stream RunEvent`, `stream Event`); the "<Rpc>Response" rule would force
+    # a meaningless wrapper name on every item.
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  # A breaking change means a new package version (`v2`), never a changed `v1`.
+  use:
+    - PACKAGE

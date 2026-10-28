@@ -1,0 +1,426 @@
+[package]
+name = "flowcraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The FlowCraft platform: wire contracts, deployment composition, control plane, and the built-in capabilities."
+readme = "../../README.md"
+keywords = ["agent", "platform", "sandbox", "grpc", "workspace"]
+categories = ["development-tools", "filesystem"]
+documentation = "https://docs.rs/flowcraft"
+# Declared targets only: every integration test names the features it needs,
+# which autodiscovery cannot.
+autotests = false
+
+# docs.rs builds with every feature so the capability modules and the OTLP
+# exporter are documented; the crate itself defaults to `platform` only.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+# The composition plane: documents, the kernel that builds them, the control
+# plane, and client plumbing. This is what a program that hosts FlowCraft wants.
+default = ["platform"]
+platform = ["telemetry", "proto", "search", "resource", "kernel", "client"]
+
+# The async/blocking boundary (`flowcraft::blocking`): one way to move
+# synchronous work off a worker. Every capability that does file, DNS or sleep
+# work needs it, so they imply it below.
+blocking = ["dep:tokio", "dep:tracing"]
+
+# `fs::PrivateDir`: a directory handle whose resolution cannot leave it. One
+# capability needs it today (the secret store's file provider), so it is opt-in
+# rather than a dependency every consumer of `telemetry` would carry.
+private-dir = ["dep:cap-std"]
+
+# One capability each. Only `workspace` builds without the control plane, so
+# `--no-default-features --features workspace` is the portable shape (no tonic,
+# no unix-domain sockets) that the Windows lane checks.
+workspace = [
+    "blocking",
+    "resource",
+    "dep:async-trait",
+    "dep:cap-std",
+    "dep:globset",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tracing",
+]
+secret = [
+    "blocking",
+    "resource",
+    # The file provider's read boundary: a directory handle, not a path check.
+    "private-dir",
+    "dep:async-trait",
+    "dep:ring",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tracing",
+]
+sandbox = [
+    "blocking",
+    "resource",
+    # The unix mechanisms the runner owns. Naming them here keeps a host that
+    # embeds another capability from compiling a pty stack or a cgroup reader.
+    "dep:portable-pty",
+    "dep:cgroups-rs",
+    "dep:nix",
+    "dep:async-trait",
+    "dep:notify",
+    # The loopback proxy credential: a real random source, and the Basic header a
+    # client library already sends when the proxy URL carries userinfo.
+    "dep:rand",
+    "dep:base64",
+    "dep:flowcraft-win32",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    # The session output log is a stream; that is the provider's own interface,
+    # not the transport's.
+    "dep:tokio-stream",
+    "dep:tracing",
+]
+tool = [
+    "blocking",
+    "resource",
+    "search",
+    # The framework speaks the conversation model (`message`), but not the
+    # transport: the endpoint and the remote client are behind `wire`.
+    "message",
+    "dep:async-trait",
+    "dep:base64",
+    "dep:futures-util",
+    "dep:http",
+    "dep:prost",
+    "dep:regex",
+    "dep:rmcp",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tracing",
+]
+# Every built-in capability, endpoint servers and remote clients included.
+caps = ["platform", "workspace", "secret", "sandbox", "tool", "wire"]
+
+# The layers underneath `platform`, for a consumer that wants less of it.
+# `error` has no feature: it is the only module whose dependency is `thiserror`
+# alone, so it is always compiled and every other module may rely on it.
+telemetry = ["dep:tracing", "dep:tracing-subscriber"]
+otel = [
+    "telemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+]
+# Ship telemetry to an OTLP collector. Off by default: it adds an HTTP stack and
+# a runtime to a build that a client never needs, which `tests/telemetry_deps.rs`
+# pins from both sides.
+otlp = [
+    "otel",
+    "opentelemetry_sdk/rt-tokio",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tokio",
+]
+proto = ["dep:prost", "dep:tonic", "dep:tonic-prost"]
+# The hand-written half of the message model: shape rules (they parse a schema and
+# an argument object), text parts, and the small helpers. It sits above `proto`
+# because it is a contract, not wire plumbing.
+message = ["proto", "dep:serde_json"]
+# The craft side of `flowcraft.craft/v1`: the handler a craft implements and the
+# gRPC adapter that serves it. Above `proto` and below the platform: a craft is
+# not a capability, so this layer knows nothing about grants or listeners.
+craft = ["proto", "dep:async-trait", "dep:futures-util"]
+search = []
+
+# The inference vocabulary: what a canonical request is made of. Deliberately below
+# `resource` and without protobuf — a caller that only needs to name a model compiles
+# this and nothing else.
+# The transport *trait* lives in this layer, so `async-trait`, `bytes` and `futures-util`
+# belong here rather than to the HTTP feature: a caller may plug in its own transport, and
+# a feature that only compiled because another one supplied those crates would break the
+# first time someone built with `--no-default-features`.
+inference = [
+    "proto",
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:futures-util",
+    "dep:serde",
+    "dep:serde_json",
+    # Routing sleeps between retries. A timer, not a socket stack: this is the one runtime
+    # facility the vocabulary and the route need, and `dep:` keeps it out of a build that
+    # only wants the field vocabulary.
+    "dep:tokio",
+]
+
+# The HTTP transport for an inference driver. Separate from `inference` on purpose: the
+# vocabulary and the pipeline are useful to a caller that only names a model, and pulling
+# hyper, rustls and a socket stack into *that* build is exactly what the split exists to
+# avoid.
+# The inference capability: the deployment's model table served over the pipeline, with an
+# HTTP transport. Its own feature so a host that only wants the vocabulary or the pipeline
+# does not link a capability, and a host that wants the capability gets the client it needs.
+caps-inference = [
+    "inference-http",
+    "wire",
+    "resource",
+    "dep:async-trait",
+    "dep:rustls-native-certs",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+]
+inference-http = [
+    "inference",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rustls",
+    "dep:sse-stream",
+    "dep:tokio",
+    "dep:tokio-rustls",
+]
+resource = [
+    "otel",
+    "dep:async-trait",
+    "dep:saphyr",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_path_to_error",
+    "dep:tracing",
+]
+kernel = [
+    "resource",
+    "blocking",
+    "dep:base64",
+    "dep:ed25519-dalek",
+    "dep:rustls",
+    "dep:globset",
+    "dep:http",
+    "dep:hyper-util",
+    "dep:nix",
+    "dep:rand",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tower",
+    "dep:tracing",
+]
+client = [
+    "kernel",
+    "proto",
+    "craft",
+    "dep:bytes",
+    "dep:http",
+    "dep:hyper-util",
+    "dep:prost",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tonic",
+    "dep:tower",
+    "dep:tracing",
+]
+# The gRPC endpoint servers, the remote clients, and the grant-scope checks they
+# share. The workspace capability proved the split when it was a crate of its
+# own: everything else in a capability is a provider a host can embed without a
+# control plane.
+wire = ["client", "proto", "dep:tonic"]
+
+[dependencies]
+thiserror.workspace = true
+
+async-trait = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+cap-std = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+futures-util = { version = "0.3", optional = true }
+globset = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper-util = { workspace = true, optional = true }
+# The SSE parser for streaming generation. Already in the workspace through `rmcp`, so
+# picking it over hand-writing one costs a dependency edge that is already paid.
+rustls-native-certs = { version = "0.8", optional = true }
+sse-stream = { version = "0.2", optional = true }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = [
+    "ring",
+    "tls12",
+] }
+notify = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-appender-tracing = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+ring = { workspace = true, optional = true }
+# rustls is reached through tonic, but the provider has to be *pinned* here: a
+# workspace-wide build unifies `ring` (tonic) with `aws_lc_rs` (rmcp → reqwest),
+# and rustls then refuses to guess. See `kernel::tls::install_provider`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+rmcp = { version = "3.7", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+], optional = true }
+saphyr = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde_path_to_error = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+tonic = { workspace = true, features = ["tls-ring"], optional = true }
+tonic-prost = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+# Unix mechanisms live here: signals and process groups, and the pty syscalls. A
+# platform without them compiles the same crate and reports the features it
+# cannot provide (see `caps::sandbox::session::terminal::available` and
+# `Runner::capabilities`).
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["user"], optional = true }
+# A pty needs `setsid` + `TIOCSCTTY`, which are `unsafe` and this crate forbids
+# `unsafe_code` outright (`forbid` cannot be relaxed by an inner `allow`), so the
+# mechanism comes from a dependency.
+portable-pty = { workspace = true, optional = true }
+
+# The Win32 mechanisms (job objects today, tokens and app containers next). The
+# crate is empty off Windows, so naming it in the `sandbox` feature costs nothing
+# elsewhere and keeps `unsafe` out of this one.
+[target.'cfg(windows)'.dependencies]
+flowcraft-win32 = { workspace = true, optional = true }
+
+# cgroups are a Linux-only mechanism; everywhere else the probe reports the caps
+# as unavailable.
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+rcgen = "0.14"
+# The Windows control experiment only: `portable-pty` is a unix mechanism for the
+# shipped crate, but its ConPTY backend is the reference this crate's own is
+# checked against. A dev-dependency keeps that out of everything shipped.
+portable-pty.workspace = true
+# The tests pin the rustls provider explicitly: a workspace-wide build unifies
+# rustls' `ring` feature (tonic) with `aws_lc_rs` (the OTLP client), which
+# leaves the process default ambiguous.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json.workspace = true
+# The allocation-budget gate (`tests/allocation_budget.rs`). A copy that is merely
+# unnecessary leaves no trace in behaviour, so the only honest regression test
+# counts allocations. This crate forbids `unsafe_code`, so the counting allocator
+# lives in a dependency instead of here (a hand-written one needs
+# `unsafe impl GlobalAlloc`); only the `#[global_allocator]` static is local.
+stats_alloc = "0.1"
+tempfile = "3"
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[lib]
+name = "flowcraft"
+path = "src/lib.rs"
+
+# The integration tests are declared rather than discovered: each one names the
+# feature it needs, so `cargo test --no-default-features --features workspace`
+# skips the socket-bound suites instead of failing to compile them.
+[[test]]
+name = "workspace_conformance"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_decorators"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_roundtrip"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_tenant"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "workspace_tls"
+required-features = ["workspace", "wire"]
+
+[[test]]
+name = "secret_roundtrip"
+required-features = ["secret", "wire"]
+
+[[test]]
+name = "sandbox_conformance"
+required-features = ["sandbox", "wire"]
+
+[[test]]
+name = "sandbox_roundtrip"
+required-features = ["sandbox", "wire"]
+
+# The Windows session semantics: job objects are the only mechanism that can
+# keep them, so the fixtures here are `cfg(windows)` and the target is empty
+# elsewhere.
+[[test]]
+name = "sandbox_windows"
+required-features = ["sandbox"]
+
+# The control experiment: `portable-pty`'s ConPTY, used to tell "our plumbing is
+# wrong" from "this host cannot provide a pseudo console".
+[[test]]
+name = "sandbox_win_conpty_control"
+required-features = ["sandbox"]
+
+[[test]]
+name = "tool_registry"
+required-features = ["tool", "wire"]
+
+[[test]]
+name = "tool_roundtrip"
+required-features = ["tool", "wire"]
+
+[[test]]
+name = "kernel_trace"
+required-features = ["kernel"]
+
+[[test]]
+name = "resource_kernel"
+required-features = ["resource"]
+
+# The module graph: scans `src/` and compares each module's `crate::` paths with
+# the table in the test. `autotests = false`, so a missing entry here means the
+# gate does not run at all.
+[[test]]
+name = "layering"
+
+# The allocation budget: a copy that is merely unnecessary leaves no trace in
+# behaviour, so the regression gate counts allocations (see the test's module
+# comment). One test only — the counter is process-wide.
+[[test]]
+name = "allocation_budget"
+required-features = ["tool"]
+
+[[test]]
+name = "telemetry_deps"
+required-features = ["telemetry"]
+
+[[test]]
+name = "telemetry_install"
+required-features = ["telemetry"]
+
+[lints]
+workspace = true
