@@ -529,6 +529,10 @@ Three rules make those numbers usable:
   considers an exited entry — preferring one whose output has already been read
   to the end, then the oldest exit — and refuses the new start if nothing can go
   (`session_limit`);
+- **`exit_retention_secs` is the whole promise.** Reading a session to the end does
+  not reclaim it early: a client may come back (a replay from another cursor, a
+  `watch` recovering through `read`), so "consumed" only makes an entry the first
+  eviction candidate when a bound is actually reached;
 - **the output budget never truncates a live session.** Truncating would open a
   sequence gap on a stream that promises none, so an exited entry goes first;
 - **a loopback proxy listener demands a credential** (in the `HTTP_PROXY` /

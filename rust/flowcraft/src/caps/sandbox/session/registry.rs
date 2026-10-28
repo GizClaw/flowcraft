@@ -268,9 +268,16 @@ fn reclaim_expired(
                 return None;
             };
             let exited_at = ready.exited_at?;
+            // Only the window decides here. A consumed session is *not* reclaimed
+            // early: "I read it once" is not "I will never read it again" — a replay
+            // from another cursor, or a `watch` that recovers through `read`, is a
+            // legitimate second look, and the conformance suite asserts exactly that
+            // ("the retained window stays readable after the process is gone").
+            // Consumption is an *eviction preference* under pressure (`evict_one`),
+            // where the bound is a hard cap rather than a promise of retention.
             let past_window = limits.exit_retention.is_zero()
                 || now.saturating_duration_since(exited_at) >= limits.exit_retention;
-            (past_window || ready.log.consumed()).then(|| id.clone())
+            past_window.then(|| id.clone())
         })
         .collect();
     for id in expired {
@@ -1082,11 +1089,16 @@ mod tests {
         assert!(!registry.holds(session.id()));
     }
 
-    /// A client that read to the end is owed nothing, so its session may go before
-    /// the window ends — that is what keeps a busy runner from accumulating full
-    /// retention windows.
+    /// Reading to the end does not end the window.
+    ///
+    /// A client that drained a session may come back to it — a replay from another
+    /// cursor, or a `watch` that recovers through `read` — so "consumed" is a
+    /// tie-breaker for eviction under pressure, not a reclaim trigger. The
+    /// conformance suite asserts the same thing over every backend, which is how
+    /// this was caught: the first version reclaimed the entry on the sweep right
+    /// after the drain, and re-reading became a race against a 50 ms tick.
     #[tokio::test]
-    async fn a_consumed_session_is_reclaimed_before_its_window_ends() {
+    async fn a_consumed_session_keeps_its_window() {
         let limits = SessionLimits {
             exit_retention: Duration::from_secs(300),
             ..SessionLimits::default()
@@ -1101,9 +1113,13 @@ mod tests {
         fake.write("all of it");
         fake.finish_with_output();
         fake.read_to_end().await;
-        // The exit still has to be observed once, then the entry may go.
         registry.sweep(Instant::now(), &limits);
-        assert!(!registry.holds(session.id()));
+        assert!(
+            registry.holds(session.id()),
+            "the window is the window: a drained session is still readable"
+        );
+        // And the exit is still reported while it is retained.
+        assert!(session.exit().is_some());
     }
 
     /// A reader blocked on a reclaimed session learns why it ended, instead of
