@@ -1012,15 +1012,23 @@ mod host_policy_tests {
             HostPolicy::default()
         );
 
-        let named = host_policy_from(Some(&["/opt/tools/bin".to_owned()])).expect("named");
-        assert_eq!(named.path_dirs, vec![PathBuf::from("/opt/tools/bin")]);
+        // Built from a temporary directory rather than a literal POSIX path:
+        // "absolute" is a platform question (`/opt/tools` is neither absolute nor
+        // usable on Windows), and this test is about the plumbing, not about one
+        // host's layout.
+        let home = tempfile::tempdir().expect("tempdir");
+        let first = home.path().join("bin");
+        let second = home.path().join("sbin");
+        let named = host_policy_from(Some(&[first.display().to_string()])).expect("named");
+        assert_eq!(named.path_dirs, vec![first.clone()]);
 
         // The order is the precedence, so it is preserved.
-        let ordered = host_policy_from(Some(&["/a".to_owned(), "/b".to_owned()])).expect("ordered");
-        assert_eq!(
-            ordered.path_dirs,
-            vec![PathBuf::from("/a"), PathBuf::from("/b")]
-        );
+        let ordered = host_policy_from(Some(&[
+            first.display().to_string(),
+            second.display().to_string(),
+        ]))
+        .expect("ordered");
+        assert_eq!(ordered.path_dirs, vec![first, second]);
     }
 
     #[test]
