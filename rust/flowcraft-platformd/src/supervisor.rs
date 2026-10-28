@@ -125,15 +125,23 @@ impl Supervisor {
     /// runner, or a runner that does not report, is simply absent.
     pub async fn sandbox_stats(&self) -> Vec<(String, RunnerStats)> {
         let generation = self.current.read().await.clone();
-        generation
-            .built
-            .entries()
-            .into_iter()
-            .filter_map(|(name, value)| {
-                let handle = value.downcast::<flowcraft::caps::sandbox::Handle>().ok()?;
-                handle.runner().stats().map(|stats| (name, stats))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for (name, value) in generation.built.entries() {
+            let Ok(handle) = value.downcast::<flowcraft::caps::sandbox::Handle>() else {
+                continue;
+            };
+            let runner = handle.runner();
+            // A runner that owns its table answers without doing anything; one that
+            // has to ask a peer does it here, so `stats()` stays synchronous and a
+            // failed refresh leaves the previous reading rather than an empty one.
+            if let Err(error) = runner.refresh_stats().await {
+                tracing::debug!(%error, runner = name, "sandbox: could not refresh the counters");
+            }
+            if let Some(stats) = runner.stats() {
+                out.push((name, stats));
+            }
+        }
+        out
     }
 
     /// The kernel behind the generations.

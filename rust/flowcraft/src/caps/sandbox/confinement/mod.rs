@@ -482,6 +482,10 @@ impl Runner for ConfinedRunner {
         self.config.host.clone()
     }
 
+    async fn refresh_stats(&self) -> Result<()> {
+        self.inner.refresh_stats().await
+    }
+
     fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
         self.inner.stats()
     }

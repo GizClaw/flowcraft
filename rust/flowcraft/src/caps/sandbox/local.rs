@@ -172,7 +172,7 @@ impl Runner for LocalRunner {
         Some(crate::caps::sandbox::contract::RunnerStats {
             sessions_ready: ready,
             sessions_exited: exited,
-            log_bytes,
+            log_bytes: Some(log_bytes),
         })
     }
 

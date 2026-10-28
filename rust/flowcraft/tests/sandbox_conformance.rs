@@ -92,7 +92,52 @@ async fn suite(backend: &str, runner: Arc<dyn Runner>) {
     capabilities_never_overclaim(backend, &*runner).await;
     a_pty_merges_the_streams(backend, &*runner).await;
     a_workdir_escape_is_forbidden(backend, &*runner).await;
+    stats_reflect_the_table(backend, &*runner).await;
     runner.close().await.expect("runner close");
+}
+
+/// The counters `/status` shows, over every backend.
+///
+/// A runner that owns its table answers synchronously; one that has to ask a peer
+/// refreshes first, and derives the counts from `List` — which is why the byte
+/// total is `None` there. A zero would read as "an empty table", which is a
+/// different statement.
+///
+/// The counts are `>= 1` rather than exact: earlier steps leave exited sessions
+/// behind (that is the retention window doing its job), so the table has history.
+async fn stats_reflect_the_table(backend: &str, runner: &dyn Runner) {
+    let session = runner
+        .start(support::spec(&["sh", "-c", "echo counted"]))
+        .await
+        .expect("start");
+    runner.refresh_stats().await.expect("refresh");
+    let running = runner.stats().expect("stats");
+    assert!(
+        running.sessions_ready >= 1,
+        "{backend}: a started session is counted as running: {running:?}"
+    );
+
+    session.wait().await.expect("wait");
+    runner.refresh_stats().await.expect("refresh");
+    let exited = runner.stats().expect("stats");
+    assert!(
+        exited.sessions_exited >= 1,
+        "{backend}: an exited session is retained and counted: {exited:?}"
+    );
+
+    if backend == "remote" {
+        assert_eq!(
+            exited.log_bytes, None,
+            "{backend}: a remote runner cannot answer retained bytes without a \
+             counter RPC, and must not report zero instead"
+        );
+    } else {
+        assert!(
+            exited.log_bytes.is_some(),
+            "{backend}: a local runner knows its retained bytes: {exited:?}"
+        );
+    }
+    session.close().await.expect("close");
 }
 
 async fn read_blocks_until_output(backend: &str, runner: &dyn Runner) {
