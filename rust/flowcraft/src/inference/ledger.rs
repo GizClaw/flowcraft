@@ -13,6 +13,8 @@
 //! - **an unreported counter stays unreported** (see [`super::usage::Usage::add`]).
 //!   A budget that charges for a silence is worse than one that knows it does not know.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use super::usage::Usage;
@@ -114,6 +116,71 @@ impl Ledger {
         self.attempts.push(attempt);
     }
 
+    /// Begin an attempt, returning its index in [`Self::attempts`].
+    ///
+    /// Three things are derived here rather than left to the caller, because each is easy to
+    /// get wrong once routing exists:
+    ///
+    /// - **`number` counts attempts within one target.** A global counter makes a fallback
+    ///   look like the Nth retry of a target that was tried once, and the per-target backoff
+    ///   history becomes unreadable.
+    /// - **`trigger` follows from the target.** The first attempt for a target is
+    ///   `Selection`; another attempt against the *same* target is `Retry`; a different
+    ///   target is `Fallback`. The rule is stated once here instead of in every policy.
+    /// - **the phase is the caller's**, because only the policy knows whether it is
+    ///   preflighting, executing, or reporting a breaker that refused to open a connection.
+    pub fn begin(&mut self, target: &str, phase: Phase, backoff: Duration) -> usize {
+        let previous = self.attempts.last().map(|attempt| attempt.target.as_str());
+        let trigger = match previous {
+            None => Trigger::Selection,
+            Some(previous) if previous == target => Trigger::Retry,
+            Some(_) => Trigger::Fallback,
+        };
+        let number = self
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.target == target)
+            .count() as u64
+            + 1;
+        self.attempts.push(Attempt {
+            target: target.to_owned(),
+            phase,
+            trigger,
+            // Filled in by `complete`: an attempt that has begun has not ended.
+            outcome: Outcome::Skipped,
+            error_kind: None,
+            observable_output: false,
+            number,
+            backoff_millis: u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+        });
+        self.attempts.len() - 1
+    }
+
+    /// Close the attempt at `index`, folding in what it cost.
+    ///
+    /// Returns `false` when the index is not an attempt — a ledger is diagnostics, so a
+    /// stale index is ignored rather than a panic in the middle of a provider call.
+    pub fn complete(
+        &mut self,
+        index: usize,
+        outcome: Outcome,
+        error_kind: Option<&str>,
+        usage: Option<&Usage>,
+        observable_output: bool,
+    ) -> bool {
+        let Some(attempt) = self.attempts.get_mut(index) else {
+            return false;
+        };
+        attempt.outcome = outcome;
+        attempt.error_kind = error_kind.map(str::to_owned);
+        attempt.observable_output = observable_output;
+        if let Some(usage) = usage {
+            // Tokens that were generated were billed, whatever the caller got to see.
+            self.usage = self.usage.add(usage);
+        }
+        true
+    }
+
     /// Whether any attempt succeeded.
     #[must_use]
     pub fn succeeded(&self) -> bool {
@@ -190,6 +257,68 @@ mod tests {
         assert_eq!(ledger.usage.reasoning_tokens, Some(2));
         assert_eq!(ledger.targets_tried(), 2);
         assert!(ledger.succeeded());
+    }
+
+    /// The numbering is per target: a fallback starts again at 1, so a policy can read a
+    /// target's own backoff history without filtering a global sequence.
+    #[test]
+    fn a_fallback_restarts_the_attempt_number() {
+        let mut ledger = Ledger::new();
+        let a1 = ledger.begin("a", Phase::Execute, Duration::ZERO);
+        ledger.complete(a1, Outcome::Failed, Some("not_available"), None, false);
+        let a2 = ledger.begin("a", Phase::Execute, Duration::from_millis(50));
+        ledger.complete(a2, Outcome::Failed, Some("not_available"), None, false);
+        let b1 = ledger.begin("b", Phase::Execute, Duration::ZERO);
+        ledger.complete(b1, Outcome::Succeeded, None, None, false);
+
+        let numbers: Vec<(String, u64, Trigger)> = ledger
+            .attempts
+            .iter()
+            .map(|attempt| (attempt.target.clone(), attempt.number, attempt.trigger))
+            .collect();
+        assert_eq!(
+            numbers,
+            vec![
+                ("a".to_owned(), 1, Trigger::Selection),
+                ("a".to_owned(), 2, Trigger::Retry),
+                ("b".to_owned(), 1, Trigger::Fallback),
+            ]
+        );
+    }
+
+    /// Once an attempt delivered output, the ledger says so for the rest of the call: that is
+    /// the question a retry policy must never get wrong, and it does not stop being true
+    /// because the last attempt happened not to stream.
+    #[test]
+    fn observable_output_is_sticky_across_attempts() {
+        let mut ledger = Ledger::new();
+        let first = ledger.begin("a", Phase::Execute, Duration::ZERO);
+        ledger.complete(
+            first,
+            Outcome::Failed,
+            Some("timeout"),
+            Some(&Usage {
+                input_tokens: 4,
+                ..Usage::default()
+            }),
+            true,
+        );
+        assert!(ledger.observed_output());
+        let second = ledger.begin("b", Phase::Execute, Duration::ZERO);
+        ledger.complete(second, Outcome::Failed, Some("not_available"), None, false);
+        assert!(
+            ledger.observed_output(),
+            "an earlier streamed attempt still means the caller saw output"
+        );
+        // And the failed attempt's tokens are on the bill even though it streamed and failed.
+        assert_eq!(ledger.usage.input_tokens, 4);
+    }
+
+    #[test]
+    fn closing_an_attempt_that_does_not_exist_is_ignored() {
+        let mut ledger = Ledger::new();
+        assert!(!ledger.complete(7, Outcome::Failed, None, None, false));
+        assert!(ledger.attempts.is_empty());
     }
 
     /// The retry question: output the caller could see must stop a re-run.
