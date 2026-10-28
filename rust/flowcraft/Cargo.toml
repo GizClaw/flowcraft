@@ -154,6 +154,7 @@ inference = ["dep:serde", "dep:serde_json", "proto"]
 # does not link a capability, and a host that wants the capability gets the client it needs.
 caps-inference = [
     "inference-http",
+    "wire",
     "resource",
     "dep:async-trait",
     "dep:rustls-native-certs",

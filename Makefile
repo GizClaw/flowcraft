@@ -267,8 +267,10 @@ release-changelog:
 # calls, so they are opt-in rather than part of `make ci`.
 memory-eval-probes:
 	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
-		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|IngestTagsDatasetTurns|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB)' \
+		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|IngestTagsDatasetTurns|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB|ArbiterJudgesDerivedChineseTurns)' \
 		-timeout 60m
+	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-relation-zh/ -count=1 -v \
+		-run 'TestLiveArbiter' -timeout 20m
 
 # ── Wire contracts ──
 # proto/ is the single source of truth for every cross-process contract. The Go
