@@ -368,10 +368,10 @@ impl McpSource {
                         )));
                     }
                     Err(_) => {
-                        return Err(Error::timeout(format!(
-                            "mcp: server {:?}: connect exceeded {limit:?}",
-                            spec.name
-                        )));
+                        return Err(crate::caps::tool::codes::timeout(
+                            crate::caps::tool::codes::Code::Timeout,
+                            format!("mcp: server {:?}: connect exceeded {limit:?}", spec.name),
+                        ));
                     }
                 }
             }
@@ -442,10 +442,10 @@ impl Server {
         match self.timeout {
             Some(limit) => match tokio::time::timeout(limit, future).await {
                 Ok(result) => result.map_err(wrap),
-                Err(_) => Err(Error::timeout(format!(
-                    "mcp: server {:?}: exceeded {limit:?}",
-                    self.name
-                ))),
+                Err(_) => Err(crate::caps::tool::codes::timeout(
+                    crate::caps::tool::codes::Code::Timeout,
+                    format!("mcp: server {:?}: exceeded {limit:?}", self.name),
+                )),
             },
             None => future.await.map_err(wrap),
         }
@@ -876,7 +876,10 @@ fn parse_arguments(arguments: &str) -> Result<Map<String, Value>> {
     {
         Value::Null => Ok(Map::new()),
         Value::Object(map) => Ok(map),
-        _ => Err(Error::validation("mcp: arguments must be a JSON object")),
+        _ => Err(crate::caps::tool::codes::validation(
+            crate::caps::tool::codes::Code::Arguments,
+            "mcp: arguments must be a JSON object",
+        )),
     }
 }
 

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::proto::message as msg;
 use async_trait::async_trait;
 
@@ -73,9 +73,10 @@ impl LocalSource {
         let tool = Tool::new(definition, handler)?;
         let name = tool.definition.name.clone();
         if self.tools.contains_key(&name) {
-            return Err(Error::conflict(format!(
-                "tool {name:?} is registered twice"
-            )));
+            return Err(crate::caps::tool::codes::conflict(
+                crate::caps::tool::codes::Code::Duplicate,
+                format!("tool {name:?} is registered twice"),
+            ));
         }
         self.tools.insert(name, tool);
         Ok(())
@@ -111,10 +112,12 @@ impl ToolSource for LocalSource {
     }
 
     async fn execute(&self, name: &str, arguments: &str) -> Result<msg::Content> {
-        let tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| Error::not_found(format!("tool {name:?} is not registered")))?;
+        let tool = self.tools.get(name).ok_or_else(|| {
+            crate::caps::tool::codes::not_found(
+                crate::caps::tool::codes::Code::Unknown,
+                format!("tool {name:?} is not registered"),
+            )
+        })?;
         tool.execute(arguments)
     }
 }

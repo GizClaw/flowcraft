@@ -31,7 +31,10 @@ impl EnvStore {
 impl Store for EnvStore {
     async fn lookup(&self, name: &str) -> Result<Option<String>> {
         if name.trim().is_empty() {
-            return Err(Error::validation("secret name is empty"));
+            return Err(crate::caps::secret::codes::validation(
+                crate::caps::secret::codes::Code::NameInvalid,
+                "secret name is empty",
+            ));
         }
         if name.contains(['/', '\\', ' ', '=']) {
             return Err(Error::validation(format!(

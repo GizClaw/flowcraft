@@ -12,6 +12,7 @@
 //! `${secret:...}`. Bootstrap material (endpoint TLS keys) belongs to the
 //! kernel's provider and never travels this wire.
 
+pub mod codes;
 pub mod contract;
 pub mod env;
 pub mod file;

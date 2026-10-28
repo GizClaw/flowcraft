@@ -242,9 +242,12 @@ impl Manager {
     }
 
     fn store(&self) -> Result<&Keychain> {
-        self.store
-            .as_ref()
-            .ok_or_else(|| Error::not_available("secret keychain: store directory is unusable"))
+        self.store.as_ref().ok_or_else(|| {
+            crate::caps::secret::codes::not_available(
+                crate::caps::secret::codes::Code::StoreUnavailable,
+                "secret keychain: store directory is unusable",
+            )
+        })
     }
 }
 

@@ -10,7 +10,7 @@
 //! interop: a scope silently ignored by the other end would widen the grant
 //! instead of narrowing it.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -57,9 +57,10 @@ impl Scope {
         if allowed.is_empty() || allowed.iter().any(|prefix| name.starts_with(prefix)) {
             return Ok(());
         }
-        Err(Error::forbidden(format!(
-            "secret {name:?} is outside the grant scope {allowed:?}"
-        )))
+        Err(crate::caps::secret::codes::forbidden(
+            crate::caps::secret::codes::Code::ScopeDenied,
+            format!("secret {name:?} is outside the grant scope {allowed:?}"),
+        ))
     }
 
     /// The wire form to sign into a grant.

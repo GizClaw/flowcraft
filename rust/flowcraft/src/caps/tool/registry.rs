@@ -346,11 +346,17 @@ impl Registry {
 
 fn add(inner: &mut Inner, conflict: ConflictPolicy, tool: Arc<dyn Tool>) -> Result<()> {
     if inner.closed {
-        return Err(Error::not_available("tool: registry is closed"));
+        return Err(crate::caps::tool::codes::not_available(
+            crate::caps::tool::codes::Code::RegistryClosed,
+            "tool: registry is closed",
+        ));
     }
     let name = tool.definition().name;
     if name.trim().is_empty() {
-        return Err(Error::validation("tool: definition name is required"));
+        return Err(crate::caps::tool::codes::validation(
+            crate::caps::tool::codes::Code::NameInvalid,
+            "tool: definition name is required",
+        ));
     }
     match inner.tools.entry(name) {
         std::collections::btree_map::Entry::Occupied(mut entry) => match conflict {
@@ -411,7 +417,10 @@ struct RegistrarHandle {
 impl Registrar for RegistrarHandle {
     fn add(&self, tool: Arc<dyn Tool>) -> Result<()> {
         let Some(inner) = self.inner.upgrade() else {
-            return Err(Error::not_available("tool: registry is gone"));
+            return Err(crate::caps::tool::codes::not_available(
+                crate::caps::tool::codes::Code::RegistryClosed,
+                "tool: registry is gone",
+            ));
         };
         let mut inner = inner
             .write()

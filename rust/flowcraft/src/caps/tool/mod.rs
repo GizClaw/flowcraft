@@ -22,6 +22,7 @@
 
 pub mod assembly;
 pub mod callable;
+pub mod codes;
 pub mod contract;
 pub mod executor;
 pub mod exposure;

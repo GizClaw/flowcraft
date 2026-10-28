@@ -36,7 +36,10 @@ impl MemoryStore {
 impl Store for MemoryStore {
     async fn lookup(&self, name: &str) -> Result<Option<String>> {
         if name.trim().is_empty() {
-            return Err(Error::validation("secret name is empty"));
+            return Err(crate::caps::secret::codes::validation(
+                crate::caps::secret::codes::Code::NameInvalid,
+                "secret name is empty",
+            ));
         }
         let values = self
             .values
