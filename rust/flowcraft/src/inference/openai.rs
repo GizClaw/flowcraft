@@ -53,6 +53,8 @@ impl OpenAi {
         let mut decisions = vec![
             native(FieldId::GenerateExecutionUnary),
             native(FieldId::GenerateContextRole),
+            // The intent axis itself: this adapter serves text generation.
+            native(FieldId::GenerateIntentText),
         ];
         let mut input: Vec<Value> = Vec::new();
         let mut instructions: Vec<String> = Vec::new();
@@ -140,6 +142,8 @@ impl OpenAi {
                 .collect();
             body.insert("tools".to_owned(), Value::Array(tools));
             decisions.push(native(FieldId::GenerateIntentTools));
+            decisions.push(native(FieldId::GenerateIntentToolChoice));
+            decisions.push(native(FieldId::GenerateIntentToolChoiceKind));
             body.insert(
                 "tool_choice".to_owned(),
                 json!(match intent.tool_choice {
@@ -148,11 +152,13 @@ impl OpenAi {
                     ToolChoice::None => "none",
                 }),
             );
-            decisions.push(native(FieldId::GenerateIntentToolChoice));
         }
         if let Some(effort) = &intent.reasoning_effort {
             body.insert("reasoning".to_owned(), json!({ "effort": effort }));
-            decisions.push(native(FieldId::GenerateIntentReasoningEffort));
+            decisions.push(native(FieldId::GenerateIntentReasoning));
+            if !effort.is_empty() {
+                decisions.push(native(FieldId::GenerateIntentReasoningEffort));
+            }
         }
         match &intent.format {
             TextFormat::Text => {}
@@ -162,8 +168,13 @@ impl OpenAi {
                     json!({"format": {"type": "json_object"}}),
                 );
                 decisions.push(native(FieldId::GenerateIntentTextResponse));
+                decisions.push(native(FieldId::GenerateIntentTextResponseKind));
             }
             TextFormat::JsonSchema { name, schema } => {
+                // The emptiness check is about the *string*, before it is shadowed by
+                // the parsed value: "a schema was given" is the ledger's question, and
+                // `{}` is still a schema.
+                let has_schema = !schema.trim().is_empty();
                 let schema = serde_json::from_str::<Value>(schema).map_err(|error| {
                     Error::validation(format!(
                         "inference: the response schema is not JSON: {error}"
@@ -179,7 +190,13 @@ impl OpenAi {
                     }}),
                 );
                 decisions.push(native(FieldId::GenerateIntentTextResponse));
-                decisions.push(native(FieldId::GenerateIntentTextResponseSchema));
+                decisions.push(native(FieldId::GenerateIntentTextResponseKind));
+                if !name.is_empty() {
+                    decisions.push(native(FieldId::GenerateIntentTextResponseName));
+                }
+                if has_schema {
+                    decisions.push(native(FieldId::GenerateIntentTextResponseSchema));
+                }
             }
         }
 
@@ -405,15 +422,9 @@ mod tests {
             .report
             .validate_success(
                 Operation::Generate,
-                &[
-                    FieldId::GenerateExecutionUnary,
-                    FieldId::GenerateContextRole,
-                    FieldId::GenerateContextText,
-                    FieldId::GenerateIntentTextMaxOutputTokens,
-                    FieldId::GenerateIntentTemperature,
-                ],
+                &crate::inference::active::active_fields(&request()),
             )
-            .expect("a complete report");
+            .expect("a complete report: every field the request carries");
     }
 
     #[test]

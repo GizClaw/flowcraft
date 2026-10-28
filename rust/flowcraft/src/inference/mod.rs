@@ -5,6 +5,7 @@
 //! caller that only needs to name a model compiles this and no wire stack; a driver
 //! implements the compile/execute contract without the control plane.
 
+pub mod active;
 pub mod ledger;
 pub mod model;
 pub mod openai;
@@ -13,6 +14,7 @@ pub mod request;
 pub mod transport;
 pub mod usage;
 
+pub use active::active_fields;
 pub use ledger::{Attempt, Ledger, Outcome, Phase, Trigger};
 pub use model::{CompileReport, Decision, Disposition, FieldId, Operation};
 pub use pipeline::{Driver, Generation, generate};

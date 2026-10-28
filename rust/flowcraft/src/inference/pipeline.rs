@@ -64,6 +64,13 @@ pub async fn generate(
     ledger: &mut Ledger,
 ) -> Result<Generation> {
     let compiled = driver.compile(request)?;
+    // The folding rule, enforced here rather than in a test: a driver that forgets a
+    // field the request carried has produced a report that would have hidden a
+    // discard, and the call fails before anything is sent.
+    compiled.report.validate_success(
+        Operation::Generate,
+        &crate::inference::active::active_fields(request),
+    )?;
     let report = compiled.report.clone();
     let url = join_url(base_url, driver.url_path());
     let raw = transport.post_json(&url, headers, &compiled.body).await;
@@ -249,14 +256,9 @@ mod tests {
             .report
             .validate_success(
                 Operation::Generate,
-                &[
-                    crate::inference::model::FieldId::GenerateExecutionUnary,
-                    crate::inference::model::FieldId::GenerateContextRole,
-                    crate::inference::model::FieldId::GenerateContextText,
-                    crate::inference::model::FieldId::GenerateIntentTextMaxOutputTokens,
-                ],
+                &crate::inference::active::active_fields(&request()),
             )
-            .expect("a complete report");
+            .expect("a complete report: every field the request carries");
     }
 
     /// A transport failure is recorded as a failed attempt before it is returned: the
