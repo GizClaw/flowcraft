@@ -443,7 +443,22 @@ pub fn approval(
     allowlist: Option<Arc<Allowlist>>,
     predicates: Vec<Arc<dyn Predicate>>,
 ) -> Layer {
+    approval_with_host(HostPolicy::default(), approver, allowlist, predicates)
+}
+
+/// [`approval`] over a deployment's programme directories.
+///
+/// The predicates see a resolution, so the list has to be the runner's: judging
+/// with the default PATH while the runner resolves elsewhere is how a rule ends up
+/// about a file that never runs.
+pub fn approval_with_host(
+    host: HostPolicy,
+    approver: Option<Arc<dyn Approver>>,
+    allowlist: Option<Arc<Allowlist>>,
+    predicates: Vec<Arc<dyn Predicate>>,
+) -> Layer {
     Arc::new(move |inner| {
+        let host = host.clone();
         let approver = approver.clone();
         let allowlist = allowlist.clone();
         let predicates = predicates.clone();
@@ -453,8 +468,9 @@ pub fn approval(
                 let approver = approver.clone();
                 let allowlist = allowlist.clone();
                 let predicates = predicates.clone();
+                let host = host.clone();
                 Box::pin(async move {
-                    let request = ExecRequest::from_spec(&spec);
+                    let request = ExecRequest::with_host(&spec, &host);
                     if let Some(list) = &allowlist
                         && list.allows(request.normalised_tokens())
                     {
@@ -520,6 +536,16 @@ pub struct LocalPolicy {
     pub approver: Option<Arc<dyn Approver>>,
     /// What is worth asking about.
     pub predicates: Vec<Arc<dyn Predicate>>,
+    /// Where this deployment's programmes live. The default is the host PATH;
+    /// a runner built from settings should pass its own.
+    pub host: HostPolicy,
+    /// Install the read-only classifier, harden what it proves, and let a proven
+    /// read-only call answer for itself instead of reaching the approver.
+    ///
+    /// One flag rather than two on purpose: classification without hardening is
+    /// still a string check (the hardening is what makes the verdict true), so a
+    /// composer must not be able to install half of it.
+    pub auto_approve_read_only: bool,
 }
 
 /// The recommended local chain:
@@ -539,16 +565,33 @@ pub fn compose_local(backend: RunnerRef, policy: LocalPolicy) -> RunnerRef {
         allowlist,
         approver,
         predicates,
+        host,
+        auto_approve_read_only,
     } = policy;
     let mut layers: Vec<Layer> = Vec::new();
     if !default_opts.eq(&ExecOptions::default()) {
         layers.push(defaults(default_opts));
     }
+    // Hardening runs before approval, so the approver — and the automatic one —
+    // sees the spec that will actually be executed.
+    if auto_approve_read_only {
+        layers.push(super::readonly::harden_read_only(host.clone()));
+    }
     if !predicates.is_empty() || approver.is_some() || allowlist.is_some() {
-        layers.push(approval(approver, allowlist, predicates));
+        let approver = if auto_approve_read_only {
+            Some(super::readonly::auto_approve(approver))
+        } else {
+            approver
+        };
+        layers.push(approval_with_host(
+            host.clone(),
+            approver,
+            allowlist,
+            predicates,
+        ));
     }
     if let Some(allowed) = allowed_commands {
-        layers.push(allow_commands(allowed));
+        layers.push(allow_commands_with_host(allowed, host.clone()));
     }
     super::Chain::of(layers).around(backend)
 }
@@ -566,6 +609,106 @@ mod tests {
 
     fn spec(argv: &[&str]) -> SessionSpec {
         SessionSpec::new(argv.iter().map(|arg| (*arg).to_owned()).collect())
+    }
+
+    /// The whole point of `auto_approve_read_only`: a call the classifier proved
+    /// read-only, and that asked for a read-only write mode, does not need a human.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_proven_read_only_call_answers_for_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ls = program(dir.path(), "ls");
+        let host = host(dir.path());
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        let approver = ApproverFn::new(move |_: &ApprovalRequest| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Decision::Deny
+        });
+        let sink = Arc::new(Sink::default());
+        let runner = compose_local(
+            sink.clone(),
+            LocalPolicy {
+                auto_approve_read_only: true,
+                approver: Some(Arc::new(approver)),
+                // Something the approver would otherwise be asked about.
+                predicates: vec![net_non_default()],
+                host: host.clone(),
+                ..LocalPolicy::default()
+            },
+        );
+        let mut spec = SessionSpec::new(vec![ls.display().to_string()]);
+        spec.opts.write = crate::caps::sandbox::contract::WriteMode::ReadOnly;
+        spec.opts.net.mode = crate::caps::sandbox::contract::NetMode::DenyAll;
+        // The sink refuses to spawn — it is a recording stub — so the assertion is
+        // about what the chain did, not about the session.
+        let _ = runner.start(spec).await;
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the approver must not be consulted for a proven read-only call"
+        );
+        assert!(sink.take().is_some(), "and the call must reach the backend");
+    }
+
+    /// Auto-approval is about a *read-only* call. A caller that asked to write is
+    /// asking for something wider than the verdict covers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_programme_that_asked_to_write_is_not_auto_approved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ls = program(dir.path(), "ls");
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        let approver = ApproverFn::new(move |_: &ApprovalRequest| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Decision::Allow
+        });
+        let sink = Arc::new(Sink::default());
+        let runner = compose_local(
+            sink.clone(),
+            LocalPolicy {
+                auto_approve_read_only: true,
+                approver: Some(Arc::new(approver)),
+                predicates: vec![net_non_default()],
+                host: host(dir.path()),
+                ..LocalPolicy::default()
+            },
+        );
+        let mut spec = SessionSpec::new(vec![ls.display().to_string()]);
+        spec.opts.write = crate::caps::sandbox::contract::WriteMode::Workspace;
+        spec.opts.net.mode = crate::caps::sandbox::contract::NetMode::DenyAll;
+        let _ = runner.start(spec).await;
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a write request must still reach the approver"
+        );
+        assert!(sink.take().is_some(), "the approver allowed it through");
+    }
+
+    /// A writer is never auto-approved, whatever the write mode says.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_writer_never_answers_for_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rm = program(dir.path(), "rm");
+        let sink = Arc::new(Sink::default());
+        let runner = compose_local(
+            sink.clone(),
+            LocalPolicy {
+                auto_approve_read_only: true,
+                predicates: vec![net_non_default()],
+                host: host(dir.path()),
+                ..LocalPolicy::default()
+            },
+        );
+        let mut spec = SessionSpec::new(vec![rm.display().to_string()]);
+        spec.opts.write = crate::caps::sandbox::contract::WriteMode::ReadOnly;
+        spec.opts.net.mode = crate::caps::sandbox::contract::NetMode::DenyAll;
+        let error = runner.start(spec).await.expect_err("denied");
+        assert_eq!(error.kind(), crate::error::ErrorKind::PolicyDenied);
+        assert!(sink.take().is_none(), "it must not reach the backend");
     }
 
     #[tokio::test]

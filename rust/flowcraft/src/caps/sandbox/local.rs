@@ -47,6 +47,8 @@ pub struct LocalRunner {
     session_limits: SessionLimits,
     /// Narrows every session's environment to these names (see `Settings`).
     env_allow: Option<Vec<String>>,
+    /// Where this deployment's programmes live (see `Settings::command_path_dirs`).
+    host: HostPolicy,
     journal: Option<Arc<Journal>>,
     limits: Arc<crate::caps::sandbox::limits::Manager>,
 }
@@ -76,6 +78,7 @@ impl LocalRunner {
             default_output_limit: DEFAULT_OUTPUT_LIMIT,
             session_limits: SessionLimits::default(),
             env_allow: None,
+            host: HostPolicy::default(),
             journal: None,
             // Probed once: creating and removing a control group is not something
             // to do per session, and the answer is a property of the host.
@@ -118,6 +121,13 @@ impl LocalRunner {
         self
     }
 
+    /// Resolve bare command names against these directories.
+    #[must_use]
+    pub fn with_host_policy(mut self, host: HostPolicy) -> Self {
+        self.host = host;
+        self
+    }
+
     /// The bounds the session table enforces.
     #[must_use]
     pub(crate) fn with_session_limits(mut self, limits: SessionLimits) -> Self {
@@ -153,6 +163,10 @@ impl LocalRunner {
 
 #[async_trait]
 impl Runner for LocalRunner {
+    fn host_policy(&self) -> HostPolicy {
+        self.host.clone()
+    }
+
     fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
         let (ready, exited, log_bytes) = self.registry.stats();
         Some(crate::caps::sandbox::contract::RunnerStats {
@@ -215,7 +229,7 @@ impl Runner for LocalRunner {
         // say which file this call will actually exec and with which
         // environment. The plan decides nothing here: the judging layers ask for
         // their own copy.
-        let planned = plan(&spec, &HostPolicy::default());
+        let planned = plan(&spec, &self.host);
         tracing::debug!(
             argv0 = %planned.argv0,
             program = ?planned.program(),
@@ -282,6 +296,14 @@ struct Settings {
     /// `0` reclaims an exited session as soon as the exit is observed.
     #[serde(default = "default_exit_retention_secs")]
     exit_retention_secs: u64,
+    /// Where this deployment's programmes live, for bare command names.
+    ///
+    /// Absent uses the conventional host PATH (`/usr/local/bin:/usr/bin:/bin`). A
+    /// deployment whose tools live elsewhere (a store, a version manager) must say
+    /// so: a bare rule resolves against *this* list, so the wrong list means either
+    /// "nothing resolves" or "the wrong file resolves".
+    #[serde(default)]
+    command_path_dirs: Option<Vec<String>>,
     /// Which host variables a session may inherit, by name.
     ///
     /// Absent leaves today's contract alone: the child inherits the daemon's whole
@@ -316,6 +338,11 @@ fn default_max_total_log_bytes() -> u64 {
 }
 
 impl Settings {
+    /// The resolved host policy: the conventional PATH unless the deployment said.
+    fn host_policy(&self) -> Result<HostPolicy> {
+        crate::caps::sandbox::contract::host_policy_from(self.command_path_dirs.as_deref())
+    }
+
     fn session_limits(&self) -> SessionLimits {
         SessionLimits {
             max_sessions: self.max_sessions,
@@ -338,6 +365,7 @@ fn validate(value: &Value) -> Result<()> {
     if let Some(names) = &settings.env_allow {
         crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
     }
+    settings.host_policy()?;
     if let Some(journal) = &settings.journal {
         JournalConfig::parse(journal)?;
     }
@@ -368,7 +396,8 @@ impl Factory for LocalFactory {
             let root = crate::caps::sandbox::confinement::path::resolve_root(&settings.root)?;
             let mut runner = LocalRunner::at(root.clone())
                 .with_session_limits(settings.session_limits())
-                .with_env_allow(settings.env_allow.clone());
+                .with_env_allow(settings.env_allow.clone())
+                .with_host_policy(settings.host_policy()?);
             if let Some(limit) = settings.max_output_bytes {
                 runner = runner.with_output_limit(limit);
             }

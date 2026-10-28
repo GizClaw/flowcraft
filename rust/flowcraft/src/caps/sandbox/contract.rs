@@ -603,6 +603,62 @@ pub struct SessionFeatures {
 /// wire's `Features`).
 pub type Features = SessionFeatures;
 
+/// Where the host looks for programmes.
+///
+/// A bare `argv[0]` (`git`, not `/usr/bin/git`) is resolved against this list and
+/// nothing else: the request's `PATH` belongs to the child's environment, so a
+/// resolution that consulted it would let the caller choose which file a rule is
+/// judged against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPolicy {
+    /// The directories a bare `argv[0]` is resolved against, in order: the first
+    /// executable match wins.
+    pub path_dirs: Vec<PathBuf>,
+}
+
+impl Default for HostPolicy {
+    fn default() -> Self {
+        Self {
+            path_dirs: ["/usr/local/bin", "/usr/bin", "/bin"]
+                .iter()
+                .map(PathBuf::from)
+                .collect(),
+        }
+    }
+}
+
+/// Build a [`HostPolicy`] from a deployment's list, refusing what cannot be resolved.
+///
+/// Absolute only: a relative directory would resolve against the daemon's working
+/// directory, which is a property of how it was started rather than of the document
+/// that named it.
+pub fn host_policy_from(dirs: Option<&[String]>) -> Result<HostPolicy> {
+    let Some(dirs) = dirs else {
+        return Ok(HostPolicy::default());
+    };
+    if dirs.is_empty() {
+        return Err(Error::validation(
+            "sandbox: command_path_dirs must not be empty (omit it for the default PATH)",
+        ));
+    }
+    let mut path_dirs = Vec::with_capacity(dirs.len());
+    for (index, dir) in dirs.iter().enumerate() {
+        if dir.trim().is_empty() {
+            return Err(Error::validation(format!(
+                "sandbox: command_path_dirs[{index}] is empty"
+            )));
+        }
+        let path = PathBuf::from(dir);
+        if !path.is_absolute() {
+            return Err(Error::validation(format!(
+                "sandbox: command_path_dirs[{index}] {dir:?} is not absolute"
+            )));
+        }
+        path_dirs.push(path);
+    }
+    Ok(HostPolicy { path_dirs })
+}
+
 /// What a runner is holding right now.
 ///
 /// The numbers an operator needs to see a bound approaching *before* a start is
@@ -863,6 +919,18 @@ pub trait Runner: Send + Sync + std::fmt::Debug {
     /// forget it so it disappears from [`list`](Runner::list).
     async fn close_session(&self, id: &str) -> Result<()>;
 
+    /// The directories a bare command name is resolved against.
+    ///
+    /// The runner is the one that knows: it is built from the deployment's
+    /// settings, and every layer that judges a command (the command gate, the
+    /// read-only classifier, the grant's scope check) has to resolve `git` the same
+    /// way or they judge different files.
+    ///
+    /// The default is the conventional host PATH, for a runner assembled in code.
+    fn host_policy(&self) -> HostPolicy {
+        HostPolicy::default()
+    }
+
     /// What this runner is holding, for the daemon's status surface.
     ///
     /// Synchronous and cheap by design: it is read on every `/status`, and a
@@ -927,6 +995,41 @@ impl std::ops::Deref for Handle {
 impl Resource for Handle {
     fn shutdown(self: Arc<Self>) -> crate::resource::BoxFuture<'static, Result<()>> {
         Box::pin(async move { self.0.close().await })
+    }
+}
+
+#[cfg(test)]
+mod host_policy_tests {
+    use super::*;
+
+    /// A deployment whose tools live off the conventional PATH has to be able to say
+    /// so: bare rules resolve against *this* list, and the wrong one means either
+    /// "nothing resolves" (fail closed, confusing) or "the wrong file resolves".
+    #[test]
+    fn a_deployment_may_name_its_own_programme_directories() {
+        assert_eq!(
+            host_policy_from(None).expect("default"),
+            HostPolicy::default()
+        );
+
+        let named = host_policy_from(Some(&["/opt/tools/bin".to_owned()])).expect("named");
+        assert_eq!(named.path_dirs, vec![PathBuf::from("/opt/tools/bin")]);
+
+        // The order is the precedence, so it is preserved.
+        let ordered = host_policy_from(Some(&["/a".to_owned(), "/b".to_owned()])).expect("ordered");
+        assert_eq!(
+            ordered.path_dirs,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_resolved_predictably_is_refused() {
+        // Relative would resolve against the daemon's working directory — a property
+        // of how it was started, not of the document.
+        assert!(host_policy_from(Some(&["tools".to_owned()])).is_err());
+        assert!(host_policy_from(Some(&["".to_owned()])).is_err());
+        assert!(host_policy_from(Some(&[])).is_err());
     }
 }
 

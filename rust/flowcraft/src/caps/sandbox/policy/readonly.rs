@@ -120,6 +120,56 @@ pub fn classify_read_only(request: &ExecRequest) -> bool {
     matches!(classify(&request.planned), Verdict::ReadOnly)
 }
 
+/// An approver that answers for itself when the call is provably read-only.
+///
+/// This is the *only* shape an automatic approval may take: it consults the same
+/// classifier the hardening layer uses, it requires the caller to have asked for a
+/// read-only write mode (approving a `Workspace` write would grant more than was
+/// requested), and it refuses to be the last word — anything it cannot prove goes to
+/// the approver it wraps, which may be none, in which case it is a denial.
+///
+/// Ordering matters and is the composer's job: [`harden_read_only`] must run
+/// *before* the approval layer, so what this approves is what will actually run.
+#[must_use]
+pub fn auto_approve(
+    inner: Option<Arc<dyn super::approval::Approver>>,
+) -> Arc<dyn super::approval::Approver> {
+    Arc::new(ReadOnlyApprover { inner })
+}
+
+struct ReadOnlyApprover {
+    inner: Option<Arc<dyn super::approval::Approver>>,
+}
+
+impl std::fmt::Debug for ReadOnlyApprover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox.ReadOnlyApprover")
+    }
+}
+
+#[async_trait::async_trait]
+impl super::approval::Approver for ReadOnlyApprover {
+    async fn approve(
+        &self,
+        request: super::approval::ApprovalRequest,
+    ) -> crate::error::Result<super::approval::Decision> {
+        // The write mode first: it is the caller's promise about what the command
+        // may do, and a read-only verdict is about the programme, not about that.
+        let asked_for_read_only =
+            request.exec.opts.write == crate::caps::sandbox::contract::WriteMode::ReadOnly;
+        if asked_for_read_only && classify(&request.exec.planned) == Verdict::ReadOnly {
+            return Ok(super::approval::Decision::Allow);
+        }
+        match &self.inner {
+            Some(inner) => inner.approve(request).await,
+            None => Err(Error::policy_denied(format!(
+                "sandbox: {} needs approval, and no approver is configured",
+                request.reason
+            ))),
+        }
+    }
+}
+
 /// A layer that hardens what it can prove read-only, and refuses what it cannot.
 ///
 /// `ReadOnly` requests come back with the execution switches removed from

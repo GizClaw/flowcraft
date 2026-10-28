@@ -187,6 +187,12 @@ impl std::fmt::Debug for Guarded {
 
 #[async_trait]
 impl Runner for Guarded {
+    /// Forwarded, like the counters: a chain that answered this from a default
+    /// would resolve `git` differently from the runner it wraps.
+    fn host_policy(&self) -> HostPolicy {
+        self.inner.host_policy()
+    }
+
     /// Forwarded, not swallowed: a chain that ate the counters would make every
     /// deployment that uses a policy look idle on `/status`.
     fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
@@ -313,6 +319,28 @@ mod tests {
             ["true".to_owned(), "outer".to_owned(), "inner".to_owned()],
             "the first layer must be outermost"
         );
+        runner.close().await.expect("close");
+    }
+
+    /// A chain must not answer the host policy from a default: it would resolve a
+    /// bare command differently from the runner it wraps, and the rule would be about
+    /// a file that never runs.
+    #[tokio::test]
+    async fn a_guarded_runner_forwards_the_host_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = crate::caps::sandbox::contract::host_policy_from(Some(&[dir
+            .path()
+            .display()
+            .to_string()]))
+        .expect("policy");
+        let runner = Chain::of([Arc::new(|inner: RunnerRef| {
+            guard(
+                inner,
+                Arc::new(|spec: SessionSpec| Box::pin(async move { Ok(spec) })),
+            )
+        }) as Layer])
+        .around(Arc::new(LocalRunner::new().with_host_policy(host.clone())));
+        assert_eq!(runner.host_policy(), host);
         runner.close().await.expect("close");
     }
 

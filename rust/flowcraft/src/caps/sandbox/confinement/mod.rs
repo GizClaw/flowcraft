@@ -38,8 +38,8 @@ use crate::caps::sandbox::net::{
 };
 
 use crate::caps::sandbox::contract::{
-    self, CONTRACT, Capabilities, Enforcement, Features, Handle, JournalCapabilities, KIND,
-    NetModes, Runner, Session, SessionInfo, SessionSpec, WriteMode, WriteModes,
+    self, CONTRACT, Capabilities, Enforcement, Features, Handle, HostPolicy, JournalCapabilities,
+    KIND, NetModes, Runner, Session, SessionInfo, SessionSpec, WriteMode, WriteModes,
 };
 use crate::caps::sandbox::local::LocalRunner;
 
@@ -180,6 +180,8 @@ pub struct SandboxConfig {
     net: NetSettings,
     /// Which host variables a session may inherit; see the local runner's settings.
     env_allow: Option<Vec<String>>,
+    /// Where this deployment's programmes live; see the local runner's settings.
+    host: HostPolicy,
 }
 
 impl std::fmt::Debug for SandboxConfig {
@@ -215,6 +217,7 @@ impl SandboxConfig {
             journal: None,
             net: NetSettings::default(),
             env_allow: None,
+            host: HostPolicy::default(),
         }
     }
 
@@ -344,7 +347,9 @@ impl ConfinedRunner {
             // The wrapper resolves the workdir, so the inner runner must not
             // re-check it against a root it does not have. The environment policy
             // is the deployment's, so it travels with the configuration.
-            inner: LocalRunner::new().with_env_allow(config.env_allow.clone()),
+            inner: LocalRunner::new()
+                .with_env_allow(config.env_allow.clone())
+                .with_host_policy(config.host.clone()),
             config,
         }
     }
@@ -473,6 +478,10 @@ struct Prepared {
 
 #[async_trait]
 impl Runner for ConfinedRunner {
+    fn host_policy(&self) -> HostPolicy {
+        self.config.host.clone()
+    }
+
     fn stats(&self) -> Option<crate::caps::sandbox::contract::RunnerStats> {
         self.inner.stats()
     }
@@ -590,6 +599,11 @@ struct Settings {
     /// Extra wrapper flags (`bwrap` only).
     #[serde(default)]
     extra_flags: Vec<String>,
+    /// Where this deployment's programmes live, for bare command names.
+    ///
+    /// Absent uses the conventional host PATH; see the local runner's settings.
+    #[serde(default)]
+    command_path_dirs: Option<Vec<String>>,
     /// Which host variables a session may inherit, by name.
     ///
     /// Absent keeps the contract's default (the child inherits the daemon's whole
@@ -704,6 +718,7 @@ fn check_common(settings: &Settings) -> Result<()> {
     if let Some(names) = &settings.env_allow {
         crate::caps::sandbox::contract::EnvPolicy::validate_allow_names(names)?;
     }
+    crate::caps::sandbox::contract::host_policy_from(settings.command_path_dirs.as_deref())?;
     for (index, path) in settings.writable_paths.iter().enumerate() {
         if path.trim().is_empty() {
             return Err(Error::validation(format!(
@@ -784,6 +799,9 @@ fn build<'a>(sandbox: Sandbox, ctx: BuildCtx<'a>) -> BoxFuture<'a, Result<Arc<Ha
                 proxy: settings.net.proxy.limits(),
             },
             env_allow: settings.env_allow.clone(),
+            host: crate::caps::sandbox::contract::host_policy_from(
+                settings.command_path_dirs.as_deref(),
+            )?,
         };
         if let Some(value) = &settings.journal {
             // A deployment that asked for a journal must not end up with a

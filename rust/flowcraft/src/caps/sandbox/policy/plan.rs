@@ -25,26 +25,8 @@ use crate::caps::sandbox::contract::{EnvPolicy, SessionSpec};
 
 use super::allowlist::names_match;
 
-/// Where the host looks for programmes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostPolicy {
-    /// The directories a bare `argv[0]` is resolved against, in order.
-    ///
-    /// A host-side list, not the request's `PATH`, and the order is the
-    /// precedence: the first executable match wins.
-    pub path_dirs: Vec<PathBuf>,
-}
-
-impl Default for HostPolicy {
-    fn default() -> Self {
-        Self {
-            path_dirs: ["/usr/local/bin", "/usr/bin", "/bin"]
-                .iter()
-                .map(PathBuf::from)
-                .collect(),
-        }
-    }
-}
+#[doc(inline)]
+pub use crate::caps::sandbox::contract::HostPolicy;
 
 /// What `argv[0]` resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]

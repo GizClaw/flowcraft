@@ -515,6 +515,23 @@ and the same three on the confined backends); the proxy limits are nested under
 | `net.proxy.idle_timeout_secs` | 60 | How long a tunnel may go with no byte moving in either direction. `0` disables it. |
 | `net.proxy.max_lifetime_secs` | 1800 | How long a tunnel may stay open at all, however busy. `0` disables it. |
 
+Two more settings decide *what the runner judges*, and both are about the
+programme rather than the numbers:
+
+- `command_path_dirs` — where this deployment's programmes live, absolute, in
+  precedence order. Absent uses `/usr/local/bin:/usr/bin:/bin`. A bare rule
+  (`allow_commands: ["git"]`) resolves against **this** list and never against the
+  request's `PATH`, so a deployment whose tools live in a store or a version
+  manager has to say so — the wrong list means either "nothing resolves" (refused)
+  or "the wrong file resolves".
+- read-only auto-approval is a **composition, not a setting**: nothing in the Rust
+  provider installs a policy chain today, so it is one flag on `LocalPolicy`
+  (`auto_approve_read_only`). It installs the classifier *and* the hardening
+  together — classification without hardening is still a string check — and the
+  automatic answer only covers a call that the classifier proved read-only **and**
+  that asked for a read-only write mode; anything else goes to the approver it
+  wraps, and with none configured that is a denial.
+
 One more setting is not a bound but a boundary: `env_allow` lists the host
 variables a session may inherit, by name. Absent, the child inherits the daemon's
 **whole** environment — the contract's default, and the one a deployment should

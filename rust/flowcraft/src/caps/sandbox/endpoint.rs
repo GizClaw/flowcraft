@@ -27,7 +27,6 @@ use tonic::{Request, Response, Status};
 
 use crate::caps::sandbox::contract::{self, CONTRACT, Capabilities, Handle};
 use crate::caps::sandbox::journal::Journal;
-use crate::caps::sandbox::policy::HostPolicy;
 use crate::caps::sandbox::policy::plan::plan;
 use crate::caps::sandbox::scope::Scope;
 use crate::caps::sandbox::wire;
@@ -281,7 +280,9 @@ impl sandbox_server::Sandbox for Service {
         // The grant judges the command the executor will run, so the plan comes
         // first: `spec.argv[0]` is a spelling the caller controls, and the
         // grant's rules are not about spellings.
-        let planned = plan(&spec, &HostPolicy::default());
+        // The runner knows where this deployment's programmes live, and the grant
+        // has to judge the same file the runner will exec.
+        let planned = plan(&spec, &self.runner.host_policy());
         scope.allows_command(&planned).map_err(status)?;
         spec.opts.timeout = scope.timeout(spec.opts.timeout).map_err(status)?;
         spec.opts.limits.max_output_bytes = scope.output_limit(spec.opts.limits.max_output_bytes);
