@@ -74,6 +74,9 @@ impl FileProvider {
     /// The directory must already exist: a missing bootstrap directory is a
     /// deployment mistake, not something to paper over by creating an empty one
     /// (which would then fail every lookup).
+    // Assembly: bootstrap secrets are read while the deployment is being built.
+    // `SecretProvider` is a synchronous contract for exactly that reason.
+    #[allow(clippy::disallowed_methods)]
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let metadata = std::fs::metadata(&root).map_err(|error| {

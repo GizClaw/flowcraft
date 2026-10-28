@@ -309,6 +309,8 @@ impl EndpointHost {
 }
 
 #[cfg(unix)]
+// Assembly: a listener is bound while the deployment is being built.
+#[allow(clippy::disallowed_methods)]
 fn bind_unix(endpoint: &str, path: &Path) -> Result<UnixListener> {
     prepare_dir(path)?;
     if path.exists() {
@@ -337,6 +339,8 @@ fn bind_tcp(endpoint: &str, address: &str) -> Result<TcpListener> {
 }
 
 #[cfg(unix)]
+// Assembly: a listener is bound while the deployment is being built.
+#[allow(clippy::disallowed_methods)]
 fn prepare_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Err(Error::validation(format!(

@@ -341,6 +341,8 @@ pub struct StubServe {
 /// The behaviour lives in [`crate::stub::StubCraft`]; this owns the listener and
 /// hands the handler to the generic adapter, which is also what a host serving a
 /// real craft does.
+// One-shot CLI (`flowcraftd craft --stub`): the process has this one job and exits.
+#[allow(clippy::disallowed_methods)]
 pub async fn craft_stub(
     serve: &StubServe,
     name: &str,
@@ -728,6 +730,8 @@ pub async fn ctl(client: &AdminClient, command: &str, session: Option<&str>) -> 
 /// user can look inside before sending it. What it must *not* contain is as
 /// important as what it must: the identity file's salt and any grant token stay
 /// in the daemon.
+// One-shot CLI (`flowcraftd diag`): the process has this one job and exits.
+#[allow(clippy::disallowed_methods)]
 pub async fn diag(client: &AdminClient, out: &str) -> Result<()> {
     let response = call(client, "diag", None).await?;
     if response.get("ok").and_then(|value| value.as_bool()) != Some(true) {

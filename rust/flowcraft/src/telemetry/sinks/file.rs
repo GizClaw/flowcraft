@@ -121,6 +121,9 @@ impl FileSink {
             .unwrap_or(true)
     }
 
+    // A `tracing` sink is called synchronously from the emitting thread and cannot
+    // await; the only alternative would be a second thread.
+    #[allow(clippy::disallowed_methods)]
     fn reopen(&self) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
@@ -195,6 +198,9 @@ fn open_private(path: &Path) -> std::io::Result<File> {
     crate::fs::private_append(path)
 }
 
+// A `tracing` sink is called synchronously from the emitting thread and cannot
+// await; the only alternative would be a second thread.
+#[allow(clippy::disallowed_methods)]
 fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -203,6 +209,9 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
+// A `tracing` sink is called synchronously from the emitting thread and cannot
+// await; the only alternative would be a second thread.
+#[allow(clippy::disallowed_methods)]
 fn rename_if_present(from: &Path, to: &Path) -> std::io::Result<()> {
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),

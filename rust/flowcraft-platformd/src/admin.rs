@@ -93,7 +93,7 @@ impl AdminHandle {
             let _ = task.await;
         }
         if let Some(socket) = &self.socket {
-            let _ = std::fs::remove_file(socket);
+            let _ = tokio::fs::remove_file(socket).await;
         }
     }
 }
@@ -127,17 +127,35 @@ pub async fn serve(
         Target::Unix(path) => {
             use std::os::unix::fs::PermissionsExt as _;
 
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            }
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
+            // Binding is assembly, but it runs inside an `async fn`, so the four
+            // syscalls behind it go to the blocking pool as one hop.
+            let bind_path = path.clone();
+            // Inside the closure: this *is* the boundary, which is the third case
+            // `clippy.toml` allows.
+            #[allow(clippy::disallowed_methods)]
+            flowcraft::blocking::run("platformd.admin_socket", move || {
+                if let Some(parent) = bind_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                }
+                if bind_path.exists() {
+                    std::fs::remove_file(&bind_path)?;
+                }
+                Ok(())
+            })
+            .await?;
             let listener = tokio::net::UnixListener::bind(path).map_err(|error| {
                 Error::not_available(format!("admin socket {}: {error}", path.display()))
             })?;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            // The socket exists now, so its mode is set after the bind — a second
+            // hop, because the first closure ran before there was a file to chmod.
+            let mode_path = path.clone();
+            #[allow(clippy::disallowed_methods)]
+            flowcraft::blocking::run("platformd.admin_socket_mode", move || {
+                std::fs::set_permissions(&mode_path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(Error::from)
+            })
+            .await?;
 
             let uid = nix::unistd::geteuid().as_raw();
             let task = tokio::spawn(async move {
@@ -552,6 +570,8 @@ pub fn mint_token() -> String {
 }
 
 /// Write the token where `ctl` will look for it, owner-only on unix.
+// Assembly: called while the deployment is being built, from `commands`.
+#[allow(clippy::disallowed_methods)]
 ///
 /// The mode is part of the `open`, not a `set_permissions` afterwards: this file
 /// is a bearer credential for the admin socket, and a create-then-chmod leaves a

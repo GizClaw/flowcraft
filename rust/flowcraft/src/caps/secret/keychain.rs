@@ -396,6 +396,9 @@ impl FileBackend {
         Ok(())
     }
 
+    // Assembly (`open`, the key mint) or the synchronous body of a store method
+    // that runs inside `blocking::run` — see the store's `impl`.
+    #[allow(clippy::disallowed_methods)]
     fn delete(&self, name: &str) -> Result<()> {
         validate_name(name)?;
         match fs::remove_file(self.path(name)) {
@@ -410,6 +413,9 @@ impl FileBackend {
         self.remove_account(name)
     }
 
+    // Assembly (`open`, the key mint) or the synchronous body of a store method
+    // that runs inside `blocking::run` — see the store's `impl`.
+    #[allow(clippy::disallowed_methods)]
     fn delete_prefix(&self, prefix: &str) -> Result<()> {
         if prefix.trim().is_empty() {
             return Err(Error::validation(
@@ -549,6 +555,9 @@ fn prepare_dir(dir: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
+// Assembly (`open`, the key mint) or the synchronous body of a store method
+// that runs inside `blocking::run` — see the store's `impl`.
+#[allow(clippy::disallowed_methods)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| {
@@ -569,6 +578,9 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 /// A crash mid-write must not leave a truncated sealed file (GCM would fail
 /// every later read) or a truncated index, so the bytes land in a temp file in
 /// the same directory and are renamed over the target.
+// Assembly (`open`, the key mint) or the synchronous body of a store method
+// that runs inside `blocking::run` — see the store's `impl`.
+#[allow(clippy::disallowed_methods)]
 fn atomic_write(dir: &Path, path: &Path, data: &[u8], prefix: &str) -> Result<()> {
     // A random suffix keeps two processes (or a leftover file from a crash) from
     // claiming the same temp name; `create_new` is what makes the claim atomic.
@@ -634,6 +646,9 @@ fn load_or_create_key(dir: &Path) -> Result<[u8; KEY_LEN]> {
     }
 }
 
+// Assembly (`open`, the key mint) or the synchronous body of a store method
+// that runs inside `blocking::run` — see the store's `impl`.
+#[allow(clippy::disallowed_methods)]
 fn mint_key(path: &Path) -> Result<[u8; KEY_LEN]> {
     let mut key = [0u8; KEY_LEN];
     SystemRandom::new()
@@ -691,6 +706,9 @@ fn read_key_retrying(path: &Path) -> Result<[u8; KEY_LEN]> {
 /// Refuse to mint a fresh key when the directory already holds store data.
 ///
 /// Anything else in the directory is not the store's to judge.
+// Assembly (`open`, the key mint) or the synchronous body of a store method
+// that runs inside `blocking::run` — see the store's `impl`.
+#[allow(clippy::disallowed_methods)]
 fn ensure_key_mintable(dir: &Path) -> Result<()> {
     let error = || {
         Error::validation(

@@ -240,13 +240,19 @@ fn inspect(path: &Path, host: &HostPolicy) -> Resolution {
 }
 
 #[cfg(unix)]
+// The plan is one resolution per start, on the path that is about to fork and
+// exec; see `resolve` for the measured argument.
+#[allow(clippy::disallowed_methods)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
+// The plan is one resolution per start, on the path that is about to fork and
+// exec; see `resolve` for the measured argument.
 #[cfg(not(unix))]
+#[allow(clippy::disallowed_methods)]
 fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }

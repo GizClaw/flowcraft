@@ -152,6 +152,8 @@ fn annotate(label: &str, error: Error) -> Error {
 /// deployment names in a document and shares between runs — would be the
 /// readable one. The Go provider passes 0700 to `os.MkdirAll` for the same
 /// reason.
+// Assembly: the workspace root is created while the capability is being built.
+#[allow(clippy::disallowed_methods)]
 fn create_root(root: &Path) -> Result<()> {
     #[cfg(unix)]
     {

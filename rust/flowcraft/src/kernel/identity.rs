@@ -347,11 +347,15 @@ fn create_at_with_epoch(path: &Path, scope: Scope, epoch: u32) -> Result<Machine
 ///
 /// Split out from [`MachineIdentity::reset`] so the behaviour is testable
 /// without touching process-wide environment state.
+// Assembly: the identity document is read and written once, before any executor.
+#[allow(clippy::disallowed_methods)]
 fn reset_at(path: &Path, scope: Scope, epoch: u32) -> Result<MachineIdentity> {
     std::fs::remove_file(path)?;
     create_at_with_epoch(path, scope, epoch.saturating_add(1))
 }
 
+// Assembly: the identity document is read and written once, before any executor.
+#[allow(clippy::disallowed_methods)]
 fn write_new(path: &Path, document: &Document) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -374,6 +378,8 @@ fn write_new(path: &Path, document: &Document) -> Result<()> {
 
 /// Machine identities are readable by every local user on purpose: that is the
 /// whole point of "one per machine" with unprivileged daemons.
+// Assembly: the identity document is read and written once, before any executor.
+#[allow(clippy::disallowed_methods)]
 fn set_readable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

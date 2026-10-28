@@ -286,7 +286,9 @@ impl Proxy {
         self.handle.abort();
         let _ = self.handle.await;
         if let Endpoint::Unix(path) = &self.endpoint {
-            let _ = std::fs::remove_file(path);
+            // Async: this is an `async fn` on the daemon's shutdown path, and one
+            // `unlink` is not worth a worker.
+            let _ = tokio::fs::remove_file(path).await;
         }
     }
 }
@@ -358,7 +360,7 @@ pub(crate) async fn start(config: Config) -> Result<Proxy> {
             #[cfg(unix)]
             {
                 // A stale socket from a crashed run must not block the next one.
-                let _ = std::fs::remove_file(&path);
+                let _ = tokio::fs::remove_file(&path).await;
                 let listener = UnixListener::bind(&path).map_err(|error| {
                     Error::not_available(format!(
                         "sandbox: bind the enforcement proxy at {}: {error}",

@@ -84,6 +84,9 @@ fn open_private(path: &Path, append: bool) -> std::io::Result<File> {
 /// Idempotent. An existing directory is **not** re-permissioned: silently
 /// changing the mode of a directory a deployment chose would be surprising, and
 /// a store that must be 0700 checks it instead (see the keychain).
+// This module *is* the boundary: its callers are assembly, or code already inside
+// a `blocking::run` closure.
+#[allow(clippy::disallowed_methods)]
 pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     if path.as_os_str().is_empty() {
         return Ok(());
@@ -105,6 +108,9 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
 
 /// The mode `path` currently has, or `None` where the platform has no modes.
 #[must_use]
+// This module *is* the boundary: its callers are assembly, or code already
+// inside a `blocking::run` closure.
+#[allow(clippy::disallowed_methods)]
 pub fn private_mode_ok(path: &Path) -> Option<bool> {
     #[cfg(unix)]
     {

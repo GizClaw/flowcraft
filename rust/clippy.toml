@@ -21,5 +21,14 @@ disallowed-methods = [
     { path = "std::fs::read_to_string", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
     { path = "std::fs::symlink_metadata", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
     { path = "std::fs::canonicalize", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    # The rest of the surface a start path reaches for. Adding these is cheap; the
+    # exemptions are where the cost sits, and each one has to say whether it is
+    # assembly, a test, or code already inside a `blocking::run` closure.
+    { path = "std::fs::metadata", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::rename", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::remove_file", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::create_dir_all", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
+    { path = "std::fs::set_permissions", reason = "async boundary: use flowcraft::blocking::run" },
+    { path = "std::fs::read_dir", reason = "async boundary: use flowcraft::blocking::run or tokio::fs" },
     { path = "std::thread::sleep", reason = "async boundary: use tokio::time::sleep" },
 ]

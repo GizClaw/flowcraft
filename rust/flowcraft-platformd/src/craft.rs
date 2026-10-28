@@ -93,6 +93,8 @@ impl CraftSpec {
 
 /// Make the craft socket owner-only, and its directory too.
 #[cfg(unix)]
+// Assembly: a craft socket is set up while the deployment is being built.
+#[allow(clippy::disallowed_methods)]
 pub fn secure_socket(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -113,6 +115,8 @@ pub fn secure_socket(path: &Path) -> Result<()> {
 /// A unix socket is a unix mechanism: elsewhere a craft target is a `dns`
 /// address, and there is no file to narrow.
 #[cfg(not(unix))]
+// Assembly: a craft socket is set up while the deployment is being built.
+#[allow(clippy::disallowed_methods)]
 pub fn secure_socket(path: &Path) -> Result<()> {
     Err(Error::not_available(format!(
         "craft target {}: a unix socket requires unix",
@@ -246,12 +250,19 @@ impl CraftSupervisor for ExecSupervisor {
         // A socket left behind by a crashed child is ours to replace; a `dns`
         // target has no file, and its address is the host's argv to choose.
         if let Some(path) = spec.unix_path() {
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            let socket = path.to_path_buf();
+            // Inside the closure: this *is* the boundary.
+            #[allow(clippy::disallowed_methods)]
+            flowcraft::blocking::run("platformd.craft_socket", move || {
+                if socket.exists() {
+                    std::fs::remove_file(&socket)?;
+                }
+                if let Some(parent) = socket.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                Ok(())
+            })
+            .await?;
         }
 
         let mut command = Command::new(&spec.argv[0]);
