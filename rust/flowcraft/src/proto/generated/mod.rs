@@ -9,6 +9,10 @@ pub mod error {
     include!("error.rs");
 }
 
+pub mod inference {
+    include!("inference.rs");
+}
+
 pub mod message {
     include!("message.rs");
 }

@@ -17,6 +17,7 @@ pub mod request;
 pub mod stream;
 pub mod transport;
 pub mod usage;
+pub mod wire;
 
 pub use active::active_fields;
 #[cfg(feature = "inference-http")]

@@ -26,16 +26,7 @@ use futures_util::StreamExt as _;
 
 use crate::error::{Error, Result};
 use crate::inference::openai::OpenAi;
-use crate::inference::request::GenerateResponse;
-
-/// One event of a streaming generation.
-#[derive(Debug, Clone, PartialEq)]
-pub enum GenerateEvent {
-    /// A fragment of the answer.
-    Delta(String),
-    /// The stream's terminal event: the assembled answer, its usage, why it stopped.
-    Finish(GenerateResponse),
-}
+pub use crate::inference::request::GenerateEvent;
 
 /// Turn a byte stream into canonical events.
 ///
@@ -228,6 +219,7 @@ mod tests {
             match event.expect("no error") {
                 GenerateEvent::Delta(text) => texts.push(text),
                 GenerateEvent::Finish(response) => finish = Some(response),
+                GenerateEvent::Attempt(attempt) => panic!("unexpected attempt: {attempt:?}"),
             }
         }
         assert_eq!(texts, ["hel", "lo"]);

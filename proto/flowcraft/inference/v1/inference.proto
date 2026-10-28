@@ -1,0 +1,350 @@
+syntax = "proto3";
+
+package flowcraft.inference.v1;
+
+import "flowcraft/message/v1/message.proto";
+
+option go_package = "github.com/GizClaw/flowcraft/core/inference/v1;inferencev1";
+
+// Inference is the model-inference capability served by a platform endpoint.
+//
+// The boundary is drawn above routing: a client names a *target* (a tier, a model, or a
+// hint) and the server compiles, routes, retries and executes. That is deliberate — the
+// route policy is a section of the deployment document, and a platform that parses a
+// section it does not execute is a platform whose configuration can lie.
+//
+// What is here is what this tree serves today: a model catalogue, a compile that does not
+// execute, unary generation and a streaming generation. Embed, Transcribe and Decide are
+// additive when their pipelines exist — `breaking: PACKAGE` makes adding an RPC safe and
+// declaring one this server answers UNIMPLEMENTED unhelpful.
+//
+// Content is *not* redefined: `flowcraft.message.v1` already carries messages, parts,
+// tool definitions and deltas, and a second copy of that vocabulary is how the two drift.
+service Inference {
+  rpc Models(ModelsRequest) returns (ModelsResponse);
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  rpc GenerateStream(GenerateStreamRequest) returns (stream GenerateEvent);
+}
+
+// ── identity ─────────────────────────────────────────────────────────────────────
+
+// ModelId is the public, credential-free identity of a model.
+message ModelId {
+  string provider = 1;
+  string name = 2;
+}
+
+// ModelRef names a model. It deliberately has no credential profile: which key pays for
+// a call is the deployment's business, and exposing it would let a caller choose.
+message ModelRef {
+  ModelId id = 1;
+}
+
+// ModelDescriptor is one catalogue entry.
+message ModelDescriptor {
+  ModelId id = 1;
+  // Free-form family, e.g. "gpt-5".
+  string family = 2;
+  // Canonical part kinds this model accepts as input ("text", "image", …).
+  repeated string input_kinds = 3;
+  // Canonical part kinds it produces.
+  repeated string output_kinds = 4;
+  // The operations it serves: "generate", "embed", "transcription", "decision".
+  repeated string operations = 5;
+}
+
+// ── intent ───────────────────────────────────────────────────────────────────────
+
+// Target is what the caller wants to run against. One of three strengths, matching the
+// three the Go runtime already has.
+message Target {
+  oneof choose {
+    // A routing class declared by the deployment. The recommended path.
+    string tier = 1;
+    // An exact model. Must fall inside what the caller's grant allows.
+    ModelRef model = 2;
+    // A soft preference: ignored when it matches nothing in the catalogue.
+    string model_hint = 3;
+  }
+}
+
+message ToolChoice {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_AUTO = 1;
+    KIND_REQUIRED = 2;
+    KIND_NONE = 3;
+  }
+  Kind kind = 1;
+  // Present only for a named choice.
+  string name = 2;
+}
+
+message ResponseFormat {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_TEXT = 1;
+    KIND_JSON_OBJECT = 2;
+    KIND_JSON_SCHEMA = 3;
+  }
+  Kind kind = 1;
+  // The name a schema is filed under, when one is given.
+  string name = 2;
+  // The JSON Schema document, when one is given.
+  bytes schema = 3;
+}
+
+// TextIntent is the text-generation half of the intent layer. Every field is optional
+// because "unset" and "zero" are different instructions to a provider.
+message TextIntent {
+  optional uint64 max_output_tokens = 1;
+  optional double temperature = 2;
+  repeated flowcraft.message.v1.ToolDefinition tools = 3;
+  ToolChoice tool_choice = 4;
+  ResponseFormat format = 5;
+  string reasoning_effort = 6;
+}
+
+// ── compile evidence ─────────────────────────────────────────────────────────────
+
+// FieldId names one canonical field of a request.
+//
+// The enum is the type-safe form; the *string* is what travels in checkpoints,
+// telemetry and compiled reports, and it is spelled exactly as the Go table spells it
+// (`generate.context.*.content.parts.text`). The mapping lives in the Rust adapter.
+enum FieldId {
+  FIELD_ID_UNSPECIFIED = 0;
+  FIELD_ID_DECISION_INPUT_JSON = 1;
+  FIELD_ID_DECISION_INPUT_PART_IMAGE = 2;
+  FIELD_ID_DECISION_INPUT_PART_TEXT = 3;
+  FIELD_ID_DECISION_INPUT_TEXT = 4;
+  FIELD_ID_DECISION_QUESTION_CHOICES = 5;
+  FIELD_ID_DECISION_QUESTION_INSTRUCTIONS = 6;
+  FIELD_ID_DECISION_QUESTION_KIND = 7;
+  FIELD_ID_DECISION_QUESTION_LEVELS = 8;
+  FIELD_ID_DECISION_QUESTION_NAME = 9;
+  FIELD_ID_DECISION_REQUEST_METADATA = 10;
+  FIELD_ID_EMBED_DIMENSIONS = 11;
+  FIELD_ID_EMBED_ITEMS = 12;
+  FIELD_ID_EMBED_ITEM_AUDIO = 13;
+  FIELD_ID_EMBED_ITEM_DATA = 14;
+  FIELD_ID_EMBED_ITEM_FILE = 15;
+  FIELD_ID_EMBED_ITEM_IMAGE = 16;
+  FIELD_ID_EMBED_ITEM_MULTI_PART = 17;
+  FIELD_ID_EMBED_ITEM_TEXT = 18;
+  FIELD_ID_EMBED_ITEM_TOOL_CALL = 19;
+  FIELD_ID_EMBED_ITEM_TOOL_RESULT = 20;
+  FIELD_ID_EMBED_ITEM_VIDEO = 21;
+  FIELD_ID_GENERATE_CONTEXT_AUDIO = 22;
+  FIELD_ID_GENERATE_CONTEXT_DATA = 23;
+  FIELD_ID_GENERATE_CONTEXT_FILE = 24;
+  FIELD_ID_GENERATE_CONTEXT_IMAGE = 25;
+  FIELD_ID_GENERATE_CONTEXT_REASONING = 26;
+  FIELD_ID_GENERATE_CONTEXT_TEXT = 27;
+  FIELD_ID_GENERATE_CONTEXT_TOOL_CALL = 28;
+  FIELD_ID_GENERATE_CONTEXT_TOOL_RESULT = 29;
+  FIELD_ID_GENERATE_CONTEXT_VIDEO = 30;
+  FIELD_ID_GENERATE_CONTEXT_ROLE = 31;
+  FIELD_ID_GENERATE_EXECUTION_STREAM = 32;
+  FIELD_ID_GENERATE_EXECUTION_UNARY = 33;
+  FIELD_ID_GENERATE_INTENT_AUDIO = 34;
+  FIELD_ID_GENERATE_INTENT_AUDIO_COUNT = 35;
+  FIELD_ID_GENERATE_INTENT_AUDIO_FORMAT = 36;
+  FIELD_ID_GENERATE_INTENT_AUDIO_FORMAT_CHANNELS = 37;
+  FIELD_ID_GENERATE_INTENT_AUDIO_FORMAT_ENCODING = 38;
+  FIELD_ID_GENERATE_INTENT_AUDIO_FORMAT_SAMPLE_RATE = 39;
+  FIELD_ID_GENERATE_INTENT_AUDIO_SPEED = 40;
+  FIELD_ID_GENERATE_INTENT_AUDIO_VOICE = 41;
+  FIELD_ID_GENERATE_INTENT_AUDIO_VOICE_ID = 42;
+  FIELD_ID_GENERATE_INTENT_AUDIO_VOICE_LANGUAGE = 43;
+  FIELD_ID_GENERATE_INTENT_IMAGE = 44;
+  FIELD_ID_GENERATE_INTENT_IMAGE_COUNT = 45;
+  FIELD_ID_GENERATE_INTENT_IMAGE_DELIVERY = 46;
+  FIELD_ID_GENERATE_INTENT_IMAGE_OUTPUT_FORMAT = 47;
+  FIELD_ID_GENERATE_INTENT_IMAGE_QUALITY = 48;
+  FIELD_ID_GENERATE_INTENT_IMAGE_SEED = 49;
+  FIELD_ID_GENERATE_INTENT_IMAGE_SIZE = 50;
+  FIELD_ID_GENERATE_INTENT_IMAGE_SIZE_HEIGHT = 51;
+  FIELD_ID_GENERATE_INTENT_IMAGE_SIZE_WIDTH = 52;
+  FIELD_ID_GENERATE_INTENT_TEXT = 53;
+  FIELD_ID_GENERATE_INTENT_TEXT_MAX_OUTPUT_TOKENS = 54;
+  FIELD_ID_GENERATE_INTENT_REASONING = 55;
+  FIELD_ID_GENERATE_INTENT_REASONING_EFFORT = 56;
+  FIELD_ID_GENERATE_INTENT_REASONING_ENABLED = 57;
+  FIELD_ID_GENERATE_INTENT_TEXT_RESPONSE = 58;
+  FIELD_ID_GENERATE_INTENT_TEXT_RESPONSE_KIND = 59;
+  FIELD_ID_GENERATE_INTENT_TEXT_RESPONSE_NAME = 60;
+  FIELD_ID_GENERATE_INTENT_TEXT_RESPONSE_SCHEMA = 61;
+  FIELD_ID_GENERATE_INTENT_TEMPERATURE = 62;
+  FIELD_ID_GENERATE_INTENT_TOOL_CHOICE = 63;
+  FIELD_ID_GENERATE_INTENT_TOOL_CHOICE_KIND = 64;
+  FIELD_ID_GENERATE_INTENT_TOOL_CHOICE_NAME = 65;
+  FIELD_ID_GENERATE_INTENT_TOOLS = 66;
+  FIELD_ID_GENERATE_INTENT_TOP_P = 67;
+  FIELD_ID_GENERATE_INTENT_VIDEO = 68;
+  FIELD_ID_GENERATE_INTENT_VIDEO_ASPECT_RATIO = 69;
+  FIELD_ID_GENERATE_INTENT_VIDEO_DURATION = 70;
+  FIELD_ID_GENERATE_INTENT_VIDEO_RESOLUTION = 71;
+  FIELD_ID_GENERATE_INTENT_VIDEO_SEED = 72;
+  FIELD_ID_GENERATE_INTENT_VIDEO_WATERMARK = 73;
+  FIELD_ID_GENERATE_INPUT_AUDIO = 74;
+  FIELD_ID_GENERATE_INPUT_DATA = 75;
+  FIELD_ID_GENERATE_INPUT_FILE = 76;
+  FIELD_ID_GENERATE_INPUT_IMAGE = 77;
+  FIELD_ID_GENERATE_INPUT_REASONING = 78;
+  FIELD_ID_GENERATE_INPUT_TEXT = 79;
+  FIELD_ID_GENERATE_INPUT_TOOL_CALL = 80;
+  FIELD_ID_GENERATE_INPUT_TOOL_RESULT = 81;
+  FIELD_ID_GENERATE_INPUT_VIDEO = 82;
+  FIELD_ID_GENERATE_INPUT_ROLE = 83;
+  FIELD_ID_GENERATE_REQUEST_METADATA = 84;
+  FIELD_ID_TRANSCRIPTION_AUDIO = 85;
+  FIELD_ID_TRANSCRIPTION_LANGUAGE = 86;
+  FIELD_ID_TRANSCRIPTION_PROMPT = 87;
+  FIELD_ID_TRANSCRIPTION_INPUT_FORMAT = 88;
+  FIELD_ID_TRANSCRIPTION_TIMESTAMPS = 89;
+}
+
+// Disposition is how one field fared.
+enum Disposition {
+  DISPOSITION_UNSPECIFIED = 0;
+  DISPOSITION_NATIVE = 1;
+  DISPOSITION_REJECTED = 2;
+  DISPOSITION_DROPPED = 3;
+}
+
+// ComponentNote is how one component inside an aggregating field fared.
+message ComponentNote {
+  // The canonical content kind ("text", "image", …).
+  string kind = 1;
+  Disposition disposition = 2;
+  // Position in encounter order.
+  uint64 index = 3;
+  string reason = 4;
+}
+
+// CompileDecision is one field's entry.
+message CompileDecision {
+  FieldId field = 1;
+  Disposition disposition = 2;
+  string reason = 3;
+  repeated ComponentNote components = 4;
+}
+
+// CompileReport is what a compile did, field by field: the evidence that replaces a
+// prepared handle. A successful compile covers every active field exactly once, as
+// native or as dropped-with-a-reason.
+message CompileReport {
+  // The workload: "generate", "embed", "transcription", "decision".
+  string operation = 1;
+  repeated CompileDecision decisions = 2;
+}
+
+// ── usage ────────────────────────────────────────────────────────────────────────
+
+// Usage is what one call cost, in the provider's own counts.
+message Usage {
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  uint64 total_tokens = 3;
+  // Absent means the provider did not report it, which is not the same as zero.
+  optional uint64 cache_read_tokens = 4;
+  optional uint64 reasoning_tokens = 5;
+}
+
+// Money is `units * 10^-scale` in `currency`.
+message Money {
+  string currency = 1;
+  int64 units = 2;
+  uint32 scale = 3;
+}
+
+// ── generate ─────────────────────────────────────────────────────────────────────
+
+message GenerateRequest {
+  Target target = 1;
+  repeated flowcraft.message.v1.Message messages = 2;
+  TextIntent intent = 3;
+}
+
+enum FinishReason {
+  FINISH_REASON_UNSPECIFIED = 0;
+  FINISH_REASON_STOP = 1;
+  FINISH_REASON_LENGTH = 2;
+  FINISH_REASON_TOOL_CALLS = 3;
+  FINISH_REASON_OTHER = 4;
+}
+
+message GenerateResponse {
+  repeated flowcraft.message.v1.Part parts = 1;
+  FinishReason finish = 2;
+  Usage usage = 3;
+  CompileReport report = 4;
+}
+
+message GenerateStreamRequest {
+  GenerateRequest request = 1;
+}
+
+// Started opens a stream: the caller learns which model answered before any content.
+message Started {
+  ModelId model = 1;
+  string response_id = 2;
+}
+
+// Attempt is one routing attempt, reported as it happens. Non-terminal: the stream's
+// `finish` is still the only thing that ends it.
+message Attempt {
+  string target = 1;
+  // "preflight", "execute", "open".
+  string phase = 2;
+  // "selection", "retry", "fallback".
+  string trigger = 3;
+  // "succeeded", "failed", "opened", "skipped".
+  string outcome = 4;
+  // The canonical error kind, when it failed.
+  string error_kind = 5;
+  // Whether the caller could observe output: a streamed attempt is not retried.
+  bool observable_output = 6;
+  // 1-based attempt number within one target.
+  uint64 number = 7;
+  // Delay slept before this attempt, in milliseconds.
+  uint64 backoff_millis = 8;
+}
+
+// GenerateEvent is one event of a streaming generation.
+message GenerateEvent {
+  oneof kind {
+    Started started = 1;
+    Attempt attempt = 2;
+    flowcraft.message.v1.Delta delta = 3;
+    // The terminal event. A stream that ends without one is a truncated provider stream.
+    Finish finish = 4;
+  }
+}
+
+message Finish {
+  GenerateResponse response = 1;
+}
+
+// ── catalogue and explain ───────────────────────────────────────────────────────
+
+message ModelsRequest {}
+
+message ModelsResponse {
+  repeated ModelDescriptor models = 1;
+}
+
+message ExplainRequest {
+  Target target = 1;
+  repeated flowcraft.message.v1.Message messages = 2;
+  TextIntent intent = 3;
+}
+
+// ExplainResponse is the compile without the call: the same report `Generate` would
+// produce, plus the model the target resolved to.
+message ExplainResponse {
+  ModelRef resolved = 1;
+  CompileReport report = 2;
+}

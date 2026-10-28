@@ -463,6 +463,8 @@ mod tests {
             match event.expect("no error") {
                 GenerateEvent::Delta(text) => texts.push(text),
                 GenerateEvent::Finish(response) => finished = Some(response),
+                // Routing emits these; nothing in this path routes.
+                GenerateEvent::Attempt(attempt) => panic!("unexpected attempt: {attempt:?}"),
             }
         }
         assert_eq!(texts, ["he", "llo"]);

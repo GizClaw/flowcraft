@@ -16,6 +16,7 @@ proto/
 ├── generate.py                    # buf generate + copy next to the Go packages
 └── flowcraft/
     ├── error/v1/error.proto       # the structured error every endpoint carries
+    ├── inference/v1/inference.proto  # model inference: compile evidence, usage, streams
     ├── message/v1/message.proto   # shared content model (parts, tools, deltas)
     ├── craft/v1/craft.proto       # platform ↔ craft lifecycle ABI
     ├── workspace/v1/workspace.proto

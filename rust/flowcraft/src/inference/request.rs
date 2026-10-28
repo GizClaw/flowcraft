@@ -86,6 +86,23 @@ pub struct Compiled {
     pub report: crate::inference::model::CompileReport,
 }
 
+/// One event of a streaming generation.
+///
+/// Defined here, beside the request and response it belongs to, rather than in the module
+/// that parses provider bytes: the *vocabulary* is transport-independent, and a caller
+/// that only speaks the wire form should not need the SSE parser to name an event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenerateEvent {
+    /// A fragment of the answer. Fragments are concatenated by the runner into the
+    /// `Finish` response; a caller that joins them itself will disagree with it.
+    Delta(String),
+    /// One routing attempt, reported as it happens. Non-terminal: only `Finish` ends a
+    /// stream.
+    Attempt(crate::inference::ledger::Attempt),
+    /// The stream's terminal event: the assembled answer.
+    Finish(GenerateResponse),
+}
+
 /// Why generation stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
