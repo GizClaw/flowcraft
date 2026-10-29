@@ -3,6 +3,15 @@
 // document: a diagnostic that wired its own resources could report on a
 // deployment the runner never builds.
 //
+// There is one exception, and it is why OpenAIProvider is here (provider.go):
+// a lane that measures one surface rather than a deployment. The eval document
+// declares the providers a full harness run uses, so building it needs every
+// key that run needs and no decision model at all -- while a lane that scores
+// the arbiter needs one decision model and one key. Wiring that assembly by
+// hand is legitimate only under that condition, and a lane that does it has to
+// say so where it does it: the reading then measures the surface it names, and
+// not the deployment the other lanes measure.
+//
 // It is internal because it is host wiring, not harness surface: the eval
 // package stays independent of core/deploy and the provider drivers.
 package host

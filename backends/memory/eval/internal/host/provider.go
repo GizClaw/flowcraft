@@ -1,3 +1,6 @@
+// A provider built from settings rather than from the deployment document, for
+// the lanes that measure one surface. See the package comment in deployment.go
+// for when that is legitimate and why the document cannot serve it.
 package host
 
 import (
@@ -21,9 +24,12 @@ type Model struct {
 // OpenAIProvider builds an inference assembly over one OpenAI provider and the
 // models it is declared to serve. It is the wiring a live lane needs when it
 // measures one surface rather than a deployment: eval/deploy.yaml names the
-// providers a harness run uses, and a lane that wants a decision model (or a
-// model beside the ones the document declares) would otherwise have to rewrite
-// that document to say so.
+// providers a harness run uses, so it declares no decision model and its build
+// requires the keys of every provider it names (deepseek, openai, bytedance),
+// while a lane scoring the arbiter needs one decision model and one key.
+// Rewriting the shared document to serve that lane would put a model no harness
+// run asks for into every run's assembly, and would make a reading that needs
+// one credential need three.
 //
 // The provider's own endpoint is the default: a proxy that reorders or filters
 // answers would be measured as the model giving them.
