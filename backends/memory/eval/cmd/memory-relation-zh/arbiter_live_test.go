@@ -25,13 +25,24 @@ import (
 // and a network: the command stays the offline measurement, and this lane runs
 // only where the repository's .env is present.
 const (
-	liveArbiterProvider = "openai"
-	liveArbiterModel    = "gpt-6-luna"
-	// liveArbiterEndpoint is the provider's own, not a compatible third party:
-	// the reading measures the answers a model gives, and a proxy that reorders
-	// them would be measured as the arbiter being wrong.
-	liveArbiterEndpoint = "https://api.openai.com/v1"
+	liveArbiterProvider = "gateway"
+	liveArbiterModel    = "azure-decision"
 )
+
+// liveDeployDocument is the probe document both arbiter lanes build: one
+// provider serves extraction, embedding, and the decision surface, so a
+// reading needs one key. It is not deploy.yaml, and the difference is the
+// reading: deploy.yaml pins each surface to the provider that serves it, and
+// building it would need every credential a harness run needs.
+const liveDeployDocument = "../../deploy-arbiter.yaml"
+
+// liveWorkspace sets the probe document's workspace root. A lane must write
+// into the directory it deletes, and the root is a variable in the document
+// so that no build can fall back to writing into the checkout.
+func liveWorkspace(t *testing.T) {
+	t.Helper()
+	t.Setenv("MEMORY_EVAL_WORKSPACE", filepath.Join(t.TempDir(), "workspace"))
+}
 
 // liveEnvFile resolves the credentials file the live lanes need: the repository
 // root, or the older location beside the eval module.
@@ -54,19 +65,22 @@ func liveEnvFile(t *testing.T) string {
 	return ""
 }
 
-// liveDecisions builds the inference assembly the arbiter calls: one provider,
-// one decision model, one credential. It is built from a settings document
-// rather than from eval/deploy.yaml because this reading measures the arbiter
-// alone -- the deployment the harness builds is what the other live lanes
-// measure, and pulling it in would need that run's other providers and keys.
-func liveDecisions(t *testing.T, key string) *inference.Assembly {
+// liveDeployment builds the probe document the arbiter lanes measure, and
+// returns the inference assembly it wires: one provider, one credential, the
+// decision surface the arbiter asks. The document is built rather than its
+// assembly wired by hand so this reading can be reproduced by building the
+// same file, and so the models it asks for are the ones the file declares.
+func liveDeployment(t *testing.T) *host.Deployment {
 	t.Helper()
-	assembly, err := host.OpenAIProvider(context.Background(), liveArbiterEndpoint, key,
-		[]host.Model{{Name: liveArbiterModel, Kind: "decision"}})
+	deployment, err := host.Build(liveDeployDocument, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return assembly
+	t.Cleanup(deployment.Close)
+	if deployment.Inference == nil {
+		t.Fatalf("%s wires no inference assembly", liveDeployDocument)
+	}
+	return &deployment
 }
 
 // corpusPairs turns the labelled conversations into the pairs the pass would
@@ -111,9 +125,9 @@ func TestLiveArbiterOnTheRelationCorpus(t *testing.T) {
 	if err := host.LoadEnvFile(liveEnvFile(t)); err != nil {
 		t.Fatal(err)
 	}
-	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	key := strings.TrimSpace(os.Getenv("GATEWAY_API_KEY"))
 	if key == "" {
-		t.Skip("OPENAI_API_KEY is empty")
+		t.Skip("GATEWAY_API_KEY is empty")
 	}
 	pairs, updates := corpusPairs()
 	if len(pairs) != len(zhScenarios) {
@@ -125,7 +139,8 @@ func TestLiveArbiterOnTheRelationCorpus(t *testing.T) {
 			wanted++
 		}
 	}
-	recorder := &recordingDecisions{inner: liveDecisions(t, key)}
+	liveWorkspace(t)
+	recorder := &recordingDecisions{inner: liveDeployment(t).Inference}
 	arbiter := &maintain.DecisionArbiter{
 		Decisions: recorder, Model: model.ModelRef{
 			ID: model.ModelID{Provider: liveArbiterProvider, Name: liveArbiterModel},

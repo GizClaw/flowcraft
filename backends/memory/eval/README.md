@@ -34,18 +34,30 @@ next to this module or at the repository root — the live probes look in
 cp .env.example .env   # or ../../../.env to keep it at the repository root
 ```
 
-The default deployment uses two providers: DeepSeek for fact extraction
-(`DEEPSEEK_API_KEY`, served by the openai driver) and ByteDance Ark
-`doubao-embedding-vision` (multimodal: text + image) for the vector lane
-(`ARK_API_KEY`). DeepSeek ships no embedding API, so the embedding model is
-declared as a separate bytedance provider in `deploy.yaml`; a third provider,
-`openai` (`gpt-4o-mini`, also multimodal), is declared but unused unless a run
-selects it with `-answer-provider openai -answer-model gpt-4o-mini` or points
-`memories.settings.generate` at it. Three consequences worth knowing:
+The default deployment reaches every model it declares through one gateway
+(`https://ai.haivivi.cn/v1`, `GATEWAY_API_KEY`) and declares two providers
+because it speaks two wires there, not because it reaches two vendors: fact
+extraction and answers run `deepseek-flash` over the openai driver, the vector
+lane runs `doubao-embedding-vision` (multimodal: text + image) over the bytedance
+driver, whose base_url is what points it at the gateway. The same credential
+also serves a second generate model (`deepseek-v4-pro`, text-only, selected with
+`-answer-provider gateway -answer-model deepseek-v4-pro`) and the decision
+surface (`azure-decision`) the maintenance arbiter asks; `deploy.yaml` declares
+all four names so `TestConfiguredModelsExistInCatalog` holds the document to the
+endpoint's catalog, and a name the gateway does not authorize answers 403
+`service_model_unavailable` rather than being substituted.
 
-- the multimodal Ark endpoint embeds one item per HTTP request (no batching),
-  so a full LoCoMo run issues roughly one call per indexed message, plus one
-  per query;
+There is no second vendor and no second key. The document used to declare an
+`openai` provider (`gpt-4o-mini` at `api.openai.com`) as the alternative answer
+backend, which made `OPENAI_API_KEY` a build-time requirement for a model no
+harness run selects; the gateway now serves both a second generate model and the
+decision surface, and `gpt-4o-mini` is scheduled to retire on 2027-01-14, so
+the provider is gone and the alternative runs on the same key. Three
+consequences worth knowing:
+
+- the multimodal embedding route embeds one item per HTTP request (no
+  batching), so a full LoCoMo run issues roughly one call per indexed message,
+  plus one per query;
 - images are exercised: `-images` defaults to `native`, which downloads each
   turn's image (8-way parallel, 20s timeout, bounded cache), verifies it by magic
   bytes and inlines it as an `ImagePart`. An image over the 4MB inline budget is
@@ -61,17 +73,19 @@ selects it with `-answer-provider openai -answer-model gpt-4o-mini` or points
   turned a slow host into a missing image for 24h and made the image set a
   function of the network's luck. `-images annotation` keeps
   the historical text-only shape.
-- one image is not cheap on either multimodal endpoint. Measured on Chat
-  Completions: a 96×96 PNG billed 8,528 prompt tokens against 28 for the same
-  prompt without it, on `gpt-4o-mini` (8,500 tokens for one thumbnail). Ark
-  embeds one image per request as well. Ingest images because the vector lane
-  needs them, not because the context window is large.
+- one image is not cheap on a multimodal endpoint. Measured on Chat
+  Completions with the OpenAI provider this document used to declare: a 96×96
+  PNG billed 8,528 prompt tokens against 28 for the same prompt without it
+  (8,500 tokens for one thumbnail). Ark embeds one image per request as well.
+  Ingest images because the vector lane needs them, not because the context
+  window is large.
 
-The deployment declares the logical name `doubao-embedding-vision` and the
-profile pins the dated snapshot (`doubao-embedding-vision-251215`); Ark also
-lists `doubao-embedding-vision-250615`, and an account endpoint ID (`ep-xxx`)
-works in the same mapping. Without an Ark key, drop `embed:` and the
-`bytedance` provider (or point the provider at a compatible gateway).
+The deployment declares the logical name `doubao-embedding-vision` and no
+endpoint pin: the gateway serves that undated name, where Ark also offers the
+dated snapshots (`doubao-embedding-vision-251215`, `-250615`) and account
+endpoint IDs (`ep-xxx`). Point `bytedance`'s `base_url` at Ark and the same
+document asks Ark instead. Without a vector lane at all, drop `embed:` and the
+`bytedance` provider.
 
 ## Run
 
@@ -279,6 +293,27 @@ recalled pack itself — so a deployment that wants the step back has to add the
 template block *and* re-test here first: the short shape's +8.57pp is not
 evidence for the product shape.
 
+### The answer model: flash, with pro behind a flag
+
+`deepseek-v4-pro` is the same gateway's second generate model and the only
+alternative `deploy.yaml` declares. Measured on one conversation's 152
+questions, reading the same frozen library (`-skip-derive`, `library` block
+identical in both runs: `conversations=2 underived=0`, evidence recall 84.21% in
+both), product shape, strict judge, 20 items / 4096 tokens:
+
+| | strict (answer) | cat 1 | cat 3 | answer out tokens | mean latency | answer stage |
+| --- | --- | --- | --- | --- | --- | --- |
+| `deepseek-flash` | 73.68% (112/152) | 43.8% | 69.2% | 65,979 | 503 ms | 3.5 min |
+| `deepseek-v4-pro` | 73.03% (111/152) | 40.6% | 76.9% | 122,963 (1.9×) | 497 ms | 9.1 min |
+
+`-1` question, `+1.9×` output tokens, `2.6×` the wall clock: on this
+conversation the alternatives are inside the ±1-question/scenario band this
+README quotes elsewhere, and the one column that moved (open-domain, n=13,
++7.7pp) is inside that sample's noise. So `deepseek-flash` stays the default
+and `-answer-model deepseek-v4-pro` is the flag that prices the alternative on
+a fuller run; both rows are strict-judged, and the stored full-corpus report is
+where a lenient figure comes from.
+
 ## What a report stores
 
 The fingerprint names the configuration; the report also carries the material and
@@ -426,9 +461,15 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   -max-items 40 -max-tokens 8192 -answer
 ```
 
-- `-answer-provider` / `-answer-model` (default `deepseek`/`deepseek-flash`:
-  this endpoint also serves `deepseek-v4-pro`, and any other name is silently
-  substituted, which `TestConfiguredModelsExistInCatalog` guards against)
+- `-answer-provider` / `-answer-model` (default `gateway`/`deepseek-flash`:
+  every report stored before this one names the provider `deepseek`, so the
+  fingerprint's `answer_model` reads `gateway/deepseek-flash` only from here on
+  and a `-baseline` compare across that rename reads as a configuration
+  difference, which is what it is. `deepseek-v4-pro` is the declared
+  alternative, text-only, so an `-images native` run cannot select it; a name
+  neither declares answers 403 rather than being substituted --
+  `TestConfiguredModelsExistInCatalog` checks the declaration against the
+  catalog before a run starts)
 - `-judge-provider` / `-judge-model` (default: the answering model)
 - `-judge-style strict|locomo|lme|both|none` — `strict` asks for a bare
   `CORRECT` / `INCORRECT` token, `locomo` mirrors the leaderboard prompt
@@ -549,9 +590,13 @@ fingerprints compares two experiments, not a regression. Build with
 so the revision is stamped into the binary; without it the runner asks `git`
 directly.
 
-`deploy.yaml` is a template: DeepSeek (responses surface) for fact extraction
-and ByteDance Ark `doubao-embedding-vision` for the vector lane. See
-"Diagnosing one question" for the retrieval-side diagnostic.
+`deploy.yaml` is a template: the gateway's `deepseek-flash` (responses surface)
+for fact extraction and its `doubao-embedding-vision` (Ark wire) for the vector
+lane, plus `deepseek-v4-pro` and `azure-decision` declared for the answer A/B
+and for the arbiter. `deploy-arbiter.yaml` is the same deployment with
+`maintain.arbiter` on, and it is what both arbiter lanes build. See "Reading the
+supersede rules" for what those lanes read, and "Diagnosing one question" for
+the retrieval-side diagnostic.
 
 ## Diagnosing one question
 
@@ -738,9 +783,9 @@ above the threshold (the highest is 0.292). It measures the rules, not the
 extractor: a predicate the model never writes is a predicate the rule never
 sees.
 
-The live halves answer the rest, and both need `OPENAI_API_KEY` (the decision
-surface is the one this lane asks; the extraction models are the deployment's
-own):
+The live halves answer the rest, and both need `GATEWAY_API_KEY`: they build
+`deploy-arbiter.yaml`, whose one provider serves the extraction model, the
+embedding model, and the decision surface the arbiter asks.
 
 ```bash
 MEMORY_EVAL_LIVE=1 go test ./cmd/memory-relation-zh/ -run TestLiveArbiter -v
@@ -748,13 +793,14 @@ MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -run TestArbiterJudges -v
 ```
 
 `TestLiveArbiterOnTheRelationCorpus` scores the maintenance arbiter against the
-same 13 labelled pairs: 10/10 updates called replaced, 0/3 controls, 4127
-tokens for the batch (about 320 a pair). `TestArbiterJudgesDerivedChineseTurns`
-is the whole path — the deployment's own extractor writes the facts, the pass
-proposes the pairs, the arbiter judges them, and the overlay is what the pass
-wrote: on two conversations it proposes both pairs, finds the update at 0.94,
-and leaves the control current. It asserts the finding's reason is the arbiter,
-which is the same statement as neither shipped rule deciding the pair.
+same 13 labelled pairs: 10/10 updates called replaced, 0/3 controls, 3332
+tokens for the batch (about 256 a pair) on `azure-decision`, the decision
+surface the gateway serves. `TestArbiterJudgesDerivedChineseTurns` is the whole
+path — the deployment's own extractor writes the facts, the pass proposes the
+pairs, the arbiter judges them, and the overlay is what the pass wrote: on two
+conversations it proposes both pairs, finds the update at 1.00, and leaves the
+control current. It asserts the finding's reason is the arbiter, which is the
+same statement as neither shipped rule deciding the pair.
 
 ## Module dependency
 
@@ -811,7 +857,7 @@ stays offline and free).
 | probe | answers |
 | --- | --- |
 | `TestConfiguredModelsExistInCatalog` | is every model named in `deploy.yaml` actually served? |
-| `TestExtractionModelAB` | is a candidate generate model good enough to extract? (failures, facts/turn, surface coverage, unsupported facts) |
+| `TestExtractionModelAB` | is a candidate generate model good enough to extract? (failures, facts/turn, surface coverage, unsupported facts). Both arms are gateway reasoning models over 30 turns, so it runs far past `go test`'s 10m default: pass `-timeout` above the probe target's 60m |
 | `TestAnswerContextSize` | how much context reaches the answer prompt |
 | `TestEvidenceFidelity` | how much of the recalled evidence is raw text vs a fact paraphrase |
 | `TestRetrievalBudgetSweep` | what evidence coverage each item budget buys |

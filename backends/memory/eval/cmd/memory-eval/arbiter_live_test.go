@@ -9,15 +9,12 @@ import (
 	"testing"
 	"time"
 
-	flowmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
 	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
 	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
 // The live half of the arbiter reading, and the half the corpus cannot answer:
@@ -26,19 +23,14 @@ import (
 // call, overlay -- on facts the deployment's own extractor produced, in a
 // language its two rules cannot read.
 //
-// One model does the extraction and one judges the pairs, both from the OpenAI
-// provider the repository's .env has a key for: the eval document's providers
-// are the ones a harness run uses, and asking it to serve a decision model
-// would mean rewriting the document this lane is supposed to leave alone.
-const (
-	liveArbiterProvider = "openai"
-	liveArbiterEndpoint = "https://api.openai.com/v1"
-	// liveArbiterGenerate extracts; gpt-4o-mini is the eval document's own
-	// generate model, and extraction is not what this lane measures.
-	liveArbiterGenerate = "gpt-4o-mini"
-	liveArbiterEmbed    = "text-embedding-3-small"
-	liveArbiterDecision = "gpt-6-luna"
-)
+// liveDeployDocument is the probe document this lane builds. It is not
+// deploy.yaml: that document reaches the gateway and OpenAI, so building it
+// resolves two credentials, and its memories block leaves the arbiter out.
+//
+// One model extracts and one judges the pairs, both from the document's single
+// provider. The names are not repeated here: a lane that named a model the
+// document does not would be measuring a deployment nobody can build.
+const liveDeployDocument = "../../deploy-arbiter.yaml"
 
 // The two Chinese conversations the probe derives. The first states an update
 // with wording that moved with it -- the shape the vocabulary cannot name and
@@ -61,22 +53,6 @@ const (
 	liveArbiterControlNewer = "郑凯参加了一个合唱团。"
 )
 
-func liveArbiterSettings() string {
-	return fmt.Sprintf(`{
-	  "storage": {"log": {"driver": "workspace"}, "kv": {"driver": "workspace"}},
-	  "scopes": [{"runtime_id": "memories"}],
-	  "interval": "0",
-	  "recent": {"max_items": 8},
-	  "fact": {"strategy": "rich", "max_facts": 16},
-	  "summary": {"disabled": true},
-	  "generate": {"provider": %q, "name": %q, "temperature": 0},
-	  "embed": {"provider": %q, "name": %q},
-	  "maintain": {"arbiter": {"provider": %q, "name": %q, "threshold": 0.75, "budget": 16}}
-	}`, liveArbiterProvider, liveArbiterGenerate,
-		liveArbiterProvider, liveArbiterEmbed,
-		liveArbiterProvider, liveArbiterDecision)
-}
-
 // TestArbiterJudgesDerivedChineseTurns derives two Chinese conversations with
 // the real extractor and runs one maintenance pass over them, so what it
 // measures is the whole path: the facts the extractor wrote, the pairs the pass
@@ -90,35 +66,20 @@ func TestArbiterJudgesDerivedChineseTurns(t *testing.T) {
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to run the credentialed live pass")
 	}
-	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	key := strings.TrimSpace(os.Getenv("GATEWAY_API_KEY"))
 	if key == "" {
-		t.Skip("OPENAI_API_KEY is empty")
+		t.Skip("GATEWAY_API_KEY is empty")
 	}
 	ctx := context.Background()
-	engine, err := host.OpenAIProvider(ctx, liveArbiterEndpoint, key, []host.Model{
-		{Name: liveArbiterGenerate, Kind: "generate"},
-		{Name: liveArbiterEmbed, Kind: "embed"},
-		{Name: liveArbiterDecision, Kind: "decision"},
-	})
+	// The document's workspace root is a variable so a build writes into the
+	// directory this lane deletes, never into the checkout.
+	t.Setenv("MEMORY_EVAL_WORKSPACE", filepath.Join(t.TempDir(), "workspace"))
+	deployment, err := host.Build(liveDeployDocument, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(t.TempDir(), "workspace")
-	store, err := workspace.NewLocalWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	assembly, err := flowmemory.NewFactory().New(ctx, resource.NewInput(
-		[]byte(liveArbiterSettings()),
-		map[string]any{"workspace": store, "inference": engine}, nil, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := assembly.Wire(ctx); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = assembly.Close() })
+	t.Cleanup(deployment.Close)
+	assembly := deployment.Memory
 
 	scope := corememory.Scope{RuntimeID: "memories"}
 	conversations := []struct {
