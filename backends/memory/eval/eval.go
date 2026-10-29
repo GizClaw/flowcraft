@@ -349,6 +349,23 @@ func Derive(ctx context.Context, runner Runner) error {
 type MaintainResult struct {
 	// Scopes counts the passes this call ran: one per distinct hard partition.
 	Scopes int `json:"scopes"`
+	// Supersedes counts the findings the passes made: the facts they judged no
+	// longer current, by either of their two rules or by the arbiter. It is the
+	// denominator ArbiterSupersedes is read against.
+	Supersedes int `json:"supersedes,omitempty"`
+	// ArbiterAsked counts the candidate pairs the passes put to the arbiter and
+	// ArbiterSkipped the ones their budget left for a later pass. A run whose
+	// skipped count is not zero measured an arbiter that was not offered the
+	// scope, which is a cost bound the deployment should raise rather than a
+	// reading -- the pairs a pass skips are judged by none.
+	ArbiterAsked   int `json:"arbiter_asked,omitempty"`
+	ArbiterSkipped int `json:"arbiter_skipped,omitempty"`
+	// ArbiterUndecided counts the pairs the arbiter answered below its
+	// threshold: asked, and deliberately left current.
+	ArbiterUndecided int `json:"arbiter_undecided,omitempty"`
+	// ArbiterSupersedes counts the findings the arbiter made, as opposed to the
+	// rules': what the deployment paid a model for.
+	ArbiterSupersedes int `json:"arbiter_supersedes,omitempty"`
 	// ReclaimedProjectionObjects counts the lane storage the passes removed:
 	// the bases and segments a compaction or a rebuild superseded. It is what
 	// says on a run's own log that the workspace did not grow by its history.
@@ -393,6 +410,15 @@ func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (Ma
 			return result, fmt.Errorf("memory eval: maintain: %w", err)
 		}
 		result.Scopes++
+		result.Supersedes += len(plan.Supersedes)
+		for _, finding := range plan.Supersedes {
+			if finding.Reason == maintain.ReasonArbiter {
+				result.ArbiterSupersedes++
+			}
+		}
+		result.ArbiterAsked += plan.ArbiterAsked
+		result.ArbiterSkipped += plan.ArbiterSkipped
+		result.ArbiterUndecided += plan.ArbiterUndecided
 		result.ReclaimedProjectionObjects += plan.ReclaimedProjectionObjects
 		result.ReclaimedChunks += plan.ReclaimedChunks
 	}
