@@ -91,9 +91,13 @@ type Config struct {
 	// ArbiterBudget caps how many pairs one pass may put to the arbiter
 	// (default 1000). Every pair is one question in a model call, and a
 	// scope of ten thousand facts has more candidate pairs than one pass
-	// should pay for. The pairs the budget leaves out are counted in
-	// Plan.ArbiterSkipped and judged by the next pass. It bounds cost rather
-	// than judgment, so it stays out of ProducerVersion.
+	// should pay for. It bounds the pairs the scope has no answer for yet:
+	// a pair an earlier pass already asked is answered from the scope's
+	// remembered verdicts and costs nothing, so the budget decides how much
+	// new surface one pass covers rather than how many pairs it looks at.
+	// The pairs it leaves out are counted in Plan.ArbiterSkipped and asked by
+	// the next pass. It bounds cost rather than judgment, so it stays out of
+	// ProducerVersion.
 	ArbiterBudget int
 }
 
@@ -282,11 +286,26 @@ type Plan struct {
 	// they say how much of the undecidable surface one pass covered: a scope
 	// that keeps skipping pairs is a budget the deployment should raise, and
 	// a scope that asks and never finds is a rule that is paying for nothing.
+	//
+	// Asked counts calls, not pairs examined: a pair an earlier pass already
+	// put to this arbiter is answered from the scope's remembered verdicts
+	// and counted in ArbiterRemembered instead.
 	ArbiterAsked   int `json:"arbiter_asked,omitempty"`
 	ArbiterSkipped int `json:"arbiter_skipped,omitempty"`
-	// ArbiterUndecided counts the pairs the arbiter declined or answered
-	// below its threshold: asked, and deliberately left current.
-	ArbiterUndecided int `json:"arbiter_undecided,omitempty"`
+	// ArbiterRemembered counts the pairs this pass answered from an earlier
+	// pass's verdicts rather than from a call. It is the number a deployment
+	// reads to tell a converging pass (remembered grows, asked shrinks) from
+	// one that keeps paying for the same questions.
+	ArbiterRemembered int `json:"arbiter_remembered,omitempty"`
+	// ArbiterReplaced, ArbiterBothCurrent and ArbiterUndecided split the
+	// pairs this pass was answered about: the ones that became a finding, the
+	// ones the arbiter found can hold at once, and the ones it declined or
+	// answered below its threshold. The three are disjoint and sum to the
+	// asked count, so a pass that asks and never replaces says so with the
+	// other two instead of hiding behind one number.
+	ArbiterReplaced    int `json:"arbiter_replaced,omitempty"`
+	ArbiterBothCurrent int `json:"arbiter_both_current,omitempty"`
+	ArbiterUndecided   int `json:"arbiter_undecided,omitempty"`
 	// ProducerVersion is the stamp the pass writes with its overlay: the
 	// policy version plus the tuning (see Config.ProducerVersion). A host
 	// reads an overlay only when the stamp is its own, so a policy or tuning
@@ -459,14 +478,11 @@ func detect(
 			}
 		}
 	}
-	// The budget is spent on the scan's own order, so two passes over the
-	// same facts ask the same questions; what falls outside it is judged by
-	// a later pass rather than by a later position in this one.
-	if len(pairs) > config.ArbiterBudget {
-		plan.ArbiterSkipped = len(pairs) - config.ArbiterBudget
-		pairs = pairs[:config.ArbiterBudget]
-	}
-	plan.ArbiterAsked = len(pairs)
+	// Detection proposes and does not budget: the pairs come back in the
+	// scan's own order, and adjudicate spends the pass's budget on the ones
+	// the scope has no answer for. That split is what lets a remembered
+	// verdict cost nothing against the budget -- a pair the scan proposes
+	// again is not a pair the pass has to pay for.
 	sort.Slice(plan.Supersedes, func(i, j int) bool { return plan.Supersedes[i].FactID < plan.Supersedes[j].FactID })
 	sort.Slice(plan.Decays, func(i, j int) bool { return plan.Decays[i].FactID < plan.Decays[j].FactID })
 	return plan, pairs, nil
@@ -477,19 +493,69 @@ func detect(
 // off. It is the caller's step rather than the detection's because it needs a
 // context and a network round trip, and detection is what has neither.
 //
+// It also spends the pass's budget, and spends it on the pairs the scope has
+// no answer for: verdicts an earlier pass remembered are applied for free, and
+// only what remains is a question the arbiter has to be asked. The scan's own
+// order decides what the budget covers, so two passes over the same facts ask
+// the same questions and a scope converges instead of starving whichever
+// pairs happen to sort last.
+//
 // A failed call changes nothing: the plan keeps the rules' findings, and the
 // caller decides whether publishing them without the arbiter's half is
 // acceptable -- for a pass it is, because the read path applies what was
 // judged and the arbiter's silence is reported rather than served.
-func adjudicate(ctx context.Context, plan *Plan, pairs []Pair, arbiter Arbiter) error {
+func adjudicate(
+	ctx context.Context,
+	plan *Plan,
+	pairs []Pair,
+	arbiter Arbiter,
+	verdicts *Verdicts,
+	budget int,
+) error {
 	if len(pairs) == 0 || !arbiterSet(arbiter) {
 		return nil
 	}
-	judgments, err := arbiter.Adjudicate(ctx, pairs)
-	if err != nil {
-		return err
+	judgments := make([]Judgment, len(pairs))
+	considered := make([]int, 0, len(pairs))
+	asked := make([]int, 0, len(pairs))
+	for index, pair := range pairs {
+		if judgment, remembered := verdicts.Lookup(pair); remembered {
+			judgments[index] = judgment
+			considered = append(considered, index)
+			plan.ArbiterRemembered++
+			continue
+		}
+		asked = append(asked, index)
 	}
-	plan.ArbiterUndecided = applyVerdicts(plan, pairs, judgments)
+	if budget > 0 && len(asked) > budget {
+		plan.ArbiterSkipped = len(asked) - budget
+		asked = asked[:budget]
+	}
+	plan.ArbiterAsked = len(asked)
+	if len(asked) > 0 {
+		subset := make([]Pair, len(asked))
+		for position, index := range asked {
+			subset[position] = pairs[index]
+		}
+		answers, err := arbiter.Adjudicate(ctx, subset)
+		if err != nil {
+			return err
+		}
+		for position, index := range asked {
+			judgments[index] = answers[position]
+			verdicts.Remember(pairs[index], answers[position])
+		}
+		considered = append(considered, asked...)
+	}
+	// The scan's order decides which later fact is recorded as the one that
+	// made an older fact stale, so the remembered and the asked pairs are
+	// judged in one ordered walk rather than two.
+	sort.Ints(considered)
+	counted := make([]bool, len(pairs))
+	for _, index := range asked {
+		counted[index] = true
+	}
+	plan.ArbiterReplaced, plan.ArbiterBothCurrent, plan.ArbiterUndecided = applyVerdicts(plan, pairs, judgments, considered, counted)
 	return nil
 }
 
@@ -498,28 +564,52 @@ func adjudicate(ctx context.Context, plan *Plan, pairs []Pair, arbiter Arbiter) 
 // that replaces a fact is the one recorded -- pairs are proposed in the scan's
 // order, so that is the earliest later fact that made it stale, which is the
 // same choice the rules make when they stop at the first deciding candidate.
-// It returns how many pairs the arbiter left current, which is the number a
-// deployment reads to tell an arbiter that is working from one that is
-// refusing.
-func applyVerdicts(plan *Plan, pairs []Pair, judgments []Judgment) (undecided int) {
+//
+// The three counts it returns cover the pairs this pass paid for -- the ones
+// marked in counted -- and not the ones it remembered: a verdict from an
+// earlier pass was counted there. Findings, both-current answers and undecided
+// ones are disjoint, so the three numbers add up to what the pass paid for.
+func applyVerdicts(
+	plan *Plan,
+	pairs []Pair,
+	judgments []Judgment,
+	considered []int,
+	counted []bool,
+) (replaced, bothCurrent, undecided int) {
 	recorded := make(map[string]struct{}, len(pairs))
 	for _, finding := range plan.Supersedes {
 		recorded[finding.FactID] = struct{}{}
 	}
-	for index, pair := range pairs {
+	for _, index := range considered {
+		pair := pairs[index]
+		countable := index < len(counted) && counted[index]
 		if index >= len(judgments) {
-			undecided += len(pairs) - index
-			break
+			if countable {
+				undecided++
+			}
+			continue
 		}
 		judgment := judgments[index]
-		if judgment.Verdict != VerdictReplaced {
-			undecided++
+		switch judgment.Verdict {
+		case VerdictBothCurrent:
+			if countable {
+				bothCurrent++
+			}
+			continue
+		case VerdictReplaced:
+		default:
+			if countable {
+				undecided++
+			}
 			continue
 		}
 		if _, exists := recorded[pair.Older.ID]; exists {
 			continue
 		}
 		recorded[pair.Older.ID] = struct{}{}
+		if countable {
+			replaced++
+		}
 		plan.Supersedes = append(plan.Supersedes, Supersede{
 			FactID: pair.Older.ID, Conversation: pair.Conversation,
 			SupersededBy: pair.Newer.ID,
@@ -532,7 +622,7 @@ func applyVerdicts(plan *Plan, pairs []Pair, judgments []Judgment) (undecided in
 	if len(plan.Supersedes) > 0 {
 		sort.Slice(plan.Supersedes, func(i, j int) bool { return plan.Supersedes[i].FactID < plan.Supersedes[j].FactID })
 	}
-	return undecided
+	return replaced, bothCurrent, undecided
 }
 
 // recencyKey orders facts by event time, falling back to creation time so a

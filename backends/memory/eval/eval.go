@@ -358,11 +358,20 @@ type MaintainResult struct {
 	// skipped count is not zero measured an arbiter that was not offered the
 	// scope, which is a cost bound the deployment should raise rather than a
 	// reading -- the pairs a pass skips are judged by none.
-	ArbiterAsked   int `json:"arbiter_asked,omitempty"`
-	ArbiterSkipped int `json:"arbiter_skipped,omitempty"`
-	// ArbiterUndecided counts the pairs the arbiter answered below its
-	// threshold: asked, and deliberately left current.
-	ArbiterUndecided int `json:"arbiter_undecided,omitempty"`
+	//
+	// Asked counts calls: a pair an earlier pass already put to the same
+	// arbiter is answered from the scope's remembered verdicts for free, and
+	// is counted in ArbiterRemembered instead.
+	ArbiterAsked      int `json:"arbiter_asked,omitempty"`
+	ArbiterSkipped    int `json:"arbiter_skipped,omitempty"`
+	ArbiterRemembered int `json:"arbiter_remembered,omitempty"`
+	// ArbiterReplaced, ArbiterBothCurrent and ArbiterUndecided split what the
+	// passes paid for: the pairs that became a finding, the ones the arbiter
+	// found can hold at once, and the ones it declined or answered below its
+	// threshold.
+	ArbiterReplaced    int `json:"arbiter_replaced,omitempty"`
+	ArbiterBothCurrent int `json:"arbiter_both_current,omitempty"`
+	ArbiterUndecided   int `json:"arbiter_undecided,omitempty"`
 	// ArbiterSupersedes counts the findings the arbiter made, as opposed to the
 	// rules': what the deployment paid a model for.
 	ArbiterSupersedes int `json:"arbiter_supersedes,omitempty"`
@@ -418,6 +427,9 @@ func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (Ma
 		}
 		result.ArbiterAsked += plan.ArbiterAsked
 		result.ArbiterSkipped += plan.ArbiterSkipped
+		result.ArbiterRemembered += plan.ArbiterRemembered
+		result.ArbiterReplaced += plan.ArbiterReplaced
+		result.ArbiterBothCurrent += plan.ArbiterBothCurrent
 		result.ArbiterUndecided += plan.ArbiterUndecided
 		result.ReclaimedProjectionObjects += plan.ReclaimedProjectionObjects
 		result.ReclaimedChunks += plan.ReclaimedChunks

@@ -76,7 +76,7 @@ func detectWith(t *testing.T, config Config, conversations map[string][]factview
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adjudicate(context.Background(), &plan, pairs, stub); err != nil {
+	if err := adjudicate(context.Background(), &plan, pairs, stub, nil, config.withDefaults().ArbiterBudget); err != nil {
 		t.Fatal(err)
 	}
 	return plan, stub
@@ -171,10 +171,11 @@ func TestDetectLeavesEntityFreeFactsUnproposed(t *testing.T) {
 	}
 }
 
-// TestDetectSpendsTheArbiterBudgetInScanOrder pins the cost bound: a pass asks
-// at most what the budget allows, spends it in the order the scan proposed the
-// pairs, and reports what it left for a later pass instead of hiding it.
-func TestDetectSpendsTheArbiterBudgetInScanOrder(t *testing.T) {
+// TestAdjudicateSpendsTheArbiterBudgetInScanOrder pins the cost bound: a pass
+// asks at most what the budget allows, spends it in the order the scan
+// proposed the pairs, and reports what it left for a later pass instead of
+// hiding it.
+func TestAdjudicateSpendsTheArbiterBudgetInScanOrder(t *testing.T) {
 	at := func(month int) time.Time { return time.Date(2021, time.Month(month), 1, 0, 0, 0, 0, time.UTC) }
 	plan, stub := detectWith(t, Config{ArbiterBudget: 2}, undecidedFacts(
 		fact("fact-1", "郑凯住在柏林。", []string{"郑凯", "柏林"}, at(1)),
@@ -190,6 +191,115 @@ func TestDetectSpendsTheArbiterBudgetInScanOrder(t *testing.T) {
 	}
 	if stub.asked[0].Older.ID != "fact-1" || stub.asked[1].Older.ID != "fact-1" {
 		t.Fatalf("the budget did not follow the scan order: %#v", stub.asked)
+	}
+}
+
+// rememberedVerdicts is the view a pass has of an earlier one: every pair it
+// is given has already been answered.
+func rememberedVerdicts(pairs []Pair, verdict Verdict) *Verdicts {
+	view := &Verdicts{
+		entries: make(map[string]verdictEntry, len(pairs)),
+		pending: make(map[string]verdictEntry),
+	}
+	for _, pair := range pairs {
+		view.Remember(pair, Judgment{Verdict: verdict, Confidence: 0.9})
+	}
+	return view
+}
+
+// TestAdjudicateDoesNotChargeTheBudgetForRememberedPairs is the whole point of
+// the verdict store: the budget bounds new surface, not pairs examined. A pass
+// over four fresh pairs with two remembered and a budget of two asks both
+// fresh ones and skips none -- without the memory it would ask two and leave
+// two for a later pass, which is how a tail of pairs used to starve.
+func TestAdjudicateDoesNotChargeTheBudgetForRememberedPairs(t *testing.T) {
+	at := func(month int) time.Time { return time.Date(2021, time.Month(month), 1, 0, 0, 0, 0, time.UTC) }
+	conversations := undecidedFacts(
+		fact("fact-1", "郑凯住在柏林。", []string{"郑凯", "柏林"}, at(1)),
+		fact("fact-2", "郑凯搬去了巴黎。", []string{"郑凯", "巴黎"}, at(2)),
+		fact("fact-3", "郑凯又搬去了罗马。", []string{"郑凯", "罗马"}, at(3)),
+	)
+	stub := &stubArbiter{answer: alwaysReplaced}
+	plan, pairs, err := detect(
+		corememory.Scope{RuntimeID: "runtime", UserID: "user"},
+		conversations, time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC), Config{Arbiter: stub}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pairs) != 3 {
+		t.Fatalf("pairs = %d", len(pairs))
+	}
+	remembered := rememberedVerdicts(pairs[1:], VerdictBothCurrent)
+	if err := adjudicate(context.Background(), &plan, pairs, stub, remembered, 2); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.asked) != 1 {
+		t.Fatalf("asked %d pairs: %#v", len(stub.asked), stub.asked)
+	}
+	if plan.ArbiterAsked != 1 || plan.ArbiterRemembered != 2 || plan.ArbiterSkipped != 0 {
+		t.Fatalf("counts = asked %d, remembered %d, skipped %d",
+			plan.ArbiterAsked, plan.ArbiterRemembered, plan.ArbiterSkipped)
+	}
+}
+
+// TestAdjudicateAsksNothingWhenEveryPairIsRemembered pins the converging pass:
+// a second pass over the same facts pays for nothing at all, and the budget it
+// did not spend carries no skip.
+func TestAdjudicateAsksNothingWhenEveryPairIsRemembered(t *testing.T) {
+	at := func(month int) time.Time { return time.Date(2021, time.Month(month), 1, 0, 0, 0, 0, time.UTC) }
+	stub := &stubArbiter{answer: alwaysReplaced}
+	plan, pairs, err := detect(
+		corememory.Scope{RuntimeID: "runtime", UserID: "user"},
+		undecidedFacts(
+			fact("fact-1", "郑凯住在柏林。", []string{"郑凯", "柏林"}, at(1)),
+			fact("fact-2", "郑凯搬去了巴黎。", []string{"郑凯", "巴黎"}, at(2)),
+		), time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC), Config{Arbiter: stub}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adjudicate(context.Background(), &plan, pairs, stub, rememberedVerdicts(pairs, VerdictReplaced), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.asked) != 0 {
+		t.Fatalf("the pass asked %#v", stub.asked)
+	}
+	if plan.ArbiterAsked != 0 || plan.ArbiterRemembered != len(pairs) || plan.ArbiterSkipped != 0 {
+		t.Fatalf("counts = asked %d, remembered %d, skipped %d",
+			plan.ArbiterAsked, plan.ArbiterRemembered, plan.ArbiterSkipped)
+	}
+	// A remembered "replaced" is still a finding: the overlay is rewritten
+	// every pass, so what the memory saves is the call, not the judgment.
+	if len(plan.Supersedes) != 1 || plan.Supersedes[0].Reason != ReasonArbiter {
+		t.Fatalf("supersedes = %#v", plan.Supersedes)
+	}
+}
+
+// TestAdjudicateSplitsTheAnswersItPaidFor pins the three counts apart: a
+// pair the arbiter found both-current is not an undecided one, and a scope
+// that asks and never replaces says so with the both-current count instead of
+// hiding both answers behind a single number.
+func TestAdjudicateSplitsTheAnswersItPaidFor(t *testing.T) {
+	at := func(month int) time.Time { return time.Date(2021, time.Month(month), 1, 0, 0, 0, 0, time.UTC) }
+	stub := &stubArbiter{}
+	plan, pairs, err := detect(
+		corememory.Scope{RuntimeID: "runtime", UserID: "user"},
+		undecidedFacts(
+			fact("fact-1", "郑凯住在柏林。", []string{"郑凯", "柏林"}, at(1)),
+			fact("fact-2", "郑凯搬去了巴黎。", []string{"郑凯", "巴黎"}, at(2)),
+			fact("fact-3", "郑凯又搬去了罗马。", []string{"郑凯", "罗马"}, at(3)),
+		), time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC), Config{Arbiter: stub}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adjudicate(context.Background(), &plan, pairs, stub, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if plan.ArbiterAsked != len(pairs) {
+		t.Fatalf("asked = %d, want %d", plan.ArbiterAsked, len(pairs))
+	}
+	if plan.ArbiterBothCurrent != len(pairs) || plan.ArbiterUndecided != 0 || plan.ArbiterReplaced != 0 {
+		t.Fatalf("counts = replaced %d, both-current %d, undecided %d",
+			plan.ArbiterReplaced, plan.ArbiterBothCurrent, plan.ArbiterUndecided)
 	}
 }
 
@@ -238,7 +348,7 @@ func TestDetectUnansweredPairsStayCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adjudicate(context.Background(), &plan, pairs, stub); err != nil {
+	if err := adjudicate(context.Background(), &plan, pairs, stub, nil, config.withDefaults().ArbiterBudget); err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Supersedes) != 0 {
@@ -428,6 +538,96 @@ func TestRunScopeStoresTheArbitersEvidence(t *testing.T) {
 	}
 	if entry.Reason != ReasonArbiter || entry.Confidence != 0.93 || entry.SupersededBy != "fact-2" {
 		t.Fatalf("entry = %#v", entry)
+	}
+}
+
+// TestRunScopeDoesNotPayTwiceForTheSamePass pins the store's half of the
+// budget: a second pass over a scope it already judged asks nothing, applies
+// the answers the first pass remembered, and writes the same overlay. That is
+// what makes a pass cost its new pairs rather than its pairs.
+func TestRunScopeDoesNotPayTwiceForTheSamePass(t *testing.T) {
+	ctx := context.Background()
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	kv, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := factview.NewFactStore(logStore, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubArbiter{answer: alwaysReplaced}
+	config := Config{Arbiter: stub}
+	store, err := NewStore(kv, WithConfig(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	seed := func(id, text string, entities []string, at time.Time) {
+		t.Helper()
+		if _, err := facts.Add(ctx, factview.AddRequest{
+			ID: id, Generation: "generation-1", Scope: scope, ConversationID: "conv-1",
+			Content:    coremessage.NewTextContent(text),
+			Entities:   entities,
+			EventTime:  at,
+			Provenance: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "message-" + id}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("fact-1", "郑凯住在柏林。", []string{"郑凯", "柏林"}, time.Date(2021, 5, 1, 0, 0, 0, 0, time.UTC))
+	seed("fact-2", "郑凯上个月搬到了上海。", []string{"郑凯"}, time.Date(2023, 8, 14, 0, 0, 0, 0, time.UTC))
+	if err := facts.PublishActiveGeneration(ctx, scope, "conv-1", "generation-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	service := &Service{Facts: facts, Store: store, Config: config}
+	first, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ArbiterAsked == 0 || first.ArbiterReplaced == 0 {
+		t.Fatalf("the first pass paid for %+v", first)
+	}
+	asked := len(stub.asked)
+	before, err := store.Load(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.RunScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.asked) != asked {
+		t.Fatalf("the second pass asked %d more pairs", len(stub.asked)-asked)
+	}
+	if second.ArbiterAsked != 0 || second.ArbiterRemembered != first.ArbiterAsked {
+		t.Fatalf("counts = asked %d, remembered %d; the first pass asked %d",
+			second.ArbiterAsked, second.ArbiterRemembered, first.ArbiterAsked)
+	}
+	after, err := store.Load(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("overlay = %#v, want what the first pass wrote %#v", after, before)
+	}
+	for identity, entry := range before {
+		// UpdatedAt is the pass's clock, not its judgment: everything the read
+		// path applies has to match, and the stamp on it does not.
+		got := after[identity]
+		entry.UpdatedAt, got.UpdatedAt = time.Time{}, time.Time{}
+		if got != entry {
+			t.Fatalf("entry %q = %#v, want %#v", identity, got, entry)
+		}
 	}
 }
 

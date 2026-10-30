@@ -140,7 +140,8 @@ func TestMaintainSumsWhatTheArbiterDid(t *testing.T) {
 			{FactID: "fact-a", Reason: maintain.ReasonSimilarity},
 			{FactID: "fact-b", Reason: maintain.ReasonArbiter},
 		},
-		ArbiterAsked: 4, ArbiterSkipped: 6, ArbiterUndecided: 3,
+		ArbiterAsked: 4, ArbiterSkipped: 6, ArbiterRemembered: 5,
+		ArbiterReplaced: 2, ArbiterBothCurrent: 1, ArbiterUndecided: 1,
 	}
 	maintained, err := Maintain(context.Background(), countingMaintainer{plan: plan},
 		[]corememory.Scope{{RuntimeID: "memories"}})
@@ -148,7 +149,8 @@ func TestMaintainSumsWhatTheArbiterDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	if maintained.Scopes != 1 || maintained.Supersedes != 2 || maintained.ArbiterSupersedes != 1 ||
-		maintained.ArbiterAsked != 4 || maintained.ArbiterSkipped != 6 || maintained.ArbiterUndecided != 3 {
+		maintained.ArbiterAsked != 4 || maintained.ArbiterSkipped != 6 || maintained.ArbiterRemembered != 5 ||
+		maintained.ArbiterReplaced != 2 || maintained.ArbiterBothCurrent != 1 || maintained.ArbiterUndecided != 1 {
 		t.Fatalf("counts = %+v", maintained)
 	}
 	quiet, err := Maintain(context.Background(), countingMaintainer{},

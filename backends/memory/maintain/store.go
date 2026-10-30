@@ -928,13 +928,25 @@ func (service *Service) run(
 		return empty, err
 	}
 	plan.IgnoredOverlay = status.Stale && status.Entries > 0
+	// What the arbiter was already asked about this scope. A pass that asks
+	// the same question twice pays twice, and a scope's facts are re-derived
+	// by every pass, so the remembered answers are what make a second pass
+	// cost what its new pairs cost rather than what its pairs cost.
+	config := service.Config.withDefaults()
+	var verdicts *Verdicts
+	if arbiterSet(config.Arbiter) && len(pairs) > 0 {
+		verdicts, err = service.Store.Verdicts(ctx, scope, config.Arbiter.Identity())
+		if err != nil {
+			return empty, err
+		}
+	}
 	// The arbiter is asked after the rules and before anything is saved: its
 	// findings are part of the same judgment, and the overlay is written once.
 	// A call that fails leaves the rules' findings to be published -- the read
 	// path applies what the pass decided, and the arbiter's silence is
 	// reported to the caller rather than passed off as a judgment that the
 	// older facts are all current.
-	arbiterErr := adjudicate(ctx, &plan, pairs, service.Config.Arbiter)
+	arbiterErr := adjudicate(ctx, &plan, pairs, config.Arbiter, verdicts, config.ArbiterBudget)
 	if judged == nil {
 		err = service.Store.Save(ctx, plan)
 	} else {
@@ -945,6 +957,15 @@ func (service *Service) run(
 	}
 	if err != nil {
 		return empty, err
+	}
+	// The overlay is published before the answers are kept: a pass that could
+	// not write its verdicts still changed what the read path serves, and
+	// forgetting a paid answer costs the next pass a call rather than the
+	// scope its findings.
+	if arbiterErr == nil && verdicts != nil {
+		if err := service.Store.SaveVerdicts(ctx, verdicts); err != nil {
+			return plan, err
+		}
 	}
 	if service.Documents != nil {
 		reclaimed, err := service.Documents.RetireScopeBuilds(ctx, scope)

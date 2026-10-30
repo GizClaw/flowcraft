@@ -127,7 +127,7 @@ chunk:
 document:
   max_runes: 1000000
 maintain:
-  arbiter: {provider: openai, name: gpt-6-luna, threshold: 0.75, budget: 1000}
+  arbiter: {provider: openai, name: gpt-6-luna, threshold: 0.75, batch: 64, concurrency: 4, budget: 1000}
 lanes:
   fusion: rrf
   cache:
@@ -239,14 +239,27 @@ not built for; a deployment that configures an arbiter without an `inference`
 assembly is refused where the document is read. The call is the platform's
 `DecisionRequest`, not a bespoke prompt: `threshold` (default 0.75) is the
 probability of `replaced` a finding needs, `batch` (default 200) is the OpenAI
-wire's own per-call limit on questions, and `budget` (default 1000) caps the
-pairs one pass pays for — the pairs it leaves out are counted
-(`Plan.ArbiterSkipped`) and judged by a later pass, because the budget bounds
-cost rather than judgment and so stays out of the stamp. A pair the arbiter
-declines, or answers below the threshold, leaves the older fact current: a
-missed update costs one stale value, a wrong one penalizes a fact that is still
-true until the next pass. On this project's Chinese corpus a pass costs about
-320 tokens a pair (`eval/cmd/memory-relation-zh`).
+wire's own per-call limit on questions, `concurrency` (default 4) is how many
+calls one pass keeps in flight, and `budget` (default 1000) caps the pairs one
+pass pays for — the pairs it leaves out are counted (`Plan.ArbiterSkipped`) and
+judged by a later pass, because the budget bounds cost rather than judgment and
+so stays out of the stamp. Batch and concurrency are a schedule, not a
+judgment: the batches are independent, each response names the questions it
+answers, and both settings stay out of the stamp. A pair the arbiter declines,
+or answers below the threshold, leaves the older fact current: a missed update
+costs one stale value, a wrong one penalizes a fact that is still true until
+the next pass. On this project's Chinese corpus a fresh pair costs about 320
+tokens (`eval/cmd/memory-relation-zh`).
+
+What a pass does not pay twice for, it remembers. The pair an arbiter answered
+is stored under `maintain/v2/verdicts/<scope>`, keyed by the digest of the
+question (the two statements and the times the question states), in 256 shards
+of 800 answers each, stamped with the arbiter's identity. A later pass applies
+those answers for free, counts them in `Plan.ArbiterRemembered`, and spends its
+budget only on the pairs nobody has asked about — so a pass over an unchanged
+scope costs nothing, and a scope's tail stops starving behind its head. A
+model, wording or threshold change is a new identity, and the shards the old
+one wrote are not read.
 
 ## Storage layout
 
@@ -940,7 +953,9 @@ a subject for, and only pairs the rules left current: sharing a subject is the
 one thing the pass reads without a model, and a pair the rules already decided
 is not a question. The finding records the probability it was judged with and
 the reason `arbiter`, so a reader can tell a rule, which can be re-applied, from
-an estimate, which cannot.
+an estimate, which cannot. What it was answered is remembered, so the pass pays
+for a pair once: the questions are the scope's, not the pass's, and only a new
+pair costs a call.
 
 One limit is worth stating: the arbiter is asked whether the older statement is
 still current, so a pair whose statements both carry a date is answered
