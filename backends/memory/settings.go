@@ -194,9 +194,17 @@ type ArbiterSettings struct {
 	// Batch caps how many pairs one call carries (default 200, the OpenAI
 	// wire's own per-call limit).
 	Batch int `json:"batch,omitempty"`
+	// Concurrency caps how many calls one pass keeps in flight (default 4).
+	// The calls are independent and each names its own answers, so this moves
+	// the wall clock and nothing else: it is not part of the arbiter's
+	// identity, and a deployment that raises it serves the same overlay. A
+	// value above the pass's ceiling is capped there.
+	Concurrency int `json:"concurrency,omitempty"`
 	// Budget caps how many pairs one maintenance pass puts to the arbiter
-	// (default 1000). The pairs it leaves out are reported as skipped and
-	// judged by a later pass.
+	// (default 1000). It bounds new questions: a pair an earlier pass already
+	// asked is answered from the verdicts that pass remembered and costs
+	// nothing, so the budget decides how much new surface a pass covers. The
+	// pairs it leaves out are reported as skipped and asked by a later pass.
 	Budget int `json:"budget,omitempty"`
 }
 
@@ -206,8 +214,8 @@ func (settings ArbiterSettings) isZero() bool {
 
 func (settings ArbiterSettings) validate() error {
 	if settings.isZero() {
-		if settings.Threshold != 0 || settings.Batch != 0 || settings.Budget != 0 {
-			return errors.New("maintain.arbiter.threshold, batch, and budget require provider and name")
+		if settings.Threshold != 0 || settings.Batch != 0 || settings.Concurrency != 0 || settings.Budget != 0 {
+			return errors.New("maintain.arbiter.threshold, batch, concurrency, and budget require provider and name")
 		}
 		return nil
 	}
@@ -222,6 +230,9 @@ func (settings ArbiterSettings) validate() error {
 	}
 	if settings.Batch < 0 {
 		return errors.New("maintain.arbiter.batch must not be negative")
+	}
+	if settings.Concurrency < 0 {
+		return errors.New("maintain.arbiter.concurrency must not be negative")
 	}
 	if settings.Budget < 0 {
 		return errors.New("maintain.arbiter.budget must not be negative")

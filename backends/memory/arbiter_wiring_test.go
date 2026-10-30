@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -30,7 +31,8 @@ func arbiterSettings(fake *inferencetest.DecisionFake) string {
 	  "scopes": [{"runtime_id": "memories", "user_id": "u1"}],
 	  "fact": {"strategy": "none"},
 	  "summary": {"disabled": true},
-	  "maintain": {"arbiter": {"provider": %q, "name": %q, "profile": %q, "threshold": 0.8, "budget": 4}},
+	  "maintain": {"arbiter": {"provider": %q, "name": %q, "profile": %q, "threshold": 0.8,
+	    "batch": 64, "concurrency": 2, "budget": 4}},
 	  "interval": "0"
 	}`, ref.ID.Provider, ref.ID.Name, ref.Profile)
 }
@@ -80,6 +82,19 @@ func TestArbiterSettingsReachTheMaintenancePass(t *testing.T) {
 	if assembly.maintain.Config.ArbiterBudget != 4 {
 		t.Fatalf("arbiter budget = %d", assembly.maintain.Config.ArbiterBudget)
 	}
+	// The schedule reaches the call site, and not the stamp: concurrency moves
+	// the wall clock, so two deployments that differ only there serve the same
+	// overlay.
+	arbiter, ok := assembly.maintain.Config.Arbiter.(*maintain.DecisionArbiter)
+	if !ok {
+		t.Fatalf("arbiter = %T", assembly.maintain.Config.Arbiter)
+	}
+	if arbiter.Batch != 64 || arbiter.Concurrency != 2 {
+		t.Fatalf("arbiter batch = %d, concurrency = %d", arbiter.Batch, arbiter.Concurrency)
+	}
+	if strings.Contains(stamp, "concurrency") || strings.Contains(stamp, "batch") {
+		t.Fatalf("the schedule entered the stamp: %q", stamp)
+	}
 	status, err := assembly.OverlayStatus(context.Background(), testScope())
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +139,7 @@ func TestArbiterSettingsAreRefusedWhenTheyCannotMeanAnything(t *testing.T) {
 		"no name":     `{"provider": "openai", "name": ""}`,
 		"threshold":   `{"provider": "openai", "name": "gpt-6-luna", "threshold": 1.5}`,
 		"batch":       `{"provider": "openai", "name": "gpt-6-luna", "batch": -1}`,
+		"concurrency": `{"provider": "openai", "name": "gpt-6-luna", "concurrency": -1}`,
 		"budget":      `{"provider": "openai", "name": "gpt-6-luna", "budget": -1}`,
 		"knobs alone": `{"threshold": 0.8}`,
 	}

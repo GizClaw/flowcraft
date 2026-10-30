@@ -190,7 +190,11 @@ func TestDecisionArbiterThresholdKeepsBorderlinePairsCurrent(t *testing.T) {
 func TestDecisionArbiterBatches(t *testing.T) {
 	fake := &inferencetest.DecisionFake{}
 	arbiter := &DecisionArbiter{
-		Decisions: fake.Assembly(t), Model: inferencetest.DefaultFakeDecisionModel, Batch: 2,
+		// One call at a time, so the requests come back in the order the pairs
+		// were proposed: which call finishes first is the schedule's business,
+		// and that is what the concurrency tests pin instead.
+		Decisions: fake.Assembly(t), Model: inferencetest.DefaultFakeDecisionModel,
+		Batch: 2, Concurrency: 1,
 	}
 	pairs := []Pair{
 		arbiterPair("a1", "a2"), arbiterPair("b1", "b2"), arbiterPair("c1", "c2"),

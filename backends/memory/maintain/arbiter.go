@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -137,7 +138,26 @@ type DecisionArbiter struct {
 	// Batch caps how many pairs one call carries (default 200, the OpenAI
 	// wire's own limit).
 	Batch int
+	// Concurrency caps how many calls one adjudication keeps in flight
+	// (default 4). The calls are independent and each one names its own
+	// answers, so the order they return in changes nothing about the plan;
+	// what it changes is how long a pass spends waiting, which for a scope of
+	// a hundred thousand pairs is the difference between an hour and a
+	// quarter of one. It is a schedule, not a judgment: it stays out of
+	// Identity, and two deployments that differ only here serve the same
+	// overlay.
+	Concurrency int
 }
+
+const (
+	// defaultArbiterConcurrency is how many batches one adjudication keeps in
+	// flight when the deployment names none.
+	defaultArbiterConcurrency = 4
+	// maxArbiterConcurrency bounds what a deployment may ask for: past this
+	// the pass is waiting on one provider's rate limit rather than on its own
+	// schedule.
+	maxArbiterConcurrency = 32
+)
 
 // DecisionSource is the decision workload as this package calls it; the
 // platform's *inference.Assembly satisfies it.
@@ -170,10 +190,19 @@ func (arbiter *DecisionArbiter) batch() int {
 	return arbiter.Batch
 }
 
+func (arbiter *DecisionArbiter) concurrency() int {
+	if arbiter == nil || arbiter.Concurrency <= 0 {
+		return defaultArbiterConcurrency
+	}
+	return min(arbiter.Concurrency, maxArbiterConcurrency)
+}
+
 // Adjudicate implements Arbiter. Pairs are answered in batches; a call that
 // fails fails the whole answer, because a response is answered in question
 // order and a partially-decoded one cannot be trusted to line up with the
-// pairs it names.
+// pairs it names. The batches are independent, so they run several at a time
+// and land in their own slots: the answer to a pair is a function of the pair,
+// never of which batch finished first.
 func (arbiter *DecisionArbiter) Adjudicate(ctx context.Context, pairs []Pair) ([]Judgment, error) {
 	if arbiter == nil || arbiter.Decisions == nil {
 		return nil, errors.New("maintain: arbiter has no decision surface")
@@ -186,24 +215,78 @@ func (arbiter *DecisionArbiter) Adjudicate(ctx context.Context, pairs []Pair) ([
 	}
 	judgments := make([]Judgment, len(pairs))
 	batch := arbiter.batch()
+	spans := make([][2]int, 0, (len(pairs)+batch-1)/batch)
 	for start := 0; start < len(pairs); start += batch {
-		end := min(start+batch, len(pairs))
-		request, err := arbiterRequest(pairs[start:end])
-		if err != nil {
-			return nil, err
-		}
-		response, err := arbiter.Decisions.Decision(ctx, arbiter.Model, request)
-		if err != nil {
-			return nil, fmt.Errorf("maintain: adjudicate pairs %d..%d: %w", start, end-1, err)
-		}
-		if err := response.ValidateFor(request); err != nil {
-			return nil, fmt.Errorf("maintain: adjudicate pairs %d..%d: %w", start, end-1, err)
-		}
-		for index, answer := range response.Answers {
-			judgments[start+index] = arbiter.judgment(answer)
-		}
+		spans = append(spans, [2]int{start, min(start+batch, len(pairs))})
+	}
+	workers := min(arbiter.concurrency(), len(spans))
+	// A failed call cancels the rest: the caller publishes all of the
+	// arbiter's half or none of it, and the answers still in flight have no
+	// reader left.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	spansOf := make(chan [2]int, len(spans))
+	for _, span := range spans {
+		spansOf <- span
+	}
+	close(spansOf)
+	var (
+		group   sync.WaitGroup
+		mutex   sync.Mutex
+		failure error
+	)
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for span := range spansOf {
+				if ctx.Err() != nil {
+					return
+				}
+				err := arbiter.adjudicateBatch(ctx, span[0], span[1], pairs, judgments)
+				if err == nil {
+					continue
+				}
+				mutex.Lock()
+				if failure == nil {
+					failure = err
+					cancel()
+				}
+				mutex.Unlock()
+			}
+		}()
+	}
+	group.Wait()
+	if failure != nil {
+		return nil, failure
 	}
 	return judgments, nil
+}
+
+// adjudicateBatch asks one batch and writes its answers into the slots they
+// name. Each worker owns the slots of the batch it took, so the writes need no
+// lock and the result does not depend on the schedule.
+func (arbiter *DecisionArbiter) adjudicateBatch(
+	ctx context.Context,
+	start, end int,
+	pairs []Pair,
+	judgments []Judgment,
+) error {
+	request, err := arbiterRequest(pairs[start:end])
+	if err != nil {
+		return err
+	}
+	response, err := arbiter.Decisions.Decision(ctx, arbiter.Model, request)
+	if err != nil {
+		return fmt.Errorf("maintain: adjudicate pairs %d..%d: %w", start, end-1, err)
+	}
+	if err := response.ValidateFor(request); err != nil {
+		return fmt.Errorf("maintain: adjudicate pairs %d..%d: %w", start, end-1, err)
+	}
+	for index, answer := range response.Answers {
+		judgments[start+index] = arbiter.judgment(answer)
+	}
+	return nil
 }
 
 // arbiterRequest asks one question per pair. The pair is stated in the

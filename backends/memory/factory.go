@@ -248,10 +248,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 		// deployment cannot switch models without the scope's overlay being
 		// re-judged.
 		maintainConfig.Arbiter = &maintain.DecisionArbiter{
-			Decisions: engine,
-			Model:     settings.Maintain.Arbiter.ref(),
-			Threshold: settings.Maintain.Arbiter.Threshold,
-			Batch:     settings.Maintain.Arbiter.Batch,
+			Decisions:   engine,
+			Model:       settings.Maintain.Arbiter.ref(),
+			Threshold:   settings.Maintain.Arbiter.Threshold,
+			Batch:       settings.Maintain.Arbiter.Batch,
+			Concurrency: settings.Maintain.Arbiter.Concurrency,
 		}
 		maintainConfig.ArbiterBudget = settings.Maintain.Arbiter.Budget
 	}
