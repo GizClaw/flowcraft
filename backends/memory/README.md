@@ -254,12 +254,24 @@ tokens (`eval/cmd/memory-relation-zh`).
 What a pass does not pay twice for, it remembers. The pair an arbiter answered
 is stored under `maintain/v2/verdicts/<scope>`, keyed by the digest of the
 question (the two statements and the times the question states), in 256 shards
-of 800 answers each, stamped with the arbiter's identity. A later pass applies
-those answers for free, counts them in `Plan.ArbiterRemembered`, and spends its
-budget only on the pairs nobody has asked about — so a pass over an unchanged
-scope costs nothing, and a scope's tail stops starving behind its head. A
-model, wording or threshold change is a new identity, and the shards the old
-one wrote are not read.
+stamped with the arbiter's identity. A later pass applies those answers for
+free, counts them in `Plan.ArbiterRemembered`, and spends its budget only on
+the pairs nobody has asked about — so a pass over an unchanged scope costs
+nothing, and a scope's tail stops starving behind its head. A model, wording or
+threshold change is a new identity, and the shards the old one wrote are not
+read.
+
+`remember` (default 204800 answers a scope) is the ceiling. Size it from the
+scope's *pair* count, not its fact count: pairs grow with the facts that share
+a subject, so a small corpus asks far more questions than it has facts — on
+LoCoMo, 689 facts across ten conversations propose 235,229 distinct pairs, and
+the default ceiling is already below that. A scope above its ceiling rotates:
+the write keeps the newest answers, forgets the oldest, and counts the loss as
+`Plan.ArbiterEvicted`, which is the number of answers every further pass buys
+again. So a run that reports `arbiter evicted=0` measured a store that
+converged, and one that reports a number measured a ceiling below its corpus.
+Raising it costs a bigger document read and rewrite per pass, about 140 bytes
+an answer (204,800 answers are ~29 MB of a workspace).
 
 ## Storage layout
 

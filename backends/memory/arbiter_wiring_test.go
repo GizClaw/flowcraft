@@ -32,7 +32,7 @@ func arbiterSettings(fake *inferencetest.DecisionFake) string {
 	  "fact": {"strategy": "none"},
 	  "summary": {"disabled": true},
 	  "maintain": {"arbiter": {"provider": %q, "name": %q, "profile": %q, "threshold": 0.8,
-	    "batch": 64, "concurrency": 2, "budget": 4}},
+	    "batch": 64, "concurrency": 2, "budget": 4, "remember": 300000}},
 	  "interval": "0"
 	}`, ref.ID.Provider, ref.ID.Name, ref.Profile)
 }
@@ -81,6 +81,14 @@ func TestArbiterSettingsReachTheMaintenancePass(t *testing.T) {
 	}
 	if assembly.maintain.Config.ArbiterBudget != 4 {
 		t.Fatalf("arbiter budget = %d", assembly.maintain.Config.ArbiterBudget)
+	}
+	// The ceiling reaches the pass, and not the stamp: it bounds what is
+	// remembered rather than what is judged.
+	if assembly.maintain.Config.ArbiterRemember != 300000 {
+		t.Fatalf("arbiter remember = %d", assembly.maintain.Config.ArbiterRemember)
+	}
+	if strings.Contains(stamp, "remember") {
+		t.Fatalf("the ceiling entered the stamp: %q", stamp)
 	}
 	// The schedule reaches the call site, and not the stamp: concurrency moves
 	// the wall clock, so two deployments that differ only there serve the same
@@ -141,6 +149,7 @@ func TestArbiterSettingsAreRefusedWhenTheyCannotMeanAnything(t *testing.T) {
 		"batch":       `{"provider": "openai", "name": "gpt-6-luna", "batch": -1}`,
 		"concurrency": `{"provider": "openai", "name": "gpt-6-luna", "concurrency": -1}`,
 		"budget":      `{"provider": "openai", "name": "gpt-6-luna", "budget": -1}`,
+		"remember":    `{"provider": "openai", "name": "gpt-6-luna", "remember": -1}`,
 		"knobs alone": `{"threshold": 0.8}`,
 	}
 	for name, block := range cases {

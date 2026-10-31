@@ -99,6 +99,17 @@ type Config struct {
 	// the next pass. It bounds cost rather than judgment, so it stays out of
 	// ProducerVersion.
 	ArbiterBudget int
+	// ArbiterRemember is how many answers one scope keeps (default
+	// DefaultArbiterRemember). A corpus proposes pairs in the number of pairs
+	// its subjects admit, not in the number of its facts -- 689 facts sharing
+	// a few subjects propose 235,229 -- so the store has a ceiling and a scope
+	// above it rotates: the newest answers are kept and the oldest are paid
+	// for again on the next pass. Plan.ArbiterEvicted reports how much.
+	//
+	// It bounds what is kept rather than what is judged, so it stays out of
+	// ProducerVersion: two deployments that differ only in this serve the
+	// same overlay.
+	ArbiterRemember int
 }
 
 func (config Config) withDefaults() Config {
@@ -122,6 +133,9 @@ func (config Config) withDefaults() Config {
 	}
 	if config.ArbiterBudget == 0 {
 		config.ArbiterBudget = 1000
+	}
+	if config.ArbiterRemember == 0 {
+		config.ArbiterRemember = DefaultArbiterRemember
 	}
 	return config
 }
@@ -147,6 +161,9 @@ func (config Config) validate() error {
 	}
 	if config.ArbiterBudget < 0 {
 		return errors.New("maintain: arbiter budget must not be negative")
+	}
+	if config.ArbiterRemember < 0 {
+		return errors.New("maintain: arbiter remember must not be negative")
 	}
 	return nil
 }
@@ -306,6 +323,12 @@ type Plan struct {
 	ArbiterReplaced    int `json:"arbiter_replaced,omitempty"`
 	ArbiterBothCurrent int `json:"arbiter_both_current,omitempty"`
 	ArbiterUndecided   int `json:"arbiter_undecided,omitempty"`
+	// ArbiterEvicted counts the answers this pass forgot because the scope's
+	// store was full: the ceiling (Config.ArbiterRemember) is below what the
+	// scope asks, so the newest answers were kept and these will be bought
+	// again. Zero is a converging store; a number that keeps coming back is
+	// the tax a ceiling below the scope's pair count charges every pass.
+	ArbiterEvicted int `json:"arbiter_evicted,omitempty"`
 	// ProducerVersion is the stamp the pass writes with its overlay: the
 	// policy version plus the tuning (see Config.ProducerVersion). A host
 	// reads an overlay only when the stamp is its own, so a policy or tuning

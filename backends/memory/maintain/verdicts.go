@@ -26,12 +26,22 @@ const (
 	// shard holds every answer that hashes into it, from every conversation
 	// of the scope.
 	shardWidth = 2
-	// verdictEntriesPerShard bounds one shard. A shard is capped rather than
-	// the scope so the eviction is local: a write never has to read the whole
-	// scope to decide what to forget, and 256 shards put the scope's ceiling
-	// at 256x this (204,800 answers), which is more than a corpus of a
-	// hundred thousand facts proposes.
-	verdictEntriesPerShard = 800
+	// verdictShards is how many shards one scope's answers are split across.
+	verdictShards = 1 << (4 * shardWidth)
+	// DefaultArbiterRemember is how many answers one scope keeps by default
+	// (256 shards x 800). It is an answer count rather than a byte budget
+	// because that is what a pass spends: one stored answer is what one call
+	// bought.
+	//
+	// The default is a corpus of a hundred thousand facts' worth of candidate
+	// pairs, and a scope above it rotates: the pass keeps the newest answers,
+	// forgets the oldest, and pays again for what it forgot. That is not a
+	// hypothetical -- a 689-fact corpus whose facts share a few subjects
+	// proposes 235,229 distinct pairs, so a scope can exceed the ceiling long
+	// before it is large. A deployment that measured its pair count raises
+	// maintain.arbiter.remember; what it buys is a bigger document read and
+	// rewritten per pass (a stored answer is ~140 bytes).
+	DefaultArbiterRemember = verdictShards * 800
 )
 
 // verdictEntry is one remembered answer. Seen is when the answering pass
@@ -123,7 +133,7 @@ func (store *Store) Verdicts(ctx context.Context, scope corememory.Scope, identi
 	view := &Verdicts{
 		scope:    scope,
 		identity: identity,
-		entries:  make(map[string]verdictEntry, verdictEntriesPerShard),
+		entries:  make(map[string]verdictEntry, DefaultArbiterRemember),
 		pending:  make(map[string]verdictEntry),
 		now:      store.clock().UTC().Unix(),
 	}
@@ -154,6 +164,22 @@ func (verdicts *Verdicts) Lookup(pair Pair) (Judgment, bool) {
 	return Judgment{Verdict: entry.Verdict, Confidence: entry.Confidence}, true
 }
 
+// verdictEntriesPerShard is how many answers one shard holds for a scope that
+// remembers remember answers. A shard is capped rather than the scope so the
+// eviction is local: a write never has to read every shard to decide what to
+// forget. The ceiling is rounded up per shard, so the scope's store holds at
+// least what was asked for, and never less than one answer a shard.
+func verdictEntriesPerShard(remember int) int {
+	if remember <= 0 {
+		remember = DefaultArbiterRemember
+	}
+	limit := (remember + verdictShards - 1) / verdictShards
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
+
 // Remember keeps an answer this pass was given, so the next pass over the same
 // statements does not pay for it again. Every verdict is kept, including the
 // undecided one: a pair the model declined, or answered below the threshold,
@@ -182,17 +208,23 @@ func (verdicts *Verdicts) Pending() int {
 // writes only the shards this pass added to, and keeps the answers already in
 // them: a pass that judged one conversation must not drop what another pass
 // paid for.
-func (store *Store) SaveVerdicts(ctx context.Context, verdicts *Verdicts) error {
+//
+// It returns how many answers the write had to forget because the scope's
+// store was full. A non-zero count is the one reading that says the ceiling is
+// below what the scope asks: the pass keeps the newest answers and pays again
+// for the rest on every pass, so the number is the size of that tax.
+func (store *Store) SaveVerdicts(ctx context.Context, verdicts *Verdicts, remember int) (int, error) {
 	if store == nil || store.kv == nil {
-		return errors.New("maintain: store is incomplete")
+		return 0, errors.New("maintain: store is incomplete")
 	}
 	if verdicts == nil || len(verdicts.pending) == 0 {
-		return nil
+		return 0, nil
 	}
 	prefix, err := verdictScopePrefix(verdicts.scope)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	limit := verdictEntriesPerShard(remember)
 	shards := make(map[string]map[string]verdictEntry)
 	for digest, entry := range verdicts.pending {
 		name := digest[:shardWidth]
@@ -206,6 +238,7 @@ func (store *Store) SaveVerdicts(ctx context.Context, verdicts *Verdicts) error 
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	evicted := 0
 	for _, name := range names {
 		key := prefix + "/" + name
 		document := verdictDocument{Identity: verdicts.identity, Entries: make(map[string]verdictEntry)}
@@ -214,7 +247,7 @@ func (store *Store) SaveVerdicts(ctx context.Context, verdicts *Verdicts) error 
 		case err == nil:
 			var stored verdictDocument
 			if err := json.Unmarshal(data, &stored); err != nil {
-				return fmt.Errorf("maintain: decode verdicts %q: %w", key, err)
+				return 0, fmt.Errorf("maintain: decode verdicts %q: %w", key, err)
 			}
 			if stored.Identity == verdicts.identity {
 				for digest, entry := range stored.Entries {
@@ -224,32 +257,33 @@ func (store *Store) SaveVerdicts(ctx context.Context, verdicts *Verdicts) error 
 		case errors.Is(err, storage.ErrNotFound):
 			// First write to this shard.
 		default:
-			return fmt.Errorf("maintain: load verdicts %q: %w", key, err)
+			return 0, fmt.Errorf("maintain: load verdicts %q: %w", key, err)
 		}
 		for digest, entry := range shards[name] {
 			document.Entries[digest] = entry
 		}
-		evictVerdicts(document.Entries, verdictEntriesPerShard)
+		evicted += evictVerdicts(document.Entries, limit)
 		if len(document.Entries) == 0 {
 			continue
 		}
 		encoded, err := json.Marshal(document)
 		if err != nil {
-			return fmt.Errorf("maintain: encode verdicts %q: %w", key, err)
+			return 0, fmt.Errorf("maintain: encode verdicts %q: %w", key, err)
 		}
 		if err := store.kv.Put(ctx, key, encoded); err != nil {
-			return fmt.Errorf("maintain: save verdicts %q: %w", key, err)
+			return 0, fmt.Errorf("maintain: save verdicts %q: %w", key, err)
 		}
 	}
-	return nil
+	return evicted, nil
 }
 
 // evictVerdicts bounds a shard by forgetting its oldest answers first. The
 // tie-break on the digest keeps a save's output independent of map order, so
-// two passes that wrote the same answers store the same document.
-func evictVerdicts(entries map[string]verdictEntry, limit int) {
+// two passes that wrote the same answers store the same document. It returns
+// how many it forgot.
+func evictVerdicts(entries map[string]verdictEntry, limit int) int {
 	if limit <= 0 || len(entries) <= limit {
-		return
+		return 0
 	}
 	digests := make([]string, 0, len(entries))
 	for digest := range entries {
@@ -262,7 +296,9 @@ func evictVerdicts(entries map[string]verdictEntry, limit int) {
 		}
 		return digests[i] < digests[j]
 	})
-	for _, digest := range digests[:len(digests)-limit] {
+	dropped := digests[:len(digests)-limit]
+	for _, digest := range dropped {
 		delete(entries, digest)
 	}
+	return len(dropped)
 }

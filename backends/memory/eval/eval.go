@@ -372,6 +372,12 @@ type MaintainResult struct {
 	ArbiterReplaced    int `json:"arbiter_replaced,omitempty"`
 	ArbiterBothCurrent int `json:"arbiter_both_current,omitempty"`
 	ArbiterUndecided   int `json:"arbiter_undecided,omitempty"`
+	// ArbiterEvicted counts the answers the passes forgot because a scope's
+	// store was full: the ceiling is below what the scope asks, so the newest
+	// answers were kept and these will be bought again. A run whose count is
+	// not zero measured a ceiling below its corpus, and the number is the tax
+	// every further pass pays.
+	ArbiterEvicted int `json:"arbiter_evicted,omitempty"`
 	// ArbiterSupersedes counts the findings the arbiter made, as opposed to the
 	// rules': what the deployment paid a model for.
 	ArbiterSupersedes int `json:"arbiter_supersedes,omitempty"`
@@ -431,6 +437,7 @@ func Maintain(ctx context.Context, runner Runner, scopes []corememory.Scope) (Ma
 		result.ArbiterReplaced += plan.ArbiterReplaced
 		result.ArbiterBothCurrent += plan.ArbiterBothCurrent
 		result.ArbiterUndecided += plan.ArbiterUndecided
+		result.ArbiterEvicted += plan.ArbiterEvicted
 		result.ReclaimedProjectionObjects += plan.ReclaimedProjectionObjects
 		result.ReclaimedChunks += plan.ReclaimedChunks
 	}

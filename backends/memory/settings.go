@@ -206,6 +206,16 @@ type ArbiterSettings struct {
 	// nothing, so the budget decides how much new surface a pass covers. The
 	// pairs it leaves out are reported as skipped and asked by a later pass.
 	Budget int `json:"budget,omitempty"`
+	// Remember is how many answers one scope keeps (default 204800). It is
+	// what makes a pass over an unchanged scope free, and it is a count
+	// rather than a size because one stored answer is what one call bought.
+	//
+	// Size it from the scope's pair count, not its fact count: pairs grow
+	// with the facts that share a subject, so a small corpus can ask far more
+	// questions than it has facts (689 facts propose 235,229). A scope above
+	// the ceiling rotates -- the pass keeps the newest answers and buys the
+	// rest again -- and reports the loss as arbiter evicted.
+	Remember int `json:"remember,omitempty"`
 }
 
 func (settings ArbiterSettings) isZero() bool {
@@ -214,8 +224,9 @@ func (settings ArbiterSettings) isZero() bool {
 
 func (settings ArbiterSettings) validate() error {
 	if settings.isZero() {
-		if settings.Threshold != 0 || settings.Batch != 0 || settings.Concurrency != 0 || settings.Budget != 0 {
-			return errors.New("maintain.arbiter.threshold, batch, concurrency, and budget require provider and name")
+		if settings.Threshold != 0 || settings.Batch != 0 || settings.Concurrency != 0 ||
+			settings.Budget != 0 || settings.Remember != 0 {
+			return errors.New("maintain.arbiter.threshold, batch, concurrency, budget, and remember require provider and name")
 		}
 		return nil
 	}
@@ -236,6 +247,9 @@ func (settings ArbiterSettings) validate() error {
 	}
 	if settings.Budget < 0 {
 		return errors.New("maintain.arbiter.budget must not be negative")
+	}
+	if settings.Remember < 0 {
+		return errors.New("maintain.arbiter.remember must not be negative")
 	}
 	return nil
 }

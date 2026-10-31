@@ -476,10 +476,11 @@ func main() {
 			"and the pass reclaimed %d projection objects and %d document chunks\n",
 			maintained.Scopes, maintained.ReclaimedProjectionObjects, maintained.ReclaimedChunks)
 		fmt.Printf("maintained findings=%d (arbiter %d); arbiter asked=%d remembered=%d skipped=%d "+
-			"replaced=%d both-current=%d undecided=%d\n",
+			"replaced=%d both-current=%d undecided=%d evicted=%d\n",
 			maintained.Supersedes, maintained.ArbiterSupersedes,
 			maintained.ArbiterAsked, maintained.ArbiterRemembered, maintained.ArbiterSkipped,
-			maintained.ArbiterReplaced, maintained.ArbiterBothCurrent, maintained.ArbiterUndecided)
+			maintained.ArbiterReplaced, maintained.ArbiterBothCurrent, maintained.ArbiterUndecided,
+			maintained.ArbiterEvicted)
 	}
 	reports := make([]eval.Report, 0, len(scenarios))
 	for index, scenario := range scenarios {

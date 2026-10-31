@@ -963,9 +963,11 @@ func (service *Service) run(
 	// forgetting a paid answer costs the next pass a call rather than the
 	// scope its findings.
 	if arbiterErr == nil && verdicts != nil {
-		if err := service.Store.SaveVerdicts(ctx, verdicts); err != nil {
+		evicted, err := service.Store.SaveVerdicts(ctx, verdicts, config.ArbiterRemember)
+		if err != nil {
 			return plan, err
 		}
+		plan.ArbiterEvicted = evicted
 	}
 	if service.Documents != nil {
 		reclaimed, err := service.Documents.RetireScopeBuilds(ctx, scope)

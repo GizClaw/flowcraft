@@ -4,7 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/backends/memory/storage"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
@@ -28,6 +30,19 @@ func testVerdicts(t *testing.T, identity string) (*Store, corememory.Scope, *Ver
 	return store, scope, verdicts
 }
 
+// testVerdictsAt is testVerdicts with the store's backing store handed back, so
+// a test can put a second store -- a later pass -- over the same documents.
+func testVerdictsAt(t *testing.T, identity string) (*Store, storage.Store, corememory.Scope, *Verdicts) {
+	t.Helper()
+	store, kv := testStore(t)
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	verdicts, err := store.Verdicts(context.Background(), scope, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, kv, scope, verdicts
+}
+
 // TestVerdictsRoundTripRemembersTheAnswer pins the cache's one promise: a pair
 // an earlier pass paid for is answered without a call, and the answer it
 // returns is the one that was given -- verdict and probability.
@@ -42,7 +57,7 @@ func TestVerdictsRoundTripRemembersTheAnswer(t *testing.T) {
 	if verdicts.Pending() != 1 {
 		t.Fatalf("pending = %d", verdicts.Pending())
 	}
-	if err := store.SaveVerdicts(ctx, verdicts); err != nil {
+	if _, err := store.SaveVerdicts(ctx, verdicts, DefaultArbiterRemember); err != nil {
 		t.Fatal(err)
 	}
 	// A second pass over the same scope reads what the first one paid for.
@@ -67,7 +82,7 @@ func TestVerdictsAreScopedToTheArbiterThatGaveThem(t *testing.T) {
 	store, scope, verdicts := testVerdicts(t, "deepseek/azure-decision@supersede-v1,p=0.75")
 	pair := verdictPair("a", "b")
 	verdicts.Remember(pair, Judgment{Verdict: VerdictReplaced, Confidence: 0.8})
-	if err := store.SaveVerdicts(ctx, verdicts); err != nil {
+	if _, err := store.SaveVerdicts(ctx, verdicts, DefaultArbiterRemember); err != nil {
 		t.Fatal(err)
 	}
 	stricter, err := store.Verdicts(ctx, scope, "deepseek/azure-decision@supersede-v1,p=0.9")
@@ -116,9 +131,10 @@ func TestSaveVerdictsMergesIntoTheShard(t *testing.T) {
 	store, scope, first := testVerdicts(t, "arbiter")
 	// Two pairs whose digests land in one shard, so the second save has to
 	// read what the first one wrote.
-	left, right := collidingVerdictPairs(t, 2)
+	colliding := collidingVerdictPairs(t, 2)
+	left, right := colliding[0], colliding[1]
 	first.Remember(left, Judgment{Verdict: VerdictBothCurrent, Confidence: 0.7})
-	if err := store.SaveVerdicts(ctx, first); err != nil {
+	if _, err := store.SaveVerdicts(ctx, first, DefaultArbiterRemember); err != nil {
 		t.Fatal(err)
 	}
 	second, err := store.Verdicts(ctx, scope, "arbiter")
@@ -126,7 +142,7 @@ func TestSaveVerdictsMergesIntoTheShard(t *testing.T) {
 		t.Fatal(err)
 	}
 	second.Remember(right, Judgment{Verdict: VerdictReplaced, Confidence: 0.9})
-	if err := store.SaveVerdicts(ctx, second); err != nil {
+	if _, err := store.SaveVerdicts(ctx, second, DefaultArbiterRemember); err != nil {
 		t.Fatal(err)
 	}
 	read, err := store.Verdicts(ctx, scope, "arbiter")
@@ -150,7 +166,9 @@ func TestEvictVerdictsKeepsTheNewest(t *testing.T) {
 		"ccc": {Verdict: VerdictBothCurrent, Seen: 20},
 		"ddd": {Verdict: VerdictBothCurrent, Seen: 40},
 	}
-	evictVerdicts(entries, 2)
+	if dropped := evictVerdicts(entries, 2); dropped != 2 {
+		t.Fatalf("dropped = %d", dropped)
+	}
 	if len(entries) != 2 {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -161,27 +179,100 @@ func TestEvictVerdictsKeepsTheNewest(t *testing.T) {
 	}
 	// Under the limit nothing is forgotten.
 	small := map[string]verdictEntry{"only": {Verdict: VerdictBothCurrent}}
-	evictVerdicts(small, 2)
+	if dropped := evictVerdicts(small, 2); dropped != 0 {
+		t.Fatalf("dropped = %d", dropped)
+	}
 	if len(small) != 1 {
 		t.Fatalf("entries = %#v", small)
 	}
 }
 
+// TestVerdictCeilingRotatesAndSaysSo pins the scope ceiling: a pass that is
+// handed more answers than the store keeps writes the newest ones, drops the
+// oldest, and reports the count. The count is the reading a deployment acts on
+// -- the same answers are bought again on the next pass -- so it must not be
+// silent.
+func TestVerdictCeilingRotatesAndSaysSo(t *testing.T) {
+	ctx := context.Background()
+	store, kv, scope, verdicts := testVerdictsAt(t, "arbiter")
+	// Two answers a shard, so the third answer in the same shard is the one
+	// that overflows the scope's store.
+	remember := verdictShards * 2
+	colliding := collidingVerdictPairs(t, 3)
+	for _, pair := range colliding[:2] {
+		verdicts.Remember(pair, Judgment{Verdict: VerdictBothCurrent, Confidence: 0.6})
+	}
+	if dropped, err := store.SaveVerdicts(ctx, verdicts, remember); err != nil || dropped != 0 {
+		t.Fatalf("first save: dropped=%d err=%v", dropped, err)
+	}
+	// A later pass over the same scope asks one more pair: the store is full,
+	// so the answer this pass paid for has to survive and an older one go.
+	later, err := NewStore(kv, WithClock(func() time.Time { return time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := later.Verdicts(ctx, scope, "arbiter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Remember(colliding[2], Judgment{Verdict: VerdictBothCurrent, Confidence: 0.9})
+	dropped, err := later.SaveVerdicts(ctx, next, remember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	read, err := store.Verdicts(ctx, scope, "arbiter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The newest answer survives, and exactly one of the two the earlier pass
+	// paid for is what the ceiling cost.
+	if _, remembered := read.Lookup(colliding[2]); !remembered {
+		t.Error("the newest answer was evicted")
+	}
+	kept := 0
+	for _, pair := range colliding[:2] {
+		if _, remembered := read.Lookup(pair); remembered {
+			kept++
+		}
+	}
+	if kept != 1 {
+		t.Fatalf("kept %d of the older answers, want 1", kept)
+	}
+}
+
+// TestVerdictCeilingRoundsUpPerShard pins the arithmetic between the configured
+// answer count and what a shard holds: the scope keeps at least the count it was
+// given, and a shard keeps at least one answer whatever the setting.
+func TestVerdictCeilingRoundsUpPerShard(t *testing.T) {
+	if got := verdictEntriesPerShard(0); got != DefaultArbiterRemember/verdictShards {
+		t.Fatalf("default shard limit = %d", got)
+	}
+	if got := verdictEntriesPerShard(verdictShards*3 + 1); got != 4 {
+		t.Fatalf("rounded shard limit = %d, want 4", got)
+	}
+	if got := verdictEntriesPerShard(1); got != 1 {
+		t.Fatalf("floor shard limit = %d, want 1", got)
+	}
+}
+
 // collidingVerdictPairs returns pairs whose digests share one shard, which is
 // what a merge test needs: two saves that touch the same document.
-func collidingVerdictPairs(t *testing.T, count int) (Pair, Pair) {
+func collidingVerdictPairs(t *testing.T, count int) []Pair {
 	t.Helper()
-	seen := map[string]Pair{}
+	pairs := make([]Pair, 0, count)
 	for index := 0; index < 2048; index++ {
 		pair := verdictPair("older-"+strings.Repeat("x", index), "newer-"+strings.Repeat("y", index))
-		shard := verdictDigest(pair)[:shardWidth]
-		if other, found := seen[shard]; found {
-			if count == 2 {
-				return other, pair
-			}
+		if len(pairs) > 0 && verdictDigest(pair)[:shardWidth] != verdictDigest(pairs[0])[:shardWidth] {
+			continue
 		}
-		seen[shard] = pair
+		pairs = append(pairs, pair)
+		if len(pairs) == count {
+			return pairs
+		}
 	}
-	t.Fatal("no two pairs shared a shard")
-	return Pair{}, Pair{}
+	t.Fatalf("found %d pairs in one shard, want %d", len(pairs), count)
+	return nil
 }

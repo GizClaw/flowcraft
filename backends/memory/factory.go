@@ -255,6 +255,11 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 			Concurrency: settings.Maintain.Arbiter.Concurrency,
 		}
 		maintainConfig.ArbiterBudget = settings.Maintain.Arbiter.Budget
+		// The ceiling is kept as configured (zero means the pass's default),
+		// so a deployment that raised it reads and writes the same store the
+		// pass that filled it did. It bounds what is remembered rather than
+		// what is judged, so it is not part of the pass's stamp.
+		maintainConfig.ArbiterRemember = settings.Maintain.Arbiter.Remember
 	}
 	// The receipt store is shared by the two halves of the reinforcement
 	// loop: the retrieval provider writes a receipt after it packs a result,
