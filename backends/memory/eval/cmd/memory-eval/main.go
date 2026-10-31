@@ -14,9 +14,11 @@ import (
 	"strings"
 	"time"
 
+	flowmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/eval"
 	evalanswer "github.com/GizClaw/flowcraft/backends/memory/eval/answer"
 	"github.com/GizClaw/flowcraft/backends/memory/eval/internal/host"
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/rerank"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
@@ -24,6 +26,9 @@ import (
 
 func main() {
 	dataset := flag.String("dataset", "locomo10.json", "LoCoMo JSON path")
+	loaderName := flag.String("loader", "locomo",
+		"dataset loader: locomo | longmemeval. It reads -dataset and decides which conversion runs, "+
+			"which categories a report names, and which judge protocol -judge-style defaults to")
 	samples := flag.Int("samples", 1, "number of conversations to run")
 	questions := flag.Int("questions", 0, "max questions per conversation (0 = all)")
 	categoryFilter := flag.String("categories", "", "only run these question categories (comma-separated, empty = all)")
@@ -46,12 +51,15 @@ func main() {
 	buildOnly := flag.Bool("build-only", false, "build and wire the deployment, then exit")
 	answerStage := flag.Bool("answer", false, "generate an answer from the recalled context and grade it")
 	resume := flag.Bool("resume", false, "skip scenarios already present in -out and retry failed ones")
-	answerProvider := flag.String("answer-provider", "deepseek", "provider id of the answering model")
-	answerModel := flag.String("answer-model", "deepseek-flash", "name of the answering model (this endpoint also serves deepseek-v4-pro)")
+	answerProvider := flag.String("answer-provider", "gateway", "provider id of the answering model")
+	answerModel := flag.String("answer-model", "deepseek-flash", "name of the answering model (the deploy also declares deepseek-v4-pro, a text-only model)")
 	answerContextRunes := flag.Int("answer-context-runes", 24_000, "runes of recalled context rendered into one answer prompt")
 	judgeProvider := flag.String("judge-provider", "", "provider id of the judge model (default: answer provider)")
 	judgeModel := flag.String("judge-model", "", "name of the judge model (default: answer model)")
-	judgeStyle := flag.String("judge-style", "strict", "judge prompt style: strict | locomo | both")
+	judgeStyle := flag.String("judge-style", "strict",
+		"judge prompt style: strict | locomo | lme | both. both grades every answer twice -- once with the "+
+			"dataset's own rubric, once with LoCoMo's -- so one report carries both columns; on the longmemeval "+
+			"loader that pair is lme + locomo")
 	answerStyle := flag.String("answer-style", "long",
 		"answering protocol: long (product, used for strict/lenient), short (official LoCoMo protocol, for token-F1), or evidence (short, but the model quotes its evidence first)")
 	temporalHint := flag.Bool("temporal-hint", false,
@@ -69,6 +77,16 @@ func main() {
 		"answer from the derivation the workspace already holds: no ingest, no derive pass")
 	maintain := flag.Bool("maintain", false,
 		"run one maintenance pass per scope after the derivation: it saves the read-path overlay and fills the profile block")
+	reclaim := flag.Bool("reclaim", false,
+		"sweep every registered scope's projection lanes and exit: the bases and segments a compaction or a rebuild "+
+			"superseded, which no manifest names, plus the whole tree of a projection layout this build does not read "+
+			"and no sweep of a lane can reach. It is the sweep a maintenance pass runs beside the overlay, without "+
+			"the pass, so it judges nothing and writes only deletes -- it is what shrinks a workspace an earlier build filled")
+	rebuildLanes := flag.String("rebuild-lanes", "",
+		"rebuild projection lanes from canonical state and exit: one repair per scope the workspace's catalog holds. "+
+			"The value names the lanes (bm25, entity, vector); an empty value rebuilds every lane whose rebuild needs "+
+			"no inference, and `vector` is the one that embeds every artifact again. A repair is a re-index, not a "+
+			"re-derivation: watermarks and the published generation stay where they are")
 	baselinePath := flag.String("baseline", "", "compare the run against this baseline JSON and fail on regression")
 	baselineTolerance := flag.Float64("baseline-tolerance", 2.0, "allowed regression in percentage points")
 	out := flag.String("out", "", "write full reports JSON here")
@@ -78,6 +96,30 @@ func main() {
 	if *envFile != "" {
 		loadEnvFile(*envFile)
 	}
+	if *reclaim {
+		// Before the dataset and the judge plan: a sweep names no library and
+		// grades nothing, so it must not need either.
+		reclaimScopes(*deployPath, *recentItems)
+		return
+	}
+	if flagWasSet(flag.CommandLine, "rebuild-lanes") {
+		// Same place as the sweep, for the same reason: a repair re-indexes
+		// canonical state, so it names no library and grades nothing.
+		rebuildLaneScopes(*deployPath, *recentItems, *rebuildLanes)
+		return
+	}
+	// The LongMemEval gold is a full clause (and, for two of its types, a stated
+	// preference or a refusal), which is not what the strict rubric scores, so a
+	// LongMemEval run that names no judge style gets the dataset's own. An
+	// explicit -judge-style still wins: grading one library with both protocols
+	// is how the two are compared.
+	if !flagWasSet(flag.CommandLine, "judge-style") && *loaderName == "longmemeval" {
+		*judgeStyle = string(evalanswer.JudgeLongMemEval)
+	}
+	// Which rubrics a style names depends on the loader, so it is resolved once,
+	// before the run, and both the wiring and the fingerprint read the result.
+	grading, err := resolveJudgePlan(*loaderName, *judgeStyle)
+	must(err)
 	if *skipDerive && *prepareAll {
 		must(fmt.Errorf("memory eval: -skip-derive answers from the stored derivation, so it cannot run -prepare-all's ingest and derive pass"))
 	}
@@ -89,18 +131,43 @@ func main() {
 	raw, err := os.ReadFile(*dataset)
 	must(err)
 	evalScope := eval.Scope{RuntimeID: "memories"}
-	scenarios, stats, err := eval.LoadLoCoMo(raw, eval.LoaderOptions{
+	loaderOptions := eval.LoaderOptions{
 		Scope:      evalScope,
 		Budget:     corememory.Budget{MaxItems: *maxItems, MaxTokens: *maxTokens},
 		Images:     *imageMode,
 		Samples:    *samples,
 		Dateless:   *noDatePrefix,
 		ObservedAt: *observedAt,
-	})
+	}
+	var (
+		scenarios []eval.Scenario
+		stats     eval.LoaderStats
+	)
+	switch *loaderName {
+	case "locomo":
+		scenarios, stats, err = eval.LoadLoCoMo(raw, loaderOptions)
+	case "longmemeval":
+		scenarios, stats, err = eval.LoadLongMemEval(raw, loaderOptions)
+	default:
+		err = fmt.Errorf("unknown -loader %q (want locomo|longmemeval)", *loaderName)
+	}
 	must(err)
-	fmt.Printf("dataset: scenarios=%d turns=%d questions=%d skipped=%d skipped_adversarial=%d",
-		stats.Conversations, stats.Turns, stats.Questions, stats.Skipped, stats.SkippedAdversarial)
-	if *imageMode == "native" || *imageMode == "both" {
+	fmt.Printf("dataset: loader=%s scenarios=%d turns=%d questions=%d skipped=%d",
+		*loaderName, stats.Conversations, stats.Turns, stats.Questions, stats.Skipped)
+	if *loaderName == "locomo" {
+		fmt.Printf(" skipped_adversarial=%d", stats.SkippedAdversarial)
+	}
+	if stats.EvidenceUnresolved > 0 {
+		fmt.Printf(" unresolved_evidence=%d", stats.EvidenceUnresolved)
+	}
+	if stats.ObservedAtAnchored > 0 || stats.ObservedAtUnparsed > 0 {
+		// Anchor coverage is a reading on the conversion, not an assumption:
+		// a session whose date did not parse carries no anchor, and a run over
+		// it cannot resolve a relative-time question.
+		fmt.Printf(" observed_at_anchored=%d observed_at_unparsed=%d",
+			stats.ObservedAtAnchored, stats.ObservedAtUnparsed)
+	}
+	if *loaderName == "locomo" && (*imageMode == "native" || *imageMode == "both") {
 		fmt.Printf(" images_attached=%d images_failed=%d", stats.ImagesAttached, stats.ImagesFailed)
 		// Why the images are missing decides whether the run is comparable: a
 		// dead link is the dataset's, a timeout is the network's.
@@ -130,16 +197,12 @@ func main() {
 		}
 	}
 	if strings.TrimSpace(*categoryFilter) != "" {
-		allowed := map[int]struct{}{}
-		for _, value := range strings.Split(*categoryFilter, ",") {
-			number, convErr := strconv.Atoi(strings.TrimSpace(value))
-			must(convErr)
-			allowed[number] = struct{}{}
-		}
+		allowed, labels, err := parseCategoryFilter(*categoryFilter)
+		must(err)
 		for index := range scenarios {
 			filtered := scenarios[index].Questions[:0]
 			for _, question := range scenarios[index].Questions {
-				if _, ok := allowed[question.Category]; ok {
+				if categoryMatches(question, allowed, labels) {
 					filtered = append(filtered, question)
 				}
 			}
@@ -196,27 +259,22 @@ func main() {
 			must(err)
 			return judge.WithJudgeStyle(style).WithTemperature(temperatureSetting(*temperature))
 		}
-		switch *judgeStyle {
-		case "none":
+		switch {
+		case grading.primary == "":
 			// The official metric is computed offline from the stored answers,
 			// so this run needs no judge at all.
-		case "strict":
-			options.Judge = newJudge(evalanswer.JudgeStrict)
-		case "locomo":
-			options.Judge = newJudge(evalanswer.JudgeLocoMo)
-		case "both":
-			strict := newJudge(evalanswer.JudgeStrict)
-			lenient := newJudge(evalanswer.JudgeLocoMo)
-			options.Judge = strict
+		case grading.lenient == "":
+			judge := newJudge(grading.primary)
+			options.Judge = judge
+			usage = append(usage, usageRole{role: "judge", counts: judge})
+		default:
+			primary := newJudge(grading.primary)
+			lenient := newJudge(grading.lenient)
+			options.Judge = primary
 			options.LenientJudge = lenient
 			usage = append(usage,
-				usageRole{role: "judge", counts: strict},
+				usageRole{role: "judge", counts: primary},
 				usageRole{role: "lenient_judge", counts: lenient})
-		default:
-			must(fmt.Errorf("unknown -judge-style %q (want strict|locomo|both)", *judgeStyle))
-		}
-		if options.Judge != nil && len(usage) == 1 {
-			usage = append(usage, usageRole{role: "judge", counts: options.Judge.(*evalanswer.Model)})
 		}
 		for index := range usage {
 			usage[index].model = judgeFingerprint(*judgeProvider, *judgeModel, *answerProvider, *answerModel)
@@ -285,8 +343,8 @@ func main() {
 		Questions:    stats.Questions,
 		PolicyDigest: deployment.Memory.PolicyDigest(),
 		Values: map[string]string{
-			"loader":               "locomo10",
-			"images":               *imageMode,
+			"loader":               loaderFingerprint(*loaderName),
+			"images":               imageFingerprint(*loaderName, *imageMode),
 			"skipped_adversarial":  strconv.Itoa(stats.SkippedAdversarial),
 			"samples":              strconv.Itoa(*samples),
 			"questions_per_sample": strconv.Itoa(*questions),
@@ -347,7 +405,7 @@ func main() {
 			// retrieval knob flipped in the document or in code lands here,
 			// and two retrieval configurations cannot share a fingerprint.
 			"retrieval":    deployment.Memory.RetrievalSummary(),
-			"judge_prompt": evalanswer.JudgePromptVersion,
+			"judge_prompt": grading.promptVersion(),
 			"schedule":     scheduleName(*prepareAll),
 			// A run that answers from the stored derivation measures a
 			// different thing than one that derives first, so the fingerprint
@@ -361,6 +419,13 @@ func main() {
 			// -answer-concurrency is deliberately absent: it changes only the
 			// schedule, so it must not block resuming a run.
 		},
+	}
+	// A conversion that dropped a gold reference (the haystack does not hold the
+	// session or turn the dataset names) is a different measurement, but the key
+	// is only written when it happens: a constant "0" would relabel every report
+	// measured before the field existed and block -resume on them.
+	if stats.EvidenceUnresolved > 0 {
+		fingerprint.Values["unresolved_evidence"] = strconv.Itoa(stats.EvidenceUnresolved)
 	}
 	fmt.Printf("fingerprint: %s\n", fingerprint)
 	// Say what the store holds once the ingest phase has landed: the report's
@@ -405,9 +470,17 @@ func main() {
 		for _, scenario := range scenarios {
 			scopes = append(scopes, scenario.Scope.MemoryScope())
 		}
-		ran, err := eval.Maintain(context.Background(), deployment.Memory, scopes)
+		maintained, err := eval.Maintain(context.Background(), deployment.Memory, scopes)
 		must(err)
-		fmt.Printf("maintained %d scopes; the read-path overlay and the profile block are what a pass wrote\n", ran)
+		fmt.Printf("maintained %d scopes; the read-path overlay and the profile block are what a pass wrote, "+
+			"and the pass reclaimed %d projection objects and %d document chunks\n",
+			maintained.Scopes, maintained.ReclaimedProjectionObjects, maintained.ReclaimedChunks)
+		fmt.Printf("maintained findings=%d (arbiter %d); arbiter asked=%d remembered=%d skipped=%d "+
+			"replaced=%d both-current=%d undecided=%d evicted=%d\n",
+			maintained.Supersedes, maintained.ArbiterSupersedes,
+			maintained.ArbiterAsked, maintained.ArbiterRemembered, maintained.ArbiterSkipped,
+			maintained.ArbiterReplaced, maintained.ArbiterBothCurrent, maintained.ArbiterUndecided,
+			maintained.ArbiterEvicted)
 	}
 	reports := make([]eval.Report, 0, len(scenarios))
 	for index, scenario := range scenarios {
@@ -461,7 +534,9 @@ func main() {
 	wall := time.Since(started)
 
 	var total, hits, ungraded, answers, answerHits int
-	var evidenceTotal, evidenceFound, evidenceRaw, evidenceProvenance, ungradedAnswers, lenientAnswers, lenientHits int
+	var evidenceTotal, evidenceFound, evidenceRaw, evidenceProvenance, ungradedAnswers int
+	var lenientAnswers, lenientHits, lenientUngraded int
+	var sessionTotal, sessionFound int
 	var latency time.Duration
 	byCategory := map[int]eval.CategoryStats{}
 	for _, report := range reports {
@@ -474,18 +549,14 @@ func main() {
 		evidenceFound += report.EvidenceFound
 		evidenceRaw += report.EvidenceRaw
 		evidenceProvenance += report.EvidenceProvenance
+		sessionTotal += report.SessionTotal
+		sessionFound += report.SessionFound
 		ungradedAnswers += report.UngradedAnswers
 		lenientAnswers += report.LenientAnswers
 		lenientHits += report.LenientHits
+		lenientUngraded += report.LenientUngraded
 		latency += report.MeanLatency * time.Duration(len(report.Questions))
-		for category, value := range report.ByCategory {
-			current := byCategory[category]
-			current.Questions += value.Questions
-			current.Hits += value.Hits
-			current.Answered += value.Answered
-			current.AnswerHits += value.AnswerHits
-			byCategory[category] = current
-		}
+		mergeCategories(byCategory, report.ByCategory)
 	}
 	graded := total - ungraded
 	mean := time.Duration(0)
@@ -500,6 +571,15 @@ func main() {
 			evidenceRaw, evidenceProvenance,
 			float64(hits)/float64(graded))
 	}
+	if sessionTotal > 0 {
+		// Session-level evidence is a separate unit from the turn-level figure
+		// above: a session counts once, and a question hits when every gold
+		// session was recalled. Adding the two would be a rate over two
+		// denominators.
+		fmt.Printf("session recall: sessions=%d/%d recall=%.4f questions_with_every_gold_session=%.4f\n",
+			sessionFound, sessionTotal, float64(sessionFound)/float64(sessionTotal),
+			float64(hits)/float64(graded))
+	}
 	if answers > 0 {
 		gradedAnswers := answers - ungradedAnswers
 		rate := 0.0
@@ -509,9 +589,13 @@ func main() {
 		fmt.Printf("answered: questions=%d graded=%d ungraded=%d answer_hits=%d answer_rate=%.4f\n",
 			answers, gradedAnswers, ungradedAnswers, answerHits, rate)
 	}
-	if lenientAnswers > 0 {
-		fmt.Printf("lenient judge: graded=%d answer_hits=%d answer_rate=%.4f\n",
-			lenientAnswers, lenientHits, float64(lenientHits)/float64(lenientAnswers))
+	if lenientAnswers > 0 || lenientUngraded > 0 {
+		rate := 0.0
+		if lenientAnswers > 0 {
+			rate = float64(lenientHits) / float64(lenientAnswers)
+		}
+		fmt.Printf("lenient judge: graded=%d ungraded=%d answer_hits=%d answer_rate=%.4f\n",
+			lenientAnswers, lenientUngraded, lenientHits, rate)
 	}
 	for _, entry := range usage {
 		calls, input, output := entry.counts.Stats()
@@ -525,11 +609,19 @@ func main() {
 	sort.Ints(categories)
 	for _, category := range categories {
 		stats := byCategory[category]
-		line := fmt.Sprintf("category %d: questions=%4d hits=%4d hit_rate=%.4f",
-			category, stats.Questions, stats.Hits, float64(stats.Hits)/float64(stats.Questions))
+		name := fmt.Sprintf("category %d", category)
+		if stats.Label != "" {
+			name += " (" + stats.Label + ")"
+		}
+		line := fmt.Sprintf("%s: questions=%4d hits=%4d hit_rate=%.4f",
+			name, stats.Questions, stats.Hits, float64(stats.Hits)/float64(stats.Questions))
 		if stats.Answered > 0 {
 			line += fmt.Sprintf(" answer_hits=%4d answer_rate=%.4f",
 				stats.AnswerHits, float64(stats.AnswerHits)/float64(stats.Answered))
+		}
+		if stats.LenientAnswered > 0 {
+			line += fmt.Sprintf(" lenient_hits=%4d lenient_rate=%.4f",
+				stats.LenientAnswerHits, float64(stats.LenientAnswerHits)/float64(stats.LenientAnswered))
 		}
 		fmt.Println(line)
 	}
@@ -593,6 +685,135 @@ func onOff(enabled bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// flagWasSet reports whether the command line named a flag, which is how a
+// per-loader default tells an explicit choice from an unset one.
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// parseCategoryFilter splits -categories into the ids and the labels a question
+// may match. A token that is not a number is a category label: LoCoMo numbers
+// its categories, LongMemEval names them ("temporal-reasoning"), and a run
+// should not have to know which numbering it is filtering on to ask for one
+// question type.
+func parseCategoryFilter(value string) (map[int]struct{}, map[string]struct{}, error) {
+	ids := map[int]struct{}{}
+	labels := map[string]struct{}{}
+	for _, token := range strings.Split(value, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if number, err := strconv.Atoi(token); err == nil {
+			ids[number] = struct{}{}
+			continue
+		}
+		labels[strings.ToLower(token)] = struct{}{}
+	}
+	if len(ids) == 0 && len(labels) == 0 {
+		return nil, nil, fmt.Errorf("memory eval: -categories names no category")
+	}
+	return ids, labels, nil
+}
+
+// categoryMatches reports whether a question falls under -categories. The id
+// and the label are both accepted, so the flag keeps working across the two
+// datasets' numbering schemes.
+func categoryMatches(question eval.Question, ids map[int]struct{}, labels map[string]struct{}) bool {
+	if _, ok := ids[question.Category]; ok {
+		return true
+	}
+	_, ok := labels[strings.ToLower(strings.TrimSpace(question.CategoryLabel))]
+	return ok
+}
+
+// loaderFingerprint names the conversion a run used. LoCoMo keeps the value
+// reports were measured under before -loader existed, so those reports still
+// compare.
+func loaderFingerprint(loader string) string {
+	if loader == "longmemeval" {
+		return "longmemeval"
+	}
+	return "locomo10"
+}
+
+// imageFingerprint names the image policy, which only the LoCoMo conversion
+// has. LongMemEval carries no images, so two runs over it that differ only in
+// -images measure the same conversion and must not be split by the fingerprint.
+func imageFingerprint(loader, mode string) string {
+	if loader == "longmemeval" {
+		return "n/a"
+	}
+	return mode
+}
+
+// judgePlan is what -judge-style resolves to on one loader: the rubric that
+// scores the report's answer columns, and the optional second, leaderboard
+// rubric whose verdicts land in the lenient columns.
+type judgePlan struct {
+	primary evalanswer.JudgeStyle
+	lenient evalanswer.JudgeStyle
+}
+
+// resolveJudgePlan maps a -judge-style value onto the prompts a run calls.
+// "both" is a pair of rubrics rather than one, and which pair depends on the
+// loader: LoCoMo's gold is a short topic phrase that its strict rubric scores,
+// while a LongMemEval gold is a full clause -- and 60 of its 500 rows are
+// graded on a stated preference or on a refusal, which the strict fact rubric
+// cannot see. Pairing strict with locomo there would grade every such row as a
+// miss, so the strict half has to be the dataset's own rubric: comparing one
+// library under both protocols is lme + locomo.
+func resolveJudgePlan(loader, style string) (judgePlan, error) {
+	switch style {
+	case "none":
+		// The official metric is computed offline from the stored answers.
+		return judgePlan{}, nil
+	case "strict":
+		return judgePlan{primary: evalanswer.JudgeStrict}, nil
+	case "locomo":
+		return judgePlan{primary: evalanswer.JudgeLocoMo}, nil
+	case "lme":
+		return judgePlan{primary: evalanswer.JudgeLongMemEval}, nil
+	case "both":
+		if loader == "longmemeval" {
+			return judgePlan{primary: evalanswer.JudgeLongMemEval, lenient: evalanswer.JudgeLocoMo}, nil
+		}
+		return judgePlan{primary: evalanswer.JudgeStrict, lenient: evalanswer.JudgeLocoMo}, nil
+	}
+	return judgePlan{}, fmt.Errorf("unknown -judge-style %q (want strict|locomo|lme|both)", style)
+}
+
+// promptVersion names the rubric that scored the answer columns. The lenient
+// half has one prompt and does not need naming; a run that names no judge keeps
+// naming the v2 prompt, because that is what its stored reports recorded.
+func (plan judgePlan) promptVersion() string {
+	return evalanswer.PromptVersion(plan.primary)
+}
+
+// mergeCategories adds one scenario's category table into the run's. The
+// lenient halves ride along: under -judge-style both every scenario line and
+// every category line carries a second rate, and summing only the strict halves
+// would print an empty lenient column over a report that holds both.
+func mergeCategories(into, from map[int]eval.CategoryStats) {
+	for category, value := range from {
+		current := into[category]
+		current.Label = value.Label
+		current.Questions += value.Questions
+		current.Hits += value.Hits
+		current.Answered += value.Answered
+		current.AnswerHits += value.AnswerHits
+		current.LenientAnswered += value.LenientAnswered
+		current.LenientAnswerHits += value.LenientAnswerHits
+		into[category] = current
+	}
 }
 
 // scheduleName names the ingestion schedule a run uses, so a report says which
@@ -854,4 +1075,124 @@ func buildAssembly(deployPath string, recentItems int) deployment {
 	built, err := host.Build(deployPath, recentItems)
 	must(err)
 	return built
+}
+
+// reclaimScopes sweeps every scope the workspace's catalog holds and prints
+// what each lane removed, then the total.
+//
+// The sweep is per lane and per scope because that is what the state is: a
+// lane's manifest is the only pointer to the objects it published, and a scope
+// is what the lanes partition by. It reads no facts and writes no overlay, so
+// it is safe on a workspace whose derivation is the one a report was measured
+// on: what it removes is state no manifest names.
+//
+// The catalog is the authority on which scopes the workspace holds, not the
+// deploy document's scope list: a document names what a run will write, and a
+// sweep has to reach the scopes an earlier document wrote.
+func reclaimScopes(deployPath string, recentItems int) {
+	if deployPath == "" {
+		must(fmt.Errorf("memory eval: -reclaim sweeps the workspace a deploy document binds, so it needs -deploy"))
+	}
+	deployment := buildAssembly(deployPath, recentItems)
+	defer deployment.Close()
+	ctx := context.Background()
+	catalog := deployment.Memory.Catalog()
+	if catalog == nil {
+		must(fmt.Errorf("memory eval: -reclaim needs the workspace's scope catalog, and this deployment has none"))
+	}
+	scopes, err := catalog.List(ctx)
+	must(err)
+	if len(scopes) == 0 {
+		fmt.Println("reclaim: the workspace catalog holds no scope, so there is nothing to sweep")
+		return
+	}
+	started := time.Now()
+	var total maintain.ReclaimResult
+	for _, scope := range scopes {
+		result, err := deployment.Memory.ReclaimProjections(ctx, scope)
+		must(err)
+		fmt.Printf("reclaim: scope=%s lanes=%d bases=%d segments=%d legacy_keys=%d legacy_layouts=%s\n",
+			scope.String(), result.Lanes, result.Bases, result.Segments,
+			result.LegacyKeys, strings.Join(result.LegacyLayouts, ","))
+		total.Lanes += result.Lanes
+		total.Bases += result.Bases
+		total.Segments += result.Segments
+		total.LegacyKeys += result.LegacyKeys
+	}
+	fmt.Printf("reclaim: scopes=%d objects=%d (bases=%d segments=%d legacy_keys=%d) elapsed=%s\n",
+		len(scopes), total.Bases+total.Segments, total.Bases, total.Segments, total.LegacyKeys,
+		time.Since(started).Round(time.Millisecond))
+}
+
+// rebuildLaneScopes re-indexes the named projection lanes of every scope the
+// workspace's catalog holds, and prints what each repair published.
+//
+// It is what carries a workspace across a change to a lane's producer or to the
+// form of what it stores: the vector lane's state lives under a storage name
+// that covers both, so a build with a new form reads a name nothing was ever
+// written under and leaves the generation an earlier build filled beside it,
+// unread. A repair re-indexes canonical state -- the messages, the facts of the
+// active generation, the chunks of the active document builds -- through the
+// shapes the derivation worker writes, so nothing is derived again and no
+// deriver runs; the vector lane is the one whose repair embeds every artifact,
+// which is why it is named rather than rebuilt by default.
+//
+// The catalog is the authority on which scopes the workspace holds, for the
+// reason the sweep gives: a deploy document names what a run will write, and a
+// repair has to reach what an earlier document wrote.
+func rebuildLaneScopes(deployPath string, recentItems int, lanes string) {
+	if deployPath == "" {
+		must(fmt.Errorf("memory eval: -rebuild-lanes rebuilds the lanes a deploy document binds, so it needs -deploy"))
+	}
+	names := splitLaneNames(lanes)
+	deployment := buildAssembly(deployPath, recentItems)
+	defer deployment.Close()
+	ctx := context.Background()
+	catalog := deployment.Memory.Catalog()
+	if catalog == nil {
+		must(fmt.Errorf("memory eval: -rebuild-lanes needs the workspace's scope catalog, and this deployment has none"))
+	}
+	scopes, err := catalog.List(ctx)
+	must(err)
+	if len(scopes) == 0 {
+		fmt.Println("rebuild: the workspace catalog holds no scope, so there is nothing to rebuild")
+		return
+	}
+	started := time.Now()
+	artifacts, laneCount := 0, 0
+	for _, scope := range scopes {
+		result, err := deployment.Memory.Repair(ctx, flowmemory.RepairRequest{Scope: scope, Lanes: names})
+		must(err)
+		artifacts += result.Artifacts
+		for _, lane := range result.Lanes {
+			laneCount++
+			fmt.Printf("rebuild: scope=%s lane=%s artifacts=%d stale_before=%t source=%s build=%s\n",
+				scope.String(), lane.Name, lane.Artifacts, lane.StaleBefore,
+				shortDigest(lane.SourceDigest), shortDigest(lane.BuildDigest))
+		}
+	}
+	fmt.Printf("rebuild: scopes=%d lanes=%d artifacts=%d elapsed=%s\n",
+		len(scopes), laneCount, artifacts, time.Since(started).Round(time.Millisecond))
+}
+
+// splitLaneNames parses -rebuild-lanes. An empty value names no lane, which is
+// how a repair asks for every configured lane whose rebuild needs no inference.
+func splitLaneNames(value string) []string {
+	var names []string
+	for _, token := range strings.Split(value, ",") {
+		if token = strings.TrimSpace(token); token != "" {
+			names = append(names, token)
+		}
+	}
+	return names
+}
+
+// shortDigest names a cumulative digest by its first bytes: a repair prints one
+// per lane per scope, and the reading is compared between runs rather than with
+// anything outside the digest's own comparison.
+func shortDigest(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
 }

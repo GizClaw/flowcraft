@@ -98,6 +98,12 @@ func TestWorkspaceKVListPrefixScan(t *testing.T) {
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("List(missing) = %+v, %v", missing, err)
 	}
+	// A prefix below an existing tree that names nothing resolves to an empty
+	// area without a walk of its siblings.
+	below, err := store.List(ctx, "facts/c/1/below")
+	if err != nil || len(below) != 0 {
+		t.Fatalf("List(facts/c/1/below) = %+v, %v", below, err)
+	}
 }
 
 func TestWorkspaceKVPutIfAbsentAndCAS(t *testing.T) {

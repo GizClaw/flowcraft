@@ -52,6 +52,11 @@ maintenance; `core/memory` stays implementation-neutral.
   projection lanes from canonical state and reports what each one published.
   No deriver runs, so converging a lexical lane costs no model call; see *Lane
   repair (host-invoked)* below.
+- Projection storage reclamation: a lane publishes immutable bases and
+  segments and keeps one manifest as the only pointer, so what a compaction or
+  a rebuild replaced is collected -- on the publication itself, keeping one
+  generation of grace, and by the maintenance pass down to the active manifest;
+  see *Projection storage reclamation* below.
 - Retrieval: the context path fuses the recent lane with the configured
   projection lanes (BM25, entity, and vector when an embed model is
   configured), hydrates candidates, and packs them within the request
@@ -119,8 +124,15 @@ summary:
 chunk:
   max_runes: 1600
   overlap_runes: 160
+document:
+  max_runes: 1000000
+maintain:
+  arbiter: {provider: openai, name: gpt-6-luna, threshold: 0.75, batch: 64, concurrency: 4, budget: 1000}
 lanes:
   fusion: rrf
+  cache:
+    max_bytes: 2147483648
+  compaction: {max_segments: 64, min_delta_bytes: 4194304, ratio: 2}
 retrieval:
   rerank: false
 observed_at_anchor: true
@@ -175,11 +187,91 @@ fact:
   quota: true
 ```
 
+`document.max_runes` bounds the text one document may carry. Absent, it is the
+contract's ceiling (`memory.MaxDocumentRunes`, one million runes), and a value
+above that ceiling is a config error rather than a clamp: the contract refuses
+such a document anyway, so naming a larger limit only hides which bound binds.
+
+A document is derived from its runes -- joined, split into sections, cut into
+chunks, and every section and chunk becomes an item the build publishes -- so an
+input nobody bounded is a build nobody can finish. `PutDocument` refuses one
+above the limit as `KindInvalidRequest` before it clones, stores, or records
+work for anything, and the knowledge line refuses it again at derivation: a
+document written by an older build, or before this deployment lowered its limit,
+is still in the canonical log, and no write gate runs at re-derivation. That
+second refusal is reported rather than retried in place -- the pass counts it
+(`worker.DocumentsRefused`), steps the document stream's cursor past the
+document, and returns the refusal -- because the ceiling is a property of the
+document, and holding the cursor on it would stop every later document of the
+scope from ever being derived. The refused document keeps the build it last
+published, since nothing replaces it; one that never fit has no build and no
+lane entries, which is what a rebuild from canonical state sees as well. The
+setting stays out of the derivation policy digest: it refuses input, it does not
+change what a document derives to.
+
+The ceiling bounds the text, which is the part that is amplified. Media that
+rides along in a document is stored as provenance and never derived, so it is
+not part of the build and not part of this bound; an upload face bounds those
+where the payload exists once. The knowledge line bounds the build itself as
+well, at `knowledge.MaxDocumentArtifacts` sections and chunks: a document whose
+structure multiplies into items is refused the same way, whether it is a heading
+per line or a chunk size no one meant.
+
 The agent side binds the assembly through the `core/memory/hook` factories
 (`memory.context` under `hook.prepare`, `memory.turn` under `hook.commit`).
 Turn commits are idempotent per `IdempotencyKey`: retries must reuse the key
 of the original turn. Do not re-commit historical transcript under a new key
 — it is appended as new messages. The agent hooks use the run id as that key.
+
+`maintain.arbiter` turns on the maintenance pass's third rule: the pairs its
+own two rules leave current are put to a decision model, one choice question
+per pair, and an answer of `replaced` at or above the threshold becomes a
+finding. Absent — the default — the pass judges exactly what it judged before
+and stamps the overlay exactly as before, so turning the arbiter off keeps the
+overlay a scope already has and turning it on re-judges the scope: the model,
+the question wording and the threshold are in the stamp beside the tuning and
+the vocabulary, the same discipline the vocabulary is digested under.
+
+The model has to be declared with the `decision` operation on its provider.
+The workload routes by what the deployment says a model serves, so a
+generate-only model fails at the call rather than answering a request it was
+not built for; a deployment that configures an arbiter without an `inference`
+assembly is refused where the document is read. The call is the platform's
+`DecisionRequest`, not a bespoke prompt: `threshold` (default 0.75) is the
+probability of `replaced` a finding needs, `batch` (default 200) is the OpenAI
+wire's own per-call limit on questions, `concurrency` (default 4) is how many
+calls one pass keeps in flight, and `budget` (default 1000) caps the pairs one
+pass pays for — the pairs it leaves out are counted (`Plan.ArbiterSkipped`) and
+judged by a later pass, because the budget bounds cost rather than judgment and
+so stays out of the stamp. Batch and concurrency are a schedule, not a
+judgment: the batches are independent, each response names the questions it
+answers, and both settings stay out of the stamp. A pair the arbiter declines,
+or answers below the threshold, leaves the older fact current: a missed update
+costs one stale value, a wrong one penalizes a fact that is still true until
+the next pass. On this project's Chinese corpus a fresh pair costs about 320
+tokens (`eval/cmd/memory-relation-zh`).
+
+What a pass does not pay twice for, it remembers. The pair an arbiter answered
+is stored under `maintain/v2/verdicts/<scope>`, keyed by the digest of the
+question (the two statements and the times the question states), in 256 shards
+stamped with the arbiter's identity. A later pass applies those answers for
+free, counts them in `Plan.ArbiterRemembered`, and spends its budget only on
+the pairs nobody has asked about — so a pass over an unchanged scope costs
+nothing, and a scope's tail stops starving behind its head. A model, wording or
+threshold change is a new identity, and the shards the old one wrote are not
+read.
+
+`remember` (default 204800 answers a scope) is the ceiling. Size it from the
+scope's *pair* count, not its fact count: pairs grow with the facts that share
+a subject, so a small corpus asks far more questions than it has facts — on
+LoCoMo, 689 facts across ten conversations propose 235,229 distinct pairs, and
+the default ceiling is already below that. A scope above its ceiling rotates:
+the write keeps the newest answers, forgets the oldest, and counts the loss as
+`Plan.ArbiterEvicted`, which is the number of answers every further pass buys
+again. So a run that reports `arbiter evicted=0` measured a store that
+converged, and one that reports a number measured a ceiling below its corpus.
+Raising it costs a bigger document read and rewrite per pass, about 140 bytes
+an answer (204,800 answers are ~29 MB of a workspace).
 
 ## Storage layout
 
@@ -201,8 +293,10 @@ With the workspace driver all state lives under the bound workspace:
   recovery.
 - `storage/v1/kv/...` — current values, the scope catalog, and document
   latest-revision pointers.
-- `views/fact/v2/...` — derived facts per generation, plus each conversation's
-  published-generation pointer.
+- `views/fact/v2/...` — derived facts per generation, each conversation's
+  published-generation pointer, and the canonical-identity area of every
+  generation (`generations/<generation>/hashes/<canonical hash>/<fact id>`):
+  which fact of that generation holds a claim.
 - `views/summary/v1/...` — immutable summary records, the active record
   catalog, and the manifest bookmark of every generation that published one.
 - `maintain/v2/overlay/...` — one control record per scope: the stamp of the
@@ -231,9 +325,60 @@ With the workspace driver all state lives under the bound workspace:
 - `worker/v1/leases/<partition>` — the scope's claim: the runner holding it,
   when it took it and when it expires. It is written back as released rather
   than deleted, so a host can still read who last held the scope.
-- `projections/...` — rebuildable BM25 / entity / vector lane snapshots.
+- `projections/<family>/v3/partitions/<runtime>/<user>/<agent>/indexes/<name>/shards/<shard>/...`
+  — rebuildable BM25 / entity / vector lane state, one addressed unit per
+  conversation (`c:<conversation-id>`) or dataset (`d:<dataset-id>`): one
+  `active.json` manifest per shard, the immutable bases and segments it names,
+  and nothing a manifest stopped naming (see *Projection storage reclamation*).
+  A shard is what a delta writes and a selector reads; a scope-wide rebuild
+  publishes the shards its artifact set covers and drops the rest. The v2
+  whole-scope layout is not read (memory has not shipped, so this is a break,
+  not a migration). A vector entry's payload is base64 of the
+  components' little-endian float32 bytes, not a JSON array of numbers: the
+  stored bytes are what a lane's digests are computed over, and a decimal
+  rendering nobody owns made them depend on which toolchain compiled the
+  reader (#654). It costs 5.33 bytes per dimension instead of 14.1.
 - `worker/v1/watermarks/...` — policy-scoped derivation cursors, retired with
   the generation they belong to.
+
+## Query selectors
+
+A query names what it wants to read with two selectors, and each one decides
+which kinds of state it can reach: a named selector narrows its own family, and
+the other family does not pass at all.
+
+| Request | Reads |
+| --- | --- |
+| `conversation_id` only | that conversation's messages and facts |
+| `dataset_ids` only | those datasets' documents |
+| both | both of the above |
+| neither | every shard in the scope (global recall) |
+
+The shard plan is the same rule seen from storage: a conversation request reads
+`c:<id>` (plus `d:<id>` for each dataset it names), and a request with no
+selector reads all of them. The two axes used to be independent -- a request
+that named only a conversation also read every document in the scope, because
+the dataset axis was the absent one and nothing about documents was narrowed.
+A caller that chats and queries a knowledge base therefore names `dataset_ids`
+on the request; seeing the library by accident is no longer a read a request
+gets. The semantics are stamped into the retrieval summary as
+`selector_semantics: strict-v1`, so two runs are comparable only when their
+selectors meant the same thing.
+
+Summaries and the resident profile block are not projection state: a summary
+request narrows by its own per-conversation manifest and the profile block is
+served whole, so neither takes part in the plan.
+
+A global recall is exact rather than approximate: every shard in the scope is
+read, the merge is over the same scoring set a single table would have given
+it, and nothing is truncated to bound the fan-out. It is the expensive path by
+construction -- it reads what the scope holds -- and BM25 pays it in two passes
+(set statistics first, then per-shard scoring) so the memory it needs is a term
+table and a top-k heap rather than the whole corpus. A plan of one shard is
+read once and scored from that reading, so a conversation query is atomic the
+way a single-table read was; only a plan of several shards settles the set
+statistics first and re-reads for scoring, where a write that lands between the
+two passes can weigh a record against statistics that did not count it.
 
 ## Derivation generations
 
@@ -262,6 +407,25 @@ it replaces:
   visible and the next pass retries, so the lanes never describe a generation
   readers cannot resolve -- which is what makes re-derivation converge instead
   of leaving the two generations side by side in the lanes.
+- A fact's canonical identity is indexed beside it, inside the generation
+  (`hashes/<canonical hash>/<fact id>`), because it is the question every add
+  asks: is this text already a fact here. A claim derived twice merges into the
+  fact holding it instead of writing a second one. The area answers the
+  question by name, so an add no longer lists the generation and reads back
+  every fact it listed -- on the workspace substrate an add into a 1600-fact
+  generation took 676 ms before the area and 6.3 ms after
+  (`BenchmarkAddDistinctFact`), and a 1600-fact derivation pass holds ~155
+  facts/s instead of falling with the corpus (`BenchmarkDeriveFacts`).
+  - The entry is written before the fact it names: an entry without its fact is
+    dropped by the next lookup that reads it, while a fact without its entry
+    would be invisible once the area reports itself complete.
+  - The area carries a marker key that says a build maintaining it populated
+    it. A generation written before the area existed has none, so its first add
+    scans once, records every identity it finds, and only then marks the area;
+    every add after that trusts an absent identity instead of rescanning.
+  - Retirement drops the area with the generation, so an identity cannot
+    outlive the fact that holds it, and a replacement generation cannot inherit
+    one.
 - Projected facts are addressed by conversation: a fact id is a content address
   shared by every conversation that derived the same text, and a lane is
   partitioned by scope, so the lane entry carries the conversation and
@@ -414,9 +578,10 @@ carrying a workspace across the change is an operator's call -- which
 
 One lane does not report its staleness that way, and it is the one whose
 storage name is a function of its producer identity: the vector lane writes to
-`<projection>.vector-<digest>`, where the digest covers the algorithm version
-and the embedding model (`generationProjection`). A version bump moves the name
-rather than the stamp, so the lane reads a name nothing was ever written under
+`<projection>.vector-<digest>`, where the digest covers the algorithm version,
+the payload form, and the embedding model (`generationProjection`). A version
+bump moves the name rather than the stamp, so the lane reads a name nothing was
+ever written under
 -- it reports no stored state and no staleness, exactly like a scope that was
 never indexed, while the generation the earlier producer filled sits beside it,
 unread. `LaneDiagnostics.OtherGenerations` is what says so: the other names the
@@ -545,6 +710,116 @@ read whole (that is the shape their readers offer), and the artifact set is
 handed to every lane as it is rather than cloned per lane -- `ProjectionRequest`
 documents `Artifacts` as read-only for that reason.
 
+## Projection residency
+
+One store keeps each lane's decoded state, and the lanes hold none of their own:
+a query asks the store for the shard tables it needs, and the store answers from
+the bases it has decoded or decodes the active state and keeps the result.
+Because a conversation's table is not another's, the bound is in bytes rather
+than in tables: `lanes.cache.max_bytes` (2 GiB by default) is what one lane's
+store may keep decoded, weighed by the lane's own reading of a table -- the
+vector payload for the embedding lane, the postings for BM25, the normalized
+keys for the entity lane. The base read least recently makes room, and one base
+larger than the whole budget is read, scanned, and dropped rather than held.
+A budget never changes what a query sees: it decides what the lane keeps after
+reading it, and what a bound costs is a decode of the base it evicted. The
+readout is `vector.Stats.Resident` -- tables, bytes, hits, misses, evictions,
+and uncached reads.
+
+## Projection compaction
+
+A delta appends a segment; a compaction folds the base and every segment into
+a new base. When that happens is `lanes.compaction`: a shard compacts once its
+segment count exceeds `max_segments`, or once the bytes appended since its base
+reach the larger of `min_delta_bytes` and `base_bytes / ratio`. The byte
+trigger is a share of the base rather than a fixed size because a fixed one is
+wrong at both ends -- it rewrites a 10 MB conversation shard on a fraction of a
+percent of its size, and it lets a large shard accumulate a rewrite-sized
+segment set. At the defaults (64 segments, 4 MiB, base/2), a conversation
+compacts after roughly its own size in deltas, which keeps the write
+amplification geometric in what it stores instead of linear in how often it
+writes. The policy changes how often a lane writes a base, never what a query
+reads, and it is part of the retrieval summary so two deployments that compact
+differently do not share a retrieval fingerprint.
+
+## Projection storage reclamation
+
+A lane writes immutable **bases** and **segments** and keeps one `active.json`
+manifest as the sole pointer at the state it serves. A delta appends a segment
+and names it; a compaction folds the base and every segment into a new base and
+moves the manifest; a rebuild does the same from canonical state. What the old
+manifest pointed at stops being reachable at that instant -- nothing reads it
+again, because nothing but the manifest can find it -- and until this existed
+nothing removed it either, so a lane's storage grew with the product of how
+often it compacted and how large it was: one measured workspace held 9.4 GB in
+its three lanes, of which 9.0 GB was state no manifest named -- the vector lane
+alone held 8.8 GB against the 284 MB it served, and a second workspace repeated
+it at 6.9 GB against 252 MB.
+
+Three sweeps collect it, all of them deleting unreachability rather than
+authority -- a rebuild writes again what a sweep removed:
+
+- **On publication.** A base publication sweeps the lane's two object areas and
+  keeps what the new manifest names, plus the generation it just replaced: a
+  reader that resolved the previous manifest is allowed to finish, and a lane
+  holds two generations at most. The grace generation costs no disk the
+  compaction did not already hold, since it is the state that compaction read.
+- **In the maintenance pass.** `Assembly.Maintain` reclaims each lane down to
+  the active manifest — no grace generation — beside the superseded document
+  builds it already reclaimed, and reports the count as
+  `Plan.ReclaimedProjectionObjects`. It is what cleans a workspace an earlier
+  build filled, and what an eval run's `-maintain` pass reports on its own log.
+- **Per scope, without the pass.** `Assembly.ReclaimProjections` runs the same
+  sweep over every registered lane of one scope and reports a
+  `ReclaimResult` (lanes swept, bases, segments, legacy keys). It is the pass's
+  sweep with
+  nothing of the pass: no facts are listed, no overlay or profile block is
+  written, so a host reclaiming a workspace an earlier build filled does not
+  pay for judgments it is not making — and a workspace a report was measured on
+  keeps the overlay that report read. `memory-eval -reclaim` is the command
+  form, and it is what sweeps a store no maintenance pass is due on.
+- **Per lane, when a host has to.** `component.Reclaimer` is the lane-side
+  entry point (`ReclaimSuperseded`), implemented by the bm25, entity, and vector
+  lanes; it delegates to the projection store's `Reclaim`.
+- **The layouts this build does not read.** Each lane sweeps a second time, for
+  a tree no sweep above can reach: the one an earlier projection layout left
+  under the same scope (`component.LegacyLayoutReclaimer`). A layout is a
+  segment of every key — `projections/<family>/<version>/partitions/...` — so a
+  build that bumps it writes a tree beside the old one and reads only its own:
+  the lanes name keys inside the version they write, and `OtherStoredNames`
+  lists names inside it too, so the tree under the replaced version is storage
+  no caller can name. The sweep deletes the scope's own partition under each
+  listed version and reports it as `ReclaimResult.LegacyKeys` /
+  `.LegacyLayouts` (`memory-eval -reclaim` prints both). A version that is not
+  listed is left alone, which is the guarantee a rollback needs: the list names
+  the versions this build has decided no build in it can read, and a rollback
+  to one of those rebuilds from canonical state like any other layout change.
+
+The manifest sweep is scoped to the name the lane reads, and to keys under
+`bases/` and `segments/`: it deletes what it can compare against a manifest,
+which is why the layout sweep is a separate half rather than a wider prefix.
+Another name of the same family is another projection — the vector
+lane names its storage after the embedding model it was built with — and a
+deployment still serving that generation, or a rollback to it, reads what a
+sweep would delete; `LaneDiagnostics.OtherGenerations` reports it instead of
+removing it. A manifest the sweep cannot decode is refused rather than read as
+empty: the sweep's question is what the manifest names, and a corrupt one has
+no answer. Like every other publication to a lane, a sweep expects the lane's
+single writer — the state a concurrent writer is publishing is not in the
+manifest the sweep read.
+
+`ReclaimResult` counts objects rather than bytes: a sweep deletes by key, and
+measuring what it removes would read the storage it exists to give up. A host
+that wants the size stats the workspace it owns.
+
+The summary view's own catalog (`views/summary/v1/...`) publishes the same way
+— immutable base, delta segments, one head — but is not swept here, and a
+workspace pays for it in kilobytes rather than gigabytes: its head is
+bookmarked per generation, so every generation a retention policy keeps names a
+chain that stays readable, and a sweep could only collect the objects a
+compaction inside one generation replaced. A measured workspace held 33 of them
+(80 KB) against 9.0 GB of lane snapshots.
+
 ## Integrity and evaluation
 
 - `Assembly.Verify(ctx, scope, conversationID)` runs the repair evidence
@@ -639,10 +914,11 @@ conversations that changed judges what a whole pass would judge them to be;
 decay is always recomputed from the pass's own clock, so a conversation a
 partial pass leaves behind keeps the factors the last whole pass measured.
 
-### Supersede: two rules, one window
+### Supersede: three rules, one window
 
 A fact is superseded when a newer fact of its conversation replaces it, and the
-pass decides that two ways. The similarity rule reads the texts: facts sharing
+pass decides that with two rules of its own, plus a third a deployment can turn
+on. The similarity rule reads the texts: facts sharing
 an entity whose token overlap reaches the threshold are restatements of one
 claim, and the older one is the earlier restatement. The relation rule reads the
 predicate the extractor wrote: two facts stating the same single-valued relation
@@ -675,7 +951,33 @@ The vocabulary is part of what the pass is, so it is digested into the overlay's
 stamp beside the tuning: the same facts judged under another vocabulary are
 another pass's judgments, and this deployment serves only its own.
 
-Both rules write one kind of overlay entry, and both carry the window the older
+The third rule is the one a deployment opts into (`maintain.arbiter`). Both
+shipped rules are bounded by what their authors could write down — the
+vocabulary by its phrases, the similarity rule by shared tokens — and the pairs
+that matter are the ones where that bound bites: a Chinese deployment has no
+phrase in the vocabulary at all (0 of 31 Chinese predicates are classified), and
+"住在柏林" → "搬到了上海" scores 0.29 against a threshold of 0.5, so an update
+stated with new wording is one both rules miss. The arbiter puts those pairs to
+a model and asks the business question — does the newer statement make the older
+one out of date — rather than asking which relation the two share, which is the
+vocabulary's vocabulary and not the model's. It proposes only pairs it can name
+a subject for, and only pairs the rules left current: sharing a subject is the
+one thing the pass reads without a model, and a pair the rules already decided
+is not a question. The finding records the probability it was judged with and
+the reason `arbiter`, so a reader can tell a rule, which can be re-applied, from
+an estimate, which cannot. What it was answered is remembered, so the pass pays
+for a pair once: the questions are the scope's, not the pass's, and only a new
+pair costs a call.
+
+One limit is worth stating: the arbiter is asked whether the older statement is
+still current, so a pair whose statements both carry a date is answered
+both-current — "on 3 May 2018, 郑凯 lived in Berlin" is a record of that day, and
+a record does not stop being true. That is the honest answer to the question
+asked, and it is why the pair has to be read as two statements about now for a
+finding to be made. Deciding what a dated pair means for a read path that never
+time-travels is a design question this rule does not settle.
+
+All three rules write one kind of overlay entry, and all three carry the window the older
 fact was current over. `ValidAt` is the superseded fact's own date — its event
 time, or when the fact was created if the turn stated none — and `InvalidAt` is
 the superseding fact's date, which is the same key the pass ordered the pair by,

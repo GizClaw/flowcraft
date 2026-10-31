@@ -72,6 +72,10 @@ type ProjectionEvidence struct {
 	// producer, which is not detectable from the digests: those are recomputed
 	// from the stored state and match whatever wrote it.
 	StoredProducer, ExpectedProducer string
+	// Mixed reports that the projection's shards were written by more than one
+	// producer. StoredProducer is then empty because there is no single stored
+	// version, and the finding says so rather than calling the state unstamped.
+	Mixed bool
 }
 
 type Input struct {
@@ -151,9 +155,13 @@ func InspectContext(ctx context.Context, scope corememory.Scope, input Input) (P
 			actions = append(actions, Action{ActionRebuild, "projection:" + value.Name, "build/source digest mismatch"})
 		}
 		if value.ExpectedProducer != "" && value.StoredProducer != value.ExpectedProducer {
-			actions = append(actions, Action{ActionRebuild, "projection:" + value.Name,
-				"producer version mismatch: stored " + producerLabel(value.StoredProducer) +
-					", expected " + value.ExpectedProducer})
+			evidence := "producer version mismatch: stored " + producerLabel(value.StoredProducer) +
+				", expected " + value.ExpectedProducer
+			if value.Mixed {
+				evidence = "producer version mismatch: shards written by more than one producer, expected " +
+					value.ExpectedProducer
+			}
+			actions = append(actions, Action{ActionRebuild, "projection:" + value.Name, evidence})
 		}
 	}
 	sort.Slice(actions, func(i, j int) bool {

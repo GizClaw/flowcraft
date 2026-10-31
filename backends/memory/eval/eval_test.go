@@ -7,6 +7,7 @@ import (
 
 	flowcraftmemory "github.com/GizClaw/flowcraft/backends/memory"
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	"github.com/GizClaw/flowcraft/backends/memory/maintain"
 	factview "github.com/GizClaw/flowcraft/backends/memory/views/fact"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	coremessage "github.com/GizClaw/flowcraft/core/message"
@@ -111,6 +112,57 @@ func (fakeDeriver) Derive(context.Context, component.Artifact) ([]component.Arti
 	}}, nil
 }
 
+// countingMaintainer answers every pass with the same plan, so the test reads
+// the aggregation rather than a store: what a run reports about its arbiter is
+// summed over the passes, and a scope that asked nothing must add nothing.
+type countingMaintainer struct {
+	plan maintain.Plan
+}
+
+func (runner countingMaintainer) CommitTurn(context.Context, corememory.Turn) error { return nil }
+func (runner countingMaintainer) RunOnce(context.Context) error                     { return nil }
+
+func (runner countingMaintainer) Context(context.Context, corememory.ContextRequest) (corememory.ContextResult, error) {
+	return corememory.ContextResult{}, nil
+}
+
+func (runner countingMaintainer) Maintain(context.Context, corememory.Scope) (maintain.Plan, error) {
+	return runner.plan, nil
+}
+
+// TestMaintainSumsWhatTheArbiterDid pins the reading a run that pays for an
+// arbiter owes its own log: the pairs asked and the ones its budget skipped
+// (a non-zero skip is a coverage figure, not a judgement), the pairs left
+// current, and how many findings the model, rather than the rules, made.
+func TestMaintainSumsWhatTheArbiterDid(t *testing.T) {
+	plan := maintain.Plan{
+		Supersedes: []maintain.Supersede{
+			{FactID: "fact-a", Reason: maintain.ReasonSimilarity},
+			{FactID: "fact-b", Reason: maintain.ReasonArbiter},
+		},
+		ArbiterAsked: 4, ArbiterSkipped: 6, ArbiterRemembered: 5,
+		ArbiterReplaced: 2, ArbiterBothCurrent: 1, ArbiterUndecided: 1,
+	}
+	maintained, err := Maintain(context.Background(), countingMaintainer{plan: plan},
+		[]corememory.Scope{{RuntimeID: "memories"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maintained.Scopes != 1 || maintained.Supersedes != 2 || maintained.ArbiterSupersedes != 1 ||
+		maintained.ArbiterAsked != 4 || maintained.ArbiterSkipped != 6 || maintained.ArbiterRemembered != 5 ||
+		maintained.ArbiterReplaced != 2 || maintained.ArbiterBothCurrent != 1 || maintained.ArbiterUndecided != 1 {
+		t.Fatalf("counts = %+v", maintained)
+	}
+	quiet, err := Maintain(context.Background(), countingMaintainer{},
+		[]corememory.Scope{{RuntimeID: "memories"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quiet.ArbiterAsked != 0 || quiet.ArbiterSupersedes != 0 {
+		t.Fatalf("a pass that asked nothing reported %+v", quiet)
+	}
+}
+
 // TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot pins the pass a run that
 // measures the profile block owes the store: one pass per scope, a repeated
 // scope counted once, and a runner that cannot maintain reported as such
@@ -138,14 +190,14 @@ func TestMaintainRunsOnePassPerScopeAndRefusesWhatCannot(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly := Runner(value)
-	ran, err := Maintain(ctx, assembly, []corememory.Scope{
+	maintained, err := Maintain(ctx, assembly, []corememory.Scope{
 		{RuntimeID: "memories"}, {RuntimeID: "memories"}, {RuntimeID: "other"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ran != 2 {
-		t.Fatalf("passes = %d, want one per scope with the repeat counted once", ran)
+	if maintained.Scopes != 2 {
+		t.Fatalf("passes = %d, want one per scope with the repeat counted once", maintained.Scopes)
 	}
 	if _, err := Maintain(ctx, assembly, []corememory.Scope{{}}); err == nil {
 		t.Fatal("an invalid scope was maintained")

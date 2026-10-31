@@ -33,8 +33,11 @@ func seedLaneName(t *testing.T, ws workspace.Workspace, family, name string, sco
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The family is written under a name no lane reads, so any shard will do:
+	// what the test needs is state on disk, not state a read will reach.
+	address := projectionstore.Address{Scope: scope, Shard: "c:conversation"}
 	if err := store.FullRebuild(
-		context.Background(), scope, name, map[string]bool{"legacy": true}, "legacy-source"); err != nil {
+		context.Background(), address, name, map[string]bool{"legacy": true}, "legacy-source"); err != nil {
 		t.Fatal(err)
 	}
 }

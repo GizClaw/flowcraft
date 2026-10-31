@@ -22,11 +22,11 @@ func TestOtherNamesReportsTheNamesAFamilyHoldsStateUnder(t *testing.T) {
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	otherScope := corememory.Scope{RuntimeID: "other-runtime"}
 	for _, name := range []string{"facts", "facts.vector-1a2b"} {
-		if err := store.FullRebuild(ctx, scope, name, map[string]bool{"base": true}, "source"); err != nil {
+		if err := store.FullRebuild(ctx, testAddress(scope), name, map[string]bool{"base": true}, "source"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.FullRebuild(ctx, otherScope, "facts", map[string]bool{"base": true}, "source"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(otherScope), "facts", map[string]bool{"base": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
 	names, err := store.OtherNames(ctx, scope, "facts.vector-1a2b")

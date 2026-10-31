@@ -34,18 +34,30 @@ next to this module or at the repository root — the live probes look in
 cp .env.example .env   # or ../../../.env to keep it at the repository root
 ```
 
-The default deployment uses two providers: DeepSeek for fact extraction
-(`DEEPSEEK_API_KEY`, served by the openai driver) and ByteDance Ark
-`doubao-embedding-vision` (multimodal: text + image) for the vector lane
-(`ARK_API_KEY`). DeepSeek ships no embedding API, so the embedding model is
-declared as a separate bytedance provider in `deploy.yaml`; a third provider,
-`openai` (`gpt-4o-mini`, also multimodal), is declared but unused unless a run
-selects it with `-answer-provider openai -answer-model gpt-4o-mini` or points
-`memories.settings.generate` at it. Three consequences worth knowing:
+The default deployment reaches every model it declares through one gateway
+(`https://ai.haivivi.cn/v1`, `GATEWAY_API_KEY`) and declares two providers
+because it speaks two wires there, not because it reaches two vendors: fact
+extraction and answers run `deepseek-flash` over the openai driver, the vector
+lane runs `doubao-embedding-vision` (multimodal: text + image) over the bytedance
+driver, whose base_url is what points it at the gateway. The same credential
+also serves a second generate model (`deepseek-v4-pro`, text-only, selected with
+`-answer-provider gateway -answer-model deepseek-v4-pro`) and the decision
+surface (`azure-decision`) the maintenance arbiter asks; `deploy.yaml` declares
+all four names so `TestConfiguredModelsExistInCatalog` holds the document to the
+endpoint's catalog, and a name the gateway does not authorize answers 403
+`service_model_unavailable` rather than being substituted.
 
-- the multimodal Ark endpoint embeds one item per HTTP request (no batching),
-  so a full LoCoMo run issues roughly one call per indexed message, plus one
-  per query;
+There is no second vendor and no second key. The document used to declare an
+`openai` provider (`gpt-4o-mini` at `api.openai.com`) as the alternative answer
+backend, which made `OPENAI_API_KEY` a build-time requirement for a model no
+harness run selects; the gateway now serves both a second generate model and the
+decision surface, and `gpt-4o-mini` is scheduled to retire on 2027-01-14, so
+the provider is gone and the alternative runs on the same key. Three
+consequences worth knowing:
+
+- the multimodal embedding route embeds one item per HTTP request (no
+  batching), so a full LoCoMo run issues roughly one call per indexed message,
+  plus one per query;
 - images are exercised: `-images` defaults to `native`, which downloads each
   turn's image (8-way parallel, 20s timeout, bounded cache), verifies it by magic
   bytes and inlines it as an `ImagePart`. An image over the 4MB inline budget is
@@ -61,17 +73,19 @@ selects it with `-answer-provider openai -answer-model gpt-4o-mini` or points
   turned a slow host into a missing image for 24h and made the image set a
   function of the network's luck. `-images annotation` keeps
   the historical text-only shape.
-- one image is not cheap on either multimodal endpoint. Measured on Chat
-  Completions: a 96×96 PNG billed 8,528 prompt tokens against 28 for the same
-  prompt without it, on `gpt-4o-mini` (8,500 tokens for one thumbnail). Ark
-  embeds one image per request as well. Ingest images because the vector lane
-  needs them, not because the context window is large.
+- one image is not cheap on a multimodal endpoint. Measured on Chat
+  Completions with the OpenAI provider this document used to declare: a 96×96
+  PNG billed 8,528 prompt tokens against 28 for the same prompt without it
+  (8,500 tokens for one thumbnail). Ark embeds one image per request as well.
+  Ingest images because the vector lane needs them, not because the context
+  window is large.
 
-The deployment declares the logical name `doubao-embedding-vision` and the
-profile pins the dated snapshot (`doubao-embedding-vision-251215`); Ark also
-lists `doubao-embedding-vision-250615`, and an account endpoint ID (`ep-xxx`)
-works in the same mapping. Without an Ark key, drop `embed:` and the
-`bytedance` provider (or point the provider at a compatible gateway).
+The deployment declares the logical name `doubao-embedding-vision` and no
+endpoint pin: the gateway serves that undated name, where Ark also offers the
+dated snapshots (`doubao-embedding-vision-251215`, `-250615`) and account
+endpoint IDs (`ep-xxx`). Point `bytedance`'s `base_url` at Ark and the same
+document asks Ark instead. Without a vector lane at all, drop `embed:` and the
+`bytedance` provider.
 
 ## Run
 
@@ -87,10 +101,11 @@ Full run through a deploy document with a real provider:
 go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env -samples 1
 ```
 
-Useful flags: `-samples N` (conversations), `-questions N` (per conversation),
-`-max-items` / `-max-tokens` (context budget), `-recent-items` (assembly
-`recent.max_items`), `-out report.json`, `-build-only` (verify the deployment
-document builds and wires without calling a model).
+Useful flags: `-loader` (`locomo` | `longmemeval`, see below), `-samples N`
+(conversations), `-questions N` (per conversation), `-max-items` /
+`-max-tokens` (context budget), `-recent-items` (assembly `recent.max_items`),
+`-out report.json`, `-build-only` (verify the deployment document builds and
+wires without calling a model).
 
 ## Question categories
 
@@ -107,6 +122,64 @@ Consequences to keep in mind when reading results: every rate printed here is
 conditional on categories 1–4 (for `locomo10.json` that is 1540 of 1986
 questions), and any comparison with a published LoCoMo table must say so,
 because the official protocol also scores category 5.
+
+## LongMemEval
+
+`-loader longmemeval` converts `xiaowu0162/longmemeval-cleaned`
+(`longmemeval_oracle.json`, or `longmemeval_s_cleaned.json` for the hard
+variant). Both files stay outside the repo — they are 15 MB and 277 MB, and the
+`m` variant is 2.7 GB:
+
+```bash
+go run ./cmd/memory-eval -loader longmemeval -dataset /path/to/longmemeval_oracle.json \
+  -deploy ./deploy.yaml -env-file ./.env -samples 0 -prepare-all -out lme.json
+```
+
+One instance is one scenario: `haystack_sessions` are its turns in date order,
+and its single question is the graded one. On the oracle file that is 500
+scenarios, 948 committed sessions and 10,960 messages.
+
+Four conversion decisions a report depends on:
+
+| | conversion |
+| --- | --- |
+| session date | `haystack_dates[i]` reaches every message of session `i` as the text prefix `[2023/05/30 (Tue) 23:40] …`, or as the `observed_at` metadata anchor under `-no-date-prefix -observed-at metadata`. One of the two is required: without it no relative-time question ("last year") resolves. The `dataset:` line reports `observed_at_anchored` / `observed_at_unparsed`, so coverage is a reading rather than an assumption. |
+| question date | `question_date` → `AskedAt`, rendered into the answer prompt as `The question was asked at: …`. The dataset's own string is kept verbatim: the judge compares dates loosely, and reformatting would make "approximately right" unexplainable. |
+| categories | `question_type` → 101 multi-session, 102 temporal-reasoning, 103 knowledge-update, 104 single-session-user, 105 single-session-assistant, 106 single-session-preference, 107 for a type this build does not know; the label is carried next to the number and printed by the `category` lines. The ids start above LoCoMo's on purpose: category 2 routes the reference harness's temporal suffix, so a LongMemEval question must never land on it. `-categories` accepts an id or a label. |
+| evidence | the gold is session-level (`answer_session_ids`). A gold session counts as recalled when **any** of its messages was surfaced — the definition the dataset's own papers report; requiring every message would make a hit a function of how long the gold session is. `Turn.DatasetIDs` still names every message (`<session id>#<position>`), so a recalled item is matched back to its session, and the `session recall:` line reports that separately from the turn-level `evidence recall:` one. |
+
+The judge is `-judge-style lme`, the default for this loader: the gold is a full
+clause rather than a topic phrase, and two of the six types are not fact
+questions. The style dispatches on the question's own labels —
+
+- a fact question is graded on the gold answer (contains it, is equivalent to
+  it, or states the intermediate steps; a subset is incorrect),
+- `single-session-preference` (30 of 500) on the preferences the gold states:
+  naming the same subject while ignoring the preference is incorrect,
+- the 30 `_abs` rows on the refusal. Their gold says the history does not
+  contain the answer, so returning a plausible fact is the failure being
+  measured, not a near miss.
+
+`-judge-style both` on this loader grades each answer twice, with `lme` and with
+`locomo`, and writes both verdicts in one report: the `answer_*` fields and the
+`lenient_*` ones, plus a `lenient_hits` / `lenient_rate` column on every
+`category` line. That pair is the point of the mode — the strict half has to be
+the rubric the dataset's own gold was written for, because pairing `strict` with
+`locomo` would score all 30 preference rows and all 30 `_abs` rows as misses in
+the first column. A `both` run therefore costs two judge calls per question; the
+`usage` block lists them as the `judge` and `lenient_judge` roles.
+
+Two consequences for reading a LongMemEval report next to a LoCoMo one:
+
+- **The answer rate is not the published LongMemEval number.** That number is
+  produced by the dataset's own judge prompt and reported with session-level
+  recall; this harness answers from a recalled pack with the product policy
+  (`-answer-style long`), so it measures the same store, not the same protocol.
+- **`hit_rate` means something else here.** It is the fraction of questions
+  whose gold sessions were all recalled, not the fraction whose gold turn was.
+  Evidence granularity, conversation shape (948 committed sessions over 500
+  instances, median 23 messages each) and the judge protocol all differ, so the
+  two datasets' rates belong in two tables.
 
 ## Reference protocol vs this harness
 
@@ -220,6 +293,27 @@ recalled pack itself — so a deployment that wants the step back has to add the
 template block *and* re-test here first: the short shape's +8.57pp is not
 evidence for the product shape.
 
+### The answer model: flash, with pro behind a flag
+
+`deepseek-v4-pro` is the same gateway's second generate model and the only
+alternative `deploy.yaml` declares. Measured on one conversation's 152
+questions, reading the same frozen library (`-skip-derive`, `library` block
+identical in both runs: `conversations=2 underived=0`, evidence recall 84.21% in
+both), product shape, strict judge, 20 items / 4096 tokens:
+
+| | strict (answer) | cat 1 | cat 3 | answer out tokens | mean latency | answer stage |
+| --- | --- | --- | --- | --- | --- | --- |
+| `deepseek-flash` | 73.68% (112/152) | 43.8% | 69.2% | 65,979 | 503 ms | 3.5 min |
+| `deepseek-v4-pro` | 73.03% (111/152) | 40.6% | 76.9% | 122,963 (1.9×) | 497 ms | 9.1 min |
+
+`-1` question, `+1.9×` output tokens, `2.6×` the wall clock: on this
+conversation the alternatives are inside the ±1-question/scenario band this
+README quotes elsewhere, and the one column that moved (open-domain, n=13,
++7.7pp) is inside that sample's noise. So `deepseek-flash` stays the default
+and `-answer-model deepseek-v4-pro` is the flag that prices the alternative on
+a fuller run; both rows are strict-judged, and the stored full-corpus report is
+where a lenient figure comes from.
+
 ## What a report stores
 
 The fingerprint names the configuration; the report also carries the material and
@@ -285,6 +379,11 @@ the item's provenance resolves to it (a fact points at the messages it was
 derived from — the runner wires that through the message store). Results
 therefore carry both numbers: turn-level `evidence recall` and
 `questions_with_full_evidence`.
+
+A dataset that labels its gold by session instead of by turn (LongMemEval) is
+graded by the same matcher at that granularity: a gold session is recalled when
+any of its messages was surfaced, and the report carries `session recall` apart
+from the turn-level figure rather than adding the two. See *LongMemEval* below.
 
 Ingest also tags every committed message with the dataset turn it was loaded
 from (`DatasetTurnMetadataKey`), and that tag decides the match first: an item
@@ -362,15 +461,25 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   -max-items 40 -max-tokens 8192 -answer
 ```
 
-- `-answer-provider` / `-answer-model` (default `deepseek`/`deepseek-flash`:
-  this endpoint also serves `deepseek-v4-pro`, and any other name is silently
-  substituted, which `TestConfiguredModelsExistInCatalog` guards against)
+- `-answer-provider` / `-answer-model` (default `gateway`/`deepseek-flash`:
+  every report stored before this one names the provider `deepseek`, so the
+  fingerprint's `answer_model` reads `gateway/deepseek-flash` only from here on
+  and a `-baseline` compare across that rename reads as a configuration
+  difference, which is what it is. `deepseek-v4-pro` is the declared
+  alternative, text-only, so an `-images native` run cannot select it; a name
+  neither declares answers 403 rather than being substituted --
+  `TestConfiguredModelsExistInCatalog` checks the declaration against the
+  catalog before a run starts)
 - `-judge-provider` / `-judge-model` (default: the answering model)
-- `-judge-style strict|locomo|both` — `strict` asks for a bare `CORRECT` /
-  `INCORRECT` token, `locomo` mirrors the leaderboard prompt (`{"correct":…}`).
-  Only those two shapes are accepted; hedged prose is **ungraded** rather than
-  guessed at, and ungraded answers leave the denominator (reported as
-  `ungraded_answers`).
+- `-judge-style strict|locomo|lme|both|none` — `strict` asks for a bare
+  `CORRECT` / `INCORRECT` token, `locomo` mirrors the leaderboard prompt
+  (`{"correct":…}`), `lme` is LongMemEval's per-type rubric (and this loader's
+  default), `none` runs the answering stage with no judge at all so the official
+  token-F1 can be scored offline. `both` grades every answer twice: the strict
+  half is the dataset's own rubric (`lme` on the `longmemeval` loader, `strict`
+  on LoCoMo), the lenient half is always `locomo`. Only those verdict shapes are
+  accepted; hedged prose is **ungraded** rather than guessed at, and ungraded
+  answers leave the denominator (reported as `ungraded_answers`).
 - `-answer-style long|short|evidence` (default `long`) — `long` is the product
   policy, `short` reproduces the official LoCoMo prompt shape that token-F1 is
   defined over, and `evidence` is `short` with the quoting step added. All three
@@ -439,6 +548,38 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (or `-skip-derive`, to pass over a stored derivation); the fingerprint records
   `maintain=on|off`, and the block's own settings are in the `retrieval` value
   when the deploy document enables them.
+  The pass also reclaims derived storage nothing serves -- the lane bases and
+  segments a compaction or a rebuild superseded, and the superseded document
+  builds -- and prints what it removed, which is also how a run confirms that
+  the workspace it wrote holds its live state rather than its history.
+- `-reclaim`: sweep every scope the workspace's catalog holds and exit, with no
+  dataset, no ingest, no derivation, and no pass. It is the same lane sweep
+  `-maintain` runs, on its own: it lists each lane's object keys, deletes the
+  bases and segments the active manifests do not name, and prints what each
+  scope and each lane removed. What it removes is state no manifest can find,
+  so it is safe on a workspace a report was measured on -- it does not judge
+  facts, so it cannot change the overlay or the profile block a run serves.
+  It needs `-deploy` (the document names the workspace, and the embedding model
+  that names the vector lane's storage), and it reports objects rather than
+  bytes: a sweep deletes by key, and measuring what it removes would read the
+  storage it exists to give up.
+- `-rebuild-lanes <names>`: re-index the named projection lanes of every scope
+  the workspace's catalog holds and exit, with no dataset, no ingest, no
+  derivation, and no model call of its own. It is what carries a workspace
+  across a change to a lane's producer, and across a change to the form of what
+  a lane stores: a lane's state lives under a storage name that covers both, so
+  a build with a new form reads a name nothing was ever written under and leaves
+  the generation an earlier build filled beside it, unread. A repair re-indexes
+  canonical state -- the messages, the facts of the active generation, the
+  chunks of the active document builds -- through the shapes the derivation
+  worker writes, so nothing is derived again: watermarks and the published
+  generation stay where they are, and the next pass resumes where it stopped.
+  The value names lanes (`bm25`, `entity`, `vector`); an empty value rebuilds
+  every lane whose rebuild needs no inference, and the vector lane is the one
+  that embeds every artifact again, which is why it is named rather than
+  rebuilt by default. It needs `-deploy`, and it prints per lane and per scope
+  what was indexed, whether the state it replaced was another producer's
+  (`stale_before`), and the digests of the state that replaced it.
 
 ### Reproducibility
 
@@ -449,9 +590,13 @@ fingerprints compares two experiments, not a regression. Build with
 so the revision is stamped into the binary; without it the runner asks `git`
 directly.
 
-`deploy.yaml` is a template: DeepSeek (responses surface) for fact extraction
-and ByteDance Ark `doubao-embedding-vision` for the vector lane. See
-"Diagnosing one question" for the retrieval-side diagnostic.
+`deploy.yaml` is a template: the gateway's `deepseek-flash` (responses surface)
+for fact extraction and its `doubao-embedding-vision` (Ark wire) for the vector
+lane, plus `deepseek-v4-pro` and `azure-decision` declared for the answer A/B
+and for the arbiter. `deploy-arbiter.yaml` is the same deployment with
+`maintain.arbiter` on, and it is what both arbiter lanes build. See "Reading the
+supersede rules" for what those lanes read, and "Diagnosing one question" for
+the retrieval-side diagnostic.
 
 ## Diagnosing one question
 
@@ -553,8 +698,9 @@ Reads only: no model call, no derivation, no write.
 
 ## Reading the vector lane
 
-The vector lane serves by an exact scan: it materializes the scope's table,
-embeds the query, walks every entry a filter admits, and sorts what it scored.
+The vector lane serves by an exact scan: it materializes the table of each shard
+the request names, embeds the query, walks every entry a filter admits, and
+sorts what it scored.
 Which of those terms dominates decides whether an approximate index could be
 worth its loss of determinism, and `memory-vector-readout` answers it by running
 the retrieval arm against a live deployment and reading the lane's own counters
@@ -572,9 +718,9 @@ deploy document names, so the reading describes that derivation. What it
 reports:
 
 - a **cold pass**: the first question of each scope, sequentially — the question
-  itself (`latency`, and the table it had to materialize: `load`, `misses`,
-  `entries`) beside the warm the deployment's own writes paid (`warm`,
-  `warms`);
+  itself (`latency`, and the shard tables it had to materialize: `load`,
+  `shards`) and whether the store had them decoded (`decodes`) or paid to
+  decode them (`resident+`, the payload they added to what the store keeps);
 - a **hot pass**: every question the library holds, with `-workers`, attributed
   by the delta of two lane readings taken around it;
 - the **phases** inside the lane — table load, query embed, scan (the walk over
@@ -585,8 +731,11 @@ reports:
   not have (the scan is linear in entries, the sort n log n), read against this
   run's mean query embed — the term an approximate index would remove against
   the one it would not;
-- the **footprint**: the resident materialized tables (scopes, entries,
-  dimensions, vector payload) with the process's heap and RSS before and after.
+- the **resident state**: the tables the lane's store kept decoded, the payload
+  they are reckoned at, and the store's own account of the reads — `hits` found
+  decoded, `decodes` materialized off storage, `evictions` dropped to stay
+  within the budget, `uncached` read and dropped because one table alone
+  exceeded it — with the process's heap and RSS before and after.
 
 The control store's reading (9,324 entries per scope, 2,048 dimensions, the
 documented budget, 1,540 questions, 4 workers on a 4-vCPU host) says the
@@ -610,8 +759,48 @@ state exists but cannot be read is not a lane that found nothing: the request
 fails instead of being answered from the remaining lanes (issue #651), so a
 pass that lost a lane stops the run, naming the lane and the read that failed:
 the error is rendered down its chain, because a memory error states only its
-kind and capability. `snapshot_errors` and `warm_errors` count the lookups that
-returned an error, apart from the hits and the loads.
+kind and capability. `shard_errors` counts the lookups that returned an error,
+apart from the loads the lane served.
+
+## Reading the supersede rules
+
+`memory-relation-zh` measures the two rules a maintenance pass ships with,
+against a Chinese corpus, without a model and without a workspace:
+
+```bash
+go run ./cmd/memory-relation-zh          # human-readable
+go run ./cmd/memory-relation-zh -json    # for a diff between two builds
+```
+
+It classifies a 31-phrase inventory of Chinese predicates against
+`maintain.Vocabulary` (the same fold the pass uses, exported for this), scores
+three negative phrases per class, and applies the similarity rule at
+`maintain.DefaultSimilarityThreshold` over 13 two-turn scenarios — ten updates
+and three pairs that can hold at once. The English control pairs are there to
+show the table is not broken. What it reads at the time of writing: 0/31
+predicates classified, 0/8 negative predicates misclassified, and 0/10 updates
+above the threshold (the highest is 0.292). It measures the rules, not the
+extractor: a predicate the model never writes is a predicate the rule never
+sees.
+
+The live halves answer the rest, and both need `GATEWAY_API_KEY`: they build
+`deploy-arbiter.yaml`, whose one provider serves the extraction model, the
+embedding model, and the decision surface the arbiter asks.
+
+```bash
+MEMORY_EVAL_LIVE=1 go test ./cmd/memory-relation-zh/ -run TestLiveArbiter -v
+MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -run TestArbiterJudges -v
+```
+
+`TestLiveArbiterOnTheRelationCorpus` scores the maintenance arbiter against the
+same 13 labelled pairs: 10/10 updates called replaced, 0/3 controls, 3332
+tokens for the batch (about 256 a pair) on `azure-decision`, the decision
+surface the gateway serves. `TestArbiterJudgesDerivedChineseTurns` is the whole
+path — the deployment's own extractor writes the facts, the pass proposes the
+pairs, the arbiter judges them, and the overlay is what the pass wrote: on two
+conversations it proposes both pairs, finds the update at 1.00, and leaves the
+control current. It asserts the finding's reason is the arbiter, which is the
+same statement as neither shipped rule deciding the pair.
 
 ## Module dependency
 
@@ -668,7 +857,7 @@ stays offline and free).
 | probe | answers |
 | --- | --- |
 | `TestConfiguredModelsExistInCatalog` | is every model named in `deploy.yaml` actually served? |
-| `TestExtractionModelAB` | is a candidate generate model good enough to extract? (failures, facts/turn, surface coverage, unsupported facts) |
+| `TestExtractionModelAB` | is a candidate generate model good enough to extract? (failures, facts/turn, surface coverage, unsupported facts). Both arms are gateway reasoning models over 30 turns, so it runs far past `go test`'s 10m default: pass `-timeout` above the probe target's 60m |
 | `TestAnswerContextSize` | how much context reaches the answer prompt |
 | `TestEvidenceFidelity` | how much of the recalled evidence is raw text vs a fact paraphrase |
 | `TestRetrievalBudgetSweep` | what evidence coverage each item budget buys |
@@ -677,6 +866,7 @@ stays offline and free).
 | `TestCoIngestedConversationsDoNotChangeRetrieval` | does the two-phase schedule change recall |
 | `TestRejudgeStoredAnswersWithLenientJudge` | re-grade a stored report with the other judge style |
 | `TestIngestTagsDatasetTurns` | does ingest tag every committed message with its dataset turn, and does a re-ingest repair a store that predates that tagging |
+| `TestArbiterJudgesDerivedChineseTurns` | does the maintenance arbiter reach real derived Chinese facts: are the pairs proposed, is the update found, is the control left current |
 
 The three retrieval probes read the same workspace the runner does and match
 evidence the way the report does, so they need one that carries dataset turn ids

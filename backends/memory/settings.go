@@ -61,6 +61,7 @@ type Settings struct {
 	Summary    SummarySettings   `json:"summary,omitempty"`
 	Profile    ProfileSettings   `json:"profile,omitempty"`
 	Chunk      ChunkSettings     `json:"chunk,omitempty"`
+	Document   DocumentSettings  `json:"document,omitempty"`
 	Lanes      LanesSettings     `json:"lanes,omitempty"`
 	Retrieval  RetrievalSettings `json:"retrieval,omitempty"`
 	Projection string            `json:"projection,omitempty"`
@@ -82,6 +83,12 @@ type Settings struct {
 	// schedule (how many conversations of a scope are derived at once), never
 	// what is derived, so it stays out of the policy digest.
 	Derive DeriveSettings `json:"derive,omitempty"`
+	// Maintain tunes the maintenance pass a host schedules over the scope's
+	// facts. Maintenance reads facts and writes a read-path overlay; it never
+	// derives anything, so nothing here belongs to the derivation policy
+	// digest -- the overlay carries its own stamp, and changing this
+	// invalidates exactly that stamp and nothing else.
+	Maintain MaintainSettings `json:"maintain,omitempty"`
 	// Interval is the derivation scan period; "0" disables the background
 	// runner while keeping RunOnce available.
 	Interval string `json:"interval,omitempty"`
@@ -160,6 +167,100 @@ type ScopeSettings struct {
 	AgentID   string `json:"agent_id,omitempty"`
 }
 
+// MaintainSettings tunes the maintenance pass.
+type MaintainSettings struct {
+	// Arbiter, when set, decides the supersede pairs the pass's own rules
+	// cannot: the pair whose predicates the relation vocabulary does not
+	// recognize, and whose texts share too few tokens for the similarity
+	// rule. Absent leaves the pass with those two rules, which is the
+	// default and the only shape that needs no model.
+	Arbiter ArbiterSettings `json:"arbiter,omitempty"`
+}
+
+// ArbiterSettings names the model the arbiter asks and the bounds of the
+// question. The model has to be declared with the decision operation on its
+// provider: the inference assembly routes by what the deployment says the
+// model serves, so a generate-only model fails at the call rather than
+// answering a request it was not built for.
+type ArbiterSettings struct {
+	Provider string `json:"provider,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	// Threshold is the probability of "replaced" a pair needs before the pass
+	// makes a finding (default 0.75). A finding penalizes a fact that may
+	// still be true, and the pass cannot tell: the threshold is how much
+	// certainty the deployment charges for that.
+	Threshold float64 `json:"threshold,omitempty"`
+	// Batch caps how many pairs one call carries (default 200, the OpenAI
+	// wire's own per-call limit).
+	Batch int `json:"batch,omitempty"`
+	// Concurrency caps how many calls one pass keeps in flight (default 4).
+	// The calls are independent and each names its own answers, so this moves
+	// the wall clock and nothing else: it is not part of the arbiter's
+	// identity, and a deployment that raises it serves the same overlay. A
+	// value above the pass's ceiling is capped there.
+	Concurrency int `json:"concurrency,omitempty"`
+	// Budget caps how many pairs one maintenance pass puts to the arbiter
+	// (default 1000). It bounds new questions: a pair an earlier pass already
+	// asked is answered from the verdicts that pass remembered and costs
+	// nothing, so the budget decides how much new surface a pass covers. The
+	// pairs it leaves out are reported as skipped and asked by a later pass.
+	Budget int `json:"budget,omitempty"`
+	// Remember is how many answers one scope keeps (default 204800). It is
+	// what makes a pass over an unchanged scope free, and it is a count
+	// rather than a size because one stored answer is what one call bought.
+	//
+	// Size it from the scope's pair count, not its fact count: pairs grow
+	// with the facts that share a subject, so a small corpus can ask far more
+	// questions than it has facts (689 facts propose 235,229). A scope above
+	// the ceiling rotates -- the pass keeps the newest answers and buys the
+	// rest again -- and reports the loss as arbiter evicted.
+	Remember int `json:"remember,omitempty"`
+}
+
+func (settings ArbiterSettings) isZero() bool {
+	return settings.Provider == "" && settings.Name == "" && settings.Profile == ""
+}
+
+func (settings ArbiterSettings) validate() error {
+	if settings.isZero() {
+		if settings.Threshold != 0 || settings.Batch != 0 || settings.Concurrency != 0 ||
+			settings.Budget != 0 || settings.Remember != 0 {
+			return errors.New("maintain.arbiter.threshold, batch, concurrency, budget, and remember require provider and name")
+		}
+		return nil
+	}
+	if strings.TrimSpace(settings.Provider) == "" {
+		return errors.New("maintain.arbiter.provider is required")
+	}
+	if strings.TrimSpace(settings.Name) == "" {
+		return errors.New("maintain.arbiter.name is required")
+	}
+	if settings.Threshold < 0 || settings.Threshold > 1 || math.IsNaN(settings.Threshold) {
+		return fmt.Errorf("maintain.arbiter.threshold %v is outside [0,1]", settings.Threshold)
+	}
+	if settings.Batch < 0 {
+		return errors.New("maintain.arbiter.batch must not be negative")
+	}
+	if settings.Concurrency < 0 {
+		return errors.New("maintain.arbiter.concurrency must not be negative")
+	}
+	if settings.Budget < 0 {
+		return errors.New("maintain.arbiter.budget must not be negative")
+	}
+	if settings.Remember < 0 {
+		return errors.New("maintain.arbiter.remember must not be negative")
+	}
+	return nil
+}
+
+func (settings ArbiterSettings) ref() model.ModelRef {
+	return model.ModelRef{
+		ID:      model.ModelID{Provider: settings.Provider, Name: settings.Name},
+		Profile: settings.Profile,
+	}
+}
+
 // RecentSettings bounds the recent-message lane when a request does not
 // supply its own limits. Request-level limits may override these values but
 // are themselves clamped to retrieval.MaxRecentItems/MaxRecentTokens.
@@ -220,6 +321,19 @@ type ChunkSummarySettings struct {
 	MaxRunes int  `json:"max_runes,omitempty"`
 }
 
+// DocumentSettings bounds the text one document may carry.
+type DocumentSettings struct {
+	// MaxRunes is the text a put accepts and the text a derivation will
+	// build. Absent takes the contract ceiling. A value above that ceiling is
+	// a config error rather than a clamp: the contract refuses such a document
+	// anyway, so naming a larger limit only hides which bound binds.
+	//
+	// It is not part of the derivation policy digest. It refuses input; it
+	// does not change what a document derives to, so lowering it leaves a
+	// workspace's derived state comparable instead of asking for a re-derive.
+	MaxRunes int `json:"max_runes,omitempty"`
+}
+
 // LaneSettings configures one retrieval lane.
 type LaneSettings struct {
 	Weight float64 `json:"weight,omitempty"`
@@ -245,16 +359,52 @@ type LanesSettings struct {
 	// Fusion selects the lane fusion algorithm: "rrf" (default) or
 	// "weighted". RRF is robust to score-scale differences between lanes.
 	Fusion string `json:"fusion,omitempty"`
-	// VectorCache bounds the vector lane's resident tables. Absent, the lane
-	// keeps every scope's table it has read, which is what it always did; a
-	// host that serves many scopes bounds it, because one scope's table is
-	// its embedding model's width times four bytes per entry (measured: a
-	// 9324-entry, 2048-dimension table holds 72.8MB of vector payload).
+	// Cache bounds what each lane's store keeps decoded. The lanes hold no
+	// table of their own -- one store is the only place a materialized
+	// projection lives -- so this is the whole of what a process holds for
+	// retrieval, one budget per lane. Absent, each store keeps up to its
+	// built-in budget (2 GiB).
+	Cache *CacheSettings `json:"cache,omitempty"`
+	// Compaction decides when a lane folds a shard's segments into its base
+	// instead of appending another segment. The byte trigger is a share of
+	// the base rather than a fixed size, so a small shard compacts after a
+	// few commits and a large one does not pay a rewrite every few. It
+	// changes write amplification, not what a query reads.
+	//
+	// Absent, each store's own policy applies (64 segments, 4 MiB floor,
+	// base/2); a field left at zero takes the same default.
+	Compaction *CompactionSettings `json:"compaction,omitempty"`
+}
+
+// CacheSettings bounds the decoded projection state one lane keeps resident.
+type CacheSettings struct {
+	// MaxBytes is the budget, weighed by each lane's own reading of a table:
+	// the vector payload for the embedding lane, the postings for BM25, the
+	// normalized keys for the entity lane. A table is kept until keeping it
+	// would put the lane over the budget, and the table read least recently
+	// makes room; a table larger than the whole budget is scanned and dropped
+	// rather than held. It never changes what a query sees, only what the lane
+	// keeps after reading it.
 	//
 	// It is part of the retrieval summary because it is what a footprint
-	// reading has to be read against, and because two runs of the same
-	// deployment that differ in it are not the same configuration.
-	VectorCache *VectorCacheSettings `json:"vector_cache,omitempty"`
+	// reading has to be read against: two runs of the same deployment that
+	// differ in it hold different amounts of the same state.
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+}
+
+// CompactionSettings decides when a lane rewrites a shard's base.
+type CompactionSettings struct {
+	// MaxSegments folds the segments into the base once there are this many,
+	// whatever their bytes: a read replays every segment, so the count is
+	// bounded on its own.
+	MaxSegments int `json:"max_segments,omitempty"`
+	// MinDeltaBytes floors the byte trigger, so a shard whose base is small
+	// still appends a few commits before it rewrites.
+	MinDeltaBytes int64 `json:"min_delta_bytes,omitempty"`
+	// Ratio makes the byte trigger relative to the base: the segments compact
+	// once the bytes appended since the base reach base_bytes / Ratio. A
+	// larger ratio rewrites less often and reads more segments.
+	Ratio int `json:"ratio,omitempty"`
 }
 
 // ProfileSettings configures the resident profile block: the bounded lines
@@ -279,19 +429,6 @@ type ProfileSettings struct {
 	// MaxEntries bounds how many lines one served block holds, default
 	// profile.DefaultMaxEntries.
 	MaxEntries int `json:"max_entries,omitempty"`
-}
-
-// VectorCacheSettings bounds what the vector lane keeps resident. Both fields
-// are a count of what may be held: zero is no bound, and a bound never changes
-// what a query sees, only what the lane keeps after reading it.
-type VectorCacheSettings struct {
-	// MaxCachedScopes is how many scopes' tables may be resident at once. The
-	// lane drops the one it read least recently to make room.
-	MaxCachedScopes int `json:"max_cached_scopes,omitempty"`
-	// MaxEntriesPerScope is the largest table the lane keeps. A scope whose
-	// table is larger is read and scanned per query instead of held, trading
-	// the memory for the read.
-	MaxEntriesPerScope int `json:"max_entries_per_scope,omitempty"`
 }
 
 // applyDefaults fills zero values with the documented defaults in place.
@@ -364,6 +501,9 @@ func (settings *Settings) applyDefaults() {
 			settings.Chunk.OverlapRunes = 160
 		}
 	}
+	if settings.Document.MaxRunes == 0 {
+		settings.Document.MaxRunes = corememory.MaxDocumentRunes
+	}
 	if settings.Lanes.Vector.Weight == 0 {
 		settings.Lanes.Vector.Weight = 1
 	}
@@ -389,6 +529,13 @@ func (settings Settings) anchorObservedAt() bool {
 	return settings.ObservedAtAnchor == nil || *settings.ObservedAtAnchor
 }
 
+// selectorSemantics names what a request's selectors mean in this build. It is
+// stamped into the retrieval summary because the summary is what two runs are
+// compared by: a run whose selectors narrowed differently produced its
+// candidates by another rule, and the reading is not comparable however equal
+// the weights were.
+const selectorSemantics = "strict-v1"
+
 // retrievalSummary renders the retrieval-side configuration -- lane weights and
 // fusion, the bm25 parameters, source quotes and rerank -- as one stable JSON
 // object with defaults applied. The derivation policy digest covers what
@@ -411,11 +558,15 @@ func (settings Settings) retrievalSummary() (string, error) {
 		served = &settings.Profile
 	}
 	encoded, err := json.Marshal(struct {
-		Lanes     LanesSettings     `json:"lanes"`
-		BM25      BM25Settings      `json:"bm25"`
-		Retrieval RetrievalSettings `json:"retrieval"`
-		Profile   *ProfileSettings  `json:"profile,omitempty"`
-	}{Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval, Profile: served})
+		Lanes             LanesSettings     `json:"lanes"`
+		BM25              BM25Settings      `json:"bm25"`
+		Retrieval         RetrievalSettings `json:"retrieval"`
+		Profile           *ProfileSettings  `json:"profile,omitempty"`
+		SelectorSemantics string            `json:"selector_semantics"`
+	}{
+		Lanes: settings.Lanes, BM25: settings.BM25, Retrieval: settings.Retrieval, Profile: served,
+		SelectorSemantics: selectorSemantics,
+	})
 	if err != nil {
 		return "", fmt.Errorf("retrieval summary: %w", err)
 	}
@@ -453,15 +604,12 @@ func (settings Settings) Validate() error {
 	if settings.Retrieval.SourceQuotes < 0 || settings.Retrieval.SourceQuotes > 4 {
 		return errors.New("retrieval.source_quotes must be between 0 and 4")
 	}
-	if cache := settings.Lanes.VectorCache; cache != nil {
-		for name, value := range map[string]int{
-			"max_cached_scopes":     cache.MaxCachedScopes,
-			"max_entries_per_scope": cache.MaxEntriesPerScope,
-		} {
-			if value < 0 {
-				return fmt.Errorf("lanes.vector_cache.%s must not be negative", name)
-			}
-		}
+	if cache := settings.Lanes.Cache; cache != nil && cache.MaxBytes < 0 {
+		return errors.New("lanes.cache.max_bytes must not be negative")
+	}
+	if compaction := settings.Lanes.Compaction; compaction != nil &&
+		(compaction.MaxSegments < 0 || compaction.MinDeltaBytes < 0 || compaction.Ratio < 0) {
+		return errors.New("lanes.compaction fields must not be negative")
 	}
 	if settings.Derive.Concurrency < 0 {
 		return errors.New("derive.concurrency must not be negative")
@@ -480,6 +628,9 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Derive.Trigger.Batch < 0 {
 		return errors.New("derive.trigger.batch must not be negative")
+	}
+	if err := settings.Maintain.Arbiter.validate(); err != nil {
+		return err
 	}
 	switch chat.FactStrategy(settings.Fact.Strategy) {
 	case chat.StrategyNone, chat.StrategySimple, chat.StrategyRich:
@@ -552,6 +703,9 @@ func (settings Settings) Validate() error {
 	}
 	if settings.Chunk.MaxRunes > knowledge.MaxChunkRunes {
 		return fmt.Errorf("chunk.max_runes must not exceed %d", knowledge.MaxChunkRunes)
+	}
+	if settings.Document.MaxRunes <= 0 || settings.Document.MaxRunes > corememory.MaxDocumentRunes {
+		return fmt.Errorf("document.max_runes must be positive and must not exceed %d", corememory.MaxDocumentRunes)
 	}
 	// The block's bound holds whether or not it is served: a block store
 	// written under one setting and read under another must not be the place

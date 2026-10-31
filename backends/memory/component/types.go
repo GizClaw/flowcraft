@@ -113,10 +113,18 @@ type ProducerIdentity struct {
 	// the state was written before lanes stamped one, which is itself a
 	// version: the producer that wrote it is unknown, not current.
 	Version string
+	// Mixed reports that the scope's shards were written by more than one
+	// producer. There is then no single version to report, so Version stays
+	// empty and every "is this the current producer" comparison fails: the
+	// state a read serves is a blend, and a rebuild is what converges it.
+	Mixed bool
 	// SourceDigest and BuildDigest are the cumulative digests of the active
-	// manifest: the chain of indexed inputs and the chain of builds.
+	// state: the root over the shards' chains of indexed inputs and of builds.
 	SourceDigest string
 	BuildDigest  string
+	// Shards counts the shards that hold state. It is zero when found is
+	// false and grows with the scope's conversations and datasets.
+	Shards int
 }
 
 // Producer names the state one projection lane produces and reports the
@@ -143,6 +151,86 @@ type Producer interface {
 	OtherStoredNames(context.Context, corememory.Scope) ([]string, error)
 }
 
+// ReclaimResult reports what one lane's reclaim removed: the immutable bases
+// and segments the lane published before and its active manifest stopped
+// pointing at. It counts objects rather than bytes because a sweep deletes by
+// key: measuring what it removes would read the storage the sweep exists to
+// give up, and a host that wants the size stats the workspace it owns.
+type ReclaimResult struct {
+	// Bases counts the full snapshots removed.
+	Bases int `json:"bases"`
+	// Segments counts the incremental deltas removed.
+	Segments int `json:"segments"`
+}
+
+// Empty reports whether the sweep found nothing to remove.
+func (result ReclaimResult) Empty() bool { return result.Bases == 0 && result.Segments == 0 }
+
+// Reclaimer reclaims the storage a projection lane no longer serves.
+//
+// A lane publishes immutable bases and segments and moves one manifest at
+// them, so every publication that rewrites the shape -- a compaction, a
+// rebuild -- leaves the state it replaced unreachable but stored. Nothing
+// reads it: the manifest is the only pointer, and it names what is current.
+// Reclaiming is unreachability, not erasure of authority: a lane reads its
+// manifest, and a rebuild writes again what a sweep removed.
+type Reclaimer interface {
+	// ReclaimSuperseded removes the objects of one scope this lane's active
+	// manifest does not reference. It is idempotent -- a retried sweep finds
+	// less to remove -- and it reports what it removed.
+	//
+	// It expects the lane's single writer to be held off, which is the same
+	// discipline every publication to the lane already needs: a manifest this
+	// sweep read while another writer replaced it would name the objects that
+	// writer is about to publish.
+	ReclaimSuperseded(context.Context, corememory.Scope) (ReclaimResult, error)
+}
+
+// LegacyLayout names one projection layout version a scope still holds state
+// under, together with the number of keys a sweep removed from it.
+type LegacyLayout struct {
+	Version string `json:"version"`
+	Keys    int    `json:"keys"`
+}
+
+// LegacyReclaimResult reports what one lane's legacy-layout sweep removed.
+//
+// It counts keys rather than bases and segments because a layout this build
+// does not read is not one whose object types it knows: the sweep deletes a
+// subtree, not the artifacts of a protocol it can parse.
+type LegacyReclaimResult struct {
+	// Layouts lists the versions the sweep found state under, in the order it
+	// swept them, with the keys it removed from each.
+	Layouts []LegacyLayout `json:"layouts,omitempty"`
+	// Keys counts the keys removed across versions.
+	Keys int `json:"keys"`
+}
+
+// Empty reports whether the sweep found nothing to remove.
+func (result LegacyReclaimResult) Empty() bool { return result.Keys == 0 }
+
+// LegacyLayoutReclaimer reclaims the state a lane's family holds under a
+// projection layout this build does not read.
+//
+// A layout is a segment of every key the family writes, so a build that bumps
+// it leaves the tree of the version it replaced behind: the lanes of this build
+// read the one layout they write, and every sweep of a lane stops at its own
+// root inside that layout. This is the sweep that reaches the others, and it is
+// the only one that deletes state no build in this tree can read.
+//
+// It is separate from Reclaimer because the two answer different questions.
+// ReclaimSuperseded keeps what a manifest names, so it deletes only what a
+// rebuild could publish again under the same layout; a lane that skipped a
+// legacy version would leave a tree that a rollback to an earlier build still
+// serves. A host calls this one when it has decided no rollback is coming.
+type LegacyLayoutReclaimer interface {
+	// ReclaimLegacyLayouts removes one scope's state under every layout
+	// version this build does not read, and reports what it removed. It is
+	// idempotent -- a retried sweep finds less to remove -- and it touches no
+	// other scope, because the partition is the same in every version.
+	ReclaimLegacyLayouts(context.Context, corememory.Scope) (LegacyReclaimResult, error)
+}
+
 // DocumentAddress qualifies a document within one hard scope.
 type DocumentAddress struct {
 	DatasetID  string `json:"dataset_id"`
@@ -163,8 +251,18 @@ func (address DocumentAddress) Key() string { return address.DatasetID + "\x00" 
 
 // ProjectionDelta mutates only changed projection records. DeleteDocuments
 // removes every active item belonging to each qualified tombstoned document.
+//
+// Shard names the one shard the delta writes to. A delta is always addressed,
+// never mixed: every upsert it carries belongs to that address family and the
+// ids it deletes are ids of that shard, which is what lets the store route a
+// delete without an id-to-shard catalog. The caller knows the address -- it is
+// processing one conversation's commit or one document event -- so saying it
+// is cheaper and stricter than making the store infer it from the upserts,
+// and a delete-only delta (a retired generation) has no upsert to infer from.
 type ProjectionDelta struct {
-	Scope              corememory.Scope
+	Scope corememory.Scope
+	// Shard is required for every delta, including one that only deletes.
+	Shard              string
 	Projection         string
 	Upserts            []Artifact
 	DeleteIDs          []string
@@ -173,6 +271,38 @@ type ProjectionDelta struct {
 	ActiveIDs          []string
 	SourceRevision     string
 	SourceDigest       string
+}
+
+// ValidateShard checks that the delta names one shard and that everything it
+// carries belongs to it. A delta spanning two addresses is refused: its
+// deletes would have to reach a shard the delta does not name.
+func (delta ProjectionDelta) ValidateShard() error {
+	if strings.TrimSpace(delta.Shard) == "" {
+		return errors.New("memory component: projection delta shard is required")
+	}
+	for _, artifact := range delta.Upserts {
+		shard, err := ShardForAddress(AddressFromArtifact(artifact))
+		if err != nil {
+			return fmt.Errorf("memory component: projection delta artifact %q: %w", artifact.ID, err)
+		}
+		if shard != delta.Shard {
+			return fmt.Errorf("memory component: projection delta writes artifact %q to shard %q, not %q",
+				artifact.ID, shard, delta.Shard)
+		}
+	}
+	for _, addresses := range [][]DocumentAddress{delta.DeleteDocuments, delta.ReconcileDocuments} {
+		for _, address := range addresses {
+			shard, err := DatasetShard(address.DatasetID)
+			if err != nil {
+				return fmt.Errorf("memory component: projection delta document %q: %w", address.DocumentID, err)
+			}
+			if shard != delta.Shard {
+				return fmt.Errorf("memory component: projection delta writes document %q of %q to shard %q, not %q",
+					address.DocumentID, address.DatasetID, shard, delta.Shard)
+			}
+		}
+	}
+	return nil
 }
 
 func (delta ProjectionDelta) ValidateDocumentAddresses() error {

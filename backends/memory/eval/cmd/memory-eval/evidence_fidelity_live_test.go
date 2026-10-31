@@ -30,8 +30,8 @@ func TestEvidenceFidelity(t *testing.T) {
 		t.Fatal(err)
 	}
 	loadEnvFile(envPath)
-	if os.Getenv("DEEPSEEK_API_KEY") == "" || os.Getenv("ARK_API_KEY") == "" {
-		t.Skip("DEEPSEEK_API_KEY and ARK_API_KEY are required")
+	if os.Getenv("GATEWAY_API_KEY") == "" {
+		t.Skip("GATEWAY_API_KEY is required")
 	}
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to measure live evidence fidelity")

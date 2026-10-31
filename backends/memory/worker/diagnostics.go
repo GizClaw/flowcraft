@@ -12,9 +12,15 @@ import (
 
 // Stats is a snapshot of one processor's cumulative counters.
 type Stats struct {
-	CommitsProcessed       int64 `json:"commits_processed"`
-	FactsPublished         int64 `json:"facts_published"`
-	DocumentsProcessed     int64 `json:"documents_processed"`
+	CommitsProcessed   int64 `json:"commits_processed"`
+	FactsPublished     int64 `json:"facts_published"`
+	DocumentsProcessed int64 `json:"documents_processed"`
+	// DocumentsRefused counts the documents the knowledge line would not
+	// derive -- above the text or the artifact ceiling -- that a pass stepped
+	// over. The stream moves past them so one oversized document cannot stop
+	// the scope's other documents; this counter and the pass's error are how a
+	// host learns it happened.
+	DocumentsRefused       int64 `json:"documents_refused"`
 	ChunksPublished        int64 `json:"chunks_published"`
 	IndexDeltasApplied     int64 `json:"index_deltas_applied"`
 	GenerationConvergences int64 `json:"generation_convergences"`

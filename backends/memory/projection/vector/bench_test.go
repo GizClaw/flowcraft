@@ -11,7 +11,7 @@ import (
 )
 
 // BenchmarkSearchSnapshotScaling measures what an exact scan costs as one
-// scope's table grows, and how much of that cost is the ordering. It is the
+// shard's table grows, and how much of that cost is the ordering. It is the
 // reading an approximate index would replace: the per-entry slope is the
 // portable number, the absolute times belong to the machine that ran it. The
 // limit dimension is the difference between the two shapes a scan is asked

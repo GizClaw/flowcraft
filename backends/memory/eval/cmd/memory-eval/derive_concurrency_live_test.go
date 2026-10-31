@@ -41,8 +41,8 @@ func TestDeriveConcurrencyLiveMatchesSequential(t *testing.T) {
 		t.Fatal(err)
 	}
 	loadEnvFile(envPath)
-	if os.Getenv("DEEPSEEK_API_KEY") == "" || os.Getenv("ARK_API_KEY") == "" {
-		t.Skip("DEEPSEEK_API_KEY and ARK_API_KEY are required")
+	if os.Getenv("GATEWAY_API_KEY") == "" {
+		t.Skip("GATEWAY_API_KEY is required")
 	}
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		// Opt-in so an ordinary `go test ./...` / `make ci` neither pays for
@@ -139,8 +139,8 @@ func TestCoIngestedConversationsDoNotChangeRetrieval(t *testing.T) {
 	}
 	envPath := liveEnvFile(t)
 	loadEnvFile(envPath)
-	if os.Getenv("DEEPSEEK_API_KEY") == "" || os.Getenv("ARK_API_KEY") == "" {
-		t.Skip("DEEPSEEK_API_KEY and ARK_API_KEY are required")
+	if os.Getenv("GATEWAY_API_KEY") == "" {
+		t.Skip("GATEWAY_API_KEY is required")
 	}
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to run the credentialed retrieval check")

@@ -17,7 +17,7 @@ func newIdentityStore(t *testing.T, kvStore storage.Store, producerVersion strin
 	t.Helper()
 	store, err := NewTypedStore(kvStore, "test", TypedOptions[map[string]bool, map[string]bool]{
 		ProducerVersion: producerVersion,
-		Thresholds:      Thresholds{MaxSegments: maxSegments, MaxDeltaBytes: 1 << 20},
+		Thresholds:      Thresholds{MaxSegments: maxSegments, MinDeltaBytes: 1 << 20},
 		Apply: func(base *map[string]bool, delta map[string]bool) error {
 			for key, value := range delta {
 				(*base)[key] = value
@@ -51,7 +51,7 @@ func TestProducerVersionSurvivesDeltasAndCompaction(t *testing.T) {
 	}
 	store := newIdentityStore(t, kvStore, "lane-v1", 1)
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", map[string]bool{"base": true}, "source"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", map[string]bool{"base": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
 	if version := identityOf(t, store, scope, "index").Version; version != "lane-v1" {
@@ -60,11 +60,11 @@ func TestProducerVersionSurvivesDeltasAndCompaction(t *testing.T) {
 	// The first delta fits the segment budget, the second exceeds it and
 	// compacts, which is the write path that republishes the base.
 	for _, delta := range []map[string]bool{{"first": true}, {"second": true}} {
-		if _, err := store.ApplyDelta(ctx, scope, "index", delta, "revision", "input"); err != nil {
+		if _, err := store.ApplyDelta(ctx, testAddress(scope), "index", delta, "revision", "input"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	manifest, found, err := store.loadManifestLocked(ctx, scope, "index")
+	manifest, found, err := store.loadManifestLocked(ctx, testAddress(scope), "index")
 	if err != nil || !found {
 		t.Fatalf("manifest = %#v, %v, %v", manifest, found, err)
 	}
@@ -91,10 +91,10 @@ func TestUnstampedStateReadsAsUnknownUntilRebuilt(t *testing.T) {
 	}
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	legacy := newIdentityStore(t, kvStore, "", 1)
-	if err := legacy.FullRebuild(ctx, scope, "index", map[string]bool{"base": true}, "source"); err != nil {
+	if err := legacy.FullRebuild(ctx, testAddress(scope), "index", map[string]bool{"base": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := kvStore.Get(ctx, legacy.activePath(scope, "index"))
+	raw, err := kvStore.Get(ctx, legacy.activePath(testAddress(scope), "index"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +105,13 @@ func TestUnstampedStateReadsAsUnknownUntilRebuilt(t *testing.T) {
 	if version := identityOf(t, current, scope, "index").Version; version != "" {
 		t.Fatalf("unstamped state reported version %q", version)
 	}
-	if _, err := current.ApplyDelta(ctx, scope, "index", map[string]bool{"later": true}, "revision", "input"); err != nil {
+	if _, err := current.ApplyDelta(ctx, testAddress(scope), "index", map[string]bool{"later": true}, "revision", "input"); err != nil {
 		t.Fatal(err)
 	}
 	if version := identityOf(t, current, scope, "index").Version; version != "" {
 		t.Fatalf("a delta apply stamped unstamped state as %q", version)
 	}
-	if err := current.FullRebuild(ctx, scope, "index", map[string]bool{"rebuilt": true}, "source"); err != nil {
+	if err := current.FullRebuild(ctx, testAddress(scope), "index", map[string]bool{"rebuilt": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
 	if version := identityOf(t, current, scope, "index").Version; version != "lane-v2" {
@@ -122,12 +122,14 @@ func TestUnstampedStateReadsAsUnknownUntilRebuilt(t *testing.T) {
 // legacyManifest is the manifest a build without the producer stamp writes:
 // the same fields in the same order, minus that one. Such a build drops the
 // field when it unmarshals, so the identity it recomputes is the digest of
-// exactly these bytes.
+// exactly these bytes. It carries the address fields, because those are what
+// the state is rather than who wrote it.
 type legacyManifest struct {
 	SchemaVersion    int              `json:"schema_version"`
 	StorageVersion   string           `json:"storage_version"`
 	Projection       string           `json:"projection"`
 	Scope            corememory.Scope `json:"scope"`
+	Shard            string           `json:"shard"`
 	Base             *BaseRef         `json:"base,omitempty"`
 	Segments         []SegmentRef     `json:"segments"`
 	BaseSourceDigest string           `json:"base_source_digest"`
@@ -151,10 +153,10 @@ func TestManifestIdentitySurvivesAReaderWithoutTheStamp(t *testing.T) {
 	}
 	store := newIdentityStore(t, kvStore, "lane-v1", 1)
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", map[string]bool{"base": true}, "source"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", map[string]bool{"base": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
-	manifest, found, err := store.loadManifestLocked(ctx, scope, "index")
+	manifest, found, err := store.loadManifestLocked(ctx, testAddress(scope), "index")
 	if err != nil || !found {
 		t.Fatalf("manifest = %#v, %v, %v", manifest, found, err)
 	}
@@ -163,7 +165,8 @@ func TestManifestIdentitySurvivesAReaderWithoutTheStamp(t *testing.T) {
 	}
 	encoded, err := json.Marshal(legacyManifest{
 		SchemaVersion: manifest.SchemaVersion, StorageVersion: manifest.StorageVersion,
-		Projection: manifest.Projection, Scope: manifest.Scope, Base: manifest.Base,
+		Projection: manifest.Projection, Scope: manifest.Scope, Shard: manifest.Shard,
+		Base:     manifest.Base,
 		Segments: manifest.Segments, BaseSourceDigest: manifest.BaseSourceDigest,
 		SourceDigest: manifest.SourceDigest, BuildDigest: manifest.BuildDigest,
 		BaseLastApplied: manifest.BaseLastApplied, LastApplied: manifest.LastApplied,

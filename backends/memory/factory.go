@@ -57,19 +57,6 @@ type factoryOptions struct {
 	deriverVersion string
 }
 
-// vectorCacheLimits maps the configured bounds onto the lane's own. An absent
-// block is no bound: the lane keeps every scope's table it reads, which is what
-// it did before the bounds existed.
-func vectorCacheLimits(settings *VectorCacheSettings) vector.CacheLimits {
-	if settings == nil {
-		return vector.CacheLimits{}
-	}
-	return vector.CacheLimits{
-		Scopes:  settings.MaxCachedScopes,
-		Entries: settings.MaxEntriesPerScope,
-	}
-}
-
 // deriverPolicy is the policy contribution of a caller-supplied deriver. The
 // built-in settings-driven extractor contributes nothing (its algorithm
 // versions are already part of the digest); any override contributes at least
@@ -219,6 +206,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 			Sections: settings.Chunk.Summary.Sections,
 			MaxRunes: settings.Chunk.Summary.MaxRunes,
 		},
+		MaxDocumentRunes: settings.Document.MaxRunes,
 	})
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: knowledge chunker: %w", err))
@@ -253,6 +241,26 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	// a pass with its own stamp wrote, so the service that plans and the store
 	// that serves have to name the same pass.
 	maintainConfig := maintain.Config{}
+	if !settings.Maintain.Arbiter.isZero() {
+		// The arbiter is the pass's third rule, so it is configured with the
+		// pass and stamped into its overlay: the store serves only the
+		// judgments of a pass that names the same arbiter, which is why a
+		// deployment cannot switch models without the scope's overlay being
+		// re-judged.
+		maintainConfig.Arbiter = &maintain.DecisionArbiter{
+			Decisions:   engine,
+			Model:       settings.Maintain.Arbiter.ref(),
+			Threshold:   settings.Maintain.Arbiter.Threshold,
+			Batch:       settings.Maintain.Arbiter.Batch,
+			Concurrency: settings.Maintain.Arbiter.Concurrency,
+		}
+		maintainConfig.ArbiterBudget = settings.Maintain.Arbiter.Budget
+		// The ceiling is kept as configured (zero means the pass's default),
+		// so a deployment that raised it reads and writes the same store the
+		// pass that filled it did. It bounds what is remembered rather than
+		// what is judged, so it is not part of the pass's stamp.
+		maintainConfig.ArbiterRemember = settings.Maintain.Arbiter.Remember
+	}
 	// The receipt store is shared by the two halves of the reinforcement
 	// loop: the retrieval provider writes a receipt after it packs a result,
 	// and the maintenance pass reads them back to tell a fact that keeps
@@ -331,10 +339,15 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	}
 	indexers := make([]worker.ProjectionIndexer, 0, len(projections))
 	auditors := make([]projectionAuditor, 0, len(projections))
+	reclaimers := make([]maintain.ProjectionReclaimer, 0, len(projections))
 	for _, lane := range projections {
 		indexers = append(indexers, lane.workerIndexer())
 		auditors = append(auditors, projectionAuditor{Name: lane.Name, Auditor: lane.Auditor, Producer: lane.Producer})
+		reclaimers = append(reclaimers, maintain.ProjectionReclaimer{Name: lane.Name, Reclaimer: lane.Reclaimer})
 	}
+	// A maintenance pass reclaims what each lane compacted away, beside the
+	// document builds it reclaims: both are derived storage no manifest names.
+	maintainService.Projections = reclaimers
 	// The summary branch is a first-class fusion lane. Appending its
 	// candidates after fusion (as an earlier revision did) skipped lane
 	// calibration and weighting, so its raw lexical ratios were not
@@ -444,6 +457,7 @@ func (f factory) New(ctx context.Context, in resource.Input) (*Assembly, error) 
 	}
 	assembly, err := newAssembly(
 		messages, documents, documentViews, facts, summaries, catalog, seeds, settings.Recent,
+		settings.Document.MaxRunes,
 		retrievalSummary,
 		provider, processor, maintainService, interval, clock, closers,
 		buildVerifier(facts, summaries, auditors),
@@ -482,9 +496,9 @@ func resolveInference(in resource.Input, settings Settings) (*inference.Assembly
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("memory config: %w", err))
 	}
-	if (!settings.Generate.isZero() || !settings.Embed.isZero()) && engine == nil {
+	if (!settings.Generate.isZero() || !settings.Embed.isZero() || !settings.Maintain.Arbiter.isZero()) && engine == nil {
 		return nil, errdefs.Validationf(
-			"memory config: dependency %q is required when generate or embed models are configured", "inference")
+			"memory config: dependency %q is required when generate, embed, or arbiter models are configured", "inference")
 	}
 	return engine, nil
 }
@@ -623,6 +637,7 @@ func collectVerifyEvidence(
 			}
 			if stored {
 				entry.StoredProducer = identity.Version
+				entry.Mixed = identity.Mixed
 			}
 		}
 		evidence.Projections = append(evidence.Projections, entry)
@@ -676,6 +691,8 @@ func buildLaneStatus(
 			if found {
 				status.Stored = true
 				status.StoredProducer = identity.Version
+				status.Shards = identity.Shards
+				status.Mixed = identity.Mixed
 				status.Stale = identity.Version != status.ExpectedProducer
 			}
 			// State under another name is what this lane's own manifest
@@ -815,6 +832,10 @@ type projectionLane struct {
 	Auditor   component.Auditor
 	Producer  component.Producer
 	Rebuilder component.FullRebuilder
+	// Reclaimer reclaims the objects this lane compacted or rebuilt away. Every
+	// lane that stores anything implements it; the field is kept optional so a
+	// lane that stores nothing outside its manifest needs no sweep.
+	Reclaimer component.Reclaimer
 	// RebuildNeedsInference marks a lane whose rebuild embeds every artifact
 	// again, so a repair that was not asked for that lane leaves it alone.
 	RebuildNeedsInference bool
@@ -824,24 +845,47 @@ func (lane projectionLane) workerIndexer() worker.ProjectionIndexer {
 	return worker.ProjectionIndexer{Name: lane.Name, Indexer: lane.Indexer}
 }
 
+// laneThresholds is the compaction policy every lane runs with: the configured
+// fields, with the store's own defaults standing in for the ones left at zero.
+// The three lanes alias the store's type, so one value configures all of them.
+func laneThresholds(settings Settings) bm25.Thresholds {
+	var thresholds bm25.Thresholds
+	if compaction := settings.Lanes.Compaction; compaction != nil {
+		thresholds.MaxSegments = compaction.MaxSegments
+		thresholds.MinDeltaBytes = compaction.MinDeltaBytes
+		thresholds.Ratio = compaction.Ratio
+	}
+	return thresholds
+}
+
 func buildProjections(
 	settings Settings,
 	kvStore storage.Store,
 	engine *inference.Assembly,
 ) ([]projectionLane, []fusion.Lane, *vector.Index, error) {
+	// What one lane's store may keep decoded. An absent block leaves the
+	// store's own budget in charge.
+	var budget int64
+	if cache := settings.Lanes.Cache; cache != nil {
+		budget = cache.MaxBytes
+	}
+	thresholds := laneThresholds(settings)
 	bm25Index, err := bm25.New(bm25.Config{
 		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
+		CacheBytes: budget, Thresholds: thresholds,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	entityIndex, err := entity.New(entity.Config{KV: kvStore, Projection: settings.Projection})
+	entityIndex, err := entity.New(entity.Config{
+		KV: kvStore, Projection: settings.Projection, CacheBytes: budget, Thresholds: thresholds,
+	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	projections := []projectionLane{
-		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index},
-		{Name: "entity", Indexer: entityIndex, Auditor: entityIndex, Producer: entityIndex, Rebuilder: entityIndex},
+		{Name: "bm25", Indexer: bm25Index, Auditor: bm25Index, Producer: bm25Index, Rebuilder: bm25Index, Reclaimer: bm25Index},
+		{Name: "entity", Indexer: entityIndex, Auditor: entityIndex, Producer: entityIndex, Rebuilder: entityIndex, Reclaimer: entityIndex},
 	}
 	lanes := []fusion.Lane{
 		{Name: "bm25", Searcher: bm25Index, Weight: settings.Lanes.BM25.Weight, Calibrator: fusion.BM25QuerySigmoid{}},
@@ -852,14 +896,14 @@ func buildProjections(
 	}
 	vectorIndex, err := vector.New(vector.Config{
 		KV: kvStore, Runtime: engine, Model: settings.Embed.ref(), Projection: settings.Projection,
-		Limits: vectorCacheLimits(settings.Lanes.VectorCache),
+		CacheBytes: budget, Thresholds: thresholds,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	projections = append(projections, projectionLane{
 		Name: "vector", Indexer: vectorIndex, Auditor: vectorIndex, Producer: vectorIndex,
-		Rebuilder: vectorIndex, RebuildNeedsInference: true,
+		Rebuilder: vectorIndex, Reclaimer: vectorIndex, RebuildNeedsInference: true,
 	})
 	lanes = append(lanes, fusion.Lane{
 		Name: "vector", Searcher: vectorIndex, Weight: settings.Lanes.Vector.Weight, Calibrator: fusion.Cosine{},

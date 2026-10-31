@@ -1,0 +1,120 @@
+version: v1
+
+# The arbiter probe document: the same gateway credential as deploy.yaml,
+# plus the decision surface the arbiter asks.
+#
+# deploy.yaml describes the deployment a harness run measures, and one of its
+# choices makes it the wrong document for a lane that measures one surface: its
+# memories block leaves `maintain.arbiter` out, which is the shipped default and
+# not something a harness run should pay for. This document is the same
+# deployment with the arbiter turned on, and with nothing else added: the
+# models are the gateway's own, so a probe lane needs GATEWAY_API_KEY and no
+# second vendor.
+#
+# It is deliberately minimal (no rerank, no profile pass, no lane cache)
+# because the readings it supports are about the arbiter's path, not about
+# retrieval; numbers taken here are not comparable with a harness run's, and
+# the report has to name the document it was built from for exactly that
+# reason.
+#
+# The workspace root is a variable because a probe lane must write into the
+# temporary directory it will delete, not into the checkout.
+resources:
+  ws:
+    kind: workspace.Workspace
+    impl: local
+    settings:
+      root: ${env:MEMORY_EVAL_WORKSPACE}
+
+  secrets:
+    kind: secret.Store
+    impl: env
+    settings:
+      id: env
+      default: true
+
+  gateway:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: gateway
+      spec:
+        # The responses surface: the fact extractor asks for a json_schema
+        # response format, and the chat surface rejects it at runtime.
+        api: responses
+        endpoint:
+          base_url: https://ai.haivivi.cn/v1
+        wire:
+          reasoning_channel: text
+        models:
+          - name: deepseek-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image]
+              outputs: [text]
+          # The decision surface, which is what this document exists for:
+          # the arbiter asks one choice question per candidate pair and reads
+          # the answers back in question order.
+          - name: azure-decision
+            kind: decision
+            capabilities:
+              inputs: [text]
+      profiles:
+        - secrets:
+            api_key: ${env:GATEWAY_API_KEY}
+
+  # The vector lane's embed model, on the Ark wire as in deploy.yaml: the
+  # gateway's text `/v1/embeddings` route answers 403 for every name, and the
+  # multimodal route is what carries the turns' images.
+  bytedance:
+    kind: inference.Provider
+    impl: bytedance
+    settings:
+      id: bytedance
+      spec:
+        base_url: https://ai.haivivi.cn/v1
+        models:
+          - name: doubao-embedding-vision
+            kind: embed
+            capabilities:
+              inputs: [text, image]
+            limits:
+              max_input_tokens: 8191
+      profiles:
+        - secrets:
+            api_key: ${env:GATEWAY_API_KEY}
+
+  infer:
+    kind: inference.Assembly
+    impl: unified
+    deps:
+      provider.gateway: gateway
+      provider.bytedance: bytedance
+
+  memories:
+    kind: memory.Assembly
+    impl: flowcraft
+    deps:
+      workspace: ws
+      inference: infer
+    settings:
+      storage:
+        log: {driver: workspace}
+        kv: {driver: workspace}
+      # Sampling is pinned for the same reason deploy.yaml pins it: every
+      # unpinned generate call is a sample, and the facts a pass scans have to
+      # be the facts the last derivation wrote.
+      generate: {provider: gateway, name: deepseek-flash, temperature: 0}
+      embed: {provider: bytedance, name: doubao-embedding-vision}
+      scopes:
+        - {runtime_id: memories}
+      interval: "0"
+      recent: {max_items: 8}
+      fact: {strategy: rich, max_facts: 16}
+      summary: {disabled: true}
+      # The surface this document exists for. The budget is small on purpose:
+      # a probe derives two conversations, so a pass has a handful of pairs,
+      # and a budget large enough to hide a scan that proposes everything
+      # would not measure anything.
+      maintain:
+        arbiter: {provider: gateway, name: azure-decision, threshold: 0.75, budget: 16}

@@ -95,7 +95,12 @@ func seedStaleBM25Lane(
 			ContentDigest: strings.Repeat("0", 64),
 		}},
 	}
-	if err := store.FullRebuild(ctx, scope, projection, snapshot, "legacy-source-digest"); err != nil {
+	shard, err := component.ConversationShard(conversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FullRebuild(ctx, projectionstore.Address{Scope: scope, Shard: shard},
+		projection, snapshot, "legacy-source-digest"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -153,6 +158,13 @@ func TestLaneStatusReportsTheStoredProducer(t *testing.T) {
 			t.Fatalf("lane derived by the running producer reported %+v", lane)
 		}
 	}
+	// One conversation wrote one shard per lane: that count is what a
+	// footprint reading is read against, so it is reported beside the version.
+	for _, name := range []string{"bm25", "entity"} {
+		if lane := laneNamed(t, lanes, name); lane.Shards != 1 {
+			t.Fatalf("%s shards = %d, want 1", name, lane.Shards)
+		}
+	}
 	if lane := laneNamed(t, lanes, "bm25"); lane.ExpectedProducer != "okapi-bm25-v2+k1=1.2,b=0.75" {
 		t.Fatalf("bm25 expected producer = %q", lane.ExpectedProducer)
 	}
@@ -197,5 +209,54 @@ func TestLaneStatusReportsTheStoredProducer(t *testing.T) {
 	}
 	if stale := laneNamed(t, diagnostics.Scopes[0].Lanes, "bm25"); !stale.Stale {
 		t.Fatalf("assembly diagnostics reported %+v", stale)
+	}
+}
+
+// A scope whose shards carry two producer versions has no single stored
+// version to report, and reporting one of them would claim the state is more
+// converged than it is: the lane reports none, marks the state mixed, and the
+// verify plan names the mixture instead of calling the state unstamped.
+func TestLaneStatusReportsShardsWrittenByDifferentProducers(t *testing.T) {
+	ctx := context.Background()
+	assembly, ws, factID := derivedLaneAssembly(t)
+	// A second conversation is written by the running producer while the first
+	// one's shard is replaced by an earlier producer's below.
+	turn := corememory.Turn{
+		Scope: testScope(), ConversationID: "conv-2", IdempotencyKey: "run-2",
+		Messages: []coremessage.Message{textMessage(coremessage.RoleUser, "再见世界")},
+	}
+	if err := assembly.CommitTurn(ctx, turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := assembly.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seedStaleBM25Lane(t, ws, testScope(), "facts", "conv-1", factID, "你好世界")
+
+	lanes, err := assembly.LaneStatus(ctx, testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm25 := laneNamed(t, lanes, "bm25")
+	if !bm25.Stored || !bm25.Mixed || !bm25.Stale || bm25.StoredProducer != "" || bm25.Shards != 2 {
+		t.Fatalf("a mixed lane reported %+v", bm25)
+	}
+	if entity := laneNamed(t, lanes, "entity"); entity.Mixed || entity.Shards != 2 {
+		t.Fatalf("a single-producer lane reported %+v", entity)
+	}
+
+	plan, err := assembly.Verify(ctx, testScope(), "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed := false
+	for _, action := range plan.Actions {
+		if action.Kind == "rebuild" && action.Target == "projection:bm25" &&
+			strings.Contains(action.Evidence, "shards written by more than one producer") {
+			mixed = true
+		}
+	}
+	if !mixed {
+		t.Fatalf("verify plan did not report the mixture: %+v", plan.Actions)
 	}
 }

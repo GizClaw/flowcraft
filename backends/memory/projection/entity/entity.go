@@ -20,6 +20,7 @@ import (
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	corememory "github.com/GizClaw/flowcraft/core/memory"
 	corebm25 "github.com/GizClaw/flowcraft/core/utils/bm25"
 )
@@ -51,6 +52,9 @@ type Config struct {
 	KV         storage.Store
 	Projection string
 	Thresholds projectionstore.Thresholds
+	// CacheBytes bounds the tables the store behind this lane keeps decoded.
+	// Zero uses the store's default budget.
+	CacheBytes int64
 }
 
 type Index struct {
@@ -95,6 +99,7 @@ var _ component.Searcher = (*Index)(nil)
 var _ component.DeltaIndexer = (*Index)(nil)
 var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Producer = (*Index)(nil)
+var _ component.Reclaimer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if strings.TrimSpace(config.Projection) == "" {
@@ -105,6 +110,8 @@ func New(config Config) (*Index, error) {
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			ProducerVersion: AlgorithmVersion,
 			Thresholds:      config.Thresholds,
+			MaxBytes:        config.CacheBytes,
+			BaseBytes:       tableBytes,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
@@ -144,21 +151,64 @@ func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope
 	return index.store.OtherNames(ctx, scope, index.projection)
 }
 
+// ReclaimSuperseded removes the bases and segments the lane compacted or
+// rebuilt away, keeping the one the active manifest names. The entity lane
+// names its storage after the projection setting alone, so the sweep is exactly
+// the lane's own area: no generation of this family is something the lane is
+// not.
+func (index *Index) ReclaimSuperseded(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ReclaimResult, error) {
+	return index.store.Reclaim(ctx, scope, index.projection)
+}
+
+// ReclaimLegacyLayouts removes the state this lane's family holds for one scope
+// under a projection layout this build does not read.
+func (index *Index) ReclaimLegacyLayouts(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.LegacyReclaimResult, error) {
+	return index.store.ReclaimLegacyLayouts(ctx, scope)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
-	entries := make([]entry, 0, len(request.Artifacts))
-	for i, artifact := range request.Artifacts {
+	groups, err := component.GroupArtifactsByShard(request.Artifacts)
+	if err != nil {
+		return fmt.Errorf("entity projection: %w", err)
+	}
+	covered := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		entries, err := index.buildEntries(group.Artifacts)
+		if err != nil {
+			return err
+		}
+		if err := index.store.FullRebuild(ctx,
+			projectionstore.Address{Scope: request.Scope, Shard: group.Shard}, index.projection,
+			snapshot{Entries: entries}, entriesDigest(entries)); err != nil {
+			return err
+		}
+		covered[group.Shard] = struct{}{}
+	}
+	return index.dropUncoveredShards(ctx, request.Scope, covered)
+}
+
+// buildEntries turns one shard's artifacts into its entries, sorted by ID.
+func (index *Index) buildEntries(artifacts []component.Artifact) ([]entry, error) {
+	entries := make([]entry, 0, len(artifacts))
+	for i, artifact := range artifacts {
 		if err := artifact.Validate(); err != nil {
-			return fmt.Errorf("entity projection: artifact %d: %w", i, err)
+			return nil, fmt.Errorf("entity projection: artifact %d: %w", i, err)
 		}
 		entities := normalizeEntities(artifact.Entities)
 		if len(entities) == 0 {
 			var err error
 			entities, err = parseEntities(artifact.Metadata["entities"])
 			if err != nil {
-				return fmt.Errorf("entity projection: artifact %q entities: %w", artifact.ID, err)
+				return nil, fmt.Errorf("entity projection: artifact %q entities: %w", artifact.ID, err)
 			}
 		}
 		if len(entities) == 0 {
@@ -166,7 +216,7 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 		}
 		address := component.AddressFromArtifact(artifact)
 		if err := address.Validate(); err != nil {
-			return fmt.Errorf("entity projection: artifact %q address: %w", artifact.ID, err)
+			return nil, fmt.Errorf("entity projection: artifact %q address: %w", artifact.ID, err)
 		}
 		entries = append(entries, entry{
 			ID: artifact.ID, Name: string(artifact.Kind), Entities: entities,
@@ -174,8 +224,19 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
-	return index.store.FullRebuild(ctx, request.Scope, index.projection,
-		snapshot{Entries: entries}, entriesDigest(entries))
+	return entries, nil
+}
+
+// dropUncoveredShards removes the shards a scope-wide rebuild did not publish.
+func (index *Index) dropUncoveredShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	covered map[string]struct{},
+) error {
+	if _, err := index.store.PruneShards(ctx, scope, index.projection, covered); err != nil {
+		return fmt.Errorf("entity projection: %w", err)
+	}
+	return nil
 }
 
 func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDelta) error {
@@ -184,6 +245,9 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	}
 	if err := index.validateRequest(component.ProjectionRequest{Scope: delta.Scope, Projection: delta.Projection}); err != nil {
 		return err
+	}
+	if err := delta.ValidateShard(); err != nil {
+		return fmt.Errorf("entity projection: %w", err)
 	}
 	upserts := make([]entry, 0, len(delta.Upserts))
 	deleteIDs := append([]string(nil), delta.DeleteIDs...)
@@ -213,7 +277,8 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 			Metadata: artifact.Metadata.Clone(),
 		})
 	}
-	_, err := index.store.ApplyDelta(ctx, delta.Scope, index.projection,
+	_, err := index.store.ApplyDelta(ctx,
+		projectionstore.Address{Scope: delta.Scope, Shard: delta.Shard}, index.projection,
 		projectionstore.EntryDelta[entry]{
 			Upserts: upserts, DeleteIDs: deleteIDs,
 			DeleteDocuments:    delta.DeleteDocuments,
@@ -226,42 +291,148 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if err := validateSearch(request); err != nil {
 		return nil, err
 	}
-	build, _, err := index.store.Materialize(ctx, request.Scope, index.projection)
+	selector, err := projectionstore.ParseSelector(request.Metadata)
 	if err != nil {
-		return nil, fmt.Errorf("entity projection: %w", err)
+		return nil, fmt.Errorf("entity projection: selector: %w", err)
 	}
-	queryEntities, idf := selectQueryEntities(request.Query, build.Entries)
+	shards, err := index.searchShards(ctx, request.Scope, selector)
+	if err != nil {
+		return nil, err
+	}
+	if len(shards) == 0 {
+		return []component.Candidate{}, nil
+	}
+	// A plan of one shard is materialized once and both passes read it, so no
+	// write can land between the statistics and the scoring; a plan of several
+	// shards re-reads them because holding them all is the memory the shards
+	// exist to bound. Each shard is read atomically either way.
+	var (
+		single      snapshot
+		singleFound bool
+	)
+	if len(shards) == 1 {
+		single, singleFound, err = index.materialize(ctx, request.Scope, shards[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	load := func(shard string) (snapshot, bool, error) {
+		if len(shards) == 1 {
+			return single, singleFound, nil
+		}
+		return index.materialize(ctx, request.Scope, shard)
+	}
+	// Pass 1 accumulates the scoring set's statistics: how many records the
+	// selector admits and how many of them link each entity. Both are
+	// properties of the set, not of one shard, so they have to be counted
+	// before any record is scored -- a shard scored against its own counts
+	// would weigh the same entity differently from the shard next to it, and
+	// the scores could no longer be compared.
+	documents := 0
+	frequency := make(map[string]int)
+	for _, shard := range shards {
+		build, found, err := load(shard)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		for _, item := range build.Entries {
+			if !selector.Matches(item.Address) {
+				continue
+			}
+			documents++
+			seen := make(map[string]struct{}, len(item.Entities))
+			for _, entity := range item.Entities {
+				if _, duplicate := seen[entity]; duplicate {
+					continue
+				}
+				seen[entity] = struct{}{}
+				frequency[entity]++
+			}
+		}
+	}
+	queryEntities, idf := queryEntitySelection(request.Query, documents, frequency)
 	if len(queryEntities) == 0 {
 		return []component.Candidate{}, nil
 	}
-	results := make([]component.Candidate, 0, len(build.Entries))
-	for _, item := range build.Entries {
-		matches, err := projectionstore.MatchesRequest(request.Metadata, item.Address)
+	// Pass 2 scores the same shards against the statistics pass 1 settled, and
+	// each shard contributes its own best records; the merge keeps the top
+	// limit of the union under the lane's order, which is total, so the result
+	// is the one a single table holding every planned shard would produce.
+	collected := make([][]component.Candidate, 0, len(shards))
+	for _, shard := range shards {
+		build, found, err := load(shard)
 		if err != nil {
-			return nil, fmt.Errorf("entity projection: selector: %w", err)
+			return nil, err
 		}
-		if !matches {
+		if !found {
 			continue
 		}
-		score := entityScore(queryEntities, idf, item.Entities)
-		if score == 0 {
-			continue
+		results := make([]component.Candidate, 0, len(build.Entries))
+		for _, item := range build.Entries {
+			if !selector.Matches(item.Address) {
+				continue
+			}
+			score := entityScore(queryEntities, idf, item.Entities)
+			if score == 0 {
+				continue
+			}
+			results = append(results, component.Candidate{
+				ID: item.ID, Lane: laneName, Name: item.Name, Score: score,
+				Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
+			})
 		}
-		results = append(results, component.Candidate{
-			ID: item.ID, Lane: laneName, Name: item.Name, Score: score,
-			Source: item.Source, Address: item.Address, Metadata: item.Metadata.Clone(),
+		sort.Slice(results, func(i, j int) bool {
+			if results[i].Score == results[j].Score {
+				return results[i].ID < results[j].ID
+			}
+			return results[i].Score > results[j].Score
 		})
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].ID < results[j].ID
+		if request.Limit > 0 && len(results) > request.Limit {
+			results = results[:request.Limit]
 		}
-		return results[i].Score > results[j].Score
-	})
-	if request.Limit > 0 && len(results) > request.Limit {
-		results = results[:request.Limit]
+		if len(results) > 0 {
+			collected = append(collected, results)
+		}
 	}
-	return results, nil
+	return component.MergeCandidates(collected, request.Limit), nil
+}
+
+// searchShards resolves the shards one read has to touch: the ones the selector
+// names, or every shard the lane holds when the request narrows nothing.
+func (index *Index) searchShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	selector projectionstore.Selector,
+) ([]string, error) {
+	plan, err := selector.Plan()
+	if err != nil {
+		return nil, fmt.Errorf("entity projection: selector: %w", err)
+	}
+	if !plan.All {
+		return plan.Shards, nil
+	}
+	shards, err := index.store.Shards(ctx, scope, index.projection)
+	if err != nil {
+		return nil, fmt.Errorf("entity projection: %w", err)
+	}
+	return shards, nil
+}
+
+// materialize reads one shard's table. A shard the plan names that was never
+// written holds nothing, which is an empty read rather than a failed one.
+func (index *Index) materialize(ctx context.Context, scope corememory.Scope, shard string) (snapshot, bool, error) {
+	build, _, err := index.store.MaterializeView(ctx,
+		projectionstore.Address{Scope: scope, Shard: shard}, index.projection)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return snapshot{}, false, nil
+		}
+		return snapshot{}, false, fmt.Errorf("entity projection: %w", err)
+	}
+	return build, true, nil
 }
 
 func entriesDigest(entries []entry) string {
@@ -341,27 +512,17 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-// extractEntities is deterministic dictionary mention extraction over the
-// active entity projection. Callers pass ordinary query text, never metadata.
-// selectQueryEntities matches the query against the entity vocabulary and
+// queryEntitySelection matches the query against the entity vocabulary and
 // returns the most selective entities together with their IDF weights.
 // Ubiquitous entities are gated out once the corpus is large enough, and the
-// selection is capped so a long query cannot vote with dozens of entities.
-func selectQueryEntities(query string, entries []entry) ([]string, map[string]float64) {
+// selection is capped so a long query cannot vote with dozens of entities. A
+// sharded read counts the scoring set's frequency across shards first and then
+// selects, so the weights it applies are the set's and not one shard's;
+// documents and frequency must describe the same records.
+func queryEntitySelection(query string, documents int, frequency map[string]int) ([]string, map[string]float64) {
 	queryTokens := corebm25.Tokenize(query)
-	if len(entries) == 0 || len(queryTokens) == 0 {
+	if documents == 0 || len(queryTokens) == 0 {
 		return nil, nil
-	}
-	frequency := make(map[string]int)
-	for _, item := range entries {
-		seen := make(map[string]struct{}, len(item.Entities))
-		for _, entity := range item.Entities {
-			if _, ok := seen[entity]; ok {
-				continue
-			}
-			seen[entity] = struct{}{}
-			frequency[entity]++
-		}
 	}
 	mentioned := make(map[string]struct{})
 	idf := make(map[string]float64, len(frequency))
@@ -370,12 +531,12 @@ func selectQueryEntities(query string, entries []entry) ([]string, map[string]fl
 		if !containsTokens(queryTokens, entityTokens) {
 			continue
 		}
-		if len(entries) >= entitySaturationMinEntries &&
-			float64(count) >= entitySaturationShare*float64(len(entries)) {
+		if documents >= entitySaturationMinEntries &&
+			float64(count) >= entitySaturationShare*float64(documents) {
 			continue
 		}
 		mentioned[entity] = struct{}{}
-		idf[entity] = math.Log(1 + float64(len(entries))/float64(count))
+		idf[entity] = math.Log(1 + float64(documents)/float64(count))
 	}
 	result := make([]string, 0, len(mentioned))
 	for entity := range mentioned {
@@ -490,6 +651,30 @@ func validateSnapshot(build snapshot) error {
 		}
 	}
 	return nil
+}
+
+const (
+	// entityKeyBytes is what one normalized entity key costs beyond its text:
+	// the slice slot, the string header, and the entry it sits in.
+	entityKeyBytes = 32
+	// entryBytes is what one entry costs beyond its keys: its id, its source
+	// reference, and its address.
+	entryBytes = 200
+)
+
+// tableBytes weighs one table for the store's cache budget: the normalized keys
+// the lane matches against, which is what makes one table larger than another,
+// plus a fixed cost per entry for the identity around them. The constants are
+// estimates of the runtime's own overhead, not a measurement of it.
+func tableBytes(build snapshot) int64 {
+	weight := int64(0)
+	for _, item := range build.Entries {
+		weight += entryBytes
+		for _, value := range item.Entities {
+			weight += int64(len(value)) + entityKeyBytes
+		}
+	}
+	return weight
 }
 
 func entityEntryKey() projectionstore.EntryKey[entry] {
