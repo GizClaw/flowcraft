@@ -12,12 +12,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
-// The pair below measures what the lane's kernel cache is worth: a
-// search whose (identity, selector) pair is unchanged reuses the kernel,
-// while alternating between two selectors forces a rebuild every time
-// and reproduces the cost the cache removes.
-
-func BenchmarkSearchKernelHit(b *testing.B) {
+// The pair below separates the two read shapes a sharded lane serves: a
+// conversation selector materializes one shard, while a global recall
+// materializes every shard twice -- once for the scoring set's statistics and
+// once to score it.
+func BenchmarkSearchConversationSelector(b *testing.B) {
 	for _, documents := range []int{400, 4000} {
 		b.Run(fmt.Sprintf("documents=%d", documents), func(b *testing.B) {
 			index, scope := benchProjection(b, documents)
@@ -36,18 +35,17 @@ func BenchmarkSearchKernelHit(b *testing.B) {
 	}
 }
 
-func BenchmarkSearchKernelMiss(b *testing.B) {
+func BenchmarkSearchGlobalRecall(b *testing.B) {
 	for _, documents := range []int{400, 4000} {
 		b.Run(fmt.Sprintf("documents=%d", documents), func(b *testing.B) {
 			index, scope := benchProjection(b, documents)
-			requests := []component.SearchRequest{
-				{Scope: scope, Query: "needle common", Limit: 8, Metadata: corememory.Metadata{"conversation_id": "c1"}},
-				{Scope: scope, Query: "needle common", Limit: 8, Metadata: corememory.Metadata{"conversation_id": "c2"}},
+			request := component.SearchRequest{
+				Scope: scope, Query: "needle common", Limit: 8,
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := index.Search(context.Background(), requests[i%len(requests)]); err != nil {
+				if _, err := index.Search(context.Background(), request); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -55,9 +53,9 @@ func BenchmarkSearchKernelMiss(b *testing.B) {
 	}
 }
 
-// benchProjection indexes documents facts split evenly across two
-// conversation selectors, so both a hit and a miss path have a
-// non-empty scored set.
+// benchProjection indexes document facts split evenly across two conversation
+// selectors, so both a single-shard read and a global one have a non-empty
+// scored set.
 func benchProjection(b *testing.B, documents int) (*Index, corememory.Scope) {
 	b.Helper()
 	workspaceDirectory := b.TempDir()

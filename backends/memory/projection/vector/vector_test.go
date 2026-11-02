@@ -2,11 +2,15 @@ package vector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
 	"github.com/GizClaw/flowcraft/backends/memory/storage"
@@ -43,10 +47,12 @@ func TestVectorUsesInferenceRuntimeAndCosineSort(t *testing.T) {
 	}
 }
 
-func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testing.T) {
-	embedCalls := 0
+func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndShardFilter(t *testing.T) {
+	// A rebuild publishes a scope's shards a few at a time, so a fake runtime
+	// counts its calls atomically.
+	var embedCalls atomic.Int64
 	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
-		embedCalls++
+		embedCalls.Add(1)
 		vectors := make([][]float32, len(texts))
 		for index := range vectors {
 			vectors[index] = []float32{1, 0}
@@ -63,12 +69,9 @@ func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testi
 	otherScope := corememory.Scope{RuntimeID: "runtime", UserID: "other"}
 	artifacts := make([]component.Artifact, 0, 7)
 	for _, id := range []string{"g", "f", "e", "d", "c", "b", "a"} {
-		artifact := vectorArtifact(id, id)
-		artifact.Metadata["conversation_id"] = "wanted"
-		artifacts = append(artifacts, artifact)
+		artifacts = append(artifacts, conversationArtifact("wanted", id, id))
 	}
-	excluded := vectorArtifact("excluded", "excluded")
-	excluded.Metadata["conversation_id"] = "other"
+	excluded := conversationArtifact("other", "excluded", "excluded")
 	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
 		Scope: scope, Artifacts: append(artifacts, excluded),
 	}); err != nil {
@@ -79,7 +82,7 @@ func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	before := embedCalls
+	before := embedCalls.Load()
 	results, err := index.SearchVector(context.Background(), component.VectorSearchRequest{
 		Scope: scope, Vector: []float32{1, 0}, Limit: 5,
 		Filter: component.VectorSearchFilter{
@@ -89,8 +92,8 @@ func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if embedCalls != before {
-		t.Fatalf("SearchVector called embed: before=%d after=%d", before, embedCalls)
+	if after := embedCalls.Load(); after != before {
+		t.Fatalf("SearchVector called embed: before=%d after=%d", before, after)
 	}
 	got := make([]string, len(results))
 	for index := range results {
@@ -185,7 +188,8 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 	}
 	scope := corememory.Scope{RuntimeID: "runtime"}
 	if err := first.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{vectorArtifact("fact", "same")}, SourceRevision: "r1",
+		Scope: scope, Shard: shardOf("conversation"),
+		Upserts: []component.Artifact{vectorArtifact("fact", "same")}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,7 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 	if first.storageProjection == second.storageProjection {
 		t.Fatal("different embedding models shared a vector generation")
 	}
-	if _, err := second.readSnapshot(context.Background(), scope); err == nil {
+	if _, err := second.readSnapshot(context.Background(), addressOf(scope, shardOf("conversation"))); err == nil {
 		t.Fatal("new embedding model read the previous model generation")
 	}
 }
@@ -227,9 +231,9 @@ func TestVectorRejectsQueryDimensionMismatch(t *testing.T) {
 }
 
 func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *testing.T) {
-	embedItems := 0
+	var embedItems atomic.Int64
 	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
-		embedItems += len(texts)
+		embedItems.Add(int64(len(texts)))
 		result := make([][]float32, len(texts))
 		for index := range result {
 			result[index] = []float32{1, 0}
@@ -251,21 +255,23 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 	other.Metadata["document_id"] = "other-document"
 	other.Metadata["item_id"] = "b"
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{value, other},
+		Scope: scope, Shard: datasetShardOf("dataset"), Upserts: []component.Artifact{value, other},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	value.Metadata["provenance_note"] = "changed"
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{value}, ActiveIDs: []string{"a"},
+		Scope: scope, Shard: datasetShardOf("dataset"),
+		Upserts: []component.Artifact{value}, ActiveIDs: []string{"a"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if embedItems != 2 {
-		t.Fatalf("unchanged content embedded %d items", embedItems)
+	if items := embedItems.Load(); items != 2 {
+		t.Fatalf("unchanged content embedded %d items", items)
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, ActiveIDs: []string{},
+		Scope: scope, Shard: datasetShardOf("dataset"),
+		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, ActiveIDs: []string{},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +284,8 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manifest, found, err := index.store.Audit(context.Background(), scope, index.storageProjection)
+	manifest, found, err := index.store.Audit(context.Background(),
+		addressOf(scope, datasetShardOf("dataset")), index.storageProjection)
 	if err != nil || !found || len(manifest.Segments) != 0 || manifest.SourceDigest == "" {
 		t.Fatalf("full build manifest = %+v, found=%v, err=%v", manifest, found, err)
 	}
@@ -295,7 +302,7 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	})
 	index, err := New(Config{
 		KV: meter, Runtime: runtime, Model: model, Projection: "facts",
-		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +320,8 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	meter.reset()
 	changed := vectorArtifact("changed", "updated")
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{changed}, SourceRevision: "r1",
+		Scope: scope, Shard: shardOf("conversation"),
+		Upserts: []component.Artifact{changed}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +330,8 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 	}
 	meter.reset()
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
+		Scope: scope, Shard: shardOf("conversation"),
+		DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -473,10 +482,147 @@ func runtimeForModel(t *testing.T, modelName string, respond func([]string) [][]
 }
 
 func vectorArtifact(id, text string) component.Artifact {
+	return conversationArtifact("conversation", id, text)
+}
+
+// TestVectorFullRebuildPublishesShardsConcurrently pins the bound a repair
+// publishes at. A rebuild embeds one shard per conversation, and embedding a
+// shard is one round trip per artifact, so publishing a scope one shard at a
+// time is what made a repair wait on the provider for the whole run.
+func TestVectorFullRebuildPublishesShardsConcurrently(t *testing.T) {
+	var (
+		mutex    sync.Mutex
+		inFlight int
+		peak     int
+	)
+	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
+		mutex.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mutex.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mutex.Lock()
+		inFlight--
+		mutex.Unlock()
+		vectors := make([][]float32, len(texts))
+		for index := range vectors {
+			vectors[index] = []float32{1, 0}
+		}
+		return vectors
+	})
+	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	conversations := 6
+	artifacts := make([]component.Artifact, 0, conversations*3)
+	for conversation := 0; conversation < conversations; conversation++ {
+		id := fmt.Sprintf("conversation-%d", conversation)
+		for turn := 0; turn < 3; turn++ {
+			artifacts = append(artifacts, conversationArtifact(id,
+				fmt.Sprintf("%s-turn-%d", id, turn), fmt.Sprintf("text %d", turn)))
+		}
+	}
+	if err := index.FullRebuild(context.Background(),
+		component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	flight := peak
+	mutex.Unlock()
+	if want := min(conversations, rebuildShardConcurrency); flight != want {
+		t.Fatalf("shards in flight = %d, want %d", flight, want)
+	}
+	for conversation := 0; conversation < conversations; conversation++ {
+		manifest, found, err := index.store.Audit(context.Background(),
+			addressOf(scope, shardOf(fmt.Sprintf("conversation-%d", conversation))),
+			index.storageProjection)
+		if err != nil || !found || manifest.SourceDigest == "" {
+			t.Fatalf("shard %d manifest = %+v, found=%v, err=%v", conversation, manifest, found, err)
+		}
+	}
+}
+
+// TestVectorFullRebuildStopsAtAFailedShard pins what a failing shard costs: the
+// shards not yet started are left alone, and the error names the shard a repair
+// has to look at.
+func TestVectorFullRebuildStopsAtAFailedShard(t *testing.T) {
+	conversations := rebuildShardConcurrency * 3
+	names := make([]string, conversations)
+	for position := range names {
+		names[position] = fmt.Sprintf("conversation-%03d", position)
+	}
+	// The failing shard sorts first, so it is the first one a rebuild starts.
+	sort.Slice(names, func(i, j int) bool { return shardOf(names[i]) < shardOf(names[j]) })
+	failing := names[0]
+	embedder := &failingEmbedder{failing: failing}
+	index, err := New(Config{
+		KV: kvFor(t), Runtime: embedder, Projection: "facts",
+		Model: model.ModelRef{ID: model.ModelID{Provider: "fake", Name: "embed"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	artifacts := make([]component.Artifact, 0, conversations)
+	for _, name := range names {
+		artifacts = append(artifacts, conversationArtifact(name, name+"-fact", "text of "+name))
+	}
+	err = index.FullRebuild(context.Background(),
+		component.ProjectionRequest{Scope: scope, Artifacts: artifacts})
+	if err == nil {
+		t.Fatal("a rebuild over a failed shard reported no error")
+	}
+	if shard := shardOf(failing); !strings.Contains(err.Error(), shard) {
+		t.Fatalf("error %q does not name shard %q", err, shard)
+	}
+	if embedded := embedder.count(); embedded >= conversations {
+		t.Fatalf("rebuild embedded %d of %d conversations, want fewer after the failure", embedded, conversations)
+	}
+}
+
+// failingEmbedder refuses the conversation it is told to refuse and embeds
+// every other one, recording the conversations it was asked to embed.
+type failingEmbedder struct {
+	failing string
+	mutex   sync.Mutex
+	seen    []string
+}
+
+func (embedder *failingEmbedder) Embed(
+	_ context.Context,
+	_ model.ModelRef,
+	request inference.EmbedRequest,
+) (inference.EmbedResponse, error) {
+	embedder.mutex.Lock()
+	embedder.seen = append(embedder.seen, request.Items[0].Content.Text())
+	embedder.mutex.Unlock()
+	if strings.Contains(request.Items[0].Content.Text(), embedder.failing) {
+		return inference.EmbedResponse{}, errors.New("provider refused the shard")
+	}
+	embeddings := make([]inference.Embedding, len(request.Items))
+	for position := range embeddings {
+		embeddings[position].Vector = []float32{1, 0}
+	}
+	return inference.EmbedResponse{Embeddings: embeddings}, nil
+}
+
+func (embedder *failingEmbedder) count() int {
+	embedder.mutex.Lock()
+	defer embedder.mutex.Unlock()
+	return len(embedder.seen)
+}
+
+// conversationArtifact builds a fact belonging to one conversation, which is
+// what decides the shard it is written to.
+func conversationArtifact(conversationID, id, text string) component.Artifact {
 	return component.Artifact{
 		Kind: "fact", ID: id,
 		Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: text}}},
 		Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-" + id}},
-		Metadata: corememory.Metadata{"conversation_id": "conversation"},
+		Metadata: corememory.Metadata{"conversation_id": conversationID},
 	}
 }

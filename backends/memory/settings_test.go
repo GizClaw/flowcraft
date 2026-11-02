@@ -8,7 +8,107 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
+	corememory "github.com/GizClaw/flowcraft/core/memory"
 )
+
+// TestDocumentCeilingStaysUnderTheContract pins the document ceiling's four
+// surfaces: an unnamed limit resolves to the contract's, a deployment may set a
+// tighter one, one above the contract is a config error rather than a clamp,
+// and the limit stays out of the derivation policy digest -- it refuses input,
+// it does not change what a document derives to, so lowering it must not ask a
+// workspace to re-derive.
+func TestDocumentCeilingStaysUnderTheContract(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if settings.Document.MaxRunes != corememory.MaxDocumentRunes {
+		t.Fatalf("unnamed document ceiling = %d, want the contract's %d",
+			settings.Document.MaxRunes, corememory.MaxDocumentRunes)
+	}
+	digest := func() string {
+		t.Helper()
+		value, err := policyDigest(settings, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	before := digest()
+	settings.Document.MaxRunes = 1024
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("a tighter document ceiling was rejected: %v", err)
+	}
+	if after := digest(); after != before {
+		t.Fatalf("the document ceiling moved the policy digest: %s -> %s", before, after)
+	}
+	for name, value := range map[string]int{
+		"above the contract": corememory.MaxDocumentRunes + 1,
+		"zero":               0,
+		"negative":           -1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings.Document.MaxRunes = value
+			if err := settings.Validate(); err == nil {
+				t.Fatalf("document.max_runes %d was accepted", value)
+			}
+		})
+	}
+}
+
+// TestRetrievalSummaryNamesTheSelectorSemantics pins the one part of the
+// summary that is not configuration: what a selector means. Two runs are
+// compared by their summaries, so a run whose selectors narrowed by another
+// rule must not look like this one however its weights were set.
+func TestRetrievalSummaryNamesTheSelectorSemantics(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	summary, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, `"selector_semantics":"strict-v1"`) {
+		t.Fatalf("summary does not name the selector semantics: %s", summary)
+	}
+}
+
+// TestCompactionSettingsTravelFromConfigurationToTheLanesAndTheFootprint pins
+// the compaction policy's three surfaces: the configured fields are what the
+// lanes run with, a field left at zero stays the store's default instead of
+// becoming a trigger on every commit, a negative one is rejected, and the block
+// is part of the retrieval summary so two deployments that compact differently
+// do not share a fingerprint.
+func TestCompactionSettingsTravelFromConfigurationToTheLanesAndTheFootprint(t *testing.T) {
+	settings := Settings{}
+	settings.applyDefaults()
+	if thresholds := laneThresholds(settings); thresholds.MaxSegments != 0 ||
+		thresholds.MinDeltaBytes != 0 || thresholds.Ratio != 0 {
+		t.Fatalf("a deployment with no policy resolved to %+v, want the store's defaults", thresholds)
+	}
+	settings.Lanes.Compaction = &CompactionSettings{MaxSegments: 8, MinDeltaBytes: 1 << 20, Ratio: 4}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	thresholds := laneThresholds(settings)
+	if thresholds.MaxSegments != 8 || thresholds.MinDeltaBytes != 1<<20 || thresholds.Ratio != 4 {
+		t.Fatalf("thresholds = %+v", thresholds)
+	}
+	summary, err := settings.retrievalSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, `"compaction":{"max_segments":8,"min_delta_bytes":1048576,"ratio":4}`) {
+		t.Fatalf("the policy is not in the footprint: %s", summary)
+	}
+	for name, compaction := range map[string]*CompactionSettings{
+		"max_segments":    {MaxSegments: -1},
+		"min_delta_bytes": {MinDeltaBytes: -1},
+		"ratio":           {Ratio: -1},
+	} {
+		settings.Lanes.Compaction = compaction
+		if err := settings.Validate(); err == nil || !strings.Contains(err.Error(), "lanes.compaction") {
+			t.Fatalf("%s: a negative value was accepted: %v", name, err)
+		}
+	}
+}
 
 // TestProfileSettingsTravelWithTheBlock pins the three things the block's
 // configuration decides: the settings resolve to the module's defaults, the
@@ -58,9 +158,11 @@ func TestProfileSettingsTravelWithTheBlock(t *testing.T) {
 
 // TestRetrievalSummaryRendersTheResolvedSettings pins the fingerprint value the
 // derivation policy digest does not cover: lane weights and fusion, the bm25
-// parameters, source quotes and rerank, as the settings resolved them. The
-// exact strings are the point -- a knob added to Lanes, BM25 or Retrieval
-// changes this output, and this test then has to be updated on purpose.
+// parameters, source quotes and rerank, as the settings resolved them, and the
+// selectors' semantics closing the object -- not configuration, but what the
+// rest of it meant. The exact strings are the point -- a knob added to Lanes,
+// BM25 or Retrieval changes this output, and this test then has to be updated
+// on purpose.
 func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	settings := Settings{}
 	settings.applyDefaults()
@@ -68,7 +170,7 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"lanes":{"vector":{"weight":1},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"rrf"},"bm25":{},"retrieval":{}}`
+	want := `{"lanes":{"vector":{"weight":1},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"rrf"},"bm25":{},"retrieval":{},"selector_semantics":"strict-v1"}`
 	if summary != want {
 		t.Fatalf("default summary = %s, want %s", summary, want)
 	}
@@ -77,39 +179,34 @@ func TestRetrievalSummaryRendersTheResolvedSettings(t *testing.T) {
 	settings.Lanes.Vector.Weight = 2
 	settings.BM25.K1, settings.BM25.B = 1.4, 0.4
 	settings.Retrieval.SourceQuotes, settings.Retrieval.Rerank = 3, true
-	settings.Lanes.VectorCache = &VectorCacheSettings{MaxCachedScopes: 4, MaxEntriesPerScope: 20000}
+	settings.Lanes.Cache = &CacheSettings{MaxBytes: 1 << 30}
 	summary, err = settings.retrievalSummary()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","vector_cache":{"max_cached_scopes":4,"max_entries_per_scope":20000}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want = `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted","cache":{"max_bytes":1073741824}},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true},"selector_semantics":"strict-v1"}`
 	if summary != want {
 		t.Fatalf("tuned summary = %s, want %s", summary, want)
 	}
 }
 
-// TestVectorCacheBoundsAreValidatedAndNamed pins the knob's shape: it is absent
+// TestLaneCacheBudgetIsValidatedAndNamed pins the knob's shape: it is absent
 // from the summary unless a host names it (so no existing run's fingerprint
-// moves), and a count of what may be resident cannot be negative.
-func TestVectorCacheBoundsAreValidatedAndNamed(t *testing.T) {
+// moves), and a budget in bytes cannot be negative.
+func TestLaneCacheBudgetIsValidatedAndNamed(t *testing.T) {
 	settings := Settings{}
 	settings.applyDefaults()
-	if settings.Lanes.VectorCache != nil {
-		t.Fatal("an untouched workspace names a vector cache bound")
+	if settings.Lanes.Cache != nil {
+		t.Fatal("an untouched workspace names a lane cache budget")
 	}
 	if err := settings.Validate(); err != nil {
 		t.Fatalf("an untouched workspace does not validate: %v", err)
 	}
-	for _, bound := range []VectorCacheSettings{
-		{MaxCachedScopes: -1},
-		{MaxEntriesPerScope: -1},
-	} {
-		invalid := Settings{}
-		invalid.applyDefaults()
-		invalid.Lanes.VectorCache = &bound
-		if err := invalid.Validate(); err == nil {
-			t.Fatalf("%+v was accepted", bound)
-		}
+	invalid := Settings{}
+	invalid.applyDefaults()
+	invalid.Lanes.Cache = &CacheSettings{MaxBytes: -1}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("a negative lane cache budget was accepted")
 	}
 }
 
@@ -167,7 +264,7 @@ func TestAssemblyStampsTheRetrievalSummary(t *testing.T) {
   "retrieval": {"source_quotes": 3, "rerank": true}
 }`)
 	t.Cleanup(func() { _ = assembly.Close() })
-	want := `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true}}`
+	want := `{"lanes":{"vector":{"weight":2},"bm25":{"weight":0.6},"entity":{"weight":0.4},"summary":{"weight":0.5},"fusion":"weighted"},"bm25":{"k1":1.4,"b":0.4},"retrieval":{"source_quotes":3,"rerank":true},"selector_semantics":"strict-v1"}`
 	if got := assembly.RetrievalSummary(); got != want {
 		t.Fatalf("RetrievalSummary() = %s, want %s", got, want)
 	}

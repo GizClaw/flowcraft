@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/backends/memory/component"
+	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/backends/memory/profile"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/fusion"
 	"github.com/GizClaw/flowcraft/backends/memory/retrieval/hydrate"
@@ -322,6 +323,14 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 		provider.setDiagnostics(diagnostics)
 		return corememory.ContextResult{}, err
 	}
+	// The lanes filter their own state with this selector; the check below is
+	// the same rule applied to what fusion hands back, so the two cannot
+	// disagree about which axis a request named.
+	selector, err := projectionstore.ParseSelector(metadata)
+	if err != nil {
+		provider.setDiagnostics(diagnostics)
+		return corememory.ContextResult{}, corememory.NewError(corememory.KindInvalidRequest, "context", err)
+	}
 	hydrated := make([]corememory.ContextItem, 0, len(candidates))
 	contentTruncated := false
 	eligible := 0
@@ -362,7 +371,7 @@ func (provider *Provider) Context(ctx context.Context, request corememory.Contex
 	defer func() { provider.recordStage("hydrate", hydrateStarted) }()
 	for index, candidate := range candidates {
 		isRecent := index < recentCount
-		if (!isRecent && candidate.Score < request.MinScore) || !matchesRequest(candidate, request) {
+		if (!isRecent && candidate.Score < request.MinScore) || !matchesRequest(candidate, request, selector) {
 			continue
 		}
 		eligible++
@@ -1043,18 +1052,20 @@ func (provider *Provider) setDiagnostics(values []Diagnostic) {
 	provider.mu.Unlock()
 }
 
-func matchesRequest(candidate component.Candidate, request corememory.ContextRequest) bool {
-	if request.ConversationID != "" && candidate.Address.ConversationID != "" &&
-		candidate.Address.ConversationID != request.ConversationID {
-		return false
+// matchesRequest re-checks one fused candidate against the request's compiled
+// selector. A candidate whose address lives in a locator envelope rather than
+// in these fields cannot be judged by kind, so all that is left of it is the
+// conversation it reports -- and the lane that produced it already applied the
+// selector to its own state.
+func matchesRequest(
+	candidate component.Candidate,
+	request corememory.ContextRequest,
+	selector projectionstore.Selector,
+) bool {
+	address := candidate.Address
+	if address.Kind == "" {
+		return request.ConversationID == "" || address.ConversationID == "" ||
+			address.ConversationID == request.ConversationID
 	}
-	if len(request.DatasetIDs) == 0 || candidate.Address.DatasetID == "" {
-		return true
-	}
-	for _, datasetID := range request.DatasetIDs {
-		if candidate.Address.DatasetID == datasetID {
-			return true
-		}
-	}
-	return false
+	return selector.Matches(address)
 }

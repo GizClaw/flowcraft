@@ -237,6 +237,12 @@ func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, erro
 	} else if exists {
 		return Fact{}, errdefs.Conflictf("fact view: fact %q already exists with canonical hash %q", request.ID, byID.Fact.CanonicalHash)
 	}
+	// The identity is recorded before the fact: see indexCanonicalHash.
+	if err := store.indexCanonicalHash(
+		ctx, request.Scope, request.ConversationID, generation, canonicalHash, request.ID,
+	); err != nil {
+		return Fact{}, err
+	}
 	persisted := persistedFact{
 		SchemaVersion: schemaVersion, Generation: generation, RuntimeID: request.Scope.RuntimeID,
 		UserID: request.Scope.UserID, AgentID: request.Scope.AgentID, ConversationID: request.ConversationID,
@@ -470,6 +476,10 @@ func (store *FactStore) RetireGeneration(ctx context.Context, scope corememory.S
 	if err != nil {
 		return 0, err
 	}
+	factsPrefix, err := store.factsPrefix(scope, conversationID, generation)
+	if err != nil {
+		return 0, err
+	}
 	entries, err := store.kv.List(ctx, prefix)
 	if err != nil {
 		return 0, err
@@ -479,7 +489,12 @@ func (store *FactStore) RetireGeneration(ctx context.Context, scope corememory.S
 		if err := store.kv.Delete(ctx, entry.Key); err != nil {
 			return removed, fmt.Errorf("fact view: retire %q: %w", entry.Key, err)
 		}
-		removed++
+		// The generation also holds the canonical-identity area, which is
+		// bookkeeping: what the caller counts is the facts that stop being
+		// readable.
+		if strings.HasPrefix(entry.Key, factsPrefix+"/") {
+			removed++
+		}
 	}
 	return removed, nil
 }
@@ -722,7 +737,7 @@ func (store *FactStore) listScopeLocked(ctx context.Context, scope corememory.Sc
 }
 
 func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, conversationID, generation string, options ListOptions) ([]Fact, error) {
-	prefix, err := store.generationPrefix(scope, conversationID, generation)
+	prefix, err := store.factsPrefix(scope, conversationID, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -791,31 +806,6 @@ func (store *FactStore) listLocked(ctx context.Context, scope corememory.Scope, 
 		facts = append(facts, aggregated)
 	}
 	return facts, nil
-}
-
-func (store *FactStore) findByCanonicalHash(ctx context.Context, scope corememory.Scope, conversationID, generation, canonicalHash string) (persistedFact, bool, error) {
-	prefix, err := store.generationPrefix(scope, conversationID, generation)
-	if err != nil {
-		return persistedFact{}, false, err
-	}
-	entries, err := store.kv.List(ctx, prefix)
-	if err != nil {
-		return persistedFact{}, false, fmt.Errorf("fact view: scan exact identities: %w", err)
-	}
-	for _, entry := range entries {
-		factID, err := decodeFactKey(prefix, entry.Key)
-		if err != nil {
-			return persistedFact{}, false, err
-		}
-		value, ok, err := store.read(ctx, scope, conversationID, generation, factID)
-		if err != nil {
-			return persistedFact{}, false, err
-		}
-		if ok && value.Fact.CanonicalHash == canonicalHash {
-			return value, true, nil
-		}
-	}
-	return persistedFact{}, false, nil
 }
 
 func (store *FactStore) aggregate(ctx context.Context, base persistedFact) (Fact, error) {
@@ -963,6 +953,17 @@ func (store *FactStore) factKey(scope corememory.Scope, conversationID, generati
 	return prefix + "/facts/" + storage.EncodeSegment(factID), nil
 }
 
+// factsPrefix returns the area holding the fact snapshots of one generation.
+// The generation prefix also holds the canonical-identity area, so a scan that
+// wants facts names this prefix instead of decoding whatever it finds.
+func (store *FactStore) factsPrefix(scope corememory.Scope, conversationID, generation string) (string, error) {
+	prefix, err := store.generationPrefix(scope, conversationID, generation)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/facts", nil
+}
+
 func (store *FactStore) mergeStream(scope corememory.Scope, conversationID, generation, factID string) (string, error) {
 	key, err := store.factKey(scope, conversationID, generation, factID)
 	if err != nil {
@@ -979,17 +980,13 @@ func (store *FactStore) activeKey(scope corememory.Scope, conversationID string)
 	return prefix + "/active", nil
 }
 
-// decodeFactKey parses one key below a generation prefix into a fact ID.
+// decodeFactKey parses one key below a facts prefix into a fact ID.
 func decodeFactKey(prefix, key string) (string, error) {
 	suffix := strings.TrimPrefix(key, prefix+"/")
-	if suffix == key {
-		return "", errors.New("fact key outside prefix")
-	}
-	segments := strings.Split(suffix, "/")
-	if len(segments) != 2 || segments[0] != "facts" {
+	if suffix == key || suffix == "" || strings.Contains(suffix, "/") {
 		return "", errors.New("fact key has unexpected shape")
 	}
-	factID, err := storage.DecodeSegment(segments[1])
+	factID, err := storage.DecodeSegment(suffix)
 	if err != nil {
 		return "", err
 	}
@@ -1005,7 +1002,11 @@ func decodeGenerationKey(prefix, key string) (string, error) {
 		return "", errors.New("generation key outside prefix")
 	}
 	segments := strings.Split(suffix, "/")
-	if len(segments) != 3 || segments[1] != "facts" {
+	// A generation holds its fact snapshots and its canonical-identity area;
+	// both name the generation they belong to.
+	factKey := len(segments) == 3 && segments[1] == "facts"
+	hashKey := len(segments) >= 3 && len(segments) <= 4 && segments[1] == hashIndexSegment
+	if !factKey && !hashKey {
 		return "", errors.New("generation key has unexpected shape")
 	}
 	generation, err := storage.DecodeSegment(segments[0])
@@ -1024,8 +1025,9 @@ type factAddress struct {
 }
 
 // decodeScopeKey parses one key below a scope prefix. Keys that are not fact
-// addresses -- the active-generation pointer of a conversation -- report
-// isFact false instead of an error, so a scope scan can skip them.
+// addresses -- the active-generation pointer of a conversation, the
+// canonical-identity area of a generation -- report isFact false instead of an
+// error, so a scope scan can skip them.
 func decodeScopeKey(prefix, key string) (factAddress, bool, error) {
 	suffix := strings.TrimPrefix(key, prefix+"/")
 	if suffix == key {
@@ -1033,6 +1035,10 @@ func decodeScopeKey(prefix, key string) (factAddress, bool, error) {
 	}
 	segments := strings.Split(suffix, "/")
 	if len(segments) == 3 && segments[0] == "conversations" && segments[2] == "active" {
+		return factAddress{}, false, nil
+	}
+	if len(segments) >= 6 && segments[0] == "conversations" && segments[2] == "generations" &&
+		segments[4] == hashIndexSegment {
 		return factAddress{}, false, nil
 	}
 	if len(segments) != 6 || segments[0] != "conversations" || segments[2] != "generations" ||

@@ -1,60 +1,65 @@
 package vector
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"math"
-	"math/big"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
 	projectionstore "github.com/GizClaw/flowcraft/backends/memory/internal/projection"
 )
 
-// TestCanonicalFloat32Forms pins the rendering a component is persisted as.
-// The values are the ones two toolchains disagree about, or that sit on a
-// branch of the rendering (a tie, a sign, a subnormal, either end of the
-// plain/scientific split, a carry through every digit).
-func TestCanonicalFloat32Forms(t *testing.T) {
+// TestVectorPayloadIsTheComponentsBytes pins the persisted form: base64 of the
+// components' little-endian IEEE-754 bytes, and nothing else. The bytes are what
+// a lane's digests are computed over, so the encoding has to be a function of the
+// components alone -- a build that rendered them differently would make every
+// stored state fail its own digest check (#654), and a build that stored them in
+// another order would read a vector as its own reflection.
+func TestVectorPayloadIsTheComponentsBytes(t *testing.T) {
 	cases := []struct {
-		bits     uint32
-		expected string
+		value Vector
+		want  string
 	}{
-		{0x39800000, "0.00024414062"}, // 2^-12: an exact tie, 1.26 writes 0.00024414063
-		{0xb9800000, "-0.00024414062"},
-		{0x3f800000, "1"},
-		{0xbf800000, "-1"},
-		{0x00000000, "0"},
-		{0x80000000, "-0"},
-		{0x00000001, "1e-45"},         // the smallest subnormal
-		{0x007fffff, "1.1754942e-38"}, // the largest subnormal
-		{0x00800000, "1.1754944e-38"}, // the smallest normal
-		{0x7f7fffff, "3.4028235e+38"},
-		{0x358637bd, "0.000001"},              // the plain side of the 1e-6 split
-		{0x358637bc, "9.999999e-7"},           // just below it
-		{0x60ad78ec, "100000000000000000000"}, // 1e20: just below the 1e21 split
-		{0x60ad78ed, "100000010000000000000"},
-		{0x322bcc77, "1e-8"},
-		{0x2edbe6ff, "1e-10"},
-		{0x1d000000, "1.6940659e-21"},
-		{0x4b189680, "10000000"},
-		{0x5f000000, "9223372000000000000"},
-		{0x3a83126f, "0.001"},
-		{0x3dcccccd, "0.1"},
-		{0x40490fdb, "3.1415927"},
-		{0x3f7fffff, "0.99999994"},
-		{0x421c0000, "39"}, // a trailing zero the significant digits must not keep
+		{Vector{}, `""`},
+		{Vector{1}, `"AACAPw=="`},
+		{Vector{1, 0}, `"AACAPwAAAAA="`},
+		// The sign of a zero is a component, not a rendering: -0 keeps its bit.
+		{Vector{1, float32(math.Copysign(0, -1))}, `"AACAPwAAAIA="`},
+		{Vector{3.1415927, -1, math.SmallestNonzeroFloat32}, `"2w9JQAAAgL8BAAAA"`},
+		{Vector{1, 2, 3}, `"AACAPwAAAEAAAEBA"`},
 	}
 	for _, item := range cases {
-		encoded, err := appendFloat32(nil, math.Float32frombits(item.bits))
+		encoded, err := json.Marshal(item.value)
 		if err != nil {
-			t.Fatalf("%08x: %v", item.bits, err)
+			t.Fatalf("%v: %v", item.value, err)
 		}
-		if string(encoded) != item.expected {
-			t.Errorf("%08x: rendered %s, want %s", item.bits, encoded, item.expected)
+		if string(encoded) != item.want {
+			t.Errorf("%v: encoded %s, want %s", item.value, encoded, item.want)
 		}
+	}
+}
+
+// TestVectorPayloadCostsFiveBytesPerDimension is the reason the form changed,
+// measured rather than assumed: the decimal rendering this package used to write
+// averaged 14.1 bytes per dimension, and the eval's 9324-entry,
+// 2048-dimension table spent 270MB of stored text on 72.8MB of vectors.
+func TestVectorPayloadCostsFiveBytesPerDimension(t *testing.T) {
+	value := make(Vector, 2048)
+	for index := range value {
+		value[index] = float32(index) / 7
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perDimension := float64(len(encoded)) / float64(len(value))
+	if perDimension > 5.4 {
+		t.Fatalf("one 2048-dimension vector encodes to %d bytes, %.2f per dimension", len(encoded), perDimension)
+	}
+	if want := 2 + base64.StdEncoding.EncodedLen(4*len(value)); len(encoded) != want {
+		t.Fatalf("encoded %d bytes, want %d", len(encoded), want)
 	}
 }
 
@@ -96,147 +101,33 @@ func TestVectorJSONRoundTripsComponents(t *testing.T) {
 	}
 }
 
-// TestVectorDigitsAreTheShortestThatReadBack checks the rendered form against
-// an independent shortest-decimal search over exact rationals: for every
-// length it takes the two decimals of that length that straddle the
-// component, keeps the ones that read back, and stops at the first length
-// that has one -- taking the closer of the two, and the even one of a pair it
-// is exactly between. It shares no code with the encoder, which is the point.
-func TestVectorDigitsAreTheShortestThatReadBack(t *testing.T) {
-	checked := 0
-	for bits := uint64(1); bits < 1<<32; bits += 524_287 { // an odd stride: no binade is skipped
-		value := math.Float32frombits(uint32(bits))
-		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
-			continue
-		}
-		encoded, err := appendFloat32(nil, value)
-		if err != nil {
-			t.Fatalf("%08x: %v", uint32(bits), err)
-		}
-		digits, exponent := parseRendered(t, string(encoded))
-		wantDigits, wantExponent := referenceShortest(t, value)
-		if digits != wantDigits || exponent != wantExponent {
-			t.Fatalf("%08x (%v): rendered %s = %s x 10^%d, want %s x 10^%d",
-				uint32(bits), value, encoded, digits, exponent, wantDigits, wantExponent)
-		}
-		checked++
-	}
-	if checked < 7000 {
-		t.Fatalf("only %d components checked", checked)
-	}
-}
-
-// referenceShortest finds the shortest decimal that reads back as value with
-// exact rational arithmetic.
-func referenceShortest(t *testing.T, value float32) (string, int) {
-	t.Helper()
-	magnitude := math.Abs(float64(value))
-	exact := new(big.Rat).SetFloat64(magnitude)
-	lead := decimalExponent(exact, magnitude)
-	for count := 1; count <= 20; count++ {
-		place := lead - count + 1
-		step := powerOfTen(place)
-		scaled := new(big.Rat).Quo(exact, step)
-		below := new(big.Int).Quo(scaled.Num(), scaled.Denom())
-		candidates := []*big.Int{below}
-		if new(big.Rat).SetInt(below).Cmp(scaled) != 0 {
-			candidates = append(candidates, new(big.Int).Add(below, big.NewInt(1)))
-		}
-		var reading []*big.Int
-		for _, candidate := range candidates {
-			if parseDecimal(t, candidate, place) == float32(magnitude) {
-				reading = append(reading, candidate)
-			}
-		}
-		switch len(reading) {
-		case 0:
-			continue
-		case 1:
-			return digitsOf(reading[0]), lead
-		}
-		// Both read back: the closer one, and the even one of a pair the
-		// component is exactly between.
-		low, high := new(big.Rat).SetInt(reading[0]), new(big.Rat).SetInt(reading[1])
-		lowDistance := new(big.Rat).Sub(exact, new(big.Rat).Mul(low, step))
-		highDistance := new(big.Rat).Sub(new(big.Rat).Mul(high, step), exact)
-		switch lowDistance.Cmp(highDistance) {
-		case -1:
-			return digitsOf(reading[0]), lead
-		case 1:
-			return digitsOf(reading[1]), lead
-		}
-		if reading[0].Bit(0) == 0 {
-			return digitsOf(reading[0]), lead
-		}
-		return digitsOf(reading[1]), lead
-	}
-	t.Fatalf("%v: no shortest form found", value)
-	return "", 0
-}
-
-// decimalExponent returns floor(log10(value)) of a positive rational: the
-// logarithm seeds the answer and the exact comparisons settle it.
-func decimalExponent(value *big.Rat, magnitude float64) int {
-	lead := int(math.Floor(math.Log10(magnitude)))
-	for value.Cmp(powerOfTen(lead)) < 0 {
-		lead--
-	}
-	for value.Cmp(new(big.Rat).Mul(powerOfTen(lead), big.NewRat(10, 1))) >= 0 {
-		lead++
-	}
-	return lead
-}
-
-// parseDecimal reads the digits x 10^exponent a candidate stands for.
-func parseDecimal(t *testing.T, digits *big.Int, exponent int) float32 {
-	t.Helper()
-	parsed, err := strconv.ParseFloat(digits.String()+"e"+strconv.Itoa(exponent), 32)
-	if err != nil && !errors.Is(err, strconv.ErrRange) {
+// TestVectorReadsTheDecimalForm pins the reader's other half: state an earlier
+// build published is an array of numbers, and a reader that could not read it
+// could not answer for a workspace it did not write.
+func TestVectorReadsTheDecimalForm(t *testing.T) {
+	var decoded Vector
+	if err := json.Unmarshal([]byte(`[1,0.00024414062,-0,1e-45]`), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	return float32(parsed)
+	want := Vector{1, math.Float32frombits(0x39800000), float32(math.Copysign(0, -1)), math.SmallestNonzeroFloat32}
+	if !reflect.DeepEqual(decoded, want) {
+		t.Fatalf("decoded %v, want %v", decoded, want)
+	}
+	if err := json.Unmarshal([]byte(`null`), &decoded); err != nil || decoded != nil {
+		t.Fatalf("null decoded to %v, %v", decoded, err)
+	}
+	if err := json.Unmarshal([]byte(`"not base64!"`), &decoded); err == nil {
+		t.Fatal("accepted a payload that is not base64")
+	}
+	if err := json.Unmarshal([]byte(`"AAAAAAA"`), &decoded); err == nil {
+		t.Fatal("accepted a payload that is not whole components")
+	}
 }
 
-// digitsOf returns the digits of a scaled significand, trailing zeros removed.
-func digitsOf(digits *big.Int) string {
-	return strings.TrimRight(digits.String(), "0")
-}
-
-// powerOfTen returns 10^exponent as an exact rational, negative exponents
-// included.
-func powerOfTen(exponent int) *big.Rat {
-	absolute := exponent
-	if absolute < 0 {
-		absolute = -absolute
-	}
-	value := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(absolute)), nil))
-	if exponent < 0 {
-		return value.Inv(value)
-	}
-	return value
-}
-
-// parseRendered reads a rendered JSON number back into its significant digits
-// and the exponent of its first digit.
-func parseRendered(t *testing.T, text string) (string, int) {
-	t.Helper()
-	text = strings.TrimPrefix(text, "-")
-	if strings.Contains(text, "e") {
-		return splitExponential(text)
-	}
-	whole, fraction := text, ""
-	if point := strings.IndexByte(text, '.'); point >= 0 {
-		whole, fraction = text[:point], text[point+1:]
-	}
-	digits := whole + fraction
-	leading := len(digits) - len(strings.TrimLeft(digits, "0"))
-	return strings.TrimRight(digits[leading:], "0"), len(whole) - leading - 1
-}
-
-// TestPersistedStateKeepsVectorsCanonical walks the state the lane persists
-// and fails on a float the canonical encoding does not cover: a float32 field
-// that is not a Vector would be rendered by encoding/json instead, and the
-// digests of the state would go back to depending on the toolchain.
+// TestPersistedStateKeepsVectorsCanonical walks the state the lane persists and
+// fails on a float it renders itself: a float32 field that is not a Vector would
+// be written by encoding/json, whose form this package does not own and cannot
+// promise to keep still across toolchains.
 func TestPersistedStateKeepsVectorsCanonical(t *testing.T) {
 	var delta projectionstore.EntryDelta[entry]
 	for _, value := range []any{snapshot{}, entry{}, delta} {

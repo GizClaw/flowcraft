@@ -314,8 +314,12 @@ func TestFactEntityProjectionProviderIntegration(t *testing.T) {
 		t.Fatalf("stored fact = %+v, %v", stored, err)
 	}
 	index, _ := entity.New(entity.Config{KV: kvStore, Projection: "facts"})
+	shard, err := component.ConversationShard("conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{{
+		Scope: scope, Shard: shard, Upserts: []component.Artifact{{
 			Kind: "fact", ID: "fact", Content: stored.Content, Entities: stored.Entities,
 			Sources: stored.Provenance, Metadata: corememory.Metadata{
 				"context_kind": string(corememory.ContextFact), "conversation_id": "conversation", "item_id": "fact",

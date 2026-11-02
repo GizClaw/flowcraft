@@ -69,7 +69,7 @@ func TestCertificationStatesWhetherTheLaneServedThePass(t *testing.T) {
 	for name, phase := range map[string]vectorPhase{
 		"a question the lane never saw":    {Queries: 3, Scans: 4, Embeds: 3},
 		"a question that was not embedded": {Queries: 4, Scans: 4, Embeds: 3},
-		"a lookup that failed":             {Queries: 4, Scans: 4, Embeds: 4, SnapshotErrors: 1},
+		"a lookup that failed":             {Queries: 4, Scans: 4, Embeds: 4, ShardErrors: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := certify(phase, 4)
@@ -82,35 +82,36 @@ func TestCertificationStatesWhetherTheLaneServedThePass(t *testing.T) {
 
 func TestPhaseDeltaAndShares(t *testing.T) {
 	before := vector.Stats{
-		Queries: 3, SnapshotHits: 3, ScanTotal: 30 * time.Millisecond,
+		Queries: 3, ShardLoads: 3, ScanTotal: 30 * time.Millisecond,
 		Embeds: 3, EmbedTotal: 300 * time.Millisecond, SortTotal: 3 * time.Millisecond,
 		EntriesScanned: 300, EntriesScored: 300, Scans: 3,
-		WarmHits: 1, WarmMisses: 1, WarmLoad: 4 * time.Second,
 	}
+	before.Resident.Hits, before.Resident.Misses, before.Resident.Evictions = 2, 1, 1
 	after := vector.Stats{
-		Queries: 5, SnapshotHits: 4, SnapshotMisses: 1, SnapshotLoad: 8 * time.Millisecond,
-		SnapshotErrors: 2,
-		Scans:          5, ScanTotal: 50 * time.Millisecond, SortTotal: 5 * time.Millisecond,
+		Queries: 5, ShardLoads: 6, ShardLoadTotal: 8 * time.Millisecond,
+		ShardErrors: 2,
+		Scans:       5, ScanTotal: 50 * time.Millisecond, SortTotal: 5 * time.Millisecond,
 		Embeds: 5, EmbedTotal: 500 * time.Millisecond,
 		EntriesScanned: 500, EntriesScored: 500,
-		WarmHits: 3, WarmMisses: 1, WarmErrors: 1, WarmLoad: 9 * time.Second,
 	}
+	after.Resident.Hits, after.Resident.Misses = 5, 4
+	after.Resident.Evictions, after.Resident.Uncached = 3, 1
 	phase := phaseDelta(before, after)
 	if phase.Queries != 2 || phase.Scans != 2 || phase.EntriesScanned != 200 {
 		t.Fatalf("phase = %+v", phase)
 	}
-	if phase.ScanTotal != 20*time.Millisecond || phase.SnapshotLoad != 8*time.Millisecond {
+	if phase.ScanTotal != 20*time.Millisecond || phase.ShardLoad != 8*time.Millisecond {
 		t.Fatalf("phase = %+v", phase)
 	}
-	// The warm a deployment pays beside the queries is reported apart, so a
-	// reader never adds it to the load the queries paid.
-	if phase.WarmLoad != 5*time.Second || phase.WarmHits != 2 || phase.WarmMisses != 0 {
-		t.Fatalf("warm phase = %+v, want the warm's own delta", phase)
+	// The store's account of the same reads is carried as its own delta: a
+	// hit is a table found decoded, a decode one materialized off storage.
+	if phase.Hits != 3 || phase.Decodes != 3 || phase.Evictions != 2 || phase.Uncached != 1 {
+		t.Fatalf("resident phase = %+v, want the store's own delta", phase)
 	}
 	// Lookups that failed are their own bucket, and the phase carries them:
 	// they are what tells a pass that lost the lane apart from one that
 	// served it.
-	if phase.SnapshotErrors != 2 || phase.WarmErrors != 1 {
+	if phase.ShardErrors != 2 {
 		t.Fatalf("error phase = %+v", phase)
 	}
 	stages := map[string]stageReading{
@@ -150,17 +151,17 @@ func TestStageDeltasKeepPerStageCounts(t *testing.T) {
 // the limit the scan asked for, so a bigger table does not order more.
 func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 	phase := vectorPhase{Scans: 2, ScanTotal: 20 * time.Millisecond, SortTotal: time.Millisecond, EntriesScanned: 2000}
-	points := projections(phase, 1000, 2048)
+	points := projections(phase, 1000)
 	if len(points) != 4 {
 		t.Fatalf("points = %+v", points)
 	}
-	if points[0].EntriesPerScope != 1000 || points[0].Scan != 10*time.Millisecond {
+	if points[0].EntriesPerShard != 1000 || points[0].Scan != 10*time.Millisecond {
 		t.Fatalf("current point = %+v", points[0])
 	}
 	// Ten times the entries cost ten times the scan, and the ordering stays at
 	// what one scan of this run cost.
 	tenX := points[1]
-	if tenX.EntriesPerScope != 10000 || tenX.Scan != 100*time.Millisecond {
+	if tenX.EntriesPerShard != 10000 || tenX.Scan != 100*time.Millisecond {
 		t.Fatalf("10k point = %+v", tenX)
 	}
 	if tenX.Sort != points[0].Sort || points[0].Sort != 500*time.Microsecond {
@@ -168,26 +169,20 @@ func TestProjectionsScaleTheScanAndKeepTheOrdering(t *testing.T) {
 	}
 }
 
-// TestFootprintLinesNameWhatTheBoundsHeldOut pins the reading a bounded run
-// needs: a footprint below what the scopes read would hold has to say why, and
-// a run with no bounds in play has to stay silent about them.
-func TestFootprintLinesNameWhatTheBoundsHeldOut(t *testing.T) {
+// TestResidentLinesNameWhatTheBudgetHeldOut pins the reading a bounded run
+// needs: resident state below what the shards read would hold has to say why,
+// and a run with no budget in play has to stay silent about it.
+func TestResidentLinesNameWhatTheBudgetHeldOut(t *testing.T) {
 	var out strings.Builder
-	renderFootprint(&out, reading{
-		Footprint: vector.Footprint{Scopes: 1, Entries: 12, Dimensions: 3, VectorBytes: 144},
-	})
-	if strings.Contains(out.String(), "bounds:") {
-		t.Fatalf("a run with no eviction and no oversized table rendered a bounds line:\n%s", out.String())
+	renderResident(&out, reading{Resident: residentReading{Bases: 1, Bytes: 144, Hits: 12}})
+	if strings.Contains(out.String(), "budget:") {
+		t.Fatalf("a run with no eviction and no oversized table rendered a budget line:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "scopes 1  entries 12  dimensions 3") {
-		t.Fatalf("the footprint line changed:\n%s", out.String())
+	if !strings.Contains(out.String(), "tables 1  payload 0.0MB  hits 12  decodes 0") {
+		t.Fatalf("the resident line changed:\n%s", out.String())
 	}
 	out.Reset()
-	renderFootprint(&out, reading{
-		Footprint:     vector.Footprint{Scopes: 2, Entries: 20, Dimensions: 3, VectorBytes: 240},
-		Evictions:     3,
-		UncachedLoads: 1,
-	})
+	renderResident(&out, reading{Resident: residentReading{Bases: 2, Bytes: 240, Evictions: 3, Uncached: 1}})
 	if !strings.Contains(out.String(), "3 tables evicted, 1 reads of a table too large to keep") {
 		t.Fatalf("the bounds line does not name what the cache did:\n%s", out.String())
 	}

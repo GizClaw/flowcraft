@@ -24,9 +24,22 @@ import (
 )
 
 const (
-	laneName                = "vector"
-	AlgorithmVersion        = "vector-cosine-v2"
+	laneName         = "vector"
+	AlgorithmVersion = "vector-cosine-v2"
+	// EncodingVersion names the form of one persisted vector payload. It is
+	// part of the generation a lane writes -- the name its state lives under
+	// and the stamp its manifest carries -- so changing the payload form moves
+	// the lane to a generation nothing was written under, instead of
+	// reinterpreting the payloads an earlier build published as if they were
+	// this build's.
+	EncodingVersion         = "vector-base64-v1"
 	StorageAlgorithmVersion = projectionstore.StorageAlgorithmVersion
+	// rebuildShardConcurrency bounds how many shards a full rebuild embeds and
+	// publishes at a time. A shard is one conversation, and embedding it is one
+	// call per artifact on the multimodal shape several providers serve, so the
+	// bound is what keeps a repair from spending its whole run waiting on the
+	// provider one conversation at a time.
+	rebuildShardConcurrency = 8
 )
 
 // Embedder is the narrow inference surface the vector projection needs.
@@ -45,16 +58,9 @@ type Config struct {
 	Model      model.ModelRef
 	Projection string
 	Thresholds projectionstore.Thresholds
-	// Limits bounds the tables the lane keeps resident. The zero value keeps
-	// every scope's table the lane reads, which is what the lane always did.
-	Limits CacheLimits
-}
-
-// CacheLimits bounds the resident tables: how many scopes may hold one, and
-// how large one may be. A zero field is no bound.
-type CacheLimits struct {
-	Scopes  int
-	Entries int
+	// CacheBytes bounds the tables the store behind this lane keeps decoded.
+	// Zero uses the store's default budget.
+	CacheBytes int64
 }
 
 type Index struct {
@@ -68,170 +74,10 @@ type Index struct {
 	// projection a generation is written to, so a stored version can only
 	// match its own generation's; the stamp records which producer wrote it.
 	producerVersion string
-	// snapshotMu guards the tables the lane keeps resident. Loading a table
-	// per query meant reading every entry through the workspace store's single
-	// mutex, which dominated retrieval latency under concurrency (measured:
-	// vector lane 14.7s/query at 4 workers vs 449ms for bm25). A write drops
-	// the written scope's table, so a query can only see an up-to-date one.
-	snapshotMu sync.RWMutex
-	cache      tableCache
 	// stats accumulates the phase counters Stats() publishes. It is written on
 	// the serving path with atomics only, so no reader can perturb what the
 	// lane serves.
 	stats *statsState
-}
-
-// tableCache holds the materialized tables the lane keeps resident, bounded by
-// CacheLimits. The bounds are about memory, not about what a query sees: a
-// table this cache does not hold is read again, and the scope's page it is
-// read from is the scope's own, so nothing here can change a result.
-//
-// The scope bound evicts by recency -- the table read least recently goes
-// first, which is the one a host is least likely to read again. The per-scope
-// entry bound refuses a table outright: a scope whose table is too large to
-// keep is read and scanned per query instead, trading the memory for the read
-// (measured on the eval store: one 9324-entry, 2048-dimension table is 72.8MB
-// of vector payload, and materializing it costs 9.6s locally).
-type tableCache struct {
-	limits CacheLimits
-	// tables is keyed by the scope's partition, which is what its projection
-	// state is stored under: a scope's runtime, tenant, and agent.
-	tables map[string]*residentTable
-	// clock orders the tables by recency. Every read takes the next reading,
-	// so no two tables share one and an eviction cannot depend on map order.
-	clock     atomic.Int64
-	evictions int64
-	uncached  int64
-}
-
-// residentTable is one table the cache holds and when it was last read.
-type residentTable struct {
-	build snapshot
-	// used is the cache clock reading at the table's last read. It is read and
-	// written under the cache lock, and atomic because a hit records its
-	// recency while holding only the read side of it.
-	used atomic.Int64
-}
-
-// lookup returns the resident table for a partition, and records the read.
-func (cache *tableCache) lookup(key string) (snapshot, bool) {
-	entry, ok := cache.tables[key]
-	if !ok {
-		return snapshot{}, false
-	}
-	entry.used.Store(cache.clock.Add(1))
-	return entry.build, true
-}
-
-// store keeps a table if the bounds allow it. A table larger than the
-// per-scope bound is not kept at all: it is counted, and the next query reads
-// it again.
-func (cache *tableCache) store(key string, build snapshot) {
-	if cache.limits.Entries > 0 && len(build.Entries) > cache.limits.Entries {
-		cache.uncached++
-		return
-	}
-	if cache.tables == nil {
-		cache.tables = make(map[string]*residentTable)
-	}
-	for cache.limits.Scopes > 0 && len(cache.tables) >= cache.limits.Scopes {
-		oldest := cache.oldest()
-		if oldest == "" {
-			break
-		}
-		delete(cache.tables, oldest)
-		cache.evictions++
-	}
-	entry := &residentTable{build: build}
-	entry.used.Store(cache.clock.Add(1))
-	cache.tables[key] = entry
-}
-
-// drop forgets one partition's table.
-func (cache *tableCache) drop(key string) { delete(cache.tables, key) }
-
-// oldest names the table read least recently.
-func (cache *tableCache) oldest() string {
-	oldest, when := "", int64(0)
-	for key, entry := range cache.tables {
-		used := entry.used.Load()
-		if oldest == "" || used < when {
-			oldest, when = key, used
-		}
-	}
-	return oldest
-}
-
-// footprint sizes the tables the cache holds. Dimensions reports the largest
-// table's width, which is the width of every table a lane serves: one index is
-// bound to one embedding model.
-func (cache *tableCache) footprint() Footprint {
-	out := Footprint{Scopes: len(cache.tables)}
-	for _, entry := range cache.tables {
-		out.Entries += len(entry.build.Entries)
-		if entry.build.Dimensions > out.Dimensions {
-			out.Dimensions = entry.build.Dimensions
-		}
-		out.VectorBytes += int64(len(entry.build.Entries)) * int64(entry.build.Dimensions) * 4
-	}
-	return out
-}
-
-// cachedSnapshot returns the scope's vector table, loading it once per write
-// epoch instead of once per query. loaded reports whether the table was
-// materialized off the store rather than served from the cache.
-func (index *Index) cachedSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, bool, error) {
-	key := scope.HardPartitionKey()
-	index.snapshotMu.RLock()
-	cached, ok := index.cache.lookup(key)
-	index.snapshotMu.RUnlock()
-	if ok {
-		return cached, false, nil
-	}
-	build, err := index.readSnapshot(ctx, scope)
-	if err != nil {
-		return snapshot{}, false, err
-	}
-	index.snapshotMu.Lock()
-	index.cache.store(key, build)
-	index.snapshotMu.Unlock()
-	return build, true, nil
-}
-
-// warmSnapshots loads the scope's table in the background so the first query
-// does not pay for it. Deferred before invalidateScope, so the written scope's
-// table is dropped first and then repopulated. The read is counted apart from the
-// serving path -- a query's load has to stay the query's own -- but it pays
-// the same materialization, so a reading that adds the two sees the whole
-// scope's first read.
-func (index *Index) warmSnapshots(ctx context.Context, scope corememory.Scope) {
-	// The warm keeps running after the write that triggered it returns, so the
-	// read must not inherit the caller's cancellation; dropping only the
-	// cancellation keeps the write's span on the warm-up's load.
-	readCtx := context.WithoutCancel(ctx)
-	go func() {
-		started := time.Now()
-		_, loaded, err := index.cachedSnapshot(readCtx, scope)
-		// A warm that failed is recorded too: it is the reason a later query
-		// pays a load of its own, and a warm nobody can see is how a state
-		// that cannot be read stayed invisible.
-		index.recordWarmLoad(time.Since(started), loaded, err != nil)
-	}()
-}
-
-// invalidateScope drops one scope's cached table; called on a write to that
-// scope, and by the tests that model one. A write changes exactly the
-// partition it wrote -- state lives under the scope's own runtime, tenant, and
-// agent -- so a table another scope holds is not what the write could stale.
-//
-// Dropping every scope's table on any write is what the lane did before, and
-// it made a derivation of one conversation evict the tables of the others,
-// which the next query of each paid to materialize (measured: 9.6s locally and
-// 14.0s on the eval host for the 9324-entry table, per scope, per process).
-func (index *Index) invalidateScope(scope corememory.Scope) {
-	index.snapshotMu.Lock()
-	index.cache.drop(scope.HardPartitionKey())
-	index.snapshotMu.Unlock()
 }
 
 // AuditDigests independently recomputes and validates active projection digests.
@@ -274,6 +120,7 @@ var _ component.FullRebuilder = (*Index)(nil)
 var _ component.Searcher = (*Index)(nil)
 var _ component.VectorSearcher = (*Index)(nil)
 var _ component.Producer = (*Index)(nil)
+var _ component.Reclaimer = (*Index)(nil)
 
 func New(config Config) (*Index, error) {
 	if config.Runtime == nil {
@@ -290,13 +137,22 @@ func New(config Config) (*Index, error) {
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			ProducerVersion: generationIdentity(config.Model),
 			Thresholds:      config.Thresholds,
+			MaxBytes:        config.CacheBytes,
+			BaseBytes:       tableBytes,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {
 				return projectionstore.CanonicalEntryDelta(delta, key)
 			},
 			ValidateBase: validateSnapshot,
 			Apply: func(base *snapshot, delta projectionstore.EntryDelta[entry]) error {
 				base.Entries = projectionstore.ApplyEntryDelta(base.Entries, delta, key)
-				return recomputeDimensions(base)
+				if err := recomputeDimensions(base); err != nil {
+					return err
+				}
+				// The norms are derived from the entries the delta replaced,
+				// and a kept base is advanced by this call: a norm of the
+				// table that was there is not a norm of the one that is.
+				base.norms = nil
+				return nil
 			},
 		})
 	if err != nil {
@@ -306,7 +162,6 @@ func New(config Config) (*Index, error) {
 		store: store, runtime: config.Runtime, model: config.Model, projection: config.Projection,
 		storageProjection: generationProjection(config.Projection, config.Model),
 		producerVersion:   generationIdentity(config.Model),
-		cache:             tableCache{limits: config.Limits},
 		stats:             &statsState{},
 	}, nil
 }
@@ -337,36 +192,155 @@ func (index *Index) OtherStoredNames(ctx context.Context, scope corememory.Scope
 	return index.store.OtherNames(ctx, scope, index.storageProjection)
 }
 
+// ReclaimSuperseded removes the bases and segments the lane compacted or
+// rebuilt away, keeping the one the active manifest names.
+//
+// It sweeps the generation this lane reads and no other. A generation another
+// producer filled is a name a deployment still on that producer serves, and the
+// state a version bump left behind is the state a rollback back to it reads;
+// `OtherStoredNames` is what reports it, and repairing the lane is what fills
+// the name this run reads. Reclaiming it here would make a rebuild delete
+// another deployment's index.
+func (index *Index) ReclaimSuperseded(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.ReclaimResult, error) {
+	return index.store.Reclaim(ctx, scope, index.storageProjection)
+}
+
+// ReclaimLegacyLayouts removes the state this lane's family holds for one scope
+// under a projection layout this build does not read. The layout is a segment
+// above the generation name, so a build that bumped it left a whole tree the
+// lane's own manifest cannot report and ReclaimSuperseded cannot reach.
+func (index *Index) ReclaimLegacyLayouts(
+	ctx context.Context,
+	scope corememory.Scope,
+) (component.LegacyReclaimResult, error) {
+	return index.store.ReclaimLegacyLayouts(ctx, scope)
+}
+
 func (index *Index) FullRebuild(ctx context.Context, request component.ProjectionRequest) error {
-	defer index.warmSnapshots(ctx, request.Scope)
-	defer index.invalidateScope(request.Scope)
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
-	if len(request.Artifacts) == 0 {
-		return index.store.FullRebuild(ctx, request.Scope, index.storageProjection, snapshot{}, digestArtifacts(request.Artifacts))
+	groups, err := component.GroupArtifactsByShard(request.Artifacts)
+	if err != nil {
+		return fmt.Errorf("vector projection: %w", err)
 	}
-	items := make([]inference.EmbedItem, len(request.Artifacts))
-	for i, artifact := range request.Artifacts {
+	covered, err := index.publishShards(ctx, request.Scope, groups)
+	if err != nil {
+		return err
+	}
+	// A rebuild replaces the lane for the scope, so a shard the artifact set no
+	// longer covers is state the canonical log no longer has: it has to stop
+	// being readable, or a deleted conversation keeps answering queries.
+	return index.dropUncoveredShards(ctx, request.Scope, covered)
+}
+
+// publishShards embeds and publishes every shard of one scope, rebuildShardConcurrency
+// of them in flight, and reports the shards it covered.
+//
+// A shard is one conversation's state, and embedding it costs one call per
+// artifact: the multimodal endpoint several providers serve fuses an item's
+// inputs into one vector per request, so a conversation's few hundred artifacts
+// are a few hundred round trips. A rebuild that published one shard at a time
+// therefore spent a repair waiting on the provider -- a scope of 300
+// conversations ran for most of a day at that bound -- while the same lane
+// applied deltas from many conversations at once during derivation. Publishing a
+// few shards at a time is what carries the lane's own read rate into the repair,
+// and it stays inside what one scope costs in memory, since a shard is a
+// conversation rather than the scope.
+//
+// A shard that fails stops the shards not yet started; the ones in flight are
+// left to finish, because each is published whole and a half-published shard is
+// not a state a reader can serve. The error reported is the first failure in
+// shard order, so a repair that fails twice reports the same one.
+func (index *Index) publishShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	groups []component.ShardGroup,
+) (map[string]struct{}, error) {
+	failures := make([]error, len(groups))
+	var (
+		wait   sync.WaitGroup
+		slots  = make(chan struct{}, min(len(groups), rebuildShardConcurrency))
+		halted atomic.Bool
+	)
+	for position, group := range groups {
+		if halted.Load() {
+			break
+		}
+		slots <- struct{}{}
+		wait.Add(1)
+		go func(position int, group component.ShardGroup) {
+			defer wait.Done()
+			defer func() { <-slots }()
+			if err := index.publishShard(ctx, scope, group); err != nil {
+				failures[position] = err
+				halted.Store(true)
+			}
+		}(position, group)
+	}
+	wait.Wait()
+	covered := make(map[string]struct{}, len(groups))
+	for position, err := range failures {
+		if err != nil {
+			return nil, err
+		}
+		covered[groups[position].Shard] = struct{}{}
+	}
+	return covered, nil
+}
+
+// publishShard embeds one shard's artifacts and publishes it whole. The error
+// names the shard, since a repair covers every shard of a scope and the failing
+// one is what an operator has to look at.
+func (index *Index) publishShard(
+	ctx context.Context,
+	scope corememory.Scope,
+	group component.ShardGroup,
+) error {
+	build, err := index.embedArtifacts(ctx, group.Artifacts)
+	if err != nil {
+		return fmt.Errorf("vector projection: shard %s: %w", group.Shard, err)
+	}
+	address := projectionstore.Address{Scope: scope, Shard: group.Shard}
+	if err := index.store.FullRebuild(ctx, address, index.storageProjection, build,
+		digestArtifacts(group.Artifacts)); err != nil {
+		return fmt.Errorf("vector projection: shard %s: %w", group.Shard, err)
+	}
+	return nil
+}
+
+// embedArtifacts builds one shard's table from its artifacts: one embed call
+// per shard, so a rebuild of a scope with many conversations does not need the
+// whole scope's text in one request, and a failed shard leaves the shards
+// already published untouched instead of discarding a scope-sized batch.
+func (index *Index) embedArtifacts(ctx context.Context, artifacts []component.Artifact) (snapshot, error) {
+	if len(artifacts) == 0 {
+		return snapshot{}, nil
+	}
+	items := make([]inference.EmbedItem, len(artifacts))
+	for i, artifact := range artifacts {
 		if err := artifact.Validate(); err != nil {
-			return fmt.Errorf("vector projection: artifact %d: %w", i, err)
+			return snapshot{}, fmt.Errorf("vector projection: artifact %d: %w", i, err)
 		}
 		items[i] = inference.EmbedItem{Content: sanitizeEmbedContent(artifact.Content)}
 	}
 	response, err := index.embedWithTextFallback(ctx, items)
 	if err != nil {
-		return fmt.Errorf("vector projection: embed artifacts: %w", err)
+		return snapshot{}, fmt.Errorf("vector projection: embed artifacts: %w", err)
 	}
-	entries := make([]entry, len(request.Artifacts))
+	entries := make([]entry, len(artifacts))
 	dimensions := len(response.Embeddings[0].Vector)
-	for i, artifact := range request.Artifacts {
+	for i, artifact := range artifacts {
 		vector := append([]float32(nil), response.Embeddings[i].Vector...)
 		if _, err := norm(vector); err != nil {
-			return fmt.Errorf("vector projection: artifact %q: %w", artifact.ID, err)
+			return snapshot{}, fmt.Errorf("vector projection: artifact %q: %w", artifact.ID, err)
 		}
 		address := component.AddressFromArtifact(artifact)
 		if err := address.Validate(); err != nil {
-			return fmt.Errorf("vector projection: artifact %q address: %w", artifact.ID, err)
+			return snapshot{}, fmt.Errorf("vector projection: artifact %q address: %w", artifact.ID, err)
 		}
 		entries[i] = entry{
 			ID: artifact.ID, Name: string(artifact.Kind), Vector: vector,
@@ -376,24 +350,38 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
-	return index.store.FullRebuild(ctx, request.Scope, index.storageProjection,
-		snapshot{Dimensions: dimensions, Entries: entries}, digestArtifacts(request.Artifacts))
+	return snapshot{Dimensions: dimensions, Entries: entries}, nil
+}
+
+// dropUncoveredShards removes the shards a scope-wide rebuild did not publish.
+func (index *Index) dropUncoveredShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	covered map[string]struct{},
+) error {
+	if _, err := index.store.PruneShards(ctx, scope, index.storageProjection, covered); err != nil {
+		return fmt.Errorf("vector projection: %w", err)
+	}
+	return nil
 }
 
 func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDelta) error {
-	// Warm the cache for this scope after the write instead of leaving the
-	// first query to pay the materialization (measured: the cold query cost up
-	// to 22s while warm queries sat at ~0.6s).
-	defer index.warmSnapshots(ctx, delta.Scope)
-	defer index.invalidateScope(delta.Scope)
+	address := projectionstore.Address{Scope: delta.Scope, Shard: delta.Shard}
 	if err := delta.ValidateDocumentAddresses(); err != nil {
+		return fmt.Errorf("vector projection: %w", err)
+	}
+	if err := delta.ValidateShard(); err != nil {
 		return fmt.Errorf("vector projection: %w", err)
 	}
 	request := component.ProjectionRequest{Scope: delta.Scope, Projection: delta.Projection}
 	if err := index.validateRequest(request); err != nil {
 		return err
 	}
-	build, _, err := index.store.Materialize(ctx, delta.Scope, index.storageProjection)
+	// The base is read, not taken: the delta needs the entries it already
+	// holds -- to embed only what changed, and to re-use the vector of what did
+	// not -- and nothing here writes to them. Copying a scope-sized table per
+	// commit is what made the derivation quadratic.
+	build, _, err := index.store.MaterializeView(ctx, address, index.storageProjection)
 	if err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("vector projection: materialize active build: %w", err)
 	}
@@ -444,7 +432,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 			ContentDigest: contentDigest(artifact),
 		})
 	}
-	_, err = index.store.ApplyDelta(ctx, delta.Scope, index.storageProjection,
+	_, err = index.store.ApplyDelta(ctx, address, index.storageProjection,
 		projectionstore.EntryDelta[entry]{
 			Upserts: upserts, DeleteIDs: delta.DeleteIDs,
 			DeleteDocuments:    delta.DeleteDocuments,
@@ -458,13 +446,11 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 		return nil, err
 	}
 	index.recordQuery()
-	loadStarted := time.Now()
-	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
-	index.recordSnapshotLoad(time.Since(loadStarted), loaded, err != nil)
+	shards, err := index.searchShards(ctx, request.Scope, request.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	if len(build.Entries) == 0 {
+	if len(shards) == 0 {
 		return []component.Candidate{}, nil
 	}
 	content := requestContent(request.Query)
@@ -474,13 +460,8 @@ func (index *Index) Search(ctx context.Context, request component.SearchRequest)
 	if err != nil {
 		return nil, fmt.Errorf("vector projection: embed query: %w", err)
 	}
-	results, report, err := searchSnapshot(build, response.Embeddings[0].Vector, component.VectorSearchFilter{
-		Metadata: request.Metadata,
-	}, request.Limit)
-	if err == nil {
-		index.recordScan(report)
-	}
-	return results, err
+	return index.scanShards(ctx, shards, response.Embeddings[0].Vector,
+		request.Scope, component.VectorSearchFilter{Metadata: request.Metadata}, request.Limit)
 }
 
 // SearchVector searches persisted projection vectors with a precomputed query
@@ -490,24 +471,92 @@ func (index *Index) SearchVector(ctx context.Context, request component.VectorSe
 		return nil, err
 	}
 	index.recordQuery()
-	loadStarted := time.Now()
-	build, loaded, err := index.cachedSnapshot(ctx, request.Scope)
-	index.recordSnapshotLoad(time.Since(loadStarted), loaded, err != nil)
+	shards, err := index.searchShards(ctx, request.Scope, request.Filter.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	results, report, err := searchSnapshot(build, request.Vector, request.Filter, request.Limit)
-	if err == nil {
-		index.recordScan(report)
+	if len(shards) == 0 {
+		return []component.Candidate{}, nil
 	}
-	return results, err
+	return index.scanShards(ctx, shards, request.Vector, request.Scope, request.Filter, request.Limit)
 }
 
-func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (snapshot, error) {
+// searchShards resolves the shards one read has to touch. A request that names
+// an axis reads the shards it names; a request that names nothing is the exact
+// whole-scope recall, and enumerates every shard the lane holds.
+func (index *Index) searchShards(
+	ctx context.Context,
+	scope corememory.Scope,
+	metadata corememory.Metadata,
+) ([]string, error) {
+	plan, err := projectionstore.ShardsFor(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("vector projection: selector: %w", err)
+	}
+	if !plan.All {
+		return plan.Shards, nil
+	}
+	shards, err := index.store.Shards(ctx, scope, index.storageProjection)
+	if err != nil {
+		return nil, fmt.Errorf("vector projection: %w", err)
+	}
+	return shards, nil
+}
+
+// scanShards scores every planned shard and merges the results. Each shard is
+// read on its own, and the merge keeps the top limit of the union under the
+// order the scan publishes -- higher score, then lower id -- which is a total
+// order, so the result is the same as scanning one table that held every
+// planned shard.
+func (index *Index) scanShards(
+	ctx context.Context,
+	shards []string,
+	query []float32,
+	scope corememory.Scope,
+	filter component.VectorSearchFilter,
+	limit int,
+) ([]component.Candidate, error) {
+	var report scanReport
+	collected := make([][]component.Candidate, 0, len(shards))
+	for _, shard := range shards {
+		address := projectionstore.Address{Scope: scope, Shard: shard}
+		loadStarted := time.Now()
+		build, err := index.readSnapshot(ctx, address)
+		index.recordShardLoad(time.Since(loadStarted), err != nil)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				// A shard the plan names that was never written holds
+				// nothing: that is an empty read, not a failed one.
+				continue
+			}
+			return nil, err
+		}
+		if len(build.Entries) == 0 {
+			continue
+		}
+		results, shardReport, err := searchSnapshot(build, query, filter, limit)
+		if err != nil {
+			return nil, err
+		}
+		report.scanned += shardReport.scanned
+		report.scored += shardReport.scored
+		report.scanNanos += shardReport.scanNanos
+		report.scoreNanos += shardReport.scoreNanos
+		report.sortNanos += shardReport.sortNanos
+		collected = append(collected, results)
+	}
+	index.recordScan(report)
+	return component.MergeCandidates(collected, limit), nil
+}
+
+func (index *Index) readSnapshot(ctx context.Context, address projectionstore.Address) (snapshot, error) {
 	if index == nil || index.store == nil {
 		return snapshot{}, errors.New("vector projection: index is required")
 	}
-	build, _, err := index.store.Materialize(ctx, scope, index.storageProjection)
+	// The table shares its entries with the store's kept base: the norms below
+	// are the lane's own reading of it, so they are computed onto this copy
+	// rather than written into the state the store holds.
+	build, _, err := index.store.MaterializeView(ctx, address, index.storageProjection)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("vector projection: %w", err)
 	}
@@ -517,13 +566,13 @@ func (index *Index) readSnapshot(ctx context.Context, scope corememory.Scope) (s
 	return build, nil
 }
 
-// fillNorms computes every entry's L2 norm once per materialized table, so a
-// query scores with a stored norm instead of recomputing one per entry per
-// query. The norm is half of one cosine's floating-point work, and it is the
-// half that depends on the entry alone: measured on a 9324-entry table, the
-// cosine phase of a query was 7.2µs per scored entry, of which the norm was
-// the vector-shaped part. The cost moves to the table's own load, where it is
-// paid once per scope per write epoch instead of once per query.
+// fillNorms computes every entry's L2 norm once per materialized table, so the
+// scan scores with a stored norm instead of recomputing one per entry. The lane
+// holds no table of its own, so this is paid per query: on a table of the size
+// one shard holds -- a conversation's 800-odd entries at 2048 dimensions -- it
+// is about 1.7M multiply-adds, one millisecond, against a scan that reads every
+// one of those entries. A second copy of the norms, kept resident to save that
+// millisecond, would be the memory this lane is built not to hold.
 //
 // A vector that has no norm is rejected here, with the entry named: the
 // materialized state passed the lane's base validation, so this is the same
@@ -839,6 +888,16 @@ func recomputeDimensions(build *snapshot) error {
 	return nil
 }
 
+// tableBytes weighs one table for the store's cache budget: its vector payload,
+// four bytes per dimension per entry. That is the term that dominates a table
+// and the one a host serving many conversations has to bound -- a measured
+// 9324-entry, 2048-dimension table is 72.8MB of payload -- and it is the only
+// term counted here: entry identity, addresses and metadata sit on top, so a
+// budget sized in payload under-counts what the cache really holds.
+func tableBytes(build snapshot) int64 {
+	return int64(len(build.Entries)) * int64(build.Dimensions) * 4
+}
+
 func vectorEntryKey() projectionstore.EntryKey[entry] {
 	return projectionstore.EntryKey[entry]{
 		ID: func(value entry) string { return value.ID },
@@ -922,19 +981,22 @@ func textOnlyEmbedContent(content coremessage.Content) coremessage.Content {
 // generationProjection isolates vectors produced by different embedding
 // identities. A new model starts an empty generation and is filled by normal
 // source replay; retrieval degrades through the other lanes until it exists.
+// The payload form is part of the identity for the same reason: state an
+// earlier form published is not state this build can read, and a new name is
+// how the lane says so without touching what a build that still reads it holds.
 func generationProjection(projection string, model model.ModelRef) string {
 	payload := strings.Join([]string{
-		AlgorithmVersion, model.ID.Provider, model.ID.Name, model.Profile,
+		AlgorithmVersion, EncodingVersion, model.ID.Provider, model.ID.Name, model.Profile,
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return fmt.Sprintf("%s.vector-%x", projection, sum[:12])
 }
 
 // generationIdentity names the producer of one vector generation, readably:
-// the scoring algorithm together with the embedding model identity the
-// generation is bound to.
+// the scoring algorithm and the payload form, together with the embedding model
+// identity the generation is bound to.
 func generationIdentity(model model.ModelRef) string {
-	parts := []string{AlgorithmVersion, model.ID.Provider, model.ID.Name}
+	parts := []string{AlgorithmVersion, EncodingVersion, model.ID.Provider, model.ID.Name}
 	if model.Profile != "" {
 		parts = append(parts, model.Profile)
 	}

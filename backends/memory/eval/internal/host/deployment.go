@@ -3,6 +3,13 @@
 // document: a diagnostic that wired its own resources could report on a
 // deployment the runner never builds.
 //
+// A lane that measures one surface rather than a deployment gets a document of
+// its own (deploy-arbiter.yaml) rather than an assembly wired by hand. The
+// distinction is what the numbers mean: building a document is the only way a
+// reading can be reproduced by building the same file, and a document states
+// the provider, the models, and the workflow in one place a runner can be
+// pointed at.
+//
 // It is internal because it is host wiring, not harness surface: the eval
 // package stays independent of core/deploy and the provider drivers.
 package host

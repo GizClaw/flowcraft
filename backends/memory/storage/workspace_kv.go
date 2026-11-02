@@ -128,15 +128,48 @@ func (store *WorkspaceKV) Keys(ctx context.Context, prefix string) ([]string, er
 // walkKeys collects the keys inside one prefix area. The caller holds the
 // lock, so the walk and the reads that may follow it see one state.
 func (store *WorkspaceKV) walkKeys(ctx context.Context, prefix string) ([]string, error) {
-	base := prefixBase(prefix)
-	basePath := kvRoot
-	if base != "" {
-		var err error
-		basePath, err = nameToPath(kvRoot, base)
-		if err != nil {
-			return nil, err
-		}
+	if prefix == "" {
+		return store.walkDir(ctx, kvRoot, prefix)
 	}
+	candidate, err := nameToPath(kvRoot, prefix)
+	if err != nil {
+		return nil, err
+	}
+	info, statErr := store.ws.Stat(ctx, candidate)
+	if statErr == nil {
+		if info.IsDir() {
+			return store.walkDir(ctx, candidate, prefix)
+		}
+		// The prefix names a key rather than a directory, so that key is the
+		// whole area.
+		return []string{prefix}, nil
+	}
+	if isNotFound(statErr) {
+		// A key inside the area would have made the prefix a directory.
+		return nil, nil
+	}
+	// The prefix can also sit below a key, which is a file: nothing lives
+	// under one, so the area is empty as well. Anything else is a real
+	// failure to read the tree, and reporting it as an empty area would hide
+	// state.
+	parent := prefixBase(prefix)
+	if parent == "" {
+		return nil, statErr
+	}
+	parentPath, err := nameToPath(kvRoot, parent)
+	if err != nil {
+		return nil, err
+	}
+	if parentInfo, parentErr := store.ws.Stat(ctx, parentPath); parentErr == nil && !parentInfo.IsDir() {
+		return nil, nil
+	}
+	return nil, statErr
+}
+
+// walkDir collects the keys below one directory. Every key there is inside the
+// prefix area -- the walk started at it -- so the filter only guards against a
+// caller that asked for a broader area than the directory it resolved to.
+func (store *WorkspaceKV) walkDir(ctx context.Context, basePath, prefix string) ([]string, error) {
 	keys := make([]string, 0)
 	err := workspace.Walk(ctx, store.ws, basePath, func(child string, entry fs.DirEntry) error {
 		child = normalizeWalkPath(child)

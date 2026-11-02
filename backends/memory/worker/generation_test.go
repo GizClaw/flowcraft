@@ -270,6 +270,9 @@ func TestGenerationSwitchConvergesTheProjectionLanes(t *testing.T) {
 		t.Fatalf("projected entries after the switch = %#v, want one entry replacing %#v", switched, derived)
 	}
 	converge := lane.lastConverge(t)
+	if want, _ := component.ConversationShard(conversationID); converge.Shard != want {
+		t.Fatalf("converge shard = %q, want %q", converge.Shard, want)
+	}
 	if !contains(converge.DeleteIDs, derived[0]) {
 		t.Fatalf("converge deletes = %#v, want the replaced entry %q", converge.DeleteIDs, derived[0])
 	}

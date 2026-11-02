@@ -36,8 +36,8 @@ func TestExtractionModelAB(t *testing.T) {
 		t.Fatal(err)
 	}
 	loadEnvFile(envPath)
-	if os.Getenv("DEEPSEEK_API_KEY") == "" || os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("DEEPSEEK_API_KEY and OPENAI_API_KEY are required")
+	if os.Getenv("GATEWAY_API_KEY") == "" {
+		t.Skip("GATEWAY_API_KEY is required")
 	}
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to compare extraction models")
@@ -69,8 +69,8 @@ func TestExtractionModelAB(t *testing.T) {
 		name     string
 	}
 	models := []modelUnderTest{
-		{label: "deepseek-flash", provider: "deepseek", name: "deepseek-flash"},
-		{label: "gpt-4o-mini", provider: "openai", name: "gpt-4o-mini"},
+		{label: "deepseek-flash", provider: "gateway", name: "deepseek-flash"},
+		{label: "deepseek-v4-pro", provider: "gateway", name: "deepseek-v4-pro"},
 	}
 
 	type turnResult struct {

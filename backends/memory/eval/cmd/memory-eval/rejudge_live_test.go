@@ -41,8 +41,8 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 		t.Fatal(err)
 	}
 	loadEnvFile(envPath)
-	if os.Getenv("DEEPSEEK_API_KEY") == "" {
-		t.Skip("DEEPSEEK_API_KEY is required")
+	if os.Getenv("GATEWAY_API_KEY") == "" {
+		t.Skip("GATEWAY_API_KEY is required")
 	}
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to re-judge live")
@@ -86,7 +86,7 @@ func TestRejudgeStoredAnswersWithLenientJudge(t *testing.T) {
 	// being silently substituted.
 	newJudge := func(style evalanswer.JudgeStyle) *evalanswer.Model {
 		judge, judgeErr := evalanswer.New(built.Inference, model.ModelRef{
-			ID: model.ModelID{Provider: "deepseek", Name: "deepseek-flash"},
+			ID: model.ModelID{Provider: "gateway", Name: "deepseek-flash"},
 		})
 		if judgeErr != nil {
 			t.Fatal(judgeErr)

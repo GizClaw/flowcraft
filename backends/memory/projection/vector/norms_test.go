@@ -148,7 +148,7 @@ func TestStoredNormsAreDerivedFromTheVectors(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	build, err := index.readSnapshot(context.Background(), scope)
+	build, err := index.readSnapshot(context.Background(), addressOf(scope, shardOf("conversation")))
 	if err != nil {
 		t.Fatal(err)
 	}

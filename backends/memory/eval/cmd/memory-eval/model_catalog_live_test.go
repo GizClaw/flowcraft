@@ -18,9 +18,11 @@ import (
 // A model name that is not in the provider's catalog is a configuration error,
 // not something to discover from a fingerprint months later.
 //
-// The OpenAI arm also reads the model's `shutdown_date`: a configured model
-// that the provider has announced it will retire, or has already retired, fails
-// here in a minute instead of mid-run.
+// It reads deploy.yaml, so it covers both of the document's providers: the
+// gateway publishes one catalog for the two wire surfaces, which is why the
+// generate, decision, and embedding models are all listed by one GET /v1/models.
+// A name missing from it is not substituted: the gateway answers 403
+// service_model_unavailable, and the run stops where it started.
 func TestConfiguredModelsExistInCatalog(t *testing.T) {
 	if os.Getenv("MEMORY_EVAL_LIVE") != "1" {
 		t.Skip("set MEMORY_EVAL_LIVE=1 to check the provider catalogs")
@@ -32,24 +34,16 @@ func TestConfiguredModelsExistInCatalog(t *testing.T) {
 	}
 
 	providers := []struct {
-		name       string
-		keyEnv     string
-		url        string
-		pattern    string
-		retirement bool
+		name    string
+		keyEnv  string
+		url     string
+		pattern string
 	}{
 		{
-			name:    "deepseek",
-			keyEnv:  "DEEPSEEK_API_KEY",
-			url:     "https://api.deepseek.com/models",
-			pattern: `name:\s*(deepseek-[a-z0-9.\-]+)`,
-		},
-		{
-			name:       "openai",
-			keyEnv:     "OPENAI_API_KEY",
-			url:        "https://api.openai.com/v1/models",
-			pattern:    `name:\s*(gpt-[a-z0-9.\-]+)`,
-			retirement: true,
+			name:    "gateway",
+			keyEnv:  "GATEWAY_API_KEY",
+			url:     "https://ai.haivivi.cn/v1/models",
+			pattern: `name:\s*((?:deepseek|doubao|azure|glm|minimax)-[a-z0-9.\-]+)`,
 		},
 	}
 
@@ -65,15 +59,11 @@ func TestConfiguredModelsExistInCatalog(t *testing.T) {
 			}
 			served := servedModels(t, provider.url, key)
 			for _, name := range names {
-				shutdown, ok := served[name]
+				_, ok := served[name]
 				if !ok {
 					t.Fatalf("deploy.yaml asks for %q, which the endpoint does not serve (available: %v); "+
 						"an unknown name is silently substituted, so results would not come from the configured model",
 						name, slices.Sorted(maps.Keys(served)))
-				}
-				if provider.retirement && shutdown != "" {
-					t.Fatalf("deploy.yaml asks for %q, which the provider has retired or scheduled "+
-						"to retire on %s; pick a served model instead", name, shutdown)
 				}
 			}
 			t.Logf("configured %s models %v all exist in the catalog", provider.name, names)
@@ -81,9 +71,9 @@ func TestConfiguredModelsExistInCatalog(t *testing.T) {
 	}
 }
 
-// declaredModels reads the model names the deploy document declares for one
-// provider. The pattern is anchored on the provider's name prefix so a model
-// belongs to exactly one arm.
+// declaredModels reads the model names the deploy document declares. The
+// pattern is anchored on a name prefix so the prose in the document's comments
+// is not mistaken for a declaration.
 func declaredModels(t *testing.T, document []byte, pattern, provider string) []string {
 	t.Helper()
 	names := map[string]struct{}{}
@@ -93,10 +83,8 @@ func declaredModels(t *testing.T, document []byte, pattern, provider string) []s
 	return slices.Sorted(maps.Keys(names))
 }
 
-// servedModels returns every model the endpoint lists, mapped to its announced
-// shutdown date ("" when the provider publishes none, which is the case for
-// DeepSeek and for an OpenAI model that is not going away).
-func servedModels(t *testing.T, url, key string) map[string]string {
+// servedModels returns every model the endpoint lists.
+func servedModels(t *testing.T, url, key string) map[string]struct{} {
 	t.Helper()
 	client := &http.Client{Timeout: 30 * time.Second}
 	request, err := http.NewRequest(http.MethodGet, url, nil)
@@ -114,8 +102,7 @@ func servedModels(t *testing.T, url, key string) map[string]string {
 	}
 	var payload struct {
 		Data []struct {
-			ID           string `json:"id"`
-			ShutdownDate string `json:"shutdown_date"`
+			ID string `json:"id"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
@@ -124,9 +111,9 @@ func servedModels(t *testing.T, url, key string) map[string]string {
 	if len(payload.Data) == 0 {
 		t.Fatalf("GET %s listed no models", url)
 	}
-	served := make(map[string]string, len(payload.Data))
+	served := make(map[string]struct{}, len(payload.Data))
 	for _, model := range payload.Data {
-		served[model.ID] = model.ShutdownDate
+		served[model.ID] = struct{}{}
 	}
 	return served
 }

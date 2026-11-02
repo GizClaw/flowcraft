@@ -20,45 +20,49 @@ func (store unreadableStore) Get(context.Context, string) ([]byte, error) {
 	return nil, errors.New("storage: state cannot be read")
 }
 
-// TestStatsCountsAFailedLookupApartFromHitsAndLoads pins the counter split: a
-// lookup that returned an error used to be recorded as a hit, so a reading of
-// a lane that served nothing showed a resident table it never read. A hit, a
-// load, and a failed lookup are three outcomes and are counted apart.
-func TestStatsCountsAFailedLookupApartFromHitsAndLoads(t *testing.T) {
+// TestStatsCountsAFailedLookupApartFromLoads pins the counter split: a lookup
+// that returned an error must not be read as a table the lane served. A load
+// and a failed lookup are two outcomes and are counted apart.
+func TestStatsCountsAFailedLookupApartFromLoads(t *testing.T) {
 	runtime, model := fakeRuntime(t)
 	kvStore, ok := kvFor(t).(*storage.WorkspaceKV)
 	if !ok {
 		t.Fatalf("kvFor returned %T", kvFor(t))
 	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	// The shard has to exist for the failed read to be a lookup at all: a scope
+	// no write reached holds no shard, and a global read of it is empty rather
+	// than unreadable.
+	writer, err := New(Config{KV: kvStore, Runtime: runtime, Model: model, Projection: "facts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	index, err := New(Config{KV: unreadableStore{kvStore}, Runtime: runtime, Model: model, Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
 	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err == nil {
 		t.Fatal("a lookup that cannot read its state returned a result")
 	}
 	stats := index.Stats()
-	if stats.SnapshotErrors != 1 || stats.SnapshotHits != 0 || stats.SnapshotMisses != 0 {
+	if stats.ShardErrors != 1 || stats.ShardLoads != 0 {
 		t.Fatalf("failed lookup counted as %+v", stats)
 	}
-}
-
-// waitForStats polls until the reading satisfies want, so a test never races
-// the background warm a write starts.
-func waitForStats(t *testing.T, index *Index, why string, want func(Stats) bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if want(index.Stats()) {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if stats.Resident.Misses != 0 || stats.Resident.Bases != 0 {
+		t.Fatalf("a failed lookup left a table resident: %+v", stats.Resident)
 	}
-	t.Fatalf("stats never reached %s: %+v", why, index.Stats())
 }
 
-func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
+// TestStatsAttributesThePhasesOfAQuery pins what one query is made of: the
+// shard it materialized, the query it embedded, the table it scanned, and what
+// the store paid to hand that table over. A second query of the same shard is
+// served out of the store's kept base, which is the only resident copy.
+func TestStatsAttributesThePhasesOfAQuery(t *testing.T) {
 	runtime, model := fakeRuntime(t)
 	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
 	if err != nil {
@@ -72,9 +76,6 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 	if err := index.Rebuild(ctx, component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
 		t.Fatal(err)
 	}
-	// The warm a write starts materializes the table; it is counted apart, so
-	// the two reads below are the serving path's hits.
-	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
 	if _, err := index.Search(ctx, component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +93,9 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 	if stats.Queries != 2 {
 		t.Fatalf("queries = %d", stats.Queries)
 	}
-	if stats.SnapshotHits != 2 || stats.SnapshotMisses != 0 {
-		t.Fatalf("serving-path snapshot hits/misses = %d/%d: a write's warm is not a query's load",
-			stats.SnapshotHits, stats.SnapshotMisses)
-	}
-	if stats.WarmHits != 0 || stats.WarmMisses != 1 {
-		t.Fatalf("warm hits/misses = %d/%d", stats.WarmHits, stats.WarmMisses)
+	if stats.ShardLoads != 2 || stats.ShardErrors != 0 {
+		t.Fatalf("shard loads/errors = %d/%d: each query reads the one shard it names",
+			stats.ShardLoads, stats.ShardErrors)
 	}
 	if stats.Embeds != 1 {
 		t.Fatalf("embeds = %d: only the text search may embed a query", stats.Embeds)
@@ -109,9 +107,16 @@ func TestStatsAttributesPhasesAndFootprint(t *testing.T) {
 		t.Fatalf("score total = %v exceeds the scan total %v: the walk cannot be negative",
 			stats.ScoreTotal, stats.ScanTotal)
 	}
-	if stats.Footprint.Scopes != 1 || stats.Footprint.Entries != 3 ||
-		stats.Footprint.Dimensions != 2 || stats.Footprint.VectorBytes != 3*2*4 {
-		t.Fatalf("footprint = %+v", stats.Footprint)
+	// The rebuild published the table but kept nothing: the value it published
+	// was the caller's. The first query decodes it and the store keeps it, so
+	// the second is a hit -- one table resident, weighed in its vector payload
+	// (three entries of two dimensions).
+	if stats.Resident.Bases != 1 || stats.Resident.Bytes != 3*2*4 {
+		t.Fatalf("resident = %+v, want the one table the first query decoded", stats.Resident)
+	}
+	if stats.Resident.Hits != 1 || stats.Resident.Misses != 1 {
+		t.Fatalf("serving two queries off one table = hits %d, misses %d",
+			stats.Resident.Hits, stats.Resident.Misses)
 	}
 }
 
@@ -137,60 +142,6 @@ func TestStatsScoredFollowsTheFilter(t *testing.T) {
 	if stats.EntriesScanned != 2 || stats.EntriesScored != 0 {
 		t.Fatalf("scanned/scored = %d/%d: a filtered-out entry is scanned, not scored",
 			stats.EntriesScanned, stats.EntriesScored)
-	}
-}
-
-func TestFootprintFollowsCacheInvalidation(t *testing.T) {
-	runtime, model := fakeRuntime(t)
-	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
-	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
-		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.Footprint.Entries == 1 })
-	index.invalidateScope(scope)
-	if footprint := index.Stats().Footprint; footprint != (Footprint{}) {
-		t.Fatalf("footprint after invalidation = %+v", footprint)
-	}
-}
-
-// TestStatsKeepsAQueryThatMaterializesOnTheServingPath pins the split from the
-// other side: dropping the cache without warming it leaves the next query to
-// materialize the table, and that read is the query's own.
-func TestStatsKeepsAQueryThatMaterializesOnTheServingPath(t *testing.T) {
-	runtime, model := fakeRuntime(t)
-	index, err := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
-	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
-		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitForStats(t, index, "the warm load", func(stats Stats) bool { return stats.WarmMisses == 1 })
-	index.invalidateScope(scope)
-	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
-		t.Fatal(err)
-	}
-	stats := index.Stats()
-	if stats.SnapshotMisses != 1 || stats.SnapshotHits != 0 {
-		t.Fatalf("the query that materialized the table was not counted on the serving path: %+v", stats)
-	}
-	if stats.WarmMisses != 1 {
-		t.Fatalf("warm misses = %d: the query's miss must not land in the warm counters", stats.WarmMisses)
-	}
-	if _, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "alpha"}); err != nil {
-		t.Fatal(err)
-	}
-	if after := index.Stats(); after.SnapshotHits != 1 || after.SnapshotMisses != 1 {
-		t.Fatalf("second read = hits %d misses %d, want one hit", after.SnapshotHits, after.SnapshotMisses)
 	}
 }
 

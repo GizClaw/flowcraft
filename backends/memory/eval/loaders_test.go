@@ -32,6 +32,34 @@ const loCoMoFixture = `[
   }
 ]`
 
+// longMemEvalLabelsFixture is the two shapes the label rules have to keep
+// apart: an abstention row ("_abs", where refusing is the answer) and a type
+// this build does not know.
+const longMemEvalLabelsFixture = `[
+  {
+    "question_id": "q-labels_abs",
+    "question_type": "temporal-reasoning",
+    "question": "Which task did I complete first?",
+    "answer": "The information provided is not enough.",
+    "question_date": "2023/07/02 (Sun) 09:15",
+    "answer_session_ids": ["s1"],
+    "haystack_session_ids": ["s1"],
+    "haystack_dates": ["2023/05/01 (Mon) 09:00"],
+    "haystack_sessions": [[{"role": "user", "content": "I like tea."}]]
+  },
+  {
+    "question_id": "q-new-type",
+    "question_type": "brand-new-type",
+    "question": "What is my favourite colour?",
+    "answer": "blue",
+    "question_date": "2023/07/02 (Sun) 09:15",
+    "answer_session_ids": [],
+    "haystack_session_ids": ["s1"],
+    "haystack_dates": ["2023/05/01 (Mon) 09:00"],
+    "haystack_sessions": [[{"role": "user", "content": "I like blue."}]]
+  }
+]`
+
 const longMemEvalFixture = `[
   {
     "question_id": "q-1",
@@ -136,6 +164,175 @@ func TestLoadLongMemEvalOrdersSessions(t *testing.T) {
 	}
 	if scenario.Questions[0].WantContains[0] != "May 2023" {
 		t.Fatalf("question = %#v", scenario.Questions[0])
+	}
+}
+
+// longMemEvalDatedFixture carries three sessions out of date order, one of them
+// with a date string no layout parses. It is the shape the dating rules have to
+// answer: which session happened when, and what happens when the date is
+// garbage.
+const longMemEvalDatedFixture = `[
+  {
+    "question_id": "q-dates",
+    "question_type": "temporal-reasoning",
+    "question": "How long after I adopted the dog did I move?",
+    "answer": "two months",
+    "question_date": "2023/07/02 (Sun) 09:15",
+    "answer_session_ids": ["s-b", "s-a", "s-unknown"],
+    "haystack_session_ids": ["s-b", "s-a", "s-c"],
+    "haystack_dates": ["2023/06/20 (Tue) 08:00", "2023/05/01 (Mon) 09:00", "not a date"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "We moved to Lisbon."}, {"role": "assistant", "content": "Congrats!"}],
+      [{"role": "user", "content": "I adopted a dog today."}],
+      [{"role": "user", "content": "I like tea."}]
+    ]
+  }
+]`
+
+// The session date is what a temporal question resolves against: it reaches the
+// messages as the observed_at anchor, its whole session shares it, and a date
+// that cannot be parsed leaves the messages unanchored instead of guessing.
+func TestLoadLongMemEvalAnchorsSessionDates(t *testing.T) {
+	options := LoaderOptions{Scope: Scope{RuntimeID: "eval"}, Dateless: true, ObservedAt: "metadata"}
+	scenarios, stats, err := LoadLongMemEval([]byte(longMemEvalDatedFixture), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := scenarios[0].Turns
+	if len(turns) != 3 {
+		t.Fatalf("turns = %d", len(turns))
+	}
+	if turns[0].IdempotencyKey != "longmemeval/q-dates/s-a" || turns[1].IdempotencyKey != "longmemeval/q-dates/s-b" {
+		t.Fatalf("sessions are not in date order: %q, %q", turns[0].IdempotencyKey, turns[1].IdempotencyKey)
+	}
+	if got := turns[0].ObservedAt; len(got) != 1 || got[0] != "2023-05-01T09:00:00Z" {
+		t.Fatalf("s-a observed_at = %#v", got)
+	}
+	// The anchor is a property of the session, so every message in it carries
+	// the same value.
+	if got := turns[1].ObservedAt; len(got) != 2 || got[0] != "2023-06-20T08:00:00Z" || got[1] != "2023-06-20T08:00:00Z" {
+		t.Fatalf("s-b observed_at = %#v", got)
+	}
+	if got := turns[2].ObservedAt; len(got) != 0 {
+		t.Fatalf("an unparsable date must leave the messages unanchored: %#v", got)
+	}
+	if stats.ObservedAtAnchored != 3 || stats.ObservedAtUnparsed != 1 {
+		t.Fatalf("observed-at stats = %#v", stats)
+	}
+}
+
+// The text prefix is the other rendering of the same session date, and the two
+// are alternatives: the metadata anchor requires the dateless conversion, the
+// same rule the LoCoMo conversion enforces.
+func TestLoadLongMemEvalDatePrefix(t *testing.T) {
+	prefixed, _, err := LoadLongMemEval([]byte(longMemEvalDatedFixture), LoaderOptions{Scope: Scope{RuntimeID: "eval"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prefixed[0].Turns[0].Messages[0].Content.Text(); got != "[2023/05/01 (Mon) 09:00] I adopted a dog today." {
+		t.Fatalf("prefixed text = %q", got)
+	}
+	dateless, _, err := LoadLongMemEval([]byte(longMemEvalDatedFixture),
+		LoaderOptions{Scope: Scope{RuntimeID: "eval"}, Dateless: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dateless[0].Turns[0].Messages[0].Content.Text(); got != "I adopted a dog today." {
+		t.Fatalf("dateless text = %q", got)
+	}
+	if _, _, err := LoadLongMemEval([]byte(longMemEvalDatedFixture),
+		LoaderOptions{Scope: Scope{RuntimeID: "eval"}, ObservedAt: "metadata"}); err == nil {
+		t.Fatal("observed_at=metadata without the dateless conversion was accepted")
+	}
+}
+
+// The dataset labels its evidence by session, so the question carries the gold
+// sessions while every message still gets an id: that id is what ingest writes
+// and what lets a recalled message be matched back to its session. A gold
+// session the haystack does not hold is counted, not graded as a permanent miss.
+func TestLoadLongMemEvalNamesEvidenceSessionsAndTurnIDs(t *testing.T) {
+	scenarios, stats, err := LoadLongMemEval([]byte(longMemEvalDatedFixture), LoaderOptions{Scope: Scope{RuntimeID: "eval"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	question := scenarios[0].Questions[0]
+	if got := question.EvidenceSessions; len(got) != 2 || got[0] != "s-b" || got[1] != "s-a" {
+		t.Fatalf("evidence sessions = %#v", got)
+	}
+	if len(question.Evidence) != 0 {
+		t.Fatalf("session evidence must not be restated as turn evidence: %#v", question.Evidence)
+	}
+	if stats.EvidenceUnresolved != 1 {
+		t.Fatalf("an unresolvable gold session must be counted: stats=%#v", stats)
+	}
+	turns := scenarios[0].Turns
+	if got := turns[0].DatasetIDs; len(got) != 1 || got[0] != "s-a#0" {
+		t.Fatalf("s-a dataset ids = %#v", got)
+	}
+	if got := turns[1].DatasetIDs; len(got) != 2 || got[0] != "s-b#0" || got[1] != "s-b#1" {
+		t.Fatalf("s-b dataset ids = %#v", got)
+	}
+	if len(turns[1].DatasetIDs) != len(turns[1].Messages) {
+		t.Fatalf("dataset ids must align with messages: %#v", turns[1])
+	}
+}
+
+// Every row the dataset marks is carried into the question: the asked-at date,
+// the type as both a report bucket and its own label, and the "_abs" marker
+// that says the graded behaviour is a refusal. A type this build does not know
+// keeps its label and lands in the catch-all bucket rather than reading as
+// uncategorised.
+func TestLoadLongMemEvalCarriesQuestionLabels(t *testing.T) {
+	scenarios, _, err := LoadLongMemEval([]byte(longMemEvalLabelsFixture), LoaderOptions{Scope: Scope{RuntimeID: "eval"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenarios) != 2 {
+		t.Fatalf("scenarios = %d", len(scenarios))
+	}
+	dated := scenarios[0].Questions[0]
+	if dated.AskedAt != "2023/07/02 (Sun) 09:15" {
+		t.Fatalf("asked_at = %q, want the dataset's own string", dated.AskedAt)
+	}
+	if dated.Category != LongMemEvalTemporalReasoning || dated.CategoryLabel != "temporal-reasoning" {
+		t.Fatalf("category = %d %q", dated.Category, dated.CategoryLabel)
+	}
+	if !dated.Unanswerable {
+		t.Fatal("the _abs row must be marked unanswerable")
+	}
+	// The one thing the category id must never be is LoCoMo's temporal id: that
+	// number routes the reference harness's question suffix.
+	if dated.Category == TemporalCategory {
+		t.Fatalf("LongMemEval temporal-reasoning shares LoCoMo's category %d", TemporalCategory)
+	}
+	unknown := scenarios[1].Questions[0]
+	if unknown.Category != LongMemEvalUnknownCategory || unknown.CategoryLabel != "brand-new-type" {
+		t.Fatalf("unknown type = %d %q", unknown.Category, unknown.CategoryLabel)
+	}
+	if unknown.Unanswerable {
+		t.Fatal("a question without the _abs marker must stay answerable")
+	}
+}
+
+func TestLongMemEvalTurnIDsRoundTrip(t *testing.T) {
+	if got := LongMemEvalTurnID("answer_4be1b6b4_2", 3); got != "answer_4be1b6b4_2#3" {
+		t.Fatalf("turn id = %q", got)
+	}
+	for _, test := range []struct {
+		id      string
+		session string
+		ok      bool
+	}{
+		{"answer_4be1b6b4_2#3", "answer_4be1b6b4_2", true},
+		{"a#b#7", "a#b", true},
+		{"D1:3", "", false},
+		{"#3", "", false},
+		{"s-a#", "", false},
+	} {
+		session, ok := LongMemEvalSessionOfTurn(test.id)
+		if ok != test.ok || session != test.session {
+			t.Fatalf("%q -> (%q, %v), want (%q, %v)", test.id, session, ok, test.session, test.ok)
+		}
 	}
 }
 

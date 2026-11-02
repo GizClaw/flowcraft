@@ -12,6 +12,13 @@ import (
 	coremessage "github.com/GizClaw/flowcraft/core/message"
 )
 
+const (
+	// testShard is where entityArtifact's conversation lives.
+	testShard = "c:conversation"
+	// documentShard is where the document fixtures' dataset lives.
+	documentShard = "d:dataset"
+)
+
 func TestEntityIndependentRecallAndStableSort(t *testing.T) {
 	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
 	if err != nil {
@@ -23,8 +30,9 @@ func TestEntityIndependentRecallAndStableSort(t *testing.T) {
 		entityArtifact("a", "openai, Cursor"),
 		{
 			Kind: "fact", ID: "skipped",
-			Content: coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "OpenAI appears only in content"}}},
-			Sources: []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-skipped"}},
+			Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "OpenAI appears only in content"}}},
+			Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-skipped"}},
+			Metadata: corememory.Metadata{"conversation_id": "conversation"},
 		},
 	}
 	if err := index.Rebuild(context.Background(), component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
@@ -266,7 +274,8 @@ func TestEntityValuesThatTokenizeToNothingAreDropped(t *testing.T) {
 		t.Fatalf("OpenAI search = %+v, %v, want one hit", results, err)
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, Upserts: []component.Artifact{entityArtifact("fact-1", `["..."]`)},
+		Scope: scope, Shard: testShard,
+		Upserts:        []component.Artifact{entityArtifact("fact-1", `["..."]`)},
 		SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
@@ -280,7 +289,7 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 	meter := &entityMeter{Store: kvFor(t)}
 	index, err := New(Config{
 		KV: meter, Projection: "entities",
-		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +309,7 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 	}
 	meter.reset()
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r1",
+		Scope: scope, Shard: documentShard, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +317,9 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 		t.Fatalf("single delete wrote %d bytes", meter.written)
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}},
-		ActiveIDs: []string{artifacts[1].ID}, SourceRevision: "r2",
+		Scope: scope, Shard: documentShard,
+		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}},
+		ActiveIDs:          []string{artifacts[1].ID}, SourceRevision: "r2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +342,8 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 		t.Fatalf("full results = %+v, %v; delta = %+v", fullResults, err, results)
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
-		Scope: scope, DeleteDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, SourceRevision: "r3",
+		Scope: scope, Shard: documentShard,
+		DeleteDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, SourceRevision: "r3",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +374,7 @@ func TestEntityReconcileIsDatasetQualified(t *testing.T) {
 	}
 	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
 		Scope:              scope,
+		Shard:              "d:dataset-a",
 		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset-a", DocumentID: "shared-document"}},
 		ActiveIDs:          []string{}, SourceRevision: "reconcile-a",
 	}); err != nil {
@@ -371,6 +383,72 @@ func TestEntityReconcileIsDatasetQualified(t *testing.T) {
 	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"})
 	if err != nil || len(results) != 1 || results[0].ID != second.ID {
 		t.Fatalf("dataset-qualified reconcile = %#v, %v", results, err)
+	}
+}
+
+// TestEntityShardedSearchEqualsALaneHoldingTheScoringSet pins the two-pass
+// read against the lane's unsharded answer. IDF and the ubiquity gate count the
+// entity across the whole scoring set, so a sharded scope has to score like a
+// lane that holds exactly the records the selector admits in one table.
+func TestEntityShardedSearchEqualsALaneHoldingTheScoringSet(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	first := entityArtifact("a1", `["OpenAI", "Rare Entity"]`)
+	second := entityArtifact("b1", `["OpenAI"]`)
+	second.Metadata["conversation_id"] = "other"
+	third := entityArtifact("b2", `["OpenAI", "Rare Entity"]`)
+	third.Metadata["conversation_id"] = "other"
+	sharded, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sharded.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities",
+		Artifacts: []component.Artifact{first, second, third},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The same records, addressed to one conversation, are one shard: that is
+	// the table a selector-scoped read has to reproduce.
+	unsharded, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	single := make([]component.Artifact, 0, 2)
+	for _, artifact := range []component.Artifact{second, third} {
+		artifact.Metadata["conversation_id"] = "conversation"
+		single = append(single, artifact)
+	}
+	if err := unsharded.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities", Artifacts: single,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"OpenAI", "Rare Entity", "OpenAI Rare Entity"} {
+		want, err := unsharded.Search(ctx, component.SearchRequest{Scope: scope, Query: query})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := sharded.Search(ctx, component.SearchRequest{
+			Scope: scope, Query: query,
+			Metadata: corememory.Metadata{"conversation_id": "other"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("query %q = %+v, want %+v", query, got, want)
+		}
+		for i := range want {
+			if got[i].ID != want[i].ID || got[i].Score != want[i].Score {
+				t.Fatalf("query %q result %d = %+v, want %+v", query, i, got[i], want[i])
+			}
+		}
+	}
+	// And the global plan sees both conversations, ordered by the same scores.
+	all, err := sharded.Search(ctx, component.SearchRequest{Scope: scope, Query: "Rare Entity"})
+	if err != nil || len(all) != 2 || all[0].ID != "a1" || all[1].ID != "b2" {
+		t.Fatalf("global recall = %+v, %v, want both conversations", all, err)
 	}
 }
 

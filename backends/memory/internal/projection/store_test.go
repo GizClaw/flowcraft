@@ -30,15 +30,15 @@ func TestPublishFailureRetainsOldActiveBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
-	if err := store.FullRebuild(context.Background(), scope, "index", map[string]bool{"old": true}, "old"); err != nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", map[string]bool{"old": true}, "old"); err != nil {
 		t.Fatal(err)
 	}
 	fault.failActive = true
-	if err := store.FullRebuild(context.Background(), scope, "index", map[string]bool{"new": true}, "new"); err == nil {
+	if err := store.FullRebuild(context.Background(), testAddress(scope), "index", map[string]bool{"new": true}, "new"); err == nil {
 		t.Fatal("publish unexpectedly succeeded")
 	}
 	fault.failActive = false
-	data, _, err := store.Materialize(context.Background(), scope, "index")
+	data, _, err := store.Materialize(context.Background(), testAddress(scope), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := corememory.Scope{RuntimeID: "runtime"}
-	if err := store.FullRebuild(ctx, scope, "index", map[string]bool{"value": true}, "source"); err != nil {
+	if err := store.FullRebuild(ctx, testAddress(scope), "index", map[string]bool{"value": true}, "source"); err != nil {
 		t.Fatal(err)
 	}
 	evidence, found, err := store.AuditDigestEvidence(ctx, scope, "index")
@@ -77,7 +77,7 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 		t.Fatalf("normal audit mismatched = %#v", evidence)
 	}
 
-	data, err := kvStore.Get(ctx, store.activePath(scope, "index"))
+	data, err := kvStore.Get(ctx, store.activePath(testAddress(scope), "index"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kvStore.Put(ctx, store.activePath(scope, "index"), data); err != nil {
+	if err := kvStore.Put(ctx, store.activePath(testAddress(scope), "index"), data); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,36 +102,6 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 	if evidence.StoredSourceDigest == evidence.ComputedSourceDigest ||
 		evidence.StoredBuildDigest == evidence.ComputedBuildDigest {
 		t.Fatalf("tampered audit did not expose mismatch = %#v", evidence)
-	}
-}
-
-func TestMatchesRequestAppliesDatasetOnlyToDocumentKinds(t *testing.T) {
-	for _, kind := range []corememory.ContextItemKind{
-		corememory.ContextDocumentResource,
-		corememory.ContextDocumentSection,
-		corememory.ContextDocumentChunk,
-		corememory.ContextDocumentSummary,
-	} {
-		t.Run(string(kind), func(t *testing.T) {
-			matches, err := MatchesRequest(
-				corememory.Metadata{"dataset_ids": `["allowed"]`},
-				component.CandidateAddress{Kind: kind, DatasetID: "excluded"},
-			)
-			if err != nil || matches {
-				t.Fatalf("matches=%v err=%v", matches, err)
-			}
-		})
-	}
-	for _, kind := range []corememory.ContextItemKind{corememory.ContextRawMessage, corememory.ContextFact} {
-		t.Run(string(kind), func(t *testing.T) {
-			matches, err := MatchesRequest(
-				corememory.Metadata{"dataset_ids": `["allowed"]`},
-				component.CandidateAddress{Kind: kind, ConversationID: "conversation"},
-			)
-			if err != nil || !matches {
-				t.Fatalf("matches=%v err=%v", matches, err)
-			}
-		})
 	}
 }
 

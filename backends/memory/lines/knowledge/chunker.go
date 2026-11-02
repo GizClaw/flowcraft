@@ -39,13 +39,31 @@ const (
 	MaxChunkRunes = 8_000
 	// MaxSummaryRunes bounds one deterministic hierarchy summary.
 	MaxSummaryRunes = 4_000
+	// MaxDocumentArtifacts bounds what one document derives to. Every section
+	// and every chunk is an item the build publishes -- written to the view,
+	// indexed into each lane, embedded one by one -- so a document whose
+	// structure multiplies into artifacts is the same failure as a document
+	// nobody bounded: work with no end. The ceiling is far above what text a
+	// document may carry can produce with any sane chunk size (a million
+	// runes at the default 1600 is 625 chunks); it trips on a structure that
+	// is not prose, and on a chunk size no one meant.
+	MaxDocumentArtifacts = 16_384
 )
+
+// ErrDocumentTooLarge reports a document this chunker refuses to derive. The
+// refusal is a property of the input, not of the run: deriving it again under
+// the same policy produces the same answer, so a caller that keeps its own
+// cursor is meant to move past it and report it.
+var ErrDocumentTooLarge = errors.New("knowledge line: document is above the derivation ceiling")
 
 // ChunkerConfig controls deterministic rune-safe chunking.
 type ChunkerConfig struct {
 	MaxRunes     int
 	OverlapRunes int
 	Summary      SummaryConfig
+	// MaxDocumentRunes is the text this chunker will derive; zero takes the
+	// contract ceiling, and a deployment may set anything below it.
+	MaxDocumentRunes int
 }
 
 // SummaryConfig explicitly enables deterministic extractive summaries.
@@ -57,9 +75,10 @@ type SummaryConfig struct {
 
 // Chunker splits document text at paragraph boundaries where possible.
 type Chunker struct {
-	maxRunes     int
-	overlapRunes int
-	summary      SummaryConfig
+	maxRunes         int
+	overlapRunes     int
+	summary          SummaryConfig
+	maxDocumentRunes int
 }
 
 var _ component.Deriver = (*Chunker)(nil)
@@ -80,7 +99,17 @@ func NewChunker(config ChunkerConfig) (*Chunker, error) {
 	if config.Summary.MaxRunes > MaxSummaryRunes {
 		return nil, fmt.Errorf("knowledge line: summary max_runes must not exceed %d", MaxSummaryRunes)
 	}
-	return &Chunker{maxRunes: config.MaxRunes, overlapRunes: config.OverlapRunes, summary: config.Summary}, nil
+	if config.MaxDocumentRunes == 0 {
+		config.MaxDocumentRunes = corememory.MaxDocumentRunes
+	}
+	if config.MaxDocumentRunes < 0 || config.MaxDocumentRunes > corememory.MaxDocumentRunes {
+		return nil, fmt.Errorf("knowledge line: max_document_runes must be positive and must not exceed %d",
+			corememory.MaxDocumentRunes)
+	}
+	return &Chunker{
+		maxRunes: config.MaxRunes, overlapRunes: config.OverlapRunes,
+		summary: config.Summary, maxDocumentRunes: config.MaxDocumentRunes,
+	}, nil
 }
 
 func (chunker *Chunker) Derive(ctx context.Context, input component.Artifact) ([]component.Artifact, error) {
@@ -98,6 +127,12 @@ func (chunker *Chunker) Derive(ctx context.Context, input component.Artifact) ([
 	}
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("knowledge line: input: %w", err)
+	}
+	// The text is measured before it is joined: everything below allocates in
+	// proportion to it, so the refusal has to come before the first copy.
+	if runes := corememory.DocumentTextRunes(input.Content); runes > chunker.maxDocumentRunes {
+		return nil, fmt.Errorf("%w: %d runes of text, ceiling %d",
+			ErrDocumentTooLarge, runes, chunker.maxDocumentRunes)
 	}
 	text := normalizeDocumentText(input.Content.Text())
 	if text == "" {
@@ -144,9 +179,15 @@ func (chunker *Chunker) Derive(ctx context.Context, input component.Artifact) ([
 				"", sourceDigest, transformSignature),
 		})
 	}
-	sections := parseSections(text)
+	sections, err := parseSections(text)
+	if err != nil {
+		return nil, err
+	}
 	for _, section := range sections {
 		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := checkBuild(output); err != nil {
 			return nil, err
 		}
 		parentID := resourceID
@@ -184,6 +225,9 @@ func (chunker *Chunker) Derive(ctx context.Context, input component.Artifact) ([
 			if normalized == "" {
 				continue
 			}
+			if err := checkBuild(output); err != nil {
+				return nil, err
+			}
 			chunkPosition := fmt.Sprintf("%s/chunk/%d", section.position, ordinal)
 			chunkID, err := hierarchyID(identitySources, "chunk", chunkPosition, normalized)
 			if err != nil {
@@ -198,6 +242,16 @@ func (chunker *Chunker) Derive(ctx context.Context, input component.Artifact) ([
 		}
 	}
 	return output, nil
+}
+
+// checkBuild refuses a build that has grown past the artifact ceiling. It is
+// called as the artifacts are appended rather than after the loop, because the
+// growth it bounds happens inside one section as much as across many.
+func checkBuild(output []component.Artifact) error {
+	if len(output) >= MaxDocumentArtifacts {
+		return fmt.Errorf("%w: more than %d artifacts", ErrDocumentTooLarge, MaxDocumentArtifacts)
+	}
+	return nil
 }
 
 func summarize(value string, maxRunes int) string {
@@ -219,7 +273,11 @@ type parsedSection struct {
 	id       string
 }
 
-func parseSections(text string) []parsedSection {
+// parseSections splits one document into heading sections. It stops at the
+// artifact ceiling instead of materializing a section per line: a document
+// that is all headings would otherwise build a structure nobody reads, and
+// the sections are the build's first order of growth.
+func parseSections(text string) ([]parsedSection, error) {
 	lines := strings.Split(text, "\n")
 	sections := make([]parsedSection, 0)
 	current := -1
@@ -247,6 +305,10 @@ func parseSections(text string) []parsedSection {
 			}
 		}
 		if heading {
+			if len(sections) >= MaxDocumentArtifacts {
+				return nil, fmt.Errorf("%w: more than %d sections",
+					ErrDocumentTooLarge, MaxDocumentArtifacts)
+			}
 			parent := -1
 			for parentLevel := level - 1; parentLevel >= 1; parentLevel-- {
 				if stack[parentLevel] >= 0 {
@@ -280,7 +342,7 @@ func parseSections(text string) []parsedSection {
 	if len(sections) == 0 {
 		return []parsedSection{{
 			index: 0, parent: -1, level: 1, ordinal: 0, body: text, position: "section/0",
-		}}
+		}}, nil
 	}
 	if preambleText != "" {
 		root := parsedSection{
@@ -299,7 +361,7 @@ func parseSections(text string) []parsedSection {
 	for index := range sections {
 		sections[index].body = strings.TrimSpace(sections[index].body)
 	}
-	return sections
+	return sections, nil
 }
 
 func markdownSetextLevel(line string) (int, bool) {

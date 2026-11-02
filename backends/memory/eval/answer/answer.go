@@ -51,6 +51,15 @@ const (
 	// normalized). Use it for cross-paper comparability, not as product
 	// semantics.
 	JudgeLocoMo JudgeStyle = "locomo"
+	// JudgeLongMemEval grades with the LongMemEval protocol. Its gold answers
+	// are full clauses rather than the short topic phrases LoCoMo uses, and two
+	// of its question types are not fact questions at all: a
+	// single-session-preference row asks whether a recommendation followed the
+	// preferences the user stated, and an abstention row ("_abs") asks about
+	// something the history does not contain, where refusing is the correct
+	// answer. No single rubric grades all three, so this style dispatches on
+	// the question's own labels.
+	JudgeLongMemEval JudgeStyle = "lme"
 )
 
 // New builds a model-backed answerer/judge.
@@ -125,7 +134,7 @@ func (model *Model) System() string {
 // WithJudgeStyle selects the grading prompt. Unknown values keep the current
 // style.
 func (model *Model) WithJudgeStyle(style JudgeStyle) *Model {
-	if model != nil && (style == JudgeStrict || style == JudgeLocoMo) {
+	if model != nil && (style == JudgeStrict || style == JudgeLocoMo || style == JudgeLongMemEval) {
 		model.judgeStyle = style
 	}
 	return model
@@ -213,8 +222,12 @@ func (model *Model) Judge(ctx context.Context, question eval.Question, candidate
 	if ctx == nil {
 		return false, errors.New("memory eval answer: context is required")
 	}
+	system := model.judgeStyle.system()
+	if model.judgeStyle == JudgeLongMemEval {
+		system = longMemEvalJudgeSystem(question)
+	}
 	request := generateRequest(
-		model.judgeStyle.system(),
+		system,
 		judgeUser(question, candidate),
 		nil,
 		model.temperature,
@@ -407,6 +420,23 @@ const AnswerEvidencePromptVersion = "answer-evidence-v1"
 // prediction.
 const JudgePromptVersion = "judge-v2"
 
+// JudgeLongMemEvalPromptVersion names the LongMemEval rubrics below. It is a
+// separate version on purpose: the two protocols grade different gold shapes
+// (a short topic phrase, or a full clause plus a stated preference), so a run
+// graded by one is not comparable with a run graded by the other.
+const JudgeLongMemEvalPromptVersion = "judge-lme-v1"
+
+// PromptVersion names the grading prompt a style uses, so a run can record it
+// in the fingerprint. "both" keeps naming the v2 prompt: the lenient half has
+// always been the same prompt, and a report measured before this function
+// existed must still read as the same configuration.
+func PromptVersion(style JudgeStyle) string {
+	if style == JudgeLongMemEval {
+		return JudgeLongMemEvalPromptVersion
+	}
+	return JudgePromptVersion
+}
+
 // The answer and judge prompts mirror the memory eval protocol used by the
 // pre-rebuild eval harness: the rules matter for list questions, exact
 // figures, and partial evidence.
@@ -481,3 +511,55 @@ Be generous with your grading - as long as the generated answer touches on the s
 For time related questions, be generous as well: as long as the answer refers to the same date or time period as the gold answer, count it as CORRECT, even if the format differs (for example "May 7th" vs "7 May") or the answer uses a longer phrasing.
 
 First, provide a short (one sentence) explanation of your reasoning, then return your verdict as JSON: {"correct": true} if CORRECT, otherwise {"correct": false}.`
+
+// judgeSystemLongMemEval is the LongMemEval protocol's rubric for its fact
+// questions, kept close to the reference prompt ("answer yes if the response
+// contains the correct answer ... if the response only contains a subset of the
+// information required by the answer, answer no") and stated in the CORRECT /
+// INCORRECT shape parseVerdict accepts.
+const judgeSystemLongMemEval = `You grade whether a prediction correctly answers a question about a user's long conversation history. Answer with exactly one word: CORRECT or INCORRECT.
+
+Rules:
+- CORRECT if the prediction contains the gold answer, is equivalent to it in other words, or states every intermediate step needed to reach it. Extra detail or a longer phrasing is fine.
+- INCORRECT if the prediction contains only a subset of the information the gold requires, contradicts it, or answers a different question than the one asked.
+- A date counts as the same when it names the same day or period in any format ("2023/05/30", "May 30, 2023", "the last Tuesday of May").
+- A prediction that lists one of several plausible items and drops the rest is INCORRECT; so is one that hedges between the gold and something else without committing.`
+
+// judgeSystemLongMemEvalPreference grades the single-session-preference rows,
+// whose gold is not an answer at all but a statement of what the user prefers.
+// Containment cannot grade it (the gold shares most of its words with a topic
+// match that ignores every preference), which is why the topic-only prediction
+// has to be spelled out as incorrect.
+const judgeSystemLongMemEvalPreference = `You grade whether a recommendation followed the preferences a user stated in a long conversation history. Answer with exactly one word: CORRECT or INCORRECT.
+
+The gold field does not hold an answer to repeat: it states what this user prefers and what they do not prefer.
+
+Rules:
+- CORRECT when the prediction satisfies every preference the gold states and contradicts none of them: it recommends what the user asked about, in the form they asked for, with the attributes they said matter to them.
+- INCORRECT when the prediction ignores a stated preference, recommends something the gold says the user does not prefer, or settles for the general topic the gold rules out. Naming the same subject as the gold is not enough on its own.
+- A prediction that adds detail the preferences neither require nor forbid stays CORRECT.`
+
+// judgeSystemLongMemEvalAbstention grades the rows whose question the history
+// cannot answer. Their gold says the information is missing, so an answer that
+// produces a plausible fact from general knowledge is a failure, not a miss.
+const judgeSystemLongMemEvalAbstention = `You grade whether a model correctly recognised that a question cannot be answered from a conversation history. Answer with exactly one word: CORRECT or INCORRECT.
+
+The gold field states that the history does not contain what the question asks about.
+
+Rules:
+- CORRECT when the prediction says the information is missing, unclear, or insufficient -- optionally naming what the history does contain -- and commits to no answer.
+- INCORRECT when the prediction gives a concrete answer to the question, asserts a fact about these people the history does not support, or answers a different question as if it were the one asked.
+- A partial or hedged answer that still states a value is INCORRECT.`
+
+// longMemEvalJudgeSystem picks the rubric the question's own labels call for:
+// an abstention row is graded on the refusal, a preference row on the
+// preferences it states, and everything else on the gold answer.
+func longMemEvalJudgeSystem(question eval.Question) string {
+	switch {
+	case question.Unanswerable:
+		return judgeSystemLongMemEvalAbstention
+	case question.Category == eval.LongMemEvalSingleSessionPreference:
+		return judgeSystemLongMemEvalPreference
+	}
+	return judgeSystemLongMemEval
+}
