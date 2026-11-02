@@ -838,6 +838,22 @@ changing the model — greedy decoding cut one answer call's output from 121 to
 93 tokens — so the number it produced belonged to a different system
 (2026-11-02).
 
+The derivation side looked like the culprit and is not. A controlled pair
+settles it: two stores derived on the same day from the same corpus, one
+unpinned (3135 facts) and one at `0` (3070), scored 42.9% and 40.1% strict on
+the same 282 category-1 questions, with identical lenient rates (79.8%) and
+evidence within 0.4pp of each other. What does move the score is the age of the
+store: a derivation written on 2026-10-20 scores 33.0% strict and 70.9%
+lenient on those questions -- 8-10pp below both fresh stores -- even though its
+policy digest matches today's pinned derivation exactly. A digest match is
+therefore not evidence that a store is current.
+
+Two reporting traps sit next to this. The `scope[...]` number in the library
+line is a **commit watermark**, not a fact count (both stores above print 689);
+a pass's fact count is `facts_published` on its `worker:` line. And the header's
+`temperature` value describes the answer and judge calls only, so it says
+nothing about how the store under it was derived.
+
 Consequences for reading results:
 
 - noise band: **±1 question per scenario**, **<1pp** on answer/F1 rates
@@ -848,8 +864,8 @@ Consequences for reading results:
   (3× → 5×) so the packed 30 stop sitting exactly on the ranking boundary
 
 That band describes a run that **reads an existing derivation**. Two further
-layers sat outside it before the sampling was pinned, measured over the full
-1540-question corpus by pairing every question across runs (McNemar exact):
+layers sit outside it, measured over the full 1540-question corpus by pairing
+every question across runs (McNemar exact):
 
 | layer | retrieval (`hit`) | strict answer | reading |
 | --- | --- | --- | --- |
