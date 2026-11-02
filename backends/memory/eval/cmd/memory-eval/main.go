@@ -65,10 +65,12 @@ func main() {
 	temporalHint := flag.Bool("temporal-hint", false,
 		"append the reference harness's category-2 suffix (\"Use DATE of CONVERSATION to answer with an approximate date.\") "+
 			"to temporal questions; off by default, because it routes on the dataset's category label")
-	temperature := flag.Float64("temperature", 0,
-		"sampling temperature for answers and judgments; 0 makes a re-run agree with itself, a negative value "+
-			"leaves it to the provider (which is how every report before 2026-10-20 was measured, and why a "+
-			"configuration re-run over one library flips 6% of the graded questions)")
+	temperature := flag.Float64("temperature", -1,
+		"sampling temperature for answers and judgments; a negative value leaves it to the provider, which is "+
+			"the default and how every run is measured. Do not pin 0 to make a re-run agree with itself: on the "+
+			"gateway's reasoning models greedy decoding is a different model (one answer call fell from 121 to 93 "+
+			"output tokens when only the temperature changed), so a pinned run differs from an unpinned one in "+
+			"behavior, not just in reproducibility")
 	answerConcurrency := flag.Int("answer-concurrency", 4,
 		"questions processed in parallel (1 = sequential); only the schedule changes, never the prompts or the report order")
 	prepareAll := flag.Bool("prepare-all", false,
@@ -227,10 +229,11 @@ func main() {
 		Concurrency: *answerConcurrency,
 	}
 	var usage []usageRole
-	if *answerStage && *temperature < 0 {
-		fmt.Fprintln(os.Stderr,
-			"warning: -temperature is provider-default: answers and judgments are sampled, so a re-run of this "+
-				"configuration will not reproduce these numbers")
+	if *answerStage && *temperature >= 0 {
+		fmt.Fprintf(os.Stderr,
+			"note: -temperature %s pins the sampling of answers and judgments; every report this harness "+
+				"publishes is measured at the provider default, so this run is comparable only with itself\n",
+			temperatureFingerprint(*temperature))
 	}
 	if *answerStage {
 		if deployment.Inference == nil {

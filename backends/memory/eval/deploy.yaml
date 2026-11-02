@@ -116,13 +116,15 @@ resources:
       storage:
         log: {driver: workspace}
         kv: {driver: workspace}
-      # Pin sampling on the derivation side. Every unpinned generate call is a
-      # sample, and those samples compound: two fresh derivations of this corpus
-      # under one revision wrote 3424 and 3090 facts, and that difference alone
-      # moved evidence recall by 1.4pp -- larger than the effect a read-path arm
-      # is asked to show. It is part of the derivation policy digest, so a
-      # workspace derived without it is derived again.
-      generate: {provider: gateway, name: deepseek-flash, temperature: 0}
+      # Sampling stays at the provider default. It was pinned to 0 to make a
+      # derivation a function of its input, but 0 is not the same model on a
+      # reasoning endpoint: greedy decoding cut one answer call's output from
+      # 121 to 93 tokens (2026-11-02), and the extractor reads the same surface.
+      # A derivation is a draw either way; what that costs is measured as a
+      # noise band (two fresh derivations of this corpus wrote 3424 and 3090
+      # facts, 1.4pp of evidence recall), not removed by pinning. It is part of
+      # the derivation policy digest, so dropping it re-derives the scope.
+      generate: {provider: gateway, name: deepseek-flash}
       embed: {provider: bytedance, name: doubao-embedding-vision}
       scopes:
         - {runtime_id: memories}

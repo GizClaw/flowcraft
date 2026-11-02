@@ -489,14 +489,18 @@ go run ./cmd/memory-eval -deploy ./deploy.yaml -env-file ../../../.env \
   (` Use DATE of CONVERSATION to answer with an approximate date.`) to temporal
   questions. Off by default and recorded in the fingerprint; see
   "Reference protocol vs this harness" for what it measured.
-- `-temperature` (default `0`): the sampling temperature of **both** the answer
+- `-temperature` (default `-1`): the sampling temperature of **both** the answer
   and the judge call, recorded in the fingerprint as `temperature`. A negative
-  value passes the provider's default through and prints a warning, because
-  that is how every report before 2026-10-20 was measured: at the provider
-  default one configuration re-run over one library flips 93 of 1540 graded
-  questions (see "Measurement noise"). Pinning it makes a re-run agree with
-  itself; it does not make a sampled *derivation* deterministic -- that side is
-  `generate.temperature` in the deployment (see `../README.md`).
+  value leaves the provider's default alone, and that is the default: `0` is not
+  a cheaper way to reproduce a reading, because greedy decoding is a different
+  model on a reasoning endpoint. Replaying one byte-identical answer request six
+  times each way (2026-11-02) gave 121 output tokens at the provider default and
+  93 pinned to `0`; the judge call moved 47 to 46, which is why the pin used to
+  look harmless there. Pinning now prints a note and is comparable only with
+  itself. It still does not make a sampled *derivation* deterministic -- that
+  side is `generate.temperature` in the deployment (see `../README.md`), and
+  neither side is pinned there any more: the drift is measured as a noise band
+  (see "Measurement noise") instead.
 - `-no-date-prefix`: convert turns without the session date prefix the loader
   otherwise writes into each turn's text (`[1:00 pm on 1 May, 2023] Alice: ...`
   → `Alice: ...`); the two conversions differ in exactly this step, so running
@@ -824,6 +828,15 @@ identity key, every lane sorts by item id before scoring, the packer ends on
 call**: a last-bit difference reorders near-ties around the pack boundary. Its
 effect is ±1 evidence turn, which showed up as 4/10 scenarios differing by
 0.5–0.9pp in recall between two full runs.
+
+Sampling is the other source. At the provider default, one configuration
+re-run over one library flipped 93 of 1540 graded questions, and a re-run of
+the category-1 questions alone moved strict accuracy 1.8pp while only 39% of
+the answers stayed identical word for word. That band is why `-temperature`
+no longer defaults to `0`: the pin bought agreement between re-runs by
+changing the model — greedy decoding cut one answer call's output from 121 to
+93 tokens — so the number it produced belonged to a different system
+(2026-11-02).
 
 Consequences for reading results:
 

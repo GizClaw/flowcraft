@@ -151,8 +151,11 @@ type ModelSettings struct {
 	// compound on the write side: two fresh derivations of one corpus under one
 	// revision wrote 3424 and 3090 facts, and that difference alone moved
 	// evidence recall by 1.4pp, which is larger than the effect a read-path arm
-	// is asked to show. Pinning derivations makes the fact set a function of the
-	// input instead of a draw.
+	// is asked to show. That drift is the noise band a measurement has to clear.
+	//
+	// Zero is not the value to pin when a host does pin one: on a reasoning
+	// endpoint greedy decoding is a different model, so a run at 0 measures that
+	// model rather than reproducing the unpinned one.
 	//
 	// It changes what the extractor writes, so it is part of the derivation
 	// policy digest: turning it on re-derives the scope. The embed block takes

@@ -101,10 +101,10 @@ resources:
       storage:
         log: {driver: workspace}
         kv: {driver: workspace}
-      # Sampling is pinned for the same reason deploy.yaml pins it: every
-      # unpinned generate call is a sample, and the facts a pass scans have to
-      # be the facts the last derivation wrote.
-      generate: {provider: gateway, name: deepseek-flash, temperature: 0}
+      # Sampling stays at the provider default, for the same reason deploy.yaml
+      # leaves it there: the facts a pass scans have to be the facts the last
+      # derivation wrote, and a pinned 0 would change both.
+      generate: {provider: gateway, name: deepseek-flash}
       embed: {provider: bytedance, name: doubao-embedding-vision}
       scopes:
         - {runtime_id: memories}
