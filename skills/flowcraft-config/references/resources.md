@@ -712,6 +712,8 @@ sim:
 For an anonymous HTTP search/fetch example, see
 [Parallel Search MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel).
 Its README covers deployment identity, startup readiness and result budgets.
+For an anonymous HTTP publishing example (a tool with public side effects), see
+[deed.page publishing MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/deedpage).
 
 ## memory
 

@@ -152,6 +152,10 @@ For a runnable anonymous search and fetch example using the HTTP bridge, see
 [Parallel Search MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel). It loads a server
 spec through the MCP factory and executes the discovered tools through the
 ordinary registry and executor, without a model provider or Parallel API key.
+For a write example over the same bridge, see
+[deed.page publishing MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/deedpage),
+which publishes an HTML page to a public URL and deletes it with the returned
+owner token, also without a model provider or API key.
 
 ## Middleware chain
 
