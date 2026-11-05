@@ -72,9 +72,7 @@ func TestWithDefaultsPermissionMerge(t *testing.T) {
 
 	t.Run("a default never widens a caller decision", func(t *testing.T) {
 		inner := &captureRunner{}
-		wide := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-			{Path: filepath.Join(string(filepath.Separator), "wide"), Access: permission.Write},
-		}}}
+		wide := &permission.Policy{Writes: permission.Writes{Paths: []string{filepath.Join(string(filepath.Separator), "wide")}}}
 		runner := engine.WithDefaults(inner, sandbox.ExecOptions{Permission: wide})
 		caller := readOnly()
 		if _, err := runner.Start(context.Background(), sandbox.SessionSpec{
@@ -98,9 +96,7 @@ func TestValidateExecPolicyPermission(t *testing.T) {
 	valid := []sandbox.ExecOptions{
 		{},
 		{Permission: &permission.Policy{}},
-		{Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-			{Path: root, Access: permission.Write},
-		}}}},
+		{Permission: &permission.Policy{Writes: permission.Writes{Paths: []string{root}}}},
 	}
 	for i, opts := range valid {
 		if err := engine.ValidateExecPolicy(opts); err != nil {
@@ -109,12 +105,12 @@ func TestValidateExecPolicyPermission(t *testing.T) {
 	}
 
 	invalid := map[string]sandbox.ExecOptions{
-		"relative path": {Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-			{Path: "work", Access: permission.Write},
-		}}}},
-		"glob path": {Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-			{Path: root + string(filepath.Separator) + "*", Access: permission.Write},
-		}}}},
+		"relative path": {Permission: &permission.Policy{
+			Writes: permission.Writes{Paths: []string{"work"}},
+		}},
+		"glob path": {Permission: &permission.Policy{
+			Writes: permission.Writes{Paths: []string{root + string(filepath.Separator) + "*"}},
+		}},
 		"network on the permission": {Permission: &permission.Policy{
 			Net: permission.NetPolicy{Mode: permission.NetDenyAll},
 		}},

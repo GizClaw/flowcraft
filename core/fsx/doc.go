@@ -1,36 +1,38 @@
-// Package fsx is the file-I/O contract: one FS interface and one per-call
-// Sandbox that carries an optional permission.Policy.
+// Package fsx is where file I/O happens: reads go through this process, writes
+// go through a sandbox.
 //
-// # One value, two interpreters
+// # Why the split
 //
-// The same permission.Policy feeds this package and a sandbox backend. fsx
-// interprets it in-process, right before the syscall; a backend projects the
-// writable paths onto the kernel (bind mounts, a seatbelt profile, Windows
-// ACLs). That is why the policy is an argument and not a decorator: a decorator
-// holds the boundary in one process, so a remote executor or a sandboxed helper
-// cannot receive it, and the second boundary has to be written from scratch.
+// A read restriction only means something if the kernel enforces it, and this
+// framework does not project one. So reads are unrestricted: any absolute path
+// this process can open, fsx can read. That is a decision with a consequence —
+// the model can read a secret and copy it into the workspace — and it is stated
+// here rather than left to be discovered.
 //
-// # What is enforced where
+// Writes are the opposite. A write is the one file operation where a mistake
+// becomes persistent, so it is performed by a helper process running inside the
+// sandbox, with the writable set projected onto the kernel. The helper does no
+// policy check of its own: the kernel is the boundary, and this package never
+// has to prove that a path is safe to write. A path spelling this process does
+// not understand cannot widen anything, because nothing here decides.
 //
-//   - Write entries: enforced here, and projected onto the kernel, so a
-//     spawned command obeys the same set.
-//   - Read and Deny entries: enforced here only. No backend projects a read
-//     restriction, so a spawned command can still read a denied path. They are
-//     a tool-layer guard, not the boundary that protects a secret; keep secrets
-//     outside the tree instead.
-//   - Containment: every path is resolved against the sandbox root and checked
-//     lexically and after symlink resolution, so neither ".." nor a link
-//     planted inside the tree can escape it.
+// # What that costs
 //
-// # Implementations
+// Every write spawns a process (roughly 5–50ms depending on the backend). A
+// tool that writes many small files should batch its work, not call Write in a
+// loop. Reads, listing, walking and stat are in-process and cheap.
 //
-// [Local] is the directory-backed implementation; [Mem] is the in-memory test
-// double. Both run the same contract suite (core/fsx/fstest), because an
-// interface whose implementations disagree is not a contract.
+// # Without a sandbox
 //
-// # What is not here
+// A host with no sandbox (a local workspace demo, a test) cannot have kernel
+// enforcement. It must say so: Open fails unless the host opts into
+// [Unenforced], in which case writes go straight to the filesystem and the
+// writable set is documentation, not a boundary.
 //
-// Persistence (checkpoints, memory documents) and command execution
-// (sandbox.Runner). This package answers one question: read and write these
-// bytes, under this policy.
+// # The helper
+//
+// Writes are performed by re-executing the host binary with a magic argument
+// and speaking JSON over stdin/stdout. A host must call [MaybeRunHelper] before
+// doing anything else in main; forgetting it makes the first write fail with a
+// clear error rather than silently writing unconfined.
 package fsx

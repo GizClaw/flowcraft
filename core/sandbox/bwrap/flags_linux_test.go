@@ -146,9 +146,7 @@ func TestFilesystemFlagsForPerCallPermission(t *testing.T) {
 		t.Fatalf("a supplied policy is the whole writable set; %q must not be bound: %v", cache, readOnly)
 	}
 
-	narrow := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-		{Path: cache, Access: permission.Write},
-	}}}
+	narrow := &permission.Policy{Writes: permission.Writes{Paths: []string{cache}}}
 	allowed := runner.filesystemFlagsFor(sandbox.ExecOptions{Permission: narrow})
 	if !containsSeq(allowed, "--bind", cache, cache) {
 		t.Fatalf("the policy entry must be bound writable: %v", allowed)

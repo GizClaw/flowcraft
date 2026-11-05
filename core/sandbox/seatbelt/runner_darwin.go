@@ -317,7 +317,16 @@ func (r *Runner) writablePathsFor(opts sandbox.ExecOptions) []string {
 	if !r.readOnlyRoot {
 		defaults = append(defaults, r.rootDir)
 	}
-	return opts.Writable(defaults)
+	writes := opts.Writable(defaults)
+	// A profile rule names the executor's real path. A caller-supplied writable
+	// path may still contain symlinks (macOS /var is /private/var), and a rule
+	// written against the unresolved spelling matches nothing.
+	for i, path := range writes {
+		if real, err := evalExistingPrefix(path); err == nil {
+			writes[i] = real
+		}
+	}
+	return writes
 }
 
 // closeProxy best-effort closes the enforcement proxy, leaving the

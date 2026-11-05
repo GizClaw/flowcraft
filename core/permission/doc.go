@@ -1,25 +1,27 @@
 // Package permission holds the declarations that answer "what may this turn
-// touch?" — files and network — plus the pure predicates that read them.
+// touch?" — writes and network — plus the path primitives those declarations
+// are judged with.
 //
-// One value, several interpreters. A Policy is a value: it can be built once
-// from configuration, copied into a per-call context, and serialised across a
-// process boundary. Who interprets it depends on what is being enforced:
+// # What is enforced, and by whom
 //
-//   - fsx interprets the file half in-process, right before touching the disk.
-//   - sandbox projects the writable paths onto the kernel (bind mounts, a
-//     seatbelt profile, Windows ACLs) and the network half onto its proxy and
-//     netns machinery.
+//   - Writes: projected onto the kernel (a bind mount, a seatbelt profile, a
+//     Windows label) and enforced there. The process that performs a write is
+//     the one the kernel confines, so the policy is not a suggestion.
+//   - Network: projected onto the sandbox's proxy and namespace machinery.
+//   - Reads: not restricted. This is a decision, not an omission. A read
+//     restriction would have to be enforced by the kernel to mean anything, and
+//     the only place it could be projected is the same projection that already
+//     handles writes; without it, an in-process check would be a boundary that
+//     stops the model but not a command it runs.
 //
-// Nothing here performs I/O. That is the rule that keeps this package from
-// becoming a hub: policy is a value, enforcement is somebody else's package.
-// If a change wants to open a file, listen on a socket, or parse configuration
-// here, the logic belongs in the interpreter instead.
+// # What is deliberately absent
 //
-// What is deliberately absent:
+//   - Globs. A mount binds a path or a subtree; it cannot bind "anything named
+//     tmp at any depth" without scanning the filesystem first. A permission the
+//     kernel cannot enforce is not modelled here.
+//   - Read and deny entries. They existed, nothing configured them, and their
+//     enforcement could only ever be advisory.
 //
-//   - Globs. A mount can bind a path or a subtree; it cannot bind "anything
-//     named tmp at any depth" without scanning the filesystem first. A
-//     permission the kernel cannot enforce is not modelled here.
-//   - Read restrictions that a sandbox would honour. Backends do not project
-//     them (see Access), so they are tool-layer guards, not a boundary.
+// Nothing here performs I/O. That rule is what keeps the package from becoming
+// a hub: policy is a value, enforcement is somebody else's package.
 package permission

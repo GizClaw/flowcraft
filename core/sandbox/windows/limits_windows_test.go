@@ -102,9 +102,7 @@ func TestValidatePolicy(t *testing.T) {
 		},
 		{
 			name: "unknown write policy",
-			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-				{Path: "relative", Access: permission.Write},
-			}}}}},
+			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Permission: &permission.Policy{Writes: permission.Writes{Paths: []string{"relative"}}}}},
 		},
 		{
 			name: "disk limit",

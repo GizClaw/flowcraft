@@ -58,7 +58,7 @@ type ExecOptions struct {
 // how a call asks for it without needing a second enum.
 func (o ExecOptions) Writable(defaults []string) []string {
 	if o.Permission != nil {
-		return o.Permission.Files.Writable()
+		return o.Permission.Writes.Writable()
 	}
 	return defaults
 }

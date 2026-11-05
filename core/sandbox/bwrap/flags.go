@@ -64,6 +64,14 @@ func buildFlags(opts sandbox.ExecOptions) ([]string, error) {
 // replaces the runner boundary without covering the root.
 func (r *Runner) filesystemFlagsFor(opts sandbox.ExecOptions) []string {
 	writable := opts.Writable(r.writablePaths)
+	// A bind names the executor's real path. A caller-supplied path may still
+	// contain symlinks (e.g. /var/run -> /run), and binding the link would bind
+	// the link, not the directory the write lands in.
+	for i, path := range writable {
+		if real, err := evalExistingPrefix(path); err == nil {
+			writable[i] = real
+		}
+	}
 	readOnlyRoot := r.readOnlyRoot
 	if opts.Permission != nil {
 		readOnlyRoot = !coversRoot(writable, r.rootDir)

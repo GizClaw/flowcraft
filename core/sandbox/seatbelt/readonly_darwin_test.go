@@ -3,6 +3,7 @@
 package seatbelt
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -120,11 +121,15 @@ func TestWritablePathsForPerCallPermission(t *testing.T) {
 		t.Fatalf("a supplied policy is the whole writable set, got %v", writes)
 	}
 
-	narrow := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
-		{Path: cache, Access: permission.Write},
-	}}}
+	narrow := &permission.Policy{Writes: permission.Writes{Paths: []string{cache}}}
 	writes = runner.writablePathsFor(sandbox.ExecOptions{Permission: narrow})
-	if len(writes) != 1 || writes[0] != cache {
-		t.Fatalf("writable = %v, want exactly the policy entry %q", writes, cache)
+	// The profile names the executor's real path: a rule written against a
+	// symlinked spelling (macOS /var -> /private/var) would match nothing.
+	realCache, err := filepath.EvalSymlinks(cache)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(cache): %v", err)
+	}
+	if len(writes) != 1 || writes[0] != realCache {
+		t.Fatalf("writable = %v, want exactly %q", writes, realCache)
 	}
 }

@@ -22,7 +22,7 @@ import (
 // proven read-only", and should route to the human approver, never to
 // an automatic deny or allow. It pairs with the per-exec write policy:
 //
-//	if req.Opts.Permission != nil && len(req.Opts.Permission.Files.Writable()) == 0 &&
+//	if req.Opts.Permission != nil && req.Opts.Permission.Writes.IsZero() &&
 //		sandbox.ClassifySafeReadOnly(req.Exec) {
 //		return sandbox.Allow, nil
 //	}
