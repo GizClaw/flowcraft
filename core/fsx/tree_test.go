@@ -3,9 +3,11 @@ package fsx_test
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/fsx"
 )
@@ -138,6 +140,75 @@ func TestWritableIsCanonical(t *testing.T) {
 	got := tree.Writable()
 	if len(got) != 1 || got[0] != real {
 		t.Errorf("Writable() = %v, want [%q]", got, real)
+	}
+}
+
+// WriteStream must copy into the file handle as it reads. A buffering
+// implementation would block until the stream closes, so the first chunk would
+// never become observable; this pins the property rather than the memory use.
+func TestWriteStreamDoesNotBuffer(t *testing.T) {
+	root := t.TempDir()
+	tree, ctx := openTree(t, root)
+	target := filepath.Join(root, "stream.txt")
+
+	pipeReader, pipeWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, err := tree.WriteStream(ctx, target, pipeReader)
+		done <- err
+	}()
+
+	if _, err := pipeWriter.Write([]byte("first")); err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if data, err := os.ReadFile(target); err == nil && string(data) == "first" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("WriteStream did not make the first chunk visible before the stream closed: it buffers")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := pipeWriter.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("WriteStream: %v", err)
+	}
+}
+
+type failingReader struct {
+	sent bool
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, errors.New("source failed")
+	}
+	r.sent = true
+	return copy(p, "partial"), nil
+}
+
+// A source failure must surface with the bytes already copied, not be swallowed
+// by a Close error or reported as success.
+func TestWriteStreamReportsSourceErrors(t *testing.T) {
+	root := t.TempDir()
+	tree, ctx := openTree(t, root)
+	target := filepath.Join(root, "partial.txt")
+
+	n, err := tree.WriteStream(ctx, target, &failingReader{})
+	if err == nil {
+		t.Fatal("WriteStream = nil error, want the source failure")
+	}
+	if n != int64(len("partial")) {
+		t.Errorf("WriteStream reported %d bytes, want %d", n, len("partial"))
+	}
+	if data, readErr := os.ReadFile(target); readErr != nil || string(data) != "partial" {
+		t.Errorf("partial content = %q, %v; want %q, nil", data, readErr, "partial")
 	}
 }
 

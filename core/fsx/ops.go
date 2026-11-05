@@ -1,6 +1,7 @@
 package fsx
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"io/fs"
@@ -72,36 +73,36 @@ func (t *Tree) Walk(ctx context.Context, dir string, fn WalkFunc) error {
 // the kernel — not this method — decides whether it stays inside. A path that
 // matches no root is refused before anything is opened.
 func (t *Tree) Write(ctx context.Context, path string, data []byte) error {
+	_, err := t.WriteStream(ctx, path, bytes.NewReader(data))
+	return err
+}
+
+// WriteStream replaces a file from a stream and reports the byte count.
+//
+// It copies straight into the file handle: memory stays at the copy buffer
+// regardless of payload size. (An earlier design buffered the whole payload
+// because a helper protocol carried one request; with a handle there is no such
+// constraint, and buffering would cap the reachable size at the process limit.)
+func (t *Tree) WriteStream(ctx context.Context, path string, src io.Reader) (int64, error) {
 	handle, rel, err := t.writable(ctx, "write", path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if dir := filepath.Dir(rel); dir != "." {
 		if err := handle.MkdirAll(dir, 0o755); err != nil {
-			return denied(err)
+			return 0, denied(err)
 		}
 	}
 	file, err := handle.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return denied(err)
+		return 0, denied(err)
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return denied(err)
+	written, copyErr := io.Copy(file, src)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return written, denied(copyErr)
 	}
-	return denied(file.Close())
-}
-
-// WriteStream replaces a file from a stream and reports the byte count.
-func (t *Tree) WriteStream(ctx context.Context, path string, src io.Reader) (int64, error) {
-	data, err := io.ReadAll(src)
-	if err != nil {
-		return 0, err
-	}
-	if err := t.Write(ctx, path, data); err != nil {
-		return 0, err
-	}
-	return int64(len(data)), nil
+	return written, denied(closeErr)
 }
 
 // Mkdir creates a directory and its parents inside a writable root.
