@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
-	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
+	"github.com/GizClaw/flowcraft/core/fsx"
+	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 // ExecRequest is a snapshot of one Runner.Exec call (or one
@@ -134,7 +134,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		if !pathsafe.RealWithin(real, abs) {
+		if !fsx.RealWithin(real, abs) {
 			return fmt.Sprintf("workdir %q resolves outside root %q", wd, real), true
 		}
 		return "", false
