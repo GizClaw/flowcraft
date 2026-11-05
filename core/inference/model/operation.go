@@ -21,7 +21,6 @@ const (
 	OperationGenerate      Operation = "generate"
 	OperationEmbed         Operation = "embed"
 	OperationTranscription Operation = "transcription"
-	OperationDecision      Operation = "decision"
 )
 
 // Operations returns every workload this vocabulary declares, in declaration
@@ -34,7 +33,6 @@ func Operations() []Operation {
 		OperationGenerate,
 		OperationEmbed,
 		OperationTranscription,
-		OperationDecision,
 	}
 }
 

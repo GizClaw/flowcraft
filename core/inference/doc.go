@@ -1,46 +1,57 @@
-// Package inference is the inference resource. Files are grouped by
-// responsibility:
+// Package inference defines the provider contract: the canonical shape of a
+// generation call, the interface a provider implements, and the error and
+// accounting vocabulary every caller and driver shares.
 //
-//   - Model vocabulary: model_alias.go re-exports core/inference/model
-//     (identity, descriptor, capabilities, limits, lifecycle, reasoning) so
-//     existing callers keep compiling. New code imports
-//     core/inference/model directly.
-//   - Token/cost vocabulary: usage_alias.go re-exports
-//     core/inference/usage (Usage, its breakdowns, Money) so existing
-//     callers keep compiling. New code imports core/inference/usage
-//     directly — a host can name a usage report without the runtime.
-//   - Shared contract: decision.go, errors.go, extension.go,
-//     extension_registry.go, extension_dispatch.go, metadata.go,
-//     internal_helpers.go
-//   - Attempt compilation: ledger.go (the shared compile ledger),
-//     generate_ledger.go (the generate part-to-field tables), provider.go
-//     (the compiler/binding pipeline),
-//     reasoning_scope.go (the reasoning provenance rule and the decode
-//     stamping wrappers),
-//     provider_definition.go (ProviderDefinition / Openers),
-//     generate_driver.go, prepared.go (a compiled attempt), binding.go
-//     (opened drivers), binding_cache.go (the host-side reuse cache),
-//     declaration.go (declared output-budget and input-kind preflight),
-//     provider_log.go
-//   - Generate domain: generate_request.go, generate_input.go,
-//     generate_intent.go, generate_output.go, generate_response.go,
-//     generate_stream.go, generate_stream_accumulator.go,
-//     generate_stream_delta.go
-//   - Embed domain: embedding.go
-//   - Transcribe domain: transcribe_request.go, transcribe_driver.go
-//     (unary whole-file recognition and the duplex TranscriptionSession),
-//     transcribe_session.go, transcribe_stream.go (live message.Stream
-//     input pumped into a session)
-//   - Decision domain: decision_request.go, decision_response.go,
-//     decision_driver.go (one evidence input plus an ordered list of typed
-//     questions, answered in a single unary call)
-//   - Resource layer: resource.go (the resource factory), assembly.go
-//     (the inference.Assembly resource with execution), telemetry.go,
-//     route/ (the inference.Router decorator: tiers, selectors,
-//     retry/backoff, circuit breaker, trace)
+// # What this package is
 //
-// The operation axis is declared once, by model.Operations(); a workload
-// without a request/session surface is not enumerated, so it cannot be
-// declared, routed, or advertised. Realtime remains unimplemented and is
-// therefore absent from the vocabulary until its surface lands.
+// inference is the seam between a host that wants a model answer and a driver
+// that knows how to obtain one. It owns vocabulary and nothing else. It never
+// reads a file, resolves an environment variable, names an implementation, or
+// chooses between providers: an application decides what to construct and hands
+// the result here as a [Provider].
+//
+// # One request, one response, many modalities
+//
+// [GenerateRequest.Output] selects what to produce — text, image, audio, video —
+// and everything else stays the same: the same request type, the same
+// [GenerateResponse], the same [Provider] method. The answer is always a
+// [message.Content], so the caller reads the produced parts rather than the
+// produced type. A modality that lands later adds one [Output] constant, not a
+// request type.
+//
+// # Where a knob belongs
+//
+// The boundary is mechanical, and it is the reason this package stays small:
+//
+//   - A field belongs on [GenerateRequest] when its schema is provider-neutral
+//     (owned by message or by this package) AND a provider-agnostic caller sets
+//     it per call. That is input, output, tools and tool choice.
+//   - A value a caller sets once per deployment — sampling, response format,
+//     reasoning depth, an image's size and quality, a voice — is driver
+//     settings. It never crosses this boundary, and a driver applies it while
+//     compiling.
+//   - A value whose schema only one provider understands is an [Extension]: a
+//     driver-defined, driver-decoded JSON value that other providers treat as
+//     inert.
+//   - Correlation data whose keys the deployment defines — a conversation id, a
+//     tenant id — is not a field at all: it travels in the context as
+//     [RequestMetadata], because this package does not own its schema and every
+//     layer may read it.
+//
+// # Layers
+//
+//	host            Provider, request/response vocabulary, optional capabilities
+//	driver author   the protocol kit in inference/protocol
+//	driver tests    the conformance suites in inference/inferencetest
+//
+// The host face is deliberately small: a caller needs one method,
+// [Provider.Generate], and, when it wants incremental output,
+// [Provider.GenerateStream]. Everything a driver needs in order to be written
+// and tested without a network lives in inference/protocol, which hosts do not
+// import.
+//
+// [Catalog] is how a model's declared facts — which outputs it can produce,
+// whether it calls tools, its limits — reach the runtime. Those facts are
+// configuration data supplied by the application; without a reader they would be
+// dead declarations.
 package inference

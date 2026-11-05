@@ -9,111 +9,78 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
+// ErrorKind classifies an inference failure. Callers branch on the kind, not
+// on the message text: the message is for humans and may change, the kind is
+// part of the contract and maps onto the shared [errdefs] categories.
 type ErrorKind string
 
 const (
-	InvalidRequest            ErrorKind = "invalid_request"
-	UnsupportedOperation      ErrorKind = "unsupported_operation"
-	UnsupportedFeature        ErrorKind = "unsupported_feature"
-	InvalidExtension          ErrorKind = "invalid_extension"
-	UnknownProvider           ErrorKind = "unknown_provider"
-	UnknownModel              ErrorKind = "unknown_model"
-	UnknownProfile            ErrorKind = "unknown_profile"
-	PolicyDenied              ErrorKind = "policy_denied"
-	OperationInterrupted      ErrorKind = "operation_interrupted"
+	// InvalidRequest means the canonical request is malformed. It is
+	// detected before any provider I/O.
+	InvalidRequest ErrorKind = "invalid_request"
+	// UnsupportedOperation means the model does not serve this operation
+	// at all (an embedding model asked to generate).
+	UnsupportedOperation ErrorKind = "unsupported_operation"
+	// UnsupportedFeature means the model serves the operation but cannot
+	// honor a requested field. The field is named on the error.
+	UnsupportedFeature ErrorKind = "unsupported_feature"
+	// InvalidExtension means a provider-specific extension failed to
+	// decode or validate.
+	InvalidExtension ErrorKind = "invalid_extension"
+	// UnknownModel means the requested model is not declared.
+	UnknownModel ErrorKind = "unknown_model"
+	// PolicyDenied means a host policy refused the request before I/O.
+	PolicyDenied ErrorKind = "policy_denied"
+	// OperationInterrupted means the caller's context ended the call.
+	OperationInterrupted ErrorKind = "operation_interrupted"
+	// CompilerContractViolation means a driver compiled a different set of
+	// fields than the request declared active. It is a driver bug, not a
+	// caller error.
 	CompilerContractViolation ErrorKind = "compiler_contract_violation"
-	ProviderFailure           ErrorKind = "provider_failure"
-	InvalidProviderResponse   ErrorKind = "invalid_provider_response"
-	// ProviderTruncated marks a stream that ended before the provider
-	// emitted a terminal finish event. It is distinct from
-	// InvalidProviderResponse so retry/degradation policies can treat it
-	// as transient (the request may simply have been cut off mid-flight)
-	// instead of permanent response corruption.
-	// Contract: core never auto-retries this error. Its NotAvailable/503
-	// classification means "this attempt is void and worth re-initiating
-	// at caller granularity" — partial content may already have been
-	// committed by the inference node before the error propagated, so an
-	// internal mid-stream retry would duplicate output.
+	// ProviderFailure means the provider call itself failed.
+	ProviderFailure ErrorKind = "provider_failure"
+	// InvalidProviderResponse means the wire response could not be decoded.
+	InvalidProviderResponse ErrorKind = "invalid_provider_response"
+	// ProviderTruncated means a stream ended before a terminal finish
+	// event. Partial content may already have been delivered, so core never
+	// retries it internally.
 	ProviderTruncated ErrorKind = "provider_truncated"
-	// ProviderResponseUnusable marks a response that completed — a
-	// terminal finish event was received, or a unary call returned — but
-	// whose artifact cannot be used: empty completed content, an
-	// unassemblable or missing part, an unrequested part or tool call,
-	// invalid tool-call structure, tool-choice violations, or usage and
-	// structure rules.
-	//
-	// The boundary is completion, not the site that detects the failure:
-	// anything raised while the stream is still in flight — decode,
-	// normalize, and accumulation failures, including an event whose own
-	// payload is malformed (a usage snapshot or finish value that fails
-	// validation, contradictory tool-call fragments) — stays
-	// InvalidProviderResponse, because we could not make sense of what the
-	// provider sent and there is no artifact to judge. Anything raised
-	// after the provider signalled completion is this kind even when the
-	// failure is in assembly rather than validation, and the transcription
-	// session follows its unary sibling on the same rule.
-	//
-	// It is distinct from InvalidProviderResponse so callers can treat
-	// this attempt as void and re-initiate at their own granularity while
-	// corruption remains non-retryable.
-	// Contract: core never auto-retries this error. Its NotAvailable/503
-	// classification means "this attempt is void and worth re-initiating
-	// at caller granularity" — partial content may already have been
-	// committed by the inference node before the error propagated, so an
-	// internal retry would duplicate output.
+	// ProviderResponseUnusable means the call completed but its payload
+	// cannot be used: empty content, a finish reason the contract does not
+	// define, and so on.
 	ProviderResponseUnusable ErrorKind = "provider_response_unusable"
-	// UndefinedTool marks a response whose tool calls name tools absent
-	// from the request's definitions. It is distinct from
-	// ProviderResponseUnusable so callers can offer a recoverable path
-	// (e.g. feedback that sends the model back to tool_search) without
-	// weakening the contract for responses that are merely unusable.
+	// UndefinedTool means the model called a tool that the request never
+	// defined. It is deterministic: retrying the same request cannot help.
 	UndefinedTool ErrorKind = "undefined_tool"
 )
 
-// Error carries safe structural context. Error() deliberately excludes the
-// underlying cause, so its text is safe for routine logs and API responses.
-//
-// Unwrap retains the cause for errors.Is/errors.As and errdefs classification.
-// The error chain is therefore diagnostic data, not redacted output: callers
-// must not serialize or log unwrapped causes where prompts, credentials, or
-// provider wire payloads could be exposed.
+// Error is the single failure type the inference contract produces. Kind,
+// Operation and Field are structural; Detail is a stable stage label safe to
+// log and return to callers. The wrapped cause may carry provider payloads and
+// must not be surfaced where prompts or credentials could leak.
 type Error struct {
 	Kind      ErrorKind
 	Operation Operation
-	Field     FieldID
-	// Detail is a stable, redacted stage label identifying where within
-	// the operation the failure was detected (for example
-	// "stream.finish.missing" for a stream that ended without a finish
-	// reason). Unlike cause it never carries provider wire payloads,
-	// prompts, or raw response fragments, so it is safe for Error()
-	// text, routine logs, and API responses.
+	Field     Field
+	// Detail is a stable, redacted stage label identifying where inside the
+	// operation the failure was detected ("stream.finish.missing"). It never
+	// carries prompts, credentials or wire payloads.
 	Detail string
-	// RetryAfter is a server-provided backoff hint (Retry-After) when a
-	// provider failure carries one. Zero means no hint. It is diagnostic
-	// metadata, not part of the redacted Error() text.
+	// RetryAfter is a server-provided backoff hint. Zero means none.
 	RetryAfter time.Duration
-	// WireAttempts is the number of HTTP sends the provider transport made
-	// before surfacing this failure. Zero means the provider did not report
-	// a count.
-	WireAttempts int
-	// RequestID is the provider-assigned request identifier attached to
-	// this failure when the provider reported one. Empty otherwise.
-	// Stream failures that end early may carry the provider's response
-	// identifier (chat/message id) instead when the transport-level request
-	// id is unknown, so operators can still correlate the truncated
-	// request with the provider.
-	// Runtime telemetry mirrors it onto error spans and logs as
-	// llm.request.id.
+	// RequestID is the provider-assigned request identifier when the
+	// provider reported one.
 	RequestID string
-	// UndefinedToolCall is the first tool call rejected because its name
-	// was absent from the request's definitions. Populated only for
-	// UndefinedTool errors; a recovering caller uses it to reconstruct the
-	// call for the stored recovery feedback.
+	// UndefinedToolCall is the first call rejected by name. Populated only
+	// for UndefinedTool, so a recovering caller can rebuild the call.
 	UndefinedToolCall *message.ToolCall
-	cause             error
+
+	cause error
 }
 
-func NewError(kind ErrorKind, operation Operation, field FieldID, cause error) *Error {
+// NewError builds an inference error and classifies its cause for the shared
+// error categories.
+func NewError(kind ErrorKind, operation Operation, field Field, cause error) *Error {
 	if cause == nil {
 		cause = errors.New(string(kind))
 	}
@@ -125,63 +92,44 @@ func NewError(kind ErrorKind, operation Operation, field FieldID, cause error) *
 	}
 }
 
-func newProviderError(
-	operation Operation,
-	provider string,
-	cause error,
-) *Error {
-	classified := errdefs.FromContext(cause)
-	if !errdefs.HasClassification(classified) {
-		classified = errdefs.ClassifyProviderError(provider, classified)
-	}
-	err := NewError(ProviderFailure, operation, "", classified)
-	if retryAfter, ok := errdefs.RetryAfter(cause); ok {
-		err.RetryAfter = retryAfter
-	}
-	err.WireAttempts = errdefs.RetryCount(cause)
-	if requestID, ok := errdefs.RequestID(cause); ok {
-		err.RequestID = requestID
-	}
-	return err
+// WithDetail returns e with the stage label set. It mutates e and returns it so
+// construction can stay flat.
+func (e *Error) WithDetail(detail string) *Error {
+	e.Detail = detail
+	return e
 }
 
+// Error renders the redacted form: no cause text, no payload.
 func (e *Error) Error() string {
-	message := string(e.Kind)
+	text := string(e.Kind)
 	if e.Operation != "" {
-		message += " during " + string(e.Operation)
+		text = string(e.Operation) + ": " + text
 	}
 	if e.Field != "" {
-		message += " at " + string(e.Field)
+		text += " (" + string(e.Field) + ")"
 	}
 	if e.Detail != "" {
-		message += ": " + e.Detail
+		text += ": " + e.Detail
 	}
-	return message
+	return text
 }
 
+// Unwrap exposes the classified cause.
 func (e *Error) Unwrap() error { return e.cause }
 
+// IsKind reports whether err is an inference error of the given kind.
 func IsKind(err error, kind ErrorKind) bool {
 	var inferenceErr *Error
 	return errors.As(err, &inferenceErr) && inferenceErr.Kind == kind
 }
 
-func (kind ErrorKind) isCompilerRejection() bool {
-	switch kind {
-	case UnsupportedFeature, InvalidExtension:
-		return true
-	default:
-		return false
-	}
-}
-
 func (kind ErrorKind) classify(cause error) error {
 	switch kind {
-	case InvalidRequest, UnsupportedFeature, InvalidExtension:
+	case InvalidRequest, UnsupportedFeature, InvalidExtension, UndefinedTool:
 		return errdefs.Validation(cause)
-	case UnknownProvider, UnknownModel, UnknownProfile:
+	case UnknownModel:
 		return errdefs.NotFound(cause)
-	case UnsupportedOperation:
+	case UnsupportedOperation, ProviderTruncated, ProviderResponseUnusable:
 		return errdefs.NotAvailable(cause)
 	case PolicyDenied:
 		return errdefs.PolicyDenied(cause)
@@ -193,14 +141,6 @@ func (kind ErrorKind) classify(cause error) error {
 		return errdefs.Aborted(classified)
 	case CompilerContractViolation, InvalidProviderResponse:
 		return errdefs.Internal(cause)
-	case ProviderTruncated, ProviderResponseUnusable:
-		return errdefs.NotAvailable(cause)
-	case UndefinedTool:
-		// Deterministic response violation: the model referenced a tool
-		// it was never shown. Retrying the same request cannot help, so
-		// it classifies as validation (non-retryable) rather than
-		// internal.
-		return errdefs.Validation(cause)
 	case ProviderFailure:
 		classified := errdefs.FromContext(cause)
 		if errdefs.HasClassification(classified) {
@@ -212,141 +152,15 @@ func (kind ErrorKind) classify(cause error) error {
 	}
 }
 
-// newResponseValidationError classifies a GenerateResponse.ValidateFor
-// failure. Undefined tool calls become UndefinedTool (deterministic,
-// potentially recoverable); every other contract violation becomes
-// ProviderResponseUnusable — a completed response whose payload the request
-// contract rejects — while InvalidProviderResponse stays reserved for
-// wire-level corruption raised on the decode and assembly paths.
-// scope identifies the call phase independently of the operation.
-func newResponseValidationError(operation Operation, scope string, err error) *Error {
-	out := NewError(ProviderResponseUnusable, operation, "", err)
-	var ute *undefinedToolError
-	if errors.As(err, &ute) {
-		out = NewError(UndefinedTool, operation, "", err)
-		call := ute.Call
-		out.UndefinedToolCall = &call
-	}
-	var check *generateResponseCheckError
-	if errors.As(err, &check) {
-		prefix := scope + ".validation."
-		if scope == "stream.finish" {
-			// Preserve the terminal labels already used by logs and alerts.
-			switch check.check {
-			case generateResponseCheckToolCall, generateResponseCheckMismatch, generateResponseCheckUndefinedTool:
-				prefix = scope + "."
-			}
-		}
-		out.Detail = prefix + string(check.check)
-	}
-	return out
-}
-
-// newDetailError builds an *Error that carries a stable Detail label and any
-// provider request identifier the cause chain knows.
-func newDetailError(
-	kind ErrorKind,
-	operation Operation,
-	detail string,
-	cause error,
-) *Error {
-	out := NewError(kind, operation, "", cause)
-	out.Detail = detail
-	if requestID, ok := errdefs.RequestID(out); ok {
-		out.RequestID = requestID
-	}
-	return out
-}
-
-// tokenLimit bounds identifier tokens (tool names today) before they are
-// rendered into a message CauseMessage may surface. A broken or hostile
-// provider is free to answer a tool call with a megabyte-long name, and the
-// attribute is documented as short, redacted-by-construction text.
-const tokenLimit = 64
-
-// quoteToken renders a provider- or caller-supplied identifier token as a
-// quoted, length-bounded string: truncation is rune-aware and marked with a
-// trailing "...", and quoting escapes control characters, so the rendered
-// text stays structurally safe and bounded however hostile the input is.
-func quoteToken(value string) string {
-	if runes := []rune(value); len(runes) > tokenLimit {
-		value = string(runes[:tokenLimit]) + "..."
-	}
-	return fmt.Sprintf("%q", value)
-}
-
-// redactedCause is implemented by inference-owned error types whose message
-// is redacted by construction, which is what makes it safe for CauseMessage
-// to surface in routine logs. That property means the message is built only
-// from:
-//
-//   - flowcraft-generated text: our format strings, static labels, and
-//     scalar values we derive (counts, media types, JSON types, enum names);
-//   - identifier-like tokens the provider or caller supplied, one of two
-//     ways: through quoteToken when the message is ours (tool names, media
-//     types — valid UTF-8, quoted, capped at tokenLimit runes), or as
-//     rendered by a sibling validator's own format string when the message
-//     comes from the message and media packages (a tool-call id, a media
-//     type) — quoted there, but not length-bounded;
-//   - library-rendered structural messages for the structured-output checks
-//     (generateResponseCheckText): the JSON-schema and encoding/json
-//     renderers echo schema pointers, property names, and at most a single
-//     offending character, never free-form response text.
-//
-// Free-form provider material — prompt and message bodies, tool arguments,
-// raw response fragments — must never reach these messages, and a cause that
-// cannot promise the property (driver, transport, or context errors) stays
-// unmarked even when its text looks harmless.
-type redactedCause interface {
-	error
-	redactedCause()
-}
-
-// redactedMessage marks a cause whose text is flowcraft-generated by
-// construction, letting CauseMessage surface a message that has no dedicated
-// error type. Only inference-owned text — our format strings plus message and
-// media validation — may be marked this way; a cause that could carry driver,
-// transport, or provider text must stay unmarked even when its text looks
-// harmless.
-type redactedMessage struct {
-	err error
-}
-
-func (e *redactedMessage) Error() string { return e.err.Error() }
-func (e *redactedMessage) Unwrap() error { return e.err }
-func (*redactedMessage) redactedCause()  {}
-
-// markRedacted wraps cause in the redacted-by-construction marker unless it
-// already carries one. A nil cause stays nil.
-func markRedacted(cause error) error {
-	if cause == nil {
-		return nil
-	}
-	var marked redactedCause
-	if errors.As(cause, &marked) {
-		return cause
-	}
-	return &redactedMessage{err: cause}
-}
-
-// CauseMessage returns the message of the first inference-owned cause
-// beneath the outer *Error in err's chain. It returns "" when the chain
-// carries no *Error, or when none of its causes is marked
-// redacted-by-construction: driver, transport, and context errors stay out,
-// because Error documents the chain as diagnostic data rather than redacted
-// output.
-//
-// It exists so routine logs can carry the actual reason behind a stable
-// Detail label — for example the terminal check that rejected a completed
-// response — without serializing an arbitrary error chain.
-func CauseMessage(err error) string {
-	var inferenceErr *Error
-	if !errors.As(err, &inferenceErr) {
-		return ""
-	}
-	var marked redactedCause
-	if errors.As(inferenceErr.cause, &marked) {
-		return marked.Error()
-	}
-	return ""
+// newUndefinedToolError builds the deterministic rejection raised when a model
+// calls a tool the request never defined.
+func newUndefinedToolError(operation Operation, call message.ToolCall) *Error {
+	err := NewError(
+		UndefinedTool,
+		operation,
+		FieldTools,
+		fmt.Errorf("model called undefined tool %q", call.Name),
+	)
+	err.UndefinedToolCall = &call
+	return err
 }

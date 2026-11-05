@@ -1,27 +1,20 @@
 package inference
 
-// Metadata is attached to every successful operation.
+import "github.com/GizClaw/flowcraft/core/inference/model"
+
+// Metadata describes a completed call. It answers "what answered, and can I
+// correlate this with the provider's logs" without exposing the request or the
+// response payload.
 type Metadata struct {
-	Model     ModelID    `json:"model"`
-	Operation Operation  `json:"operation"`
-	Decisions []Decision `json:"decisions,omitempty"`
-
-	// RequestID is the provider-assigned request identifier when the
-	// wire response carries one (e.g. DashScope request_id, or an error
-	// envelope's request id). Empty when the provider does not expose
-	// one. Runtime telemetry mirrors it onto spans as llm.request.id.
+	// Model is the provider-qualified model that produced the response.
+	Model model.ModelID `json:"model"`
+	// Operation is the call that produced it.
+	Operation Operation `json:"operation"`
+	// RequestID is the provider-assigned request identifier when the wire
+	// carries one (DashScope request_id, an error envelope's request id).
+	// Empty when the provider exposes none.
 	RequestID string `json:"request_id,omitempty"`
-	// ResponseID is the provider-assigned identifier of the response
-	// object when the wire response carries one (e.g. OpenAI
-	// response.id, Anthropic message.id, chat completion id). Empty
-	// when unavailable. Runtime telemetry mirrors it onto spans as
-	// llm.response.id.
+	// ResponseID is the provider-assigned identifier of the response object
+	// (OpenAI response.id, Anthropic message.id, a chat completion id).
 	ResponseID string `json:"response_id,omitempty"`
-}
-
-// Clone returns a defensive copy of the metadata: the returned value
-// shares no backing array with the receiver.
-func (m Metadata) Clone() Metadata {
-	m.Decisions = append([]Decision(nil), m.Decisions...)
-	return m
 }

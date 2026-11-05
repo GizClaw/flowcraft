@@ -154,16 +154,7 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 	  "capabilities": {
 	    "inputs": ["text", "image"],
 	    "outputs": ["text"],
-	    "reasoning": {
-	      "kind": "toggle",
-	      "effort_map": {
-	        "minimal": "minimal",
-	        "low": "low",
-	        "medium": "medium",
-	        "high": "high",
-	        "xhigh": "max"
-	      }
-	    },
+	    "tool_calling": true,
 	    "hosted_web_search": true
 	  },
 	  "limits": {"max_input_tokens": 128000, "max_output_tokens": 8192},
@@ -187,7 +178,7 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 	}
 	for _, key := range []string{
 		`"id"`, `"label"`, `"operations"`, `"capabilities"`, `"inputs"`,
-		`"outputs"`, `"reasoning"`, `"effort_map"`, `"hosted_web_search"`,
+		`"outputs"`, `"tool_calling"`, `"hosted_web_search"`,
 		`"limits"`, `"max_input_tokens"`, `"max_output_tokens"`,
 		`"lifecycle"`, `"status"`, `"retires_at"`, `"replacement"`, `"notes"`,
 	} {

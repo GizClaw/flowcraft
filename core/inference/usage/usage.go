@@ -257,8 +257,10 @@ func (u Usage) Clone() Usage {
 // the dimensions a budget accumulator sums: normalized token totals,
 // the plain input-side sub-counters (cache read/write, uncached — all
 // subset counters sharing the input unit), and the Model / LatencyMs
-// envelope. Model is preserved from u when both are non-zero and
-// disagree (the accumulator's identity wins); when one side is zero
+// envelope, plus the plain workload counters (generated images and
+// videos, input characters, audio duration), which are counts like the
+// token totals and therefore sum without ambiguity. Model is preserved
+// from u when both are non-zero and disagree (the accumulator's identity wins); when one side is zero
 // the other fills it in — so per-model breakdowns SHOULD bucket by
 // Model before summing. Billing.Cost is deliberately not summed: cost
 // carries a currency and scale, and silently adding mixed currencies
@@ -273,11 +275,15 @@ func (u Usage) Add(other Usage) Usage {
 		ref = other.Model
 	}
 	return Usage{
-		InputTokens:  u.InputTokens + other.InputTokens,
-		OutputTokens: u.OutputTokens + other.OutputTokens,
-		TotalTokens:  u.TotalTokens + other.TotalTokens,
-		Model:        ref,
-		LatencyMs:    u.LatencyMs + other.LatencyMs,
+		InputTokens:         u.InputTokens + other.InputTokens,
+		OutputTokens:        u.OutputTokens + other.OutputTokens,
+		TotalTokens:         u.TotalTokens + other.TotalTokens,
+		GeneratedImages:     addPointers(u.GeneratedImages, other.GeneratedImages),
+		GeneratedVideos:     addPointers(u.GeneratedVideos, other.GeneratedVideos),
+		InputCharacters:     addPointers(u.InputCharacters, other.InputCharacters),
+		AudioDurationMillis: addPointers(u.AudioDurationMillis, other.AudioDurationMillis),
+		Model:               ref,
+		LatencyMs:           u.LatencyMs + other.LatencyMs,
 		Input: InputTokenUsage{
 			CacheReadTokens:  addPointers(u.Input.CacheReadTokens, other.Input.CacheReadTokens),
 			CacheWriteTokens: addPointers(u.Input.CacheWriteTokens, other.Input.CacheWriteTokens),

@@ -2,7 +2,6 @@ package model
 
 import (
 	"fmt"
-	"maps"
 
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -26,12 +25,13 @@ type ModelCapabilities struct {
 	// request intent and skips declared-incompatible tiers. Empty outputs are
 	// undeclared and do not filter routing.
 	Outputs []message.PartKind `json:"outputs,omitempty"`
-	// Reasoning declares the model's reasoning control capability: whether it
-	// has a reasoning channel and whether reasoning can be switched or its
-	// effort adjusted, and how the canonical effort levels map onto the
-	// model's own wire levels. Empty (ReasoningNone) is the conservative
-	// default.
-	Reasoning ReasoningCapability `json:"reasoning,omitzero"`
+	// ToolCalling marks function-tool support. Tool definitions are
+	// canonical data (name, description, JSON Schema), so a request carries
+	// them directly; this bit lets a driver reject tools for a model that has
+	// no tool channel before any provider I/O, the same way
+	// CustomEmbedDimensions rejects its knob. Zero means undeclared, which
+	// filters nothing.
+	ToolCalling bool `json:"tool_calling,omitempty"`
 	// HostedWebSearch marks provider-side web_search tool support. It is
 	// discovery metadata for hosts; the search configuration itself still
 	// rides on GenerateRequest.Extensions as a provider GenerateOptions
@@ -52,9 +52,6 @@ type ModelCapabilities struct {
 func (c ModelCapabilities) Clone() ModelCapabilities {
 	c.Inputs = append([]message.PartKind(nil), c.Inputs...)
 	c.Outputs = append([]message.PartKind(nil), c.Outputs...)
-	if c.Reasoning.EffortMap != nil {
-		c.Reasoning.EffortMap = maps.Clone(c.Reasoning.EffortMap)
-	}
 	return c
 }
 
@@ -74,23 +71,10 @@ func (c ModelCapabilities) WithOutputs(kinds ...message.PartKind) ModelCapabilit
 	return c
 }
 
-// WithReasoning returns a copy of the capabilities with the reasoning control
-// capability set.
-func (c ModelCapabilities) WithReasoning(kind ReasoningKind) ModelCapabilities {
-	c.Reasoning.Kind = kind
-	return c
-}
-
-// WithReasoningEffortMap returns a copy of the capabilities with the model's
-// canonical-to-wire effort map set. The result shares no backing map with
-// the receiver or the caller.
-func (c ModelCapabilities) WithReasoningEffortMap(
-	efforts map[ReasoningEffort]string,
-) ModelCapabilities {
-	if efforts != nil {
-		efforts = maps.Clone(efforts)
-	}
-	c.Reasoning.EffortMap = efforts
+// WithToolCalling returns a copy of the capabilities with function-tool
+// support marked available.
+func (c ModelCapabilities) WithToolCalling() ModelCapabilities {
+	c.ToolCalling = true
 	return c
 }
 
@@ -109,9 +93,6 @@ func (c ModelCapabilities) WithCustomEmbedDimensions() ModelCapabilities {
 }
 
 func (c ModelCapabilities) Validate() error {
-	if err := c.Reasoning.Validate(); err != nil {
-		return err
-	}
 	if err := validatePartKinds(c.Inputs, true); err != nil {
 		return err
 	}
