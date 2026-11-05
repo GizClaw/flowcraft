@@ -1,4 +1,4 @@
-package pathsafe
+package fsx
 
 import (
 	"os"

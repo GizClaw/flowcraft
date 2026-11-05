@@ -3,8 +3,9 @@
 //
 // It imports nothing beyond the standard library — not even another core
 // package — so base packages such as core/message can use it without
-// inheriting the dependency graph of core/utils (HTTP, TLS, telemetry,
-// configuration decoding).
+// inheriting anything. It is internal because it is a helper, not API: a driver
+// module that wants a defensive copy writes its own five lines rather than
+// depending on this module's internals.
 package ptr
 
 import "reflect"

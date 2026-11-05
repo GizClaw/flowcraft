@@ -1,22 +1,20 @@
-// Package pathsafe centralizes the containment rule: "is this path the
-// root or a descendant of it?". It exists because the same check was
-// re-implemented across the tree with different strengths — a sandbox
-// resolving a working directory, a settings loader validating a
-// relative path, a workspace classifying a resolved root — and a
-// missing symlink pass in any one of them is a path-escape bug.
+// Containment is the rule every FS policy rests on: is this path the root, or a
+// descendant of it? It lives here because Policy speaks root-relative paths and
+// this is the step that turns an untrusted absolute path into one.
 //
 // Two strengths are offered, and callers must pick deliberately:
 //
-//   - Within / Rel / ResolveUnder judge the paths as given, lexically.
-//     They are the right choice when the path has already been
-//     resolved, or when the caller owns the resolution step.
-//   - RealWithin / RealDir resolve symlinks first. Use them when an
-//     untrusted path is compared against a root: without the symlink
-//     pass, a link inside the root can point outside it.
+//   - Within / WithinFold / Rel / ResolveUnder judge the paths as given,
+//     lexically. They are the right choice when the path is already resolved, or
+//     when the caller owns the resolution step.
+//   - RealWithin / RealDir resolve symlinks first. Use them when an untrusted path
+//     is compared against a root: without the symlink pass, a link inside the root
+//     can point outside it.
 //
-// The package owns no I/O policy. Which roots exist, what is readable,
-// and what happens on a violation stay with the caller.
-package pathsafe
+// This file owns no I/O policy: which roots exist, what is readable, and what
+// happens on a violation stay with the caller.
+
+package fsx
 
 import (
 	"errors"
