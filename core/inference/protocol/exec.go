@@ -17,9 +17,9 @@ import (
 // request value.
 //
 // Implementations must be safe for concurrent use.
-type Transport[Wire, Raw any] func(
+type Transport[Req Request, Wire, Raw any] func(
 	ctx context.Context,
-	request inference.GenerateRequest,
+	request Req,
 	wire Wire,
 ) (Raw, error)
 
@@ -31,11 +31,11 @@ type Transport[Wire, Raw any] func(
 // from what was asked for.
 //
 // Implementations must be safe for concurrent use.
-type Decoder[Raw any] func(
+type Decoder[Req Request, Raw, Res any] func(
 	ctx context.Context,
-	request inference.GenerateRequest,
+	request Req,
 	raw Raw,
-) (inference.GenerateResponse, error)
+) (Res, error)
 
 // GenerateDriver is one bound unary pipeline. It is what [BindGenerate] returns
 // and what [BindProvider] wraps into an [inference.Provider].
@@ -52,9 +52,9 @@ type GenerateDriver interface {
 // providers before compiling, so a driver never has to filter them itself.
 func BindGenerate[Wire, Raw any](
 	providerID string,
-	compile Compiler[Wire],
-	transport Transport[Wire, Raw],
-	decode Decoder[Raw],
+	compile Compiler[inference.GenerateRequest, Wire],
+	transport Transport[inference.GenerateRequest, Wire, Raw],
+	decode Decoder[inference.GenerateRequest, Raw, inference.GenerateResponse],
 ) (GenerateDriver, error) {
 	switch {
 	case providerID == "":
@@ -76,9 +76,9 @@ func BindGenerate[Wire, Raw any](
 
 type unaryDriver[Wire, Raw any] struct {
 	providerID string
-	compile    Compiler[Wire]
-	transport  Transport[Wire, Raw]
-	decode     Decoder[Raw]
+	compile    Compiler[inference.GenerateRequest, Wire]
+	transport  Transport[inference.GenerateRequest, Wire, Raw]
+	decode     Decoder[inference.GenerateRequest, Raw, inference.GenerateResponse]
 }
 
 // Execute validates, compiles, calls and decodes one request.
@@ -86,17 +86,18 @@ func (d *unaryDriver[Wire, Raw]) Execute(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, error) {
-	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeUnary)
+	request.Extensions = request.Extensions.ForProvider(d.providerID)
+	compiled, err := prepare(ctx, d.providerID, model.OperationGenerate, d.compile, request, ShapeUnary)
 	if err != nil {
 		return inference.GenerateResponse{}, err
 	}
 	raw, err := d.transport(ctx, request, compiled.Wire)
 	if err != nil {
-		return inference.GenerateResponse{}, transportError(ctx, err)
+		return inference.GenerateResponse{}, transportError(ctx, model.OperationGenerate, err)
 	}
 	response, err := d.decode(ctx, request, raw)
 	if err != nil {
-		return inference.GenerateResponse{}, decodeError(err)
+		return inference.GenerateResponse{}, decodeError(model.OperationGenerate, err)
 	}
 	response.Warnings = joinWarnings(compiled.Warnings, response.Warnings)
 	if err := response.ValidateFor(request); err != nil {
@@ -111,27 +112,22 @@ func (d *unaryDriver[Wire, Raw]) Execute(
 // It is unexported on purpose. A driver hands over three functions and receives
 // a working driver; it cannot call prepare, cannot hold a prepared request, and
 // therefore cannot execute one request with another request's compilation.
-func prepare[Wire any](
+func prepare[Req Request, Wire any](
 	ctx context.Context,
 	providerID string,
-	compile Compiler[Wire],
-	request inference.GenerateRequest,
+	operation model.Operation,
+	compile Compiler[Req, Wire],
+	request Req,
 	shape Shape,
 ) (Compiled[Wire], error) {
-	// Extensions addressed to other providers are inert by contract: a caller
-	// may carry options for several providers at once, and each attempt applies
-	// only its own. Dropping them here keeps the compiler from having to filter
-	// and keeps the contract check comparing against what this driver can
-	// actually see.
-	request.Extensions = request.Extensions.ForProvider(providerID)
 	if err := request.Validate(); err != nil {
 		return Compiled[Wire]{}, err
 	}
 	compiled, err := compile(ctx, request, shape)
 	if err != nil {
-		return Compiled[Wire]{}, compilerError(err)
+		return Compiled[Wire]{}, compilerError(operation, err)
 	}
-	if err := checkContract(request, compiled.Fields, compiled.Warnings); err != nil {
+	if err := checkContract(request, operation, compiled.Fields, compiled.Warnings); err != nil {
 		return Compiled[Wire]{}, err
 	}
 	return compiled, nil
@@ -140,18 +136,18 @@ func prepare[Wire any](
 // compilerError keeps a driver's classified rejection and treats anything else
 // as a driver bug: an unclassified compiler failure means the pipeline cannot
 // tell a rejected request from a broken driver.
-func compilerError(err error) error {
+func compilerError(operation model.Operation, err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
 	}
-	return contractError("", "compiler failed without classifying the error")
+	return contractError(operation, "", "compiler failed without classifying the error")
 }
 
 // transportError keeps a driver's classified failure, maps cancellation onto
 // OperationInterrupted, and treats the rest as a provider failure so retry
 // policy sees a transient class rather than an internal one.
-func transportError(ctx context.Context, err error) error {
+func transportError(ctx context.Context, operation model.Operation, err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
@@ -159,14 +155,14 @@ func transportError(ctx context.Context, err error) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return inference.NewError(
 			inference.OperationInterrupted,
-			model.OperationGenerate,
+			operation,
 			"",
 			contextErr,
 		)
 	}
 	return inference.NewError(
 		inference.ProviderFailure,
-		model.OperationGenerate,
+		operation,
 		"",
 		err,
 	)
@@ -174,14 +170,14 @@ func transportError(ctx context.Context, err error) error {
 
 // decodeError treats an unclassified decode failure as a malformed provider
 // answer: the call finished, the payload did not make sense.
-func decodeError(err error) error {
+func decodeError(operation model.Operation, err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
 	}
 	return inference.NewError(
 		inference.InvalidProviderResponse,
-		model.OperationGenerate,
+		operation,
 		"",
 		err,
 	)

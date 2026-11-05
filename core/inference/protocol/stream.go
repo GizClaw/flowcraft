@@ -25,9 +25,9 @@ type RawStream[Raw any] interface {
 
 // StreamOpener performs the streaming call and returns the wire-level stream. It
 // receives the canonical request for the same reason [Transport] does.
-type StreamOpener[Wire, Raw any] func(
+type StreamOpener[Req Request, Wire, Raw any] func(
 	ctx context.Context,
-	request inference.GenerateRequest,
+	request Req,
 	wire Wire,
 ) (RawStream[Raw], error)
 
@@ -44,8 +44,8 @@ type StreamDecoder[Raw any] func(ctx context.Context, raw Raw) ([]inference.Stre
 //
 // It receives the request for the same reason [Decoder] does: some streams never
 // name the model or the media type they are producing.
-type StreamDecoderFactory[Raw any] func(
-	request inference.GenerateRequest,
+type StreamDecoderFactory[Req Request, Raw any] func(
+	request Req,
 ) StreamDecoder[Raw]
 
 // GenerateStreamDriver is one bound streaming pipeline.
@@ -57,9 +57,9 @@ type GenerateStreamDriver interface {
 // and so is the provider identity, for the same reason as [BindGenerate].
 func BindGenerateStream[Wire, Raw any](
 	providerID string,
-	compile Compiler[Wire],
-	open StreamOpener[Wire, Raw],
-	newDecoder StreamDecoderFactory[Raw],
+	compile Compiler[inference.GenerateRequest, Wire],
+	open StreamOpener[inference.GenerateRequest, Wire, Raw],
+	newDecoder StreamDecoderFactory[inference.GenerateRequest, Raw],
 ) (GenerateStreamDriver, error) {
 	switch {
 	case providerID == "":
@@ -81,9 +81,9 @@ func BindGenerateStream[Wire, Raw any](
 
 type streamDriver[Wire, Raw any] struct {
 	providerID string
-	compile    Compiler[Wire]
-	open       StreamOpener[Wire, Raw]
-	newDecoder StreamDecoderFactory[Raw]
+	compile    Compiler[inference.GenerateRequest, Wire]
+	open       StreamOpener[inference.GenerateRequest, Wire, Raw]
+	newDecoder StreamDecoderFactory[inference.GenerateRequest, Raw]
 }
 
 // Open validates, compiles, starts the call and returns the ready stream.
@@ -91,13 +91,14 @@ func (d *streamDriver[Wire, Raw]) Open(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {
-	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeStream)
+	request.Extensions = request.Extensions.ForProvider(d.providerID)
+	compiled, err := prepare(ctx, d.providerID, model.OperationGenerate, d.compile, request, ShapeStream)
 	if err != nil {
 		return nil, err
 	}
 	raw, err := d.open(ctx, request, compiled.Wire)
 	if err != nil {
-		return nil, transportError(ctx, err)
+		return nil, transportError(ctx, model.OperationGenerate, err)
 	}
 	if raw == nil {
 		return nil, inference.NewError(
@@ -158,12 +159,12 @@ func (s *boundStream[Raw]) Next(ctx context.Context) (inference.StreamEvent, err
 		}
 		if err != nil {
 			s.ended = true
-			return inference.StreamEvent{}, transportError(ctx, err)
+			return inference.StreamEvent{}, transportError(ctx, model.OperationGenerate, err)
 		}
 		events, err := s.decode(ctx, raw)
 		if err != nil {
 			s.ended = true
-			return inference.StreamEvent{}, decodeError(err)
+			return inference.StreamEvent{}, decodeError(model.OperationGenerate, err)
 		}
 		for _, event := range events {
 			if err := event.Validate(); err != nil {

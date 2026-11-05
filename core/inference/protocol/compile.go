@@ -53,17 +53,28 @@ type Compiled[Wire any] struct {
 // without a network.
 //
 // Implementations must be safe for concurrent use.
-type Compiler[Wire any] func(
+type Compiler[Req Request, Wire any] func(
 	ctx context.Context,
-	request inference.GenerateRequest,
+	request Req,
 	shape Shape,
 ) (Compiled[Wire], error)
 
+// Request is what a pipeline compiles. Every workload's request type exposes
+// the same two facts, which is what lets one contract check serve them all:
+// which canonical fields it set, and whether it is valid at all.
+type Request interface {
+	// ActiveFields names the canonical fields this request uses. The contract
+	// check requires the compilation to honour or explain every one.
+	ActiveFields() []inference.Field
+	// Validate rejects a request before any provider I/O.
+	Validate() error
+}
+
 // contractError builds a driver-bug rejection that names the field.
-func contractError(field inference.Field, detail string) *inference.Error {
+func contractError(operation model.Operation, field inference.Field, detail string) *inference.Error {
 	return inference.NewError(
 		inference.CompilerContractViolation,
-		model.OperationGenerate,
+		operation,
 		field,
 		errors.New(detail),
 	).WithDetail(detail)
@@ -71,8 +82,9 @@ func contractError(field inference.Field, detail string) *inference.Error {
 
 // checkContract verifies that the compilation accounted for every active field
 // and invented none.
-func checkContract(
-	request inference.GenerateRequest,
+func checkContract[Req Request](
+	request Req,
+	operation model.Operation,
 	fields []inference.Field,
 	warnings []inference.Warning,
 ) error {
@@ -85,7 +97,7 @@ func checkContract(
 	explained := make(map[inference.Field]struct{}, len(fields)+len(warnings))
 	for _, field := range fields {
 		if _, ok := activeSet[field]; !ok {
-			return contractError(field, "compiled a field the request did not set")
+			return contractError(operation, field, "compiled a field the request did not set")
 		}
 		explained[field] = struct{}{}
 	}
@@ -98,7 +110,7 @@ func checkContract(
 
 	for _, field := range active {
 		if _, ok := explained[field]; !ok {
-			return contractError(field, "was requested but the compilation neither honored nor explained it")
+			return contractError(operation, field, "was requested but the compilation neither honored nor explained it")
 		}
 	}
 	return nil
