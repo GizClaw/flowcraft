@@ -34,7 +34,7 @@
 //
 // # Boundary
 //
-// MCP-backed tools live in tool/mcp; the built-in cross-cutting middleware
+// MCP-backed tools live in tool-mcp; the built-in cross-cutting middleware
 // lives in tool/middleware. Neither is imported here. Tools reach host
 // capabilities (workspace, sandbox, session identity) through the context
 // helpers in this package, never by holding a host object.
