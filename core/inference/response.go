@@ -3,6 +3,7 @@ package inference
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -96,12 +97,12 @@ func (r GenerateResponse) Validate() error {
 func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	if err := r.Validate(); err != nil {
 		return inferenceErr(
-			ProviderResponseUnusable, OperationGenerate, "", err,
+			ProviderResponseUnusable, model.OperationGenerate, "", err,
 		)
 	}
 	for _, call := range r.Message.ToolCalls() {
 		if !request.Tools.Has(call.Name) {
-			return newUndefinedToolError(OperationGenerate, call)
+			return newUndefinedToolError(model.OperationGenerate, call)
 		}
 	}
 	return nil

@@ -19,7 +19,6 @@ type Operation string
 
 const (
 	OperationGenerate      Operation = "generate"
-	OperationEmbed         Operation = "embed"
 	OperationTranscription Operation = "transcription"
 )
 
@@ -31,7 +30,6 @@ const (
 func Operations() []Operation {
 	return []Operation{
 		OperationGenerate,
-		OperationEmbed,
 		OperationTranscription,
 	}
 }

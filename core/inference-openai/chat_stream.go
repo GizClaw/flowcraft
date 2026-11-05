@@ -64,7 +64,7 @@ func chatStreamEvents(
 		*started = true
 		metadata := inference.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: chunk.Model},
-			Operation:  inference.OperationGenerate,
+			Operation:  model.OperationGenerate,
 			ResponseID: chunk.ID,
 		}
 		events = append(events, inference.StreamEvent{

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // Shape is the execution contract a compilation targets. A provider may accept
@@ -62,7 +63,7 @@ type Compiler[Wire any] func(
 func contractError(field inference.Field, detail string) *inference.Error {
 	return inference.NewError(
 		inference.CompilerContractViolation,
-		inference.OperationGenerate,
+		model.OperationGenerate,
 		field,
 		errors.New(detail),
 	).WithDetail(detail)

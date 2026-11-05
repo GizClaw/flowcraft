@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -21,7 +22,7 @@ import (
 func imageURL(source media.ImageSource) (string, error) {
 	if err := source.Validate(); err != nil {
 		return "", inference.NewError(
-			inference.InvalidRequest, inference.OperationGenerate, inference.FieldContent, err,
+			inference.InvalidRequest, model.OperationGenerate, inference.FieldContent, err,
 		)
 	}
 	switch source.Kind() {
@@ -38,12 +39,12 @@ func imageURL(source media.ImageSource) (string, error) {
 func audioPayload(source media.AudioSource) (string, string, error) {
 	if err := source.Validate(); err != nil {
 		return "", "", inference.NewError(
-			inference.InvalidRequest, inference.OperationGenerate, inference.FieldContent, err,
+			inference.InvalidRequest, model.OperationGenerate, inference.FieldContent, err,
 		)
 	}
 	if source.Kind() != media.SourceInline {
 		return "", "", inference.NewError(
-			inference.UnsupportedFeature, inference.OperationGenerate, inference.FieldContent,
+			inference.UnsupportedFeature, model.OperationGenerate, inference.FieldContent,
 			fmt.Errorf("openai: audio input must be inline, got a %q source", source.Kind()),
 		)
 	}
@@ -64,7 +65,7 @@ func audioFormat(mediaType string) (string, error) {
 		return "mp3", nil
 	default:
 		return "", inference.NewError(
-			inference.UnsupportedFeature, inference.OperationGenerate, inference.FieldContent,
+			inference.UnsupportedFeature, model.OperationGenerate, inference.FieldContent,
 			fmt.Errorf("openai: audio media type %q is not a supported input format", mediaType),
 		)
 	}
@@ -83,7 +84,7 @@ func textOf(item message.Message) string { return item.Content.Text() }
 func unsupportedPart(kind message.PartKind) error {
 	return inference.NewError(
 		inference.UnsupportedFeature,
-		inference.OperationGenerate,
+		model.OperationGenerate,
 		inference.FieldContent,
 		fmt.Errorf("openai: content part %q is not mapped", kind),
 	)

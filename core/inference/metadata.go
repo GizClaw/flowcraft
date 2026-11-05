@@ -9,7 +9,7 @@ type Metadata struct {
 	// Model is the provider-qualified model that produced the response.
 	Model model.ModelID `json:"model"`
 	// Operation is the call that produced it.
-	Operation Operation `json:"operation"`
+	Operation model.Operation `json:"operation"`
 	// RequestID is the provider-assigned request identifier when the wire
 	// carries one (DashScope request_id, an error envelope's request id).
 	// Empty when the provider exposes none.

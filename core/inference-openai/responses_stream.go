@@ -57,7 +57,7 @@ func responsesStreamEvents(
 		*started = true
 		metadata := inference.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(event.Response.Model)},
-			Operation:  inference.OperationGenerate,
+			Operation:  model.OperationGenerate,
 			ResponseID: event.Response.ID,
 		}
 		events = append([]inference.StreamEvent{{
@@ -125,7 +125,7 @@ func responsesEventPayload(event responses.ResponseStreamEventUnion) ([]inferenc
 	case "response.failed":
 		return nil, inference.NewError(
 			inference.ProviderFailure,
-			inference.OperationGenerate,
+			model.OperationGenerate,
 			inference.FieldStream,
 			fmt.Errorf("openai: response failed: %s", event.Response.Error.Message),
 		)

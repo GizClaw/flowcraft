@@ -32,7 +32,7 @@ func imageStreamDecoder(request inference.GenerateRequest) protocol.StreamDecode
 	mediaType := imageMediaType(options)
 	metadata := inference.Metadata{
 		Model:     model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
-		Operation: inference.OperationGenerate,
+		Operation: model.OperationGenerate,
 	}
 	started := false
 	return func(_ context.Context, event openai.ImageGenStreamEventUnion) ([]inference.StreamEvent, error) {

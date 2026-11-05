@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -60,7 +61,7 @@ const (
 // must not be surfaced where prompts or credentials could leak.
 type Error struct {
 	Kind      ErrorKind
-	Operation Operation
+	Operation model.Operation
 	Field     Field
 	// Detail is a stable, redacted stage label identifying where inside the
 	// operation the failure was detected ("stream.finish.missing"). It never
@@ -80,7 +81,7 @@ type Error struct {
 
 // NewError builds an inference error and classifies its cause for the shared
 // error categories.
-func NewError(kind ErrorKind, operation Operation, field Field, cause error) *Error {
+func NewError(kind ErrorKind, operation model.Operation, field Field, cause error) *Error {
 	if cause == nil {
 		cause = errors.New(string(kind))
 	}
@@ -154,7 +155,7 @@ func (kind ErrorKind) classify(cause error) error {
 
 // newUndefinedToolError builds the deterministic rejection raised when a model
 // calls a tool the request never defined.
-func newUndefinedToolError(operation Operation, call message.ToolCall) *Error {
+func newUndefinedToolError(operation model.Operation, call message.ToolCall) *Error {
 	err := NewError(
 		UndefinedTool,
 		operation,

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // Transport is the only stage allowed to perform provider I/O.
@@ -158,14 +159,14 @@ func transportError(ctx context.Context, err error) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return inference.NewError(
 			inference.OperationInterrupted,
-			inference.OperationGenerate,
+			model.OperationGenerate,
 			"",
 			contextErr,
 		)
 	}
 	return inference.NewError(
 		inference.ProviderFailure,
-		inference.OperationGenerate,
+		model.OperationGenerate,
 		"",
 		err,
 	)
@@ -180,7 +181,7 @@ func decodeError(err error) error {
 	}
 	return inference.NewError(
 		inference.InvalidProviderResponse,
-		inference.OperationGenerate,
+		model.OperationGenerate,
 		"",
 		err,
 	)
