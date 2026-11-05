@@ -25,6 +25,14 @@ const (
 	FieldToolChoice Field = "tool_choice"
 	FieldExtensions Field = "extension"
 	FieldStream     Field = "stream"
+
+	// Fields of the transcription request. They live in the same flat set
+	// because the contract check is per workload, not per field namespace: a
+	// driver reports what it honoured, and the caller reads one vocabulary.
+	FieldAudio    Field = "audio"
+	FieldLanguage Field = "language"
+	FieldPrompt   Field = "prompt"
+	FieldSegments Field = "segments"
 )
 
 const extensionFieldPrefix = "extension."
