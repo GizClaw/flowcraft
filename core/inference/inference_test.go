@@ -512,7 +512,6 @@ func TestErrorRenderIsRedacted(t *testing.T) {
 	const payload = "sk-live-secret-payload"
 	err := inference.NewError(
 		inference.ProviderFailure,
-		model.OperationGenerate,
 		inference.FieldModel,
 		errors.New(payload),
 	)

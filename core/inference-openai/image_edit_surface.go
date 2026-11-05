@@ -10,7 +10,6 @@ import (
 	"github.com/openai/openai-go/v3"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -30,7 +29,6 @@ func (d *driver) imageEditCompile(
 	if request.Output.Kind() != inference.OutputImage {
 		return protocol.Compiled[openai.ImageEditParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldOutput,
 			fmt.Errorf("openai: image edit pipeline cannot serve output %q", request.Output.Kind()),
 		)
@@ -41,7 +39,6 @@ func (d *driver) imageEditCompile(
 	if len(request.Context) > 0 {
 		return protocol.Compiled[openai.ImageEditParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldContext,
 			fmt.Errorf("openai: image editing has no conversation context; put the prompt in the input"),
 		)
@@ -92,7 +89,6 @@ func editInput(item message.Message) (string, []imageFile, error) {
 		default:
 			return "", nil, inference.NewError(
 				inference.UnsupportedFeature,
-				model.OperationGenerate,
 				inference.FieldContent,
 				fmt.Errorf("openai: image editing accepts text and images, not %q", part.Kind()),
 			)
@@ -101,7 +97,6 @@ func editInput(item message.Message) (string, []imageFile, error) {
 	if len(images) == 0 {
 		return "", nil, inference.NewError(
 			inference.InvalidRequest,
-			model.OperationGenerate,
 			inference.FieldContent,
 			fmt.Errorf("openai: image editing requires at least one reference image"),
 		)
@@ -110,7 +105,6 @@ func editInput(item message.Message) (string, []imageFile, error) {
 	if prompt == "" {
 		return "", nil, inference.NewError(
 			inference.InvalidRequest,
-			model.OperationGenerate,
 			inference.FieldContent,
 			fmt.Errorf("openai: image editing requires a prompt"),
 		)

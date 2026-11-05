@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
@@ -324,7 +323,6 @@ func generationOptions(extensions inference.Extensions) (*GenerationOptions, err
 		if !ok {
 			return nil, inference.NewError(
 				inference.InvalidExtension,
-				model.OperationGenerate,
 				inference.FieldExtensions,
 				fmt.Errorf("openai: extension %s/%s is not understood by this driver",
 					extension.ProviderID(), extension.ExtensionID()),
@@ -333,7 +331,6 @@ func generationOptions(extensions inference.Extensions) (*GenerationOptions, err
 		if found != nil {
 			return nil, inference.NewError(
 				inference.InvalidExtension,
-				model.OperationGenerate,
 				inference.FieldExtensions,
 				fmt.Errorf("openai: duplicate generation options"),
 			)

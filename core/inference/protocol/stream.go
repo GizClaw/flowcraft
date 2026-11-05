@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // RawStream is one in-flight provider stream at the wire level: the provider's
@@ -92,18 +91,17 @@ func (d *streamDriver[Wire, Raw]) Open(
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {
 	request.Extensions = request.Extensions.ForProvider(d.providerID)
-	compiled, err := prepare(ctx, d.providerID, model.OperationGenerate, d.compile, request, ShapeStream)
+	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeStream)
 	if err != nil {
 		return nil, err
 	}
 	raw, err := d.open(ctx, request, compiled.Wire)
 	if err != nil {
-		return nil, transportError(ctx, model.OperationGenerate, err)
+		return nil, transportError(ctx, err)
 	}
 	if raw == nil {
 		return nil, inference.NewError(
 			inference.InvalidProviderResponse,
-			model.OperationGenerate,
 			"",
 			errors.New("opener returned a nil stream"),
 		)
@@ -112,7 +110,6 @@ func (d *streamDriver[Wire, Raw]) Open(
 	if decode == nil {
 		return nil, inference.NewError(
 			inference.InvalidProviderResponse,
-			model.OperationGenerate,
 			"",
 			errors.New("decoder factory returned nil"),
 		)
@@ -150,7 +147,6 @@ func (s *boundStream[Raw]) Next(ctx context.Context) (inference.StreamEvent, err
 			if !s.acc.finished() {
 				return inference.StreamEvent{}, inference.NewError(
 					inference.ProviderTruncated,
-					model.OperationGenerate,
 					inference.FieldStream,
 					errors.New("stream ended without a terminal event"),
 				).WithDetail("stream.finish.missing")
@@ -159,19 +155,18 @@ func (s *boundStream[Raw]) Next(ctx context.Context) (inference.StreamEvent, err
 		}
 		if err != nil {
 			s.ended = true
-			return inference.StreamEvent{}, transportError(ctx, model.OperationGenerate, err)
+			return inference.StreamEvent{}, transportError(ctx, err)
 		}
 		events, err := s.decode(ctx, raw)
 		if err != nil {
 			s.ended = true
-			return inference.StreamEvent{}, decodeError(model.OperationGenerate, err)
+			return inference.StreamEvent{}, decodeError(err)
 		}
 		for _, event := range events {
 			if err := event.Validate(); err != nil {
 				s.ended = true
 				return inference.StreamEvent{}, inference.NewError(
 					inference.InvalidProviderResponse,
-					model.OperationGenerate,
 					inference.FieldStream,
 					err,
 				)
@@ -198,7 +193,6 @@ func (s *boundStream[Raw]) Result() (inference.GenerateResponse, error) {
 	if !s.acc.finished() {
 		return inference.GenerateResponse{}, inference.NewError(
 			inference.ProviderTruncated,
-			model.OperationGenerate,
 			inference.FieldStream,
 			errors.New("result requested before the stream finished"),
 		).WithDetail("stream.result.incomplete")
@@ -209,7 +203,6 @@ func (s *boundStream[Raw]) Result() (inference.GenerateResponse, error) {
 		// template is unusable; the answer is not salvageable.
 		return inference.GenerateResponse{}, inference.NewError(
 			inference.InvalidProviderResponse,
-			model.OperationGenerate,
 			inference.FieldStream,
 			err,
 		)

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -60,9 +59,8 @@ const (
 // log and return to callers. The wrapped cause may carry provider payloads and
 // must not be surfaced where prompts or credentials could leak.
 type Error struct {
-	Kind      ErrorKind
-	Operation model.Operation
-	Field     Field
+	Kind  ErrorKind
+	Field Field
 	// Detail is a stable, redacted stage label identifying where inside the
 	// operation the failure was detected ("stream.finish.missing"). It never
 	// carries prompts, credentials or wire payloads.
@@ -81,15 +79,14 @@ type Error struct {
 
 // NewError builds an inference error and classifies its cause for the shared
 // error categories.
-func NewError(kind ErrorKind, operation model.Operation, field Field, cause error) *Error {
+func NewError(kind ErrorKind, field Field, cause error) *Error {
 	if cause == nil {
 		cause = errors.New(string(kind))
 	}
 	return &Error{
-		Kind:      kind,
-		Operation: operation,
-		Field:     field,
-		cause:     kind.classify(cause),
+		Kind:  kind,
+		Field: field,
+		cause: kind.classify(cause),
 	}
 }
 
@@ -103,9 +100,6 @@ func (e *Error) WithDetail(detail string) *Error {
 // Error renders the redacted form: no cause text, no payload.
 func (e *Error) Error() string {
 	text := string(e.Kind)
-	if e.Operation != "" {
-		text = string(e.Operation) + ": " + text
-	}
 	if e.Field != "" {
 		text += " (" + string(e.Field) + ")"
 	}
@@ -155,10 +149,9 @@ func (kind ErrorKind) classify(cause error) error {
 
 // newUndefinedToolError builds the deterministic rejection raised when a model
 // calls a tool the request never defined.
-func newUndefinedToolError(operation model.Operation, call message.ToolCall) *Error {
+func newUndefinedToolError(call message.ToolCall) *Error {
 	err := NewError(
 		UndefinedTool,
-		operation,
 		FieldTools,
 		fmt.Errorf("model called undefined tool %q", call.Name),
 	)

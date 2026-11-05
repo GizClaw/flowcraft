@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // Shape is the execution contract a compilation targets. A provider may accept
@@ -71,10 +70,9 @@ type Request interface {
 }
 
 // contractError builds a driver-bug rejection that names the field.
-func contractError(operation model.Operation, field inference.Field, detail string) *inference.Error {
+func contractError(field inference.Field, detail string) *inference.Error {
 	return inference.NewError(
 		inference.CompilerContractViolation,
-		operation,
 		field,
 		errors.New(detail),
 	).WithDetail(detail)
@@ -84,7 +82,6 @@ func contractError(operation model.Operation, field inference.Field, detail stri
 // and invented none.
 func checkContract[Req Request](
 	request Req,
-	operation model.Operation,
 	fields []inference.Field,
 	warnings []inference.Warning,
 ) error {
@@ -97,7 +94,7 @@ func checkContract[Req Request](
 	explained := make(map[inference.Field]struct{}, len(fields)+len(warnings))
 	for _, field := range fields {
 		if _, ok := activeSet[field]; !ok {
-			return contractError(operation, field, "compiled a field the request did not set")
+			return contractError(field, "compiled a field the request did not set")
 		}
 		explained[field] = struct{}{}
 	}
@@ -110,7 +107,7 @@ func checkContract[Req Request](
 
 	for _, field := range active {
 		if _, ok := explained[field]; !ok {
-			return contractError(operation, field, "was requested but the compilation neither honored nor explained it")
+			return contractError(field, "was requested but the compilation neither honored nor explained it")
 		}
 	}
 	return nil

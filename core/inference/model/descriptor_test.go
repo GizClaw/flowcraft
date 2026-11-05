@@ -26,9 +26,8 @@ func TestModelDescriptorValidateRejectsNonPositiveLimits(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			descriptor := ModelDescriptor{
-				ID:         ModelID{Provider: "openai", Name: "gpt-x"},
-				Operations: []Operation{OperationGenerate},
-				Limits:     test.limits,
+				ID:     ModelID{Provider: "openai", Name: "gpt-x"},
+				Limits: test.limits,
 			}
 			if err := descriptor.Validate(); err == nil {
 				t.Fatalf("non-positive max %s tokens unexpectedly accepted", test.name)
@@ -41,8 +40,7 @@ func TestModelDescriptorClonePreservesLimits(t *testing.T) {
 	inputLimit := 200_000
 	outputLimit := 16_384
 	original := ModelDescriptor{
-		ID:         ModelID{Provider: "openai", Name: "gpt-x"},
-		Operations: []Operation{OperationGenerate},
+		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 		Limits: ModelLimits{
 			MaxInputTokens:  &inputLimit,
 			MaxOutputTokens: &outputLimit,
@@ -67,8 +65,7 @@ func TestModelDescriptorClonePreservesLimits(t *testing.T) {
 
 func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
 	original := ModelDescriptor{
-		ID:         ModelID{Provider: "openai", Name: "gpt-x"},
-		Operations: []Operation{OperationGenerate},
+		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 		Capabilities: ModelCapabilities{
 			Inputs:  []message.PartKind{message.PartText, message.PartImage},
 			Outputs: []message.PartKind{message.PartText},
@@ -88,8 +85,7 @@ func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
 
 func TestModelDescriptorValidateRejectsNonOutputModality(t *testing.T) {
 	descriptor := ModelDescriptor{
-		ID:         ModelID{Provider: "openai", Name: "gpt-x"},
-		Operations: []Operation{OperationGenerate},
+		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 		Capabilities: ModelCapabilities{
 			Outputs: []message.PartKind{message.PartToolCall},
 		},
@@ -101,8 +97,7 @@ func TestModelDescriptorValidateRejectsNonOutputModality(t *testing.T) {
 
 func TestModelDescriptorJSONLimits(t *testing.T) {
 	descriptor := ModelDescriptor{
-		ID:         ModelID{Provider: "openai", Name: "gpt-x"},
-		Operations: []Operation{OperationGenerate},
+		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 	}
 	encoded, err := json.Marshal(descriptor)
 	if err != nil {
@@ -150,7 +145,6 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 	const spec = `{
 	  "id": {"provider": "kimi", "name": "kimi-k3"},
 	  "label": "Kimi K3",
-	  "operations": ["generate"],
 	  "capabilities": {
 	    "inputs": ["text", "image"],
 	    "outputs": ["text"],
@@ -177,7 +171,7 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	for _, key := range []string{
-		`"id"`, `"label"`, `"operations"`, `"capabilities"`, `"inputs"`,
+		`"id"`, `"label"`, `"capabilities"`, `"inputs"`,
 		`"outputs"`, `"tool_calling"`, `"hosted_web_search"`,
 		`"limits"`, `"max_input_tokens"`, `"max_output_tokens"`,
 		`"lifecycle"`, `"status"`, `"retires_at"`, `"replacement"`, `"notes"`,

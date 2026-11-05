@@ -126,7 +126,6 @@ func (d *driver) speechCompile(
 	if request.Output.Kind() != inference.OutputAudio {
 		return protocol.Compiled[openai.AudioSpeechNewParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldOutput,
 			fmt.Errorf("openai: speech pipeline cannot serve output %q", request.Output.Kind()),
 		)
@@ -134,7 +133,6 @@ func (d *driver) speechCompile(
 	if len(request.Context) > 0 {
 		return protocol.Compiled[openai.AudioSpeechNewParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldContext,
 			fmt.Errorf("openai: speech synthesis has no conversation context; put the text in the input"),
 		)
@@ -188,7 +186,6 @@ func speechInput(item message.Message) (string, error) {
 		if !ok {
 			return "", inference.NewError(
 				inference.UnsupportedFeature,
-				model.OperationGenerate,
 				inference.FieldContent,
 				fmt.Errorf("openai: speech synthesis takes text input only, not %q", part.Kind()),
 			)
@@ -199,7 +196,6 @@ func speechInput(item message.Message) (string, error) {
 	if joined == "" {
 		return "", inference.NewError(
 			inference.InvalidRequest,
-			model.OperationGenerate,
 			inference.FieldContent,
 			fmt.Errorf("openai: speech synthesis requires text"),
 		)
@@ -227,7 +223,6 @@ func (d *driver) speechCall(
 	if len(data) == 0 {
 		return nil, inference.NewError(
 			inference.ProviderResponseUnusable,
-			model.OperationGenerate,
 			"",
 			fmt.Errorf("openai: speech response carried no audio"),
 		)
@@ -268,8 +263,7 @@ func (d *driver) speechDecode(
 		FinishReason: inference.FinishStop,
 		Usage:        usage.Usage{InputCharacters: &characters},
 		Metadata: inference.Metadata{
-			Model:     model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
-			Operation: model.OperationGenerate,
+			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},
 	}, nil
 }

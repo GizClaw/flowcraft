@@ -193,7 +193,6 @@ func imageOptions(extensions inference.Extensions) (*ImageOptions, error) {
 		if found != nil {
 			return nil, inference.NewError(
 				inference.InvalidExtension,
-				model.OperationGenerate,
 				inference.FieldExtensions,
 				fmt.Errorf("openai: duplicate image options"),
 			)
@@ -212,7 +211,6 @@ func (d *driver) imageCompile(
 	if request.Output.Kind() != inference.OutputImage {
 		return protocol.Compiled[openai.ImageGenerateParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldOutput,
 			fmt.Errorf("openai: image pipeline cannot serve output %q", request.Output.Kind()),
 		)
@@ -223,7 +221,6 @@ func (d *driver) imageCompile(
 	if len(request.Context) > 0 {
 		return protocol.Compiled[openai.ImageGenerateParams]{}, inference.NewError(
 			inference.UnsupportedFeature,
-			model.OperationGenerate,
 			inference.FieldContext,
 			fmt.Errorf("openai: image generation has no conversation context; put the prompt in the input"),
 		)
@@ -247,7 +244,6 @@ func (d *driver) imageCompile(
 		if options != nil && options.Count != nil && *options.Count > 1 {
 			return protocol.Compiled[openai.ImageGenerateParams]{}, inference.NewError(
 				inference.UnsupportedFeature,
-				model.OperationGenerate,
 				inference.FieldStream,
 				fmt.Errorf("openai: a streamed generation produces exactly one image"),
 			)
@@ -312,7 +308,6 @@ func imagePrompt(item message.Message) (string, error) {
 		if !ok {
 			return "", inference.NewError(
 				inference.UnsupportedFeature,
-				model.OperationGenerate,
 				inference.FieldContent,
 				fmt.Errorf("openai: image generation takes text input only; %q belongs to the edit surface", part.Kind()),
 			)
@@ -323,7 +318,6 @@ func imagePrompt(item message.Message) (string, error) {
 	if prompt == "" {
 		return "", inference.NewError(
 			inference.InvalidRequest,
-			model.OperationGenerate,
 			inference.FieldContent,
 			fmt.Errorf("openai: image generation requires a prompt"),
 		)
@@ -354,7 +348,6 @@ func (d *driver) imageDecode(
 	if len(raw.Data) == 0 {
 		return inference.GenerateResponse{}, inference.NewError(
 			inference.ProviderResponseUnusable,
-			model.OperationGenerate,
 			"",
 			fmt.Errorf("openai: image response carried no image"),
 		)
@@ -415,8 +408,7 @@ func (d *driver) imageDecode(
 			GeneratedImages: &count,
 		},
 		Metadata: inference.Metadata{
-			Model:     model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
-			Operation: model.OperationGenerate,
+			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},
 		Warnings: warnings,
 	}, nil
@@ -436,7 +428,6 @@ func imagePart(item openai.Image, mediaType string) (message.Part, bool, error) 
 		if err != nil {
 			return nil, false, inference.NewError(
 				inference.InvalidProviderResponse,
-				model.OperationGenerate,
 				"",
 				fmt.Errorf("openai: image payload is not base64: %w", err),
 			)
@@ -456,7 +447,6 @@ func imagePart(item openai.Image, mediaType string) (message.Part, bool, error) 
 	}
 	return nil, false, inference.NewError(
 		inference.InvalidProviderResponse,
-		model.OperationGenerate,
 		"",
 		fmt.Errorf("openai: generated image carries neither bytes nor a URL"),
 	)
@@ -497,12 +487,12 @@ func inlineImageBytes(part message.ImagePart) ([]byte, string, error) {
 	source := part.Source
 	if err := source.Validate(); err != nil {
 		return nil, "", inference.NewError(
-			inference.InvalidRequest, model.OperationGenerate, inference.FieldContent, err,
+			inference.InvalidRequest, inference.FieldContent, err,
 		)
 	}
 	if source.Kind() != media.SourceInline {
 		return nil, "", inference.NewError(
-			inference.UnsupportedFeature, model.OperationGenerate, inference.FieldContent,
+			inference.UnsupportedFeature, inference.FieldContent,
 			fmt.Errorf("openai: editing requires inline image bytes; materialize a %q source first", source.Kind()),
 		)
 	}
@@ -515,7 +505,6 @@ func b64ImagePart(payload, mediaType string) (message.Part, error) {
 	if err != nil {
 		return nil, inference.NewError(
 			inference.InvalidProviderResponse,
-			model.OperationGenerate,
 			"",
 			fmt.Errorf("openai: image payload is not base64: %w", err),
 		)

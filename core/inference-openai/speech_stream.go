@@ -88,8 +88,7 @@ func speechStreamDecoder(request inference.GenerateRequest) protocol.StreamDecod
 	mediaType := speechMediaType(format)
 	encoding, sampleRate, channels := speechEncoding(format)
 	metadata := inference.Metadata{
-		Model:     model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
-		Operation: model.OperationGenerate,
+		Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 	}
 	characters := int64(len([]rune(request.Input.Content.Text())))
 
@@ -108,7 +107,6 @@ func speechStreamDecoder(request inference.GenerateRequest) protocol.StreamDecod
 			if !received {
 				return nil, inference.NewError(
 					inference.ProviderResponseUnusable,
-					model.OperationGenerate,
 					"",
 					fmt.Errorf("openai: speech stream carried no audio"),
 				)

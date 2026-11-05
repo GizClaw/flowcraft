@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -13,7 +12,7 @@ import (
 func (d *driver) preflight(request inference.GenerateRequest) error {
 	if request.Output.Kind() != inference.OutputText {
 		return inference.NewError(
-			inference.UnsupportedFeature, model.OperationGenerate, inference.FieldOutput,
+			inference.UnsupportedFeature, inference.FieldOutput,
 			fmt.Errorf("openai: output %q is not served by this driver", request.Output.Kind()),
 		)
 	}
@@ -81,7 +80,6 @@ func reasoningWarnings(request inference.GenerateRequest) []inference.Warning {
 func unsupportedOption(option, surface string) error {
 	return inference.NewError(
 		inference.UnsupportedFeature,
-		model.OperationGenerate,
 		inference.FieldExtensions,
 		fmt.Errorf("openai: option %q is only available on the %s surface", option, surface),
 	)

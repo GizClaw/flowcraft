@@ -306,7 +306,6 @@ func (d *driver) responsesDecode(
 		Usage:        responsesUsage(raw),
 		Metadata: inference.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(raw.Model)},
-			Operation:  model.OperationGenerate,
 			ResponseID: raw.ID,
 		},
 	}, nil
@@ -326,7 +325,6 @@ func responsesFinishReason(status string, toolCalls int) (inference.FinishReason
 	default:
 		return "", inference.NewError(
 			inference.ProviderResponseUnusable,
-			model.OperationGenerate,
 			"",
 			fmt.Errorf("openai: unknown response status %q", status),
 		)

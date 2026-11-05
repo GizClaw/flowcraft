@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // BindProvider assembles the host-facing contract from the bound halves. Either
@@ -41,7 +40,6 @@ func (p provider) Generate(
 	if p.unary == nil {
 		return inference.GenerateResponse{}, inference.NewError(
 			inference.UnsupportedOperation,
-			model.OperationGenerate,
 			"",
 			errors.New("provider does not serve unary generation"),
 		)
@@ -56,7 +54,6 @@ func (p provider) GenerateStream(
 	if p.stream == nil {
 		return nil, inference.NewError(
 			inference.UnsupportedOperation,
-			model.OperationGenerate,
 			inference.FieldStream,
 			errors.New("provider does not serve streaming generation"),
 		)

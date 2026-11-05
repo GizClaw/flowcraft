@@ -311,7 +311,6 @@ func (d *driver) chatDecode(
 		Usage:        chatUsage(raw),
 		Metadata: inference.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(raw.Model)},
-			Operation:  model.OperationGenerate,
 			ResponseID: raw.ID,
 		},
 	}, nil
@@ -333,7 +332,6 @@ func chatFinishReason(reason string, toolCalls int) (inference.FinishReason, err
 	default:
 		return "", inference.NewError(
 			inference.ProviderResponseUnusable,
-			model.OperationGenerate,
 			"",
 			fmt.Errorf("openai: unknown finish reason %q", reason),
 		)

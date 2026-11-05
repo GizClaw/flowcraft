@@ -447,8 +447,7 @@ func chatToolStreamBody() string {
 // stays permissive and publishes no catalog.
 func TestCatalogConformance(t *testing.T) {
 	text := model.ModelDescriptor{
-		ID:         model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
-		Operations: []model.Operation{model.OperationGenerate},
+		ID: model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
 		Capabilities: model.ModelCapabilities{
 			Inputs:      []message.PartKind{message.PartText},
 			Outputs:     []message.PartKind{message.PartText},
@@ -458,7 +457,6 @@ func TestCatalogConformance(t *testing.T) {
 	}
 	image := model.ModelDescriptor{
 		ID:           model.ModelID{Provider: ProviderID, Name: "gpt-image-1"},
-		Operations:   []model.Operation{model.OperationGenerate},
 		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartImage}},
 	}
 
@@ -529,7 +527,6 @@ func TestDeclaredInputsAreEnforced(t *testing.T) {
 
 	textOnly := model.ModelDescriptor{
 		ID:           model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
-		Operations:   []model.Operation{model.OperationGenerate},
 		Capabilities: model.ModelCapabilities{Inputs: []message.PartKind{message.PartText}},
 	}
 	d := &driver{settings: Settings{API: APIChat, APIKey: "k", Models: []model.ModelDescriptor{textOnly}}}

@@ -71,9 +71,6 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 				t.Errorf("model %q is declared twice", descriptor.ID.Name)
 			}
 			seen[descriptor.ID] = struct{}{}
-			if !containsOperation(descriptor.Operations, model.OperationGenerate) {
-				t.Errorf("model %q does not declare the generate operation", descriptor.ID.Name)
-			}
 		}
 		if len(published) != len(fixture.Declared) {
 			t.Errorf("published %d models, fixture declares %d", len(published), len(fixture.Declared))
@@ -219,15 +216,6 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 			t.Fatalf("kind = %v, want UnsupportedOperation", err)
 		}
 	})
-}
-
-func containsOperation(operations []model.Operation, want model.Operation) bool {
-	for _, operation := range operations {
-		if operation == want {
-			return true
-		}
-	}
-	return false
 }
 
 func declaresOutput(descriptor model.ModelDescriptor, output inference.Output) bool {

@@ -1,21 +1,20 @@
 package model
 
-import "fmt"
-
-// ModelDescriptor is public discovery metadata. Operations must be derived
-// from the drivers registered for the model rather than maintained as a
-// separate capability declaration.
+// ModelDescriptor is public discovery metadata: who the model is, what content
+// it accepts and emits, what it limits, and how long it lives.
+//
+// There is no operation list. What a model can do is expressed by the kinds it
+// declares — a model whose Inputs include audio and whose Outputs are text
+// serves transcription, and no separate label says so twice.
 type ModelDescriptor struct {
 	ID           ModelID           `json:"id"`
 	Label        string            `json:"label,omitempty"`
-	Operations   []Operation       `json:"operations"`
 	Capabilities ModelCapabilities `json:"capabilities,omitzero"`
 	Limits       ModelLimits       `json:"limits,omitzero"`
 	Lifecycle    ModelLifecycle    `json:"lifecycle,omitzero"`
 }
 
 func (d ModelDescriptor) Clone() ModelDescriptor {
-	d.Operations = append([]Operation(nil), d.Operations...)
 	d.Capabilities = d.Capabilities.Clone()
 	d.Limits = d.Limits.Clone()
 	d.Lifecycle = d.Lifecycle.Clone()
@@ -25,23 +24,6 @@ func (d ModelDescriptor) Clone() ModelDescriptor {
 func (d ModelDescriptor) Validate() error {
 	if err := d.ID.Validate(); err != nil {
 		return err
-	}
-	seen := make(map[Operation]struct{}, len(d.Operations))
-	for _, operation := range d.Operations {
-		if err := operation.Validate(); err != nil {
-			return err
-		}
-		if _, ok := seen[operation]; ok {
-			return fmt.Errorf("duplicate model operation %q", operation)
-		}
-		seen[operation] = struct{}{}
-	}
-	if d.Capabilities.HostedWebSearch {
-		if _, ok := seen[OperationGenerate]; !ok {
-			return fmt.Errorf(
-				"hosted web search requires the generate operation",
-			)
-		}
 	}
 	if err := d.Capabilities.Validate(); err != nil {
 		return err

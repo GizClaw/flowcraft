@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // Transport is the only stage allowed to perform provider I/O.
@@ -87,17 +86,17 @@ func (d *unaryDriver[Wire, Raw]) Execute(
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, error) {
 	request.Extensions = request.Extensions.ForProvider(d.providerID)
-	compiled, err := prepare(ctx, d.providerID, model.OperationGenerate, d.compile, request, ShapeUnary)
+	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeUnary)
 	if err != nil {
 		return inference.GenerateResponse{}, err
 	}
 	raw, err := d.transport(ctx, request, compiled.Wire)
 	if err != nil {
-		return inference.GenerateResponse{}, transportError(ctx, model.OperationGenerate, err)
+		return inference.GenerateResponse{}, transportError(ctx, err)
 	}
 	response, err := d.decode(ctx, request, raw)
 	if err != nil {
-		return inference.GenerateResponse{}, decodeError(model.OperationGenerate, err)
+		return inference.GenerateResponse{}, decodeError(err)
 	}
 	response.Warnings = joinWarnings(compiled.Warnings, response.Warnings)
 	if err := response.ValidateFor(request); err != nil {
@@ -115,7 +114,6 @@ func (d *unaryDriver[Wire, Raw]) Execute(
 func prepare[Req Request, Wire any](
 	ctx context.Context,
 	providerID string,
-	operation model.Operation,
 	compile Compiler[Req, Wire],
 	request Req,
 	shape Shape,
@@ -125,9 +123,9 @@ func prepare[Req Request, Wire any](
 	}
 	compiled, err := compile(ctx, request, shape)
 	if err != nil {
-		return Compiled[Wire]{}, compilerError(operation, err)
+		return Compiled[Wire]{}, compilerError(err)
 	}
-	if err := checkContract(request, operation, compiled.Fields, compiled.Warnings); err != nil {
+	if err := checkContract(request, compiled.Fields, compiled.Warnings); err != nil {
 		return Compiled[Wire]{}, err
 	}
 	return compiled, nil
@@ -136,18 +134,18 @@ func prepare[Req Request, Wire any](
 // compilerError keeps a driver's classified rejection and treats anything else
 // as a driver bug: an unclassified compiler failure means the pipeline cannot
 // tell a rejected request from a broken driver.
-func compilerError(operation model.Operation, err error) error {
+func compilerError(err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
 	}
-	return contractError(operation, "", "compiler failed without classifying the error")
+	return contractError("", "compiler failed without classifying the error")
 }
 
 // transportError keeps a driver's classified failure, maps cancellation onto
 // OperationInterrupted, and treats the rest as a provider failure so retry
 // policy sees a transient class rather than an internal one.
-func transportError(ctx context.Context, operation model.Operation, err error) error {
+func transportError(ctx context.Context, err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
@@ -155,14 +153,12 @@ func transportError(ctx context.Context, operation model.Operation, err error) e
 	if contextErr := ctx.Err(); contextErr != nil {
 		return inference.NewError(
 			inference.OperationInterrupted,
-			operation,
 			"",
 			contextErr,
 		)
 	}
 	return inference.NewError(
 		inference.ProviderFailure,
-		operation,
 		"",
 		err,
 	)
@@ -170,14 +166,13 @@ func transportError(ctx context.Context, operation model.Operation, err error) e
 
 // decodeError treats an unclassified decode failure as a malformed provider
 // answer: the call finished, the payload did not make sense.
-func decodeError(operation model.Operation, err error) error {
+func decodeError(err error) error {
 	var inferenceErr *inference.Error
 	if errors.As(err, &inferenceErr) {
 		return inferenceErr
 	}
 	return inference.NewError(
 		inference.InvalidProviderResponse,
-		operation,
 		"",
 		err,
 	)

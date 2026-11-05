@@ -88,7 +88,6 @@ func (d *driver) checkDeclarations(request inference.GenerateRequest) error {
 	if !ok {
 		return inference.NewError(
 			inference.UnknownModel,
-			model.OperationGenerate,
 			inference.FieldModel,
 			fmt.Errorf("openai: model %q is not declared by this deployment", request.Model.ID.Name),
 		)
@@ -118,7 +117,6 @@ func checkDeclaredOutput(
 	}
 	return inference.NewError(
 		inference.UnsupportedOperation,
-		model.OperationGenerate,
 		inference.FieldOutput,
 		fmt.Errorf("openai: model %q does not declare %q output", descriptor.ID.Name, want),
 	)
@@ -146,7 +144,6 @@ func checkDeclaredInputs(
 			}
 			return inference.NewError(
 				inference.UnsupportedFeature,
-				model.OperationGenerate,
 				inference.FieldContent,
 				fmt.Errorf("openai: model %q does not declare %q input (%s)",
 					descriptor.ID.Name, part.Kind(), where),

@@ -109,33 +109,33 @@ func (r GenerateRequest) Clone() GenerateRequest {
 // only it holds the declarations.
 func (r GenerateRequest) Validate() error {
 	if err := r.Model.Validate(); err != nil {
-		return inferenceErr(InvalidRequest, model.OperationGenerate, FieldModel, err)
+		return inferenceErr(InvalidRequest, FieldModel, err)
 	}
 	for i, item := range r.Context {
 		if err := item.Validate(); err != nil {
 			return inferenceErr(
-				InvalidRequest, model.OperationGenerate, FieldContext,
+				InvalidRequest, FieldContext,
 				fmt.Errorf("context message %d: %w", i, err),
 			)
 		}
 	}
 	if err := r.Input.Validate(); err != nil {
-		return inferenceErr(InvalidRequest, model.OperationGenerate, FieldInput, err)
+		return inferenceErr(InvalidRequest, FieldInput, err)
 	}
 	if err := r.Output.Validate(); err != nil {
-		return inferenceErr(InvalidRequest, model.OperationGenerate, FieldOutput, err)
+		return inferenceErr(InvalidRequest, FieldOutput, err)
 	}
 	if r.Output.Kind() != OutputText && !r.Tools.IsZero() {
 		return inferenceErr(
-			InvalidRequest, model.OperationGenerate, FieldTools,
+			InvalidRequest, FieldTools,
 			fmt.Errorf("tools apply to text output only, not %q", r.Output.Kind()),
 		)
 	}
 	if err := r.Tools.Validate(); err != nil {
-		return inferenceErr(InvalidRequest, model.OperationGenerate, FieldTools, err)
+		return inferenceErr(InvalidRequest, FieldTools, err)
 	}
 	if err := r.Extensions.Validate(); err != nil {
-		return inferenceErr(InvalidExtension, model.OperationGenerate, FieldExtensions, err)
+		return inferenceErr(InvalidExtension, FieldExtensions, err)
 	}
 	return nil
 }
@@ -171,6 +171,6 @@ func (r GenerateRequest) ActiveFields() []Field {
 }
 
 // inferenceErr builds a pre-I/O rejection.
-func inferenceErr(kind ErrorKind, operation model.Operation, field Field, cause error) error {
-	return NewError(kind, operation, field, cause)
+func inferenceErr(kind ErrorKind, field Field, cause error) error {
+	return NewError(kind, field, cause)
 }
