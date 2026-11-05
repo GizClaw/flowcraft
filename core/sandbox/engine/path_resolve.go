@@ -1,0 +1,79 @@
+// Package sandbox resolves backend setting paths relative to a workspace
+// root, rejecting traversal outside it (including through symlinks).
+package engine
+
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/fsx"
+)
+
+// ResolveMany resolves every path in paths. A nil slice returns nil.
+func ResolveMany(root string, paths []string) ([]string, error) {
+	if paths == nil {
+		return nil, nil
+	}
+	resolved := make([]string, len(paths))
+	for i, p := range paths {
+		if p == "" {
+			return nil, errdefs.Validationf("path[%d] is empty", i)
+		}
+		value, err := Resolve(root, p)
+		if err != nil {
+			return nil, errdefs.Validationf("path[%d] %q: %w", i, p, err)
+		}
+		resolved[i] = value
+	}
+	return resolved, nil
+}
+
+// Resolve makes a relative setting path relative to root and rejects
+// relative traversal outside it. Absolute paths are cleaned and
+// returned unchanged.
+func Resolve(root, p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	value := filepath.Clean(filepath.Join(root, p))
+	cleanRoot := filepath.Clean(root)
+	if !fsx.Within(cleanRoot, value) {
+		return "", errdefs.Validationf(
+			"relative path %q escapes workspace root", p)
+	}
+	realRoot, err := EvalExistingPrefix(cleanRoot)
+	if err != nil {
+		return "", errdefs.Validationf(
+			"resolve workspace root %q: %w", cleanRoot, err)
+	}
+	realValue, err := EvalExistingPrefix(value)
+	if err != nil {
+		return "", errdefs.Validationf(
+			"resolve relative path %q: %w", p, err)
+	}
+	if !fsx.Within(realRoot, realValue) {
+		return "", errdefs.Validationf(
+			"relative path %q escapes workspace root through a symlink", p)
+	}
+	return realValue, nil
+}
+
+func EvalExistingPrefix(p string) (string, error) {
+	real, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return real, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p, nil
+	}
+	realParent, err := EvalExistingPrefix(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(realParent, filepath.Base(p)), nil
+}

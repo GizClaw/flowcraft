@@ -53,14 +53,3 @@ type Enforcement struct {
 	FilesystemBounds bool
 	WriteModes       []WritePolicy
 }
-
-// GroupCapsSupported reports whether the shared process-group watcher
-// (StartGroupCapsWatcher) can enforce MemoryCap/CPUCap in this process:
-// unix, with a working ps(1). Backends that delegate resource caps to
-// that watcher — core/sandbox/local, core/sandbox/seatbelt — must gate the
-// MemoryCap/CPUCap fields of their Enforcement on it instead of
-// hardcoding true, otherwise they advertise caps that silently never
-// fire in a restricted environment where ps cannot be executed.
-//
-// The probe result is cached for the process lifetime.
-func GroupCapsSupported() bool { return groupCapsAvailable() }

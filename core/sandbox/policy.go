@@ -91,25 +91,6 @@ type ResourceLimits struct {
 //
 // Backend-specific posture checks (which Net modes a runner enforces,
 // WorkDir confinement) stay in each backend.
-func ValidateExecPolicy(opts ExecOptions) error {
-	if opts.Write > WriteReadOnly {
-		return errdefs.Validationf(
-			"sandbox: unknown write policy %d", int(opts.Write))
-	}
-	if opts.Resources.DiskBytes != 0 {
-		return errdefs.NotAvailablef(
-			"sandbox: disk limits not supported (no quota mechanism)")
-	}
-	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
-		return errdefs.NotAvailablef(
-			"sandbox: CPUMillicores requires a per-call Timeout to derive a cpu-time cap")
-	}
-	if (opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0) && !groupCapsAvailable() {
-		return errdefs.NotAvailablef(
-			"sandbox: resource limits require process-group sampling, which is unavailable here")
-	}
-	return nil
-}
 
 // ErrPathTraversal is returned when a WorkDir resolves outside the
 // runner's root, including via symlinks. sandbox owns its own
