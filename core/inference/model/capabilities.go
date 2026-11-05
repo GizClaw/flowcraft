@@ -37,14 +37,6 @@ type ModelCapabilities struct {
 	// rides on GenerateRequest.Extensions as a provider GenerateOptions
 	// extension.
 	HostedWebSearch bool `json:"hosted_web_search,omitempty"`
-	// CustomEmbedDimensions marks embed models whose API accepts the
-	// optional output-dimensions parameter on EmbedRequest. Like
-	// HostedWebSearch it is discovery metadata: hosts surface the knob from
-	// the descriptor, and compilers reject the field for models without
-	// it. Drivers with exact-size constraints (for example Qwen's embed
-	// whitelist) validate the requested size against their own catalog
-	// facts at compile time.
-	CustomEmbedDimensions bool `json:"custom_embed_dimensions,omitempty"`
 }
 
 // Clone returns a defensive copy of the capabilities: the returned value
@@ -82,13 +74,6 @@ func (c ModelCapabilities) WithToolCalling() ModelCapabilities {
 // search marked supported.
 func (c ModelCapabilities) WithHostedWebSearch() ModelCapabilities {
 	c.HostedWebSearch = true
-	return c
-}
-
-// WithCustomEmbedDimensions returns a copy of the capabilities with custom
-// embed output dimensions marked supported.
-func (c ModelCapabilities) WithCustomEmbedDimensions() ModelCapabilities {
-	c.CustomEmbedDimensions = true
 	return c
 }
 

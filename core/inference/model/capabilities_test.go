@@ -77,20 +77,6 @@ func TestModelCapabilitiesBuilders(t *testing.T) {
 	}
 }
 
-func TestCustomEmbedDimensionsLeaf(t *testing.T) {
-	var capabilities ModelCapabilities
-	if err := json.Unmarshal([]byte(
-		`{"inputs":["text"],"custom_embed_dimensions":true}`), &capabilities); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !capabilities.CustomEmbedDimensions {
-		t.Fatal("custom_embed_dimensions: true must set the capability")
-	}
-	if err := capabilities.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-}
-
 // TestToolCallingRoundTrip pins the capability bit that lets a driver reject
 // tools against a model with no tool channel before any provider I/O.
 func TestToolCallingRoundTrip(t *testing.T) {
