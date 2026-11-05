@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -87,7 +87,7 @@ func TestValidatePolicy(t *testing.T) {
 		t.Fatalf("valid policy rejected: %v", err)
 	}
 	denyAll := valid
-	denyAll.Opts.Net = netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll}
+	denyAll.Opts.Net = permission.NetPolicy{Mode: permission.NetDenyAll}
 	if err := r.validatePolicy(denyAll); err != nil {
 		t.Fatalf("net deny-all policy rejected: %v", err)
 	}

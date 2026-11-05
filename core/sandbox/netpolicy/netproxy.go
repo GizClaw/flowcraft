@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -78,7 +79,7 @@ type MITMEngine interface {
 
 // MITMFactory builds a MITMEngine.
 type MITMFactory func(
-	policy *MITMPolicy,
+	policy *permission.MITMPolicy,
 	hooks MITMHooks,
 	dial func(context.Context, string) (net.Conn, error),
 	roots *x509.CertPool,
@@ -88,17 +89,17 @@ type MITMFactory func(
 // ProxyConfig (not Config) because httpkit already owns Config for the
 // transport builder.
 type ProxyConfig struct {
-	// Mode is NetAllowList or NetProxy.
-	Mode NetMode
+	// Mode is permission.NetAllowList or permission.NetProxy.
+	Mode permission.NetMode
 	// AllowHosts is the deprecated allow-list: hostname suffixes and
 	// exact IP literals. Compiled as trailing allow rules (see
 	// Matcher); explicit Rules deny rules always win.
 	AllowHosts []string
 	// Rules are explicit host/port allow or deny rules. In
-	// NetAllowList mode they define what is reachable; in NetProxy
+	// permission.NetAllowList mode they define what is reachable; in permission.NetProxy
 	// mode deny rules override the upstream and everything else is
 	// delegated to the upstream.
-	Rules []NetRule
+	Rules []permission.NetRule
 	// Upstream is the proxy-mode upstream URL: "http://host:port" or
 	// "socks5://[user:pass@]host:port". Ignored in allow-list mode.
 	Upstream string
@@ -109,7 +110,7 @@ type ProxyConfig struct {
 	// leaves it false and uses the unix socket for its bridge.
 	TCPLoopback bool
 	// MITM enables TLS termination for CONNECT tunnels (opt-in).
-	MITM *MITMPolicy
+	MITM *permission.MITMPolicy
 	// OnDecision receives one audit record per allow/deny decision.
 	// It must not block the proxy; keep it fast and non-throwing.
 	OnDecision func(ProxyDecision)
@@ -127,8 +128,8 @@ type ProxyConfig struct {
 type ProxyDecision struct {
 	Host   string
 	Port   int
-	Action NetAction
-	Mode   NetMode
+	Action permission.NetAction
+	Mode   permission.NetMode
 	Rule   string
 	// Reason is the deny rule's model-facing explanation ("" when the
 	// mode default or an allow rule decided).
@@ -164,11 +165,11 @@ type Proxy struct {
 // Windows, where access is governed by the directory ACL) whose path
 // is available via SocketPath for bind-mounting into a
 func Start(cfg ProxyConfig) (*Proxy, error) {
-	if cfg.Mode != NetAllowList && cfg.Mode != NetProxy {
+	if cfg.Mode != permission.NetAllowList && cfg.Mode != permission.NetProxy {
 		return nil, fmt.Errorf(
 			"netproxy: mode must be allow_list or proxy, got %d", int(cfg.Mode))
 	}
-	if err := (NetPolicy{
+	if err := (permission.NetPolicy{
 		Mode:       cfg.Mode,
 		AllowHosts: cfg.AllowHosts,
 		Rules:      cfg.Rules,
@@ -320,11 +321,11 @@ func (p *Proxy) serveSOCKS5(conn net.Conn, br *bufio.Reader) {
 		host, port := splitHostPort(hostport, 0)
 		action, rule, reason, dialHost, err := p.decide(ctx, hostport, 0)
 		if err != nil {
-			p.audit(host, port, NetDeny, rule, reason)
+			p.audit(host, port, permission.NetDeny, rule, reason)
 			return nil, err
 		}
 		p.audit(host, port, action, rule, reason)
-		if action != NetAllow {
+		if action != permission.NetAllow {
 			return nil, errDestinationNotAllowed
 		}
 		if p.cfg.Hooks != nil {
@@ -460,7 +461,7 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.audit(host, port, action, rule, reason)
-	if action != NetAllow {
+	if action != permission.NetAllow {
 		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
 	}
@@ -497,7 +498,7 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.audit(host, port, action, rule, reason)
-	if action != NetAllow {
+	if action != permission.NetAllow {
 		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
 	}
@@ -560,45 +561,45 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 // and the dial target is pinned to an address the rule set covered, so
 // neither the upstream nor a rebinding DNS response can bypass the
 // rule set: see [Proxy.decideAddrs].
-func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (NetAction, string, string, string, error) {
+func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (permission.NetAction, string, string, string, error) {
 	host, port := splitHostPort(hostport, defaultPort)
 	dialHost := hostport
 	m := p.matcher()
 	if m == nil {
-		return NetDeny, "", "", dialHost, fmt.Errorf("netproxy: policy matcher unavailable")
+		return permission.NetDeny, "", "", dialHost, fmt.Errorf("netproxy: policy matcher unavailable")
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
 		action, rule, reason, matched := m.MatchIP(ip.Unmap(), port)
-		if action == NetDeny {
+		if action == permission.NetDeny {
 			return action, rule, reason, dialHost, nil
 		}
 		if matched {
 			return action, rule, reason, dialHost, nil
 		}
-		if p.cfg.Mode == NetAllowList {
-			return NetDeny, "", "", dialHost, nil
+		if p.cfg.Mode == permission.NetAllowList {
+			return permission.NetDeny, "", "", dialHost, nil
 		}
-		return NetAllow, "", "", dialHost, nil
+		return permission.NetAllow, "", "", dialHost, nil
 	}
 
 	action, rule, reason, matched := m.Match(host, port)
-	if action == NetDeny {
+	if action == permission.NetDeny {
 		return action, rule, reason, dialHost, nil
 	}
 	if !m.HasIPRules() {
 		if matched {
-			return NetAllow, rule, reason, dialHost, nil
+			return permission.NetAllow, rule, reason, dialHost, nil
 		}
-		if p.cfg.Mode == NetAllowList {
-			return NetDeny, "", "", dialHost, nil
+		if p.cfg.Mode == permission.NetAllowList {
+			return permission.NetDeny, "", "", dialHost, nil
 		}
-		return NetAllow, "", "", dialHost, nil
+		return permission.NetAllow, "", "", dialHost, nil
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		// With IP rules present we cannot prove the destination is
 		// not denied, so we fail closed.
-		return NetDeny, "", "", dialHost, fmt.Errorf(
+		return permission.NetDeny, "", "", dialHost, fmt.Errorf(
 			"netproxy: resolve %s for IP rules: %w", host, err)
 	}
 	action, rule, reason, dialHost = p.decideAddrs(port, dialHost, addrs, hostVerdict{
@@ -645,7 +646,7 @@ func (p *Proxy) decideAddrs(
 	dialHost string,
 	addrs []netip.Addr,
 	host hostVerdict,
-) (NetAction, string, string, string) {
+) (permission.NetAction, string, string, string) {
 	m := p.matcher()
 	var pinned netip.Addr
 	pinRule := ""
@@ -655,8 +656,8 @@ func (p *Proxy) decideAddrs(
 		if !matched {
 			continue
 		}
-		if action == NetDeny {
-			return NetDeny, rule, reason, dialHost
+		if action == permission.NetDeny {
+			return permission.NetDeny, rule, reason, dialHost
 		}
 		if !pinned.IsValid() {
 			pinned, pinRule = addr, rule
@@ -671,19 +672,19 @@ func (p *Proxy) decideAddrs(
 	}
 	switch {
 	case host.matched:
-		return NetAllow, host.rule, host.reason, dialHost
+		return permission.NetAllow, host.rule, host.reason, dialHost
 	case ipAllow:
 		// The address itself is what the rule set allowed.
-		return NetAllow, pinRule, "", dialHost
-	case p.cfg.Mode == NetAllowList:
-		return NetDeny, "", "", dialHost
+		return permission.NetAllow, pinRule, "", dialHost
+	case p.cfg.Mode == permission.NetAllowList:
+		return permission.NetDeny, "", "", dialHost
 	default:
-		return NetAllow, "", "", dialHost
+		return permission.NetAllow, "", "", dialHost
 	}
 }
 
 // audit emits one decision record when OnDecision is configured.
-func (p *Proxy) audit(host string, port int, action NetAction, rule, reason string) {
+func (p *Proxy) audit(host string, port int, action permission.NetAction, rule, reason string) {
 	if p.cfg.OnDecision != nil {
 		p.cfg.OnDecision(ProxyDecision{
 			Host:   host,
@@ -754,7 +755,7 @@ func (p *Proxy) dialTarget(ctx context.Context, hostport string) (net.Conn, erro
 
 func (p *Proxy) matcher() *Matcher {
 	p.matcherOnce.Do(func() {
-		p.compiled, p.matcherErr = NewMatcher(NetPolicy{
+		p.compiled, p.matcherErr = NewMatcher(permission.NetPolicy{
 			Mode:       p.cfg.Mode,
 			AllowHosts: p.cfg.AllowHosts,
 			Rules:      p.cfg.Rules,

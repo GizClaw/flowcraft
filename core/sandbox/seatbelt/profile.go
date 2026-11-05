@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
 // buildProfile translates the enforceable part of ExecOptions into an
@@ -22,7 +22,7 @@ import (
 // AF_SYSTEM sockets macOS needs for TLS and network configuration, so
 // those platform sockets are explicitly re-allowed first (same
 // exemption set Codex ships in seatbelt_network_policy.sbpl).
-func buildProfile(writable []string, net netpolicy.NetPolicy, proxyPort int) (string, error) {
+func buildProfile(writable []string, net permission.NetPolicy, proxyPort int) (string, error) {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
 	b.WriteString("(allow default)\n")
@@ -36,11 +36,11 @@ func buildProfile(writable []string, net netpolicy.NetPolicy, proxyPort int) (st
 	b.WriteString("(allow file-write* (literal \"/dev/null\"))\n")
 
 	switch net.Mode {
-	case netpolicy.NetDefault:
+	case permission.NetDefault:
 		// No network rule: host posture, on purpose (the #10390 guard).
-	case netpolicy.NetDenyAll:
+	case permission.NetDenyAll:
 		b.WriteString("(deny network*)\n")
-	case netpolicy.NetAllowList, netpolicy.NetProxy:
+	case permission.NetAllowList, permission.NetProxy:
 		if proxyPort <= 0 {
 			return "", errdefs.Internalf(
 				"seatbelt: net mode %d requires a positive proxy port, got %d",

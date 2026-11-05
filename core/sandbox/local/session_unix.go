@@ -7,10 +7,10 @@ import (
 	"os/exec"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/internal/session"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 // sessionsAvailable reports whether interactive process sessions can be
@@ -24,7 +24,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	if err := engine.ValidateExecPolicy(spec.Opts); err != nil {
 		return nil, err
 	}
-	if spec.Opts.Net.Mode != netpolicy.NetDefault {
+	if spec.Opts.Net.Mode != permission.NetDefault {
 		return nil, errdefs.NotAvailablef(
 			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
 	}

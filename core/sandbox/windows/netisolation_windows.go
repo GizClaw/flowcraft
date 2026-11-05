@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy/mitm"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -47,7 +48,7 @@ type netIsolation struct {
 	token xwin.Token
 	home  string
 
-	policy    netpolicy.NetPolicy
+	policy    permission.NetPolicy
 	wfp       *wfpIsolation // allow_list / proxy modes
 	proxy     *netpolicy.Proxy
 	proxyPort int
@@ -60,9 +61,9 @@ type netIsolation struct {
 // the container's network to the enforcement proxy with WFP. Hosts
 // without the privilege to create AppContainer profiles or open a WFP
 // engine fail closed with NotAvailable.
-func newNetIsolation(root string, writable []string, policy netpolicy.NetPolicy) (*netIsolation, error) {
+func newNetIsolation(root string, writable []string, policy permission.NetPolicy) (*netIsolation, error) {
 	mode := policy.Mode
-	if mode != netpolicy.NetDenyAll && mode != netpolicy.NetAllowList && mode != netpolicy.NetProxy {
+	if mode != permission.NetDenyAll && mode != permission.NetAllowList && mode != permission.NetProxy {
 		return nil, errdefs.NotAvailablef(
 			"windows: net mode %d is not implemented yet", int(mode))
 	}
@@ -111,7 +112,7 @@ func newNetIsolation(root string, writable []string, policy netpolicy.NetPolicy)
 			return nil, err
 		}
 	}
-	if mode != netpolicy.NetDenyAll {
+	if mode != permission.NetDenyAll {
 		if err := iso.setupProxy(); err != nil {
 			_ = iso.Close()
 			return nil, err

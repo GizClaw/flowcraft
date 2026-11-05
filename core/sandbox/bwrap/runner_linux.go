@@ -13,7 +13,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/fsx"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/bwrap/internal/bridge"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -52,7 +52,7 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 	caps := session.GroupCapsAvailable()
 	return sandbox.Enforcement{
 		EnvAllowList:     true,
-		NetModes:         []netpolicy.NetMode{netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy},
+		NetModes:         []permission.NetMode{permission.NetDenyAll, permission.NetAllowList, permission.NetProxy},
 		Socks5:           true,
 		MITM:             true,
 		UnixSocketPolicy: true,
@@ -232,8 +232,8 @@ func (r *Runner) spawnProcess(
 	}
 	spec.Opts.WorkDir = resolvedWorkDir
 
-	proxyMode := spec.Opts.Net.Mode == netpolicy.NetAllowList ||
-		spec.Opts.Net.Mode == netpolicy.NetProxy
+	proxyMode := spec.Opts.Net.Mode == permission.NetAllowList ||
+		spec.Opts.Net.Mode == permission.NetProxy
 	var proxy *netpolicy.Proxy
 	if proxyMode {
 		proxy, err = netpolicy.Start(netpolicy.ProxyConfig{
@@ -430,7 +430,7 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("bwrap: resolve workdir: %w", err)
 	}
-	if !fsx.Within(r.rootDir, real) {
+	if !permission.Within(r.rootDir, real) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil

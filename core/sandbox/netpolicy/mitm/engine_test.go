@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
 const testServerName = "example.com"
@@ -142,7 +142,7 @@ func startMITM(t *testing.T, upstream *httptest.Server) *mitmEndpoint {
 		var d net.Dialer
 		return d.DialContext(ctx, "tcp", upstream.Listener.Addr().String())
 	}
-	impl, err := New(&corenet.MITMPolicy{}, nil, dial, certPool)
+	impl, err := New(&permission.MITMPolicy{}, nil, dial, certPool)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -1,4 +1,4 @@
-package netpolicy
+package permission
 
 import (
 	"net/url"
@@ -137,4 +137,11 @@ func (p NetPolicy) Validate() error {
 		}
 	}
 	return nil
+}
+
+// IsZero reports whether the network policy asks for nothing: no mode, no
+// rules, no proxy. It is what an unconfigured host produces.
+func (p NetPolicy) IsZero() bool {
+	return p.Mode == NetDefault && len(p.AllowHosts) == 0 && len(p.Rules) == 0 &&
+		p.Proxy == "" && len(p.UnixSockets) == 0 && p.MITM == nil
 }

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 func TestBuildProfileRootWritableByDefault(t *testing.T) {
 	profile, err := buildProfile(
 		[]string{"/srv/root", "/srv/cache"},
-		corenet.NetPolicy{Mode: corenet.NetDefault},
+		permission.NetPolicy{Mode: permission.NetDefault},
 		0,
 	)
 	if err != nil {
@@ -35,7 +35,7 @@ func TestBuildProfileRootWritableByDefault(t *testing.T) {
 func TestBuildProfileReadOnlyOmitsRoot(t *testing.T) {
 	profile, err := buildProfile(
 		[]string{"/srv/cache"},
-		corenet.NetPolicy{Mode: corenet.NetDefault},
+		permission.NetPolicy{Mode: permission.NetDefault},
 		0,
 	)
 	if err != nil {

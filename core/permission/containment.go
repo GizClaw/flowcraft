@@ -14,12 +14,9 @@
 // This file owns no I/O policy: which roots exist, what is readable, and what
 // happens on a violation stay with the caller.
 
-package fsx
+package permission
 
 import (
-	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -71,23 +68,6 @@ func Rel(root, target string) (string, bool) {
 	return rel, true
 }
 
-// ResolveUnder joins one slash-separated relative reference onto root
-// and rejects anything that lands outside it, so a ".." component
-// cannot walk out of the root. The returned path is cleaned, not
-// symlink-resolved: callers comparing it against untrusted input want
-// RealWithin or their own resolution step.
-func ResolveUnder(root, rel string) (string, error) {
-	if root == "" {
-		return "", errors.New("pathsafe: empty root")
-	}
-	cleanRoot := filepath.Clean(root)
-	full := filepath.Clean(filepath.Join(cleanRoot, filepath.FromSlash(rel)))
-	if !Within(cleanRoot, full) {
-		return "", fmt.Errorf("pathsafe: %q escapes %s", rel, root)
-	}
-	return full, nil
-}
-
 // RelRef reports whether ref is a relative reference that cannot walk
 // out of the directory it will be joined onto: not absolute, not
 // rooted, not "..", and not starting with "../". The rooted case is
@@ -119,20 +99,6 @@ func RealWithin(root, path string) bool {
 		return false
 	}
 	return Within(resolvedOrCleaned(root), resolvedOrCleaned(path))
-}
-
-// RealDir reports whether path exists, is a directory, and is not a
-// symlink. It is the guard for "may I move or adopt this tree?":
-// following a link would move whatever it points at.
-func RealDir(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	return info.IsDir() && info.Mode()&os.ModeSymlink == 0, nil
 }
 
 // resolvedOrCleaned resolves symlinks on path. When path itself does not

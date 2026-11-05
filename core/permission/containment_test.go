@@ -1,4 +1,4 @@
-package fsx
+package permission
 
 import (
 	"os"
@@ -104,40 +104,6 @@ func TestRelRef(t *testing.T) {
 	}
 }
 
-func TestResolveUnder(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "root")
-	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		rel  string
-		want string
-	}{
-		{"plain", "sub/file.txt", filepath.Join(root, "sub", "file.txt")},
-		{"root itself", ".", root},
-		{"embedded slash", "a/b/c", filepath.Join(root, "a", "b", "c")},
-	} {
-		got, err := ResolveUnder(root, tc.rel)
-		if err != nil {
-			t.Errorf("%s: ResolveUnder(%q) error: %v", tc.name, tc.rel, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("%s: ResolveUnder(%q) = %q, want %q",
-				tc.name, tc.rel, got, tc.want)
-		}
-	}
-	for _, rel := range []string{"../escape", "sub/../../escape", ".."} {
-		if got, err := ResolveUnder(root, rel); err == nil {
-			t.Errorf("ResolveUnder(%q) = %q, want an escape error", rel, got)
-		}
-	}
-	if _, err := ResolveUnder("", "a"); err == nil {
-		t.Error("ResolveUnder with an empty root must fail")
-	}
-}
-
 func TestRealWithinFollowsSymlinks(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "root")
@@ -170,35 +136,6 @@ func TestRealWithinFollowsSymlinks(t *testing.T) {
 	// instead of silently reading as outside.
 	if !RealWithin(root, filepath.Join(root, "missing")) {
 		t.Error("an unresolvable child falls back to the lexical answer")
-	}
-}
-
-func TestRealDir(t *testing.T) {
-	base := t.TempDir()
-	dir := filepath.Join(base, "dir")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(base, "file")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(base, "dirlink")
-	if err := os.Symlink(dir, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-
-	if ok, err := RealDir(dir); err != nil || !ok {
-		t.Errorf("RealDir(dir) = %v, %v; want true, nil", ok, err)
-	}
-	if ok, err := RealDir(link); err != nil || ok {
-		t.Errorf("RealDir(symlink) = %v, %v; want false, nil", ok, err)
-	}
-	if ok, err := RealDir(file); err != nil || ok {
-		t.Errorf("RealDir(file) = %v, %v; want false, nil", ok, err)
-	}
-	if ok, err := RealDir(filepath.Join(base, "missing")); err != nil || ok {
-		t.Errorf("RealDir(missing) = %v, %v; want false, nil", ok, err)
 	}
 }
 

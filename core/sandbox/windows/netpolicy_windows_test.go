@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 // requireNetIsolation probes whether the host can create AppContainer
@@ -18,7 +18,7 @@ import (
 // net-policy behaviors cannot be exercised there, so the test skips.
 func requireNetIsolation(t *testing.T) {
 	t.Helper()
-	iso, err := newNetIsolation(t.TempDir(), nil, netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll})
+	iso, err := newNetIsolation(t.TempDir(), nil, permission.NetPolicy{Mode: permission.NetDenyAll})
 	if err != nil {
 		if errdefs.IsNotAvailable(err) {
 			t.Skipf("host cannot create appcontainer profiles or open the WFP engine: %v", err)
@@ -51,7 +51,7 @@ func TestExecNetDenyAll(t *testing.T) {
 	r := mustNewRunner(t)
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "deny-ok"},
-		sandbox.ExecOptions{Net: netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll}})
+		sandbox.ExecOptions{Net: permission.NetPolicy{Mode: permission.NetDenyAll}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestExecNetDenyAllBlocksNetwork(t *testing.T) {
 	}
 
 	denied, err := r.Exec(ctx, "powershell", dial,
-		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll}})
+		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: permission.NetPolicy{Mode: permission.NetDenyAll}})
 	if err != nil {
 		t.Fatalf("deny-all Exec: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestNetPolicyTTYNotAvailable(t *testing.T) {
 	_, err := r.Start(context.Background(), sandbox.SessionSpec{
 		Argv: []string{"cmd"},
 		TTY:  true,
-		Opts: sandbox.ExecOptions{Net: netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll}},
+		Opts: sandbox.ExecOptions{Net: permission.NetPolicy{Mode: permission.NetDenyAll}},
 	})
 	if err == nil {
 		t.Fatal("Start succeeded, want NotAvailable")
@@ -114,8 +114,8 @@ func TestExecNetAllowList(t *testing.T) {
 	requireWFP(t)
 	r := mustNewRunner(t)
 	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "allow-ok"},
-		sandbox.ExecOptions{Net: netpolicy.NetPolicy{
-			Mode:       netpolicy.NetAllowList,
+		sandbox.ExecOptions{Net: permission.NetPolicy{
+			Mode:       permission.NetAllowList,
 			AllowHosts: []string{"1.1.1.1"},
 		}})
 	if err != nil {
@@ -141,8 +141,8 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 	dial := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 	res, err := r.Exec(ctx, "powershell", dial,
-		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: netpolicy.NetPolicy{
-			Mode:       netpolicy.NetAllowList,
+		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: permission.NetPolicy{
+			Mode:       permission.NetAllowList,
 			AllowHosts: []string{"1.1.1.1"},
 		}})
 	if err != nil {
@@ -180,7 +180,7 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 		t.Skipf("host cannot send UDP without a policy (exit=%d out=%q); skipping", ctrl.ExitCode, ctrl.Stdout)
 	}
 
-	assertBlocked := func(label string, argv []string, net netpolicy.NetPolicy) {
+	assertBlocked := func(label string, argv []string, net permission.NetPolicy) {
 		t.Helper()
 		res, err := r.Exec(ctx, "powershell", argv,
 			sandbox.ExecOptions{Timeout: 20 * time.Second, Net: net})
@@ -191,11 +191,11 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 			t.Fatalf("%s exec sent UDP: stdout=%q", label, res.Stdout)
 		}
 	}
-	assertBlocked("deny-all", send, netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll})
+	assertBlocked("deny-all", send, permission.NetPolicy{Mode: permission.NetDenyAll})
 	assertBlocked("allow-list unconnected", send,
-		netpolicy.NetPolicy{Mode: netpolicy.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
+		permission.NetPolicy{Mode: permission.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
 	assertBlocked("allow-list connected", sendConn,
-		netpolicy.NetPolicy{Mode: netpolicy.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
+		permission.NetPolicy{Mode: permission.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
 }
 
 func TestExecNetProxy(t *testing.T) {
@@ -203,8 +203,8 @@ func TestExecNetProxy(t *testing.T) {
 	requireWFP(t)
 	r := mustNewRunner(t)
 	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "proxy-ok"},
-		sandbox.ExecOptions{Net: netpolicy.NetPolicy{
-			Mode:  netpolicy.NetProxy,
+		sandbox.ExecOptions{Net: permission.NetPolicy{
+			Mode:  permission.NetProxy,
 			Proxy: "http://127.0.0.1:1",
 		}})
 	if err != nil {

@@ -1,6 +1,6 @@
 package sandbox
 
-import corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
+import "github.com/GizClaw/flowcraft/core/permission"
 
 // Enforcement reports which policy dimensions a Runner can actually
 // enforce on the current platform, so callers and UIs never have to
@@ -43,7 +43,7 @@ import corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 //     rejected with NotAvailable there.
 type Enforcement struct {
 	EnvAllowList     bool
-	NetModes         []corenet.NetMode
+	NetModes         []permission.NetMode
 	Socks5           bool
 	MITM             bool
 	UnixSocketPolicy bool

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -42,7 +42,7 @@ type ExecOptions struct {
 	Stdin     []byte
 	Timeout   time.Duration
 	Env       EnvPolicy
-	Net       corenet.NetPolicy
+	Net       permission.NetPolicy
 	Write     WritePolicy
 	Resources ResourceLimits
 }

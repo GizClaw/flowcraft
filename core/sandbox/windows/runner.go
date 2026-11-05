@@ -12,12 +12,11 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/fsx"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/internal/session"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -131,8 +130,8 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			sandbox.WriteReadOnly,
 		}
 	}
-	policy.NetModes = []netpolicy.NetMode{
-		netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy,
+	policy.NetModes = []permission.NetMode{
+		permission.NetDenyAll, permission.NetAllowList, permission.NetProxy,
 	}
 	return sandbox.Capabilities{
 		Policy:   policy,
@@ -228,7 +227,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 
 	env := buildEnv(spec.Opts.Env)
 	var iso *netIsolation
-	if spec.Opts.Net.Mode != netpolicy.NetDefault {
+	if spec.Opts.Net.Mode != permission.NetDefault {
 		if spec.TTY {
 			return nil, errdefs.NotAvailablef(
 				"windows: TTY sessions with a net policy are not supported yet")
@@ -293,9 +292,9 @@ func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
 		return errdefs.NotAvailablef(
 			"windows: write policy requires the runner to be constructed with WithWriteConfinement")
 	}
-	if spec.Opts.Net.Mode != netpolicy.NetDefault {
+	if spec.Opts.Net.Mode != permission.NetDefault {
 		switch spec.Opts.Net.Mode {
-		case netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy:
+		case permission.NetDenyAll, permission.NetAllowList, permission.NetProxy:
 			// Supported: AppContainer, plus WFP port-pinning to the
 			// enforcement proxy for allow_list / proxy modes.
 		default:
@@ -390,10 +389,10 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 
 // containedInRoot reports whether path is root itself or directly
 // under it. Windows paths are case-insensitive, so the comparison
-// folds case (fsx.WithinFold); the workspace layer's equivalent
+// folds case (permission.WithinFold); the workspace layer's equivalent
 // check does the same.
 func containedInRoot(path, root string) bool {
-	return fsx.WithinFold(root, path)
+	return permission.WithinFold(root, path)
 }
 
 // resolveAbsolutePaths makes each path absolute (relative entries are

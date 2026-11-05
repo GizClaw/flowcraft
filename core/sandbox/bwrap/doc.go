@@ -133,7 +133,7 @@
 //	        spec.AllowedCommands,
 //	    ),
 //	    sandbox.ExecOptions{
-//	        Net:       netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll},
+//	        Net:       permission.NetPolicy{Mode: permission.NetDenyAll},
 //	        Resources: sandbox.ResourceLimits{MemoryBytes: 256 << 20},
 //	    },
 //	)

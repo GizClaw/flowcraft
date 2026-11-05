@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 // buildFlags translates sandbox.ExecOptions into the bwrap flag list
@@ -141,12 +141,12 @@ func splitKV(kv string) (string, string, bool) {
 	return kv[:i], kv[i+1:], true
 }
 
-func netFlags(p netpolicy.NetPolicy) ([]string, error) {
+func netFlags(p permission.NetPolicy) ([]string, error) {
 	switch p.Mode {
-	case netpolicy.NetDefault:
+	case permission.NetDefault:
 		// Inherit the host's network namespace.
 		return []string{"--share-net"}, nil
-	case netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy:
+	case permission.NetDenyAll, permission.NetAllowList, permission.NetProxy:
 		// Fresh net namespace with only loopback (bwrap brings lo up).
 		// NetAllowList / NetProxy differ only in the command (the
 		// in-netns bridge) and the extra binds, which Exec adds.
@@ -163,9 +163,9 @@ func netFlags(p netpolicy.NetPolicy) ([]string, error) {
 // systemd's stub-resolv.conf under /run) keeps working; the isolated
 // modes have no resolver route anyway and resolve through the
 // enforcement proxy on the host.
-func netIsolationFlags(mode netpolicy.NetMode) []string {
+func netIsolationFlags(mode permission.NetMode) []string {
 	switch mode {
-	case netpolicy.NetDenyAll, netpolicy.NetAllowList, netpolicy.NetProxy:
+	case permission.NetDenyAll, permission.NetAllowList, permission.NetProxy:
 		return []string{"--tmpfs", "/run"}
 	default:
 		return nil

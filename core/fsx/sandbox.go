@@ -1,6 +1,10 @@
 package fsx
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/GizClaw/flowcraft/core/permission"
+)
 
 // ErrDenied is the classified failure of a policy check. Implementations
 // wrap it so callers can test with errors.Is regardless of whether the
@@ -11,8 +15,10 @@ var ErrDenied = errors.New("fsx: access denied by policy")
 // per call, serialise it across a process boundary if the operation runs
 // elsewhere, and never mutate a shared instance.
 type Sandbox struct {
-	// Policy is the boundary for this call.
-	Policy Policy
+	// Policy is the boundary for this call. It is the same value the
+	// sandbox backend projects onto the kernel, so the in-process check and
+	// the kernel mounts cannot disagree.
+	Policy permission.Policy
 	// Cwd is the executor-side working directory used to resolve
 	// relative paths. It is executor-side by definition: a client must
 	// not add local absolute paths to it.

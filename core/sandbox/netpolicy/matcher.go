@@ -8,9 +8,10 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
-// Matcher evaluates NetPolicy rules against a destination.
+// Matcher evaluates permission.NetPolicy rules against a destination.
 // Rules are compiled once at construction: hostnames are normalized
 // (lowercase, trailing dot removed, IDNA → punycode) and IP/CIDR
 // entries are parsed so Match / MatchIP stay pure and IO-free.
@@ -39,7 +40,7 @@ type Matcher struct {
 }
 
 type compiledRule struct {
-	action NetAction
+	action permission.NetAction
 	port   int
 	desc   string
 	reason string
@@ -47,9 +48,9 @@ type compiledRule struct {
 }
 
 // NewMatcher compiles policy into a Matcher. The policy should already
-// have passed NetPolicy.Validate; this constructor re-checks the rule
+// have passed permission.NetPolicy.Validate; this constructor re-checks the rule
 // forms it needs and returns Validation errors for malformed hosts.
-func NewMatcher(policy NetPolicy) (*Matcher, error) {
+func NewMatcher(policy permission.NetPolicy) (*Matcher, error) {
 	m := &Matcher{}
 	for i, rule := range policy.Rules {
 		c, err := compileRule(rule)
@@ -65,7 +66,7 @@ func NewMatcher(policy NetPolicy) (*Matcher, error) {
 	// explicit rules, preserving "explicit deny wins" while keeping
 	// old configurations byte-for-byte equivalent.
 	for _, host := range policy.AllowHosts {
-		c, err := compileRule(NetRule{Action: NetAllow, Host: host})
+		c, err := compileRule(permission.NetRule{Action: permission.NetAllow, Host: host})
 		if err != nil {
 			return nil, errdefs.Validationf("sandbox: allow_hosts entry %q: %w", host, err)
 		}
@@ -86,7 +87,7 @@ func (m *Matcher) HasIPRules() bool { return m.hasIPRules }
 // rule string describes the decisive rule ("" when nothing matched)
 // and reason is the optional model-facing explanation attached to a
 // deny rule.
-func (m *Matcher) Match(host string, port int) (NetAction, string, string, bool) {
+func (m *Matcher) Match(host string, port int) (permission.NetAction, string, string, bool) {
 	host = normalizeHost(host)
 	for _, r := range m.rules {
 		if r.host.IsIP() || !r.host.Match(host) {
@@ -95,8 +96,8 @@ func (m *Matcher) Match(host string, port int) (NetAction, string, string, bool)
 		if !portMatches(r.port, port) {
 			continue
 		}
-		if r.action == NetDeny {
-			return NetDeny, r.desc, r.reason, true
+		if r.action == permission.NetDeny {
+			return permission.NetDeny, r.desc, r.reason, true
 		}
 	}
 	for _, r := range m.rules {
@@ -106,13 +107,13 @@ func (m *Matcher) Match(host string, port int) (NetAction, string, string, bool)
 		if !portMatches(r.port, port) {
 			continue
 		}
-		return NetAllow, r.desc, r.reason, true
+		return permission.NetAllow, r.desc, r.reason, true
 	}
-	return NetAllow, "", "", false
+	return permission.NetAllow, "", "", false
 }
 
 // MatchIP evaluates IP/CIDR rules against one resolved address.
-func (m *Matcher) MatchIP(ip netip.Addr, port int) (NetAction, string, string, bool) {
+func (m *Matcher) MatchIP(ip netip.Addr, port int) (permission.NetAction, string, string, bool) {
 	for _, r := range m.rules {
 		if !r.host.MatchIP(ip) {
 			continue
@@ -120,8 +121,8 @@ func (m *Matcher) MatchIP(ip netip.Addr, port int) (NetAction, string, string, b
 		if !portMatches(r.port, port) {
 			continue
 		}
-		if r.action == NetDeny {
-			return NetDeny, r.desc, r.reason, true
+		if r.action == permission.NetDeny {
+			return permission.NetDeny, r.desc, r.reason, true
 		}
 	}
 	for _, r := range m.rules {
@@ -131,12 +132,12 @@ func (m *Matcher) MatchIP(ip netip.Addr, port int) (NetAction, string, string, b
 		if !portMatches(r.port, port) {
 			continue
 		}
-		return NetAllow, r.desc, r.reason, true
+		return permission.NetAllow, r.desc, r.reason, true
 	}
-	return NetAllow, "", "", false
+	return permission.NetAllow, "", "", false
 }
 
-func compileRule(rule NetRule) (compiledRule, error) {
+func compileRule(rule permission.NetRule) (compiledRule, error) {
 	host, port, err := splitRuleHostPort(rule.Host, rule.Port)
 	if err != nil {
 		return compiledRule{}, err

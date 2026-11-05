@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
@@ -49,7 +50,7 @@ const (
 // shared by all tunnels of one proxy instance; it is safe for
 // concurrent use.
 type Engine struct {
-	policy   *corenet.MITMPolicy
+	policy   *permission.MITMPolicy
 	hooks    corenet.MITMHooks
 	ca       *CA
 	roots    *x509.CertPool
@@ -67,7 +68,7 @@ var errBlocked = errors.New("mitm: blocked by hook")
 // the target — the enforcement proxy's policy-aware dialer. roots
 // overrides the system pool used to verify the target's certificate
 // (nil means system roots).
-func New(policy *corenet.MITMPolicy, hooks corenet.MITMHooks, dial func(context.Context, string) (net.Conn, error), roots *x509.CertPool) (corenet.MITMEngine, error) {
+func New(policy *permission.MITMPolicy, hooks corenet.MITMHooks, dial func(context.Context, string) (net.Conn, error), roots *x509.CertPool) (corenet.MITMEngine, error) {
 	if policy == nil {
 		return nil, fmt.Errorf("mitm: nil policy")
 	}

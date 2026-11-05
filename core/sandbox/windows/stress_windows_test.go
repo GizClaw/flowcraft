@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
 )
 
 // runEcho asserts one-shot exec of `cmd /c echo token` completed with
@@ -123,7 +123,7 @@ func TestConcurrentNetDenyAllSessions(t *testing.T) {
 			errs <- runEcho(r, fmt.Sprintf("deny-%d", i),
 				sandbox.ExecOptions{
 					Timeout: 90 * time.Second,
-					Net:     netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll},
+					Net:     permission.NetPolicy{Mode: permission.NetDenyAll},
 				})
 		}(i)
 	}
@@ -150,8 +150,8 @@ func TestConcurrentNetAllowListSessions(t *testing.T) {
 			errs <- runEcho(r, fmt.Sprintf("allow-%d", i),
 				sandbox.ExecOptions{
 					Timeout: 90 * time.Second,
-					Net: netpolicy.NetPolicy{
-						Mode:       netpolicy.NetAllowList,
+					Net: permission.NetPolicy{
+						Mode:       permission.NetAllowList,
 						AllowHosts: []string{"1.1.1.1"},
 					},
 				})
@@ -175,7 +175,7 @@ func TestConcurrentNetIsolationClose(t *testing.T) {
 	isos := make([]*netIsolation, n)
 	for i := range isos {
 		iso, err := newNetIsolation(roots[i], nil,
-			netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll})
+			permission.NetPolicy{Mode: permission.NetDenyAll})
 		if err != nil {
 			t.Fatalf("newNetIsolation %d: %v", i, err)
 		}
@@ -227,7 +227,7 @@ func TestLargeWorkspaceGrantScales(t *testing.T) {
 	res, err := r.Exec(ctx, "cmd", []string{"/c", "echo", "ok"},
 		sandbox.ExecOptions{
 			Timeout: 110 * time.Second,
-			Net:     netpolicy.NetPolicy{Mode: netpolicy.NetDenyAll},
+			Net:     permission.NetPolicy{Mode: permission.NetDenyAll},
 		})
 	if err != nil {
 		t.Fatalf("exec over %d-file workspace: %v", dirs*filesPerDir, err)

@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/GizClaw/flowcraft/core/fsx"
-	corenet "github.com/GizClaw/flowcraft/core/sandbox/netpolicy"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
 // ExecRequest is a snapshot of one Runner.Exec call (or one
@@ -107,7 +106,7 @@ func Interactive() Predicate {
 // network posture other than NetDefault.
 func NetNonDefault() Predicate {
 	return PredicateFunc(func(req ExecRequest) (string, bool) {
-		if req.Opts.Net.Mode != corenet.NetDefault {
+		if req.Opts.Net.Mode != permission.NetDefault {
 			return fmt.Sprintf("non-default network policy requested (mode %d)", req.Opts.Net.Mode), true
 		}
 		return "", false
@@ -134,7 +133,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		if !fsx.RealWithin(real, abs) {
+		if !permission.RealWithin(real, abs) {
 			return fmt.Sprintf("workdir %q resolves outside root %q", wd, real), true
 		}
 		return "", false
