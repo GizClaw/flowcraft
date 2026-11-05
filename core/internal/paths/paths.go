@@ -14,7 +14,7 @@
 // This file owns no I/O policy: which roots exist, what is readable, and what
 // happens on a violation stay with the caller.
 
-package permission
+package paths
 
 import (
 	"path/filepath"
@@ -101,6 +101,16 @@ func RealWithin(root, path string) bool {
 	return Within(resolvedOrCleaned(root), resolvedOrCleaned(path))
 }
 
+// ResolveExisting resolves symlinks on the longest existing prefix of path and
+// re-appends the rest.
+//
+// A caller that must match a not-yet-created target against a root uses this so
+// both sides are spelled the same way (on macOS /var is /private/var, and a
+// target spelled the unresolved way matches no canonical root). It is a
+// SELECTOR input, never a decision: the handle still resolves and confines the
+// operation it is given.
+func ResolveExisting(path string) string { return resolvedOrCleaned(path) }
+
 // resolvedOrCleaned resolves symlinks on path. When path itself does not
 // exist, the longest existing ancestor is resolved and the remainder is
 // re-appended; a relative path that cannot be resolved is only cleaned,
@@ -125,4 +135,28 @@ func resolvedOrCleaned(path string) string {
 // ".." itself, or anything starting with "../".
 func escapes(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// RelFold is Rel with case-insensitive comparison, for a caller that must pick
+// a writable root on a filesystem where names are not case-sensitive.
+//
+// It is a SELECTOR, not a decision: the handle the caller then opens under the
+// chosen root is what refuses an escape. A wrong pick here therefore costs a
+// failed operation, never a wider one.
+func RelFold(root, target string) (string, bool) {
+	if rel, ok := Rel(root, target); ok {
+		return rel, true
+	}
+	if !WithinFold(root, target) {
+		return "", false
+	}
+	trimmed := strings.TrimRight(root, string(filepath.Separator))
+	if len(target) <= len(trimmed) {
+		return ".", true
+	}
+	rest := strings.TrimLeft(target[len(trimmed):], string(filepath.Separator))
+	if rest == "" {
+		return ".", true
+	}
+	return rest, true
 }

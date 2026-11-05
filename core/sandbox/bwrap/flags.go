@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
@@ -83,7 +84,7 @@ func (r *Runner) filesystemFlagsFor(opts sandbox.ExecOptions) []string {
 // it, which is what makes the root itself writable.
 func coversRoot(writable []string, root string) bool {
 	for _, path := range writable {
-		if permission.Within(path, root) {
+		if paths.Within(path, root) {
 			return true
 		}
 	}

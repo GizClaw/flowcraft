@@ -1,5 +1,5 @@
-// Package fsx is where file I/O happens: reads go through this process, writes
-// go through a sandbox.
+// Package fsx is where file I/O happens: reads go through this process
+// unrestricted, writes go through an OS handle that cannot leave its root.
 //
 // # Why the split
 //
@@ -10,29 +10,32 @@
 // here rather than left to be discovered.
 //
 // Writes are the opposite. A write is the one file operation where a mistake
-// becomes persistent, so it is performed by a helper process running inside the
-// sandbox, with the writable set projected onto the kernel. The helper does no
-// policy check of its own: the kernel is the boundary, and this package never
-// has to prove that a path is safe to write. A path spelling this process does
-// not understand cannot widen anything, because nothing here decides.
+// becomes persistent, so each declared writable root is opened with
+// [os.OpenRoot] and every write is performed relative to that handle. The
+// kernel resolves the path inside the root (openat2 on Linux, a relative NT
+// open on Windows), so nothing here has to prove a path is safe: a spelling
+// this package does not understand cannot widen anything, because the handle
+// decides at open time. There is also no resolve-then-open window to lose: the
+// resolution happens as part of the open.
 //
-// # What that costs
+// # What a root has to be
 //
-// Every write spawns a process (roughly 5–50ms depending on the backend). A
-// tool that writes many small files should batch its work, not call Write in a
-// loop. Reads, listing, walking and stat are in-process and cheap.
+// A writable root must exist when Open is called and must be a directory. An
+// entry that cannot be opened cannot be enforced, and a writable set nothing
+// enforces is a comment. Paths are resolved through symlinks at Open, so the
+// handle and the selector that picks it compare the same spelling.
 //
-// # Without a sandbox
+// # Absolute paths only
 //
-// A host with no sandbox (a local workspace demo, a test) cannot have kernel
-// enforcement. It must say so: Open fails unless the host opts into
-// [Unenforced], in which case writes go straight to the filesystem and the
-// writable set is documentation, not a boundary.
+// There is no single base for a relative path when several roots are declared,
+// so every path is absolute. Selecting the root for a target is a string
+// comparison and only a selector: picking wrongly costs a denied operation,
+// never a wider one, because the handle refuses the relative path it is handed.
 //
-// # The helper
+// # What is not here
 //
-// Writes are performed by re-executing the host binary with a magic argument
-// and speaking JSON over stdin/stdout. A host must call [MaybeRunHelper] before
-// doing anything else in main; forgetting it makes the first write fail with a
-// clear error rather than silently writing unconfined.
+// Command confinement. Commands run under sandbox.Runner with the same
+// permission.Writes projected onto the kernel; that projection and these
+// handles are two expressions of one value, which is why the fs side and the
+// shell side cannot confine to different roots.
 package fsx

@@ -12,8 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/internal/fsatomic"
+	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -152,7 +152,7 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 func spillPath(dir, callID string) string {
 	name := callID
 	if name == "" || name == "." || name == ".." ||
-		strings.ContainsAny(name, `/\`) || !permission.RelRef(name) {
+		strings.ContainsAny(name, `/\`) || !paths.RelRef(name) {
 		sum := sha256.Sum256([]byte(callID))
 		name = hex.EncodeToString(sum[:16])
 	}

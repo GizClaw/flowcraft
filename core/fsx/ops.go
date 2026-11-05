@@ -68,16 +68,31 @@ func (t *Tree) Walk(ctx context.Context, dir string, fn WalkFunc) error {
 
 // Write replaces a file, creating missing parent directories.
 //
-// It runs in the sandboxed helper, so the kernel decides whether the path is
-// writable — this method never decides.
+// The write happens on the handle of the writable root that contains path, so
+// the kernel — not this method — decides whether it stays inside. A path that
+// matches no root is refused before anything is opened.
 func (t *Tree) Write(ctx context.Context, path string, data []byte) error {
-	return t.call(ctx, helperRequest{Op: "write", Path: path, Data: data})
+	handle, rel, err := t.writable(ctx, "write", path)
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := handle.MkdirAll(dir, 0o755); err != nil {
+			return denied(err)
+		}
+	}
+	file, err := handle.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return denied(err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return denied(err)
+	}
+	return denied(file.Close())
 }
 
 // WriteStream replaces a file from a stream and reports the byte count.
-//
-// The payload is buffered: the helper protocol carries one request, so a
-// streaming write would need a second protocol. Reads stream; writes do not.
 func (t *Tree) WriteStream(ctx context.Context, path string, src io.Reader) (int64, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
@@ -89,24 +104,50 @@ func (t *Tree) WriteStream(ctx context.Context, path string, src io.Reader) (int
 	return int64(len(data)), nil
 }
 
-// Mkdir creates a directory and its parents. Like every write, it is performed
-// inside the sandbox.
+// Mkdir creates a directory and its parents inside a writable root.
 func (t *Tree) Mkdir(ctx context.Context, path string) error {
-	return t.call(ctx, helperRequest{Op: "mkdir", Path: path})
+	handle, rel, err := t.writable(ctx, "mkdir", path)
+	if err != nil {
+		return err
+	}
+	return denied(handle.MkdirAll(rel, 0o755))
 }
 
 // Remove deletes a file, or a directory tree. It is idempotent: removing a path
 // that does not exist returns nil.
 func (t *Tree) Remove(ctx context.Context, path string) error {
-	return t.call(ctx, helperRequest{Op: "remove", Path: path})
+	handle, rel, err := t.writable(ctx, "remove", path)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return errdefs.Validationf("fsx: refusing to remove the writable root %q", path)
+	}
+	return denied(handle.RemoveAll(rel))
 }
 
 // Copy duplicates a file: the source is read here, the destination is written
-// through the sandbox, so the boundary applies to the side that persists.
+// through a writable root, so the boundary applies to the side that persists.
 func (t *Tree) Copy(ctx context.Context, src, dst string) error {
 	data, err := t.Read(ctx, src)
 	if err != nil {
 		return err
 	}
 	return t.Write(ctx, dst, data)
+}
+
+// writable resolves an absolute target to the handle and relative path that
+// carry out the operation.
+func (t *Tree) writable(ctx context.Context, op, path string) (*os.Root, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", errdefs.FromContext(err)
+	}
+	if err := absolute(op, path); err != nil {
+		return nil, "", err
+	}
+	handle, rel, err := t.select_(path)
+	if err != nil {
+		return nil, "", err
+	}
+	return handle.root, rel, nil
 }

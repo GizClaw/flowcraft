@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -385,10 +386,10 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 
 // containedInRoot reports whether path is root itself or directly
 // under it. Windows paths are case-insensitive, so the comparison
-// folds case (permission.WithinFold); the workspace layer's equivalent
+// folds case (paths.WithinFold); the workspace layer's equivalent
 // check does the same.
 func containedInRoot(path, root string) bool {
-	return permission.WithinFold(root, path)
+	return paths.WithinFold(root, path)
 }
 
 // resolveAbsolutePaths makes each path absolute (relative entries are

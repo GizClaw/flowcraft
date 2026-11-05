@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/permission"
 )
 
@@ -133,7 +134,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		if !permission.RealWithin(real, abs) {
+		if !paths.RealWithin(real, abs) {
 			return fmt.Sprintf("workdir %q resolves outside root %q", wd, real), true
 		}
 		return "", false
