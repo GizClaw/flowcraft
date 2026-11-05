@@ -59,7 +59,7 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
-		WriteModes:       []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly},
+		WriteConfinement: true,
 	}
 }
 
@@ -283,7 +283,7 @@ func (r *Runner) spawnProcess(
 		abortBundle()
 		return nil, err
 	}
-	fsFlags := r.filesystemFlagsFor(spec.Opts.Write)
+	fsFlags := r.filesystemFlagsFor(spec.Opts)
 	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
 	if bundlePath != "" {
 		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
@@ -359,14 +359,6 @@ func (r *Runner) spawnProcess(
 		return &sessionHandle{Session: sess, cleanup: cleanup}, nil
 	}
 	return sess, nil
-}
-
-// filesystemFlagsFor renders the mount flags for a single spawn: the
-// runner root is read-only when pinned at construction or by the
-// per-call write policy.
-func (r *Runner) filesystemFlagsFor(write sandbox.WritePolicy) []string {
-	return filesystemFlags(r.rootDir, r.writablePaths,
-		r.readOnlyRoot || write == sandbox.WriteReadOnly)
 }
 
 // closeProxy best-effort closes the enforcement proxy, leaving the

@@ -42,12 +42,12 @@ func buildOptions(opts []Option) (*options, error) {
 
 // writable reports whether path may be written under this call's boundary.
 //
-// The per-call policy wins when it declares entries at all; otherwise the
-// instance defaults apply, and an instance with no declaration is writable
-// across its whole root (the local-directory default, matching what a
-// workspace directory means to a host application).
+// A supplied per-call policy is the whole boundary (so an empty one means
+// read-only); otherwise the instance defaults apply, and an instance with no
+// declaration is writable across its whole root — the local-directory default,
+// matching what a workspace directory means to a host application.
 func writable(path string, sb *Sandbox, defaults []string) bool {
-	if sb != nil && len(sb.Policy.Files.Entries) > 0 {
+	if sb != nil && sb.Policy != nil {
 		return sb.Policy.Files.Allows(path, permission.Write)
 	}
 	for _, root := range defaults {
@@ -65,7 +65,7 @@ func writable(path string, sb *Sandbox, defaults []string) bool {
 // the interpreter that performs the read, and the documentation says so rather
 // than implying a boundary the kernel does not provide.
 func readable(path string, sb *Sandbox) bool {
-	if sb == nil || len(sb.Policy.Files.Entries) == 0 {
+	if sb == nil || sb.Policy == nil {
 		return true
 	}
 	return sb.Policy.Files.Allows(path, permission.Read)

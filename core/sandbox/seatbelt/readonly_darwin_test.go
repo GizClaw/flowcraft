@@ -95,10 +95,15 @@ func TestNewRejectsWritableRootWithReadOnlyRoot(t *testing.T) {
 	}
 }
 
-// TestWritablePathsForPerCallReadOnly is the direct assertion that a
-// per-call WriteReadOnly keeps the construction-time writable root out
-// of the writable set while explicit writable paths stay writable.
-func TestWritablePathsForPerCallReadOnly(t *testing.T) {
+// TestWritablePathsForPerCallPermission pins the replacement rule: a
+// caller-supplied permission is the whole writable set for that call, so the
+// runner root *and* the host's explicit writable paths are dropped.
+//
+// Keeping the exceptions would reintroduce exactly the drift the shared policy
+// exists to prevent: fsx would deny a write to cache/ while the kernel mounts
+// still allowed it. A host that wants its exceptions on a narrowed call puts
+// them in the policy it hands to both interpreters.
+func TestWritablePathsForPerCallPermission(t *testing.T) {
 	root := t.TempDir()
 	cache := t.TempDir()
 	runner, err := New(root, WithWritablePaths(cache))
@@ -106,15 +111,20 @@ func TestWritablePathsForPerCallReadOnly(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if writes := runner.writablePathsFor(sandbox.WriteWorkspace); !slices.Contains(writes, runner.rootDir) {
-		t.Fatalf("workspace call must keep the root writable: %v", writes)
+	if writes := runner.writablePathsFor(sandbox.ExecOptions{}); !slices.Contains(writes, runner.rootDir) {
+		t.Fatalf("a call without a permission must keep the root writable: %v", writes)
 	}
 
-	writes := runner.writablePathsFor(sandbox.WriteReadOnly)
-	if slices.Contains(writes, runner.rootDir) {
-		t.Fatalf("per-call read-only must drop the root from the writable set: %v", writes)
+	writes := runner.writablePathsFor(sandbox.ExecOptions{Permission: &permission.Policy{}})
+	if len(writes) != 0 {
+		t.Fatalf("a supplied policy is the whole writable set, got %v", writes)
 	}
-	if len(runner.extraWritable) != 1 || !slices.Contains(writes, runner.extraWritable[0]) {
-		t.Fatalf("explicit writable paths must stay writable: %v", writes)
+
+	narrow := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+		{Path: cache, Access: permission.Write},
+	}}}
+	writes = runner.writablePathsFor(sandbox.ExecOptions{Permission: narrow})
+	if len(writes) != 1 || writes[0] != cache {
+		t.Fatalf("writable = %v, want exactly the policy entry %q", writes, cache)
 	}
 }

@@ -59,6 +59,29 @@ func buildFlags(opts sandbox.ExecOptions) ([]string, error) {
 // Writable binds follow the /tmp mount intentionally: when rootDir is
 // itself under /tmp (common in tests and CI), the later nested bind
 // makes the workspace visible inside the otherwise-private tmpfs.
+// filesystemFlagsFor renders the mount flags for a single spawn: the runner
+// root is read-only when pinned at construction, or when a per-call permission
+// replaces the runner boundary without covering the root.
+func (r *Runner) filesystemFlagsFor(opts sandbox.ExecOptions) []string {
+	writable := opts.Writable(r.writablePaths)
+	readOnlyRoot := r.readOnlyRoot
+	if opts.Permission != nil {
+		readOnlyRoot = !coversRoot(writable, r.rootDir)
+	}
+	return filesystemFlags(r.rootDir, writable, readOnlyRoot)
+}
+
+// coversRoot reports whether any writable path is the root or an ancestor of
+// it, which is what makes the root itself writable.
+func coversRoot(writable []string, root string) bool {
+	for _, path := range writable {
+		if permission.Within(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 func filesystemFlags(rootDir string, writable []string, readOnlyRoot bool) []string {
 	rootBind := "--bind"
 	if readOnlyRoot {

@@ -35,12 +35,11 @@ import "github.com/GizClaw/flowcraft/core/permission"
 //     OS level (Seatbelt profile, namespace mounts). sandbox/local's
 //     WorkDir check is call-time validation only — once the child is
 //     running it can chdir anywhere — so it does not qualify.
-//   - WriteModes: the set of WritePolicy values this backend can
-//     enforce per call. Isolation backends list WriteWorkspace (writes
-//     confined to the root plus explicit writable paths) and
-//     WriteReadOnly (root read-only). sandbox/local reports none —
-//     "unrestricted" is not an enforced mode, and WriteReadOnly is
-//     rejected with NotAvailable there.
+//   - WriteConfinement: the backend can enforce a per-call file boundary,
+//     i.e. it can make exactly ExecOptions.Permission's writable paths
+//     writable and everything else read-only. sandbox/local reports false:
+//     it has no OS boundary, so it refuses such a call instead of running
+//     it unconfined.
 type Enforcement struct {
 	EnvAllowList     bool
 	NetModes         []permission.NetMode
@@ -51,5 +50,5 @@ type Enforcement struct {
 	CPUCap           bool
 	DiskCap          bool
 	FilesystemBounds bool
-	WriteModes       []WritePolicy
+	WriteConfinement bool
 }

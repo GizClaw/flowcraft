@@ -15,10 +15,12 @@ var ErrDenied = errors.New("fsx: access denied by policy")
 // per call, serialise it across a process boundary if the operation runs
 // elsewhere, and never mutate a shared instance.
 type Sandbox struct {
-	// Policy is the boundary for this call. It is the same value the
-	// sandbox backend projects onto the kernel, so the in-process check and
-	// the kernel mounts cannot disagree.
-	Policy permission.Policy
+	// Policy is the boundary for this call. Nil keeps the implementation's
+	// configured defaults; a supplied policy is the whole boundary for the
+	// call, so an empty writable list means read-only. It is the same rule
+	// sandbox.ExecOptions.Permission follows, which is what keeps the
+	// in-process check and the kernel mounts from disagreeing.
+	Policy *permission.Policy
 	// Cwd is the executor-side working directory used to resolve
 	// relative paths. It is executor-side by definition: a client must
 	// not add local absolute paths to it.

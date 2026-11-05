@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
 
@@ -116,7 +117,7 @@ func TestNewRejectsWritableRootWithReadOnlyRoot(t *testing.T) {
 }
 
 // TestFilesystemFlagsForPerCallReadOnly is the direct assertion that a
-// per-call WriteReadOnly keeps the construction-time writable root
+// a per-call read-only permission keeps the construction-time writable root
 // read-only while explicit writable paths stay writable.
 func TestFilesystemFlagsForPerCallReadOnly(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "bwrap-fake")
@@ -130,12 +131,12 @@ func TestFilesystemFlagsForPerCallReadOnly(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	workspace := runner.filesystemFlagsFor(sandbox.WriteWorkspace)
+	workspace := runner.filesystemFlagsFor(sandbox.ExecOptions{})
 	if !containsSeq(workspace, "--bind", runner.rootDir, runner.rootDir) {
 		t.Fatalf("workspace call must bind the root read-write: %v", workspace)
 	}
 
-	readOnly := runner.filesystemFlagsFor(sandbox.WriteReadOnly)
+	readOnly := runner.filesystemFlagsFor(sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if !containsSeq(readOnly, "--ro-bind", runner.rootDir, runner.rootDir) {
 		t.Fatalf("per-call read-only must ro-bind the root: %v", readOnly)
 	}

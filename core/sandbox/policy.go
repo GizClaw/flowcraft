@@ -23,29 +23,6 @@ type EnvPolicy struct {
 	Inject map[string]string
 }
 
-// WritePolicy controls how much filesystem write access a single Exec
-// call gets on top of the runner's construction-time boundary (runner
-// root plus explicit [RunnerOption] writable paths).
-//
-//   - WriteWorkspace (zero value): the runner root plus explicit
-//     writable paths are writable — the current behavior and the
-//     back-compat default. With the seatbelt / bwrap backends this is
-//     enforced at the OS level; sandbox/local has no OS boundary and
-//     reports no write modes in Capabilities.
-//   - WriteReadOnly: the runner root is not writable for this call.
-//     Explicitly configured writable paths remain writable, and
-//     platform escape hatches such as /dev/null stay open.
-//
-// There is deliberately no "wider" value: a call can narrow the
-// construction-time boundary, never widen it. A runner constructed
-// read-only (e.g. WithReadOnlyRoot) stays read-only for every call.
-type WritePolicy uint8
-
-const (
-	WriteWorkspace WritePolicy = iota
-	WriteReadOnly
-)
-
 // ResourceLimits caps how much the child process may consume.
 //
 // MemoryBytes caps aggregate resident memory used by the child process
@@ -85,9 +62,10 @@ type ResourceLimits struct {
 //   - MemoryBytes / CPUMillicores ride the shared process-group
 //     sampler; where that sampler cannot run, honouring the request
 //     would silently run without caps, so it is rejected instead.
-//   - Write must be a known WritePolicy value; anything else is
-//     rejected so an unsupported mode cannot silently degrade to the
-//     runner default.
+//   - Permission, when supplied, must validate: absolute glob-free
+//     paths, and its network half left to ExecOptions.Net so a nil
+//     permission ("inherit") cannot be confused with an empty network
+//     policy ("unrestricted").
 //
 // Backend-specific posture checks (which Net modes a runner enforces,
 // WorkDir confinement) stay in each backend.

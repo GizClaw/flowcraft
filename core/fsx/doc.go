@@ -1,5 +1,5 @@
 // Package fsx is the file-I/O contract: one FS interface and one per-call
-// Sandbox that carries a permission.Policy.
+// Sandbox that carries an optional permission.Policy.
 //
 // # One value, two interpreters
 //

@@ -229,7 +229,7 @@ func RunContract(t *testing.T, newFS Factory) {
 		ctx := context.Background()
 		sub := path.Join(root, "sub")
 		sb := &fsx.Sandbox{
-			Policy: permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			Policy: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
 				{Path: sub, Access: permission.Write},
 			}}},
 			Roots: []string{root},
@@ -243,6 +243,18 @@ func RunContract(t *testing.T, newFS Factory) {
 		}
 	})
 
+	t.Run("an empty per-call policy is read-only", func(t *testing.T) {
+		f, _ := newFS(t)
+		ctx := context.Background()
+		sb := &fsx.Sandbox{Policy: &permission.Policy{}}
+		if err := f.Write(ctx, "x.txt", []byte("x"), sb); !errors.Is(err, fsx.ErrDenied) {
+			t.Errorf("Write with an empty policy = %v, want fsx.ErrDenied", err)
+		}
+		if err := f.Write(ctx, "x.txt", []byte("x"), nil); err != nil {
+			t.Errorf("Write with no policy = %v, want the instance defaults", err)
+		}
+	})
+
 	t.Run("read entries are enforced in process", func(t *testing.T) {
 		f, root := newFS(t)
 		ctx := context.Background()
@@ -250,7 +262,7 @@ func RunContract(t *testing.T, newFS Factory) {
 			t.Fatalf("Write: %v", err)
 		}
 		sb := &fsx.Sandbox{
-			Policy: permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			Policy: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
 				{Path: root, Access: permission.Read},
 				{Path: path.Join(root, "secret"), Access: permission.Deny},
 			}}},

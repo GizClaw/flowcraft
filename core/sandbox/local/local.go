@@ -78,8 +78,8 @@ func WithFileJournalConfig(cfg journal.Config) Option {
 //     just the leader.
 //   - Env: fully supported (see sandbox.EnvPolicy doc).
 //   - Net.Mode != permission.NetDefault: returns errdefs.NotAvailable.
-//   - Write == WriteReadOnly: returns errdefs.NotAvailable (no OS
-//     boundary to confine writes).
+//   - Permission != nil: returns errdefs.NotAvailable (no OS boundary
+//     to confine a caller-supplied file boundary).
 //   - Resources.MemoryBytes: enforced by a sampling watcher on aggregate
 //     group RSS; overflow kills the whole group.
 //   - Resources.CPUMillicores: enforced by the same watcher as group

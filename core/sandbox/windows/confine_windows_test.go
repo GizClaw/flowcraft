@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
@@ -20,11 +21,11 @@ import (
 // confinement behaviors cannot be exercised there, so the test skips.
 func requireConfinement(t *testing.T, r *Runner) {
 	t.Helper()
-	// Probe with WriteReadOnly so the probe itself does not label the
-	// runner root (which would mask write-denial assertions in the
+	// Probe with a read-only permission so the probe itself does not label
+	// the runner root (which would mask write-denial assertions in the
 	// caller's test).
 	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"},
-		sandbox.ExecOptions{Write: sandbox.WriteReadOnly})
+		sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if err == nil {
 		return
 	}
@@ -71,8 +72,8 @@ func TestWriteConfinementCapabilities(t *testing.T) {
 	if !caps.Policy.FilesystemBounds {
 		t.Error("confined runner FilesystemBounds = false, want true")
 	}
-	if len(caps.Policy.WriteModes) != 2 {
-		t.Errorf("WriteModes = %v, want WriteWorkspace + WriteReadOnly", caps.Policy.WriteModes)
+	if !caps.Policy.WriteConfinement {
+		t.Error("confined runner WriteConfinement = false, want true")
 	}
 
 	plain, err := New(t.TempDir())
@@ -83,8 +84,8 @@ func TestWriteConfinementCapabilities(t *testing.T) {
 	if plain.Capabilities().Policy.FilesystemBounds {
 		t.Error("plain runner FilesystemBounds = true, want false")
 	}
-	if len(plain.Capabilities().Policy.WriteModes) != 0 {
-		t.Errorf("plain runner WriteModes = %v, want none", plain.Capabilities().Policy.WriteModes)
+	if plain.Capabilities().Policy.WriteConfinement {
+		t.Error("plain runner WriteConfinement = true, want false")
 	}
 }
 
@@ -125,7 +126,7 @@ func TestWriteConfinementReadOnlyRejectsWrite(t *testing.T) {
 
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "hi", ">", "out.txt"},
-		sandbox.ExecOptions{Write: sandbox.WriteReadOnly})
+		sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}

@@ -130,7 +130,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			MemoryCap:        caps,
 			CPUCap:           caps,
 			FilesystemBounds: true,
-			WriteModes:       []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly},
+			WriteConfinement: true,
 		},
 		Features: sandbox.SessionFeatures{
 			TTY:    true,
@@ -266,7 +266,7 @@ func (r *Runner) spawnProcess(
 		}
 	}
 
-	writes := r.writablePathsFor(spec.Opts.Write)
+	writes := r.writablePathsFor(spec.Opts)
 	profile, err := buildProfile(writes, spec.Opts.Net, proxyPort)
 	if err != nil {
 		closeProxy(ctx, proxy)
@@ -311,13 +311,13 @@ func (r *Runner) spawnProcess(
 
 // writablePathsFor returns the writable set for a single spawn: the
 // configured extra paths always, plus the runner root unless it was
-// pinned read-only at construction or by the per-call write policy.
-func (r *Runner) writablePathsFor(write sandbox.WritePolicy) []string {
-	writes := append([]string(nil), r.extraWritable...)
-	if !r.readOnlyRoot && write != sandbox.WriteReadOnly {
-		writes = append(writes, r.rootDir)
+// pinned read-only at construction or replaced by the per-call permission.
+func (r *Runner) writablePathsFor(opts sandbox.ExecOptions) []string {
+	defaults := append([]string(nil), r.extraWritable...)
+	if !r.readOnlyRoot {
+		defaults = append(defaults, r.rootDir)
 	}
-	return writes
+	return opts.Writable(defaults)
 }
 
 // closeProxy best-effort closes the enforcement proxy, leaving the

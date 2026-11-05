@@ -66,7 +66,7 @@
 //	                              Hosts without AppContainer-profile or
 //	                              WFP-engine access fail closed with
 //	                              errdefs.NotAvailable.
-//	Write == WriteReadOnly        enforced when the runner is built
+//	Permission != nil             enforced when the runner is built
 //	                              with WithWriteConfinement: the child
 //	                              runs with a restricted, Low-integrity
 //	                              token and only the explicitly granted

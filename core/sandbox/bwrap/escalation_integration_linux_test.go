@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
 
@@ -25,7 +26,7 @@ var namespaceFailures = []string{
 
 // TestDeniedRecognizesRealBwrapRefusal pins the refusal spelling
 // [sandbox.Denied] matches for this backend to what a real namespace
-// writes: a per-call WriteReadOnly leaves the root on a read-only bind,
+// writes: a per-call read-only permission leaves the root on a read-only bind,
 // and the write that reaches it has to come back as EROFS.
 func TestDeniedRecognizesRealBwrapRefusal(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
@@ -41,7 +42,7 @@ func TestDeniedRecognizesRealBwrapRefusal(t *testing.T) {
 
 	res, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
 		[]string{"-c", "echo hi > " + filepath.Join(root, "denied.txt")},
-		sandbox.ExecOptions{WorkDir: root, Write: sandbox.WriteReadOnly})
+		sandbox.ExecOptions{WorkDir: root, Permission: &permission.Policy{}})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}

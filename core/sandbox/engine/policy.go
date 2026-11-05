@@ -11,9 +11,17 @@ import (
 // no timeout to derive it from, or resource caps where process-group sampling is
 // unavailable. Backends call it before starting anything.
 func ValidateExecPolicy(opts sandbox.ExecOptions) error {
-	if opts.Write > sandbox.WriteReadOnly {
-		return errdefs.Validationf(
-			"sandbox: unknown write policy %d", int(opts.Write))
+	if opts.Permission != nil {
+		// The network posture has its own field: a nil Permission must mean
+		// "inherit the runner boundary" while a nil network means
+		// "unrestricted", and one pointer cannot carry both zero meanings.
+		if !opts.Permission.Net.IsZero() {
+			return errdefs.Validationf(
+				"sandbox: set the network posture on ExecOptions.Net, not on Permission.Net")
+		}
+		if err := opts.Permission.Validate(); err != nil {
+			return err
+		}
 	}
 	if opts.Resources.DiskBytes != 0 {
 		return errdefs.NotAvailablef(

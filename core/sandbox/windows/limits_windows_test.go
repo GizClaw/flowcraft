@@ -98,11 +98,13 @@ func TestValidatePolicy(t *testing.T) {
 	}{
 		{
 			name: "write read only",
-			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Write: sandbox.WriteReadOnly}},
+			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Permission: &permission.Policy{}}},
 		},
 		{
 			name: "unknown write policy",
-			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Write: sandbox.WritePolicy(99)}},
+			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+				{Path: "relative", Access: permission.Write},
+			}}}}},
 		},
 		{
 			name: "disk limit",

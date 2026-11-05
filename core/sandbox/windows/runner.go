@@ -46,8 +46,8 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     without network capabilities), and NetAllowList / NetProxy
 //     (AppContainer + WFP port-pinning to the enforcement proxy) are
 //     supported. Non-elevated hosts fail closed with NotAvailable.
-//   - Write == WriteReadOnly: errdefs.NotAvailable (no OS boundary to
-//     confine writes yet).
+//   - Permission != nil without WithWriteConfinement: errdefs.NotAvailable
+//     (no OS boundary to confine a caller-supplied file boundary).
 //   - Resources.MemoryBytes: enforced as a job-wide memory limit
 //     (JOB_OBJECT_LIMIT_JOB_MEMORY).
 //   - Resources.CPUMillicores: enforced as a per-process user-time
@@ -125,10 +125,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	}
 	if r.cfg.writeConfine {
 		policy.FilesystemBounds = true
-		policy.WriteModes = []sandbox.WritePolicy{
-			sandbox.WriteWorkspace,
-			sandbox.WriteReadOnly,
-		}
+		policy.WriteConfinement = true
 	}
 	policy.NetModes = []permission.NetMode{
 		permission.NetDenyAll, permission.NetAllowList, permission.NetProxy,
@@ -232,10 +229,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 			return nil, errdefs.NotAvailablef(
 				"windows: TTY sessions with a net policy are not supported yet")
 		}
-		writable := r.cfg.writable
-		if spec.Opts.Write != sandbox.WriteReadOnly {
-			writable = append([]string{r.rootDir}, writable...)
-		}
+		writable := spec.Opts.Writable(append([]string{r.rootDir}, r.cfg.writable...))
 		iso, err = newNetIsolation(r.rootDir, writable, spec.Opts.Net)
 		if err != nil {
 			return nil, err
@@ -260,10 +254,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	cmd.Dir = workDir
 	cmd.Env = env
 	if iso == nil && r.cfg.writeConfine {
-		writable := r.cfg.writable
-		if spec.Opts.Write != sandbox.WriteReadOnly {
-			writable = append([]string{r.rootDir}, writable...)
-		}
+		writable := spec.Opts.Writable(append([]string{r.rootDir}, r.cfg.writable...))
 		for _, p := range writable {
 			if err := labelLowIntegrity(p); err != nil {
 				return nil, err
@@ -284,13 +275,18 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 // availability check does not apply. The job-object caps themselves
 // are enforced by the kernel, not sampled.
 func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
-	if spec.Opts.Write > sandbox.WriteReadOnly {
-		return errdefs.Validationf(
-			"windows: unknown write policy %d", int(spec.Opts.Write))
-	}
-	if spec.Opts.Write == sandbox.WriteReadOnly && !r.cfg.writeConfine {
-		return errdefs.NotAvailablef(
-			"windows: write policy requires the runner to be constructed with WithWriteConfinement")
+	if spec.Opts.Permission != nil {
+		if !spec.Opts.Permission.Net.IsZero() {
+			return errdefs.Validationf(
+				"windows: set the network posture on ExecOptions.Net, not on Permission.Net")
+		}
+		if err := spec.Opts.Permission.Validate(); err != nil {
+			return err
+		}
+		if !r.cfg.writeConfine {
+			return errdefs.NotAvailablef(
+				"windows: a per-call file boundary requires the runner to be constructed with WithWriteConfinement")
+		}
 	}
 	if spec.Opts.Net.Mode != permission.NetDefault {
 		switch spec.Opts.Net.Mode {

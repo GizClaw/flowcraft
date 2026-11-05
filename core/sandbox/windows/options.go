@@ -41,7 +41,7 @@ func WithMaxOutputBytes(n int64) Option {
 // readable, not writable. The child gets its own Low-labeled TEMP/TMP.
 //
 // Confinement is opt-in: without it the backend is the phase-1
-// lifecycle-only sandbox and WriteReadOnly is rejected with
+// lifecycle-only sandbox and a per-call permission is rejected with
 // NotAvailable.
 func WithWriteConfinement() Option {
 	return func(c *runnerConfig) {
@@ -51,7 +51,7 @@ func WithWriteConfinement() Option {
 
 // WithWritablePaths grants write access to additional existing paths
 // beyond rootDir when write confinement is enabled. Explicit writable
-// paths remain writable even for a WriteReadOnly call, mirroring the
+// paths remain writable even for a read-only permission, mirroring the
 // bwrap / seatbelt semantics. Paths are resolved to absolute form at
 // construction.
 func WithWritablePaths(paths ...string) Option {

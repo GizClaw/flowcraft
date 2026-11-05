@@ -118,12 +118,12 @@ func (r *allowCommandsRunner) OpenJournal(ctx context.Context) (sandbox.FileJour
 //     sandbox's static injections.
 //   - Net: defaults wins entirely. Caller Net is ignored — the
 //     network posture is sandbox-level policy.
-//   - Write: the caller may narrow the boundary to WriteReadOnly for a
-//     single call; defaults pin the policy for the whole chain. Since
-//     WriteReadOnly is the strictest mode and there is no widening
-//     mode, "either side is read-only" is the whole merge rule. An
-//     unknown value on either side is preserved — never silently
-//     degraded to WriteWorkspace — so backend validation rejects it.
+//   - Permission: a caller-supplied boundary replaces the configured
+//     default for that call, in either direction of strictness, because
+//     the caller stated the decision. The default applies only when the
+//     caller supplied nothing. A default never widens a caller policy;
+//     an invalid policy is preserved so backend validation rejects it
+//     instead of it being silently dropped.
 //   - Resources: defaults wins entirely. Caller cannot raise caps;
 //     and narrowing CPU/Mem/Disk per call is not actionable for a
 //     local runner today (those fields are advisory until a real
@@ -204,20 +204,18 @@ func (r *defaultsRunner) OpenJournal(ctx context.Context) (sandbox.FileJournal, 
 // pointer receiver so the defaults map is not copied on every call.
 func (r *defaultsRunner) merge(caller sandbox.ExecOptions) sandbox.ExecOptions {
 	merged := sandbox.ExecOptions{
-		WorkDir:   caller.WorkDir,
-		Stdin:     caller.Stdin,
-		Timeout:   mergeTimeout(caller.Timeout, r.defaults.Timeout),
-		Env:       mergeEnv(caller.Env, r.defaults.Env),
-		Net:       r.defaults.Net,
-		Write:     caller.Write,
-		Resources: r.defaults.Resources,
+		WorkDir:    caller.WorkDir,
+		Stdin:      caller.Stdin,
+		Timeout:    mergeTimeout(caller.Timeout, r.defaults.Timeout),
+		Env:        mergeEnv(caller.Env, r.defaults.Env),
+		Net:        r.defaults.Net,
+		Permission: caller.Permission,
+		Resources:  r.defaults.Resources,
 	}
-	// Any non-workspace default pins the policy: WriteReadOnly narrows
-	// every call, and an unknown value is preserved so backend
-	// validation rejects it instead of being silently swallowed when
-	// the caller passes the zero-value WriteWorkspace.
-	if r.defaults.Write != sandbox.WriteWorkspace {
-		merged.Write = r.defaults.Write
+	// A caller policy is a decision, so defaults never widen it; when the
+	// caller supplied none, the configured boundary applies.
+	if merged.Permission == nil {
+		merged.Permission = r.defaults.Permission
 	}
 	if merged.WorkDir == "" {
 		merged.WorkDir = r.defaults.WorkDir

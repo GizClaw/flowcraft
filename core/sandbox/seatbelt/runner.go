@@ -51,8 +51,8 @@ func WithWritablePaths(paths ...string) RunnerOption {
 // WithReadOnlyRoot keeps the runner root read-only for every exec
 // spawned through this runner, instead of the default (root writable).
 // Explicit [WithWritablePaths] exceptions remain writable, and
-// per-exec sandbox.WriteReadOnly can only keep the root read-only —
-// it cannot re-enable writes on a runner constructed with this option.
+// a per-call permission can only narrow the boundary — it cannot
+// re-enable writes on a runner constructed with this option.
 func WithReadOnlyRoot() RunnerOption {
 	return func(c *runnerConfig) {
 		c.readOnlyRoot = true

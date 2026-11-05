@@ -2,8 +2,10 @@ package sandbox_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
@@ -25,55 +27,101 @@ func (r *captureRunner) Start(_ context.Context, spec sandbox.SessionSpec) (sand
 	return nil, nil
 }
 
-// TestWithDefaultsWriteMerge pins the security-biased merge rule:
-// either side being read-only wins, an unknown value on either side is
-// preserved for backend validation (never silently degraded to
-// WriteWorkspace), and a pinned default can never be widened.
-func TestWithDefaultsWriteMerge(t *testing.T) {
-	tests := []struct {
-		name     string
-		caller   sandbox.WritePolicy
-		def      sandbox.WritePolicy
-		expected sandbox.WritePolicy
-	}{
-		{name: "defaults workspace", expected: sandbox.WriteWorkspace},
-		{name: "caller narrows", caller: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
-		{name: "default pins read-only", def: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
-		{name: "both read-only", caller: sandbox.WriteReadOnly, def: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
-		{name: "unknown caller preserved", caller: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
-		{name: "unknown caller cannot widen pinned default", caller: sandbox.WritePolicy(7), def: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
-		{name: "unknown default preserved", def: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
-		{name: "unknown default cannot be widened", caller: sandbox.WriteReadOnly, def: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inner := &captureRunner{}
-			runner := engine.WithDefaults(inner, sandbox.ExecOptions{Write: tt.def})
-			if _, err := runner.Start(context.Background(), sandbox.SessionSpec{
-				Opts: sandbox.ExecOptions{Write: tt.caller},
-			}); err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-			if len(inner.opts) != 1 {
-				t.Fatalf("captured %d calls, want 1", len(inner.opts))
-			}
-			if got := inner.opts[0].Write; got != tt.expected {
-				t.Fatalf("merged Write = %d, want %d", int(got), int(tt.expected))
-			}
-		})
-	}
+func readOnly() *permission.Policy { return &permission.Policy{} }
+
+// TestWithDefaultsPermissionMerge pins the security-biased merge rule: a
+// caller that supplied a boundary keeps it, a pinned default applies when the
+// caller supplied none, and defaults never widen a caller's decision.
+func TestWithDefaultsPermissionMerge(t *testing.T) {
+	t.Run("no caller, no default keeps the runner boundary", func(t *testing.T) {
+		inner := &captureRunner{}
+		runner := engine.WithDefaults(inner, sandbox.ExecOptions{})
+		if _, err := runner.Start(context.Background(), sandbox.SessionSpec{}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if got := inner.opts[0].Permission; got != nil {
+			t.Fatalf("merged Permission = %+v, want nil (runner boundary)", got)
+		}
+	})
+
+	t.Run("caller boundary is preserved", func(t *testing.T) {
+		inner := &captureRunner{}
+		runner := engine.WithDefaults(inner, sandbox.ExecOptions{})
+		caller := readOnly()
+		if _, err := runner.Start(context.Background(), sandbox.SessionSpec{
+			Opts: sandbox.ExecOptions{Permission: caller},
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if got := inner.opts[0].Permission; got != caller {
+			t.Fatalf("merged Permission = %+v, want the caller's policy", got)
+		}
+	})
+
+	t.Run("default applies when the caller supplies none", func(t *testing.T) {
+		inner := &captureRunner{}
+		def := readOnly()
+		runner := engine.WithDefaults(inner, sandbox.ExecOptions{Permission: def})
+		if _, err := runner.Start(context.Background(), sandbox.SessionSpec{}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if got := inner.opts[0].Permission; got != def {
+			t.Fatalf("merged Permission = %+v, want the configured default", got)
+		}
+	})
+
+	t.Run("a default never widens a caller decision", func(t *testing.T) {
+		inner := &captureRunner{}
+		wide := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			{Path: filepath.Join(string(filepath.Separator), "wide"), Access: permission.Write},
+		}}}
+		runner := engine.WithDefaults(inner, sandbox.ExecOptions{Permission: wide})
+		caller := readOnly()
+		if _, err := runner.Start(context.Background(), sandbox.SessionSpec{
+			Opts: sandbox.ExecOptions{Permission: caller},
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if got := inner.opts[0].Permission; got != caller {
+			t.Fatalf("merged Permission = %+v, want the caller's read-only policy", got)
+		}
+	})
 }
 
-// TestValidateExecPolicyWriteMode ensures the known write modes pass
-// validation and unknown values fail closed instead of silently
-// degrading to the runner default.
-func TestValidateExecPolicyWriteMode(t *testing.T) {
-	for _, mode := range []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly} {
-		if err := engine.ValidateExecPolicy(sandbox.ExecOptions{Write: mode}); err != nil {
-			t.Fatalf("Write %d rejected: %v", int(mode), err)
+// TestValidateExecPolicyPermission checks the boundary validation: what a
+// backend cannot project is rejected rather than silently dropped, and the
+// network half is refused because a nil Permission must mean "inherit" while a
+// nil network means "unrestricted".
+func TestValidateExecPolicyPermission(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "work")
+
+	valid := []sandbox.ExecOptions{
+		{},
+		{Permission: &permission.Policy{}},
+		{Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			{Path: root, Access: permission.Write},
+		}}}},
+	}
+	for i, opts := range valid {
+		if err := engine.ValidateExecPolicy(opts); err != nil {
+			t.Errorf("case %d rejected: %v", i, err)
 		}
 	}
-	if err := engine.ValidateExecPolicy(sandbox.ExecOptions{Write: sandbox.WritePolicy(7)}); err == nil {
-		t.Fatal("unknown write policy accepted")
+
+	invalid := map[string]sandbox.ExecOptions{
+		"relative path": {Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			{Path: "work", Access: permission.Write},
+		}}}},
+		"glob path": {Permission: &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+			{Path: root + string(filepath.Separator) + "*", Access: permission.Write},
+		}}}},
+		"network on the permission": {Permission: &permission.Policy{
+			Net: permission.NetPolicy{Mode: permission.NetDenyAll},
+		}},
+	}
+	for name, opts := range invalid {
+		if err := engine.ValidateExecPolicy(opts); err == nil {
+			t.Errorf("%s accepted, want a validation error", name)
+		}
 	}
 }
