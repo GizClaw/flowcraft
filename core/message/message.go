@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 type Role string

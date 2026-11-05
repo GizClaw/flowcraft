@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 	"github.com/GizClaw/flowcraft/core/message/media"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type PartKind string

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 // Extension carries provider-specific request options. It exists so a caller

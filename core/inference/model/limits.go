@@ -3,7 +3,7 @@ package model
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 // ModelLimits declares numeric capacity limits of a model. A nil field

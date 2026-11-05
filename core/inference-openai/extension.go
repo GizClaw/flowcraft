@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 // GenerationExtensionID names this driver's per-call options extension. A

@@ -35,7 +35,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 // Usage contains normalized effective token totals plus optional
