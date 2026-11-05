@@ -64,12 +64,18 @@ help:
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 
 .PHONY: vet
+# Opt-in suites (integration_bwrap) are type-checked here even on hosts that
+# cannot run them: a file behind a build tag that CI never compiles is a file
+# that rots silently. The suites themselves self-skip when their toolchain is
+# absent, so running them under test costs nothing where bwrap is not installed.
+VET_TAGS = -tags integration_bwrap
+
 vet:
-	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet ./...)
+	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet $(VET_TAGS) ./...)
 
 .PHONY: test
 test:
-	@$(call GO_FOREACH,$(MODULES_WORK),test,go test ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_WORK),test,go test $(VET_TAGS) ./... -count=1)
 
 .PHONY: fmt
 fmt:

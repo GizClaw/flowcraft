@@ -116,10 +116,12 @@ func TestNewRejectsWritableRootWithReadOnlyRoot(t *testing.T) {
 	}
 }
 
-// TestFilesystemFlagsForPerCallReadOnly is the direct assertion that a
-// a per-call read-only permission keeps the construction-time writable root
-// read-only while explicit writable paths stay writable.
-func TestFilesystemFlagsForPerCallReadOnly(t *testing.T) {
+// TestFilesystemFlagsForPerCallPermission pins the replacement rule: a
+// caller-supplied permission is the whole writable set, so the runner root and
+// the host's explicit writable paths are both dropped. Keeping the exceptions
+// would let the kernel allow a write fsx denies — the drift the shared policy
+// exists to prevent.
+func TestFilesystemFlagsForPerCallPermission(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "bwrap-fake")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write fake binary: %v", err)
@@ -133,19 +135,26 @@ func TestFilesystemFlagsForPerCallReadOnly(t *testing.T) {
 
 	workspace := runner.filesystemFlagsFor(sandbox.ExecOptions{})
 	if !containsSeq(workspace, "--bind", runner.rootDir, runner.rootDir) {
-		t.Fatalf("workspace call must bind the root read-write: %v", workspace)
+		t.Fatalf("a call without a permission must bind the root read-write: %v", workspace)
 	}
 
 	readOnly := runner.filesystemFlagsFor(sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if !containsSeq(readOnly, "--ro-bind", runner.rootDir, runner.rootDir) {
-		t.Fatalf("per-call read-only must ro-bind the root: %v", readOnly)
+		t.Fatalf("an empty policy must ro-bind the root: %v", readOnly)
 	}
-	if containsSeq(readOnly, "--bind", runner.rootDir, runner.rootDir) {
-		t.Fatalf("per-call read-only must not bind the root read-write: %v", readOnly)
+	if containsSeq(readOnly, "--bind", cache, cache) {
+		t.Fatalf("a supplied policy is the whole writable set; %q must not be bound: %v", cache, readOnly)
 	}
-	if len(runner.writablePaths) != 1 ||
-		!containsSeq(readOnly, "--bind", runner.writablePaths[0], runner.writablePaths[0]) {
-		t.Fatalf("explicit writable paths must stay writable: %v", readOnly)
+
+	narrow := &permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+		{Path: cache, Access: permission.Write},
+	}}}
+	allowed := runner.filesystemFlagsFor(sandbox.ExecOptions{Permission: narrow})
+	if !containsSeq(allowed, "--bind", cache, cache) {
+		t.Fatalf("the policy entry must be bound writable: %v", allowed)
+	}
+	if !containsSeq(allowed, "--ro-bind", runner.rootDir, runner.rootDir) {
+		t.Fatalf("the root stays read-only when the policy does not cover it: %v", allowed)
 	}
 }
 

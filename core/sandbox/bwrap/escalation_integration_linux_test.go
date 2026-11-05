@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // namespaceFailures are the messages bwrap itself leaves when the
@@ -25,7 +26,7 @@ var namespaceFailures = []string{
 }
 
 // TestDeniedRecognizesRealBwrapRefusal pins the refusal spelling
-// [sandbox.Denied] matches for this backend to what a real namespace
+// [engine.Denied] matches for this backend to what a real namespace
 // writes: a per-call read-only permission leaves the root on a read-only bind,
 // and the write that reaches it has to come back as EROFS.
 func TestDeniedRecognizesRealBwrapRefusal(t *testing.T) {
@@ -54,12 +55,12 @@ func TestDeniedRecognizesRealBwrapRefusal(t *testing.T) {
 	if res.ExitCode == 0 {
 		t.Fatalf("the write to a read-only root succeeded: %+v", res)
 	}
-	reason, denied := sandbox.Denied(res)
+	reason, denied := engine.Denied(res)
 	if !denied {
 		t.Fatalf("Denied missed a real refusal: exit %d, stderr %q, stdout %q",
 			res.ExitCode, res.Stderr, res.Stdout)
 	}
-	if detail := sandbox.DenialExcerpt(res); detail == "" {
+	if detail := engine.DenialExcerpt(res); detail == "" {
 		t.Fatalf("DenialExcerpt found no line to show for %q", res.Stderr)
 	}
 	t.Logf("denial recognized: %s", reason)
