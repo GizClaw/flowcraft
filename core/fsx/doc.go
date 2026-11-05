@@ -1,21 +1,36 @@
-// Package fsx is the file-I/O contract: one FS interface, one Policy
-// value, and one per-call Sandbox context that carries the policy.
+// Package fsx is the file-I/O contract: one FS interface and one per-call
+// Sandbox that carries a permission.Policy.
 //
-// # Why the policy is an argument
+// # One value, two interpreters
 //
-// The boundary is not a property of the file system object; it is a
-// property of the call. Binding a policy to an instance (a decorator)
-// works only while everything runs in one process, and breaks the moment
-// the operations run somewhere else: a remote executor cannot receive a
-// wrapper, but it can receive a serialisable context. Every FS method
-// therefore takes a *Sandbox, and an implementation is free to enforce
-// it in-process (checking before touching the disk) or to hand the
-// context to a supervising process that enforces it at the kernel.
+// The same permission.Policy feeds this package and a sandbox backend. fsx
+// interprets it in-process, right before the syscall; a backend projects the
+// writable paths onto the kernel (bind mounts, a seatbelt profile, Windows
+// ACLs). That is why the policy is an argument and not a decorator: a decorator
+// holds the boundary in one process, so a remote executor or a sandboxed helper
+// cannot receive it, and the second boundary has to be written from scratch.
+//
+// # What is enforced where
+//
+//   - Write entries: enforced here, and projected onto the kernel, so a
+//     spawned command obeys the same set.
+//   - Read and Deny entries: enforced here only. No backend projects a read
+//     restriction, so a spawned command can still read a denied path. They are
+//     a tool-layer guard, not the boundary that protects a secret; keep secrets
+//     outside the tree instead.
+//   - Containment: every path is resolved against the sandbox root and checked
+//     lexically and after symlink resolution, so neither ".." nor a link
+//     planted inside the tree can escape it.
+//
+// # Implementations
+//
+// [Local] is the directory-backed implementation; [Mem] is the in-memory test
+// double. Both run the same contract suite (core/fsx/fstest), because an
+// interface whose implementations disagree is not a contract.
 //
 // # What is not here
 //
-// No storage backends (checkpoints, memory documents) and no boundary
-// for process execution. Persistence is a separate port with its own
-// lifetime; command execution is sandbox.Runner. This package answers one
-// question: read and write these bytes, under this policy.
+// Persistence (checkpoints, memory documents) and command execution
+// (sandbox.Runner). This package answers one question: read and write these
+// bytes, under this policy.
 package fsx

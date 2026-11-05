@@ -89,6 +89,18 @@ func (l *Local) resolve(path string, sb *Sandbox) (string, error) {
 	return abs, nil
 }
 
+// readablePath resolves path and additionally requires read permission.
+func (l *Local) readablePath(path string, sb *Sandbox) (string, error) {
+	abs, err := l.resolve(path, sb)
+	if err != nil {
+		return "", err
+	}
+	if !readable(abs, sb) {
+		return "", denied(abs, "not readable under the policy")
+	}
+	return abs, nil
+}
+
 // writablePath resolves path and additionally requires write permission.
 func (l *Local) writablePath(path string, sb *Sandbox) (string, error) {
 	abs, err := l.resolve(path, sb)
@@ -120,7 +132,7 @@ func (l *Local) Canonicalize(_ context.Context, path string, sb *Sandbox) (strin
 
 // Read returns the whole file.
 func (l *Local) Read(_ context.Context, path string, sb *Sandbox) ([]byte, error) {
-	abs, err := l.resolve(path, sb)
+	abs, err := l.readablePath(path, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +141,7 @@ func (l *Local) Read(_ context.Context, path string, sb *Sandbox) ([]byte, error
 
 // ReadStream returns the file as a stream.
 func (l *Local) ReadStream(_ context.Context, path string, sb *Sandbox) (io.ReadCloser, error) {
-	abs, err := l.resolve(path, sb)
+	abs, err := l.readablePath(path, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +209,7 @@ func writeAtomic(abs string, fill func(io.Writer) error) error {
 
 // Stat returns file metadata.
 func (l *Local) Stat(_ context.Context, path string, sb *Sandbox) (fs.FileInfo, error) {
-	abs, err := l.resolve(path, sb)
+	abs, err := l.readablePath(path, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +218,7 @@ func (l *Local) Stat(_ context.Context, path string, sb *Sandbox) (fs.FileInfo, 
 
 // List returns the direct children of dir, sorted by name.
 func (l *Local) List(_ context.Context, dir string, sb *Sandbox) ([]fs.DirEntry, error) {
-	abs, err := l.resolve(dir, sb)
+	abs, err := l.readablePath(dir, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +231,7 @@ func (l *Local) List(_ context.Context, dir string, sb *Sandbox) ([]fs.DirEntry,
 
 // Walk visits every entry beneath dir in lexicographic order.
 func (l *Local) Walk(ctx context.Context, dir string, sb *Sandbox, fn WalkFunc) error {
-	abs, err := l.resolve(dir, sb)
+	abs, err := l.readablePath(dir, sb)
 	if err != nil {
 		return err
 	}
@@ -270,7 +282,7 @@ func (l *Local) Remove(_ context.Context, path string, sb *Sandbox) error {
 
 // Copy duplicates a file within the tree.
 func (l *Local) Copy(_ context.Context, src, dst string, sb *Sandbox) error {
-	srcAbs, err := l.resolve(src, sb)
+	srcAbs, err := l.readablePath(src, sb)
 	if err != nil {
 		return err
 	}

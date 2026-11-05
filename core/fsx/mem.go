@@ -79,6 +79,17 @@ func (m *Mem) resolve(p string, sb *Sandbox) (string, error) {
 	return abs, nil
 }
 
+func (m *Mem) readablePath(p string, sb *Sandbox) (string, error) {
+	abs, err := m.resolve(p, sb)
+	if err != nil {
+		return "", err
+	}
+	if !readable(abs, sb) {
+		return "", denied(abs, "not readable under the policy")
+	}
+	return abs, nil
+}
+
 func (m *Mem) writablePath(p string, sb *Sandbox) (string, error) {
 	abs, err := m.resolve(p, sb)
 	if err != nil {
@@ -101,7 +112,7 @@ func (m *Mem) Canonicalize(_ context.Context, p string, sb *Sandbox) (string, er
 
 // Read returns the whole file.
 func (m *Mem) Read(_ context.Context, p string, sb *Sandbox) ([]byte, error) {
-	abs, err := m.resolve(p, sb)
+	abs, err := m.readablePath(p, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +172,7 @@ func (m *Mem) put(abs string, data []byte) {
 
 // Stat returns file metadata.
 func (m *Mem) Stat(_ context.Context, p string, sb *Sandbox) (fs.FileInfo, error) {
-	abs, err := m.resolve(p, sb)
+	abs, err := m.readablePath(p, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +189,7 @@ func (m *Mem) Stat(_ context.Context, p string, sb *Sandbox) (fs.FileInfo, error
 
 // List returns the direct children of dir, sorted by name.
 func (m *Mem) List(_ context.Context, dir string, sb *Sandbox) ([]fs.DirEntry, error) {
-	abs, err := m.resolve(dir, sb)
+	abs, err := m.readablePath(dir, sb)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +222,7 @@ func (m *Mem) List(_ context.Context, dir string, sb *Sandbox) ([]fs.DirEntry, e
 
 // Walk visits every entry beneath dir in lexicographic order.
 func (m *Mem) Walk(_ context.Context, dir string, sb *Sandbox, fn WalkFunc) error {
-	abs, err := m.resolve(dir, sb)
+	abs, err := m.readablePath(dir, sb)
 	if err != nil {
 		return err
 	}

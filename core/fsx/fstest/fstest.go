@@ -243,6 +243,28 @@ func RunContract(t *testing.T, newFS Factory) {
 		}
 	})
 
+	t.Run("read entries are enforced in process", func(t *testing.T) {
+		f, root := newFS(t)
+		ctx := context.Background()
+		if err := f.Write(ctx, "secret/x.txt", []byte("s"), nil); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		sb := &fsx.Sandbox{
+			Policy: permission.Policy{Files: permission.Files{Entries: []permission.Entry{
+				{Path: root, Access: permission.Read},
+				{Path: path.Join(root, "secret"), Access: permission.Deny},
+			}}},
+			Roots: []string{root},
+			Cwd:   root,
+		}
+		if _, err := f.Read(ctx, "secret/x.txt", sb); !errors.Is(err, fsx.ErrDenied) {
+			t.Errorf("Read under a deny entry = %v, want fsx.ErrDenied", err)
+		}
+		if _, err := f.Read(ctx, "secret/x.txt", nil); err != nil {
+			t.Errorf("Read without a policy = %v, want nil", err)
+		}
+	})
+
 	t.Run("canonicalize returns an absolute path under the root", func(t *testing.T) {
 		f, root := newFS(t)
 		ctx := context.Background()

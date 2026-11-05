@@ -57,3 +57,16 @@ func writable(path string, sb *Sandbox, defaults []string) bool {
 	}
 	return false
 }
+
+// readable reports whether path may be read under this call's boundary.
+//
+// Read entries are a tool-layer guard: no sandbox backend can project them, so
+// a spawned command can still read a denied path. They are enforced here, by
+// the interpreter that performs the read, and the documentation says so rather
+// than implying a boundary the kernel does not provide.
+func readable(path string, sb *Sandbox) bool {
+	if sb == nil || len(sb.Policy.Files.Entries) == 0 {
+		return true
+	}
+	return sb.Policy.Files.Allows(path, permission.Read)
+}
