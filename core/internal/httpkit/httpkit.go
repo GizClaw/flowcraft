@@ -15,7 +15,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // This file carries the HTTP conveniences provider clients use: a tuned
@@ -155,15 +159,40 @@ func WithConnectionPool(maxIdleConns, maxIdleConnsPerHost int, idleConnTimeout t
 	}
 }
 
-// NewRoundTripper builds the hardened base transport per Config and wraps it
-// with the retry transport unless disabled.
+// NewRoundTripper builds the hardened base transport per Config, wraps it with
+// the retry transport unless disabled, and adds trace-context propagation.
+//
+// Propagation is part of the client, not an optional extra: a request that
+// leaves without traceparent produces a second trace on the far side, and two
+// well-formed traces that join nothing are harder to notice than one missing
+// trace.
 func NewRoundTripper(options ...Option) http.RoundTripper {
 	config := applyOptions(options)
-	base := buildBaseTransport(config)
-	if !config.RetryEnabled {
-		return base
+	var base = buildBaseTransport(config)
+	if config.RetryEnabled {
+		base = newRetryTransport(base, config.Retry)
 	}
-	return newRetryTransport(base, config.Retry)
+	return propagatingTransport{base: base}
+}
+
+// propagatingTransport injects the caller's trace context (W3C traceparent /
+// tracestate, plus baggage) into every outgoing request.
+//
+// It is a value type, not a pointer: it carries no state, and a caller that
+// layers its own transport above this one gets the clone semantics for free.
+type propagatingTransport struct {
+	base http.RoundTripper
+}
+
+func (t propagatingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	ctx := request.Context()
+	// Clone before mutating: the request belongs to the caller, and the retry
+	// transport above may replay it.
+	if trace.SpanContextFromContext(ctx).IsValid() || baggage.FromContext(ctx).Len() > 0 {
+		request = request.Clone(ctx)
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
+	}
+	return t.base.RoundTrip(request)
 }
 
 // NewHTTPClient builds an http.Client over [NewRoundTripper] with the
@@ -369,6 +398,7 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 		}
 
 		delay := t.backoff(attempt, response)
+		recordRetry(request.Context(), attempt+1, response)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
@@ -380,6 +410,26 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 			)
 		}
 	}
+}
+
+// recordRetry notes one scheduled retry on the caller's span. Retries are the
+// first sign of a provider degrading, and without the event a slow request looks
+// like one slow call instead of three attempts plus two waits.
+func recordRetry(ctx context.Context, attempt int, response *http.Response) {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		// No semconv key exists for a transport retry; the status code uses
+		// the HTTP convention so it joins the other HTTP attributes.
+		attribute.Int("http.retry.attempt", attempt),
+	}
+	if response != nil {
+		attrs = append(attrs,
+			attribute.Int("http.response.status_code", response.StatusCode))
+	}
+	span.AddEvent("http.retry", trace.WithAttributes(attrs...))
 }
 
 // retryable reports whether the failure is transient: a transport error

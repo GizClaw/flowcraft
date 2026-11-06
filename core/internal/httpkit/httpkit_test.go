@@ -21,9 +21,9 @@ func TestHTTP2TransportMapping(t *testing.T) {
 		WithHTTP2Timeouts(11*time.Second, 22*time.Second, 33*time.Second),
 		WithConnectionPool(4, 2, 44*time.Second),
 	)
-	transport, ok := roundTripper.(*http.Transport)
+	transport, ok := roundTripper.(propagatingTransport).base.(*http.Transport)
 	if !ok {
-		t.Fatalf("round tripper = %T, want *http.Transport", roundTripper)
+		t.Fatalf("round tripper = %T, want *http.Transport under the propagation layer", roundTripper)
 	}
 	if transport.HTTP2 == nil {
 		t.Fatal("HTTP2Config is nil: the health checks would be dropped")
