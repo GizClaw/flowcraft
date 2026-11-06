@@ -51,6 +51,9 @@ func New(tree *fsx.Tree, discovered []skill.Metadata) (*Tool, error) {
 }
 
 // Tools returns the skill tools sharing this catalog.
+// LazyTools is empty: skill documents are already discovered at build time.
+func (t *Tool) LazyTools() []tool.LazyTool { return nil }
+
 func (t *Tool) Tools() []tool.Tool {
 	return []tool.Tool{&searchTool{tool: t}, &readTool{tool: t}}
 }

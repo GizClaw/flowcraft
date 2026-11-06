@@ -75,6 +75,10 @@ func NewSession(runner sandbox.Runner, opts ...SessionOption) (*SessionGroup, er
 }
 
 // Tools returns the lifecycle tool and the stdin tool.
+// LazyTools is empty: the session tools are local, and the processes they start
+// are deferred until a session begins.
+func (g *SessionGroup) LazyTools() []tool.LazyTool { return nil }
+
 func (g *SessionGroup) Tools() []tool.Tool {
 	return []tool.Tool{&sessionTool{group: g}, &writeStdinTool{group: g}}
 }

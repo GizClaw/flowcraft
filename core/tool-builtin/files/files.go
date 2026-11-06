@@ -64,6 +64,10 @@ func New(tree *fsx.Tree, root string, opts ...Option) (*Tool, error) {
 	return group, nil
 }
 
+// LazyTools is empty: these tools are local and cheap to describe, so there is
+// nothing worth deferring.
+func (t *Tool) LazyTools() []tool.LazyTool { return nil }
+
 // Tools returns the tools sharing this tree.
 func (t *Tool) Tools() []tool.Tool {
 	return []tool.Tool{
