@@ -71,6 +71,9 @@ type Source struct {
 	retrying  map[string]struct{}
 	closed    bool
 	registrar sdktool.Registrar
+	// lazy holds one descriptor per declared-but-unstarted server; see
+	// [NewLazy]. Empty for an eagerly connected source.
+	lazy []sdktool.LazyTool
 
 	// baseCtx is the Source-owned context governing background work.
 	// It is canceled on Close so retries never outlive the source.
@@ -166,10 +169,20 @@ func (s *Source) Tools() []sdktool.Tool {
 	return out
 }
 
-// LazyTools implements tool.Source. MCP tools are discovered eagerly
-// when a connection succeeds; a not-yet-connected server contributes
-// nothing until the background retry brings it up.
-func (s *Source) LazyTools() []sdktool.LazyTool { return nil }
+// LazyTools implements tool.Source. A source built with [NewLazy] publishes one
+// descriptor per server, so a server costs a process only when a tool from it is
+// actually loaded. An eagerly connected source contributes none: its tools are
+// already concrete.
+func (s *Source) LazyTools() []sdktool.LazyTool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.lazy) == 0 {
+		return nil
+	}
+	out := make([]sdktool.LazyTool, len(s.lazy))
+	copy(out, s.lazy)
+	return out
+}
 
 // CallTool invokes one tool on a connected server directly, bypassing
 // the tool registry. The tool result is returned as raw JSON (the

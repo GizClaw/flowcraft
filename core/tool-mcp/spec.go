@@ -37,6 +37,10 @@ type ServerSpec struct {
 	HTTPTimeout *string           `json:"http_timeout,omitempty"`
 	Liveness    *string           `json:"liveness,omitempty"`
 	Prefix      *string           `json:"prefix,omitempty"`
+	// Description tells a model what the server offers before it is connected.
+	// It is what makes a lazy server findable: without it, the placeholder says
+	// only a name, and search has nothing to rank.
+	Description string `json:"description,omitempty"`
 	// Resources and Required are pointers because "absent" is not "false": an
 	// absent value keeps the package default, while an explicit false overrides it.
 	Resources *bool `json:"resources,omitempty"`
