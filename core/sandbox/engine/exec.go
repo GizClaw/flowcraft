@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -34,6 +35,9 @@ func Exec(
 		trace.WithAttributes(
 			attribute.String(telemetry.AttrSandboxRunner, fmt.Sprintf("%T", runner)),
 		))
+	// The runtime identity the host attached: a command belongs to the runtime
+	// whose policy confined it.
+	span.SetAttributes(runctx.Attrs(ctx)...)
 	defer span.End()
 	if opts.Timeout > 0 {
 		span.SetAttributes(attribute.Int64(
