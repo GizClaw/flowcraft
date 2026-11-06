@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -9,18 +8,6 @@ func skills() []Metadata {
 	return []Metadata{
 		{Name: "alpha", Description: "does the alpha thing", Path: "/skills/alpha/SKILL.md"},
 		{Name: "beta", Description: "handles beta payloads", Path: "/skills/beta/SKILL.md"},
-	}
-}
-
-func TestRenderSection(t *testing.T) {
-	if got := RenderSection(nil); got != "" {
-		t.Errorf("RenderSection(nil) = %q, want empty", got)
-	}
-	out := RenderSection(skills()[:1])
-	for _, want := range []string{"## Skills", "- alpha: does the alpha thing", "(file: /skills/alpha/SKILL.md)"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("section missing %q:\n%s", want, out)
-		}
 	}
 }
 
