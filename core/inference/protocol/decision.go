@@ -34,6 +34,7 @@ func BindDecider[Wire, Raw any](
 	if err != nil {
 		return nil, err
 	}
+	p.observe = decideObservation()
 	return decideDriver[Wire, Raw]{pipeline: p}, nil
 }
 

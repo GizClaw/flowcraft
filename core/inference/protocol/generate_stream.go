@@ -75,6 +75,7 @@ func BindGenerateStream[Wire, Raw any](
 		compile:    compile,
 		open:       open,
 		newDecoder: newDecoder,
+		observe:    generateObservation(),
 	}, nil
 }
 
@@ -83,10 +84,33 @@ type streamDriver[Wire, Raw any] struct {
 	compile    Compiler[inference.GenerateRequest, Wire]
 	open       StreamOpener[inference.GenerateRequest, Wire, Raw]
 	newDecoder StreamDecoderFactory[inference.GenerateRequest, Raw]
+	observe    observation[inference.GenerateRequest, inference.GenerateResponse]
 }
 
-// Open validates, compiles, starts the call and returns the ready stream.
+// Open validates, compiles, starts the call and returns the ready stream,
+// instrumented as one provider round trip.
+//
+// The span outlives Open: the response envelope and the usage only exist once the
+// stream reports its result, so the returned stream carries the call and closes
+// it on its terminal event.
 func (d *streamDriver[Wire, Raw]) Open(
+	ctx context.Context,
+	request inference.GenerateRequest,
+) (inference.Stream, error) {
+	ctx, call := startCall(ctx, d.observe, d.providerID, request, ShapeStream)
+	stream, err := d.start(ctx, request)
+	if err != nil {
+		call.finish(inference.GenerateResponse{}, err)
+		return nil, err
+	}
+	if call == nil {
+		return stream, nil
+	}
+	return &instrumentedStream{inner: stream, call: call}, nil
+}
+
+// start opens the provider stream without instrumentation.
+func (d *streamDriver[Wire, Raw]) start(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {

@@ -38,6 +38,7 @@ func BindEmbedder[Wire, Raw any](
 	if err != nil {
 		return nil, err
 	}
+	p.observe = embedObservation()
 	return embedDriver[Wire, Raw]{pipeline: p}, nil
 }
 

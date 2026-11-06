@@ -50,6 +50,7 @@ func BindGenerate[Wire, Raw any](
 	if err != nil {
 		return nil, err
 	}
+	p.observe = generateObservation()
 	return unaryDriver[Wire, Raw]{pipeline: p}, nil
 }
 

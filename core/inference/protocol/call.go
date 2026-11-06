@@ -29,6 +29,10 @@ type pipeline[Req Request, Wire, Raw, Res any] struct {
 	// Warnings()/SetWarnings() pair on three types would be more machinery for
 	// the same four lines.
 	finish func(request Req, response Res, warnings []inference.Warning) (Res, error)
+	// observe is the seam's instrumentation. Set by the Bind* function after
+	// bind returns, so the shared constructor stays free of seam-specific
+	// accessors.
+	observe observation[Req, Res]
 }
 
 // bind assembles one unary pipeline. Every stage is required, and so is the
@@ -65,10 +69,23 @@ func bind[Req Request, Wire, Raw, Res any](
 	}, nil
 }
 
-// do executes one request through the shared stages.
+// do executes one request through the shared stages, instrumented as one
+// provider round trip.
+//
+// The span opens before prepare so a request the compiler rejects still produces
+// a span with its error kind: "this call failed in 40µs" and "this call timed out
+// after 30s" are different incidents, and only one of them is a provider problem.
 func (p pipeline[Req, Wire, Raw, Res]) do(ctx context.Context, request Req) (Res, error) {
-	var zero Res
 	request = p.normalize(request)
+	ctx, call := startCall(ctx, p.observe, p.providerID, request, ShapeUnary)
+	response, err := p.execute(ctx, request)
+	call.finish(response, err)
+	return response, err
+}
+
+// execute runs the pipeline stages.
+func (p pipeline[Req, Wire, Raw, Res]) execute(ctx context.Context, request Req) (Res, error) {
+	var zero Res
 	compiled, err := prepare(ctx, p.providerID, p.compile, request, ShapeUnary)
 	if err != nil {
 		return zero, err
