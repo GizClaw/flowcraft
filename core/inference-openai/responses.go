@@ -264,11 +264,7 @@ func (d *driver) responsesCall(
 	if err != nil {
 		return nil, err
 	}
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	return d.client.Responses.New(ctx, params, append(opts, auth...)...)
+	return d.client.Responses.New(ctx, params, opts...)
 }
 
 // responsesDecode maps the provider's answer onto the canonical response.

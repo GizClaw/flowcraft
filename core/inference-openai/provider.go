@@ -6,7 +6,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/openai/openai-go/v3/option"
 )
 
 // driver holds one deployment's configuration and its SDK client. The client is
@@ -166,37 +165,6 @@ func New(settings Settings) (inference.Provider, error) {
 		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	return provider, nil
-}
-
-// authOptions resolves the credential for one model profile as per-call request
-// options.
-//
-// Nothing is cached: a key that rotated between calls must take effect, and the
-// host that owns the lookup is the only place that knows a rotation policy. The
-// SDK applies request options over the client's own, so this overrides the
-// static key without rebuilding the client.
-func (d *driver) authOptions(profile string) ([]option.RequestOption, error) {
-	if d.settings.APIKeyLookup == nil {
-		// Without a lookup a profile is advisory: one static key serves the
-		// whole deployment, so there is nothing to resolve it against.
-		return nil, nil
-	}
-	key, err := d.settings.APIKeyLookup(profile)
-	if err != nil {
-		return nil, inference.NewError(
-			inference.InvalidRequest,
-			inference.FieldModel,
-			fmt.Errorf("openai: resolve credentials for profile %q: %w", profile, err),
-		)
-	}
-	if key == "" {
-		return nil, inference.NewError(
-			inference.InvalidRequest,
-			inference.FieldModel,
-			fmt.Errorf("openai: profile %q resolved an empty key", profile),
-		)
-	}
-	return []option.RequestOption{option.WithAPIKey(key)}, nil
 }
 
 // bind assembles the two pipelines for one dialect.

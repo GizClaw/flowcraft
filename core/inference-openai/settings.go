@@ -59,15 +59,6 @@ type Settings struct {
 	// APIKey authenticates every call when one key serves the whole
 	// deployment.
 	APIKey string
-	// APIKeyLookup resolves a key per model profile. When set it wins over
-	// APIKey, and a request naming a profile is resolved through it; a request
-	// naming a profile with no lookup configured is refused rather than
-	// silently using the static key.
-	//
-	// It is a function value rather than a store dependency so this driver
-	// never learns where credentials come from: environment, a file, a vault,
-	// or a test literal are all the host's business.
-	APIKeyLookup func(profile string) (string, error)
 	// Organization is sent as OpenAI-Organization when set.
 	Organization string
 	// Headers are additional request headers, applied last.
@@ -102,8 +93,8 @@ func (s Settings) Validate() error {
 	if err := validateModels(s.Models); err != nil {
 		return err
 	}
-	if strings.TrimSpace(s.APIKey) == "" && s.APIKeyLookup == nil {
-		return errors.New("openai: api key is required (set APIKey or APIKeyLookup)")
+	if strings.TrimSpace(s.APIKey) == "" {
+		return errors.New("openai: api key is required")
 	}
 	if err := s.API.Validate(); err != nil {
 		return err

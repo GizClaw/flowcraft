@@ -39,11 +39,7 @@ func (d *driver) chatOpen(
 	if err != nil {
 		return nil, err
 	}
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	stream := d.client.Chat.Completions.NewStreaming(ctx, params, append(opts, auth...)...)
+	stream := d.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

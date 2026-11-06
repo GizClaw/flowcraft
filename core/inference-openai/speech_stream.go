@@ -73,11 +73,7 @@ func (d *driver) speechOpen(
 	request inference.GenerateRequest,
 	params openai.AudioSpeechNewParams,
 ) (protocol.RawStream[[]byte], error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	response, err := d.client.Audio.Speech.New(ctx, params, auth...)
+	response, err := d.client.Audio.Speech.New(ctx, params)
 	if err != nil {
 		return nil, err
 	}

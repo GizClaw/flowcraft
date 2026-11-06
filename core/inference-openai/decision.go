@@ -147,11 +147,7 @@ func (d *driver) decideCall(
 	request inference.DecisionRequest,
 	params openai.DecisionNewParams,
 ) (openai.Decision, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return openai.Decision{}, err
-	}
-	response, err := d.client.Decisions.New(ctx, params, auth...)
+	response, err := d.client.Decisions.New(ctx, params)
 	if err != nil {
 		return openai.Decision{}, err
 	}

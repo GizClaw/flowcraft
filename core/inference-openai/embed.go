@@ -113,11 +113,7 @@ func (d *driver) embedCall(
 	request inference.EmbedRequest,
 	params openai.EmbeddingNewParams,
 ) (openai.CreateEmbeddingResponse, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return openai.CreateEmbeddingResponse{}, err
-	}
-	response, err := d.client.Embeddings.New(ctx, params, auth...)
+	response, err := d.client.Embeddings.New(ctx, params)
 	if err != nil {
 		return openai.CreateEmbeddingResponse{}, err
 	}

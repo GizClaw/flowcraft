@@ -19,11 +19,7 @@ func (d *driver) imageEditOpen(
 	request inference.GenerateRequest,
 	params openai.ImageEditParams,
 ) (protocol.RawStream[openai.ImageEditStreamEventUnion], error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	stream := d.client.Images.EditStreaming(ctx, params, auth...)
+	stream := d.client.Images.EditStreaming(ctx, params)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

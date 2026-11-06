@@ -19,11 +19,7 @@ func (d *driver) imageOpen(
 	request inference.GenerateRequest,
 	params openai.ImageGenerateParams,
 ) (protocol.RawStream[openai.ImageGenStreamEventUnion], error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	stream := d.client.Images.GenerateStreaming(ctx, params, auth...)
+	stream := d.client.Images.GenerateStreaming(ctx, params)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

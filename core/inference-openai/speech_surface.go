@@ -211,11 +211,7 @@ func (d *driver) speechCall(
 	request inference.GenerateRequest,
 	params openai.AudioSpeechNewParams,
 ) ([]byte, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	response, err := d.client.Audio.Speech.New(ctx, params, auth...)
+	response, err := d.client.Audio.Speech.New(ctx, params)
 	if err != nil {
 		return nil, err
 	}

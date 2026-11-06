@@ -298,11 +298,7 @@ func (d *driver) transcribeCall(
 	request inference.GenerateRequest,
 	wire transcriptionWire,
 ) (transcriptionPayload, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return transcriptionPayload{}, err
-	}
-	response, err := d.client.Audio.Transcriptions.New(ctx, wire.params, auth...)
+	response, err := d.client.Audio.Transcriptions.New(ctx, wire.params)
 	if err != nil {
 		return transcriptionPayload{}, err
 	}

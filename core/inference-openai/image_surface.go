@@ -331,11 +331,7 @@ func (d *driver) imageCall(
 	request inference.GenerateRequest,
 	params openai.ImageGenerateParams,
 ) (*openai.ImagesResponse, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	return d.client.Images.Generate(ctx, params, auth...)
+	return d.client.Images.Generate(ctx, params)
 }
 
 // imageDecode maps the generated images onto content parts. The provider's revised

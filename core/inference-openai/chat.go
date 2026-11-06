@@ -270,11 +270,7 @@ func (d *driver) chatCall(
 	if err != nil {
 		return nil, err
 	}
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	return d.client.Chat.Completions.New(ctx, params, append(opts, auth...)...)
+	return d.client.Chat.Completions.New(ctx, params, opts...)
 }
 
 // chatDecode maps the provider's answer onto the canonical response.

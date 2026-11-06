@@ -206,9 +206,5 @@ func (d *driver) imageEditCall(
 	request inference.GenerateRequest,
 	params openai.ImageEditParams,
 ) (*openai.ImagesResponse, error) {
-	auth, err := d.authOptions(request.Model.Profile)
-	if err != nil {
-		return nil, err
-	}
-	return d.client.Images.Edit(ctx, params, auth...)
+	return d.client.Images.Edit(ctx, params)
 }
