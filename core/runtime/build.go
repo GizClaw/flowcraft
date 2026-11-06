@@ -101,7 +101,15 @@ func (r *Runtime) buildTools(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	options := make([]engine.AssemblyOption, 0, 1)
+	table, err := middlewareTable(r.middlewareOptions)
+	if err != nil {
+		return err
+	}
+	chain, err := r.middlewareChain(ctx, table)
+	if err != nil {
+		return err
+	}
+	options := []engine.AssemblyOption{engine.WithMiddleware(chain...)}
 	if dynamic := r.cfg.Tools.Dynamic; dynamic != nil {
 		policy, err := dynamic.policy()
 		if err != nil {

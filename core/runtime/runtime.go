@@ -31,6 +31,8 @@ import (
 type Runtime struct {
 	id  string
 	cfg Config
+	// middlewareOptions are the host-registered chain entries.
+	middlewareOptions []MiddlewareOption
 
 	tree     *fsx.Tree
 	runner   sandbox.Runner
@@ -52,8 +54,9 @@ type Runtime struct {
 type Option func(*options)
 
 type options struct {
-	drivers   []Driver
-	selectors []Selector
+	drivers    []Driver
+	selectors  []Selector
+	middleware []MiddlewareOption
 }
 
 // WithSelectors declares the selection strategies YAML may name. Pure Go callers
@@ -93,7 +96,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Runtime, error) {
 		return nil, err
 	}
 
-	rt := &Runtime{id: newID(), cfg: cfg}
+	rt := &Runtime{id: newID(), cfg: cfg, middlewareOptions: settings.middleware}
 	if err := rt.build(ctx, drivers, selectors); err != nil {
 		_ = rt.Close()
 		return nil, err

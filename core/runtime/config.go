@@ -173,6 +173,16 @@ type ToolsConfig struct {
 	// MCP declares MCP servers, which are one more tool source. Declaring a
 	// server is what enables it; there is no separate name in enable.
 	MCP MCPConfig `yaml:"mcp"`
+	// Middleware lists the dispatch chain, outermost first. Omitted means
+	// [recover, telemetry]: a tool call should produce a span and must not be
+	// able to stop the process.
+	Middleware []MiddlewareConfig `yaml:"middleware"`
+}
+
+// MiddlewareConfig names one entry of the dispatch chain and its settings.
+type MiddlewareConfig struct {
+	Name     string         `yaml:"name"`
+	Settings map[string]any `yaml:"settings"`
 }
 
 // DynamicConfig enables deferred tool exposure: the model sees a bounded set

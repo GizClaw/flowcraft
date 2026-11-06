@@ -26,9 +26,9 @@ files:
 inference:
   # Position is priority: the first entry is tried first.
   models:
-    - profile: luna            # deployment identity (optional; public, no secret)
-      model: gpt-6-luna        # API model name → model.ModelID.Name
-      driver: openai           # constructor, and the public vendor identity
+    - profile: luna          # deployment identity, public and secret-free
+      model: gpt-6-luna      # API model name
+      driver: openai         # constructor, and the public vendor identity
       settings: {}
       # Fill in only what the driver's catalog does not declare; a
       # contradiction is an assembly error, not an override.
@@ -47,8 +47,9 @@ inference:
 tools:
   enable: [files, exec, skills]
   tty: true
-  # Lets read_file hand an image to the model. Fill it only for a model that
-  # takes image input; a text-only model refuses the part at the provider.
+  # Lets read_file hand an image to the model. Fill it only for a model
+  # that takes image input; a text-only model refuses the part at the
+  # provider.
   images: true
   # Omit this block and every wired tool is visible from the first round.
   dynamic:
@@ -56,6 +57,14 @@ tools:
     always: [read_file, edit, bash]   # stay visible every round
     budget: 24               # definitions per round
     idle_rounds: 3           # evict after this many idle rounds
+
+  # Dispatch chain, outermost first. Omitted means [recover, telemetry]:
+  # a tool call must produce a span and must not be able to stop the process.
+  middleware:
+    - name: recover
+    - name: telemetry
+    - name: result_limit
+      settings: {max_bytes: 262144}
 
   # MCP servers are one more tool source.
   mcp:
@@ -66,7 +75,7 @@ tools:
     #   transport: stdio
     #   command: npx
     #   args: ["-y", "@modelcontextprotocol/server-github"]
-    #   env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" }
+    #   env: {GITHUB_TOKEN: "${GITHUB_TOKEN}"}
     #   prefix: gh
     #   required: true
     #   # What the model can search for before the server starts.
