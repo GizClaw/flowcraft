@@ -7,12 +7,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ConflictPolicy decides what happens when two sources contribute a
@@ -321,13 +325,54 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 	if p.loaded {
 		return p.inner, p.err
 	}
-	p.inner, p.err = p.spec.Load(ctx)
+	p.inner, p.err = p.loadLazy(ctx)
 	p.loaded = true
 	if p.err != nil {
 		telemetry.WarnErr(ctx, "tool registry: lazy tool load failed", p.err,
 			attribute.String(telemetry.AttrToolName, p.spec.Name))
 	}
 	return p.inner, p.err
+}
+
+// loadLazy materialises a deferred tool under its own span.
+//
+// It is the miss path only: a cache hit returns above this function, so the span
+// measures real work — an MCP handshake, a process spawn, a schema fetch —
+// instead of adding a span to every executed call.
+func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
+	ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, "tool.load",
+		trace.WithAttributes(attribute.String(telemetry.AttrToolName, p.spec.Name)))
+	defer span.End()
+
+	start := time.Now()
+	inner, err := p.spec.Load(ctx)
+	duration := time.Since(start)
+
+	status := "success"
+	if err != nil {
+		status = "error"
+		// The load error is local (a file, a process, a handshake); the
+		// message goes to the warn log below, not onto the span.
+		span.SetStatus(codes.Error, "load_failed")
+	}
+	recordLoadMetrics(ctx, p.spec.Name, status, duration)
+	return inner, err
+}
+
+// recordLoadMetrics emits the deferred-load series.
+func recordLoadMetrics(ctx context.Context, name, status string, duration time.Duration) {
+	meter := telemetry.MeterWithSuffix("tool")
+	nameAttr := metric.WithAttributes(attribute.String(telemetry.AttrToolName, name))
+	if counter, err := meter.Int64Counter("loads.total",
+		metric.WithDescription("Deferred tool loads by outcome")); err == nil {
+		counter.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(telemetry.AttrToolName, name),
+			attribute.String("status", status)))
+	}
+	if histogram, err := meter.Float64Histogram("load.duration.seconds",
+		metric.WithDescription("Deferred tool load duration")); err == nil {
+		histogram.Record(ctx, duration.Seconds(), nameAttr)
+	}
 }
 
 func (p *lazyProxy) Close() error {
