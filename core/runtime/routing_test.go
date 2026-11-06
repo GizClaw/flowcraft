@@ -23,21 +23,27 @@ func (r *recorder) GenerateStream(context.Context, inference.GenerateRequest) (i
 	return nil, nil
 }
 
-func routingConfig(t *testing.T, entries ...ModelConfig) (Config, *recorder) {
+func routingConfig(t *testing.T, inferenceConfig InferenceConfig) (Config, *recorder) {
 	t.Helper()
 	cfg := localConfig(t)
 	cfg.Tools.Enable = []string{ToolFiles}
-	cfg.Inference.Models = entries
+	cfg.Inference = inferenceConfig
 	return cfg, &recorder{}
 }
 
 // A target whose catalog does not declare the requested model is filtered out
 // before it costs an attempt.
 func TestRoutingFiltersByDeclaredModel(t *testing.T) {
-	cfg, first := routingConfig(t,
-		ModelConfig{Profile: "alpha", Model: "a", Driver: "first"},
-		ModelConfig{Profile: "beta", Model: "b", Driver: "second"},
-	)
+	cfg, first := routingConfig(t, InferenceConfig{
+		Providers: []ProviderConfig{
+			{Name: "alpha", Driver: "first"},
+			{Name: "beta", Driver: "second"},
+		},
+		Models: []ModelConfig{
+			{Provider: "alpha", Model: "a"},
+			{Provider: "beta", Model: "b"},
+		},
+	})
 	second := &recorder{}
 	rt, err := New(context.Background(), cfg, WithDrivers(
 		Driver{Name: "first", Build: func(map[string]any) (inference.Provider, error) {
@@ -77,10 +83,16 @@ func (reverseSelector) Select(_ context.Context, _ inference.GenerateRequest, ta
 }
 
 func TestSelectorRegistryReachesTheRouter(t *testing.T) {
-	cfg, first := routingConfig(t,
-		ModelConfig{Profile: "alpha", Model: "same", Driver: "first"},
-		ModelConfig{Profile: "beta", Model: "same", Driver: "second"},
-	)
+	cfg, first := routingConfig(t, InferenceConfig{
+		Providers: []ProviderConfig{
+			{Name: "alpha", Driver: "first"},
+			{Name: "beta", Driver: "second"},
+		},
+		Models: []ModelConfig{
+			{Provider: "alpha", Model: "same"},
+			{Provider: "beta", Model: "same"},
+		},
+	})
 	cfg.Inference.Route.Selector = "reverse"
 	second := &recorder{}
 	rt, err := New(context.Background(), cfg,
@@ -117,7 +129,7 @@ func TestSelectorRegistryReachesTheRouter(t *testing.T) {
 }
 
 func TestUnknownSelectorIsRejected(t *testing.T) {
-	cfg, _ := routingConfig(t, ModelConfig{Profile: "alpha", Model: "a", Driver: "stub"})
+	cfg, _ := routingConfig(t, inferenceConfig("stub", "alpha", "a", nil))
 	cfg.Inference.Route.Selector = "nope"
 	_, err := New(context.Background(), cfg,
 		WithDrivers(Driver{Name: "stub", Build: func(map[string]any) (inference.Provider, error) {
@@ -157,10 +169,9 @@ func (c driverCatalog) Describe(id model.ModelID) (model.ModelDescriptor, bool) 
 // A written declaration that contradicts the driver's catalog is an assembly
 // error: the two describe the same fact and one of them is wrong.
 func TestCatalogConflictFailsAssembly(t *testing.T) {
-	cfg, _ := routingConfig(t, ModelConfig{
-		Profile: "primary", Model: "m", Driver: "stub",
-		Capabilities: &CapabilitiesConfig{Inputs: []string{"image"}},
-	})
+	withCaps := inferenceConfig("stub", "primary", "m", nil)
+	withCaps.Models[0].Capabilities = &CapabilitiesConfig{Inputs: []string{"image"}}
+	cfg, _ := routingConfig(t, withCaps)
 	_, err := New(context.Background(), cfg, WithDrivers(
 		Driver{Name: "stub", Build: func(map[string]any) (inference.Provider, error) {
 			return inference.Provider{Generator: &recorder{}, Catalog: driverCatalog{}}, nil

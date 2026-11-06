@@ -1,5 +1,6 @@
 # One runtime: the boundary commands run inside, the directories the file tools
 # may write, the model access resolved by name, and which tools are wired.
+version: 1
 name: forge
 
 sandbox:
@@ -24,19 +25,22 @@ files:
     - ${RUNTIME_ROOT}
 
 inference:
-  # Position is priority: the first entry is tried first.
-  models:
-    - profile: luna          # deployment identity, public and secret-free
-      model: gpt-6-luna      # API model name
+  # One block per account or endpoint: the driver, its credentials, and every
+  # model it serves. Declaring it once keeps the key and base_url from being
+  # repeated per model.
+  providers:
+    - name: luna             # deployment identity, public and secret-free
       driver: openai         # constructor, and the public vendor identity
       settings: {}
+
+  # Position is priority: the first model is tried first.
+  models:
+    - provider: luna
+      model: gpt-6-luna      # API model name
       # Fill in only what the driver's catalog does not declare; a
       # contradiction is an assembly error, not an override.
-      capabilities:
-        inputs: [text, image]
-      limits:
-        max_input_tokens: 128000
-        max_output_tokens: 8192
+      capabilities: {inputs: [text, image]}
+      limits: {max_input_tokens: 128000, max_output_tokens: 8192}
 
   route:
     attempts_per_target: 2

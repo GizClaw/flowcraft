@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,6 +38,10 @@ const (
 // converts them. That keeps YAML out of the contracts' public API and puts the
 // validation where the units are still visible.
 type Config struct {
+	// Version is the schema version. It is required so a future format change
+	// has an anchor to reject or migrate against, instead of being discovered
+	// as a field that silently means something else.
+	Version   int             `yaml:"version"`
 	Name      string          `yaml:"name"`
 	Sandbox   SandboxConfig   `yaml:"sandbox"`
 	Files     FilesConfig     `yaml:"files"`
@@ -94,25 +99,39 @@ type FilesConfig struct {
 // appears once per deployment it can run in — the same API model twice, with two
 // credentials, is the ordinary failover shape.
 type InferenceConfig struct {
+	// Providers are reusable construction blocks: one driver, one set of
+	// credentials and endpoints, many models. Declaring them separately keeps a
+	// deployment from repeating the same api_key and base_url for every model.
+	Providers []ProviderConfig `yaml:"providers"`
+	// Models are callable endpoints: a provider, an API model name, and the
+	// facts the driver's catalog does not declare. Order is priority.
 	Models []ModelConfig `yaml:"models"`
 	Route  RouteConfig   `yaml:"route"`
+}
+
+// ProviderConfig is one construction block: which driver, with which settings,
+// under which name the deployment refers to it.
+type ProviderConfig struct {
+	// Name is the deployment identity: it becomes model.ModelRef.Profile and the
+	// target name, and it is what distinguishes the same vendor model deployed
+	// through two accounts.
+	Name string `yaml:"name"`
+	// Driver is the constructor, resolved by the host's driver table. Its name is
+	// also the public vendor identity, model.ModelID.Provider.
+	Driver string `yaml:"driver"`
+	// Settings is passed to the driver verbatim.
+	Settings map[string]any `yaml:"settings"`
 }
 
 // ModelConfig is one callable model: which API model, through which driver, with
 // which credentials.
 type ModelConfig struct {
-	// Profile is the deployment identity: which account or endpoint this entry
-	// serves. It is public and credential-free — the secret arrives through
-	// settings — and it is what distinguishes the same vendor model deployed
-	// twice. Empty means a single deployment, which is the common case.
-	Profile string `yaml:"profile"`
+	// Provider names the construction block this model runs on. The block owns
+	// the driver, the credentials and the endpoints; one block serves many
+	// models.
+	Provider string `yaml:"provider"`
 	// Model is the API model name: model.ModelID.Name.
 	Model string `yaml:"model"`
-	// Driver is the constructor, resolved by the host's driver table. Its name
-	// is also the public vendor identity, model.ModelID.Provider.
-	Driver string `yaml:"driver"`
-	// Settings is passed to the driver verbatim.
-	Settings map[string]any `yaml:"settings"`
 	// Weight is used by selectors that weigh targets; the order of this list is
 	// the default preference.
 	Weight int `yaml:"weight"`
@@ -224,6 +243,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Files.validate(); err != nil {
+		return err
+	}
+	if err := c.validateVersion(); err != nil {
 		return err
 	}
 	if err := c.Tools.validate(); err != nil {
@@ -556,6 +578,19 @@ func (m MCPConfig) spec() (toolmcp.Spec, error) {
 	return spec, nil
 }
 
+func (c Config) validateVersion() error {
+	switch c.Version {
+	case 1:
+		return nil
+	case 0:
+		return errdefs.Validationf(
+			"version is required; this build understands version 1")
+	default:
+		return errdefs.Validationf(
+			"unsupported version %d; this build understands version 1", c.Version)
+	}
+}
+
 func (c InferenceConfig) validate() error {
 	if len(c.Models) == 0 {
 		if c.Route.Selector != "" {
@@ -564,32 +599,76 @@ func (c InferenceConfig) validate() error {
 		}
 		return nil
 	}
+	providers := make(map[string]ProviderConfig, len(c.Providers))
+	for i, provider := range c.Providers {
+		if strings.TrimSpace(provider.Name) == "" {
+			return errdefs.Validationf("inference.providers[%d]: name is required", i)
+		}
+		if _, duplicate := providers[provider.Name]; duplicate {
+			return errdefs.Validationf(
+				"inference.providers[%d]: duplicate name %q", i, provider.Name)
+		}
+		if strings.TrimSpace(provider.Driver) == "" {
+			return errdefs.Validationf(
+				"inference.providers[%s].driver is required", provider.Name)
+		}
+		providers[provider.Name] = provider
+	}
+
+	used := make(map[string]struct{}, len(c.Providers))
 	seen := make(map[string]struct{}, len(c.Models))
 	for i, entry := range c.Models {
-		key := entry.Profile + "|" + entry.Model
+		provider, declared := providers[entry.Provider]
+		if !declared {
+			return errdefs.Validationf(
+				"inference.models[%d].provider: %q is not a declared provider; declared: %s",
+				i, entry.Provider, strings.Join(providerNames(c.Providers), ", "))
+		}
+		used[entry.Provider] = struct{}{}
+		key := entry.Provider + "|" + entry.Model
 		if _, duplicate := seen[key]; duplicate {
 			return errdefs.Validationf(
-				"inference.models[%d]: profile %q already serves model %q",
-				i, entry.Profile, entry.Model)
+				"inference.models[%d]: provider %q already serves model %q",
+				i, entry.Provider, entry.Model)
 		}
 		seen[key] = struct{}{}
 		if strings.TrimSpace(entry.Model) == "" {
-			return errdefs.Validationf(
-				"inference.models[%d]: model is required", i)
-		}
-		if strings.TrimSpace(entry.Driver) == "" {
-			return errdefs.Validationf(
-				"inference.models[%d]: driver is required", i)
+			return errdefs.Validationf("inference.models[%d]: model is required", i)
 		}
 		if entry.Weight < 0 {
 			return errdefs.Validationf(
 				"inference.models[%d]: weight must not be negative", i)
 		}
-		if _, err := entry.descriptor(); err != nil {
+		if _, err := entry.descriptor(provider); err != nil {
 			return errdefs.Validationf("inference.models[%d]: %w", i, err)
 		}
 	}
+	for _, provider := range c.Providers {
+		if _, ok := used[provider.Name]; !ok {
+			return errdefs.Validationf(
+				"inference.providers[%s]: declared but serves no model", provider.Name)
+		}
+	}
 	return c.Route.validate()
+}
+
+// lookupProvider finds a declared block by name.
+func (c InferenceConfig) lookupProvider(name string) (ProviderConfig, bool) {
+	for _, provider := range c.Providers {
+		if provider.Name == name {
+			return provider, true
+		}
+	}
+	return ProviderConfig{}, false
+}
+
+func providerNames(providers []ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		names = append(names, provider.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (r RouteConfig) validate() error {
@@ -633,10 +712,10 @@ func (r RouteConfig) retry() (route.RetryPolicy, error) {
 
 // descriptor converts one entry into the model facts routing and the compiler
 // consult.
-func (m ModelConfig) descriptor() (model.ModelDescriptor, error) {
+func (m ModelConfig) descriptor(provider ProviderConfig) (model.ModelDescriptor, error) {
 	// The driver name is the public vendor identity, so the descriptor needs no
 	// restamping later: it is already what a catalog reports.
-	id := model.ModelID{Provider: m.Driver, Name: m.Model}
+	id := model.ModelID{Provider: provider.Driver, Name: m.Model}
 	descriptor := model.ModelDescriptor{ID: id}
 	if m.Capabilities != nil {
 		inputs, err := parsePartKinds(m.Capabilities.Inputs)
@@ -671,10 +750,7 @@ func (m ModelConfig) descriptor() (model.ModelDescriptor, error) {
 // profile/vendor:model, with the profile omitted when there is only one
 // deployment of that model.
 func (m ModelConfig) targetName() string {
-	if m.Profile == "" {
-		return m.Driver + ":" + m.Model
-	}
-	return m.Profile + "/" + m.Driver + ":" + m.Model
+	return m.Provider + ":" + m.Model
 }
 
 // parsePartKinds maps the written content kinds to the contract vocabulary.

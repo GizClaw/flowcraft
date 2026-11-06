@@ -71,7 +71,7 @@ func TestNewRespectsToolSelection(t *testing.T) {
 
 func TestNewRejectsUnknownDriverAndListsOffered(t *testing.T) {
 	cfg := localConfig(t)
-	cfg.Inference.Models = []ModelConfig{{Profile: "primary", Model: "m", Driver: "nope"}}
+	cfg.Inference = inferenceConfig("nope", "primary", "m", nil)
 	_, err := New(context.Background(), cfg,
 		WithDrivers(Driver{Name: "alpha", Build: func(map[string]any) (inference.Provider, error) {
 			return inference.Provider{Generator: stubGenerator{}}, nil
@@ -88,7 +88,7 @@ func TestNewRejectsUnknownDriverAndListsOffered(t *testing.T) {
 // call.
 func TestNewRejectsUncallableProvider(t *testing.T) {
 	cfg := localConfig(t)
-	cfg.Inference.Models = []ModelConfig{{Profile: "primary", Model: "m", Driver: "empty"}}
+	cfg.Inference = inferenceConfig("empty", "primary", "m", nil)
 	_, err := New(context.Background(), cfg,
 		WithDrivers(Driver{Name: "empty", Build: func(map[string]any) (inference.Provider, error) {
 			return inference.Provider{}, nil
@@ -100,7 +100,7 @@ func TestNewRejectsUncallableProvider(t *testing.T) {
 
 func TestNewBuildsDriverProvider(t *testing.T) {
 	cfg := localConfig(t)
-	cfg.Inference.Models = []ModelConfig{{Profile: "primary", Model: "gpt-6-luna", Driver: "stub"}}
+	cfg.Inference = inferenceConfig("stub", "primary", "gpt-6-luna", nil)
 	settingsSeen := map[string]any{}
 	rt, err := New(context.Background(), cfg,
 		WithDrivers(Driver{Name: "stub", Build: func(settings map[string]any) (inference.Provider, error) {
@@ -224,5 +224,13 @@ func TestMCPDeferredByDefault(t *testing.T) {
 	}
 	if !strings.Contains(placeholder.Definition().Description, "GitHub issues") {
 		t.Errorf("placeholder description = %q", placeholder.Definition().Description)
+	}
+}
+
+// inferenceConfig builds one provider block serving one model.
+func inferenceConfig(driver, provider, modelName string, settings map[string]any) InferenceConfig {
+	return InferenceConfig{
+		Providers: []ProviderConfig{{Name: provider, Driver: driver, Settings: settings}},
+		Models:    []ModelConfig{{Provider: provider, Model: modelName}},
 	}
 }

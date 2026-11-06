@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/fsx"
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -212,40 +213,60 @@ func (r *Runtime) buildProvider(drivers map[string]DriverFunc, selectors map[str
 		return nil
 	}
 
+	providers := make(map[string]ProviderConfig, len(r.cfg.Inference.Providers))
+	for _, provider := range r.cfg.Inference.Providers {
+		providers[provider.Name] = provider
+	}
+
+	// One provider is constructed per block, so ten models declared on one block
+	// share a client, a connection pool and a credential instead of rebuilding
+	// them ten times.
+	built := make(map[string]inference.Provider, len(providers))
 	targets := make([]route.Target, 0, len(entries))
 	for _, entry := range entries {
-		build, ok := drivers[entry.Driver]
-		if !ok {
-			return errdefs.Validationf(
-				"inference.models[%s].driver: %q is not available; offered: %s",
-				entry.targetName(), entry.Driver, offeredDrivers(drivers))
+		block := providers[entry.Provider]
+		provider, constructed := built[block.Name]
+		if !constructed {
+			build, ok := drivers[block.Driver]
+			if !ok {
+				return errdefs.Validationf(
+					"inference.providers[%s].driver: %q is not available; offered: %s",
+					block.Name, block.Driver, offeredDrivers(drivers))
+			}
+			// Assign to the outer provider: shadowing it here left every target
+			// with a zero value, which route reports as "serves no seam".
+			constructedProvider, err := build(block.Settings)
+			if err != nil {
+				return errdefs.Validationf(
+					"inference.providers[%s].driver %q: %w", block.Name, block.Driver, err)
+			}
+			if err := constructedProvider.Validate(); err != nil {
+				return errdefs.Validationf(
+					"inference.providers[%s].driver %q: %w", block.Name, block.Driver, err)
+			}
+			provider = constructedProvider
+			built[block.Name] = provider
 		}
-		provider, err := build(entry.Settings)
-		if err != nil {
-			return errdefs.Validationf(
-				"inference.models[%s].driver %q: %w", entry.targetName(), entry.Driver, err)
-		}
-		if err := provider.Validate(); err != nil {
-			return errdefs.Validationf(
-				"inference.models[%s].driver %q: %w", entry.targetName(), entry.Driver, err)
-		}
-		descriptor, err := entry.descriptor()
+
+		descriptor, err := entry.descriptor(block)
 		if err != nil {
 			return errdefs.Validationf("inference.models[%s]: %w", entry.targetName(), err)
 		}
-		catalog, err := mergeCatalog(entry.targetName(), provider.Catalog, []model.ModelDescriptor{descriptor})
+		catalog, err := mergeCatalog(block.Name, provider.Catalog, []model.ModelDescriptor{descriptor})
 		if err != nil {
 			return err
 		}
-		// The merged catalog is what the compiler and the routing filter read,
-		// so it must ride on the provider handed to the router.
 		provider.Catalog = catalog
+		// Keep the merged catalog on the block so the next model extends it
+		// rather than replacing it.
+		built[block.Name] = provider
+
 		targets = append(targets, route.Target{
 			Name:     entry.targetName(),
 			Provider: provider,
 			Weight:   entry.Weight,
 			Model:    descriptor.ID,
-			Profile:  entry.Profile,
+			Profile:  block.Name,
 		})
 	}
 

@@ -9,6 +9,7 @@ import (
 
 func validConfig(root string) Config {
 	return Config{
+		Version: 1,
 		Name:    "test",
 		Sandbox: SandboxConfig{Backend: BackendLocal, Writes: []string{root}},
 		Files:   FilesConfig{Roots: []string{root}},

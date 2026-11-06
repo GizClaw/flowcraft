@@ -14,6 +14,7 @@ func loadLayers(t *testing.T, layers ...Layer) (Config, Provenance, error) {
 
 func base() Layer {
 	return Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 name: forge
 sandbox:
   backend: local
@@ -102,6 +103,7 @@ func TestLoadLayersRejectsUnknownKey(t *testing.T) {
 func TestLoadLayersExpandsEnv(t *testing.T) {
 	t.Setenv("RUNTIME_TEST_ROOT", "/expanded")
 	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 sandbox:
   backend: local
   workdir: ${RUNTIME_TEST_ROOT}
@@ -120,6 +122,7 @@ files:
 // relative path, and the failure would then point at the wrong field.
 func TestLoadLayersRejectsUnsetEnv(t *testing.T) {
 	_, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 sandbox:
   backend: local
 files:
@@ -135,6 +138,7 @@ files:
 
 func TestLoadLayersFallback(t *testing.T) {
 	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 sandbox:
   backend: local
 files:
@@ -150,7 +154,7 @@ files:
 
 func TestLoadLayersFromFile(t *testing.T) {
 	path := t.TempDir() + "/base.yaml"
-	body := "sandbox:\n  backend: local\nfiles:\n  roots: [" + t.TempDir() + "]\n"
+	body := "version: 1\nsandbox:\n  backend: local\nfiles:\n  roots: [" + t.TempDir() + "]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write layer: %v", err)
 	}
@@ -163,6 +167,7 @@ func TestLoadLayersFromFile(t *testing.T) {
 // expansion runs on the parsed tree, so comments are already gone.
 func TestLoadLayersIgnoresCommentedVariables(t *testing.T) {
 	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 sandbox:
   backend: local
 files:
@@ -183,22 +188,25 @@ files:
 func TestLoadLayersExpandsInsideQuotedValues(t *testing.T) {
 	t.Setenv("RUNTIME_TEST_HOST", "api.example.test")
 	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+version: 1
 sandbox:
   backend: local
 files:
   roots: ["/work"]
 inference:
-  models:
-    - profile: primary
-      model: m
+  providers:
+    - name: primary
       driver: stub
       settings:
         endpoint: "https://${RUNTIME_TEST_HOST}/v1#fragment"
+  models:
+    - provider: primary
+      model: m
 `)})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
-	if got := cfg.Inference.Models[0].Settings["endpoint"]; got != "https://api.example.test/v1#fragment" {
+	if got := cfg.Inference.Providers[0].Settings["endpoint"]; got != "https://api.example.test/v1#fragment" {
 		t.Errorf("endpoint = %v", got)
 	}
 }

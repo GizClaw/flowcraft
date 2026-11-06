@@ -137,9 +137,15 @@ func (r *Runtime) DefaultModel() model.ModelRef {
 		return model.ModelRef{}
 	}
 	entry := r.cfg.Inference.Models[0]
+	block, found := r.cfg.Inference.lookupProvider(entry.Provider)
+	if !found {
+		// Validate rejects this, so reaching here means the config was mutated
+		// after assembly; the identity is still worth returning.
+		return model.ModelRef{ID: model.ModelID{Name: entry.Model}}
+	}
 	return model.ModelRef{
-		ID:      model.ModelID{Provider: entry.Driver, Name: entry.Model},
-		Profile: entry.Profile,
+		ID:      model.ModelID{Provider: block.Driver, Name: entry.Model},
+		Profile: block.Name,
 	}
 }
 
