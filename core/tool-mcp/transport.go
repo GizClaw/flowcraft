@@ -9,6 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/internal/httpkit"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Stdio builds a transport that spawns command as a child process and
@@ -110,9 +112,9 @@ func StreamableHTTP(endpoint string, headers map[string]string, client *http.Cli
 	}, nil
 }
 
-// headerRoundTripper injects static headers into every request. It
-// clones the request before mutating so a retry of the same *Request by
-// a higher layer never sees doubled headers.
+// headerRoundTripper injects static headers into every request and carries the
+// active trace context across the MCP hop. It clones the request before mutating
+// so a retry of the same *Request by a higher layer never sees doubled headers.
 type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
@@ -123,5 +125,9 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	for key, value := range rt.headers {
 		clone.Header.Set(key, value)
 	}
+	// Without this the remote server starts its own trace and the MCP hop is
+	// the one hop no trace crosses. The MCP SDK builds the request, so this is
+	// the only place the header can be added.
+	otel.GetTextMapPropagator().Inject(clone.Context(), propagation.HeaderCarrier(clone.Header))
 	return rt.base.RoundTrip(clone)
 }

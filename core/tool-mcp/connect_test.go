@@ -6,6 +6,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
 // TestConnectHandshakeOverStdio is the end-to-end path the config rewrite
@@ -16,6 +19,8 @@ import (
 // entry point an application actually calls — Decode then Connect — reaches a live
 // server, publishes its tools and can invoke one.
 func TestConnectHandshakeOverStdio(t *testing.T) {
+	recorder := telemetrytest.New(t)
+
 	declaration := Spec{Servers: []ServerSpec{{
 		Name:      "helper",
 		Transport: TransportStdio,
@@ -56,4 +61,10 @@ func TestConnectHandshakeOverStdio(t *testing.T) {
 	if !json.Valid(payload) {
 		t.Fatalf("CallTool payload %s is not valid JSON", payload)
 	}
+
+	// The connection is its own story: it happens before any tool call, and a
+	// failure here is invisible to a tool span that never starts.
+	span := recorder.RequireNamed(t, "mcp.connect")
+	telemetrytest.RequireAttrString(t, span, telemetry.AttrMCPServer, "helper")
+	telemetrytest.RequireAttrString(t, span, "mcp.transport", "*mcp.reconnectableStdio")
 }

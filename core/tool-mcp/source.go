@@ -645,9 +645,14 @@ func (s *Source) connect(
 		Name:    cfg.clientName,
 		Version: cfg.clientVer,
 	}, &opts)
+	ctx, span, transport := startConnect(ctx, srv.name, srv.transport)
 	session, err := client.Connect(ctx, srv.transport, nil)
 	if err != nil {
-		return nil, connectError(srv.name, err)
+		err = connectError(srv.name, err)
+	}
+	finishConnect(ctx, span, srv.name, transport, err)
+	if err != nil {
+		return nil, err
 	}
 	return session, nil
 }
@@ -870,6 +875,7 @@ func (s *Source) retryLoop(srv *server) {
 			}
 			telemetry.WarnErr(s.baseCtx, "mcp: server attach failed, will retry", err,
 				attribute.String("server", srv.name))
+			recordReconnect(s.baseCtx, srv.name)
 			backoff = s.nextBackoff(backoff)
 			continue
 		}
@@ -890,6 +896,7 @@ func (s *Source) retryLoop(srv *server) {
 		}
 		telemetry.WarnErr(s.baseCtx, "mcp: server connect failed, will retry", err,
 			attribute.String("server", srv.name))
+		recordReconnect(s.baseCtx, srv.name)
 		backoff = s.nextBackoff(backoff)
 	}
 }
@@ -1041,6 +1048,7 @@ func (s *Source) sessionLost(srv *server, session *mcpsdk.ClientSession, reason 
 		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, reason.Error()))
 	}
 	telemetry.Warn(s.baseCtx, "mcp: server connection lost, reconnecting", attrs...)
+	recordServerLost(s.baseCtx, srv.name)
 
 	if err := session.Close(); err != nil {
 		telemetry.WarnErr(s.baseCtx, "mcp: close dead server session failed", err,
