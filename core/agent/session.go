@@ -1,0 +1,339 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"io"
+	"iter"
+	"time"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// Bounds caps one Task. Zero fields mean "no bound", except MaxRounds where the
+// zero value means "until the model stops asking for tools".
+type Bounds struct {
+	// MaxRounds caps model calls within one Task.
+	MaxRounds int
+	// MaxToolCalls caps tool executions within one Task.
+	MaxToolCalls int
+	// Timeout bounds the whole Task.
+	Timeout time.Duration
+}
+
+// Prompt is a question the Task needs answered before it can continue.
+type Prompt struct{ Question string }
+
+// Reply is the answer to a Prompt.
+type Reply struct{ Text string }
+
+// Options configures a Session. Nil fields mean "not supported": a Task that
+// needs one reports input-required rather than pretending to have it.
+type Options struct {
+	// Ask lets the Task pause and ask the user. Nil means unsupported.
+	Ask func(ctx context.Context, prompt Prompt) (Reply, error)
+	// Interrupts is closed or signalled to cancel the running Task.
+	Interrupts <-chan struct{}
+	// Bounds caps the Task.
+	Bounds Bounds
+}
+
+// Option mutates Options at construction.
+type Option func(*Options)
+
+// WithAsk installs the user-prompt seam.
+func WithAsk(ask func(ctx context.Context, prompt Prompt) (Reply, error)) Option {
+	return func(o *Options) { o.Ask = ask }
+}
+
+// WithInterrupts installs the cooperative-interrupt channel.
+func WithInterrupts(ch <-chan struct{}) Option {
+	return func(o *Options) { o.Interrupts = ch }
+}
+
+// WithBounds caps one Task.
+func WithBounds(bounds Bounds) Option {
+	return func(o *Options) { o.Bounds = bounds }
+}
+
+// Input is one user request.
+type Input struct {
+	// System frames the request. It is Content, not a string, because a system
+	// prompt is a list of parts like any other message.
+	System message.Content
+	// Messages are the new turns to add before answering.
+	Messages []message.Message
+}
+
+// Session runs Tasks against one runtime. It holds the conversation transcript
+// and nothing else: no catalog, no view, no cached discovery.
+type Session struct {
+	runtime *runtime.Runtime
+	task    *Task
+	opts    Options
+}
+
+// NewSession binds a Session to a runtime. The binding is for life: a Session
+// belongs to the runtime it was created with, because everything it tells the
+// model about available tools comes from that runtime's catalog.
+func NewSession(rt *runtime.Runtime, opts ...Option) (*Session, error) {
+	if rt == nil {
+		return nil, errdefs.Validationf("agent: a runtime is required")
+	}
+	session := &Session{runtime: rt, task: &Task{ID: newTaskID(), State: StateSubmitted}}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&session.opts)
+		}
+	}
+	if session.opts.Bounds.Timeout > 0 {
+		// Bounds are read per Task; nothing to install here.
+	}
+	return session, nil
+}
+
+// Task returns the Task this Session is running or last ran.
+func (s *Session) Task() *Task { return s.task }
+
+// Run executes one Task: one user request, answered after as many model rounds
+// as it takes. The returned sequence is the Task's process; a caller that wants
+// only the final answer folds it.
+func (s *Session) Run(ctx context.Context, in Input) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		if err := s.run(ctx, in, yield); err != nil {
+			yield(nil, err)
+		}
+	}
+}
+
+func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bool) error {
+	if len(in.Messages) == 0 {
+		return errdefs.Validationf("agent: input has no messages")
+	}
+	task := s.task
+	if task.State.Terminal() {
+		// A Session may run several Tasks; a finished one is replaced.
+		task = &Task{ID: newTaskID(), State: StateSubmitted}
+		s.task = task
+	}
+	task.System = in.System
+	if err := task.advance(StateWorking); err != nil {
+		return err
+	}
+	if !yield(Status{State: StateWorking}, nil) {
+		return nil
+	}
+
+	ctx = s.runtime.Context(ctx)
+	ctx, span := telemetry.TracerWithSuffix("agent").Start(ctx, "agent.run",
+		trace.WithAttributes(
+			attribute.String(telemetry.AttrTaskID, task.ID),
+			attribute.String(telemetry.AttrConversationID, task.ContextID),
+			attribute.String(telemetry.AttrLLMModel, s.runtime.DefaultModel().ID.Name),
+		))
+	defer span.End()
+
+	// The view lives as long as the Task: created here, discarded at the end,
+	// never stored on the Session and never supplied by the caller.
+	view := s.runtime.Assembly().NewCatalogView()
+	replayDiscoveries(view, task.History)
+
+	if s.opts.Bounds.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.opts.Bounds.Timeout)
+		defer cancel()
+	}
+
+	history := append(task.History, in.Messages...)
+	contextMessages := history[:len(history)-len(in.Messages)]
+	input := inference.GenerateInput{
+		Role:    inference.InputRoleUser,
+		Content: in.Messages[len(in.Messages)-1].Content,
+	}
+	task.History = history
+	toolCalls := 0
+
+	for {
+		if err := s.interrupted(ctx); err != nil {
+			return s.finish(task, StateCanceled, err, true, yield)
+		}
+		defs := view.Definitions()
+		tools, err := inference.NewToolset(defs)
+		if err != nil {
+			return s.finish(task, StateFailed, err, true, yield)
+		}
+		request := inference.GenerateRequest{
+			Model:   s.runtime.DefaultModel(),
+			Context: contextMessages,
+			Input:   input,
+			Tools:   tools,
+		}
+		if !yield(StreamStart{Round: task.Round, Model: request.Model.ID.Name}, nil) {
+			return nil
+		}
+		response, err := s.generate(ctx, request, yield)
+		if err != nil {
+			return s.finish(task, StateFailed, err, true, yield)
+		}
+		task.History = append(task.History, response.Message)
+		if !yield(UsageEvent{Usage: response.Usage}, nil) {
+			return nil
+		}
+
+		calls := toolCallsOf(response.Message)
+		if len(calls) == 0 {
+			return s.finish(task, StateCompleted, nil, true, yield)
+		}
+		if limit := s.opts.Bounds.MaxToolCalls; limit > 0 && toolCalls+len(calls) > limit {
+			return s.finish(task, StateFailed,
+				errdefs.Validationf("agent: task %s exceeded %d tool calls", task.ID, limit),
+				true, yield)
+		}
+		toolCalls += len(calls)
+
+		results := make([]message.ToolResult, 0, len(calls))
+		for _, call := range calls {
+			if !yield(ToolCallStart{Call: call}, nil) {
+				return nil
+			}
+			result := s.runtime.Assembly().Execute(ctx, call)
+			view.RecordCall(call)
+			results = append(results, result)
+			if !yield(ToolResult{Result: result}, nil) {
+				return nil
+			}
+		}
+		observation := toolMessage(results)
+		task.History = append(task.History, observation)
+		contextMessages = task.History[:len(task.History)-1]
+		input = inference.GenerateInput{Role: inference.InputRoleTool, Content: observation.Content}
+
+		view.AdvanceRound()
+		task.Round++
+		if max := s.opts.Bounds.MaxRounds; max > 0 && task.Round >= max {
+			return s.finish(task, StateCompleted, nil, true, yield)
+		}
+	}
+}
+
+// generate drains one model stream, forwarding text, and returns the final
+// response, which carries the assembled tool calls.
+func (s *Session) generate(
+	ctx context.Context,
+	request inference.GenerateRequest,
+	yield func(Event, error) bool,
+) (inference.GenerateResponse, error) {
+	stream, err := s.runtime.Provider().GenerateStream(ctx, request)
+	if err != nil {
+		return inference.GenerateResponse{}, err
+	}
+	defer func() { _ = stream.Close() }()
+
+	for {
+		event, err := stream.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return inference.GenerateResponse{}, err
+		}
+		switch event.Kind {
+		case inference.StreamText:
+			if !yield(Text{Text: event.Text}, nil) {
+				return inference.GenerateResponse{}, nil
+			}
+		case inference.StreamReasoning:
+			if !yield(Reasoning{Text: event.Text}, nil) {
+				return inference.GenerateResponse{}, nil
+			}
+		}
+	}
+	return stream.Result()
+}
+
+func (s *Session) interrupted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.opts.Interrupts == nil {
+		return nil
+	}
+	select {
+	case <-s.opts.Interrupts:
+		return errdefs.Validationf("agent: task interrupted")
+	default:
+		return nil
+	}
+}
+
+// finish moves the Task to a terminal state and reports it.
+func (s *Session) finish(
+	task *Task,
+	state TaskState,
+	cause error,
+	report bool,
+	yield func(Event, error) bool,
+) error {
+	reason := ""
+	if cause != nil {
+		reason = cause.Error()
+	}
+	task.State = state
+	if report {
+		if !yield(Status{State: state, Reason: reason}, nil) {
+			return nil
+		}
+	}
+	return cause
+}
+
+// toolCallsOf extracts the tool calls the model asked for.
+func toolCallsOf(msg message.Message) []message.ToolCall {
+	calls := make([]message.ToolCall, 0, len(msg.Content.Parts))
+	for _, part := range msg.Content.Parts {
+		if call, ok := part.(message.ToolCallPart); ok {
+			calls = append(calls, call.Call)
+		}
+	}
+	return calls
+}
+
+// toolMessage packs every result of one round into a single tool turn, which is
+// what the next request carries as its input.
+func toolMessage(results []message.ToolResult) message.Message {
+	parts := make([]message.Part, 0, len(results))
+	for _, result := range results {
+		parts = append(parts, message.ToolResultPart{Result: result})
+	}
+	return message.Message{Role: message.RoleTool, Content: message.Content{Parts: parts}}
+}
+
+// replayDiscoveries restores the tool visibility of a Task from its transcript.
+//
+// Visibility is a function of history, not stored state: a conversation that
+// called read_file keeps read_file visible without a checkpoint having to record
+// a discovery pool. Names the catalog no longer has are ignored, and the same
+// budget that applies during the loop applies here.
+func replayDiscoveries(view toolengine.CatalogView, history []message.Message) {
+	names := make([]string, 0, 8)
+	for _, msg := range history {
+		for _, call := range toolCallsOf(msg) {
+			if call.Name == "" {
+				continue
+			}
+			names = append(names, call.Name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	view.Discover(names...)
+}
