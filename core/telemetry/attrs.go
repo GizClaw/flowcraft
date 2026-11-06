@@ -44,6 +44,13 @@ const (
 	// the operation. Stable across runs of the same logical agent.
 	AttrAgentID = "agent.id"
 
+	// AttrRuntimeID identifies one assembled agent runtime (core/runtime.Runtime.ID):
+	// the substrate a turn runs on, not a conversation. Two runtimes in one
+	// process have different ids, so this is what separates their spans. It is
+	// distinct from AttrAgentID, which names the logical agent that may outlive
+	// or share a runtime.
+	AttrRuntimeID = "agent.runtime.id"
+
 	// AttrTenantID identifies the tenant on whose behalf the
 	// operation is running. Producers should populate this when a
 	// tenant boundary is meaningful (multi-tenant SaaS deployments).
