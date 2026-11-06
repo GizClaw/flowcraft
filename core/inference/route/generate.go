@@ -9,7 +9,8 @@ import (
 
 // Generate routes one unary generation.
 func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
-	return dispatch(ctx, operationGenerate, r.targets, r.policy.Generate, request, invokeGenerate, r.policy.Retry)
+	return dispatch(ctx, operationGenerate, r.targets, r.policy.Generate, request,
+		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry)
 }
 
 // GenerateStream routes the opening of one stream.
@@ -27,9 +28,10 @@ func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateR
 
 // openStream runs the failover-on-open loop without closing the route span.
 func (r *Router) openStream(ctx context.Context, call *routeCall, request inference.GenerateRequest) (inference.Stream, error) {
-	ordered := r.targets
+	candidates := filterTargets(r.targets, modelNameOfGenerate(request))
+	ordered := candidates
 	if r.policy.Generate != nil {
-		selected, err := r.policy.Generate.Select(ctx, request, r.targets)
+		selected, err := r.policy.Generate.Select(ctx, request, candidates)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +55,7 @@ func (r *Router) openStream(ctx context.Context, call *routeCall, request infere
 		if target.Provider.Generator == nil {
 			continue
 		}
-		stream, err := target.Provider.GenerateStream(ctx, request)
+		stream, err := target.Provider.GenerateStream(ctx, withGenerateTarget(request, target))
 		call.attempt(target, 1, 0, err)
 		if err == nil {
 			trace.record(Attempt{Target: target.Name})
@@ -66,6 +68,21 @@ func (r *Router) openStream(ctx context.Context, call *routeCall, request infere
 		}
 	}
 	return nil, last
+}
+
+// modelNameOfGenerate is the model the caller asked for; routing fills the
+// provider from the target it picks.
+func modelNameOfGenerate(request inference.GenerateRequest) string { return request.Model.ID.Name }
+
+// withGenerateTarget stamps the chosen target onto the request.
+func withGenerateTarget(request inference.GenerateRequest, target Target) inference.GenerateRequest {
+	if target.Model.Name != "" {
+		request.Model.ID = target.Model
+	}
+	if request.Model.Profile == "" {
+		request.Model.Profile = target.Profile
+	}
+	return request
 }
 
 // invokeGenerate calls one target's generation seam.

@@ -23,6 +23,15 @@ type Target struct {
 	Provider inference.Provider
 	// Weight is a relative preference for selectors that use one. Zero means one.
 	Weight int
+	// Model is the model this target serves: vendor plus API model name.
+	// Dispatch stamps it onto the request, so a caller names a model and gets
+	// the provider identity of the target that actually answered. Zero means the
+	// target did not declare one, and the request's own identity is used.
+	Model model.ModelID
+	// Profile is the deployment identity this target serves. Routing fills it
+	// into the request when the caller named none, so the public account follows
+	// the target; a caller that sets it pins the deployment.
+	Profile string
 }
 
 // Selector chooses among targets for one request. One seam, one method: a
@@ -154,11 +163,13 @@ func dispatch[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
+	modelOf func(Req) string,
+	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
 ) (Res, error) {
 	ctx, call := startRoute(ctx, operation)
-	response, err := dispatchTargets(ctx, call, targets, selector, request, invoke, retry)
+	response, err := dispatchTargets(ctx, call, targets, selector, request, modelOf, withTarget, invoke, retry)
 	call.finish(err)
 	return response, err
 }
@@ -171,14 +182,20 @@ func dispatchTargets[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
+	modelOf func(Req) string,
+	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
 ) (Res, error) {
 	var zero Res
 
-	ordered := targets
+	// Filter before selecting: a target that does not serve the requested model
+	// would fail as UnknownModel and waste an attempt. Order is preserved, so a
+	// nil selector still means "in declaration order".
+	candidates := filterTargets(targets, modelOf(request))
+	ordered := candidates
 	if selector != nil {
-		selected, err := selector.Select(ctx, request, targets)
+		selected, err := selector.Select(ctx, request, candidates)
 		if err != nil {
 			return zero, err
 		}
@@ -212,7 +229,7 @@ func dispatchTargets[Req, Res any](
 					return zero, err
 				}
 			}
-			response, err := invoke(ctx, target, request)
+			response, err := invoke(ctx, target, withTarget(request, target))
 			call.attempt(target, attempt, backoff, err)
 			if err == nil {
 				trace.record(Attempt{Target: target.Name})
@@ -230,6 +247,50 @@ func dispatchTargets[Req, Res any](
 		}
 	}
 	return zero, last
+}
+
+// filterTargets keeps the targets whose catalog serves the requested model.
+//
+// A target with no catalog, or one that declares no models, is kept: absence of
+// information is not evidence of absence, and the driver's own UnknownModel is
+// still the fallback classification.
+func filterTargets(targets []Target, name string) []Target {
+	if name == "" {
+		return targets
+	}
+	kept := make([]Target, 0, len(targets))
+	for _, target := range targets {
+		// A declared model is authoritative: it is what the deployment says this
+		// target is for. Without one, fall back to the catalog, and with no
+		// catalog either the target stays a candidate and the driver decides.
+		if target.Model.Name != "" {
+			if target.Model.Name == name {
+				kept = append(kept, target)
+			}
+			continue
+		}
+		if servesModel(target, name) {
+			kept = append(kept, target)
+		}
+	}
+	return kept
+}
+
+func servesModel(target Target, name string) bool {
+	catalog := target.Provider.Catalog
+	if catalog == nil {
+		return true
+	}
+	models := catalog.Models()
+	if len(models) == 0 {
+		return true
+	}
+	for _, descriptor := range models {
+		if descriptor.ID.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // kindOf extracts the classified kind, if the failure carries one.

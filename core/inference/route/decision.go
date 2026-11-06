@@ -14,7 +14,22 @@ import (
 // probabilities and confidences from two models, which are not comparable, and a
 // refusal from one with an answer from another.
 func (r *Router) Decide(ctx context.Context, request inference.DecisionRequest) (inference.DecisionResponse, error) {
-	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request, invokeDecide, r.policy.Retry)
+	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request,
+		modelNameOfDecide, withDecideTarget, invokeDecide, r.policy.Retry)
+}
+
+// modelNameOfDecide is the model the caller asked to judge.
+func modelNameOfDecide(request inference.DecisionRequest) string { return request.Model.ID.Name }
+
+// withDecideTarget stamps the chosen target onto the request.
+func withDecideTarget(request inference.DecisionRequest, target Target) inference.DecisionRequest {
+	if target.Model.Name != "" {
+		request.Model.ID = target.Model
+	}
+	if request.Model.Profile == "" {
+		request.Model.Profile = target.Profile
+	}
+	return request
 }
 
 func invokeDecide(ctx context.Context, target Target, request inference.DecisionRequest) (inference.DecisionResponse, error) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -60,6 +61,9 @@ func startRoute(ctx context.Context, operation string) (context.Context, *routeC
 		trace.WithAttributes(
 			attribute.String(telemetry.AttrInferenceOperation, operation),
 		))
+	// The runtime identity the host attached: this span is where a call's
+	// instance is decided, so every attempt below inherits it.
+	span.SetAttributes(runctx.Attrs(ctx)...)
 	return ctx, &routeCall{
 		ctx:       ctx,
 		span:      span,
