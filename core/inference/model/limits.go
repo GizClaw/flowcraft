@@ -18,12 +18,18 @@ type ModelLimits struct {
 	// (including reasoning tokens when the provider counts them against the
 	// same budget). Nil when the provider catalog does not declare a limit.
 	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+	// MaxInputBytes caps the raw size of a binary input (an audio payload, for
+	// instance) in bytes. Nil when the provider catalog does not declare a
+	// limit. Token limits say nothing about a file, so the byte ceiling needs
+	// its own field.
+	MaxInputBytes *int64 `json:"max_input_bytes,omitempty"`
 }
 
 func (l ModelLimits) Clone() ModelLimits {
 	return ModelLimits{
 		MaxInputTokens:  ptr.Clone(l.MaxInputTokens),
 		MaxOutputTokens: ptr.Clone(l.MaxOutputTokens),
+		MaxInputBytes:   ptr.Clone(l.MaxInputBytes),
 	}
 }
 
@@ -39,6 +45,14 @@ func (l ModelLimits) WithMaxInputTokens(value int) ModelLimits {
 
 // WithMaxOutputTokens returns limits declaring the output window. Values at
 // or below zero leave the window undeclared.
+func (l ModelLimits) WithMaxInputBytes(value int64) ModelLimits {
+	if value > 0 {
+		l.MaxInputBytes = &value
+	}
+	return l
+}
+
+// WithMaxOutputTokens returns limits declaring the output window. Values at
 func (l ModelLimits) WithMaxOutputTokens(value int) ModelLimits {
 	if value > 0 {
 		l.MaxOutputTokens = &value

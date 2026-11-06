@@ -21,6 +21,7 @@ type driver struct {
 	imageEdit       protocol.GenerateDriver
 	imageEditStream protocol.GenerateStreamDriver
 	speech          protocol.GenerateDriver
+	transcribe      protocol.GenerateDriver
 	speechStream    protocol.GenerateStreamDriver
 }
 
@@ -31,6 +32,11 @@ func (d *driver) Execute(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, error) {
+	// Audio input selects transcription: the caller asked for text, and the
+	// transcription endpoint is the only surface that turns audio into text.
+	if hasAudioInput(request) {
+		return d.transcribe.Execute(ctx, request)
+	}
 	if request.Output.Kind() == inference.OutputAudio {
 		return d.speech.Execute(ctx, request)
 	}
@@ -120,6 +126,12 @@ func New(settings Settings) (inference.Provider, error) {
 	}
 	d.speechStream, err = protocol.BindGenerateStream(
 		ProviderID, d.speechCompile, d.speechOpen, speechStreamDecoder,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
+	d.transcribe, err = protocol.BindGenerate(
+		ProviderID, d.transcribeCompile, d.transcribeCall, d.transcribeDecode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("openai: %w", err)

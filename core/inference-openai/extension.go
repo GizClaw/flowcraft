@@ -294,9 +294,10 @@ func (o *GenerationOptions) Clone() inference.Extension {
 // ignored.
 func Decoders() map[string]inference.ExtensionDecoder {
 	return map[string]inference.ExtensionDecoder{
-		ProviderID + "/" + GenerationExtensionID: decodeGeneration,
-		ProviderID + "/" + ImageExtensionID:      decodeImage,
-		ProviderID + "/" + SpeechExtensionID:     decodeSpeech,
+		ProviderID + "/" + GenerationExtensionID:    decodeGeneration,
+		ProviderID + "/" + ImageExtensionID:         decodeImage,
+		ProviderID + "/" + SpeechExtensionID:        decodeSpeech,
+		ProviderID + "/" + TranscriptionExtensionID: decodeTranscription,
 	}
 }
 
