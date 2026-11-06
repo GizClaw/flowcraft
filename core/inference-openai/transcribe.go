@@ -143,6 +143,11 @@ type transcriptionAudioFile struct {
 
 func (f transcriptionAudioFile) Read(p []byte) (int, error) { return f.reader.Read(p) }
 
+// Filename is what the multipart encoder uses for the file part. Without it the
+// SDK sends "anonymous_file" and the endpoint rejects the upload: the extension
+// is how it decides the container format.
+func (f transcriptionAudioFile) Filename() string { return f.name }
+
 // filenameForAudio maps a source media type onto the extension the endpoint
 // expects. An unknown type is rejected rather than guessed, because a wrong
 // extension is a wrong container format.
@@ -230,6 +235,9 @@ func (d *driver) transcribeCompile(
 			inference.FieldInput,
 			errors.New("openai: transcription requires audio bytes; URL sources are not fetched by this driver"),
 		)
+	}
+	if err := d.checkInputBytes(request, len(data)); err != nil {
+		return protocol.Compiled[transcriptionWire]{}, err
 	}
 	name, err := filenameForAudio(audio.Source.MediaType())
 	if err != nil {
@@ -363,4 +371,29 @@ func (d *driver) transcribeDecode(
 		},
 		Warnings: warnings,
 	}, nil
+}
+
+// checkInputBytes rejects an audio payload the declared model cannot accept.
+//
+// A token limit says nothing about a file, so the byte ceiling has its own
+// field. Checking it before the call turns a provider-side 413 into a local
+// rejection that names the model and the limit, and spares the upload.
+func (d *driver) checkInputBytes(request inference.GenerateRequest, size int) error {
+	if len(d.settings.Models) == 0 {
+		return nil
+	}
+	descriptor, ok := findModel(d.settings.Models, request.Model.ID)
+	if !ok {
+		return nil // checkDeclarations already rejected an undeclared model
+	}
+	limit := descriptor.Limits.MaxInputBytes
+	if limit == nil || int64(size) <= *limit {
+		return nil
+	}
+	return inference.NewError(
+		inference.InvalidRequest,
+		inference.FieldInput,
+		fmt.Errorf("openai: audio is %d bytes; model %q accepts at most %d",
+			size, descriptor.ID.Name, *limit),
+	)
 }

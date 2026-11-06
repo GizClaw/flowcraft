@@ -2,9 +2,11 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -146,5 +148,63 @@ func TestTranscriptionRejectedByDeclaredInputs(t *testing.T) {
 	request.Model.ID.Name = "gpt-5-mini"
 	if _, err := provider.Generate(context.Background(), request); err == nil {
 		t.Fatal("audio sent to a text-only model was accepted")
+	}
+}
+
+// A declared byte ceiling must reject the payload locally, naming the limit,
+// instead of uploading it and letting the provider answer with a 413.
+func TestTranscriptionEnforcesMaxInputBytes(t *testing.T) {
+	ceiling := int64(4)
+	declared := model.ModelDescriptor{
+		ID:    model.ModelID{Provider: ProviderID, Name: "whisper-1"},
+		Label: "small budget",
+		Capabilities: model.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartAudio},
+			Outputs: []message.PartKind{message.PartText},
+		},
+		Limits: model.ModelLimits{MaxInputBytes: &ceiling},
+	}
+	provider, err := New(Settings{
+		API: APIChat, APIKey: "test-key", BaseURL: "http://127.0.0.1:1",
+		Models: []model.ModelDescriptor{declared},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	_, err = provider.Generate(context.Background(), transcriptionRequest(t, nil))
+	if err == nil {
+		t.Fatal("oversized audio accepted, want a local rejection")
+	}
+	if !inference.IsKind(err, inference.InvalidRequest) {
+		t.Errorf("kind = %v, want InvalidRequest", err)
+	}
+	// Error() renders kind and field only; the numbers live in the wrapped
+	// cause, which is where a caller looks when it wants the detail.
+	cause := errors.Unwrap(err)
+	if cause == nil || !strings.Contains(cause.Error(), "at most 4") {
+		t.Errorf("wrapped cause %v does not name the limit", cause)
+	}
+}
+
+// The multipart encoder names the file part from Filename(); without it the
+// endpoint rejects the upload as an unnamed blob. This pins both the mapping and
+// the refusal to guess an unknown container.
+func TestTranscriptionFilenameForAudio(t *testing.T) {
+	for mediaType, want := range map[string]string{
+		"audio/mpeg": "audio.mp3",
+		"audio/wav":  "audio.wav",
+		"audio/webm": "audio.webm",
+		"audio/m4a":  "audio.m4a",
+		"audio/flac": "audio.flac",
+		"audio/ogg":  "audio.ogg",
+	} {
+		got, err := filenameForAudio(mediaType)
+		if err != nil || got != want {
+			t.Errorf("filenameForAudio(%q) = %q, %v; want %q, nil", mediaType, got, err, want)
+		}
+	}
+	if _, err := filenameForAudio("audio/aiff"); err == nil {
+		t.Error("an unlisted container was accepted; a wrong extension is a wrong format")
 	}
 }
