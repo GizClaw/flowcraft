@@ -28,7 +28,11 @@ func (d *driver) responsesOpen(
 	if err != nil {
 		return nil, err
 	}
-	stream := d.client.Responses.NewStreaming(ctx, params, opts...)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	stream := d.client.Responses.NewStreaming(ctx, params, append(opts, auth...)...)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

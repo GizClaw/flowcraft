@@ -16,10 +16,14 @@ import (
 // imageOpen starts the streaming call. The SDK turns on `stream: true` itself.
 func (d *driver) imageOpen(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	params openai.ImageGenerateParams,
 ) (protocol.RawStream[openai.ImageGenStreamEventUnion], error) {
-	stream := d.client.Images.GenerateStreaming(ctx, params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	stream := d.client.Images.GenerateStreaming(ctx, params, auth...)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

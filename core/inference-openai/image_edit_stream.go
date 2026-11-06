@@ -16,10 +16,14 @@ import (
 // imageEditOpen starts the streaming edit call.
 func (d *driver) imageEditOpen(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	params openai.ImageEditParams,
 ) (protocol.RawStream[openai.ImageEditStreamEventUnion], error) {
-	stream := d.client.Images.EditStreaming(ctx, params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	stream := d.client.Images.EditStreaming(ctx, params, auth...)
 	return newSDKStream(stream.Next, stream.Current, stream.Err, stream.Close), nil
 }
 

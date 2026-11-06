@@ -295,10 +295,14 @@ type transcriptionPayload struct {
 // transcribeCall performs the provider I/O.
 func (d *driver) transcribeCall(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	wire transcriptionWire,
 ) (transcriptionPayload, error) {
-	response, err := d.client.Audio.Transcriptions.New(ctx, wire.params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return transcriptionPayload{}, err
+	}
+	response, err := d.client.Audio.Transcriptions.New(ctx, wire.params, auth...)
 	if err != nil {
 		return transcriptionPayload{}, err
 	}

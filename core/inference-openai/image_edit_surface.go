@@ -203,8 +203,12 @@ func editApply(params *openai.ImageEditParams, options *ImageOptions) error {
 // imageEditCall performs the provider I/O.
 func (d *driver) imageEditCall(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	params openai.ImageEditParams,
 ) (*openai.ImagesResponse, error) {
-	return d.client.Images.Edit(ctx, params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.Images.Edit(ctx, params, auth...)
 }

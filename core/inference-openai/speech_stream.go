@@ -70,10 +70,14 @@ func (s *bodyChunks) Close() error { return s.body.Close() }
 // body, so the wire value is bytes.
 func (d *driver) speechOpen(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	params openai.AudioSpeechNewParams,
 ) (protocol.RawStream[[]byte], error) {
-	response, err := d.client.Audio.Speech.New(ctx, params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	response, err := d.client.Audio.Speech.New(ctx, params, auth...)
 	if err != nil {
 		return nil, err
 	}

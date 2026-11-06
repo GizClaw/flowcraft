@@ -328,10 +328,14 @@ func imagePrompt(item message.Message) (string, error) {
 // imageCall performs the provider I/O.
 func (d *driver) imageCall(
 	ctx context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	params openai.ImageGenerateParams,
 ) (*openai.ImagesResponse, error) {
-	return d.client.Images.Generate(ctx, params)
+	auth, err := d.authOptions(request.Model.Profile)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.Images.Generate(ctx, params, auth...)
 }
 
 // imageDecode maps the generated images onto content parts. The provider's revised
