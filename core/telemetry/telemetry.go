@@ -1,15 +1,3 @@
-// Package telemetry is the instrumentation half of OpenTelemetry support: the
-// accessors that produce spans, metrics and log records, plus the attribute keys
-// they standardise on.
-//
-// It depends on the OpenTelemetry API only, never the SDK or an exporter. That is
-// deliberate: a package that logs a warning must not drag a tracing backend into
-// the binary. With no provider installed the API's no-ops apply, so every helper
-// here is safe to call before a host has wired anything.
-//
-// Installation lives in the setup subpackage: telemetry/setup builds the providers,
-// resources and exporters, and installs them globally. A host imports it once at
-// process start; libraries import this package and nothing else.
 package telemetry
 
 import (
