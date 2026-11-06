@@ -94,9 +94,6 @@ func NewSession(rt *runtime.Runtime, opts ...Option) (*Session, error) {
 			opt(&session.opts)
 		}
 	}
-	if session.opts.Bounds.Timeout > 0 {
-		// Bounds are read per Task; nothing to install here.
-	}
 	return session, nil
 }
 

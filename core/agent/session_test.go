@@ -17,7 +17,6 @@ import (
 type fakeStream struct {
 	events []inference.StreamEvent
 	resp   inference.GenerateResponse
-	done   bool
 }
 
 func (s *fakeStream) Next(context.Context) (inference.StreamEvent, error) {
@@ -114,7 +113,7 @@ func newTestSession(t *testing.T, provider *scriptedProvider) (*Session, *runtim
 // One Run with a tool call: the loop must execute the tool, feed the result
 // back, and finish with the model's second answer.
 func TestRunExecutesOneToolCall(t *testing.T) {
-	session, rt := newTestSession(t, &scriptedProvider{})
+	_, rt := newTestSession(t, &scriptedProvider{})
 	path := filepath.Join(rt.Files().Writable()[0], "doc.txt")
 	if err := rt.Files().Write(context.Background(), path, []byte("hello\n")); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -127,7 +126,7 @@ func TestRunExecutesOneToolCall(t *testing.T) {
 		steps: []inference.GenerateResponse{toolCallResponse(t, call), textResponse("done")},
 		texts: []string{"reading"},
 	}
-	session, _ = newTestSession(t, provider)
+	session, _ := newTestSession(t, provider)
 
 	ctx := context.Background()
 	var kinds []EventKind
