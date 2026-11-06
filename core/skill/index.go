@@ -1,0 +1,112 @@
+package skill
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/GizClaw/flowcraft/core/search"
+)
+
+// Scored couples one ranked skill with its BM25 score, for search output and
+// threshold tuning.
+type Scored struct {
+	Skill Metadata `json:"skill"`
+	Score float64  `json:"score"`
+}
+
+// Index is an immutable BM25 index over a discovered skill set. It is built
+// once per discovery pass: a caller that reloads skills builds a new Index
+// rather than mutating this one, which is what keeps reads lock-free.
+type Index struct {
+	inner  *search.Index
+	byPath map[string]Metadata
+	byName map[string]Metadata
+}
+
+// NewIndex indexes skill names and descriptions.
+func NewIndex(skills []Metadata) (*Index, error) {
+	docs := make([]search.Doc, 0, len(skills))
+	byPath := make(map[string]Metadata, len(skills))
+	byName := make(map[string]Metadata, len(skills))
+	for _, skill := range skills {
+		docs = append(docs, search.Doc{
+			ID:   skill.Path,
+			Name: skill.Name,
+			Text: skill.Description,
+		})
+		byPath[skill.Path] = skill
+		if _, ok := byName[skill.Name]; !ok {
+			byName[skill.Name] = skill
+		}
+	}
+	inner, err := search.New(docs)
+	if err != nil {
+		return nil, err
+	}
+	return &Index{inner: inner, byPath: byPath, byName: byName}, nil
+}
+
+// Len reports how many skills are indexed.
+func (ix *Index) Len() int { return len(ix.byPath) }
+
+// ByName resolves a skill by its declared name.
+func (ix *Index) ByName(name string) (Metadata, bool) {
+	skill, ok := ix.byName[name]
+	return skill, ok
+}
+
+// RankScored returns the best matches for query, highest score first. A
+// minScore <= 0 accepts any match; topN <= 0 means every match.
+func (ix *Index) RankScored(query string, topN int, minScore float64) []Scored {
+	if ix == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	if topN <= 0 {
+		topN = ix.Len()
+	}
+	results := ix.inner.Search(query, topN)
+	out := make([]Scored, 0, len(results))
+	for _, result := range results {
+		if minScore > 0 && result.Score < minScore {
+			continue
+		}
+		if skill, ok := ix.byPath[result.ID]; ok {
+			out = append(out, Scored{Skill: skill, Score: result.Score})
+		}
+	}
+	return out
+}
+
+// Rank is RankScored without the scores. A nil result reads as "nothing to
+// inject".
+func (ix *Index) Rank(query string, topN int, minScore float64) []Metadata {
+	scored := ix.RankScored(query, topN, minScore)
+	if len(scored) == 0 {
+		return nil
+	}
+	out := make([]Metadata, 0, len(scored))
+	for _, sc := range scored {
+		out = append(out, sc.Skill)
+	}
+	return out
+}
+
+// mentionRe matches $name mentions that stand alone, so "$50" inside "$500" or
+// "a$skill" mid-word is not a mention.
+var mentionRe = regexp.MustCompile(`(?:^|[^a-z0-9_])[$]([a-z0-9]+(?:-[a-z0-9]+)*)`)
+
+// Mentioned resolves explicit $name mentions in text, in mention order, keeping
+// the first mention of each skill.
+func (ix *Index) Mentioned(text string) []Metadata {
+	var out []Metadata
+	seen := make(map[string]bool)
+	for _, match := range mentionRe.FindAllStringSubmatch(text, -1) {
+		skill, ok := ix.ByName(match[1])
+		if !ok || seen[skill.Path] {
+			continue
+		}
+		seen[skill.Path] = true
+		out = append(out, skill)
+	}
+	return out
+}
