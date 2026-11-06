@@ -120,11 +120,13 @@ func coreDispatch(catalog Catalog) Dispatch {
 	return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 		t, ok := catalog.Get(call.Name)
 		if !ok {
+			RecordFailure(ctx, FailureNotFound)
 			return message.NewErrorToolResult(call.ID,
 				fmt.Sprintf("tool %q not found", call.Name))
 		}
 		content, err := t.Execute(ctx, string(call.Arguments))
 		if err != nil {
+			RecordFailure(ctx, classifyToolFailure(err))
 			return message.NewErrorToolResult(call.ID, err.Error())
 		}
 		if len(content.Parts) == 0 {
@@ -139,6 +141,7 @@ func coreDispatch(catalog Catalog) Dispatch {
 			// broken run: report it as an error result instead of letting
 			// an invalid part reach the board, a checkpoint, or a
 			// provider compile.
+			RecordFailure(ctx, FailureToolError)
 			return message.NewErrorToolResult(call.ID,
 				fmt.Sprintf("tool %q returned invalid content: %v", call.Name, err))
 		}
