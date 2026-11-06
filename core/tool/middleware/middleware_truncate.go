@@ -16,6 +16,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // TruncateSettings configures [Truncate]. Zero values disable it.
@@ -105,6 +107,16 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 				telemetry.WarnErr(ctx,
 					"tool middleware: create truncation directory failed", err)
 			}
+			// The model is about to see an excerpt, not the payload: record both
+			// facts so a degraded answer stays traceable to this middleware.
+			truncationAttrs := []attribute.KeyValue{
+				attribute.Bool(telemetry.AttrResultTruncated, true),
+			}
+			if spilled {
+				truncationAttrs = append(truncationAttrs,
+					attribute.Int(telemetry.AttrResultSpilledBytes, len(full)))
+			}
+			annotate(ctx, truncationAttrs...)
 			// The marker only carries a pointer once the payload is
 			// really on disk: a failed spill must not send the model
 			// after a file that is not there.

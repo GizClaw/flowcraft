@@ -7,7 +7,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // DefaultResultMarker is appended to a result whose content exceeds the
@@ -71,7 +74,19 @@ func ResultLimiter(max int, opts ...ResultLimitOption) (tool.Middleware, error) 
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			return limitResult(next(ctx, call), max, cfg.marker, cfg.partBudget)
+			res := next(ctx, call)
+			limited := limitResult(res, max, cfg.marker, cfg.partBudget)
+			// A shortened result is a context-budget outcome the model has to
+			// live with; recording it on the span is what makes a bad answer
+			// traceable to this middleware rather than to the model.
+			before := utf8.RuneCountInString(res.Content.Text())
+			after := utf8.RuneCountInString(limited.Content.Text())
+			if after < before {
+				annotate(ctx,
+					attribute.Bool(telemetry.AttrResultTruncated, true),
+					attribute.Int(telemetry.AttrResultDroppedRunes, before-after))
+			}
+			return limited
 		}
 	}, nil
 }

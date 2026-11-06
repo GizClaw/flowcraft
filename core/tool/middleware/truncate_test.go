@@ -503,8 +503,8 @@ func TestFromSettingsTruncate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 2 {
-		t.Fatalf("chain has %d middleware, want recover + truncate", len(mws))
+	if len(mws) != 3 {
+		t.Fatalf("chain has %d middleware, want recover + telemetry + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, strings.Repeat("y", 300))
 	if got := len([]rune(res.Content.Text())); got > 50 {
@@ -535,8 +535,8 @@ func TestFromSettingsTruncateRunsInsideResultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 3 {
-		t.Fatalf("chain has %d middleware, want recover + result limit + truncate", len(mws))
+	if len(mws) != 4 {
+		t.Fatalf("chain has %d middleware, want recover + telemetry + result limit + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, full)
 	if got := len([]rune(res.Content.Text())); got > 1000 {

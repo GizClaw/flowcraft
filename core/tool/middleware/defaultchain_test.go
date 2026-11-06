@@ -12,7 +12,7 @@ func TestDefaultChainShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	want := []tool.Middleware{Recover()}
+	want := []tool.Middleware{Recover(), Telemetry()}
 	partLimiter, _ := ResultPartLimiter(DefaultResultPartBudget)
 	want = append(want, partLimiter)
 	if len(chain) != len(want) {

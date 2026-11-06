@@ -199,8 +199,8 @@ func TestFromSettings_HostileValues(t *testing.T) {
 		{"empty settings", Settings{}, false},
 		{"recover disabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(false)}}, false},
 		{"recover enabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(true)}}, false},
-		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: false}}, false},
-		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: true}}, false},
+		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: boolPtr(false)}}, false},
+		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: boolPtr(true)}}, false},
 		{
 			"timeout empty default",
 			Settings{Timeout: &TimeoutSettings{Default: ""}},
@@ -407,7 +407,7 @@ func TestFromSettingsOrder(t *testing.T) {
 	dir := t.TempDir()
 	settings := Settings{
 		Recover:     &RecoverSettings{},
-		Telemetry:   &TelemetrySettings{Enabled: true},
+		Telemetry:   &TelemetrySettings{Enabled: boolPtr(true)},
 		ResultLimit: &ResultLimitSettings{Max: 128},
 		Truncate:    &TruncateSettings{Enabled: true, MaxChars: 16, Dir: dir},
 		Timeout:     &TimeoutSettings{Default: "30s"},
