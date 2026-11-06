@@ -2,8 +2,6 @@ package inferencetest
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -38,16 +36,7 @@ func RunDecider(t *testing.T, fixture DeciderFixture) {
 
 	for _, sample := range fixture.Samples {
 		t.Run(sample.Name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				status := sample.Status
-				if status == 0 {
-					status = http.StatusOK
-				}
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(sample.Body))
-			}))
-			t.Cleanup(server.Close)
+			server := serve(t, sample.Status, sample.Body)
 
 			decider, err := fixture.NewDecider(t, server.URL)
 			if err != nil {

@@ -65,44 +65,30 @@ func BindGenerate[Wire, Raw any](
 	case decode == nil:
 		return nil, errors.New("bind generate: decoder is required")
 	}
-	return &unaryDriver[Wire, Raw]{
-		providerID: providerID,
-		compile:    compile,
-		transport:  transport,
-		decode:     decode,
-	}, nil
+	p, err := bind("generate", providerID,
+		func(request inference.GenerateRequest) inference.GenerateRequest {
+			request.Extensions = request.Extensions.ForProvider(providerID)
+			return request
+		},
+		compile, transport, decode,
+		func(request inference.GenerateRequest, response inference.GenerateResponse, warnings []inference.Warning) (inference.GenerateResponse, error) {
+			response.Warnings = joinWarnings(warnings, response.Warnings)
+			return response, response.ValidateFor(request)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return unaryDriver[Wire, Raw]{pipeline: p}, nil
 }
 
 type unaryDriver[Wire, Raw any] struct {
-	providerID string
-	compile    Compiler[inference.GenerateRequest, Wire]
-	transport  Transport[inference.GenerateRequest, Wire, Raw]
-	decode     Decoder[inference.GenerateRequest, Raw, inference.GenerateResponse]
+	pipeline[inference.GenerateRequest, Wire, Raw, inference.GenerateResponse]
 }
 
-// Execute validates, compiles, calls and decodes one request.
-func (d *unaryDriver[Wire, Raw]) Execute(
-	ctx context.Context,
-	request inference.GenerateRequest,
-) (inference.GenerateResponse, error) {
-	request.Extensions = request.Extensions.ForProvider(d.providerID)
-	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeUnary)
-	if err != nil {
-		return inference.GenerateResponse{}, err
-	}
-	raw, err := d.transport(ctx, request, compiled.Wire)
-	if err != nil {
-		return inference.GenerateResponse{}, transportError(ctx, err)
-	}
-	response, err := d.decode(ctx, request, raw)
-	if err != nil {
-		return inference.GenerateResponse{}, decodeError(err)
-	}
-	response.Warnings = joinWarnings(compiled.Warnings, response.Warnings)
-	if err := response.ValidateFor(request); err != nil {
-		return inference.GenerateResponse{}, err
-	}
-	return response, nil
+// Execute delegates to the shared unary pipeline.
+func (d unaryDriver[Wire, Raw]) Execute(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
+	return d.do(ctx, request)
 }
 
 // prepare is the shared front half of both pipelines: validate the request,
