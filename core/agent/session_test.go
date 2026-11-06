@@ -81,7 +81,7 @@ func textResponse(text string) inference.GenerateResponse {
 	return inference.GenerateResponse{Message: message.NewTextMessage(message.RoleAssistant, text)}
 }
 
-func newTestSession(t *testing.T, provider *scriptedProvider) (*Session, *runtime.Runtime) {
+func newTestSession(t *testing.T, provider *scriptedProvider, opts ...Option) (*Session, *runtime.Runtime) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := runtime.Config{
@@ -103,7 +103,7 @@ func newTestSession(t *testing.T, provider *scriptedProvider) (*Session, *runtim
 		t.Fatalf("runtime.New: %v", err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
-	session, err := NewSession(rt)
+	session, err := NewSession(rt, opts...)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -243,5 +243,149 @@ func TestReplayDiscoveriesRestoresVisibility(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("definitions = %v, want read_file restored from history", names)
+	}
+}
+
+// memStore is a checkpoint store that keeps the newest value in memory.
+type memStore struct {
+	latest Checkpoint
+	writes int
+}
+
+func (s *memStore) Write(_ context.Context, checkpoint Checkpoint) error {
+	s.latest = checkpoint
+	s.writes++
+	return nil
+}
+
+func (s *memStore) Latest(context.Context) (Checkpoint, error) {
+	if s.writes == 0 {
+		return Checkpoint{}, ErrNoCheckpoint
+	}
+	return s.latest, nil
+}
+
+func (s *memStore) PutBlob(_ context.Context, data []byte) (string, error) {
+	return string(data), nil
+}
+
+func (s *memStore) GetBlob(_ context.Context, ref string) ([]byte, error) {
+	return []byte(ref), nil
+}
+
+func askCall(t *testing.T, question string) message.ToolCall {
+	t.Helper()
+	call, err := message.NewToolCall("ask-1", askUserTool, map[string]any{"question": question})
+	if err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	return call
+}
+
+// A host that can answer immediately keeps the Task running: the reply comes
+// back as the tool result and the loop continues.
+func TestAskSynchronouslyContinues(t *testing.T) {
+	provider := &scriptedProvider{
+		steps: []inference.GenerateResponse{
+			toolCallResponse(t, askCall(t, "which file?")),
+			textResponse("done"),
+		},
+	}
+	session, _ := newTestSession(t, provider, WithAsk(
+		func(context.Context, Prompt) (Reply, error) { return Reply{Text: "a.txt"}, nil }))
+
+	var result string
+	for event, err := range session.Run(context.Background(), Input{Messages: []message.Message{
+		message.NewTextMessage(message.RoleUser, "read something"),
+	}}) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if tr, ok := event.(ToolResult); ok {
+			result = tr.Result.Content.Text()
+		}
+	}
+	if result != "a.txt" {
+		t.Errorf("tool result = %q, want the reply", result)
+	}
+	if session.Task().State != StateCompleted {
+		t.Errorf("state = %s, want completed", session.Task().State)
+	}
+}
+
+// A host that cannot answer yet pauses the Task: the state is input-required, the
+// pending call is recorded, and a checkpoint is written.
+func TestAskPausesAndResumes(t *testing.T) {
+	provider := &scriptedProvider{
+		steps: []inference.GenerateResponse{
+			toolCallResponse(t, askCall(t, "which file?")),
+			textResponse("read a.txt"),
+		},
+	}
+	store := &memStore{}
+	session, _ := newTestSession(t, provider,
+		WithAsk(func(context.Context, Prompt) (Reply, error) { return Reply{}, ErrPaused }),
+		WithStore(store))
+
+	for _, err := range session.Run(context.Background(), Input{Messages: []message.Message{
+		message.NewTextMessage(message.RoleUser, "read something"),
+	}}) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	task := session.Task()
+	if task.State != StateInputRequired {
+		t.Fatalf("state = %s, want input-required", task.State)
+	}
+	if task.Pending == nil || task.Pending.ID != "ask-1" {
+		t.Fatalf("pending = %+v, want the ask_user call", task.Pending)
+	}
+	if store.writes != 1 {
+		t.Errorf("checkpoint writes = %d, want 1", store.writes)
+	}
+	if store.latest.Task.ID != task.ID || store.latest.Task.Pending == nil {
+		t.Errorf("checkpoint task = %+v, want the paused task", store.latest.Task)
+	}
+
+	var continued bool
+	for event, err := range session.Resume(context.Background(), Reply{Text: "a.txt"}) {
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		if tr, ok := event.(ToolResult); ok && tr.Result.Content.Text() == "a.txt" {
+			continued = true
+		}
+	}
+	if !continued {
+		t.Error("the reply did not become the pending call's result")
+	}
+	if session.Task().State != StateCompleted {
+		t.Errorf("state = %s, want completed", session.Task().State)
+	}
+	if session.Task().Pending != nil {
+		t.Error("pending call survived the resume")
+	}
+}
+
+// Without an Ask seam the tool is not offered, and a model that calls it anyway
+// gets a result it can act on instead of a dead Task.
+func TestAskUnsupportedIsAToolError(t *testing.T) {
+	provider := &scriptedProvider{
+		steps: []inference.GenerateResponse{
+			toolCallResponse(t, askCall(t, "which file?")),
+			textResponse("done anyway"),
+		},
+	}
+	session, _ := newTestSession(t, provider)
+	for _, err := range session.Run(context.Background(), Input{Messages: []message.Message{
+		message.NewTextMessage(message.RoleUser, "go"),
+	}}) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	if session.Task().State != StateCompleted {
+		t.Errorf("state = %s, want completed", session.Task().State)
 	}
 }

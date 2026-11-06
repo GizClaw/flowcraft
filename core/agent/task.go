@@ -65,6 +65,9 @@ type Task struct {
 	System    message.Content   `json:"system,omitzero"`
 	History   []message.Message `json:"history,omitempty"`
 	Artifacts []Artifact        `json:"artifacts,omitempty"`
+	// Pending is the tool call the Task stopped on when it needed the user. It
+	// is checkpointed so a resume knows which call the answer belongs to.
+	Pending *message.ToolCall `json:"pending,omitempty"`
 }
 
 // newTaskID returns an opaque id. It is stable across resumptions because a

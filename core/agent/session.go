@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"iter"
@@ -17,6 +18,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// ErrPaused tells the loop that the answer is not available yet. Ask returns it
+// when the host cannot answer synchronously; the Task then stops in
+// input-required, which is the one state a checkpoint exists for.
+var ErrPaused = errors.New("agent: waiting for the user")
 
 // Bounds caps one Task. Zero fields mean "no bound", except MaxRounds where the
 // zero value means "until the model stops asking for tools".
@@ -44,6 +50,9 @@ type Options struct {
 	Interrupts <-chan struct{}
 	// Bounds caps the Task.
 	Bounds Bounds
+	// Store persists a checkpoint when the Task pauses. Nil means the caller
+	// keeps the Session in memory instead.
+	Store Store
 }
 
 // Option mutates Options at construction.
@@ -57,6 +66,11 @@ func WithAsk(ask func(ctx context.Context, prompt Prompt) (Reply, error)) Option
 // WithInterrupts installs the cooperative-interrupt channel.
 func WithInterrupts(ch <-chan struct{}) Option {
 	return func(o *Options) { o.Interrupts = ch }
+}
+
+// WithStore installs the checkpoint store used when a Task pauses.
+func WithStore(store Store) Option {
+	return func(o *Options) { o.Store = store }
 }
 
 // WithBounds caps one Task.
@@ -129,26 +143,11 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 		return nil
 	}
 
-	ctx = s.runtime.Context(ctx)
-	ctx, span := telemetry.TracerWithSuffix("agent").Start(ctx, "agent.run",
-		trace.WithAttributes(
-			attribute.String(telemetry.AttrTaskID, task.ID),
-			attribute.String(telemetry.AttrConversationID, task.ContextID),
-			attribute.String(telemetry.AttrLLMModel, s.runtime.DefaultModel().ID.Name),
-		))
+	ctx, span, cancel := s.begin(ctx, task, "agent.run")
 	defer span.End()
+	defer cancel()
 
-	// The view lives as long as the Task: created here, discarded at the end,
-	// never stored on the Session and never supplied by the caller.
-	view := s.runtime.Assembly().NewCatalogView()
-	replayDiscoveries(view, task.History)
-
-	if s.opts.Bounds.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.opts.Bounds.Timeout)
-		defer cancel()
-	}
-
+	view := s.view(ctx, task)
 	history := append(task.History, in.Messages...)
 	contextMessages := history[:len(history)-len(in.Messages)]
 	input := inference.GenerateInput{
@@ -156,13 +155,95 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 		Content: in.Messages[len(in.Messages)-1].Content,
 	}
 	task.History = history
-	toolCalls := 0
+	return s.loop(ctx, task, view, contextMessages, input, 0, yield)
+}
 
+// Resume continues a Task that stopped waiting for the user.
+//
+// The reply becomes the result of the call the Task paused on, which is why the
+// pending call is part of the checkpoint: without it the answer would arrive
+// with no question to attach it to.
+func (s *Session) Resume(ctx context.Context, reply Reply) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		if err := s.resume(ctx, reply, yield); err != nil {
+			yield(nil, err)
+		}
+	}
+}
+
+func (s *Session) resume(ctx context.Context, reply Reply, yield func(Event, error) bool) error {
+	task := s.task
+	if task.State != StateInputRequired || task.Pending == nil {
+		return errdefs.Validationf("agent: task %s is not waiting for input", task.ID)
+	}
+	pending := *task.Pending
+	result := message.NewTextToolResult(pending.ID, reply.Text)
+	observation := toolMessage([]message.ToolResult{result})
+	task.History = append(task.History, observation)
+	task.Pending = nil
+	task.State = StateWorking
+	if !yield(ToolResult{Result: result}, nil) {
+		return nil
+	}
+
+	ctx, span, cancel := s.begin(ctx, task, "agent.resume")
+	defer span.End()
+	defer cancel()
+
+	view := s.view(ctx, task)
+	contextMessages := task.History[:len(task.History)-1]
+	input := inference.GenerateInput{Role: inference.InputRoleTool, Content: observation.Content}
+	return s.loop(ctx, task, view, contextMessages, input, 0, yield)
+}
+
+// begin prepares the context: runtime identity, the Task's root span and the
+// deadline. Every span below this one — route attempts, tool calls, sandbox
+// commands — nests under it.
+func (s *Session) begin(ctx context.Context, task *Task, name string) (context.Context, trace.Span, context.CancelFunc) {
+	ctx = s.runtime.Context(ctx)
+	ctx, span := telemetry.TracerWithSuffix("agent").Start(ctx, name,
+		trace.WithAttributes(
+			attribute.String(telemetry.AttrTaskID, task.ID),
+			attribute.String(telemetry.AttrConversationID, task.ContextID),
+			attribute.String(telemetry.AttrLLMModel, s.runtime.DefaultModel().ID.Name),
+		))
+	cancel := func() {}
+	if s.opts.Bounds.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.opts.Bounds.Timeout)
+	}
+	return ctx, span, cancel
+}
+
+// view creates the Task-scoped catalog view. It is created here and discarded
+// when the Task ends: it is neither a Session field (a cross-task cache the
+// checkpoint would have to serialise) nor a caller input (a view belongs to one
+// assembly, and tool_search searches the view's catalog while execution uses the
+// runtime's registry).
+func (s *Session) view(ctx context.Context, task *Task) toolengine.CatalogView {
+	view := s.runtime.Assembly().NewCatalogView()
+	replayDiscoveries(view, task.History)
+	return view
+}
+
+// loop runs rounds until the Task ends. It is shared by Run and Resume so the
+// two cannot drift.
+func (s *Session) loop(
+	ctx context.Context,
+	task *Task,
+	view toolengine.CatalogView,
+	contextMessages []message.Message,
+	input inference.GenerateInput,
+	toolCalls int,
+	yield func(Event, error) bool,
+) error {
 	for {
 		if err := s.interrupted(ctx); err != nil {
 			return s.finish(task, StateCanceled, err, true, yield)
 		}
 		defs := view.Definitions()
+		if s.opts.Ask != nil {
+			defs = append(defs, askUserDefinition())
+		}
 		tools, err := inference.NewToolset(defs)
 		if err != nil {
 			return s.finish(task, StateFailed, err, true, yield)
@@ -201,6 +282,17 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 			if !yield(ToolCallStart{Call: call}, nil) {
 				return nil
 			}
+			if call.Name == askUserTool {
+				result, paused := s.ask(ctx, call)
+				if paused {
+					return s.pause(ctx, task, call, yield)
+				}
+				results = append(results, result)
+				if !yield(ToolResult{Result: result}, nil) {
+					return nil
+				}
+				continue
+			}
 			result := s.runtime.Assembly().Execute(ctx, call)
 			view.RecordCall(call)
 			results = append(results, result)
@@ -218,6 +310,77 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 		if max := s.opts.Bounds.MaxRounds; max > 0 && task.Round >= max {
 			return s.finish(task, StateCompleted, nil, true, yield)
 		}
+	}
+}
+
+// pause stops the Task in input-required and checkpoints it.
+func (s *Session) pause(
+	ctx context.Context,
+	task *Task,
+	call message.ToolCall,
+	yield func(Event, error) bool,
+) error {
+	pending := call
+	task.Pending = &pending
+	task.State = StateInputRequired
+	if s.opts.Store != nil {
+		if err := s.opts.Store.Write(ctx, s.Snapshot()); err != nil {
+			// Pausing without a resume point would lose the Task, so a store
+			// failure is a Task failure rather than a status nobody acts on.
+			return s.finish(task, StateFailed, err, true, yield)
+		}
+	}
+	if !yield(Status{State: StateInputRequired, Reason: "waiting for the user"}, nil) {
+		return nil
+	}
+	return nil
+}
+
+// ask answers one ask_user call. The second return value reports that the host
+// could not answer yet, which turns the Task into a paused one.
+func (s *Session) ask(ctx context.Context, call message.ToolCall) (message.ToolResult, bool) {
+	if s.opts.Ask == nil {
+		return message.NewErrorToolResult(call.ID,
+			"asking the user is not supported by this host"), false
+	}
+	var args struct {
+		Question string `json:"question"`
+	}
+	if len(call.Arguments) > 0 {
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return message.NewErrorToolResult(call.ID, "question is not valid JSON: "+err.Error()), false
+		}
+	}
+	reply, err := s.opts.Ask(ctx, Prompt{Question: args.Question})
+	if errors.Is(err, ErrPaused) {
+		return message.ToolResult{}, true
+	}
+	if err != nil {
+		return message.NewErrorToolResult(call.ID, err.Error()), false
+	}
+	return message.NewTextToolResult(call.ID, reply.Text), false
+}
+
+// askUserTool is the name the loop intercepts. It is offered to the model only
+// when the host can answer it.
+const askUserTool = "ask_user"
+
+func askUserDefinition() message.ToolDefinition {
+	schema, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"question": map[string]any{
+				"type":        "string",
+				"description": "The question to put to the user.",
+			},
+		},
+		"required":             []string{"question"},
+		"additionalProperties": false,
+	})
+	return message.ToolDefinition{
+		Name:        askUserTool,
+		Description: "Ask the user a question and wait for the answer. Use it only when the task cannot proceed without a decision or missing information.",
+		InputSchema: schema,
 	}
 }
 
