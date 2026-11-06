@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
 
@@ -201,12 +202,15 @@ func (s *Session) resume(ctx context.Context, reply Reply, yield func(Event, err
 // commands — nests under it.
 func (s *Session) begin(ctx context.Context, task *Task, name string) (context.Context, trace.Span, context.CancelFunc) {
 	ctx = s.runtime.Context(ctx)
+	// The runtime identity rides on every span below this one; the root has to
+	// carry it too, or filtering a trace by runtime would miss its own root.
+	attrs := append(runctx.Attrs(ctx),
+		attribute.String(telemetry.AttrTaskID, task.ID),
+		attribute.String(telemetry.AttrConversationID, task.ContextID),
+		attribute.String(telemetry.AttrLLMModel, s.runtime.DefaultModel().ID.Name),
+	)
 	ctx, span := telemetry.TracerWithSuffix("agent").Start(ctx, name,
-		trace.WithAttributes(
-			attribute.String(telemetry.AttrTaskID, task.ID),
-			attribute.String(telemetry.AttrConversationID, task.ContextID),
-			attribute.String(telemetry.AttrLLMModel, s.runtime.DefaultModel().ID.Name),
-		))
+		trace.WithAttributes(attrs...))
 	cancel := func() {}
 	if s.opts.Bounds.Timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, s.opts.Bounds.Timeout)
