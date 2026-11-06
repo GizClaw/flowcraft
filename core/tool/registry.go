@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -342,6 +343,9 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
 	ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, "tool.load",
 		trace.WithAttributes(attribute.String(telemetry.AttrToolName, p.spec.Name)))
+	// The runtime identity the host attached, so a lazy load is attributable to
+	// the runtime that triggered it.
+	span.SetAttributes(runctx.Attrs(ctx)...)
 	defer span.End()
 
 	start := time.Now()

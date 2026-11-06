@@ -12,7 +12,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
@@ -48,6 +50,24 @@ func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 	if _, ok := attrs[telemetry.AttrErrorKind]; ok {
 		t.Errorf("successful call carries %q", telemetry.AttrErrorKind)
 	}
+}
+
+// TestTelemetry_CarriesRuntimeIdentity pins the correlation channel: an identity
+// that travels in the context reaches the span, so a trace can be filtered by the
+// runtime instance that produced it. The middleware never learns what a runtime
+// is; it only copies what it finds.
+func TestTelemetry_CarriesRuntimeIdentity(t *testing.T) {
+	rec := installTelemetryTestTracer(t)
+	exec := tool.NewExecutor(catalogWith(echoTool("echo")), Telemetry())
+	ctx := runctx.WithRun(context.Background(), runctx.Run{RuntimeID: "rt-7", TenantID: "acme"})
+
+	if res := exec.Execute(ctx, call("echo")); res.IsError {
+		t.Fatalf("execute = %q, want success", res.Content.Text())
+	}
+
+	span := rec.Ended()[0]
+	telemetrytest.RequireAttrString(t, span, telemetry.AttrRuntimeID, "rt-7")
+	telemetrytest.RequireAttrString(t, span, telemetry.AttrTenantID, "acme")
 }
 
 // TestTelemetry_RecordsFailureKind pins the classification channel: the stages

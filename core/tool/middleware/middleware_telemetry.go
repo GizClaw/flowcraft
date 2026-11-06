@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 
@@ -48,6 +49,10 @@ func Telemetry() tool.Middleware {
 					attribute.String(telemetry.AttrToolName, call.Name),
 					attribute.String(telemetry.AttrToolCallID, call.ID),
 				))
+			// The runtime identity the host attached: every span below a runtime
+			// carries it, so a trace can be filtered by instance without the
+			// middleware knowing what a runtime is.
+			span.SetAttributes(runctx.Attrs(ctx)...)
 			defer span.End()
 
 			start := time.Now()
