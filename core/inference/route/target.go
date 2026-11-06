@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
@@ -145,9 +146,28 @@ func (r *Router) anyTarget(match func(Target) bool) bool {
 	return false
 }
 
-// dispatch runs the shared selection loop: select, try, classify, move on.
+// dispatch runs the shared selection loop: select, try, classify, move on, with
+// one route span over the whole loop and one event per attempt.
 func dispatch[Req, Res any](
 	ctx context.Context,
+	operation string,
+	targets []Target,
+	selector Selector[Req],
+	request Req,
+	invoke func(context.Context, Target, Req) (Res, error),
+	retry RetryPolicy,
+) (Res, error) {
+	ctx, call := startRoute(ctx, operation)
+	response, err := dispatchTargets(ctx, call, targets, selector, request, invoke, retry)
+	call.finish(err)
+	return response, err
+}
+
+// dispatchTargets is the loop itself, kept separate so every return path runs
+// through the same span close.
+func dispatchTargets[Req, Res any](
+	ctx context.Context,
+	call *routeCall,
 	targets []Target,
 	selector Selector[Req],
 	request Req,
@@ -164,6 +184,7 @@ func dispatch[Req, Res any](
 		}
 		ordered = selected
 	}
+	call.selectTargets(ordered)
 	if len(ordered) == 0 {
 		return zero, inference.NewError(inference.PolicyDenied, "",
 			errors.New("route: no candidate target serves this call"))
@@ -179,14 +200,20 @@ func dispatch[Req, Res any](
 			break
 		}
 		tried++
+		if tried > 1 {
+			call.fallback()
+		}
 
 		for attempt := 1; attempt <= policy.AttemptsPerTarget; attempt++ {
+			var backoff time.Duration
 			if attempt > 1 {
-				if err := sleep(ctx, policy.backoff(attempt-1)); err != nil {
+				backoff = policy.backoff(attempt - 1)
+				if err := sleep(ctx, backoff); err != nil {
 					return zero, err
 				}
 			}
 			response, err := invoke(ctx, target, request)
+			call.attempt(target, attempt, backoff, err)
 			if err == nil {
 				trace.record(Attempt{Target: target.Name})
 				return response, nil

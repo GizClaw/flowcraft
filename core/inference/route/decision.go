@@ -14,7 +14,7 @@ import (
 // probabilities and confidences from two models, which are not comparable, and a
 // refusal from one with an answer from another.
 func (r *Router) Decide(ctx context.Context, request inference.DecisionRequest) (inference.DecisionResponse, error) {
-	return dispatch(ctx, r.targets, r.policy.Decision, request, invokeDecide, r.policy.Retry)
+	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request, invokeDecide, r.policy.Retry)
 }
 
 func invokeDecide(ctx context.Context, target Target, request inference.DecisionRequest) (inference.DecisionResponse, error) {

@@ -9,15 +9,24 @@ import (
 
 // Generate routes one unary generation.
 func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
-	return dispatch(ctx, r.targets, r.policy.Generate, request, invokeGenerate, r.policy.Retry)
+	return dispatch(ctx, operationGenerate, r.targets, r.policy.Generate, request, invokeGenerate, r.policy.Retry)
 }
 
 // GenerateStream routes the opening of one stream.
 //
 // Failover covers only the open: once the stream is returned, an error arrives
 // during iteration, after events have already been produced, and replaying it on
-// another target would duplicate partial output.
+// another target would duplicate partial output. That is also why the route span
+// ends when the stream opens: the attempt span follows the stream itself.
 func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateRequest) (inference.Stream, error) {
+	ctx, call := startRoute(ctx, operationGenerate)
+	stream, err := r.openStream(ctx, call, request)
+	call.finish(err)
+	return stream, err
+}
+
+// openStream runs the failover-on-open loop without closing the route span.
+func (r *Router) openStream(ctx context.Context, call *routeCall, request inference.GenerateRequest) (inference.Stream, error) {
 	ordered := r.targets
 	if r.policy.Generate != nil {
 		selected, err := r.policy.Generate.Select(ctx, request, r.targets)
@@ -26,6 +35,7 @@ func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateR
 		}
 		ordered = selected
 	}
+	call.selectTargets(ordered)
 
 	policy := r.policy.Retry.effective(len(ordered))
 	trace := TraceFrom(ctx)
@@ -37,10 +47,14 @@ func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateR
 			break
 		}
 		tried++
+		if tried > 1 {
+			call.fallback()
+		}
 		if target.Provider.Generator == nil {
 			continue
 		}
 		stream, err := target.Provider.GenerateStream(ctx, request)
+		call.attempt(target, 1, 0, err)
 		if err == nil {
 			trace.record(Attempt{Target: target.Name})
 			return stream, nil
