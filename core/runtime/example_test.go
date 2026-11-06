@@ -74,7 +74,7 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	// tools.dynamic defers everything except the always list, and the assembly
 	// adds tool_search so the deferred set stays reachable.
 	visible := map[string]bool{}
-	for _, definition := range rt.NewToolSession().Definitions() {
+	for _, definition := range rt.NewCatalogView().Definitions() {
 		visible[definition.Name] = true
 	}
 	if !visible["read_file"] || !visible["tool_search"] {

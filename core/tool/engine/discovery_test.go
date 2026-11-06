@@ -28,7 +28,7 @@ func TestDynamicSession_DiscoveryPoolEvictsLRU(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	outcome := session.Discover("a", "b", "c", "d")
 	if len(outcome.Results) != 4 ||
@@ -78,7 +78,7 @@ func TestDynamicSession_DiscoveryByteCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	outcome := session.Discover("big", "a")
 	if len(outcome.Evicted) == 0 || outcome.Evicted[0] != "big" {
@@ -103,21 +103,21 @@ func TestDynamicSession_DiscoveryIdleEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	session.Discover("a")
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	if !contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("discovered tool must survive one idle round")
 	}
 
 	session.RecordCall(message.ToolCall{ID: "c1", Name: "a", Arguments: []byte(`{}`)})
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	if !contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("used tool must be refreshed past the idle horizon")
 	}
 
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	if contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("unused tool must expire after the idle horizon")
 	}
@@ -125,7 +125,7 @@ func TestDynamicSession_DiscoveryIdleEviction(t *testing.T) {
 
 func TestDynamicSession_DiscoveryIgnoresAlwaysAndHidden(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always", "deferred", "hidden")
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	outcome := session.Discover("always", "hidden", "deferred")
 	if len(outcome.Results) != 3 {
@@ -154,7 +154,7 @@ func TestDynamicSession_DiscoveryStaleCatalogEntryDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	session.Discover("a")
 	if !contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("tool missing before removal")
@@ -185,7 +185,7 @@ func TestDynamicSession_ToolSearchSurvivesBudgetPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	names := definitionNames(assembly.NewSession().Definitions())
+	names := definitionNames(assembly.NewCatalogView().Definitions())
 	if len(names) != 1 || names[0] != engine.ToolName {
 		t.Fatalf("Definitions = %v, want only tool_search", names)
 	}
@@ -208,7 +208,7 @@ func TestDynamicSession_DiscoveryDirectSurvivesRecencyTie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	outcome := assembly.NewSession().Discover("keep", "drop")
+	outcome := assembly.NewCatalogView().Discover("keep", "drop")
 	if len(outcome.Results) != 2 ||
 		!outcome.Results[0].Exposed || outcome.Results[1].Exposed {
 		t.Fatalf("Discover outcome = %+v, want keep exposed, drop evicted", outcome)
@@ -229,15 +229,15 @@ func TestDynamicSession_LegacyRetentionSeedsIdleRounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	session.Discover("a")
 	for i := 0; i < 2; i++ {
-		session.AdvanceTurn()
+		session.AdvanceRound()
 		if !contains(definitionNames(session.Definitions()), "a") {
 			t.Fatalf("tool vanished after %d idle rounds (legacy retention 2)", i+1)
 		}
 	}
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	if contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("tool must expire after legacy retention rounds")
 	}
@@ -256,7 +256,7 @@ func TestDynamicSession_PerRoundBudgetPrefersMRUPoolEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	session.Discover("a")
 	session.Discover("b")
 	names := definitionNames(session.Definitions())
@@ -278,8 +278,8 @@ func TestSearchTool_ReportsLoadFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 	search, _ := assembly.Catalog().Get(engine.ToolName)
 	out, err := search.Execute(ctx, `{"query":"broken"}`)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestDynamicSession_DiscoverReportsPerRoundVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	outcome := session.Discover(order...)
 
 	visible := make(map[string]bool)
@@ -418,8 +418,8 @@ func TestSearchTool_ReportsVisibleBudgetHits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 	search, _ := assembly.Catalog().Get(engine.ToolName)
 	out, err := search.Execute(ctx, `{"query":"hit"}`)
 	if err != nil {
@@ -464,7 +464,7 @@ func TestDynamicSession_DiscoveryDefaultsFollowVisibleBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	outcome := session.Discover(names...)
 	if len(outcome.Evicted) != 0 {
 		t.Fatalf("evicted %v, want the pool to follow budget.max_bytes", outcome.Evicted)

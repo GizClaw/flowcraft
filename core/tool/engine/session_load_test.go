@@ -42,7 +42,7 @@ func TestSearchWithLoad_PolicyToggle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	hits, err := session.Search(context.Background(), "cities", 8)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestSearchWithLoad_PolicyToggle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session2 := assembly2.NewSession()
+	session2 := assembly2.NewCatalogView()
 	hits, err = session2.Search(context.Background(), "cities", 8)
 	if err != nil {
 		t.Fatalf("SearchWithLoad policy: %v", err)
@@ -86,7 +86,7 @@ func TestSearchWithLoad_ExplicitMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	hits, err := session.SearchWithLoad(context.Background(), "cities", 8)
 	if err != nil {
 		t.Fatalf("SearchWithLoad: %v", err)
@@ -111,7 +111,7 @@ func TestSession_LoadLoadsAllLazyTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	if err := session.Load(context.Background()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestStaticSession_LoadAndSearchWithLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	if err := session.Load(context.Background()); err != nil {
 		t.Fatalf("static Load = %v, want nil", err)
 	}

@@ -78,10 +78,10 @@ var DefaultBudget = Budget{
 	MaxBytes:       16 * 1024,
 }
 
-// DiscoveryPolicy bounds the session-level discovery pool: tools the
+// DiscoveryPolicy bounds the view-level discovery pool: tools the
 // model has found via tool_search or used, kept loaded across rounds.
 // The pool budget is independent from the per-round Budget: Budget caps
-// what reaches the model this turn, Discovery caps what the session
+// what reaches the model this turn, Discovery caps what the view
 // remembers.
 type DiscoveryPolicy struct {
 	// MaxTools caps the number of pool entries. Zero falls back to

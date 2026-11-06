@@ -16,7 +16,7 @@ type candidate struct {
 
 // visibleCandidates applies the visibility algorithm and returns the
 // definitions that reach the model this round, sorted by name for
-// stable output. The computation is pure: it never mutates the session
+// stable output. The computation is pure: it never mutates the view
 // or the policy.
 func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []candidate {
 	budget := policy.Budget

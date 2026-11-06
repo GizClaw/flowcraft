@@ -16,8 +16,8 @@ import (
 const ToolName = "tool_search"
 
 // SearchTool is the model-facing discovery tool. It resolves the
-// session from context (see WithSession) so one instance can be
-// registered on the shared registry for all sessions.
+// session from context (see WithCatalogView) so one instance can be
+// registered on the shared registry for all views.
 type SearchTool struct{}
 
 var _ tool.Tool = SearchTool{}
@@ -60,12 +60,12 @@ type searchFailure struct {
 }
 
 // Execute parses the query, ranks hits, and exposes the top results for
-// the following rounds through the session discovery pool.
+// the following rounds through the view discovery pool.
 func (SearchTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
-	session, ok := SessionFromContext(ctx)
+	view, ok := CatalogViewFrom(ctx)
 	if !ok {
 		return message.Content{}, errdefs.NotAvailablef(
-			"tool: %s requires a session on the context", ToolName)
+			"tool: %s requires a catalog view on the context", ToolName)
 	}
 	var args searchArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -74,7 +74,7 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (message.Conten
 	if strings.TrimSpace(args.Query) == "" {
 		return message.Content{}, errdefs.Validationf("tool: %s: query is required", ToolName)
 	}
-	hits, err := session.Search(ctx, args.Query, args.Limit)
+	hits, err := view.Search(ctx, args.Query, args.Limit)
 	if err != nil {
 		return message.Content{}, err
 	}
@@ -84,13 +84,13 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (message.Conten
 		// Exposed tools must be loaded: round N+1 shows the real
 		// definition, never the LazyTool placeholder. A hit that
 		// cannot load is reported instead of silently skipped.
-		if err := session.EnsureLoaded(ctx, hit.Name); err != nil {
+		if err := view.EnsureLoaded(ctx, hit.Name); err != nil {
 			failed = append(failed, searchFailure{Name: hit.Name, Reason: "load_failed"})
 			continue
 		}
 		loaded = append(loaded, hit.Name)
 	}
-	outcome := session.Discover(loaded...)
+	outcome := view.Discover(loaded...)
 	exposed := make([]string, 0, len(outcome.Results))
 	for _, result := range outcome.Results {
 		if result.Exposed {

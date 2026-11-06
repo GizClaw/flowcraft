@@ -21,8 +21,8 @@ func TestRecordCalls_FeedsSession(t *testing.T) {
 	}
 	//nolint:staticcheck // standalone deprecated middleware: covered for custom dispatchers
 	exec := tool.NewExecutor(assembly.Catalog(), RecordCalls())
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 
 	exec.Execute(ctx, call("direct"))
 

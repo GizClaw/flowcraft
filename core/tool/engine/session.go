@@ -11,15 +11,15 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// Session is the per-run / per-conversation injection view over a
+// CatalogView is the per-run / per-conversation injection view over a
 // [Catalog]. An Engine creates one at run start, feeds the model
 // Definitions() each round, records calls, and advances turns.
 //
-// When the assembly was built without dynamic injection, the session
-// is static: Definitions() shows every tool, and the stateful
-// operations (Require/Discover/RecordCall/AdvanceTurn) are no-ops while
+// When the assembly was built without dynamic injection, the view is
+// static: Definitions() shows every tool, and the stateful
+// operations (Require/Discover/RecordCall/AdvanceRound) are no-ops while
 // Search returns NotAvailable.
-type Session interface {
+type CatalogView interface {
 	tool.Catalog
 
 	// Require adds names to the RequiredByName set. Idempotent.
@@ -41,10 +41,10 @@ type Session interface {
 	// are skipped: the former are always visible, the latter must
 	// never surface through use.
 	RecordCall(call message.ToolCall)
-	// AdvanceTurn moves to the next round, expiring discovery entries
+	// AdvanceRound moves to the next round, expiring discovery entries
 	// that went idle and dropping names no longer in the catalog. Call
 	// it once per inference round.
-	AdvanceTurn()
+	AdvanceRound()
 	// Search ranks searchable definitions against query with BM25.
 	// Search never loads deferred tools.
 	Search(ctx context.Context, query string, limit int) ([]SearchHit, error)
@@ -82,22 +82,22 @@ type DiscoverOutcome struct {
 	Evicted []string `json:"evicted,omitempty"`
 }
 
-// dynamicSession is the stateful injection view. It reads tools from
+// dynamicView is the stateful injection view. It reads tools from
 // the shared registry (the execution surface) and applies Exposure /
 // discovery pool / budget purely on the read side.
-type dynamicSession struct {
+type dynamicView struct {
 	catalog tool.Catalog
 	policy  Policy
 
 	mu sync.Mutex
-	st sessionState
+	st viewState
 }
 
-func (s *dynamicSession) Get(name string) (tool.Tool, bool) {
+func (s *dynamicView) Get(name string) (tool.Tool, bool) {
 	return s.catalog.Get(name)
 }
 
-func (s *dynamicSession) Definitions() []message.ToolDefinition {
+func (s *dynamicView) Definitions() []message.ToolDefinition {
 	s.mu.Lock()
 	policy := s.policy
 	st := s.st.snapshot()
@@ -115,7 +115,7 @@ func (s *dynamicSession) Definitions() []message.ToolDefinition {
 // and policy, applying the discovery pool cap and the per-round budget.
 // Definitions() and Discover() share it so the exposure report can never
 // drift from the definitions that are actually sent.
-func (s *dynamicSession) visibleSet(policy Policy, st stateSnapshot) []candidate {
+func (s *dynamicView) visibleSet(policy Policy, st stateSnapshot) []candidate {
 	all := s.catalog.Definitions()
 	sizes := make(map[string]int64, len(all))
 	cands := make([]candidate, 0, len(all))
@@ -137,7 +137,7 @@ func (s *dynamicSession) visibleSet(policy Policy, st stateSnapshot) []candidate
 // Most-recently-used entries stay first; required tools are unaffected
 // (they live in their own set). The read path never mutates state, so
 // entries trimmed here are evicted for real on the next mutation or
-// AdvanceTurn. Like the per-round budget, at least one entry is kept so
+// AdvanceRound. Like the per-round budget, at least one entry is kept so
 // an oversized single tool remains discoverable.
 func fitDiscoveryPool(st stateSnapshot, sizes map[string]int64, pool DiscoveryPolicy) stateSnapshot {
 	if len(st.discovered) == 0 {
@@ -178,7 +178,7 @@ func fitDiscoveryPool(st stateSnapshot, sizes map[string]int64, pool DiscoveryPo
 	return out
 }
 
-func (s *dynamicSession) Require(names ...string) {
+func (s *dynamicView) Require(names ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.st.require(names...)
@@ -188,7 +188,7 @@ func (s *dynamicSession) Require(names ...string) {
 // must already be loaded (call EnsureLoaded first) so the pool measures
 // real definitions; entries are then evicted LRU until the pool fits
 // Policy.Discovery.
-func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
+func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -252,7 +252,7 @@ func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
 // Deferred tools are evicted before Direct ones; a single oversized
 // entry is kept so discovery cannot dead-end on one big schema. Callers
 // hold mu.
-func (s *dynamicSession) evictForFitLocked() []string {
+func (s *dynamicView) evictForFitLocked() []string {
 	pool := s.policy.Discovery
 	var evicted []string
 	for {
@@ -295,7 +295,7 @@ func evictsBefore(a discoveredEntry, aDeferred bool, b discoveredEntry, bDeferre
 	return a.seq < b.seq
 }
 
-func (s *dynamicSession) RecordCall(call message.ToolCall) {
+func (s *dynamicView) RecordCall(call message.ToolCall) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -312,7 +312,7 @@ func (s *dynamicSession) RecordCall(call message.ToolCall) {
 	s.evictForFitLocked()
 }
 
-func (s *dynamicSession) AdvanceTurn() {
+func (s *dynamicView) AdvanceRound() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -327,23 +327,23 @@ func (s *dynamicSession) AdvanceTurn() {
 	s.evictForFitLocked()
 }
 
-func (s *dynamicSession) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+func (s *dynamicView) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if s.policy.SearchWithLoad {
 		if err := s.Load(ctx); err != nil {
-			telemetry.WarnErr(ctx, "tool session: preload for search failed", err)
+			telemetry.WarnErr(ctx, "tool view: preload for search failed", err)
 		}
 	}
 	return s.search(ctx, query, limit)
 }
 
-func (s *dynamicSession) SearchWithLoad(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+func (s *dynamicView) SearchWithLoad(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if err := s.Load(ctx); err != nil {
-		telemetry.WarnErr(ctx, "tool session: preload for search failed", err)
+		telemetry.WarnErr(ctx, "tool view: preload for search failed", err)
 	}
 	return s.search(ctx, query, limit)
 }
 
-func (s *dynamicSession) search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+func (s *dynamicView) search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	s.mu.Lock()
 	policy := s.policy
 	s.mu.Unlock()
@@ -369,7 +369,7 @@ func (s *dynamicSession) search(ctx context.Context, query string, limit int) ([
 	return bm25Search(docs, query, limit)
 }
 
-func (s *dynamicSession) Load(ctx context.Context) error {
+func (s *dynamicView) Load(ctx context.Context) error {
 	var first error
 	for _, def := range s.catalog.Definitions() {
 		if err := s.EnsureLoaded(ctx, def.Name); err != nil && first == nil {
@@ -379,7 +379,7 @@ func (s *dynamicSession) Load(ctx context.Context) error {
 	return first
 }
 
-func (s *dynamicSession) EnsureLoaded(ctx context.Context, names ...string) error {
+func (s *dynamicView) EnsureLoaded(ctx context.Context, names ...string) error {
 	var first error
 	for _, name := range names {
 		t, ok := s.catalog.Get(name)
@@ -395,60 +395,60 @@ func (s *dynamicSession) EnsureLoaded(ctx context.Context, names ...string) erro
 	return first
 }
 
-// staticSession is the non-dynamic view: every tool visible, no state.
-type staticSession struct {
+// staticView is the non-dynamic view: every tool visible, no state.
+type staticView struct {
 	catalog tool.Catalog
 }
 
-func (s *staticSession) Get(name string) (tool.Tool, bool) {
+func (s *staticView) Get(name string) (tool.Tool, bool) {
 	return s.catalog.Get(name)
 }
 
-func (s *staticSession) Definitions() []message.ToolDefinition {
+func (s *staticView) Definitions() []message.ToolDefinition {
 	return s.catalog.Definitions()
 }
 
-func (s *staticSession) Require(...string) {}
+func (s *staticView) Require(...string) {}
 
-func (s *staticSession) Discover(...string) DiscoverOutcome {
+func (s *staticView) Discover(...string) DiscoverOutcome {
 	return DiscoverOutcome{}
 }
 
-func (s *staticSession) RecordCall(message.ToolCall) {}
-func (s *staticSession) AdvanceTurn()                {}
-func (s *staticSession) Load(context.Context) error  { return nil }
-func (s *staticSession) EnsureLoaded(context.Context, ...string) error {
+func (s *staticView) RecordCall(message.ToolCall) {}
+func (s *staticView) AdvanceRound()               {}
+func (s *staticView) Load(context.Context) error  { return nil }
+func (s *staticView) EnsureLoaded(context.Context, ...string) error {
 	return nil
 }
 
-func (s *staticSession) Search(context.Context, string, int) ([]SearchHit, error) {
+func (s *staticView) Search(context.Context, string, int) ([]SearchHit, error) {
 	return nil, errdefs.NotAvailablef(
 		"tool: dynamic injection is not enabled on this assembly")
 }
 
-func (s *staticSession) SearchWithLoad(context.Context, string, int) ([]SearchHit, error) {
+func (s *staticView) SearchWithLoad(context.Context, string, int) ([]SearchHit, error) {
 	return nil, errdefs.NotAvailablef(
 		"tool: dynamic injection is not enabled on this assembly")
 }
 
-// SessionFromContext returns the per-run session attached to ctx. The session
+// CatalogViewFrom returns the per-run view attached to ctx. The view
 // travels as a [tool.CallRecorder] — the contract seam middleware reads — so a
 // middleware never has to depend on this package.
-func SessionFromContext(ctx context.Context) (Session, bool) {
+func CatalogViewFrom(ctx context.Context) (CatalogView, bool) {
 	recorder, ok := tool.CallRecorderFrom(ctx)
 	if !ok {
 		return nil, false
 	}
-	session, ok := recorder.(Session)
-	return session, ok
+	view, ok := recorder.(CatalogView)
+	return view, ok
 }
 
-// WithSession attaches the per-run session to ctx.
-func WithSession(ctx context.Context, s Session) context.Context {
+// WithCatalogView attaches the per-run session to ctx.
+func WithCatalogView(ctx context.Context, s CatalogView) context.Context {
 	return tool.WithCallRecorder(ctx, s)
 }
 
 var (
-	_ Session = (*dynamicSession)(nil)
-	_ Session = (*staticSession)(nil)
+	_ CatalogView = (*dynamicView)(nil)
+	_ CatalogView = (*staticView)(nil)
 )

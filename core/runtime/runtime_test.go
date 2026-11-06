@@ -159,7 +159,7 @@ func TestDynamicDefersToolsButKeepsAlwaysVisible(t *testing.T) {
 	}
 	defer func() { _ = rt.Close() }()
 
-	visible := definitionNames(rt.NewToolSession().Definitions())
+	visible := definitionNames(rt.NewCatalogView().Definitions())
 	if !contains(visible, "read_file") {
 		t.Errorf("visible = %v, want read_file", visible)
 	}
@@ -185,7 +185,7 @@ func TestStaticExposesEveryTool(t *testing.T) {
 	}
 	defer func() { _ = rt.Close() }()
 
-	visible := definitionNames(rt.NewToolSession().Definitions())
+	visible := definitionNames(rt.NewCatalogView().Definitions())
 	for _, name := range []string{"read_file", "write_file", "edit"} {
 		if !contains(visible, name) {
 			t.Errorf("visible = %v, missing %s", visible, name)

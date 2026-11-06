@@ -38,7 +38,7 @@ func dynamicAssembly(t *testing.T, names ...string) (*engine.Assembly, engine.Po
 
 func TestDynamicSession_ExposureBaseline(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always", "direct", "deferred", "hidden")
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	names := definitionNames(session.Definitions())
 	want := []string{"always", "tool_search"}
@@ -54,7 +54,7 @@ func TestDynamicSession_ExposureBaseline(t *testing.T) {
 
 func TestDynamicSession_DiscoverRecordAdvance(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always", "direct", "deferred", "hidden")
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	session.Require("hidden")
 	names := definitionNames(session.Definitions())
@@ -77,14 +77,14 @@ func TestDynamicSession_DiscoverRecordAdvance(t *testing.T) {
 		t.Fatalf("used direct tool missing: %v", names)
 	}
 
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	names = definitionNames(session.Definitions())
 	if !contains(names, "direct") || !contains(names, "deferred") {
 		t.Fatalf("used/discovered tools must survive one advance: %v", names)
 	}
 	// The discovery idle horizon is 10 — advance past it.
 	for i := 0; i < 11; i++ {
-		session.AdvanceTurn()
+		session.AdvanceRound()
 	}
 	names = definitionNames(session.Definitions())
 	if contains(names, "direct") || contains(names, "deferred") {
@@ -94,7 +94,7 @@ func TestDynamicSession_DiscoverRecordAdvance(t *testing.T) {
 
 func TestDynamicSession_Search(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always", "direct", "deferred", "hidden")
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 
 	hits, err := session.Search(context.Background(), "deferred", 8)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestDynamicSession_Budget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	names := definitionNames(session.Definitions())
 	if len(names) != 2 {
 		t.Fatalf("budget allowed %d definitions: %v", len(names), names)
@@ -146,12 +146,12 @@ func TestStaticSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	if len(definitionNames(session.Definitions())) != 2 {
 		t.Fatalf("static session must show every tool")
 	}
 	session.Discover("a")
-	session.AdvanceTurn()
+	session.AdvanceRound()
 	session.RecordCall(message.ToolCall{ID: "c", Name: "a", Arguments: []byte(`{}`)})
 	if _, err := session.Search(context.Background(), "a", 8); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("static Search = %v, want NotAvailable", err)
@@ -160,14 +160,14 @@ func TestStaticSession(t *testing.T) {
 
 func TestSessionContext(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always")
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
-	got, ok := engine.SessionFromContext(ctx)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
+	got, ok := engine.CatalogViewFrom(ctx)
 	if !ok || got != session {
-		t.Fatalf("SessionFromContext = %v, %v", got, ok)
+		t.Fatalf("CatalogViewFrom = %v, %v", got, ok)
 	}
-	if _, ok := engine.SessionFromContext(context.Background()); ok {
-		t.Fatal("SessionFromContext without session must be false")
+	if _, ok := engine.CatalogViewFrom(context.Background()); ok {
+		t.Fatal("CatalogViewFrom without session must be false")
 	}
 }
 

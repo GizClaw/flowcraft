@@ -25,7 +25,7 @@ func TestSessionSearchCapsLimitAtPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	hits, err := session.Search(context.Background(), "tool", 1_000_000)
 	if err != nil {
 		t.Fatalf("Search: %v", err)

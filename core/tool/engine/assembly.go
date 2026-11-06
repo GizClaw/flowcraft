@@ -10,7 +10,7 @@ import (
 // Assembly is the standard tool resource value: the aggregated
 // registry (read surface), the executor (execution surface), and —
 // when dynamic injection is configured — the injection policy that
-// session views are created from.
+// view views are created from.
 type Assembly struct {
 	registry *tool.Registry
 	executor *tool.Executor
@@ -83,8 +83,8 @@ func NewAssembly(sources []tool.Source, opts ...AssemblyOption) (*Assembly, erro
 	}
 	mws := o.middleware
 	if policy != nil {
-		// Dynamic sessions keep their discovery pool fresh on every
-		// executed call. The recorder is a no-op without a session on
+		// Dynamic views keep their discovery pool fresh on every
+		// executed call. The recorder is a no-op without a view on
 		// the context, so one chain serves static and dynamic hosts.
 		mws = append(append([]tool.Middleware{}, mws...), recordSessionCalls())
 	}
@@ -103,14 +103,14 @@ func (searchToolSource) Tools() []tool.Tool         { return []tool.Tool{SearchT
 func (searchToolSource) LazyTools() []tool.LazyTool { return nil }
 
 // recordSessionCalls feeds every dispatched tool call back into the
-// session found on the execution context so active use refreshes the
-// discovery pool. Without a session on the context it is a no-op.
+// view found on the execution context so active use refreshes the
+// discovery pool. Without a view on the context it is a no-op.
 func recordSessionCalls() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			res := next(ctx, call)
-			if session, ok := SessionFromContext(ctx); ok {
-				session.RecordCall(call)
+			if view, ok := CatalogViewFrom(ctx); ok {
+				view.RecordCall(call)
 			}
 			return res
 		}
@@ -139,17 +139,17 @@ func (a *Assembly) ExecuteAll(ctx context.Context, calls []message.ToolCall) []m
 	return a.executor.ExecuteAll(ctx, calls)
 }
 
-// NewSession creates one per-run / per-conversation injection view.
-// Without dynamic injection it returns a static session showing every
+// NewCatalogView creates one per-run / per-conversation injection view.
+// Without dynamic injection it returns a static view showing every
 // tool.
-func (a *Assembly) NewSession() Session {
+func (a *Assembly) NewCatalogView() CatalogView {
 	if a.policy == nil {
-		return &staticSession{catalog: a.registry}
+		return &staticView{catalog: a.registry}
 	}
-	return &dynamicSession{
+	return &dynamicView{
 		catalog: a.registry,
 		policy:  *a.policy,
-		st:      *newSessionState(),
+		st:      *newViewState(),
 	}
 }
 

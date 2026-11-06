@@ -153,12 +153,12 @@ func (r *Runtime) DefaultModel() model.ModelRef {
 // set — the policy session views are created from.
 func (r *Runtime) Assembly() *engine.Assembly { return r.assembly }
 
-// NewToolSession returns a fresh visibility view over the tool catalog.
+// NewCatalogView returns a fresh visibility view over the tool catalog.
 //
 // The view is per round and therefore not stored: it remembers which tools the
 // model discovered, which went idle, and what the current round may show. A
 // Runtime holding one would make two conversations share that state.
-func (r *Runtime) NewToolSession() engine.Session { return r.assembly.NewSession() }
+func (r *Runtime) NewCatalogView() engine.CatalogView { return r.assembly.NewCatalogView() }
 
 // Files is the file boundary the tools work inside.
 func (r *Runtime) Files() *fsx.Tree { return r.tree }

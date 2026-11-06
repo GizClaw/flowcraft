@@ -35,7 +35,7 @@ func TestAssembly_DynamicRegistersSearchTool(t *testing.T) {
 	if _, ok := assembly.Catalog().Get(engine.ToolName); !ok {
 		t.Fatal("tool_search not registered on dynamic assembly")
 	}
-	session := assembly.NewSession()
+	session := assembly.NewCatalogView()
 	names := definitionNames(session.Definitions())
 	if !contains(names, engine.ToolName) {
 		t.Fatalf("tool_search not visible: %v", names)
@@ -62,8 +62,8 @@ func TestAssembly_SearchToolExecutesAgainstSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 	search, _ := assembly.Catalog().Get(engine.ToolName)
 	out, err := search.Execute(ctx, `{"query":"web search"}`)
 	if err != nil {
@@ -86,8 +86,8 @@ func TestAssembly_SessionRecorderRefreshesDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	session := assembly.NewSession()
-	ctx := engine.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 
 	res := assembly.Execute(ctx, message.ToolCall{
 		ID: "c1", Name: "web.search", Arguments: []byte(`{}`),

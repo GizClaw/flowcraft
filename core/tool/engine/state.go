@@ -1,18 +1,18 @@
 package engine
 
-// sessionState is the per-session injection state. All mutations
+// viewState is the per-view injection state. All mutations
 // happen through explicit methods; Definitions() only reads a
 // snapshot, so the visibility computation stays a pure function of
 // (candidates, state, policy).
-type sessionState struct {
+type viewState struct {
 	required   map[string]struct{}
 	discovered map[string]discoveredEntry
 	turn       uint64
 	seq        uint64
 }
 
-func newSessionState() *sessionState {
-	return &sessionState{
+func newViewState() *viewState {
+	return &viewState{
 		required:   make(map[string]struct{}),
 		discovered: make(map[string]discoveredEntry),
 	}
@@ -32,7 +32,7 @@ type discoveredEntry struct {
 	bytes   int64
 }
 
-func (s *sessionState) snapshot() stateSnapshot {
+func (s *viewState) snapshot() stateSnapshot {
 	snap := stateSnapshot{
 		required:   make(map[string]struct{}, len(s.required)),
 		discovered: make(map[string]discoveredEntry, len(s.discovered)),
@@ -63,7 +63,7 @@ func (s stateSnapshot) isDiscovered(name string) bool {
 	return ok
 }
 
-func (s *sessionState) require(names ...string) {
+func (s *viewState) require(names ...string) {
 	for _, name := range names {
 		s.required[name] = struct{}{}
 	}
@@ -72,7 +72,7 @@ func (s *sessionState) require(names ...string) {
 // touch inserts or refreshes one discovery pool entry as the most
 // recently used item, recording the current definition size and the
 // name's position in the discovering batch (0 for a single name).
-func (s *sessionState) touch(name string, size int64, rank int) {
+func (s *viewState) touch(name string, size int64, rank int) {
 	s.seq++
 	s.discovered[name] = discoveredEntry{
 		lastUse: s.turn,
@@ -82,11 +82,11 @@ func (s *sessionState) touch(name string, size int64, rank int) {
 	}
 }
 
-func (s *sessionState) removeDiscovered(name string) {
+func (s *viewState) removeDiscovered(name string) {
 	delete(s.discovered, name)
 }
 
-func (s *sessionState) discoveredTotals() (int, int64) {
+func (s *viewState) discoveredTotals() (int, int64) {
 	var total int64
 	for _, entry := range s.discovered {
 		total += entry.bytes
@@ -98,7 +98,7 @@ func (s *sessionState) discoveredTotals() (int, int64) {
 // discovery entries have gone idle (no use for idleRounds rounds) or
 // whose tools are no longer in the catalog. Callers perform the actual
 // removal so the catalog check stays outside the state type.
-func (s *sessionState) advanceTurn(idleRounds int, alive func(string) bool) []string {
+func (s *viewState) advanceTurn(idleRounds int, alive func(string) bool) []string {
 	s.turn++
 	var stale []string
 	for name, entry := range s.discovered {
