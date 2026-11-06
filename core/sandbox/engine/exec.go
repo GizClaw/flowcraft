@@ -3,10 +3,16 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot Exec helper:
@@ -23,6 +29,50 @@ func Exec(
 	if runner == nil {
 		return nil, errdefs.Validationf("sandbox: nil runner")
 	}
+
+	ctx, span := telemetry.TracerWithSuffix("sandbox").Start(ctx, "sandbox.exec",
+		trace.WithAttributes(
+			attribute.String(telemetry.AttrSandboxRunner, fmt.Sprintf("%T", runner)),
+		))
+	defer span.End()
+	if opts.Timeout > 0 {
+		span.SetAttributes(attribute.Int64(
+			telemetry.AttrSandboxTimeoutMs, opts.Timeout.Milliseconds()))
+	}
+
+	result, err := runCommand(ctx, runner, cmd, args, opts)
+	if err != nil {
+		// The status label is the classification, never the command or its
+		// output: argv can carry a secret, and stderr can echo one back.
+		span.SetStatus(codes.Error, execOutcome(err))
+		return result, err
+	}
+	span.SetAttributes(attribute.Int(
+		telemetry.AttrSandboxExitCode, result.ExitCode))
+	span.SetStatus(codes.Ok, "")
+	return result, nil
+}
+
+// execOutcome classifies a failed command for the span status.
+func execOutcome(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "exec_failed"
+	}
+}
+
+// runCommand is the uninstrumented one-shot execution.
+func runCommand(
+	ctx context.Context,
+	runner sandbox.Runner,
+	cmd string,
+	args []string,
+	opts sandbox.ExecOptions,
+) (*sandbox.ExecResult, error) {
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
