@@ -3,11 +3,13 @@
 //
 // # Why the split
 //
-// A read restriction only means something if the kernel enforces it, and this
-// framework does not project one. So reads are unrestricted: any absolute path
-// this process can open, fsx can read. That is a decision with a consequence —
-// the model can read a secret and copy it into the workspace — and it is stated
-// here rather than left to be discovered.
+// Reads are not restricted by this package, by decision. The boundary a read
+// rule would draw is not the boundary a write rule draws: it would have to
+// cover what a tool opens here and what every sandboxed command opens there,
+// and a secret is better kept outside the tree than fenced inside it. So reads
+// are unrestricted: any absolute path this process can open, fsx can read. That
+// is a decision with a consequence — the model can read a secret and copy it
+// into the workspace — and it is stated here rather than left to be discovered.
 //
 // Writes are the opposite. A write is the one file operation where a mistake
 // becomes persistent, so each declared writable root is opened with

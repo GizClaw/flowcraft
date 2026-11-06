@@ -15,8 +15,9 @@ import (
 // absolute. Returning an error stops the walk.
 type WalkFunc func(path string, entry fs.DirEntry) error
 
-// Read returns the whole file. Reads are unrestricted: any absolute path this
-// process can open is readable, because no read restriction is projected.
+// Read returns the whole file. Reads are unrestricted by decision: any absolute
+// path this process can open is readable, and the boundary that matters for
+// writes is not a boundary for reads.
 func (t *Tree) Read(ctx context.Context, path string) ([]byte, error) {
 	if err := t.checkRead(ctx, path); err != nil {
 		return nil, err

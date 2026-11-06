@@ -10,10 +10,13 @@ import (
 // Writes is the file permission this framework enforces: an allow-list of
 // absolute paths a turn may write.
 //
-// Only writes are listed because only writes are enforced. Reads are
-// unrestricted by decision, not by omission: the boundary that would confine
-// them is the kernel, and a read restriction the kernel cannot project is a
-// permission the code only pretends to honour. See the package doc.
+// Only writes are listed because only writes are restricted. Reads are
+// deliberately outside this vocabulary: what a read rule protects is a secret,
+// and a secret belongs outside the tree the agent works in. A read rule would
+// only protect the code paths that consult it, and it would have to hold
+// identically for in-process tools and for every command a sandbox runs — two
+// projections to keep in sync for a failure that does not persist. See the
+// package doc.
 //
 // Paths are absolute and subtree-based: /w covers /w and everything beneath it.
 // They are glob-free because a sandbox projection is a mount, and a mount binds
