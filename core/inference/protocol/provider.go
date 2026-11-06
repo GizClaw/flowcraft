@@ -7,33 +7,19 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 )
 
-// BindProvider assembles the host-facing contract from the bound halves. Either
+// BindGenerator assembles the generation seam from the bound halves. Either
 // half may be nil: a provider that cannot stream reports streaming as an
 // unsupported operation instead of forcing every driver to carry a stub.
-func BindProvider(unary GenerateDriver, stream GenerateStreamDriver) inference.Provider {
-	return provider{unary: unary, stream: stream}
+func BindGenerator(unary GenerateDriver, stream GenerateStreamDriver) inference.Generator {
+	return generator{unary: unary, stream: stream}
 }
 
-// BindProviderWithCatalog is [BindProvider] plus the model declarations a driver
-// publishes. The returned value still satisfies [inference.Provider]; a host
-// that wants the declarations asserts [inference.Catalog].
-func BindProviderWithCatalog(
-	unary GenerateDriver,
-	stream GenerateStreamDriver,
-	catalog inference.Catalog,
-) inference.Provider {
-	return catalogProvider{
-		Provider: BindProvider(unary, stream),
-		Catalog:  catalog,
-	}
-}
-
-type provider struct {
+type generator struct {
 	unary  GenerateDriver
 	stream GenerateStreamDriver
 }
 
-func (p provider) Generate(
+func (p generator) Generate(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, error) {
@@ -47,7 +33,7 @@ func (p provider) Generate(
 	return p.unary.Execute(ctx, request)
 }
 
-func (p provider) GenerateStream(
+func (p generator) GenerateStream(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {
@@ -59,9 +45,4 @@ func (p provider) GenerateStream(
 		)
 	}
 	return p.stream.Open(ctx, request)
-}
-
-type catalogProvider struct {
-	inference.Provider
-	inference.Catalog
 }

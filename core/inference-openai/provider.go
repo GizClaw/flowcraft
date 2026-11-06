@@ -23,6 +23,8 @@ type driver struct {
 	imageEditStream protocol.GenerateStreamDriver
 	speech          protocol.GenerateDriver
 	transcribe      protocol.GenerateDriver
+	embed           protocol.EmbedderDriver
+	decide          protocol.DeciderDriver
 	speechStream    protocol.GenerateStreamDriver
 }
 
@@ -85,13 +87,13 @@ func (d *driver) Open(
 func New(settings Settings) (inference.Provider, error) {
 	normalized := settings.normalized()
 	if err := normalized.Validate(); err != nil {
-		return nil, err
+		return inference.Provider{}, err
 	}
 	d := &driver{settings: normalized, client: newClient(normalized)}
 
 	unary, stream, err := d.bind(normalized.API.Kind())
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.text = unary
 	d.textStream = stream
@@ -99,48 +101,71 @@ func New(settings Settings) (inference.Provider, error) {
 		ProviderID, d.imageCompile, d.imageCall, d.imageDecode,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.imageStream, err = protocol.BindGenerateStream(
 		ProviderID, d.imageCompile, d.imageOpen, imageStreamDecoder,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.imageEdit, err = protocol.BindGenerate(
 		ProviderID, d.imageEditCompile, d.imageEditCall, d.imageDecode,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.imageEditStream, err = protocol.BindGenerateStream(
 		ProviderID, d.imageEditCompile, d.imageEditOpen, imageEditStreamDecoder,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.speech, err = protocol.BindGenerate(
 		ProviderID, d.speechCompile, d.speechCall, d.speechDecode,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.speechStream, err = protocol.BindGenerateStream(
 		ProviderID, d.speechCompile, d.speechOpen, speechStreamDecoder,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
 	}
 	d.transcribe, err = protocol.BindGenerate(
 		ProviderID, d.transcribeCompile, d.transcribeCall, d.transcribeDecode,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
+	}
+	d.embed, err = protocol.BindEmbedder(
+		ProviderID, d.embedCompile, d.embedCall, d.embedDecode,
+	)
+	if err != nil {
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
+	}
+
+	d.decide, err = protocol.BindDecider(
+		ProviderID, d.decideCompile, d.decideCall, d.decideDecode,
+	)
+	if err != nil {
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
+	}
+
+	generated := protocol.BindGenerator(d, d)
+	provider := inference.Provider{
+		Generator: generated,
+		Embedder:  d.embed,
+		Decider:   d.decide,
 	}
 	if len(normalized.Models) > 0 {
-		return protocol.BindProviderWithCatalog(d, d, newCatalog(normalized.Models)), nil
+		provider.Catalog = newCatalog(normalized.Models)
 	}
-	return protocol.BindProvider(d, d), nil
+	if err := provider.Validate(); err != nil {
+		return inference.Provider{}, fmt.Errorf("openai: %w", err)
+	}
+	return provider, nil
 }
 
 // authOptions resolves the credential for one model profile as per-call request

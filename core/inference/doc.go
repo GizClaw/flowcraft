@@ -55,3 +55,22 @@
 // configuration data supplied by the application; without a reader they would be
 // dead declarations.
 package inference
+
+// # Transitional state
+//
+// This package currently holds both the generation seam and the vocabulary every
+// seam shares (Error, Warning, Field, Extensions, Metadata). Embedder and a
+// future decision seam need the vocabulary, not the generation payload, which is
+// why they can look like they belong here.
+//
+// The intended end state splits them: an inference/call package for the shared
+// vocabulary, and generation, embedding and decision as peer packages that
+// depend on it. That move is deferred until one of these holds:
+//
+//   - this package exceeds ~1,800 lines of source;
+//   - a package needs the vocabulary without Provider (it wants to translate an
+//     Error without importing the seam);
+//   - a fourth seam lands.
+//
+// Until then each seam keeps its files self-contained — no private helpers
+// shared between seams — so the split stays a directory move.

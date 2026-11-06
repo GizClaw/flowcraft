@@ -16,11 +16,11 @@ import (
 type CredentialedFixture struct {
 	// EnvKey is the variable that enables the lane, for example OPENAI_API_KEY.
 	EnvKey string
-	// NewProvider builds a provider from the environment's credentials.
-	NewProvider func(t *testing.T) (inference.Provider, error)
-	// NewProviderWithKey builds a provider with an explicit key, used to prove a
+	// NewGenerator builds a provider from the environment's credentials.
+	NewGenerator func(t *testing.T) (inference.Provider, error)
+	// NewGeneratorWithKey builds a provider with an explicit key, used to prove a
 	// rejected credential is classified instead of retried.
-	NewProviderWithKey func(t *testing.T, key string) (inference.Provider, error)
+	NewGeneratorWithKey func(t *testing.T, key string) (inference.Provider, error)
 	// Request builds a minimal request for one output modality.
 	Request func(t *testing.T, output inference.Output) inference.GenerateRequest
 	// Outputs lists the modalities to smoke.
@@ -43,14 +43,14 @@ func RunCredentialed(t *testing.T, fixture CredentialedFixture) {
 	if key == "" {
 		t.Skipf("%s not set", fixture.EnvKey)
 	}
-	if fixture.NewProvider == nil || fixture.Request == nil {
-		t.Fatalf("inferencetest: credentialed fixture needs NewProvider and Request")
+	if fixture.NewGenerator == nil || fixture.Request == nil {
+		t.Fatalf("inferencetest: credentialed fixture needs NewGenerator and Request")
 	}
 
 	t.Run("each output produces a usable answer", func(t *testing.T) {
 		for _, output := range fixture.Outputs {
 			t.Run(string(output), func(t *testing.T) {
-				provider, err := fixture.NewProvider(t)
+				provider, err := fixture.NewGenerator(t)
 				if err != nil {
 					t.Fatalf("new provider: %v", err)
 				}
@@ -73,7 +73,7 @@ func RunCredentialed(t *testing.T, fixture CredentialedFixture) {
 
 	if !fixture.NoStreaming {
 		t.Run("streaming produces the same shape as unary", func(t *testing.T) {
-			provider, err := fixture.NewProvider(t)
+			provider, err := fixture.NewGenerator(t)
 			if err != nil {
 				t.Fatalf("new provider: %v", err)
 			}
@@ -96,9 +96,9 @@ func RunCredentialed(t *testing.T, fixture CredentialedFixture) {
 		})
 	}
 
-	if fixture.NewProviderWithKey != nil {
+	if fixture.NewGeneratorWithKey != nil {
 		t.Run("a rejected credential is classified, not retried", func(t *testing.T) {
-			provider, err := fixture.NewProviderWithKey(t, "sk-definitely-invalid")
+			provider, err := fixture.NewGeneratorWithKey(t, "sk-definitely-invalid")
 			if err != nil {
 				t.Fatalf("new provider: %v", err)
 			}
@@ -116,7 +116,7 @@ func RunCredentialed(t *testing.T, fixture CredentialedFixture) {
 	}
 
 	t.Run("concurrent calls share no state", func(t *testing.T) {
-		provider, err := fixture.NewProvider(t)
+		provider, err := fixture.NewGenerator(t)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}

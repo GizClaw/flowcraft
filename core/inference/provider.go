@@ -1,42 +1,52 @@
 package inference
 
-import (
-	"context"
-	"io"
+import "fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
-)
-
-// Provider is the whole seam a driver implements. A host holds one and calls
-// it; it never learns which implementation it holds, and an application decides
-// that when it constructs the provider.
+// Provider is one vendor's capabilities: the seams it serves plus the model
+// line-up it declared.
 //
-// Implementations must be safe for concurrent use: a host may serve several
-// conversations through one provider.
-type Provider interface {
-	// Generate performs one generation and returns the finished response.
-	Generate(ctx context.Context, request GenerateRequest) (GenerateResponse, error)
-	// GenerateStream performs one generation and returns its incremental
-	// events. The returned stream must be closed by the caller.
-	GenerateStream(ctx context.Context, request GenerateRequest) (Stream, error)
+// It is a struct, not an interface that grows a method per capability. Adding a
+// seam is one field, and a nil field is the honest answer to "can this provider
+// do it" — no stub returning UnsupportedOperation, no wrapper type per
+// combination of supported seams.
+//
+// Generator is embedded, so a host that only wants turns keeps working:
+// Provider satisfies Generator.
+type Provider struct {
+	Generator
+	// Embedder is nil when the provider does not serve embeddings.
+	Embedder Embedder
+	// Decider is nil when the provider does not serve judgments.
+	Decider Decider
+	// Catalog is nil when the deployment declared no models.
+	Catalog Catalog
 }
 
-// Catalog exposes the model facts an application declared for this provider:
-// which models exist, what they accept and emit, and their limits. It is
-// optional; a driver that ships no model line-up does not implement it.
+// Validate checks that what the line-up declares is actually served.
 //
-// Catalog is how declared capabilities reach the runtime. Without it the
-// application's model declarations would be data with no reader.
-type Catalog interface {
-	// Models returns every declared model. The slice is owned by the
-	// provider and must not be mutated by the caller.
-	Models() []model.ModelDescriptor
-	// Describe returns the descriptor for one model. found is false when
-	// the model is not declared.
-	Describe(id model.ModelID) (descriptor model.ModelDescriptor, found bool)
+// It is the one place that can answer "declared but uncallable": a model that
+// declares an embedding width while no Embedder is bound, or decision support
+// while no Decider is bound, would be a capability a caller can discover and
+// never use. Failing at construction turns that into a deployment error.
+func (p Provider) Validate() error {
+	if p.Generator == nil {
+		return fmt.Errorf("inference: provider has no generator")
+	}
+	if p.Catalog == nil {
+		return nil
+	}
+	for _, descriptor := range p.Catalog.Models() {
+		capabilities := descriptor.Capabilities
+		if capabilities.EmbeddingDimensions > 0 && p.Embedder == nil {
+			return fmt.Errorf(
+				"inference: model %q declares an embedding width but the provider serves no embeddings",
+				descriptor.ID.Name)
+		}
+		if capabilities.Decision && p.Decider == nil {
+			return fmt.Errorf(
+				"inference: model %q declares decision support but the provider serves no decisions",
+				descriptor.ID.Name)
+		}
+	}
+	return nil
 }
-
-// errStreamDone is the sentinel a Stream may return instead of [io.EOF]. It
-// exists only to let drivers with a non-io error vocabulary end a stream
-// without importing io; either value is accepted by callers.
-var errStreamDone = io.EOF

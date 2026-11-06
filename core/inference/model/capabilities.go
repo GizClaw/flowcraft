@@ -25,6 +25,14 @@ type ModelCapabilities struct {
 	// request intent and skips declared-incompatible tiers. Empty outputs are
 	// undeclared and do not filter routing.
 	Outputs []message.PartKind `json:"outputs,omitempty"`
+	// EmbeddingDimensions is the default vector width this model produces.
+	// Zero means the model does not serve embeddings; a positive value is the
+	// width a request gets when it asks for none. It is a fact, not a toggle:
+	// callers compare it against what they need to store.
+	EmbeddingDimensions int `json:"embedding_dimensions,omitempty"`
+	// Decision marks models that answer the judgment seam: a batch of typed
+	// questions with per-question answers, confidences and refusals.
+	Decision bool `json:"decision,omitempty"`
 	// ToolCalling marks function-tool support. Tool definitions are
 	// canonical data (name, description, JSON Schema), so a request carries
 	// them directly; this bit lets a driver reject tools for a model that has

@@ -1,5 +1,5 @@
 // Package protocol is the driver author's kit: the three stages a provider call
-// is made of, the binder that turns them into an [inference.Provider], and the
+// is made of, the binder that turns them into an [inference.Generator], and the
 // contract check that makes a dropped option impossible to hide.
 //
 // # Why this is a separate package

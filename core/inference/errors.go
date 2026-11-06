@@ -158,3 +158,8 @@ func newUndefinedToolError(call message.ToolCall) *Error {
 	err.UndefinedToolCall = &call
 	return err
 }
+
+// inferenceErr builds a pre-I/O rejection.
+func inferenceErr(kind ErrorKind, field Field, cause error) error {
+	return NewError(kind, field, cause)
+}

@@ -201,7 +201,7 @@ func TestSpeechConformance(t *testing.T) {
 	t.Run("credentialed", func(t *testing.T) {
 		inferencetest.RunCredentialed(t, inferencetest.CredentialedFixture{
 			EnvKey: "OPENAI_API_KEY",
-			NewProvider: func(t *testing.T) (inference.Provider, error) {
+			NewGenerator: func(t *testing.T) (inference.Provider, error) {
 				return New(Settings{API: APIChat, APIKey: os.Getenv("OPENAI_API_KEY")})
 			},
 			Request: func(t *testing.T, _ inference.Output) inference.GenerateRequest {

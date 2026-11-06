@@ -30,7 +30,7 @@ type ProviderFixture struct {
 	ProviderID string
 	// NewProvider builds a provider pointed at baseURL. It must not perform any
 	// I/O during construction.
-	NewProvider func(t *testing.T, baseURL string) (inference.Provider, error)
+	NewGenerator func(t *testing.T, baseURL string) (inference.Provider, error)
 	// Request builds the request used for decoding assertions.
 	Request func(t *testing.T) inference.GenerateRequest
 	// Samples are canned answers, grouped by the output they serve.
@@ -42,10 +42,10 @@ type ProviderFixture struct {
 // Every sample is served by a local HTTP endpoint that the driver really talks to,
 // so the assertions cover the driver's own SDK usage, its status mapping and its
 // decoder — not a mock of them.
-func RunProvider(t *testing.T, fixture ProviderFixture) {
+func RunGenerator(t *testing.T, fixture ProviderFixture) {
 	t.Helper()
-	if fixture.NewProvider == nil || fixture.Request == nil {
-		t.Fatalf("inferencetest: provider fixture needs NewProvider and Request")
+	if fixture.NewGenerator == nil || fixture.Request == nil {
+		t.Fatalf("inferencetest: provider fixture needs NewGenerator and Request")
 	}
 	if len(fixture.Samples) == 0 {
 		t.Fatalf("inferencetest: provider fixture needs at least one sample")
@@ -94,7 +94,7 @@ func RunProvider(t *testing.T, fixture ProviderFixture) {
 		}))
 		t.Cleanup(blocking.Close)
 
-		provider, err := fixture.NewProvider(t, blocking.URL)
+		provider, err := fixture.NewGenerator(t, blocking.URL)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
@@ -132,7 +132,7 @@ func RunProvider(t *testing.T, fixture ProviderFixture) {
 func (f ProviderFixture) serve(
 	t *testing.T,
 	sample Sample,
-) (inference.Provider, inference.GenerateRequest) {
+) (inference.Generator, inference.GenerateRequest) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		status := sample.Status
@@ -145,7 +145,7 @@ func (f ProviderFixture) serve(
 	}))
 	t.Cleanup(server.Close)
 
-	provider, err := f.NewProvider(t, server.URL)
+	provider, err := f.NewGenerator(t, server.URL)
 	if err != nil {
 		t.Fatalf("new provider: %v", err)
 	}

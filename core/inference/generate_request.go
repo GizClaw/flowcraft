@@ -12,8 +12,8 @@ import (
 type InputRole string
 
 const (
-	InputRoleUser InputRole = "user"
-	InputRoleTool InputRole = "tool"
+	InputRoleUser InputRole = InputRole(message.RoleUser)
+	InputRoleTool InputRole = InputRole(message.RoleTool)
 )
 
 // GenerateInput is the turn being answered.
@@ -168,9 +168,4 @@ func (r GenerateRequest) ActiveFields() []Field {
 		fields = append(fields, r.Extensions.ActiveFields()...)
 	}
 	return fields
-}
-
-// inferenceErr builds a pre-I/O rejection.
-func inferenceErr(kind ErrorKind, field Field, cause error) error {
-	return NewError(kind, field, cause)
 }

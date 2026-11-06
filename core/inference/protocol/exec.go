@@ -37,7 +37,7 @@ type Decoder[Req Request, Raw, Res any] func(
 ) (Res, error)
 
 // GenerateDriver is one bound unary pipeline. It is what [BindGenerate] returns
-// and what [BindProvider] wraps into an [inference.Provider].
+// and what [BindProvider] wraps into an [inference.Generator].
 //
 // A driver may implement this and not GenerateStreamDriver: a model that cannot
 // stream is a driver detail, and [BindProvider] reports it as a rejected request

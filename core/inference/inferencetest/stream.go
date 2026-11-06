@@ -73,9 +73,9 @@ type Equivalence struct {
 
 // StreamFixture describes how to build a streaming provider.
 type StreamFixture struct {
-	ProviderID  string
-	NewProvider func(t *testing.T, baseURL string) (inference.Provider, error)
-	Request     func(t *testing.T) inference.GenerateRequest
+	ProviderID   string
+	NewGenerator func(t *testing.T, baseURL string) (inference.Provider, error)
+	Request      func(t *testing.T) inference.GenerateRequest
 	// Samples are clean streams; each must end with a terminal event.
 	Samples []StreamSample
 	// Truncated is a stream that stops before its terminal event.
@@ -88,14 +88,14 @@ type StreamFixture struct {
 // equivalence with the unary path.
 func RunStream(t *testing.T, fixture StreamFixture) {
 	t.Helper()
-	if fixture.NewProvider == nil || fixture.Request == nil {
+	if fixture.NewGenerator == nil || fixture.Request == nil {
 		t.Fatalf("inferencetest: stream fixture needs NewProvider and Request")
 	}
 
 	t.Run("events end at a terminal event", func(t *testing.T) {
 		for _, sample := range fixture.Samples {
 			t.Run(sample.Name, func(t *testing.T) {
-				provider, request := serveStream(t, fixture.NewProvider, sample.Body, fixture.Request)
+				provider, request := serveStream(t, fixture.NewGenerator, sample.Body, fixture.Request)
 				stream, err := provider.GenerateStream(context.Background(), request)
 				if err != nil {
 					t.Fatalf("open: %v", err)
@@ -142,7 +142,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 			t.Skip("no sample to close")
 		}
 		provider, request := serveStream(
-			t, fixture.NewProvider, fixture.Samples[0].Body, fixture.Request,
+			t, fixture.NewGenerator, fixture.Samples[0].Body, fixture.Request,
 		)
 		stream, err := provider.GenerateStream(context.Background(), request)
 		if err != nil {
@@ -159,7 +159,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 	if fixture.Truncated != nil {
 		t.Run("a stream without a terminal event is truncated", func(t *testing.T) {
 			sample := *fixture.Truncated
-			provider, request := serveStream(t, fixture.NewProvider, sample.Body, fixture.Request)
+			provider, request := serveStream(t, fixture.NewGenerator, sample.Body, fixture.Request)
 			stream, err := provider.GenerateStream(context.Background(), request)
 			if err != nil {
 				t.Fatalf("open: %v", err)
@@ -201,7 +201,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 			}
 
 			streamProvider, streamRequest := serveStream(
-				t, fixture.NewProvider, equivalence.Stream.Body, fixture.Request,
+				t, fixture.NewGenerator, equivalence.Stream.Body, fixture.Request,
 			)
 			stream, err := streamProvider.GenerateStream(context.Background(), streamRequest)
 			if err != nil {
@@ -354,7 +354,7 @@ func serveStream(
 	newProvider func(*testing.T, string) (inference.Provider, error),
 	body string,
 	request func(*testing.T) inference.GenerateRequest,
-) (inference.Provider, inference.GenerateRequest) {
+) (inference.Generator, inference.GenerateRequest) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

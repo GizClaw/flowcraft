@@ -488,23 +488,12 @@ func TestStreamWithoutTerminalEventIsTruncation(t *testing.T) {
 }
 
 func TestBindProviderReportsMissingHalf(t *testing.T) {
-	provider := protocol.BindProvider(nil, nil)
+	provider := protocol.BindGenerator(nil, nil)
 	if _, err := provider.Generate(context.Background(), request(t)); !inference.IsKind(err, inference.UnsupportedOperation) {
 		t.Fatalf("kind = %v, want UnsupportedOperation", err)
 	}
 	if _, err := provider.GenerateStream(context.Background(), request(t)); !inference.IsKind(err, inference.UnsupportedOperation) {
 		t.Fatalf("kind = %v, want UnsupportedOperation", err)
-	}
-}
-
-func TestBindProviderWithCatalogKeepsDeclarations(t *testing.T) {
-	catalog := fakeCatalog{}
-	provider := protocol.BindProviderWithCatalog(nil, nil, catalog)
-	if _, ok := provider.(inference.Catalog); !ok {
-		t.Fatal("catalog assertion failed")
-	}
-	if len(provider.(inference.Catalog).Models()) != 1 {
-		t.Fatal("catalog lost its models")
 	}
 }
 

@@ -25,6 +25,14 @@ const (
 	FieldToolChoice Field = "tool_choice"
 	FieldExtensions Field = "extension"
 	FieldStream     Field = "stream"
+
+	// Fields of the embedding seam.
+	FieldDimensions Field = "dimensions"
+	FieldVectors    Field = "vectors"
+
+	// Fields of the decision seam.
+	FieldQuestions Field = "questions"
+	FieldAnswers   Field = "answers"
 )
 
 const extensionFieldPrefix = "extension."

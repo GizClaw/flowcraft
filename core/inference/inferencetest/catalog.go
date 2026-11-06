@@ -18,7 +18,7 @@ type CatalogFixture struct {
 	// unreachable address when it only exercises declaration checks, so a driver
 	// that fails to refuse a request shows up as a transport error rather than a
 	// network call.
-	NewProvider func(t *testing.T, baseURL string) (inference.Provider, error)
+	NewGenerator func(t *testing.T, baseURL string) (inference.Provider, error)
 	// Declared is the line-up the fixture expects to be published.
 	Declared []model.ModelDescriptor
 	// Served lists the output modalities the driver actually produces, for the
@@ -38,7 +38,7 @@ type CatalogFixture struct {
 // coverage and enforcement.
 func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	t.Helper()
-	if fixture.NewProvider == nil {
+	if fixture.NewGenerator == nil {
 		t.Fatalf("inferencetest: catalog fixture needs NewProvider")
 	}
 	// No I/O at construction, so an unreachable endpoint proves enforcement
@@ -46,12 +46,12 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	const unreachable = "http://127.0.0.1:1"
 
 	t.Run("declarations are published", func(t *testing.T) {
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		catalog, ok := provider.(inference.Catalog)
-		if !ok {
+		catalog := provider.Catalog
+		if catalog == nil {
 			t.Fatal("provider does not publish a catalog")
 		}
 		published := catalog.Models()
@@ -78,11 +78,11 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	})
 
 	t.Run("lookup agrees with the list", func(t *testing.T) {
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		catalog := provider.(inference.Catalog)
+		catalog := provider.Catalog
 		for _, descriptor := range catalog.Models() {
 			described, ok := catalog.Describe(descriptor.ID)
 			if !ok {
@@ -102,11 +102,11 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	// Callers may sort, filter or annotate what they receive; the catalog itself
 	// must not change as a result.
 	t.Run("published declarations are copies", func(t *testing.T) {
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		catalog := provider.(inference.Catalog)
+		catalog := provider.Catalog
 		first := catalog.Models()
 		if len(first) == 0 {
 			t.Fatal("catalog is empty")
@@ -158,7 +158,7 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	}
 
 	t.Run("an undeclared model is refused", func(t *testing.T) {
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
@@ -176,7 +176,7 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 			t.Skip("the fixture declares no input restriction")
 		}
 		request, kind := fixture.UndeclaredInput(t)
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
@@ -207,7 +207,7 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 		if missing == "" {
 			t.Skip("the fixture declares no model that excludes a served output")
 		}
-		provider, err := fixture.NewProvider(t, unreachable)
+		provider, err := fixture.NewGenerator(t, unreachable)
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}

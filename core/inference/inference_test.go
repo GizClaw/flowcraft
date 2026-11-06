@@ -482,7 +482,7 @@ func TestExtensionsValidateRejectsMalformed(t *testing.T) {
 }
 
 func TestProviderIsSatisfiableAndStreamEndsWithEOF(t *testing.T) {
-	var provider inference.Provider = stubProvider{}
+	var provider inference.Generator = stubProvider{}
 	if _, err := provider.Generate(context.Background(), inference.GenerateRequest{}); err != nil {
 		t.Fatalf("stub generate failed: %v", err)
 	}

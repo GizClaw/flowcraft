@@ -142,10 +142,10 @@ func TestChatConformance(t *testing.T) {
 	})
 
 	t.Run("provider", func(t *testing.T) {
-		inferencetest.RunProvider(t, inferencetest.ProviderFixture{
-			ProviderID:  ProviderID,
-			NewProvider: newProvider,
-			Request:     chatRequestWithTools,
+		inferencetest.RunGenerator(t, inferencetest.ProviderFixture{
+			ProviderID:   ProviderID,
+			NewGenerator: newProvider,
+			Request:      chatRequestWithTools,
 			Samples: map[inference.Output][]inferencetest.Sample{
 				inference.OutputText: {
 					{Name: "text", Body: chatCompletionBody(`"hello there"`, "stop", ""),
@@ -180,9 +180,9 @@ func TestChatConformance(t *testing.T) {
 
 	t.Run("stream", func(t *testing.T) {
 		inferencetest.RunStream(t, inferencetest.StreamFixture{
-			ProviderID:  ProviderID,
-			NewProvider: newProvider,
-			Request:     chatRequestWithTools,
+			ProviderID:   ProviderID,
+			NewGenerator: newProvider,
+			Request:      chatRequestWithTools,
 			Samples: []inferencetest.StreamSample{
 				{
 					Name: "text with trailing usage",
@@ -211,9 +211,9 @@ func TestChatConformance(t *testing.T) {
 			Truncated: &inferencetest.StreamSample{Name: "no terminal event", Body: chatTruncatedStreamBody()},
 			Equivalence: &inferencetest.Equivalence{
 				Unary: inferencetest.ProviderFixture{
-					ProviderID:  ProviderID,
-					NewProvider: newProvider,
-					Request:     chatRequestWithTools,
+					ProviderID:   ProviderID,
+					NewGenerator: newProvider,
+					Request:      chatRequestWithTools,
 				},
 				UnarySample: textSample("unary", chatCompletionBody(`"hello"`, "stop", "")),
 				Stream:      inferencetest.StreamSample{Name: "equivalence", Body: chatStreamBody()},
@@ -235,9 +235,9 @@ func TestChatConformance(t *testing.T) {
 
 	t.Run("credentialed", func(t *testing.T) {
 		inferencetest.RunCredentialed(t, inferencetest.CredentialedFixture{
-			EnvKey:      "OPENAI_API_KEY",
-			NewProvider: func(t *testing.T) (inference.Provider, error) { return New(Settings{API: APIChat, APIKey: apiKey(t)}) },
-			NewProviderWithKey: func(t *testing.T, key string) (inference.Provider, error) {
+			EnvKey:       "OPENAI_API_KEY",
+			NewGenerator: func(t *testing.T) (inference.Provider, error) { return New(Settings{API: APIChat, APIKey: apiKey(t)}) },
+			NewGeneratorWithKey: func(t *testing.T, key string) (inference.Provider, error) {
 				return New(Settings{API: APIChat, APIKey: key})
 			},
 			Request: func(t *testing.T, _ inference.Output) inference.GenerateRequest {
@@ -348,10 +348,10 @@ func TestResponsesConformance(t *testing.T) {
 	})
 
 	t.Run("provider", func(t *testing.T) {
-		inferencetest.RunProvider(t, inferencetest.ProviderFixture{
-			ProviderID:  ProviderID,
-			NewProvider: newProvider,
-			Request:     chatRequestWithTools,
+		inferencetest.RunGenerator(t, inferencetest.ProviderFixture{
+			ProviderID:   ProviderID,
+			NewGenerator: newProvider,
+			Request:      chatRequestWithTools,
 			Samples: map[inference.Output][]inferencetest.Sample{
 				inference.OutputText: {
 					{Name: "text", Body: responsesBody("hello there", "completed"),
@@ -375,10 +375,10 @@ func TestResponsesConformance(t *testing.T) {
 	t.Run("credentialed", func(t *testing.T) {
 		inferencetest.RunCredentialed(t, inferencetest.CredentialedFixture{
 			EnvKey: "OPENAI_API_KEY",
-			NewProvider: func(t *testing.T) (inference.Provider, error) {
+			NewGenerator: func(t *testing.T) (inference.Provider, error) {
 				return New(Settings{API: APIResponses, APIKey: apiKey(t)})
 			},
-			NewProviderWithKey: func(t *testing.T, key string) (inference.Provider, error) {
+			NewGeneratorWithKey: func(t *testing.T, key string) (inference.Provider, error) {
 				return New(Settings{API: APIResponses, APIKey: key})
 			},
 			Request: func(t *testing.T, _ inference.Output) inference.GenerateRequest {
@@ -468,11 +468,11 @@ func TestCatalogConformance(t *testing.T) {
 	}
 
 	inferencetest.RunCatalog(t, inferencetest.CatalogFixture{
-		ProviderID:  ProviderID,
-		NewProvider: newProvider,
-		Declared:    []model.ModelDescriptor{text, image},
-		Served:      []inference.Output{inference.OutputText, inference.OutputImage},
-		Enforces:    true,
+		ProviderID:   ProviderID,
+		NewGenerator: newProvider,
+		Declared:     []model.ModelDescriptor{text, image},
+		Served:       []inference.Output{inference.OutputText, inference.OutputImage},
+		Enforces:     true,
 		UndeclaredInput: func(t *testing.T) (inference.GenerateRequest, message.PartKind) {
 			source, err := media.NewAudioBytes([]byte("RIFF"), "audio/wav")
 			if err != nil {
@@ -503,7 +503,7 @@ func TestCatalogConformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
-		if _, ok := provider.(inference.Catalog); ok {
+		if provider.Catalog != nil {
 			t.Fatal("a provider without declarations published a catalog")
 		}
 	})
