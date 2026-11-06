@@ -18,6 +18,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -38,6 +39,8 @@ type CommandTool struct {
 	shell  sandbox.ShellSpec
 	// workDir is the default directory; a call may still override it.
 	workDir string
+	// net is the outbound posture for every call this tool makes.
+	net permission.NetPolicy
 }
 
 var _ tool.Tool = (*CommandTool)(nil)
@@ -48,6 +51,12 @@ type Option func(*CommandTool)
 // WithShell overrides the platform shell; its name becomes the tool name.
 func WithShell(spec sandbox.ShellSpec) Option {
 	return func(t *CommandTool) { t.shell = spec }
+}
+
+// WithNet sets the outbound posture applied to every call. A zero policy keeps
+// the backend's construction-time default.
+func WithNet(policy permission.NetPolicy) Option {
+	return func(t *CommandTool) { t.net = policy }
 }
 
 // WithWorkDir sets the directory a command runs in when the call names none.
@@ -138,6 +147,7 @@ func (t *CommandTool) Execute(ctx context.Context, arguments string) (message.Co
 	}
 	options := sandbox.ExecOptions{
 		WorkDir: workDir,
+		Net:     t.net,
 		// Capture more than we return: the tail is recoverable only if the
 		// backend kept it.
 		Resources: sandbox.ResourceLimits{MaxOutputBytes: maxCapturedOutput},

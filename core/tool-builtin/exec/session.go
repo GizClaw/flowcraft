@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -42,6 +43,8 @@ type SessionGroup struct {
 	tty bool
 	// workdirHint is the directory a start defaults to, shown in the schema.
 	workdirHint string
+	// net is the outbound posture every session inherits.
+	net permission.NetPolicy
 
 	mu       sync.Mutex
 	sessions map[string]sandbox.Session
@@ -55,6 +58,11 @@ type SessionOption func(*SessionGroup)
 // reports TTY support; the tools cannot tell from a request.
 func WithTTY(enabled bool) SessionOption {
 	return func(g *SessionGroup) { g.tty = enabled }
+}
+
+// WithSessionNet sets the outbound posture every session inherits.
+func WithSessionNet(policy permission.NetPolicy) SessionOption {
+	return func(g *SessionGroup) { g.net = policy }
 }
 
 // WithWorkdirHint names the directory a start defaults to.

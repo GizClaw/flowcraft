@@ -144,12 +144,19 @@ func (r *Runtime) buildSources(ctx context.Context) ([]tool.Source, error) {
 	}
 
 	if r.cfg.Tools.enabled(ToolExec) {
-		command, err := exec.NewCommand(r.runner, exec.WithWorkDir(r.cfg.workDir()))
+		policy, err := r.cfg.Sandbox.permission()
+		if err != nil {
+			return nil, err
+		}
+		command, err := exec.NewCommand(r.runner,
+			exec.WithWorkDir(r.cfg.workDir()),
+			exec.WithNet(policy.Net))
 		if err != nil {
 			return nil, errdefs.Validationf("tools.exec: %w", err)
 		}
 		sessionGroup, err := exec.NewSession(r.runner,
 			exec.WithTTY(r.cfg.Tools.TTY),
+			exec.WithSessionNet(policy.Net),
 			exec.WithWorkdirHint(r.cfg.workDir()))
 		if err != nil {
 			return nil, errdefs.Validationf("tools.exec: %w", err)

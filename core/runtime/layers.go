@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sort"
@@ -138,7 +139,7 @@ func decodeStrict(node *yaml.Node) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(body))
 	decoder.KnownFields(true)
 	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil && err != io.EOF {
+	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, errdefs.Validationf("runtime configuration: %v", err)
 	}
 	return cfg, nil

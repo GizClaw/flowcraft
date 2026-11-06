@@ -54,11 +54,11 @@ func TestAttrsAbsent(t *testing.T) {
 	if attrs := Attrs(context.Background()); attrs != nil {
 		t.Errorf("attrs = %v, want nil", attrs)
 	}
-	//nolint:staticcheck // a nil context is a documented no-op path
-	if attrs := Attrs(nil); attrs != nil {
+	var absent context.Context
+	if attrs := Attrs(absent); attrs != nil {
 		t.Errorf("attrs on nil ctx = %v, want nil", attrs)
 	}
-	if _, ok := From(nil); ok {
+	if _, ok := From(absent); ok {
 		t.Error("From(nil) reported a run")
 	}
 }
