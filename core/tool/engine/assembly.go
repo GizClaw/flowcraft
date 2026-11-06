@@ -120,6 +120,11 @@ func recordSessionCalls() tool.Middleware {
 // Catalog returns the aggregated read surface.
 func (a *Assembly) Catalog() tool.Catalog { return a.registry }
 
+// Registry is the read surface behind the assembly. A host uses it to report
+// what was wired and to look tools up by name; execution goes through Execute so
+// the middleware chain is not bypassed.
+func (a *Assembly) Registry() *tool.Registry { return a.registry }
+
 // Dispatcher returns the executor. Assembly itself also implements
 // Dispatcher by delegation, so callers can take either form.
 func (a *Assembly) Dispatcher() tool.Dispatcher { return a.executor }
