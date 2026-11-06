@@ -2,8 +2,14 @@ package setup
 
 import (
 	"context"
-	"github.com/GizClaw/flowcraft/core/telemetry"
+	"net/http"
+	"slices"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestInitTracer_NoExporter_StillCreatesValidIDs(t *testing.T) {
@@ -116,3 +122,60 @@ func TestInitMeter_WithCustomServiceName(t *testing.T) {
 		t.Fatalf("shutdown error: %v", err)
 	}
 }
+
+func TestWithPropagator(t *testing.T) {
+	o := &options{}
+	// A pointer is comparable; the default propagator is a composite of
+	// propagators, and comparing interface values that hold one panics.
+	custom := &stubPropagator{}
+	WithPropagator(custom)(o)
+	if o.propagator != custom {
+		t.Fatal("expected the custom propagator to be stored")
+	}
+}
+
+func TestInitTracer_InstallsW3CPropagator(t *testing.T) {
+	ctx := context.Background()
+	shutdown, err := InitTracer(ctx)
+	if err != nil {
+		t.Fatalf("InitTracer error: %v", err)
+	}
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
+
+	fields := otel.GetTextMapPropagator().Fields()
+	for _, want := range []string{"traceparent", "tracestate", "baggage"} {
+		if !slices.Contains(fields, want) {
+			t.Fatalf("propagator fields %v missing %q", fields, want)
+		}
+	}
+
+	ctx, span := telemetry.Tracer().Start(ctx, "root")
+	defer span.End()
+
+	carrier := propagation.HeaderCarrier(http.Header{})
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if carrier.Get("traceparent") == "" {
+		t.Fatal("expected a traceparent header after Inject")
+	}
+
+	extracted := otel.GetTextMapPropagator().Extract(
+		context.Background(), carrier)
+	if got := trace.SpanContextFromContext(extracted).TraceID(); got != span.SpanContext().TraceID() {
+		t.Fatalf("extracted trace id = %s, want %s", got, span.SpanContext().TraceID())
+	}
+}
+
+// stubPropagator is a comparable TextMapPropagator for tests that need identity.
+type stubPropagator struct{}
+
+func (*stubPropagator) Inject(context.Context, propagation.TextMapCarrier) {}
+
+func (*stubPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+func (*stubPropagator) Fields() []string { return nil }
