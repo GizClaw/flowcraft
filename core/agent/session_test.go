@@ -249,21 +249,39 @@ func TestReplayDiscoveriesRestoresVisibility(t *testing.T) {
 // memStore is a checkpoint store that keeps the newest value in memory.
 type memStore struct {
 	latest Checkpoint
-	writes int
+	events map[string][]EventRecord
+	saves  int
 }
 
-func (s *memStore) Write(_ context.Context, checkpoint Checkpoint) error {
+func (s *memStore) Save(_ context.Context, checkpoint Checkpoint, events []EventRecord) error {
 	s.latest = checkpoint
-	s.writes++
+	s.saves++
+	if s.events == nil {
+		s.events = make(map[string][]EventRecord)
+	}
+	s.events[checkpoint.Task.ID] = append(s.events[checkpoint.Task.ID], events...)
 	return nil
 }
 
-func (s *memStore) Latest(context.Context) (Checkpoint, error) {
-	if s.writes == 0 {
+func (s *memStore) Load(_ context.Context, taskID string) (Checkpoint, error) {
+	if s.saves == 0 || s.latest.Task.ID != taskID {
 		return Checkpoint{}, ErrNoCheckpoint
 	}
 	return s.latest, nil
 }
+
+func (s *memStore) Events(_ context.Context, taskID string) ([]EventRecord, error) {
+	return s.events[taskID], nil
+}
+
+func (s *memStore) List(context.Context) ([]TaskSummary, error) {
+	if s.saves == 0 {
+		return nil, nil
+	}
+	return []TaskSummary{{ID: s.latest.Task.ID, State: s.latest.Task.State}}, nil
+}
+
+func (s *memStore) Delete(context.Context, string) error { return nil }
 
 func (s *memStore) PutBlob(_ context.Context, data []byte) (string, error) {
 	return string(data), nil
@@ -341,8 +359,8 @@ func TestAskPausesAndResumes(t *testing.T) {
 	if task.Pending == nil || task.Pending.ID != "ask-1" {
 		t.Fatalf("pending = %+v, want the ask_user call", task.Pending)
 	}
-	if store.writes != 1 {
-		t.Errorf("checkpoint writes = %d, want 1", store.writes)
+	if store.saves != 1 {
+		t.Errorf("checkpoint saves = %d, want 1", store.saves)
 	}
 	if store.latest.Task.ID != task.ID || store.latest.Task.Pending == nil {
 		t.Errorf("checkpoint task = %+v, want the paused task", store.latest.Task)

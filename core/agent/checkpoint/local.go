@@ -1,193 +1,266 @@
-// Package checkpoint stores agent checkpoints on the local filesystem.
+// Package checkpoint stores agent tasks on the local filesystem with SQLite.
 //
-// The layout is one append-only log, one pointer, and a content-addressed blob
-// directory:
+// The schema is two tables plus a blob table, and it is written to translate:
 //
-//	log.jsonl        one JSON Checkpoint per line, appended, never rewritten
-//	pointer.json     offset and length of the newest line
-//	blobs/<ab>/<sha> artifact bytes, written once per content
+//	tasks   one projection row per Task: the newest truth, plus a version
+//	events  the appended facts, one row per fact, keyed (task_id, seq)
+//	blobs   artifact bytes by content hash
 //
-// Appending keeps the cost of a round proportional to what that round added;
-// a full snapshot every round would rewrite the whole transcript and make a
-// long conversation quadratic. The pointer is written last, so a reader always
-// sees either the previous valid checkpoint or the new one, never a torn line.
+// Every save is one transaction: append the round's events and update the
+// projection together, so a reader never sees a task that mentions a message the
+// event log does not have. Not persisting partial rounds is the same rule the
+// session services in the ecosystem converged on.
+//
+// The types are SQLite's, but the shapes are portable: TEXT stays TEXT, BLOB
+// becomes BYTEA, INTEGER stays INTEGER, and the only upsert uses the standard
+// ON CONFLICT form.
 package checkpoint
 
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-const (
-	logName     = "log.jsonl"
-	pointerName = "pointer.json"
-	blobDirName = "blobs"
-)
+const schema = `
+CREATE TABLE IF NOT EXISTS tasks (
+	task_id    TEXT PRIMARY KEY,
+	context_id TEXT NOT NULL DEFAULT '',
+	state      TEXT NOT NULL,
+	round      INTEGER NOT NULL DEFAULT 0,
+	schema     INTEGER NOT NULL,
+	runtime    TEXT NOT NULL,
+	body       BLOB NOT NULL,
+	version    INTEGER NOT NULL DEFAULT 1,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+	task_id TEXT    NOT NULL,
+	seq     INTEGER NOT NULL,
+	kind    TEXT    NOT NULL,
+	payload BLOB    NOT NULL,
+	PRIMARY KEY (task_id, seq)
+);
+CREATE TABLE IF NOT EXISTS blobs (
+	ref  TEXT PRIMARY KEY,
+	body BLOB NOT NULL
+);`
 
-// pointer locates the newest checkpoint in the log.
-type pointer struct {
-	Offset int64 `json:"offset"`
-	Length int64 `json:"length"`
-}
-
-// Local is a filesystem checkpoint store.
+// Local is a SQLite-backed store.
 type Local struct {
-	dir string
+	db *sql.DB
 }
 
 var _ agent.Store = (*Local)(nil)
 
-// New prepares a store rooted at dir. The directory is created when missing.
-func New(dir string) (*Local, error) {
-	if dir == "" {
-		return nil, errdefs.Validationf("checkpoint: a directory is required")
+// Open prepares a store at path. ":memory:" is accepted for tests.
+func Open(path string) (*Local, error) {
+	if path == "" {
+		return nil, errdefs.Validationf("checkpoint: a database path is required")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("checkpoint: %w", err)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: open: %w", err)
 	}
-	return &Local{dir: dir}, nil
+	// Foreign keys are off by default in SQLite, and a cascade that silently
+	// does not fire leaves events behind a deleted task. WAL keeps a reader from
+	// blocking the loop's writes.
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA busy_timeout=5000",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("checkpoint: %s: %w", pragma, err)
+		}
+	}
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("checkpoint: migrate: %w", err)
+	}
+	return &Local{db: db}, nil
 }
 
-// Write appends one checkpoint and advances the pointer.
-func (l *Local) Write(ctx context.Context, checkpoint agent.Checkpoint) error {
+// Close releases the database handle.
+func (l *Local) Close() error { return l.db.Close() }
+
+// Save updates the projection and appends the round's events in one transaction.
+func (l *Local) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if checkpoint.Task.ID == "" {
+		return errdefs.Validationf("checkpoint: task id is required")
+	}
 	body, err := json.Marshal(checkpoint)
 	if err != nil {
-		return fmt.Errorf("checkpoint: encode: %w", err)
+		return fmt.Errorf("checkpoint: encode task: %w", err)
 	}
-	body = append(body, '\n')
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("checkpoint: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
-	log, err := os.OpenFile(filepath.Join(l.dir, logName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("checkpoint: open log: %w", err)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tasks (task_id, context_id, state, round, schema, runtime, body, version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+		ON CONFLICT(task_id) DO UPDATE SET
+			context_id = excluded.context_id,
+			state      = excluded.state,
+			round      = excluded.round,
+			schema     = excluded.schema,
+			runtime    = excluded.runtime,
+			body       = excluded.body,
+			version    = tasks.version + 1,
+			updated_at = excluded.updated_at`,
+		checkpoint.Task.ID,
+		checkpoint.Task.ContextID,
+		string(checkpoint.Task.State),
+		checkpoint.Task.Round,
+		checkpoint.Schema,
+		string(checkpoint.Runtime),
+		body,
+		now,
+	); err != nil {
+		return fmt.Errorf("checkpoint: project task: %w", err)
 	}
-	defer func() { _ = log.Close() }()
-	info, err := log.Stat()
-	if err != nil {
-		return fmt.Errorf("checkpoint: stat log: %w", err)
+
+	if len(events) > 0 {
+		var next int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE task_id = ?`,
+			checkpoint.Task.ID,
+		).Scan(&next); err != nil {
+			return fmt.Errorf("checkpoint: next sequence: %w", err)
+		}
+		for i, event := range events {
+			if event.Kind == "" {
+				return errdefs.Validationf("checkpoint: event %d has no kind", i)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO events (task_id, seq, kind, payload) VALUES (?, ?, ?, ?)`,
+				checkpoint.Task.ID, next+int64(i), event.Kind, []byte(event.Payload),
+			); err != nil {
+				return fmt.Errorf("checkpoint: append event: %w", err)
+			}
+		}
 	}
-	offset := info.Size()
-	if _, err := log.Write(body); err != nil {
-		return fmt.Errorf("checkpoint: append: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("checkpoint: commit: %w", err)
 	}
-	// One sync per checkpoint is the durability point; the pointer below must
-	// never name bytes the log has not flushed.
-	if err := log.Sync(); err != nil {
-		return fmt.Errorf("checkpoint: sync log: %w", err)
-	}
-	return l.writePointer(pointer{Offset: offset, Length: int64(len(body))})
+	return nil
 }
 
-// Latest returns the newest checkpoint.
-func (l *Local) Latest(ctx context.Context) (agent.Checkpoint, error) {
-	if err := ctx.Err(); err != nil {
-		return agent.Checkpoint{}, err
-	}
-	body, err := os.ReadFile(filepath.Join(l.dir, pointerName))
-	if errors.Is(err, os.ErrNotExist) {
+// Load returns the newest projection of one task.
+func (l *Local) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
+	var body []byte
+	err := l.db.QueryRowContext(ctx, `SELECT body FROM tasks WHERE task_id = ?`, taskID).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
 	if err != nil {
-		return agent.Checkpoint{}, fmt.Errorf("checkpoint: read pointer: %w", err)
-	}
-	var mark pointer
-	if err := json.Unmarshal(body, &mark); err != nil {
-		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode pointer: %w", err)
-	}
-	log, err := os.Open(filepath.Join(l.dir, logName))
-	if err != nil {
-		return agent.Checkpoint{}, fmt.Errorf("checkpoint: open log: %w", err)
-	}
-	defer func() { _ = log.Close() }()
-	buf := make([]byte, mark.Length)
-	if _, err := log.ReadAt(buf, mark.Offset); err != nil {
-		return agent.Checkpoint{}, fmt.Errorf("checkpoint: read entry: %w", err)
+		return agent.Checkpoint{}, fmt.Errorf("checkpoint: load task: %w", err)
 	}
 	var checkpoint agent.Checkpoint
-	if err := json.Unmarshal(buf, &checkpoint); err != nil {
-		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode entry: %w", err)
+	if err := json.Unmarshal(body, &checkpoint); err != nil {
+		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode task: %w", err)
 	}
 	return checkpoint, nil
 }
 
-// PutBlob stores bytes under their content hash. Storing the same bytes twice
-// costs a stat, which is what makes repeated tool output cheap.
+// Events returns the appended facts of one task, oldest first.
+func (l *Local) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT seq, kind, payload FROM events WHERE task_id = ? ORDER BY seq`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: read events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]agent.EventRecord, 0, 16)
+	for rows.Next() {
+		var record agent.EventRecord
+		var payload []byte
+		if err := rows.Scan(&record.Seq, &record.Kind, &payload); err != nil {
+			return nil, fmt.Errorf("checkpoint: scan event: %w", err)
+		}
+		record.Payload = payload
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+// List returns every task, newest first.
+func (l *Local) List(ctx context.Context) ([]agent.TaskSummary, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT task_id, context_id, state, round, updated_at FROM tasks ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: list: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]agent.TaskSummary, 0, 16)
+	for rows.Next() {
+		var summary agent.TaskSummary
+		if err := rows.Scan(&summary.ID, &summary.ContextID, &summary.State,
+			&summary.Round, &summary.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("checkpoint: scan summary: %w", err)
+		}
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// Delete removes a task and its events.
+func (l *Local) Delete(ctx context.Context, taskID string) error {
+	if _, err := l.db.ExecContext(ctx, `DELETE FROM events WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("checkpoint: delete events: %w", err)
+	}
+	if _, err := l.db.ExecContext(ctx, `DELETE FROM tasks WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("checkpoint: delete task: %w", err)
+	}
+	return nil
+}
+
+// PutBlob stores bytes under their content hash.
 func (l *Local) PutBlob(ctx context.Context, data []byte) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(data)
 	ref := hex.EncodeToString(sum[:])
-	path := l.blobPath(ref)
-	if _, err := os.Stat(path); err == nil {
-		return ref, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("checkpoint: blob dir: %w", err)
-	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".blob-*")
-	if err != nil {
-		return "", fmt.Errorf("checkpoint: blob temp: %w", err)
-	}
-	name := temp.Name()
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		_ = os.Remove(name)
-		return "", fmt.Errorf("checkpoint: blob write: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", fmt.Errorf("checkpoint: blob close: %w", err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
-		return "", fmt.Errorf("checkpoint: blob rename: %w", err)
+	if _, err := l.db.ExecContext(ctx,
+		`INSERT INTO blobs (ref, body) VALUES (?, ?) ON CONFLICT(ref) DO NOTHING`,
+		ref, data,
+	); err != nil {
+		return "", fmt.Errorf("checkpoint: store blob: %w", err)
 	}
 	return ref, nil
 }
 
 // GetBlob returns the bytes a reference names.
 func (l *Local) GetBlob(ctx context.Context, ref string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	if len(ref) != sha256.Size*2 {
 		return nil, errdefs.Validationf("checkpoint: %q is not a blob reference", ref)
 	}
-	body, err := os.ReadFile(l.blobPath(ref))
+	var body []byte
+	err := l.db.QueryRowContext(ctx, `SELECT body FROM blobs WHERE ref = ?`, ref).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("checkpoint: blob %s: %w", ref, agent.ErrNoCheckpoint)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: read blob: %w", err)
 	}
 	return body, nil
-}
-
-func (l *Local) blobPath(ref string) string {
-	return filepath.Join(l.dir, blobDirName, ref[:2], ref)
-}
-
-func (l *Local) writePointer(mark pointer) error {
-	body, err := json.Marshal(mark)
-	if err != nil {
-		return fmt.Errorf("checkpoint: encode pointer: %w", err)
-	}
-	path := filepath.Join(l.dir, pointerName)
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, body, 0o644); err != nil {
-		return fmt.Errorf("checkpoint: write pointer: %w", err)
-	}
-	if err := os.Rename(temp, path); err != nil {
-		return fmt.Errorf("checkpoint: rename pointer: %w", err)
-	}
-	return nil
 }

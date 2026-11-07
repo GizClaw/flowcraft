@@ -240,6 +240,7 @@ func (s *Session) loop(
 	toolCalls int,
 	yield func(Event, error) bool,
 ) error {
+	var roundEvents []EventRecord
 	for {
 		if err := s.interrupted(ctx); err != nil {
 			return s.finish(task, StateCanceled, err, true, yield)
@@ -266,6 +267,7 @@ func (s *Session) loop(
 			return s.finish(task, StateFailed, err, true, yield)
 		}
 		task.History = append(task.History, response.Message)
+		roundEvents = append(roundEvents, messageEvent(response.Message))
 		if !yield(UsageEvent{Usage: response.Usage}, nil) {
 			return nil
 		}
@@ -289,7 +291,7 @@ func (s *Session) loop(
 			if call.Name == askUserTool {
 				result, paused := s.ask(ctx, call)
 				if paused {
-					return s.pause(ctx, task, call, yield)
+					return s.pause(ctx, task, call, roundEvents, yield)
 				}
 				results = append(results, result)
 				if !yield(ToolResult{Result: result}, nil) {
@@ -306,11 +308,16 @@ func (s *Session) loop(
 		}
 		observation := toolMessage(results)
 		task.History = append(task.History, observation)
+		roundEvents = append(roundEvents, messageEvent(observation))
 		contextMessages = task.History[:len(task.History)-1]
 		input = inference.GenerateInput{Role: inference.InputRoleTool, Content: observation.Content}
 
 		view.AdvanceRound()
 		task.Round++
+		// A round boundary is the only place a checkpoint may be written: a
+		// half round holds a tool call whose result nobody has yet.
+		s.persistQuietly(ctx, roundEvents)
+		roundEvents = nil
 		if max := s.opts.Bounds.MaxRounds; max > 0 && task.Round >= max {
 			return s.finish(task, StateCompleted, nil, true, yield)
 		}
@@ -322,17 +329,16 @@ func (s *Session) pause(
 	ctx context.Context,
 	task *Task,
 	call message.ToolCall,
+	events []EventRecord,
 	yield func(Event, error) bool,
 ) error {
 	pending := call
 	task.Pending = &pending
 	task.State = StateInputRequired
-	if s.opts.Store != nil {
-		if err := s.opts.Store.Write(ctx, s.Snapshot()); err != nil {
-			// Pausing without a resume point would lose the Task, so a store
-			// failure is a Task failure rather than a status nobody acts on.
-			return s.finish(task, StateFailed, err, true, yield)
-		}
+	// Pausing without a resume point would lose the Task, so here a store
+	// failure fails the Task instead of being reported as lag.
+	if err := s.persist(ctx, events); err != nil {
+		return s.finish(task, StateFailed, err, true, yield)
 	}
 	if !yield(Status{State: StateInputRequired, Reason: "waiting for the user"}, nil) {
 		return nil
@@ -457,6 +463,32 @@ func (s *Session) finish(
 		}
 	}
 	return cause
+}
+
+// messageEvent records one appended message.
+func messageEvent(msg message.Message) EventRecord {
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return EventRecord{Kind: "message", Payload: json.RawMessage(`{}`)}
+	}
+	return EventRecord{Kind: "message", Payload: body}
+}
+
+// persist writes the projection and this round's events.
+func (s *Session) persist(ctx context.Context, events []EventRecord) error {
+	if s.opts.Store == nil {
+		return nil
+	}
+	return s.opts.Store.Save(ctx, s.Snapshot(), events)
+}
+
+// persistQuietly writes a round-boundary checkpoint without failing the Task: a
+// checkpoint that lags is a resume problem, not a reason to abort an answer the
+// model already produced.
+func (s *Session) persistQuietly(ctx context.Context, events []EventRecord) {
+	if err := s.persist(ctx, events); err != nil {
+		telemetry.WarnErr(ctx, "agent: checkpoint write failed", err)
+	}
 }
 
 // toolCallsOf extracts the tool calls the model asked for.

@@ -16,14 +16,12 @@ const CheckpointSchema = 1
 // ErrNoCheckpoint reports that a store holds nothing to resume from.
 var ErrNoCheckpoint = errors.New("agent: no checkpoint")
 
-// Checkpoint is a resume point: the conversation, and the configuration it ran
-// under.
+// Checkpoint is one Task plus the configuration it ran under.
 //
-// It does not contain a runtime. A runtime holds processes, handles and
-// connections that cannot be serialised; what can be is the digest of the
-// configuration needed to rebuild one, plus the transcript to replay. That is
-// why a checkpoint is a retrieval point for the whole stack rather than a
-// private detail of the loop.
+// It does not contain a runtime: a runtime holds processes, handles and
+// connections that cannot be serialised. What can be is the digest of the
+// configuration needed to rebuild one, plus the transcript to replay — which is
+// why a checkpoint is a retrieval point for the whole stack.
 type Checkpoint struct {
 	Schema   int                        `json:"schema"`
 	Runtime  runtime.Digest             `json:"runtime"`
@@ -31,19 +29,49 @@ type Checkpoint struct {
 	Sections map[string]json.RawMessage `json:"sections,omitempty"`
 }
 
-// Store persists checkpoints and the blobs they reference.
+// EventRecord is one appended fact of a Task.
 //
-// It is the host's to implement, for the same reason drivers and secret
-// resolvers are: where state lives — a local file, an object store, a database
-// per tenant — is a deployment decision, not a framework one. The methods are
-// deliberately at the semantic level; append-only logs and pointers are an
-// implementation choice, not part of the contract.
+// The projection (the Task row) answers "what is true now"; these answer "how it
+// got there". Storing only the projection makes every write carry the whole
+// transcript; storing only events makes every read a replay. Both, in one
+// transaction, is what the shape below is for.
+type EventRecord struct {
+	// Seq is assigned by the store, monotonic per task.
+	Seq int64
+	// Kind names the fact: "message", "state", "artifact".
+	Kind string
+	// Payload is the fact itself.
+	Payload json.RawMessage
+}
+
+// TaskSummary is the list projection.
+type TaskSummary struct {
+	ID        string
+	ContextID string
+	State     TaskState
+	Round     int
+	UpdatedAt string
+}
+
+// Store persists tasks, their events, and the blobs they reference.
+//
+// The verbs follow the session-service shape the ecosystem converged on
+// (create/append/list/delete plus a projection), collapsed to one Save because a
+// Task is addressed by id and a first save is just a save. Where state lives — a
+// local file, Postgres, an object store — is a deployment decision, so the
+// interface stays semantic and the implementation is replaceable.
 type Store interface {
-	// Write persists one checkpoint. It does not need to be durable on return:
-	// the loop does not wait for it.
-	Write(ctx context.Context, checkpoint Checkpoint) error
-	// Latest returns the most recent checkpoint.
-	Latest(ctx context.Context) (Checkpoint, error)
+	// Save writes the Task projection and appends this round's events in one
+	// transaction. The first save creates the task; later ones advance it.
+	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord) error
+	// Load returns the newest projection of one task.
+	Load(ctx context.Context, taskID string) (Checkpoint, error)
+	// Events returns the appended facts of one task, oldest first.
+	Events(ctx context.Context, taskID string) ([]EventRecord, error)
+	// List returns every task, newest first.
+	List(ctx context.Context) ([]TaskSummary, error)
+	// Delete removes a task and its events.
+	Delete(ctx context.Context, taskID string) error
 	// PutBlob stores bytes and returns their reference. The same bytes must
 	// yield the same reference, so a repeated write costs nothing.
 	PutBlob(ctx context.Context, data []byte) (string, error)
@@ -65,8 +93,7 @@ func (s *Session) Snapshot() Checkpoint {
 // The digest must match the runtime it is resumed against. Continuing a
 // transcript under a different model, boundary or permission set is the most
 // dangerous silent failure this layer has: everything the model was told about
-// what it may do came from the old configuration. A caller that genuinely wants
-// to drift has to say so; there is no default that guesses.
+// what it may do came from the old configuration.
 func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Session, error) {
 	if rt == nil {
 		return nil, errdefs.Validationf("agent: a runtime is required")
@@ -88,4 +115,16 @@ func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Sessi
 		}
 	}
 	return session, nil
+}
+
+// RestoreFrom loads a task from a store and resumes it.
+func RestoreFrom(ctx context.Context, rt *runtime.Runtime, store Store, taskID string, opts ...Option) (*Session, error) {
+	if store == nil {
+		return nil, errdefs.Validationf("agent: a store is required")
+	}
+	checkpoint, err := store.Load(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return Restore(rt, checkpoint, opts...)
 }
