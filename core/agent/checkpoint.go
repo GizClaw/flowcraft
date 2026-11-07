@@ -23,7 +23,10 @@ var ErrNoCheckpoint = errors.New("agent: no checkpoint")
 // configuration needed to rebuild one, plus the transcript to replay — which is
 // why a checkpoint is a retrieval point for the whole stack.
 type Checkpoint struct {
-	Schema   int                        `json:"schema"`
+	Schema int `json:"schema"`
+	// Version is assigned by the store and advances on every save. It is what a
+	// concurrent writer is compared against.
+	Version  int64                      `json:"version,omitempty"`
 	Runtime  runtime.Digest             `json:"runtime"`
 	Task     Task                       `json:"task"`
 	Sections map[string]json.RawMessage `json:"sections,omitempty"`

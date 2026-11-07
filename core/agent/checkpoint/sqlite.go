@@ -168,7 +168,9 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 // Load returns the newest projection of one task.
 func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
 	var body []byte
-	err := l.db.QueryRowContext(ctx, `SELECT body FROM tasks WHERE task_id = ?`, taskID).Scan(&body)
+	var version int64
+	err := l.db.QueryRowContext(ctx,
+		`SELECT body, version FROM tasks WHERE task_id = ?`, taskID).Scan(&body, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -179,6 +181,7 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 	if err := json.Unmarshal(body, &checkpoint); err != nil {
 		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode task: %w", err)
 	}
+	checkpoint.Version = version
 	return checkpoint, nil
 }
 

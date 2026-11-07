@@ -5,6 +5,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
 // Where the two endpoints live. The card path is the one the A2A discovery
@@ -20,6 +21,10 @@ const (
 type ServerConfig struct {
 	Card     CardConfig
 	Sessions Sessions
+	// TaskStore, when set, makes the server read and write tasks where the agent
+	// resumes from them. Left nil the SDK keeps its in-memory store, which is a
+	// second record of the same task and does not survive a restart.
+	TaskStore taskstore.Store
 	// Options are handed to a2asrv.NewHandler: a task store, interceptors, an
 	// authenticator. They are the SDK's options, not ours, so a host that needs
 	// one does not have to reach around this package.
@@ -43,7 +48,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	handler := a2asrv.NewHandler(executor, cfg.Options...)
+	options := append([]a2asrv.RequestHandlerOption{}, cfg.Options...)
+	if cfg.TaskStore != nil {
+		options = append(options, a2asrv.WithTaskStore(cfg.TaskStore))
+	}
+	handler := a2asrv.NewHandler(executor, options...)
 	mux := http.NewServeMux()
 	mux.Handle(CardPath, a2asrv.NewStaticAgentCardHandler(executor.Card()))
 	mux.Handle(RPCPath, a2asrv.NewJSONRPCHandler(handler))
