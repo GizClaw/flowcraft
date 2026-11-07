@@ -15,7 +15,15 @@ import (
 )
 
 const (
-	maxGrepFileBytes   = 1 << 20
+	maxGrepFileBytes = 1 << 20
+	// maxGrepMatchedBytes bounds the returned text. max_matches bounds the count,
+	// but a hundred matched lines of 200 KB each is 20 MB of answer. A variable so
+	// a test can lower it without writing megabytes.
+)
+
+var maxGrepMatchedBytes = 4 << 20
+
+const (
 	binarySniffBytes   = 8 << 10
 	defaultGrepMatches = 100
 	maxGrepMatches     = 1000
@@ -155,6 +163,28 @@ func (t *grepTool) walk(ctx context.Context, root string, includeHidden bool, sc
 }
 
 // grepScan accumulates the hits of one call.
+// nextLine returns the bytes of one line starting at at, the offset after it, and
+// whether a line was there. A trailing CR is stripped so CRLF files match the
+// same way splitLines made them match, and a final newline does not open an
+// empty line.
+func nextLine(data []byte, at int) ([]byte, int, bool) {
+	if at >= len(data) {
+		return nil, at, false
+	}
+	end := at
+	for end < len(data) && data[end] != '\n' {
+		end++
+	}
+	line := data[at:end]
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		line = line[:n-1]
+	}
+	if end < len(data) {
+		end++
+	}
+	return line, end, true
+}
+
 type grepScan struct {
 	re            *regexp.Regexp
 	maxMatches    int
@@ -163,6 +193,7 @@ type grepScan struct {
 	truncated     bool
 	skippedLarge  int
 	files         int
+	matchedBytes  int
 }
 
 func (s *grepScan) file(ctx context.Context, tree *fsx.Tree, path string, info fs.FileInfo) error {
@@ -194,11 +225,26 @@ func (s *grepScan) scanData(path string, data []byte) {
 		}
 		return
 	}
-	for i, line := range splitLines(string(data)) {
-		if !s.re.MatchString(line) {
+	// Scan the raw bytes: splitLines would convert the file to one string and
+	// then copy every line, so a newline-dense file amplified to a multiple of
+	// its size before a single match was known. Only matched lines become strings.
+	lineNo := 0
+	for at := 0; ; {
+		line, next, ok := nextLine(data, at)
+		if !ok {
+			return
+		}
+		at = next
+		lineNo++
+		if !s.re.Match(line) {
 			continue
 		}
-		s.matches = append(s.matches, grepMatch{Path: path, LineNumber: i + 1, Line: line})
+		s.matches = append(s.matches, grepMatch{Path: path, LineNumber: lineNo, Line: string(line)})
+		s.matchedBytes += len(line)
+		if s.matchedBytes > maxGrepMatchedBytes {
+			s.truncated = true
+			return
+		}
 		if len(s.matches) > s.maxMatches {
 			return
 		}

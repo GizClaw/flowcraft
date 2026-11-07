@@ -684,6 +684,9 @@ type outputChunk struct {
 	data   []byte
 }
 
+// exitedRetainBytes is what a finished session keeps for a tail read.
+const exitedRetainBytes = 64 << 10
+
 func newOutputLog(maxBytes int64) *outputLog {
 	return &outputLog{wake: make(chan struct{}), max: maxBytes}
 }
@@ -721,6 +724,10 @@ func (l *outputLog) finish(exit sandbox.SessionExit) {
 	l.mu.Lock()
 	l.eof = true
 	l.exit = exit
+	// The configured budget exists to replay a live session. After exit only a
+	// tail is worth keeping: a finished session that wrote megabytes would
+	// otherwise pin all of it for as long as the registry holds the record.
+	l.keepTailLocked(exitedRetainBytes)
 	l.deliver(sandbox.SessionEvent{Seq: l.nextSeq, Type: sandbox.SessionEventExited, Exit: &l.exit})
 	l.wakeReadersLocked()
 	l.mu.Unlock()
@@ -910,6 +917,26 @@ func (l *outputLog) retainedSeqLocked() int64 {
 		return l.nextSeq
 	}
 	return l.chunks[0].seq
+}
+
+// keepTailLocked drops all but the last n bytes of retained output. trimLocked
+// never drops the last chunk, so a single huge chunk has to be cut in place to
+// honour the budget.
+func (l *outputLog) keepTailLocked(n int64) {
+	if n <= 0 || l.total <= n {
+		return
+	}
+	for len(l.chunks) > 1 && l.total-int64(len(l.chunks[0].data)) >= n {
+		l.total -= int64(len(l.chunks[0].data))
+		l.chunks = l.chunks[1:]
+	}
+	if l.total > n {
+		cut := int(l.total - n)
+		first := &l.chunks[0]
+		first.data = append([]byte(nil), first.data[cut:]...)
+		first.seq += int64(cut)
+		l.total -= int64(cut)
+	}
 }
 
 func (l *outputLog) trimLocked() {

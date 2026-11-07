@@ -90,8 +90,7 @@ func (t *readFileTool) Execute(ctx context.Context, arguments string) (message.C
 			ReadFileName, path, maxReadFileBytes)
 	}
 
-	lines := splitLines(string(data))
-	total := len(lines)
+	total := countLines(data)
 
 	offset := params.Offset
 	if offset < 1 {
@@ -108,19 +107,34 @@ func (t *readFileTool) Execute(ctx context.Context, arguments string) (message.C
 		offset = total + 1
 	}
 
+	// Only the window is materialized. Building every line first, as splitLines
+	// did, made a 20 KB answer walk a file-sized string and a line-sized slice
+	// element per line.
 	var b strings.Builder
 	next := offset
-	for i := offset; i <= total && i < offset+limit; i++ {
-		line := lines[i-1]
+	lineNo := 0
+	for at := 0; ; {
+		line, after, ok := nextLine(data, at)
+		if !ok {
+			break
+		}
+		at = after
+		lineNo++
+		if lineNo < offset {
+			continue
+		}
+		if lineNo >= offset+limit {
+			break
+		}
 		if b.Len() > 0 && b.Len()+len(line)+1 > ReadResultChars {
 			break
 		}
-		if b.Len() == 0 && utf8.RuneCountInString(line) > ReadResultChars {
-			line = string([]rune(line)[:ReadResultChars])
+		if b.Len() == 0 && utf8.RuneCountInString(string(line)) > ReadResultChars {
+			line = []byte(string([]rune(string(line))[:ReadResultChars]))
 		}
-		b.WriteString(line)
-		b.WriteString("\n")
-		next = i + 1
+		b.Write(line)
+		b.WriteByte('\n')
+		next = lineNo + 1
 	}
 
 	return result(ReadFileName, map[string]any{
@@ -134,16 +148,16 @@ func (t *readFileTool) Execute(ctx context.Context, arguments string) (message.C
 	})
 }
 
-// splitLines normalizes CRLF and drops the trailing empty line a final newline
-// produces, so total_lines counts content lines.
-func splitLines(text string) []string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	if text == "" {
-		return nil
+// countLines counts content lines the way splitLines defined them: CRLF is one
+// break and a final newline does not open an empty line.
+func countLines(data []byte) int {
+	total := 0
+	for at := 0; ; {
+		_, next, ok := nextLine(data, at)
+		if !ok {
+			return total
+		}
+		total++
+		at = next
 	}
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
 }
