@@ -98,11 +98,15 @@ func (s *Session) Snapshot() Checkpoint {
 	defer s.mu.Unlock()
 	// The task is cloned: a checkpoint handed to an asynchronous store must not
 	// change when the loop appends to History afterwards.
-	return Checkpoint{
+	checkpoint := Checkpoint{
 		Schema:  CheckpointSchema,
 		Runtime: s.resumeDigest(),
 		Task:    s.task.clone(),
 	}
+	if s.policyState != nil {
+		checkpoint.Sections = map[string]json.RawMessage{sectionContextPolicy: s.policyState}
+	}
+	return checkpoint
 }
 
 // resumeDigest is the identity a checkpoint records and a restore compares.
@@ -147,6 +151,11 @@ func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Sessi
 		}
 	}
 	session.digest = session.computeDigest()
+	session.policyState = checkpoint.Sections[sectionContextPolicy]
+	session.policy = session.opts.ContextPolicy
+	if session.policy == nil {
+		session.policy = FullHistory{}
+	}
 	if want := session.digest; checkpoint.Runtime != want {
 		return nil, errdefs.Validationf(
 			"agent: checkpoint was taken under %s, this runtime is %s",

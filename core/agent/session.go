@@ -57,6 +57,9 @@ type Options struct {
 	// configuration is the default; a deployment whose conversations depend on
 	// more than that — an engine, a peer, a protocol — supplies the wider value.
 	Digest runtime.Digest
+	// ContextPolicy decides what the model sees each round. Nil means
+	// FullHistory: the whole Task minus the input.
+	ContextPolicy ContextPolicy
 }
 
 // Option mutates Options at construction.
@@ -75,6 +78,11 @@ func WithDigest(digest runtime.Digest) Option {
 // WithStore installs the checkpoint store used when a Task pauses.
 func WithStore(store Store) Option {
 	return func(o *Options) { o.Store = store }
+}
+
+// WithContextPolicy replaces the default full-history projection.
+func WithContextPolicy(policy ContextPolicy) Option {
+	return func(o *Options) { o.ContextPolicy = policy }
 }
 
 // WithBounds caps one Task.
@@ -132,6 +140,10 @@ type Session struct {
 	// visible set; they are cleared when a Task starts.
 	toolset      *inference.Toolset
 	toolsetEpoch uint64
+	// policy decides what the model sees each round; policyState is what it
+	// returned last time, persisted in the checkpoint's own section.
+	policy      ContextPolicy
+	policyState json.RawMessage
 	// lastSave is the projection content of the newest successful write. Two
 	// saves that would write the same row (a terminal state reached twice, a
 	// resume that changes nothing) cost a round trip each.
@@ -166,6 +178,10 @@ func NewSession(rt *runtime.Runtime, opts ...Option) (*Session, error) {
 		}
 	}
 	session.digest = session.computeDigest()
+	session.policy = session.opts.ContextPolicy
+	if session.policy == nil {
+		session.policy = FullHistory{}
+	}
 	return session, nil
 }
 
@@ -487,9 +503,13 @@ func (s *Session) loop(
 		if err != nil {
 			return s.finish(ctx, task, StateFailed, err, true, yield)
 		}
+		context, err := s.project(ctx, task, contextMessages, input, tools)
+		if err != nil {
+			return s.finish(ctx, task, StateFailed, err, true, yield)
+		}
 		request := inference.GenerateRequest{
 			Model:   s.runtime.DefaultModel(),
-			Context: contextMessages,
+			Context: context,
 			Input:   input,
 			Tools:   tools,
 		}
