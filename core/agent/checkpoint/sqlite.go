@@ -56,15 +56,16 @@ CREATE TABLE IF NOT EXISTS blobs (
 	body BLOB NOT NULL
 );`
 
-// Local is a SQLite-backed store.
-type Local struct {
+// SQLite is the database/sql backend. A Postgres backend is a sibling file
+// with the same shape, which is why nothing here is named "local".
+type SQLite struct {
 	db *sql.DB
 }
 
-var _ agent.Store = (*Local)(nil)
+var _ agent.Store = (*SQLite)(nil)
 
-// Open prepares a store at path. ":memory:" is accepted for tests.
-func Open(path string) (*Local, error) {
+// Open prepares a SQLite store at path. ":memory:" is accepted for tests.
+func Open(path string) (*SQLite, error) {
 	if path == "" {
 		return nil, errdefs.Validationf("checkpoint: a database path is required")
 	}
@@ -89,14 +90,14 @@ func Open(path string) (*Local, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("checkpoint: migrate: %w", err)
 	}
-	return &Local{db: db}, nil
+	return &SQLite{db: db}, nil
 }
 
 // Close releases the database handle.
-func (l *Local) Close() error { return l.db.Close() }
+func (l *SQLite) Close() error { return l.db.Close() }
 
 // Save updates the projection and appends the round's events in one transaction.
-func (l *Local) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) error {
+func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func (l *Local) Save(ctx context.Context, checkpoint agent.Checkpoint, events []
 }
 
 // Load returns the newest projection of one task.
-func (l *Local) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
+func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
 	var body []byte
 	err := l.db.QueryRowContext(ctx, `SELECT body FROM tasks WHERE task_id = ?`, taskID).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,7 +183,7 @@ func (l *Local) Load(ctx context.Context, taskID string) (agent.Checkpoint, erro
 }
 
 // Events returns the appended facts of one task, oldest first.
-func (l *Local) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
+func (l *SQLite) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
 	rows, err := l.db.QueryContext(ctx,
 		`SELECT seq, kind, payload FROM events WHERE task_id = ? ORDER BY seq`, taskID)
 	if err != nil {
@@ -203,7 +204,7 @@ func (l *Local) Events(ctx context.Context, taskID string) ([]agent.EventRecord,
 }
 
 // List returns every task, newest first.
-func (l *Local) List(ctx context.Context) ([]agent.TaskSummary, error) {
+func (l *SQLite) List(ctx context.Context) ([]agent.TaskSummary, error) {
 	rows, err := l.db.QueryContext(ctx,
 		`SELECT task_id, context_id, state, round, updated_at FROM tasks ORDER BY updated_at DESC`)
 	if err != nil {
@@ -223,7 +224,7 @@ func (l *Local) List(ctx context.Context) ([]agent.TaskSummary, error) {
 }
 
 // Delete removes a task and its events.
-func (l *Local) Delete(ctx context.Context, taskID string) error {
+func (l *SQLite) Delete(ctx context.Context, taskID string) error {
 	if _, err := l.db.ExecContext(ctx, `DELETE FROM events WHERE task_id = ?`, taskID); err != nil {
 		return fmt.Errorf("checkpoint: delete events: %w", err)
 	}
@@ -234,7 +235,7 @@ func (l *Local) Delete(ctx context.Context, taskID string) error {
 }
 
 // PutBlob stores bytes under their content hash.
-func (l *Local) PutBlob(ctx context.Context, data []byte) (string, error) {
+func (l *SQLite) PutBlob(ctx context.Context, data []byte) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -250,7 +251,7 @@ func (l *Local) PutBlob(ctx context.Context, data []byte) (string, error) {
 }
 
 // GetBlob returns the bytes a reference names.
-func (l *Local) GetBlob(ctx context.Context, ref string) ([]byte, error) {
+func (l *SQLite) GetBlob(ctx context.Context, ref string) ([]byte, error) {
 	if len(ref) != sha256.Size*2 {
 		return nil, errdefs.Validationf("checkpoint: %q is not a blob reference", ref)
 	}

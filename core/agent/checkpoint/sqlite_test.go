@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 )
 
-func openStore(t *testing.T) *Local {
+func openStore(t *testing.T) *SQLite {
 	t.Helper()
 	store, err := Open(t.TempDir() + "/checkpoints.db")
 	if err != nil {
