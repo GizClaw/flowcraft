@@ -479,3 +479,29 @@ func BenchmarkToolsFor(b *testing.B) {
 		}
 	}
 }
+
+// Two saves that would write the same row cost a round trip each; events always
+// write, because they advance the log.
+func TestUnchangedSavesAreSkipped(t *testing.T) {
+	store := &memStore{}
+	session, _ := newTestSession(t, &scriptedProvider{}, WithStore(store))
+	ctx := context.Background()
+
+	if err := session.persist(ctx, nil); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	wrote := store.saves
+	if err := session.persist(ctx, nil); err != nil {
+		t.Fatalf("persist again: %v", err)
+	}
+	if store.saves != wrote {
+		t.Errorf("second identical save wrote %d rows, want 0 more", store.saves-wrote)
+	}
+	events := []EventRecord{messageEvent(message.NewTextMessage(message.RoleAssistant, "hi"))}
+	if err := session.persist(ctx, events); err != nil {
+		t.Fatalf("persist with events: %v", err)
+	}
+	if store.saves != wrote+1 {
+		t.Errorf("save with events = %d writes, want one", store.saves-wrote)
+	}
+}

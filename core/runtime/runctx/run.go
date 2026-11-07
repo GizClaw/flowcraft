@@ -32,6 +32,14 @@ type Run struct {
 
 type runKey struct{}
 
+// attached pairs the identity with the attributes it renders to. Building them
+// on every span was two allocations per span for a value that cannot change
+// between WithRun and the span it decorates.
+type attached struct {
+	run   Run
+	attrs []attribute.KeyValue
+}
+
 // WithRun attaches run identity to ctx.
 //
 // A nested call overrides only the fields it sets, so a layer that knows the
@@ -48,7 +56,7 @@ func WithRun(ctx context.Context, run Run) context.Context {
 	if run.TenantID != "" {
 		merged.TenantID = run.TenantID
 	}
-	return context.WithValue(ctx, runKey{}, merged)
+	return context.WithValue(ctx, runKey{}, attached{run: merged, attrs: buildAttrs(merged)})
 }
 
 // From returns the run identity attached to ctx.
@@ -63,20 +71,12 @@ func stored(ctx context.Context) Run {
 	if ctx == nil {
 		return Run{}
 	}
-	run, _ := ctx.Value(runKey{}).(Run)
-	return run
+	att, _ := ctx.Value(runKey{}).(attached)
+	return att.run
 }
 
-// Attrs returns the correlation attributes to attach to a span or log record.
-//
-// It returns nil when nothing is attached, so a caller writes
-// span.SetAttributes(runctx.Attrs(ctx)...) without a nil check, and a
-// hand-built context stays as cheap as before.
-func Attrs(ctx context.Context) []attribute.KeyValue {
-	run := stored(ctx)
-	if run == (Run{}) {
-		return nil
-	}
+// buildAttrs renders the identity once, when it is attached.
+func buildAttrs(run Run) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 2)
 	if run.RuntimeID != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrRuntimeID, run.RuntimeID))
@@ -85,4 +85,21 @@ func Attrs(ctx context.Context) []attribute.KeyValue {
 		attrs = append(attrs, attribute.String(telemetry.AttrTenantID, run.TenantID))
 	}
 	return attrs
+}
+
+// Attrs returns the correlation attributes to attach to a span or log record.
+//
+// It returns nil when nothing is attached, so a caller writes
+// span.SetAttributes(runctx.Attrs(ctx)...) without a nil check, and a
+// hand-built context stays as cheap as before.
+func Attrs(ctx context.Context) []attribute.KeyValue {
+	if ctx == nil {
+		return nil
+	}
+	att, ok := ctx.Value(runKey{}).(attached)
+	if !ok || len(att.attrs) == 0 {
+		return nil
+	}
+	// The cap keeps a caller's append from writing into the shared slice.
+	return att.attrs[:len(att.attrs):len(att.attrs)]
 }

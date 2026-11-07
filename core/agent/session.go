@@ -132,6 +132,10 @@ type Session struct {
 	// visible set; they are cleared when a Task starts.
 	toolset      *inference.Toolset
 	toolsetEpoch uint64
+	// lastSave is the projection content of the newest successful write. Two
+	// saves that would write the same row (a terminal state reached twice, a
+	// resume that changes nothing) cost a round trip each.
+	lastSave *saveKey
 	// digest is the resume identity, derived once: it is a constant per
 	// session and hashing the config per checkpoint would repeat that work.
 	digest runtime.Digest
@@ -786,12 +790,47 @@ func messageEvent(msg message.Message) EventRecord {
 	return EventRecord{Kind: "message", Payload: body}
 }
 
+// saveKey is the part of a Task a projection write changes. History is not in it:
+// history lives in the event log, so its length is only a cheap sanity check.
+type saveKey struct {
+	state      TaskState
+	round      int
+	historyLen int
+	artifacts  int
+	pending    string
+}
+
+func keyOf(task Task) saveKey {
+	key := saveKey{
+		state:      task.State,
+		round:      task.Round,
+		historyLen: len(task.History),
+		artifacts:  len(task.Artifacts),
+	}
+	if task.Pending != nil {
+		key.pending = task.Pending.ID
+	}
+	return key
+}
+
 // persist writes the projection and this round's events.
+//
+// A save with no events and an unchanged projection is skipped: it would write the
+// same row the store already has.
 func (s *Session) persist(ctx context.Context, events []EventRecord) error {
 	if s.opts.Store == nil {
 		return nil
 	}
-	return s.opts.Store.Save(ctx, s.Snapshot(), events)
+	snapshot := s.Snapshot()
+	key := keyOf(snapshot.Task)
+	if len(events) == 0 && s.lastSave != nil && *s.lastSave == key {
+		return nil
+	}
+	if err := s.opts.Store.Save(ctx, snapshot, events); err != nil {
+		return err
+	}
+	s.lastSave = &key
+	return nil
 }
 
 // persistQuietly writes a round-boundary checkpoint without failing the Task: a

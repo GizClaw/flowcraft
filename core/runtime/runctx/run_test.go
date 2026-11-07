@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -79,5 +81,33 @@ func TestRunAddsTenantToRuntimeContext(t *testing.T) {
 	attrs := Attrs(ctx)
 	if len(attrs) != 2 {
 		t.Fatalf("attrs = %v, want runtime id and tenant", attrs)
+	}
+}
+
+// The attributes are built when the identity is attached: a span decorating the
+// same context must not rebuild them.
+func TestAttrsAllocateNothingOnceAttached(t *testing.T) {
+	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1", TenantID: "tenant-1"})
+	if got := testing.AllocsPerRun(1000, func() { _ = Attrs(ctx) }); got != 0 {
+		t.Fatalf("Attrs allocates %.0f times, want 0", got)
+	}
+}
+
+// The returned slice is shared, so a caller's append must copy rather than write
+// into the cache.
+func TestAttrsSurviveCallerAppend(t *testing.T) {
+	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1"})
+	attrs := Attrs(ctx)
+	attrs = append(attrs, attribute.String("extra", "x"))
+	if got := len(Attrs(ctx)); got != 1 {
+		t.Fatalf("Attrs after a caller append = %d attributes, want 1", got)
+	}
+}
+
+func BenchmarkAttrs(b *testing.B) {
+	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1", TenantID: "tenant-1"})
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Attrs(ctx)
 	}
 }
