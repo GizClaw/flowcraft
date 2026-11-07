@@ -10,6 +10,7 @@ package exec
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -31,6 +32,9 @@ const (
 	// maxReturnedOutput is what the model sees inline; the rest goes to a file
 	// whose path is part of the result.
 	maxReturnedOutput = 1 << 20
+	// maxReturnedStderr is stderr's share of that budget. A command that writes
+	// megabytes to stderr must not push the answer past the inline limit.
+	maxReturnedStderr = 256 << 10
 )
 
 // CommandTool runs one command line per call through one shell.
@@ -163,52 +167,79 @@ func (t *CommandTool) Execute(ctx context.Context, arguments string) (message.Co
 		return message.Content{}, err
 	}
 
-	output := result.Stdout
-	if result.Stderr != "" {
-		if output != "" && output[len(output)-1] != '\n' {
-			output += "\n"
-		}
-		output += result.Stderr
+	// Two streams share one inline budget. Concatenating them first, as this used
+	// to, copied up to 8 MiB of stdout and 8 MiB of stderr into a new string, then
+	// sliced it, then wrote another copy to the spool file.
+	stdout, stdoutCut := truncateOutput(result.Stdout, maxReturnedOutput)
+	stderrBudget := maxReturnedOutput - len(stdout)
+	if stderrBudget > maxReturnedStderr {
+		stderrBudget = maxReturnedStderr
 	}
+	stderr, stderrCut := truncateOutput(result.Stderr, stderrBudget)
+	truncated := stdoutCut || stderrCut
 
 	answer := map[string]any{
 		"exit_code": result.ExitCode,
-		"stderr":    result.Stderr,
+		"output":    stdout,
+		"stderr":    stderr,
+		"truncated": truncated,
 	}
-	if len(output) <= maxReturnedOutput {
-		answer["output"] = output
-		answer["truncated"] = false
-	} else {
-		answer["output"] = output[:maxReturnedOutput]
-		answer["truncated"] = true
-		// The tool already holds the whole capture, so the tail goes to a file
+	if truncated {
+		// The tool already holds the whole capture, so the rest goes to a file
 		// rather than being lost. Spooling to the system temp dir keeps the
 		// workspace clean and needs no write permission from the agent's policy:
 		// this file is the tool's own artifact, not agent data.
-		if path, spoolErr := spool(output); spoolErr == nil {
+		if path, spoolErr := spool(result.Stdout, result.Stderr); spoolErr == nil {
 			answer["full_output_path"] = path
 		}
 	}
 	return encode(t.shell.Name, answer)
 }
 
-// spool writes one capture to a temp file and returns its path.
-func spool(output string) (string, error) {
+// spool writes the captured streams to a temp file and returns its path. The
+// streams are written as they are: no joined copy is built in memory.
+func spool(stdout, stderr string) (string, error) {
 	file, err := os.CreateTemp("", "exec-output-*.log")
 	if err != nil {
 		return "", err
 	}
 	name := file.Name()
-	if _, err := file.WriteString(output); err != nil {
+	fail := func(err error) (string, error) {
 		_ = file.Close()
 		_ = os.Remove(name)
 		return "", err
+	}
+	if stdout != "" {
+		if _, err := io.WriteString(file, stdout); err != nil {
+			return fail(err)
+		}
+	}
+	if stderr != "" {
+		if stdout != "" && !strings.HasSuffix(stdout, "\n") {
+			if _, err := io.WriteString(file, "\n"); err != nil {
+				return fail(err)
+			}
+		}
+		if _, err := io.WriteString(file, stderr); err != nil {
+			return fail(err)
+		}
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(name)
 		return "", err
 	}
 	return name, nil
+}
+
+// truncateOutput cuts s to at most limit bytes, without copying when it fits.
+func truncateOutput(s string, limit int) (string, bool) {
+	if limit < 0 {
+		limit = 0
+	}
+	if len(s) <= limit {
+		return s, false
+	}
+	return s[:limit], true
 }
 
 func humanBytes(n int) string {

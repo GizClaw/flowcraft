@@ -133,3 +133,33 @@ func TestOutputIsCappedAndReported(t *testing.T) {
 		t.Errorf("truncated output gave no full_output_path: %v", out)
 	}
 }
+
+// Truncation must not copy a stream that fits, and must cut on a byte boundary
+// when it does not.
+func TestTruncateOutput(t *testing.T) {
+	short := "abc"
+	if got, cut := truncateOutput(short, 10); cut || got != short {
+		t.Errorf("truncateOutput(%q, 10) = %q, %v", short, got, cut)
+	}
+	long := strings.Repeat("x", 20)
+	got, cut := truncateOutput(long, 5)
+	if !cut || got != "xxxxx" {
+		t.Errorf("truncateOutput = %q, %v; want %q, true", got, cut, "xxxxx")
+	}
+}
+
+// Both streams land in the spool file, separated only when needed.
+func TestSpoolWritesBothStreams(t *testing.T) {
+	path, err := spool("out", "err")
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	if string(data) != "out\nerr" {
+		t.Errorf("spool = %q, want %q", data, "out\nerr")
+	}
+}

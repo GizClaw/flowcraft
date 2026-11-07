@@ -16,6 +16,12 @@ import (
 
 const maxGlobMatches = 1000
 
+// maxGlobScanned bounds the walk itself. A match cap alone does not: a pattern
+// that matches nothing still visits the whole tree, and ** on a deep tree can
+// visit far more entries than it can ever return. A variable so tests can lower
+// it without building a quarter-million-entry tree.
+var maxGlobScanned = 200000
+
 type globTool struct {
 	tree *fsx.Tree
 	root string
@@ -61,9 +67,18 @@ func (t *globTool) Execute(ctx context.Context, arguments string) (message.Conte
 		return message.Content{}, err
 	}
 
+	// Compile the pattern once: splitting it per visited entry was work the walk
+	// repeated for every file in the tree.
+	pattern := strings.Split(strings.Trim(params.Pattern, "/"), "/")
 	matches := []string{}
 	truncated := false
+	scanned := 0
 	err = t.tree.Walk(ctx, root, func(candidate string, entry fs.DirEntry) error {
+		if scanned >= maxGlobScanned {
+			truncated = true
+			return errStopWalk
+		}
+		scanned++
 		name := entry.Name()
 		if entry.IsDir() {
 			if !params.IncludeHidden && (name == alwaysSkipDir || strings.HasPrefix(name, ".")) {
@@ -71,11 +86,11 @@ func (t *globTool) Execute(ctx context.Context, arguments string) (message.Conte
 			}
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, candidate)
-		if relErr != nil {
+		rel, ok := relTo(root, candidate)
+		if !ok {
 			return nil
 		}
-		if !matchGlob(params.Pattern, filepath.ToSlash(rel)) {
+		if !matchSegments(pattern, strings.Split(strings.Trim(rel, "/"), "/")) {
 			return nil
 		}
 		if len(matches) >= maxGlobMatches {
@@ -91,14 +106,17 @@ func (t *globTool) Execute(ctx context.Context, arguments string) (message.Conte
 	return result(GlobName, map[string]any{"matches": matches, "truncated": truncated})
 }
 
-// matchGlob matches one slash-separated pattern against a slash-separated
-// relative path. ** spans any number of segments; everything else is path.Match
-// within one segment.
-func matchGlob(pattern, rel string) bool {
-	return matchSegments(
-		strings.Split(strings.Trim(pattern, "/"), "/"),
-		strings.Split(strings.Trim(rel, "/"), "/"),
-	)
+// relTo returns the slash-separated path under root. filepath.Rel per entry
+// allocates and re-cleans both paths; the walk already knows the prefix.
+func relTo(root, path string) (string, bool) {
+	prefix := root
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	return filepath.ToSlash(path[len(prefix):]), true
 }
 
 func matchSegments(pattern, segments []string) bool {

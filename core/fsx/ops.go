@@ -130,12 +130,18 @@ func (t *Tree) Remove(ctx context.Context, path string) error {
 
 // Copy duplicates a file: the source is read here, the destination is written
 // through a writable root, so the boundary applies to the side that persists.
+// It streams, so a large file never becomes one buffer.
 func (t *Tree) Copy(ctx context.Context, src, dst string) error {
-	data, err := t.Read(ctx, src)
+	if src == dst {
+		return errdefs.Validationf("fsx: copy source and destination are the same")
+	}
+	in, err := t.ReadStream(ctx, src)
 	if err != nil {
 		return err
 	}
-	return t.Write(ctx, dst, data)
+	defer func() { _ = in.Close() }()
+	_, err = t.WriteStream(ctx, dst, in)
+	return err
 }
 
 // writable resolves an absolute target to the handle and relative path that
