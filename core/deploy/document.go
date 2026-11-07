@@ -90,7 +90,14 @@ func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
 // Load parses and validates a deployment document.
 func (l Loader) Load(ctx context.Context, body []byte) ([]Spec, error) {
 	var document Document
-	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	// Placeholders are expanded by the same code a runtime layer uses, on the
+	// parsed values: peer, auth, card and settings can all name a secret, and a
+	// host should not have to learn a second rule for the outer document.
+	expanded, err := runtime.ExpandDocument(ctx, body, l.LoadOptions...)
+	if err != nil {
+		return nil, errdefs.Validationf("manage: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(expanded))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&document); err != nil && !errors.Is(err, io.EOF) {
 		return nil, errdefs.Validationf("manage: deployment document: %v", err)

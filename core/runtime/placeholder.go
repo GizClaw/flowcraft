@@ -225,3 +225,31 @@ func offeredSchemes(resolvers map[string]ResolverFunc) string {
 	sort.Strings(names)
 	return strings.Join(names, ", ")
 }
+
+// ExpandDocument resolves the placeholders in one YAML document and returns the
+// document with them replaced.
+//
+// The rules are the ones LoadLayers applies to a layer: parse first, expand the
+// values, and treat an unregistered scheme as an error rather than a literal.
+// Nothing here knows what the document means, so a deployment document and a
+// runtime layer cannot drift apart.
+func ExpandDocument(ctx context.Context, body []byte, opts ...LoadOption) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(body, &document); err != nil {
+		return nil, errdefs.Validationf("runtime: parse document: %v", err)
+	}
+	settings := loadOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&settings)
+		}
+	}
+	if err := resolvePlaceholders(ctx, &document, "", settings); err != nil {
+		return nil, err
+	}
+	expanded, err := yaml.Marshal(&document)
+	if err != nil {
+		return nil, errdefs.Validationf("runtime: encode document: %v", err)
+	}
+	return expanded, nil
+}

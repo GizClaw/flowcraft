@@ -46,6 +46,9 @@ func writeLayer(t *testing.T) string {
 
 // A proxy needs no substrate; a local engine cannot do without one.
 func TestLoadProxyAgent(t *testing.T) {
+	// The document names a secret; a missing variable is a load error, which is
+	// the runtime rule this loader now shares.
+	t.Setenv("TOKEN", "test-token")
 	specs, err := loader(t).Load(context.Background(), []byte(`
 version: 1
 agents:
@@ -217,5 +220,42 @@ agents:
 	}
 	if specs[0].Protocol == nil || specs[0].Protocol.Decoded == nil {
 		t.Errorf("protocol = %+v, want the decoded settings", specs[0].Protocol)
+	}
+}
+
+// A deployment document is expanded by the same code a layer uses, so a bearer
+// token can name a secret instead of being pasted into the file.
+func TestLoadResolvesPlaceholdersInTheDocument(t *testing.T) {
+	t.Setenv("DEPLOY_TOKEN", "s3cr3t")
+	specs, err := loader(t).Load(context.Background(), []byte(`
+version: 1
+agents:
+  - name: translator
+    engine:
+      kind: a2a
+      peer: https://peer.example/.well-known/agent-card.json
+      auth: {type: bearer, token: "${env:DEPLOY_TOKEN}"}
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := specs[0].Engine.Auth["token"]; got != "s3cr3t" {
+		t.Fatalf("auth token = %v, want the resolved secret", got)
+	}
+}
+
+// An unregistered scheme must fail the load: a literal "${secret:...}" would be
+// sent as the credential.
+func TestLoadRejectsAnUnregisteredScheme(t *testing.T) {
+	if _, err := loader(t).Load(context.Background(), []byte(`
+version: 1
+agents:
+  - name: translator
+    engine:
+      kind: a2a
+      peer: https://peer.example/.well-known/agent-card.json
+      auth: {type: bearer, token: "${vault:translator}"}
+`)); err == nil {
+		t.Fatal("Load with an unregistered scheme = nil, want an error")
 	}
 }

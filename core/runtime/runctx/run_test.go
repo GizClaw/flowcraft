@@ -98,7 +98,9 @@ func TestAttrsAllocateNothingOnceAttached(t *testing.T) {
 func TestAttrsSurviveCallerAppend(t *testing.T) {
 	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1"})
 	attrs := Attrs(ctx)
-	attrs = append(attrs, attribute.String("extra", "x"))
+	if got := len(append(attrs, attribute.String("extra", "x"))); got != 2 {
+		t.Fatalf("append = %d attributes, want 2", got)
+	}
 	if got := len(Attrs(ctx)); got != 1 {
 		t.Fatalf("Attrs after a caller append = %d attributes, want 1", got)
 	}
