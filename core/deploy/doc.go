@@ -1,4 +1,4 @@
-// Package manage owns deployed agents: their runtimes, their conversations, and
+// Package deploy owns deployed agents: their runtimes, their conversations, and
 // their lifetime.
 //
 // It sits above core/agent and core/runtime and knows nothing about how a client
@@ -9,4 +9,4 @@
 // Resume. A raw Session is deliberately not reachable: an undelivered message is
 // reported to whoever drives the loop, and if callers could drive it themselves
 // they could drop input the user sent and nobody saw.
-package manage
+package deploy

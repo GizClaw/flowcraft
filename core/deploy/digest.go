@@ -1,4 +1,4 @@
-package manage
+package deploy
 
 import (
 	"crypto/sha256"
