@@ -229,7 +229,17 @@ func (p *proxyConversation) Run(ctx context.Context, in agent.Input) iter.Seq2[a
 }
 
 // Resume continues the remote task with the user's answer.
+//
+// The local session refuses a resume with nothing to resume; forwarding one would
+// start a second remote run on a task that already finished, so the two
+// implementations must agree here.
 func (p *proxyConversation) Resume(ctx context.Context, reply agent.Reply) iter.Seq2[agent.Event, error] {
+	if state := p.currentState(); state != agent.StateInputRequired {
+		return func(yield func(agent.Event, error) bool) {
+			yield(nil, errdefs.Validationf(
+				"manage: task is not waiting for input (state %s)", state))
+		}
+	}
 	return p.forward(ctx, []message.Message{message.NewTextMessage(message.RoleUser, reply.Text)})
 }
 

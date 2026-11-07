@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -169,4 +170,12 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 	if got := loaded.Task.History[0].Content.Parts[0]; got == nil {
 		t.Error("first message lost its content")
 	}
+}
+
+// The SQLite backend must satisfy the same contract every other backend does;
+// these are the promises a resume relies on, not SQLite details.
+func TestSQLiteConformance(t *testing.T) {
+	agenttest.Store(t, func(t *testing.T) agent.Store {
+		return openStore(t)
+	})
 }
