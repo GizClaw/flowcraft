@@ -65,6 +65,14 @@ func RequiredEnv(layers ...Layer) (EnvRequirement, error) {
 		}
 	}
 
+	return finishEnv(requirement, required, optional), nil
+}
+
+// finishEnv turns the accumulated name sets into the sorted report.
+func finishEnv(
+	requirement EnvRequirement,
+	required, optional map[string]struct{},
+) EnvRequirement {
 	for name := range required {
 		requirement.Required = append(requirement.Required, name)
 	}
@@ -76,7 +84,28 @@ func RequiredEnv(layers ...Layer) (EnvRequirement, error) {
 	}
 	sort.Strings(requirement.Required)
 	sort.Strings(requirement.Optional)
-	return requirement, nil
+	return requirement
+}
+
+// RequiredEnvDocument reports which environment variables one YAML document
+// references, without resolving them.
+//
+// RequiredEnv answers the same question for layers, which have names and are
+// merged; a caller that owns a single document — a deployment document — needs
+// the answer before it can build a layer, and needs the source name to say which
+// file to edit. The scan is the one expansion uses, so only string values count.
+func RequiredEnvDocument(body []byte, source string) (EnvRequirement, error) {
+	requirement := EnvRequirement{Sources: make(map[string][]string)}
+	required := make(map[string]struct{})
+	optional := make(map[string]struct{})
+	var document yaml.Node
+	if err := yaml.Unmarshal(body, &document); err != nil {
+		return EnvRequirement{}, errdefs.Validationf("runtime: %s: %v", source, err)
+	}
+	if err := collectEnv(&document, Layer{Name: source}, &requirement, required, optional); err != nil {
+		return EnvRequirement{}, err
+	}
+	return finishEnv(requirement, required, optional), nil
 }
 
 func collectEnv(

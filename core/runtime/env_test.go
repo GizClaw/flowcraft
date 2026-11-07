@@ -106,3 +106,25 @@ name: "cost is $$5, not ${MONEY}"
 		t.Errorf("expanded = %q, want the literal dollar preserved", encoded)
 	}
 }
+
+// One document, no layers: the deployment loader needs the answer before it can
+// build the layer stack, and it needs to name the file to edit.
+func TestRequiredEnvDocument(t *testing.T) {
+	requirement, err := RequiredEnvDocument([]byte(`
+name: ${NAME}
+sandbox:
+  memory_mib: ${MEM_MIB:-512}
+`), "deploy.yaml")
+	if err != nil {
+		t.Fatalf("RequiredEnvDocument: %v", err)
+	}
+	if len(requirement.Required) != 1 || requirement.Required[0] != "NAME" {
+		t.Errorf("required = %v, want [NAME]", requirement.Required)
+	}
+	if len(requirement.Optional) != 1 || requirement.Optional[0] != "MEM_MIB" {
+		t.Errorf("optional = %v, want [MEM_MIB]", requirement.Optional)
+	}
+	if sources := requirement.Sources["NAME"]; len(sources) != 1 || sources[0] != "deploy.yaml" {
+		t.Errorf("sources = %v, want [deploy.yaml]", sources)
+	}
+}

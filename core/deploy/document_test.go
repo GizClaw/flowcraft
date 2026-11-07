@@ -259,3 +259,34 @@ agents:
 		t.Fatal("Load with an unregistered scheme = nil, want an error")
 	}
 }
+
+// A host prints its startup checklist before loading: every missing variable in
+// one pass, not one restart per variable.
+func TestLoaderRequiredEnvReportsBeforeLoading(t *testing.T) {
+	requirement, err := loader(t).RequiredEnv([]byte(`
+version: 1
+agents:
+  - name: translator
+    engine:
+      kind: a2a
+      peer: https://peer.example/.well-known/agent-card.json
+      auth: {type: bearer, token: "${env:TRANS_TOKEN}"}
+  - name: fallback
+    engine:
+      kind: a2a
+      peer: "${PEER_URL:-https://peer.example}"
+`))
+	if err != nil {
+		t.Fatalf("RequiredEnv: %v", err)
+	}
+	if len(requirement.Required) != 1 || requirement.Required[0] != "TRANS_TOKEN" {
+		t.Errorf("required = %v, want [TRANS_TOKEN]", requirement.Required)
+	}
+	if len(requirement.Optional) != 1 || requirement.Optional[0] != "PEER_URL" {
+		t.Errorf("optional = %v, want [PEER_URL]", requirement.Optional)
+	}
+	missing := requirement.Missing(func(string) (string, bool) { return "", false })
+	if len(missing) != 1 || missing[0] != "TRANS_TOKEN" {
+		t.Errorf("missing = %v, want [TRANS_TOKEN]", missing)
+	}
+}
