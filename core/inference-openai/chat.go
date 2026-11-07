@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
@@ -350,13 +351,26 @@ func chatUsage(raw *openai.ChatCompletion) usage.Usage {
 	return out
 }
 
+// schemaCache memoizes decoded tool schemas.
+//
+// A definition is fixed when the tool is constructed, and the SDK only reads the
+// object while marshalling, so the key — name plus raw schema — cannot return a
+// different value for the same key. Without it the driver runs a full
+// json.Unmarshal per tool on every text request.
+var schemaCache sync.Map // string -> map[string]any
+
 // schemaObject decodes a tool input schema into the untyped object the SDK
 // expects. The canonical definition already validated it as a JSON object.
 func schemaObject(definition message.ToolDefinition) (map[string]any, error) {
+	key := definition.Name + "\x00" + string(definition.InputSchema)
+	if cached, ok := schemaCache.Load(key); ok {
+		return cached.(map[string]any), nil
+	}
 	var parameters map[string]any
 	if err := json.Unmarshal(definition.InputSchema, &parameters); err != nil {
 		return nil, fmt.Errorf("openai: tool %q schema: %w", definition.Name, err)
 	}
+	schemaCache.Store(key, parameters)
 	return parameters, nil
 }
 

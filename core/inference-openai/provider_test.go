@@ -104,3 +104,33 @@ func TestLiveChat(t *testing.T) {
 		})
 	}
 }
+
+// Decoding a schema per request is a full json.Unmarshal per tool; the
+// definition never changes after construction.
+func TestSchemaObjectIsCached(t *testing.T) {
+	definition := message.ToolDefinition{
+		Name:        "read_file",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+	}
+	if _, err := schemaObject(definition); err != nil {
+		t.Fatalf("schemaObject: %v", err)
+	}
+	calls := func() { _, _ = schemaObject(definition) }
+	if got := testing.AllocsPerRun(100, calls); got > 3 {
+		t.Fatalf("schemaObject allocates %.0f times after warm-up, want at most 3 "+
+			"(key plus slack); a decode would be many more", got)
+	}
+}
+
+func BenchmarkSchemaObject(b *testing.B) {
+	definition := message.ToolDefinition{
+		Name:        "read_file",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := schemaObject(definition); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

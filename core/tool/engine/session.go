@@ -60,6 +60,11 @@ type CatalogView interface {
 	// next Definitions call sees their real schemas. Unknown or
 	// already-concrete tools are skipped.
 	EnsureLoaded(ctx context.Context, names ...string) error
+	// Epoch changes whenever the visible set could have changed: a discovery,
+	// a recorded call, an advanced round, a load. A caller that caches anything
+	// derived from Definitions (a toolset, a byte budget) can reuse it while the
+	// epoch is unchanged.
+	Epoch() uint64
 }
 
 // DiscoverResult reports one tool's discovery outcome.
@@ -91,7 +96,22 @@ type dynamicView struct {
 
 	mu sync.Mutex
 	st viewState
+	// epoch bumps on every mutation that can change the visible set.
+	epoch uint64
+	// defBytes caches the serialized size of each definition for the current
+	// epoch; RecordCall needs it on the hot path.
+	defBytes map[string]int64
 }
+
+// Epoch implements CatalogView.
+func (s *dynamicView) Epoch() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.epoch
+}
+
+// bumpEpoch must be called with mu held.
+func (s *dynamicView) bumpEpoch() { s.epoch++ }
 
 func (s *dynamicView) Get(name string) (tool.Tool, bool) {
 	return s.catalog.Get(name)
@@ -103,7 +123,10 @@ func (s *dynamicView) Definitions() []message.ToolDefinition {
 	st := s.st.snapshot()
 	s.mu.Unlock()
 
-	visible := s.visibleSet(policy, st)
+	visible, sizes := s.visibleSet(policy, st)
+	s.mu.Lock()
+	s.defBytes = sizes
+	s.mu.Unlock()
 	out := make([]message.ToolDefinition, 0, len(visible))
 	for _, cand := range visible {
 		out = append(out, cand.def)
@@ -115,7 +138,7 @@ func (s *dynamicView) Definitions() []message.ToolDefinition {
 // and policy, applying the discovery pool cap and the per-round budget.
 // Definitions() and Discover() share it so the exposure report can never
 // drift from the definitions that are actually sent.
-func (s *dynamicView) visibleSet(policy Policy, st stateSnapshot) []candidate {
+func (s *dynamicView) visibleSet(policy Policy, st stateSnapshot) ([]candidate, map[string]int64) {
 	all := s.catalog.Definitions()
 	sizes := make(map[string]int64, len(all))
 	cands := make([]candidate, 0, len(all))
@@ -129,7 +152,10 @@ func (s *dynamicView) visibleSet(policy Policy, st stateSnapshot) []candidate {
 	}
 	st = fitDiscoveryPool(st, sizes, policy.Discovery)
 
-	return visibleCandidates(cands, st, policy)
+	// RecordCall uses the same figure; recomputing it per executed call would
+	// re-marshal a schema that this pass already measured. The caller stores it,
+	// because Discover calls this while holding mu.
+	return visibleCandidates(cands, st, policy), sizes
 }
 
 // fitDiscoveryPool restricts the snapshot's discovered set to the pool
@@ -191,6 +217,7 @@ func (s *dynamicView) Require(names ...string) {
 func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.bumpEpoch()
 
 	reasons := make(map[string]string, len(names))
 	changed := false
@@ -224,7 +251,9 @@ func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	var visible map[string]struct{}
 	if changed {
 		visible = make(map[string]struct{})
-		for _, cand := range s.visibleSet(s.policy, s.st.snapshot()) {
+		cands, sizes := s.visibleSet(s.policy, s.st.snapshot())
+		s.defBytes = sizes
+		for _, cand := range cands {
 			visible[cand.name] = struct{}{}
 		}
 	}
@@ -308,13 +337,19 @@ func (s *dynamicView) RecordCall(call message.ToolCall) {
 	if !ok {
 		return
 	}
-	s.st.touch(call.Name, definitionBytes(t.Definition()), 0)
+	size, cached := s.defBytes[call.Name]
+	if !cached {
+		size = definitionBytes(t.Definition())
+	}
+	s.st.touch(call.Name, size, 0)
+	s.bumpEpoch()
 	s.evictForFitLocked()
 }
 
 func (s *dynamicView) AdvanceRound() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.bumpEpoch()
 
 	alive := func(name string) bool {
 		_, ok := s.catalog.Get(name)
@@ -399,6 +434,9 @@ func (s *dynamicView) EnsureLoaded(ctx context.Context, names ...string) error {
 type staticView struct {
 	catalog tool.Catalog
 }
+
+// Epoch implements CatalogView: a static view never changes.
+func (s *staticView) Epoch() uint64 { return 0 }
 
 func (s *staticView) Get(name string) (tool.Tool, bool) {
 	return s.catalog.Get(name)

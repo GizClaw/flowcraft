@@ -128,6 +128,10 @@ type Session struct {
 	runtime *runtime.Runtime
 	task    *Task
 	opts    Options
+	// toolset and toolsetEpoch cache the request's tool list for the current
+	// visible set; they are cleared when a Task starts.
+	toolset      *inference.Toolset
+	toolsetEpoch uint64
 	// digest is the resume identity, derived once: it is a constant per
 	// session and hashing the config per checkpoint would repeat that work.
 	digest runtime.Digest
@@ -336,6 +340,9 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 	// instead of joining this Task.
 	s.markRunning(true)
 	defer s.markRunning(false)
+	// A new Task gets a new view; a toolset cached under the same epoch number
+	// would belong to a different catalog.
+	s.toolset, s.toolsetEpoch = nil, 0
 	messages := append(s.takeQueued(), in.Messages...)
 	if len(messages) == 0 {
 		return errdefs.Validationf("agent: input has no messages")
@@ -463,11 +470,7 @@ func (s *Session) loop(
 		}
 		roundCtx, cancelRound := context.WithCancel(ctx)
 		s.setRoundCancel(cancelRound)
-		defs := view.Definitions()
-		if s.opts.Ask != nil {
-			defs = append(defs, askUserDefinition())
-		}
-		tools, err := inference.NewToolset(defs)
+		tools, err := s.toolsFor(view)
 		if err != nil {
 			return s.finish(ctx, task, StateFailed, err, true, yield)
 		}
@@ -657,6 +660,26 @@ func buildAskUserDefinition() message.ToolDefinition {
 // It is not a failure: the loop ends the Task as cancelled and persists that,
 // instead of appending the zero response to the transcript.
 var errConsumerStopped = errors.New("agent: consumer stopped")
+
+// toolsFor returns the request's tool list, rebuilding it only when the visible
+// set changed. NewToolset validates and clones every schema, so rebuilding it
+// per round is O(tools x schema bytes) of identical work.
+func (s *Session) toolsFor(view toolengine.CatalogView) (inference.Toolset, error) {
+	epoch := view.Epoch()
+	if s.toolset != nil && s.toolsetEpoch == epoch {
+		return *s.toolset, nil
+	}
+	defs := view.Definitions()
+	if s.opts.Ask != nil {
+		defs = append(defs, askUserDefinition())
+	}
+	tools, err := inference.NewToolset(defs)
+	if err != nil {
+		return inference.Toolset{}, err
+	}
+	s.toolset, s.toolsetEpoch = &tools, epoch
+	return tools, nil
+}
 
 // generate drains one model stream. It reports whether any text was emitted, so
 // the caller can fall back to the response message for drivers that do not stream.

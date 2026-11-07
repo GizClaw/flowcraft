@@ -81,7 +81,7 @@ func textResponse(text string) inference.GenerateResponse {
 	return inference.GenerateResponse{Message: message.NewTextMessage(message.RoleAssistant, text)}
 }
 
-func newTestSession(t *testing.T, provider inference.Generator, opts ...Option) (*Session, *runtime.Runtime) {
+func newTestSession(t testing.TB, provider inference.Generator, opts ...Option) (*Session, *runtime.Runtime) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := runtime.Config{
@@ -450,5 +450,30 @@ func BenchmarkAskUserDefinition(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = askUserDefinition()
+	}
+}
+
+// NewToolset validates and clones every schema; a round that has not changed
+// the visible set must reuse the previous result.
+func TestToolsetIsReusedWhileVisibilityIsUnchanged(t *testing.T) {
+	session, _ := newTestSession(t, &scriptedProvider{})
+	view := session.runtime.Assembly().NewCatalogView()
+	if _, err := session.toolsFor(view); err != nil {
+		t.Fatalf("toolsFor: %v", err)
+	}
+	calls := func() { _, _ = session.toolsFor(view) }
+	if got := testing.AllocsPerRun(100, calls); got != 0 {
+		t.Fatalf("toolsFor allocates %.0f times on the reuse path, want 0", got)
+	}
+}
+
+func BenchmarkToolsFor(b *testing.B) {
+	session, _ := newTestSession(b, &scriptedProvider{})
+	view := session.runtime.Assembly().NewCatalogView()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := session.toolsFor(view); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -137,10 +137,14 @@ func checkDeclaredInputs(
 	for _, kind := range descriptor.Capabilities.Inputs {
 		allowed[kind] = struct{}{}
 	}
-	check := func(where string, content message.Content) error {
+	check := func(index int, content message.Content) error {
 		for _, part := range content.Parts {
 			if _, ok := allowed[part.Kind()]; ok {
 				continue
+			}
+			where := "input"
+			if index >= 0 {
+				where = fmt.Sprintf("context message %d", index)
 			}
 			return inference.NewError(
 				inference.UnsupportedFeature,
@@ -152,9 +156,9 @@ func checkDeclaredInputs(
 		return nil
 	}
 	for i, item := range request.Context {
-		if err := check(fmt.Sprintf("context message %d", i), item.Content); err != nil {
+		if err := check(i, item.Content); err != nil {
 			return err
 		}
 	}
-	return check("input", request.Input.Content)
+	return check(-1, request.Input.Content)
 }
