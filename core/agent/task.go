@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -91,4 +92,19 @@ func (t *Task) advance(state TaskState) error {
 	}
 	t.State = state
 	return nil
+}
+
+// clone returns a copy that shares no mutable state with the live task, except
+// message parts: the loop only appends messages, never modifies one already in
+// History, so sharing them is safe and saves a per-part copy on every snapshot.
+func (t *Task) clone() Task {
+	out := *t
+	out.System = t.System.Clone()
+	out.History = slices.Clone(t.History)
+	out.Artifacts = slices.Clone(t.Artifacts)
+	if t.Pending != nil {
+		pending := t.Pending.Clone()
+		out.Pending = &pending
+	}
+	return out
 }

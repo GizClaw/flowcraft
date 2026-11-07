@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"iter"
+	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -13,17 +15,39 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
-// Sessions builds the agent session one execution runs on.
+// Runner is what an execution drives. *agent.Session is the local
+// implementation; a proxy over a remote agent implements the same three methods,
+// which is what lets a deployment expose either one through the same protocol.
+type Runner interface {
+	// State is the runner's lifecycle state; the executor only needs this to
+	// decide whether an incoming message answers a pending question.
+	State() agent.TaskState
+	// SetIdentity stamps the protocol's task id and context onto the runner
+	// before the Run starts.
+	SetIdentity(taskID, conversationID string)
+	Run(ctx context.Context, in agent.Input) iter.Seq2[agent.Event, error]
+	Resume(ctx context.Context, reply agent.Reply) iter.Seq2[agent.Event, error]
+}
+
+// Sessions builds the runner one execution drives.
 //
-// A fresh session per execution keeps conversations apart without the executor
+// A fresh runner per execution keeps conversations apart without the executor
 // tracking anything: the SDK owns task identity, and the host owns whatever it
-// needs to build a session for it — a runtime, a store, an interrupt channel.
-type Sessions func(ctx context.Context, exec *a2asrv.ExecutorContext) (*agent.Session, error)
+// needs to build one — a runtime, a store, an interrupt channel.
+type Sessions func(ctx context.Context, exec *a2asrv.ExecutorContext) (Runner, error)
 
 // Config is one A2A server's two halves: what it claims, and how it runs.
 type Config struct {
 	Card     CardConfig
 	Sessions Sessions
+	// OnUndelivered receives input the Task did not consume. The loop hands it
+	// up rather than dropping it; the deployment decides whether the
+	// conversation continues.
+	OnUndelivered func(conversationID string, messages []message.Message)
+	// OnCancel is called when a client cancels a task, after the local run has
+	// been signalled. A deployment uses it for work the local context cannot
+	// reach — a remote peer's task, for instance.
+	OnCancel func(conversationID string)
 }
 
 // Executor implements a2asrv.AgentExecutor over agent.Session.Run.
@@ -33,6 +57,14 @@ type Config struct {
 type Executor struct {
 	card  *a2a.AgentCard
 	build Sessions
+	cfg   Config
+
+	mu sync.Mutex
+	// running maps a task id to the cancel func of its execution. A cancel that
+	// finds nothing here means the run already ended.
+	running map[string]context.CancelFunc
+	// cancelled remembers ids cancelled before their execution registered.
+	cancelled map[string]struct{}
 }
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
@@ -46,7 +78,13 @@ func New(cfg Config) (*Executor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Executor{card: card, build: cfg.Sessions}, nil
+	return &Executor{
+		card:      card,
+		build:     cfg.Sessions,
+		cfg:       cfg,
+		running:   make(map[string]context.CancelFunc),
+		cancelled: make(map[string]struct{}),
+	}, nil
 }
 
 // Card is the AgentCard this server answers with.
@@ -69,19 +107,57 @@ func (e *Executor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext) it
 			yield(nil, err)
 			return
 		}
+		taskID := string(exec.TaskID)
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		if !e.register(taskID, cancel) {
+			// A cancel arrived before the execution started.
+			cancel()
+		}
+		defer e.unregister(taskID)
 		// The SDK owns task identity; adopting it means a checkpoint resumed
 		// through A2A keeps the id its client knows.
-		session.Task().ID = string(exec.TaskID)
-		session.Task().ContextID = exec.ContextID
+		session.SetIdentity(string(exec.TaskID), exec.ContextID)
 
 		info := exec.TaskInfo()
-		for event, runErr := range session.Run(ctx, agent.Input{Messages: []message.Message{turn}}) {
+		// The server requires a new stream to open with a Task; a stored one is
+		// already tracked, and re-announcing it would reset its state and history
+		// to "submitted".
+		if exec.StoredTask == nil {
+			if !yield(a2a.NewSubmittedTask(info, exec.Message), nil) {
+				return
+			}
+		}
+		// A message addressed to a task that is waiting for input is the answer
+		// to its question, not a new task: resuming keeps the pending call. The
+		// durable state and the runner have to agree, or a stale row would fail
+		// a recoverable task.
+		var sequence iter.Seq2[agent.Event, error]
+		stored := exec.StoredTask
+		if stored != nil && stored.Status.State == a2a.TaskStateInputRequired {
+			if session.State() != agent.StateInputRequired {
+				yield(nil, errdefs.Validationf(
+					"a2a: task %s is input-required in the store but %s in the runner",
+					stored.ID, session.State()))
+				return
+			}
+			sequence = session.Resume(runCtx, agent.Reply{Text: textContent(exec.Message)})
+		} else {
+			sequence = session.Run(runCtx, agent.Input{Messages: []message.Message{turn}})
+		}
+		for event, runErr := range sequence {
 			if runErr != nil {
 				// The loop reports its own failures as a status event; an error
 				// here means it could not even report, so say so to the client.
 				yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateFailed,
 					a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(runErr.Error()))), nil)
 				return
+			}
+			if undelivered, ok := event.(agent.Undelivered); ok {
+				if e.cfg.OnUndelivered != nil && len(undelivered.Messages) > 0 {
+					e.cfg.OnUndelivered(exec.ContextID, undelivered.Messages)
+				}
+				continue
 			}
 			converted, representable := toA2A(info, event)
 			if !representable {
@@ -94,13 +170,62 @@ func (e *Executor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext) it
 	}
 }
 
-// Cancel answers a client's stop request. The loop notices through its interrupt
-// channel when the host wired one; this method reports the state the client
-// asked for.
+// Cancel signals the running execution of one task.
+//
+// A cancellation that reaches a live run emits nothing itself: the run reports
+// the canceled state as its own terminal event, and a second terminal event
+// would be rejected by the server. Only a task with nothing to cancel answers
+// directly.
 func (e *Executor) Cancel(_ context.Context, exec *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
+		if exec == nil {
+			return
+		}
+		taskID := string(exec.TaskID)
+		if e.signal(taskID) {
+			if e.cfg.OnCancel != nil {
+				e.cfg.OnCancel(exec.ContextID)
+			}
+			return
+		}
+		if e.cfg.OnCancel != nil {
+			e.cfg.OnCancel(exec.ContextID)
+		}
 		yield(a2a.NewStatusUpdateEvent(exec.TaskInfo(), a2a.TaskStateCanceled, nil), nil)
 	}
+}
+
+// register records a running execution; it reports false when the task was
+// already cancelled.
+func (e *Executor) register(taskID string, cancel context.CancelFunc) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, cancelled := e.cancelled[taskID]; cancelled {
+		delete(e.cancelled, taskID)
+		return false
+	}
+	e.running[taskID] = cancel
+	return true
+}
+
+func (e *Executor) unregister(taskID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.running, taskID)
+}
+
+// signal cancels a running execution, and reports whether one was found.
+func (e *Executor) signal(taskID string) bool {
+	e.mu.Lock()
+	cancel, running := e.running[taskID]
+	if !running {
+		e.cancelled[taskID] = struct{}{}
+	}
+	e.mu.Unlock()
+	if running {
+		cancel()
+	}
+	return running
 }
 
 // toA2A maps one loop event onto the wire.
@@ -156,6 +281,20 @@ func stateOf(state agent.TaskState) a2a.TaskState {
 	default:
 		return a2a.TaskStateFailed
 	}
+}
+
+// textContent is the text parts of a wire message, concatenated.
+func textContent(msg *a2a.Message) string {
+	if msg == nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, part := range msg.Parts {
+		if text, ok := part.Content.(a2a.Text); ok {
+			out.WriteString(string(text))
+		}
+	}
+	return out.String()
 }
 
 // fromA2AMessage converts an incoming wire message into the core shape.

@@ -48,13 +48,15 @@ type Reply struct{ Text string }
 type Options struct {
 	// Ask lets the Task pause and ask the user. Nil means unsupported.
 	Ask func(ctx context.Context, prompt Prompt) (Reply, error)
-	// Interrupts is closed or signalled to cancel the running Task.
-	Interrupts <-chan struct{}
 	// Bounds caps the Task.
 	Bounds Bounds
 	// Store persists a checkpoint when the Task pauses. Nil means the caller
 	// keeps the Session in memory instead.
 	Store Store
+	// Digest overrides the resume identity a checkpoint records. The runtime's
+	// configuration is the default; a deployment whose conversations depend on
+	// more than that — an engine, a peer, a protocol — supplies the wider value.
+	Digest runtime.Digest
 }
 
 // Option mutates Options at construction.
@@ -65,9 +67,9 @@ func WithAsk(ask func(ctx context.Context, prompt Prompt) (Reply, error)) Option
 	return func(o *Options) { o.Ask = ask }
 }
 
-// WithInterrupts installs the cooperative-interrupt channel.
-func WithInterrupts(ch <-chan struct{}) Option {
-	return func(o *Options) { o.Interrupts = ch }
+// WithDigest overrides the resume identity recorded in checkpoints.
+func WithDigest(digest runtime.Digest) Option {
+	return func(o *Options) { o.Digest = digest }
 }
 
 // WithStore installs the checkpoint store used when a Task pauses.
@@ -172,7 +174,9 @@ func (s *Session) Send(ctx context.Context, msg message.Message, mode Mode) (Mod
 	if !s.running {
 		effective = ModeQueue
 	}
-	s.mailbox = append(s.mailbox, submission{message: msg, mode: mode})
+	// File the mode that applies, not the one requested: an idle steer reported
+	// as queue but stored as steer would never be consumed by the next Task.
+	s.mailbox = append(s.mailbox, submission{message: msg, mode: effective})
 	if effective == ModeInterrupt {
 		s.interruptRequested = true
 		if s.cancelRound != nil {
@@ -270,11 +274,43 @@ func (s *Session) markRunning(running bool) {
 	s.running = running
 	if !running {
 		s.cancelRound = nil
+		// A flag that outlived its Run would cancel the next Task before its
+		// first model call, and its input would already have been consumed.
+		s.interruptRequested = false
 	}
 }
 
-// Task returns the Task this Session is running or last ran.
-func (s *Session) Task() *Task { return s.task }
+// Task returns a snapshot of the Task: a copy no later append can mutate.
+//
+// It is a snapshot rather than the live object because a caller that held the
+// live one could read it while a Run writes it, or write it while a Run assumes
+// it is the only owner. Message parts are shared, on the invariant the loop
+// keeps: a message already in History is never modified in place.
+func (s *Session) Task() Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.task.clone()
+}
+
+// State reports the Task's lifecycle state under the session lock.
+func (s *Session) State() TaskState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.task.State
+}
+
+// SetIdentity binds the Task to a protocol's identity before a Run starts. The
+// executor owns this, because the protocol assigns the id a client will use.
+func (s *Session) SetIdentity(taskID, conversationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if taskID != "" {
+		s.task.ID = taskID
+	}
+	if conversationID != "" {
+		s.task.ContextID = conversationID
+	}
+}
 
 // Run executes one Task: one user request, answered after as many model rounds
 // as it takes. The returned sequence is the Task's process; a caller that wants
@@ -291,12 +327,15 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 	// Queued submissions and the caller's messages are the same thing: user
 	// input. A queue entry that lost to an explicit input would be input the
 	// user sent and the model never saw.
+	// Claim the run before consuming the queue: a Send in between would see an
+	// idle session, degrade to queue, and then be reported as undelivered
+	// instead of joining this Task.
+	s.markRunning(true)
+	defer s.markRunning(false)
 	messages := append(s.takeQueued(), in.Messages...)
 	if len(messages) == 0 {
 		return errdefs.Validationf("agent: input has no messages")
 	}
-	s.markRunning(true)
-	defer s.markRunning(false)
 	task := s.task
 	if task.State.Terminal() {
 		// A Session may run several Tasks; a finished one is replaced.
@@ -410,10 +449,13 @@ func (s *Session) loop(
 	var roundEvents []EventRecord
 	for {
 		if s.consumeInterrupt() {
-			return s.finish(task, StateCanceled, nil, true, yield)
+			if !yield(Interrupted{Reason: "interrupt requested"}, nil) {
+				return s.finish(ctx, task, StateCanceled, nil, true, yield)
+			}
+			return s.finish(ctx, task, StateCanceled, nil, true, yield)
 		}
 		if err := s.interrupted(ctx); err != nil {
-			return s.finish(task, StateCanceled, err, true, yield)
+			return s.finish(ctx, task, StateCanceled, err, true, yield)
 		}
 		roundCtx, cancelRound := context.WithCancel(ctx)
 		s.setRoundCancel(cancelRound)
@@ -423,7 +465,7 @@ func (s *Session) loop(
 		}
 		tools, err := inference.NewToolset(defs)
 		if err != nil {
-			return s.finish(task, StateFailed, err, true, yield)
+			return s.finish(ctx, task, StateFailed, err, true, yield)
 		}
 		request := inference.GenerateRequest{
 			Model:   s.runtime.DefaultModel(),
@@ -434,26 +476,43 @@ func (s *Session) loop(
 		if !yield(StreamStart{Round: task.Round, Model: request.Model.ID.Name}, nil) {
 			return nil
 		}
-		response, err := s.generate(roundCtx, request, yield)
+		response, streamed, err := s.generate(roundCtx, request, yield)
+		if errors.Is(err, errConsumerStopped) {
+			return s.finish(ctx, task, StateCanceled, nil, true, yield)
+		}
+		// The caller's context ending is a cancellation, not a provider failure:
+		// an A2A tasks/cancel arrives exactly this way.
+		if ctx.Err() != nil {
+			return s.finish(ctx, task, StateCanceled, ctx.Err(), true, yield)
+		}
 		if err != nil {
 			cancelRound()
 			if s.consumeInterrupt() {
-				return s.finish(task, StateCanceled, nil, true, yield)
+				return s.finish(ctx, task, StateCanceled, nil, true, yield)
 			}
-			return s.finish(task, StateFailed, err, true, yield)
+			return s.finish(ctx, task, StateFailed, err, true, yield)
 		}
 		task.History = append(task.History, response.Message)
 		roundEvents = append(roundEvents, messageEvent(response.Message))
+		// A driver that answers without streaming would otherwise leave the event
+		// stream empty: the answer is in the message, not in deltas.
+		if !streamed {
+			if text := response.Message.Content.Text(); text != "" {
+				if !yield(Text{Text: text}, nil) {
+					return s.finish(ctx, task, StateCanceled, nil, true, yield)
+				}
+			}
+		}
 		if !yield(UsageEvent{Usage: response.Usage}, nil) {
-			return nil
+			return s.finish(ctx, task, StateCanceled, nil, true, yield)
 		}
 
 		calls := toolCallsOf(response.Message)
 		if len(calls) == 0 {
-			return s.finish(task, StateCompleted, nil, true, yield)
+			return s.finish(ctx, task, StateCompleted, nil, true, yield)
 		}
 		if limit := s.opts.Bounds.MaxToolCalls; limit > 0 && toolCalls+len(calls) > limit {
-			return s.finish(task, StateFailed,
+			return s.finish(ctx, task, StateFailed,
 				errdefs.Validationf("agent: task %s exceeded %d tool calls", task.ID, limit),
 				true, yield)
 		}
@@ -509,7 +568,7 @@ func (s *Session) loop(
 			}
 		}
 		if max := s.opts.Bounds.MaxRounds; max > 0 && task.Round >= max {
-			return s.finish(task, StateCompleted, nil, true, yield)
+			return s.finish(ctx, task, StateCompleted, nil, true, yield)
 		}
 	}
 }
@@ -528,7 +587,7 @@ func (s *Session) pause(
 	// Pausing without a resume point would lose the Task, so here a store
 	// failure fails the Task instead of being reported as lag.
 	if err := s.persist(ctx, events); err != nil {
-		return s.finish(task, StateFailed, err, true, yield)
+		return s.finish(ctx, task, StateFailed, err, true, yield)
 	}
 	if !yield(Status{State: StateInputRequired, Reason: "waiting for the user"}, nil) {
 		return nil
@@ -586,56 +645,59 @@ func askUserDefinition() message.ToolDefinition {
 
 // generate drains one model stream, forwarding text, and returns the final
 // response, which carries the assembled tool calls.
+// errConsumerStopped reports that the caller stopped reading the event stream.
+// It is not a failure: the loop ends the Task as cancelled and persists that,
+// instead of appending the zero response to the transcript.
+var errConsumerStopped = errors.New("agent: consumer stopped")
+
+// generate drains one model stream. It reports whether any text was emitted, so
+// the caller can fall back to the response message for drivers that do not stream.
 func (s *Session) generate(
 	ctx context.Context,
 	request inference.GenerateRequest,
 	yield func(Event, error) bool,
-) (inference.GenerateResponse, error) {
+) (inference.GenerateResponse, bool, error) {
 	stream, err := s.runtime.Provider().GenerateStream(ctx, request)
 	if err != nil {
-		return inference.GenerateResponse{}, err
+		return inference.GenerateResponse{}, false, err
 	}
 	defer func() { _ = stream.Close() }()
 
+	streamed := false
 	for {
 		event, err := stream.Next(ctx)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return inference.GenerateResponse{}, err
+			return inference.GenerateResponse{}, streamed, err
 		}
 		switch event.Kind {
 		case inference.StreamText:
+			streamed = streamed || event.Text != ""
 			if !yield(Text{Text: event.Text}, nil) {
-				return inference.GenerateResponse{}, nil
+				return inference.GenerateResponse{}, streamed, errConsumerStopped
 			}
 		case inference.StreamReasoning:
 			if !yield(Reasoning{Text: event.Text}, nil) {
-				return inference.GenerateResponse{}, nil
+				return inference.GenerateResponse{}, streamed, errConsumerStopped
 			}
 		}
 	}
-	return stream.Result()
+	response, err := stream.Result()
+	return response, streamed, err
 }
 
 func (s *Session) interrupted(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s.opts.Interrupts == nil {
-		return nil
-	}
-	select {
-	case <-s.opts.Interrupts:
-		return errdefs.Validationf("agent: task interrupted")
-	default:
-		return nil
-	}
+	return nil
 }
 
 // finish moves the Task to a terminal state and reports it.
 func (s *Session) finish(
+	ctx context.Context,
 	task *Task,
 	state TaskState,
 	cause error,
@@ -648,6 +710,9 @@ func (s *Session) finish(
 	}
 	task.State = state
 	if state.Terminal() {
+		// The durable row must not keep saying "working": a restart restores from
+		// it, and tasks/get reads it.
+		s.persistQuietly(ctx, nil)
 		// A paused Task keeps its mailbox: those entries are for the next Run.
 		// A finished one hands the rest up, because only the caller knows whether
 		// the conversation continues or the client is gone.

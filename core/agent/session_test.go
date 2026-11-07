@@ -149,8 +149,10 @@ func TestRunExecutesOneToolCall(t *testing.T) {
 		}
 	}
 
+	// The second round's answer arrives without deltas, so it is emitted from
+	// the response message: the caller must see the text either way.
 	want := []EventKind{KindStatus, KindStreamStart, KindText, KindUsage, KindToolCall,
-		KindToolResult, KindStreamStart, KindUsage, KindStatus}
+		KindToolResult, KindStreamStart, KindText, KindUsage, KindStatus}
 	if len(kinds) != len(want) {
 		t.Fatalf("kinds = %v, want %v", kinds, want)
 	}
@@ -225,10 +227,10 @@ func TestReplayDiscoveriesRestoresVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tool call: %v", err)
 	}
-	session.Task().History = []message.Message{{
+	seedHistory(t, session, []message.Message{{
 		Role:    message.RoleAssistant,
 		Content: message.Content{Parts: []message.Part{message.ToolCallPart{Call: call}}},
-	}}
+	}})
 	view := session.runtime.Assembly().NewCatalogView()
 	replayDiscoveries(view, session.Task().History)
 	names := make([]string, 0, len(view.Definitions()))
@@ -412,5 +414,27 @@ func TestAskUnsupportedIsAToolError(t *testing.T) {
 	}
 	if session.Task().State != StateCompleted {
 		t.Errorf("state = %s, want completed", session.Task().State)
+	}
+}
+
+// A driver that answers without streaming still reaches the caller: the text is
+// in the response message, and an empty event stream would lose it.
+func TestFinalTextIsEmittedWithoutDeltas(t *testing.T) {
+	provider := &scriptedProvider{steps: []inference.GenerateResponse{textResponse("quiet answer")}}
+	session, _ := newTestSession(t, provider)
+
+	var text string
+	for event, err := range session.Run(context.Background(), Input{Messages: []message.Message{
+		message.NewTextMessage(message.RoleUser, "hi"),
+	}}) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if chunk, ok := event.(Text); ok {
+			text += chunk.Text
+		}
+	}
+	if text != "quiet answer" {
+		t.Errorf("text = %q, want the response message", text)
 	}
 }

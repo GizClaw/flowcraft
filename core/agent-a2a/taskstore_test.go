@@ -20,7 +20,7 @@ func newTaskStore(t *testing.T) *TaskStore {
 		t.Fatalf("checkpoint.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = backend.Close() })
-	store, err := NewTaskStore(backend)
+	store, err := NewTaskStore(backend, "sha256:test")
 	if err != nil {
 		t.Fatalf("NewTaskStore: %v", err)
 	}
@@ -58,9 +58,17 @@ func TestTaskStoreRoundTrip(t *testing.T) {
 		t.Errorf("history = %d, want the message the task was created with", len(stored.Task.History))
 	}
 
-	// A second create of the same id is what the server uses to detect a
-	// duplicate, so it must be refused.
-	if _, err := store.Create(ctx, a2aTask("task-1", "conv-1")); !errors.Is(err, taskstore.ErrTaskAlreadyExists) {
+	// The server creates a task before executing it and the executor's first
+	// event carries the same task back, so re-creating the identical task is
+	// idempotent. A different task under the same id is refused.
+	again, err := store.Create(ctx, a2aTask("task-1", "conv-1"))
+	if err != nil {
+		t.Errorf("re-creating the same task: %v", err)
+	}
+	if again != version {
+		t.Errorf("version = %d, want the existing %d", again, version)
+	}
+	if _, err := store.Create(ctx, a2aTask("task-1", "conv-2")); !errors.Is(err, taskstore.ErrTaskAlreadyExists) {
 		t.Errorf("err = %v, want ErrTaskAlreadyExists", err)
 	}
 }

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 
@@ -26,10 +28,14 @@ type Checkpoint struct {
 	Schema int `json:"schema"`
 	// Version is assigned by the store and advances on every save. It is what a
 	// concurrent writer is compared against.
-	Version  int64                      `json:"version,omitempty"`
-	Runtime  runtime.Digest             `json:"runtime"`
-	Task     Task                       `json:"task"`
-	Sections map[string]json.RawMessage `json:"sections,omitempty"`
+	Version int64 `json:"version,omitempty"`
+	// ServerVersion belongs to a protocol adapter (the A2A task store) and only
+	// it changes this. The loop's own saves never touch it: two writers sharing
+	// one counter would reject each other's writes, and both are legitimate.
+	ServerVersion int64                      `json:"server_version,omitempty"`
+	Runtime       runtime.Digest             `json:"runtime"`
+	Task          Task                       `json:"task"`
+	Sections      map[string]json.RawMessage `json:"sections,omitempty"`
 }
 
 // EventRecord is one appended fact of a Task.
@@ -88,11 +94,28 @@ type Store interface {
 
 // Snapshot captures the Session's current Task.
 func (s *Session) Snapshot() Checkpoint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The task is cloned: a checkpoint handed to an asynchronous store must not
+	// change when the loop appends to History afterwards.
 	return Checkpoint{
 		Schema:  CheckpointSchema,
-		Runtime: s.runtime.Config().Digest(),
-		Task:    *s.task,
+		Runtime: s.resumeDigest(),
+		Task:    s.task.clone(),
 	}
+}
+
+// resumeDigest is the identity a checkpoint records and a restore compares.
+func (s *Session) resumeDigest() runtime.Digest {
+	base := s.runtime.Config().Digest()
+	if s.opts.Digest == "" {
+		return base
+	}
+	// An override extends the runtime's identity; replacing it would let a
+	// caller resume under a different model or permission set by supplying a
+	// constant.
+	sum := sha256.Sum256([]byte(string(base) + "\x00" + string(s.opts.Digest)))
+	return runtime.Digest("sha256:" + hex.EncodeToString(sum[:]))
 }
 
 // Restore resumes a Session from a checkpoint.
@@ -110,16 +133,16 @@ func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Sessi
 			"agent: checkpoint schema %d is not supported; this build reads %d",
 			checkpoint.Schema, CheckpointSchema)
 	}
-	if want := rt.Config().Digest(); checkpoint.Runtime != want {
-		return nil, errdefs.Validationf(
-			"agent: checkpoint was taken under %s, this runtime is %s",
-			checkpoint.Runtime, want)
-	}
 	session := &Session{runtime: rt, task: &checkpoint.Task}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&session.opts)
 		}
+	}
+	if want := session.resumeDigest(); checkpoint.Runtime != want {
+		return nil, errdefs.Validationf(
+			"agent: checkpoint was taken under %s, this runtime is %s",
+			checkpoint.Runtime, want)
 	}
 	return session, nil
 }

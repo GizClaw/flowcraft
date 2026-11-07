@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
@@ -25,16 +26,19 @@ import (
 // loop over the same row.
 type TaskStore struct {
 	store agent.Store
+	// digest is the deployment identity the agent resumes under; a task row
+	// without it could never be restored.
+	digest runtime.Digest
 }
 
 var _ taskstore.Store = (*TaskStore)(nil)
 
 // NewTaskStore wraps an agent store.
-func NewTaskStore(store agent.Store) (*TaskStore, error) {
+func NewTaskStore(store agent.Store, digest runtime.Digest) (*TaskStore, error) {
 	if store == nil {
 		return nil, errdefs.Validationf("a2a: a checkpoint store is required")
 	}
-	return &TaskStore{store: store}, nil
+	return &TaskStore{store: store, digest: digest}, nil
 }
 
 // Create stores a task the server just created.
@@ -42,8 +46,15 @@ func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	if task == nil || task.ID == "" {
 		return 0, errdefs.Validationf("a2a: a task without an id cannot be stored")
 	}
-	if _, err := s.store.Load(ctx, string(task.ID)); err == nil {
-		return 0, taskstore.ErrTaskAlreadyExists
+	// The server creates the task before it executes, and the executor's first
+	// event carries the same task back. Re-creating it must be idempotent, or the
+	// server rejects its own reservation; a genuinely different task under the
+	// same id is the only case worth refusing.
+	if existing, err := s.store.Load(ctx, string(task.ID)); err == nil {
+		if existing.Task.ContextID != task.ContextID {
+			return 0, taskstore.ErrTaskAlreadyExists
+		}
+		return taskstore.TaskVersion(existing.ServerVersion), nil
 	} else if !errors.Is(err, agent.ErrNoCheckpoint) {
 		return 0, err
 	}
@@ -51,7 +62,12 @@ func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	if err != nil {
 		return 0, err
 	}
-	checkpoint := agent.Checkpoint{Schema: agent.CheckpointSchema, Task: core}
+	checkpoint := agent.Checkpoint{
+		Schema:        agent.CheckpointSchema,
+		Runtime:       s.digest,
+		ServerVersion: 1,
+		Task:          core,
+	}
 	// The history the task arrives with is the first batch of events, so history
 	// has exactly one source everywhere: the event log.
 	events, err := messageEvents(core.History)
@@ -78,9 +94,18 @@ func (s *TaskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 	if err != nil {
 		return 0, err
 	}
+	// The adapter owns this counter; the loop owns the other one. Sharing a
+	// single version would make the loop's round-boundary save invalidate the
+	// server's token and fail every tool-using task.
 	if update.PrevVersion != taskstore.TaskVersionMissing &&
-		taskstore.TaskVersion(current.Version) != update.PrevVersion {
+		taskstore.TaskVersion(current.ServerVersion) != update.PrevVersion {
 		return 0, taskstore.ErrConcurrentModification
+	}
+	current.ServerVersion++
+	if update.Task != nil && isTerminal(update.Task.Status.State) {
+		// A cancel or a failure is decided by the server, not by the loop, so the
+		// projection has to take it from here.
+		current.Task.State = stateFromA2A(update.Task.Status.State)
 	}
 	events, err := eventsOf(update.Event)
 	if err != nil {
@@ -109,7 +134,7 @@ func (s *TaskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.Stor
 	if err != nil {
 		return nil, err
 	}
-	return &taskstore.StoredTask{Task: task, Version: taskstore.TaskVersion(checkpoint.Version)}, nil
+	return &taskstore.StoredTask{Task: task, Version: taskstore.TaskVersion(checkpoint.ServerVersion)}, nil
 }
 
 // List answers the tasks query, filtered by context when asked.
@@ -141,7 +166,7 @@ func (s *TaskStore) version(ctx context.Context, taskID string) (taskstore.TaskV
 	if err != nil {
 		return 0, err
 	}
-	return taskstore.TaskVersion(checkpoint.Version), nil
+	return taskstore.TaskVersion(checkpoint.ServerVersion), nil
 }
 
 // eventsOf records what the server appended. Only messages have a core event
@@ -206,7 +231,11 @@ func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Ta
 		}
 		converted, err := toA2AMessage(core)
 		if err != nil {
-			return nil, err
+			// The loop persists its own working (tool calls, results, reasoning)
+			// in the same log; those parts have no wire form. Skipping them keeps
+			// the transcript readable instead of failing the whole task: an
+			// internal bookkeeping record must never break tasks/get.
+			continue
 		}
 		history = append(history, converted)
 	}
@@ -238,6 +267,16 @@ func toA2AMessage(msg message.Message) (*a2a.Message, error) {
 		}
 	}
 	return a2a.NewMessage(role, parts...), nil
+}
+
+// isTerminal reports whether a wire state ends a task.
+func isTerminal(state a2a.TaskState) bool {
+	switch state {
+	case a2a.TaskStateCompleted, a2a.TaskStateFailed, a2a.TaskStateCanceled, a2a.TaskStateRejected:
+		return true
+	default:
+		return false
+	}
 }
 
 // stateFromA2A translates the protocol's spelling back into the internal one.

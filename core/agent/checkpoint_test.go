@@ -61,7 +61,7 @@ func TestRestoreRejectsADifferentConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	session.Task().History = []message.Message{message.NewTextMessage(message.RoleUser, "hi")}
+	seedHistory(t, session, []message.Message{message.NewTextMessage(message.RoleUser, "hi")})
 	checkpoint := session.Snapshot()
 
 	other := newTestRuntime(t, "other-model")
@@ -80,7 +80,7 @@ func TestRestoreKeepsTheTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	session.Task().History = []message.Message{message.NewTextMessage(message.RoleUser, "hi")}
+	seedHistory(t, session, []message.Message{message.NewTextMessage(message.RoleUser, "hi")})
 	checkpoint := session.Snapshot()
 
 	restored, err := Restore(rt, checkpoint)
@@ -110,4 +110,48 @@ func TestRestoreRequiresARuntime(t *testing.T) {
 	if _, err := Restore(nil, Checkpoint{Schema: CheckpointSchema}); err == nil {
 		t.Fatal("nil runtime accepted")
 	}
+}
+
+// A deployment that is more than its runtime config records the wider identity;
+// the runtime's own digest stays the default.
+func TestDigestOverrideIsRecorded(t *testing.T) {
+	rt := newTestRuntime(t, "m")
+	session, err := NewSession(rt, WithDigest("sha256:custom"))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	got := session.Snapshot().Runtime
+	if got == rt.Config().Digest() || got == "sha256:custom" {
+		t.Errorf("digest = %s, want the runtime digest extended by the override", got)
+	}
+	if again := session.Snapshot().Runtime; again != got {
+		t.Errorf("digest is not stable: %s != %s", again, got)
+	}
+}
+
+// Restore compares against the same identity: with the override it accepts, and
+// without it the runtime digest no longer matches what the checkpoint recorded.
+func TestRestoreHonoursTheDigestOverride(t *testing.T) {
+	rt := newTestRuntime(t, "m")
+	session, err := NewSession(rt, WithDigest("sha256:custom"))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	checkpoint := session.Snapshot()
+
+	if _, err := Restore(rt, checkpoint, WithDigest("sha256:custom")); err != nil {
+		t.Fatalf("Restore with the override: %v", err)
+	}
+	if _, err := Restore(rt, checkpoint); err == nil {
+		t.Fatal("restore without the override was accepted")
+	}
+}
+
+// seedHistory installs a transcript directly, under the session lock: Task()
+// returns a snapshot, so mutating its History would be a silent no-op.
+func seedHistory(t *testing.T, session *Session, history []message.Message) {
+	t.Helper()
+	session.mu.Lock()
+	session.task.History = history
+	session.mu.Unlock()
 }

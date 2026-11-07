@@ -40,9 +40,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 	round      INTEGER NOT NULL DEFAULT 0,
 	schema     INTEGER NOT NULL,
 	runtime    TEXT NOT NULL,
-	body       BLOB NOT NULL,
-	version    INTEGER NOT NULL DEFAULT 1,
-	updated_at TEXT NOT NULL
+	body           BLOB NOT NULL,
+	version        INTEGER NOT NULL DEFAULT 1,
+	server_version INTEGER NOT NULL DEFAULT 0,
+	updated_at     TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
 	task_id TEXT    NOT NULL,
@@ -73,6 +74,10 @@ func Open(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: open: %w", err)
 	}
+	// One writer. The pragmas below apply per connection, and two connections
+	// writing at once return SQLITE_BUSY even with a busy timeout set on only one
+	// of them. A local checkpoint store gains nothing from a pool.
+	db.SetMaxOpenConns(1)
 	// Foreign keys are off by default in SQLite, and a cascade that silently
 	// does not fire leaves events behind a deleted task. WAL keeps a reader from
 	// blocking the loop's writes.
@@ -86,6 +91,9 @@ func Open(path string) (*SQLite, error) {
 			return nil, fmt.Errorf("checkpoint: %s: %w", pragma, err)
 		}
 	}
+	// An older database predates the adapter's own counter; adding it here keeps
+	// one migration path without a schema-version table.
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN server_version INTEGER NOT NULL DEFAULT 0")
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("checkpoint: migrate: %w", err)
@@ -116,17 +124,18 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tasks (task_id, context_id, state, round, schema, runtime, body, version, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+		INSERT INTO tasks (task_id, context_id, state, round, schema, runtime, body, version, server_version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
-			context_id = excluded.context_id,
-			state      = excluded.state,
-			round      = excluded.round,
-			schema     = excluded.schema,
-			runtime    = excluded.runtime,
-			body       = excluded.body,
-			version    = tasks.version + 1,
-			updated_at = excluded.updated_at`,
+			context_id     = excluded.context_id,
+			state          = excluded.state,
+			round          = excluded.round,
+			schema         = excluded.schema,
+			runtime        = excluded.runtime,
+			body           = excluded.body,
+			version        = tasks.version + 1,
+			server_version = excluded.server_version,
+			updated_at     = excluded.updated_at`,
 		checkpoint.Task.ID,
 		checkpoint.Task.ContextID,
 		string(checkpoint.Task.State),
@@ -134,6 +143,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		checkpoint.Schema,
 		string(checkpoint.Runtime),
 		body,
+		checkpoint.ServerVersion,
 		now,
 	); err != nil {
 		return fmt.Errorf("checkpoint: project task: %w", err)
@@ -168,9 +178,10 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 // Load returns the newest projection of one task.
 func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
 	var body []byte
-	var version int64
+	var version, serverVersion int64
 	err := l.db.QueryRowContext(ctx,
-		`SELECT body, version FROM tasks WHERE task_id = ?`, taskID).Scan(&body, &version)
+		`SELECT body, version, server_version FROM tasks WHERE task_id = ?`,
+		taskID).Scan(&body, &version, &serverVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -182,16 +193,17 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode task: %w", err)
 	}
 	checkpoint.Version = version
+	checkpoint.ServerVersion = serverVersion
 	return checkpoint, nil
 }
 
 // LatestForContext returns the newest task of one conversation.
 func (l *SQLite) LatestForContext(ctx context.Context, conversationID string) (agent.Checkpoint, error) {
 	var body []byte
-	var version int64
+	var version, serverVersion int64
 	err := l.db.QueryRowContext(ctx,
-		`SELECT body, version FROM tasks WHERE context_id = ?
-		 ORDER BY updated_at DESC LIMIT 1`, conversationID).Scan(&body, &version)
+		`SELECT body, version, server_version FROM tasks WHERE context_id = ?
+		 ORDER BY updated_at DESC LIMIT 1`, conversationID).Scan(&body, &version, &serverVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -203,6 +215,7 @@ func (l *SQLite) LatestForContext(ctx context.Context, conversationID string) (a
 		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode task: %w", err)
 	}
 	checkpoint.Version = version
+	checkpoint.ServerVersion = serverVersion
 	return checkpoint, nil
 }
 
