@@ -81,7 +81,7 @@ func textResponse(text string) inference.GenerateResponse {
 	return inference.GenerateResponse{Message: message.NewTextMessage(message.RoleAssistant, text)}
 }
 
-func newTestSession(t *testing.T, provider *scriptedProvider, opts ...Option) (*Session, *runtime.Runtime) {
+func newTestSession(t *testing.T, provider inference.Generator, opts ...Option) (*Session, *runtime.Runtime) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := runtime.Config{
@@ -265,6 +265,13 @@ func (s *memStore) Save(_ context.Context, checkpoint Checkpoint, events []Event
 
 func (s *memStore) Load(_ context.Context, taskID string) (Checkpoint, error) {
 	if s.saves == 0 || s.latest.Task.ID != taskID {
+		return Checkpoint{}, ErrNoCheckpoint
+	}
+	return s.latest, nil
+}
+
+func (s *memStore) LatestForContext(_ context.Context, conversationID string) (Checkpoint, error) {
+	if s.saves == 0 || s.latest.Task.ContextID != conversationID {
 		return Checkpoint{}, ErrNoCheckpoint
 	}
 	return s.latest, nil

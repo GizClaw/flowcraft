@@ -185,6 +185,27 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 	return checkpoint, nil
 }
 
+// LatestForContext returns the newest task of one conversation.
+func (l *SQLite) LatestForContext(ctx context.Context, conversationID string) (agent.Checkpoint, error) {
+	var body []byte
+	var version int64
+	err := l.db.QueryRowContext(ctx,
+		`SELECT body, version FROM tasks WHERE context_id = ?
+		 ORDER BY updated_at DESC LIMIT 1`, conversationID).Scan(&body, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return agent.Checkpoint{}, agent.ErrNoCheckpoint
+	}
+	if err != nil {
+		return agent.Checkpoint{}, fmt.Errorf("checkpoint: latest for context: %w", err)
+	}
+	var checkpoint agent.Checkpoint
+	if err := json.Unmarshal(body, &checkpoint); err != nil {
+		return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode task: %w", err)
+	}
+	checkpoint.Version = version
+	return checkpoint, nil
+}
+
 // Events returns the appended facts of one task, oldest first.
 func (l *SQLite) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
 	rows, err := l.db.QueryContext(ctx,

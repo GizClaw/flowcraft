@@ -69,6 +69,10 @@ type Store interface {
 	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord) error
 	// Load returns the newest projection of one task.
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
+	// LatestForContext returns the newest task of one conversation, which is
+	// what resuming a conversation needs: checkpoints are keyed by task, but a
+	// conversation outlives each of its tasks.
+	LatestForContext(ctx context.Context, conversationID string) (Checkpoint, error)
 	// Events returns the appended facts of one task, oldest first.
 	Events(ctx context.Context, taskID string) ([]EventRecord, error)
 	// List returns every task, newest first.

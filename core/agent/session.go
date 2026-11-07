@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -79,6 +80,37 @@ func WithBounds(bounds Bounds) Option {
 	return func(o *Options) { o.Bounds = bounds }
 }
 
+// Mode says what a submitted message wants to do with the running Task.
+type Mode int
+
+const (
+	// ModeQueue delivers the message as the next Task's input.
+	ModeQueue Mode = iota
+	// ModeSteer injects the message into the running Task: the model sees it no
+	// later than the next round's request.
+	ModeSteer
+	// ModeInterrupt cancels the running round and leaves the message queued as
+	// the next Task's input.
+	ModeInterrupt
+)
+
+func (m Mode) String() string {
+	switch m {
+	case ModeSteer:
+		return "steer"
+	case ModeInterrupt:
+		return "interrupt"
+	default:
+		return "queue"
+	}
+}
+
+// submission is one message waiting in the mailbox.
+type submission struct {
+	message message.Message
+	mode    Mode
+}
+
 // Input is one user request.
 type Input struct {
 	// System frames the request. It is Content, not a string, because a system
@@ -94,6 +126,17 @@ type Session struct {
 	runtime *runtime.Runtime
 	task    *Task
 	opts    Options
+
+	mu sync.Mutex
+	// mailbox holds submissions not yet consumed by a Task.
+	mailbox []submission
+	// running is true between the start and the end of Run.
+	running bool
+	// interruptRequested is set by an interrupt submission, so the loop can tell
+	// its own cancellation from the caller's.
+	interruptRequested bool
+	// cancelRound cancels the round in flight, if any.
+	cancelRound context.CancelFunc
 }
 
 // NewSession binds a Session to a runtime. The binding is for life: a Session
@@ -112,6 +155,124 @@ func NewSession(rt *runtime.Runtime, opts ...Option) (*Session, error) {
 	return session, nil
 }
 
+// Send submits one message to the mailbox and reports the mode that will take
+// effect.
+//
+// A message can only steer or interrupt a Task that is running; while the
+// Session is idle both degrade to queue, and the returned mode says so, because
+// a caller told "steered" when nothing was injected would wait for an effect
+// that never comes.
+func (s *Session) Send(ctx context.Context, msg message.Message, mode Mode) (Mode, error) {
+	if err := ctx.Err(); err != nil {
+		return mode, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	effective := mode
+	if !s.running {
+		effective = ModeQueue
+	}
+	s.mailbox = append(s.mailbox, submission{message: msg, mode: mode})
+	if effective == ModeInterrupt {
+		s.interruptRequested = true
+		if s.cancelRound != nil {
+			s.cancelRound()
+		}
+	}
+	return effective, nil
+}
+
+// Pending reports how many submissions are waiting.
+func (s *Session) Pending() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.mailbox)
+}
+
+// Abandon cancels a Task paused on a question. The caller decided not to answer
+// it; the Task ends canceled instead of waiting forever.
+func (s *Session) Abandon() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.State != StateInputRequired {
+		return errdefs.Validationf(
+			"agent: task %s is %s, not waiting for input", s.task.ID, s.task.State)
+	}
+	s.task.State = StateCanceled
+	s.task.Pending = nil
+	return nil
+}
+
+// takeQueued removes the submissions the next Task consumes.
+func (s *Session) takeQueued() []message.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.mailbox[:0]
+	out := make([]message.Message, 0, len(s.mailbox))
+	for _, item := range s.mailbox {
+		if item.mode == ModeQueue || item.mode == ModeInterrupt {
+			out = append(out, item.message)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	s.mailbox = kept
+	return out
+}
+
+// drainSteers removes the steering submissions for one round boundary.
+func (s *Session) drainSteers() []message.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.mailbox[:0]
+	out := make([]message.Message, 0, len(s.mailbox))
+	for _, item := range s.mailbox {
+		if item.mode == ModeSteer {
+			out = append(out, item.message)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	s.mailbox = kept
+	return out
+}
+
+// takeAll removes everything left, whatever its mode.
+func (s *Session) takeAll() []message.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]message.Message, 0, len(s.mailbox))
+	for _, item := range s.mailbox {
+		out = append(out, item.message)
+	}
+	s.mailbox = nil
+	return out
+}
+
+// consumeInterrupt reports and clears a pending interrupt request.
+func (s *Session) consumeInterrupt() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	requested := s.interruptRequested
+	s.interruptRequested = false
+	return requested
+}
+
+func (s *Session) setRoundCancel(cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelRound = cancel
+}
+
+func (s *Session) markRunning(running bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running = running
+	if !running {
+		s.cancelRound = nil
+	}
+}
+
 // Task returns the Task this Session is running or last ran.
 func (s *Session) Task() *Task { return s.task }
 
@@ -127,9 +288,15 @@ func (s *Session) Run(ctx context.Context, in Input) iter.Seq2[Event, error] {
 }
 
 func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bool) error {
-	if len(in.Messages) == 0 {
+	// Queued submissions and the caller's messages are the same thing: user
+	// input. A queue entry that lost to an explicit input would be input the
+	// user sent and the model never saw.
+	messages := append(s.takeQueued(), in.Messages...)
+	if len(messages) == 0 {
 		return errdefs.Validationf("agent: input has no messages")
 	}
+	s.markRunning(true)
+	defer s.markRunning(false)
 	task := s.task
 	if task.State.Terminal() {
 		// A Session may run several Tasks; a finished one is replaced.
@@ -149,11 +316,11 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 	defer cancel()
 
 	view := s.view(ctx, task)
-	history := append(task.History, in.Messages...)
-	contextMessages := history[:len(history)-len(in.Messages)]
+	history := append(task.History, messages...)
+	contextMessages := history[:len(history)-len(messages)]
 	input := inference.GenerateInput{
 		Role:    inference.InputRoleUser,
-		Content: in.Messages[len(in.Messages)-1].Content,
+		Content: messages[len(messages)-1].Content,
 	}
 	task.History = history
 	return s.loop(ctx, task, view, contextMessages, input, 0, yield)
@@ -242,9 +409,14 @@ func (s *Session) loop(
 ) error {
 	var roundEvents []EventRecord
 	for {
+		if s.consumeInterrupt() {
+			return s.finish(task, StateCanceled, nil, true, yield)
+		}
 		if err := s.interrupted(ctx); err != nil {
 			return s.finish(task, StateCanceled, err, true, yield)
 		}
+		roundCtx, cancelRound := context.WithCancel(ctx)
+		s.setRoundCancel(cancelRound)
 		defs := view.Definitions()
 		if s.opts.Ask != nil {
 			defs = append(defs, askUserDefinition())
@@ -262,8 +434,12 @@ func (s *Session) loop(
 		if !yield(StreamStart{Round: task.Round, Model: request.Model.ID.Name}, nil) {
 			return nil
 		}
-		response, err := s.generate(ctx, request, yield)
+		response, err := s.generate(roundCtx, request, yield)
 		if err != nil {
+			cancelRound()
+			if s.consumeInterrupt() {
+				return s.finish(task, StateCanceled, nil, true, yield)
+			}
 			return s.finish(task, StateFailed, err, true, yield)
 		}
 		task.History = append(task.History, response.Message)
@@ -299,7 +475,7 @@ func (s *Session) loop(
 				}
 				continue
 			}
-			result := s.runtime.Assembly().Execute(ctx, call)
+			result := s.runtime.Assembly().Execute(roundCtx, call)
 			view.RecordCall(call)
 			results = append(results, result)
 			if !yield(ToolResult{Result: result}, nil) {
@@ -312,12 +488,26 @@ func (s *Session) loop(
 		contextMessages = task.History[:len(task.History)-1]
 		input = inference.GenerateInput{Role: inference.InputRoleTool, Content: observation.Content}
 
+		cancelRound()
 		view.AdvanceRound()
 		task.Round++
 		// A round boundary is the only place a checkpoint may be written: a
 		// half round holds a tool call whose result nobody has yet.
 		s.persistQuietly(ctx, roundEvents)
 		roundEvents = nil
+		// Steering lands at the round boundary: it changes what the next request
+		// asks, so it cannot arrive mid-stream.
+		if steers := s.drainSteers(); len(steers) > 0 {
+			task.History = append(task.History, steers...)
+			contextMessages = task.History[:len(task.History)-1]
+			input = inference.GenerateInput{
+				Role:    inference.InputRoleUser,
+				Content: steers[len(steers)-1].Content,
+			}
+			if !yield(SteerApplied{Count: len(steers), Messages: steers}, nil) {
+				return nil
+			}
+		}
 		if max := s.opts.Bounds.MaxRounds; max > 0 && task.Round >= max {
 			return s.finish(task, StateCompleted, nil, true, yield)
 		}
@@ -457,6 +647,16 @@ func (s *Session) finish(
 		reason = cause.Error()
 	}
 	task.State = state
+	if state.Terminal() {
+		// A paused Task keeps its mailbox: those entries are for the next Run.
+		// A finished one hands the rest up, because only the caller knows whether
+		// the conversation continues or the client is gone.
+		if leftovers := s.takeAll(); len(leftovers) > 0 {
+			if !yield(Undelivered{Messages: leftovers}, nil) {
+				return nil
+			}
+		}
+	}
 	if report {
 		if !yield(Status{State: state, Reason: reason}, nil) {
 			return nil
