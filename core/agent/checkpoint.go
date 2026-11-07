@@ -106,7 +106,14 @@ func (s *Session) Snapshot() Checkpoint {
 }
 
 // resumeDigest is the identity a checkpoint records and a restore compares.
-func (s *Session) resumeDigest() runtime.Digest {
+//
+// It is a constant per Session: the runtime config cannot change and the option
+// is applied before construction finishes, so hashing it per Snapshot would
+// re-encode the same document every round.
+func (s *Session) resumeDigest() runtime.Digest { return s.digest }
+
+// computeDigest derives the identity once, at construction.
+func (s *Session) computeDigest() runtime.Digest {
 	base := s.runtime.Config().Digest()
 	if s.opts.Digest == "" {
 		return base
@@ -139,7 +146,8 @@ func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Sessi
 			opt(&session.opts)
 		}
 	}
-	if want := session.resumeDigest(); checkpoint.Runtime != want {
+	session.digest = session.computeDigest()
+	if want := session.digest; checkpoint.Runtime != want {
 		return nil, errdefs.Validationf(
 			"agent: checkpoint was taken under %s, this runtime is %s",
 			checkpoint.Runtime, want)

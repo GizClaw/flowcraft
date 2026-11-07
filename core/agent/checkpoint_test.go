@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
-func newTestRuntime(t *testing.T, modelName string) *runtime.Runtime {
+func newTestRuntime(t testing.TB, modelName string) *runtime.Runtime {
 	t.Helper()
 	root := t.TempDir()
 	cfg := runtime.Config{
@@ -154,4 +154,29 @@ func seedHistory(t *testing.T, session *Session, history []message.Message) {
 	session.mu.Lock()
 	session.task.History = history
 	session.mu.Unlock()
+}
+
+// The digest is a constant per session; recomputing it per snapshot would
+// re-encode the configuration on every round boundary.
+func TestResumeDigestAllocatesNothing(t *testing.T) {
+	rt := newTestRuntime(t, "m")
+	session, err := NewSession(rt, WithDigest("sha256:override"))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if got := testing.AllocsPerRun(100, func() { _ = session.resumeDigest() }); got != 0 {
+		t.Fatalf("resumeDigest allocates %.0f times, want 0", got)
+	}
+}
+
+func BenchmarkResumeDigest(b *testing.B) {
+	rt := newTestRuntime(b, "m")
+	session, err := NewSession(rt, WithDigest("sha256:override"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = session.resumeDigest()
+	}
 }

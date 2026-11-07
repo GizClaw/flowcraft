@@ -438,3 +438,17 @@ func TestFinalTextIsEmittedWithoutDeltas(t *testing.T) {
 		t.Errorf("text = %q, want the response message", text)
 	}
 }
+
+// The ask_user schema never varies, so building it per round is pure waste.
+func TestAskUserDefinitionAllocatesNothing(t *testing.T) {
+	if got := testing.AllocsPerRun(100, func() { _ = askUserDefinition() }); got != 0 {
+		t.Fatalf("askUserDefinition allocates %.0f times, want 0", got)
+	}
+}
+
+func BenchmarkAskUserDefinition(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = askUserDefinition()
+	}
+}

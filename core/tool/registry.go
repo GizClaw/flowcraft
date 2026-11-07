@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -66,6 +67,9 @@ type Registry struct {
 	conflict  ConflictPolicy
 	closed    bool
 	detachers []RegistryDetacher
+	// defs caches the sorted definitions; nil means rebuild. Atomic because a
+	// deferred tool invalidates it while holding its own lock.
+	defs atomic.Pointer[[]message.ToolDefinition]
 }
 
 // NewRegistry builds a registry from sources in order. With the
@@ -103,7 +107,7 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 			if err := lt.Validate(); err != nil {
 				return nil, err
 			}
-			if err := r.add(newLazyProxy(lt)); err != nil {
+			if err := r.add(newLazyProxy(r, lt)); err != nil {
 				return nil, err
 			}
 		}
@@ -147,6 +151,7 @@ func (r *Registry) Remove(name string) {
 		r.mu.Unlock()
 		return
 	}
+	r.invalidateDefinitions()
 	delete(r.tools, name)
 	for i, n := range r.order {
 		if n == name {
@@ -174,6 +179,7 @@ func (r *Registry) add(t Tool) error {
 }
 
 func (r *Registry) addLocked(t Tool) error {
+	r.invalidateDefinitions()
 	def := t.Definition()
 	if strings.TrimSpace(def.Name) == "" {
 		return errdefs.Validationf("tool: tool definition name is required")
@@ -203,16 +209,39 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // Definitions implements Catalog, sorted by name.
+//
+// The list is cached: every builtin tool rebuilds and re-marshals its schema in
+// Definition(), and the loop asks for the whole set once per round. The cache is
+// dropped whenever the set can change — Add, Remove, or a deferred tool finishing
+// its load (its definition replaces the placeholder) — and the pointer is atomic
+// so that a load, which holds the proxy lock, can invalidate without taking the
+// registry lock and inverting the lock order.
 func (r *Registry) Definitions() []message.ToolDefinition {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]message.ToolDefinition, 0, len(r.tools))
-	for _, name := range r.order {
-		out = append(out, r.tools[name].Definition())
+	if cached := r.defs.Load(); cached != nil {
+		return cloneDefinitions(*cached)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	r.mu.RLock()
+	defs := make([]message.ToolDefinition, 0, len(r.tools))
+	for _, name := range r.order {
+		defs = append(defs, r.tools[name].Definition())
+	}
+	r.mu.RUnlock()
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	r.defs.Store(&defs)
+	return cloneDefinitions(defs)
+}
+
+// cloneDefinitions returns a copy, so a caller that appends cannot corrupt the
+// cache.
+func cloneDefinitions(defs []message.ToolDefinition) []message.ToolDefinition {
+	out := make([]message.ToolDefinition, len(defs))
+	copy(out, defs)
 	return out
 }
+
+// invalidateDefinitions drops the cached definitions. It is safe to call while
+// holding any lock: the pointer is atomic.
+func (r *Registry) invalidateDefinitions() { r.defs.Store(nil) }
 
 // Names returns the registered tool names in sorted order.
 func (r *Registry) Names() []string {
@@ -267,7 +296,8 @@ func (r *Registry) Close() error {
 // (serialised, so concurrent callers share one load), and refuses to
 // load after the registry closes.
 type lazyProxy struct {
-	spec LazyTool
+	registry *Registry
+	spec     LazyTool
 
 	mu     sync.Mutex
 	inner  Tool
@@ -276,8 +306,8 @@ type lazyProxy struct {
 	closed bool
 }
 
-func newLazyProxy(spec LazyTool) *lazyProxy {
-	return &lazyProxy{spec: spec}
+func newLazyProxy(registry *Registry, spec LazyTool) *lazyProxy {
+	return &lazyProxy{registry: registry, spec: spec}
 }
 
 func (p *lazyProxy) Definition() message.ToolDefinition {
@@ -328,6 +358,10 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 	}
 	p.inner, p.err = p.loadLazy(ctx)
 	p.loaded = true
+	// The real definition replaces the placeholder: the cached set is stale.
+	if p.registry != nil {
+		p.registry.invalidateDefinitions()
+	}
 	if p.err != nil {
 		telemetry.WarnErr(ctx, "tool registry: lazy tool load failed", p.err,
 			attribute.String(telemetry.AttrToolName, p.spec.Name))

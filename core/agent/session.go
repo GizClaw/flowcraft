@@ -128,6 +128,9 @@ type Session struct {
 	runtime *runtime.Runtime
 	task    *Task
 	opts    Options
+	// digest is the resume identity, derived once: it is a constant per
+	// session and hashing the config per checkpoint would repeat that work.
+	digest runtime.Digest
 
 	mu sync.Mutex
 	// mailbox holds submissions not yet consumed by a Task.
@@ -154,6 +157,7 @@ func NewSession(rt *runtime.Runtime, opts ...Option) (*Session, error) {
 			opt(&session.opts)
 		}
 	}
+	session.digest = session.computeDigest()
 	return session, nil
 }
 
@@ -624,7 +628,11 @@ func (s *Session) ask(ctx context.Context, call message.ToolCall) (message.ToolR
 // when the host can answer it.
 const askUserTool = "ask_user"
 
-func askUserDefinition() message.ToolDefinition {
+var askUserToolDefinition = buildAskUserDefinition()
+
+func askUserDefinition() message.ToolDefinition { return askUserToolDefinition }
+
+func buildAskUserDefinition() message.ToolDefinition {
 	schema, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
