@@ -2,10 +2,13 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 func openStore(t *testing.T) *SQLite {
@@ -113,5 +116,57 @@ func TestPutBlobDeduplicates(t *testing.T) {
 	}
 	if _, err := store.GetBlob(ctx, "not-a-hash"); err == nil {
 		t.Error("malformed reference accepted")
+	}
+}
+
+// History after the seed comes from the event log, so the projection row does
+// not grow with it: n rounds cost O(n), not O(n^2).
+func TestProjectionDoesNotCarryHistory(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+
+	seed := checkpoint("task-1", 0)
+	seed.Task.History = []message.Message{
+		message.NewTextMessage(message.RoleUser, "write the report"),
+	}
+	if err := store.Save(ctx, seed, nil); err != nil {
+		t.Fatalf("Save seed: %v", err)
+	}
+	bodySize := func() int {
+		var n int
+		if err := store.db.QueryRowContext(ctx,
+			`SELECT length(body) FROM tasks WHERE task_id = ?`, "task-1").Scan(&n); err != nil {
+			t.Fatalf("body size: %v", err)
+		}
+		return n
+	}
+	seeded := bodySize()
+
+	for round := 1; round <= 50; round++ {
+		round1 := message.NewTextMessage(message.RoleAssistant, strings.Repeat("x", 200))
+		payload, err := json.Marshal(round1)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		cp := checkpoint("task-1", round)
+		cp.Task.History = append(seed.Task.History, round1)
+		if err := store.Save(ctx, cp, []agent.EventRecord{{Kind: "message", Payload: payload}}); err != nil {
+			t.Fatalf("Save round %d: %v", round, err)
+		}
+	}
+	if grown := bodySize(); grown > seeded+16 {
+		t.Errorf("projection body grew from %d to %d bytes; history leaked into it", seeded, grown)
+	}
+
+	loaded, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Task.History) != 51 {
+		t.Fatalf("history = %d messages, want the seed plus 50 replayed events",
+			len(loaded.Task.History))
+	}
+	if got := loaded.Task.History[0].Content.Parts[0]; got == nil {
+		t.Error("first message lost its content")
 	}
 }

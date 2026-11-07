@@ -368,8 +368,10 @@ func TestAskPausesAndResumes(t *testing.T) {
 	if task.Pending == nil || task.Pending.ID != "ask-1" {
 		t.Fatalf("pending = %+v, want the ask_user call", task.Pending)
 	}
-	if store.saves != 1 {
-		t.Errorf("checkpoint saves = %d, want 1", store.saves)
+	// Two writes: the seed at Run start, then the pause. The point of the count
+	// is that the loop does not save per round, not that it never seeds.
+	if store.saves != 2 {
+		t.Errorf("checkpoint saves = %d, want 2 (seed + pause)", store.saves)
 	}
 	if store.latest.Task.ID != task.ID || store.latest.Task.Pending == nil {
 		t.Errorf("checkpoint task = %+v, want the paused task", store.latest.Task)

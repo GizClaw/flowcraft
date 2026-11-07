@@ -366,6 +366,14 @@ func (s *Session) run(ctx context.Context, in Input, yield func(Event, error) bo
 	defer cancel()
 
 	view := s.view(ctx, task)
+	// The seed row is written before this input joins the history: the seed is
+	// history as it stood, and the input itself is an event. A restore then
+	// rebuilds history from the seed plus the log — one source, not two.
+	inputEvents := make([]EventRecord, 0, len(messages))
+	for _, msg := range messages {
+		inputEvents = append(inputEvents, messageEvent(msg))
+	}
+	s.persistQuietly(ctx, inputEvents)
 	history := append(task.History, messages...)
 	contextMessages := history[:len(history)-len(messages)]
 	input := inference.GenerateInput{
@@ -400,6 +408,7 @@ func (s *Session) resume(ctx context.Context, reply Reply, yield func(Event, err
 	task.History = append(task.History, observation)
 	task.Pending = nil
 	task.State = StateWorking
+	s.persistQuietly(ctx, []EventRecord{messageEvent(observation)})
 	if !yield(ToolResult{Result: result}, nil) {
 		return nil
 	}
@@ -565,6 +574,13 @@ func (s *Session) loop(
 		// asks, so it cannot arrive mid-stream.
 		if steers := s.drainSteers(); len(steers) > 0 {
 			task.History = append(task.History, steers...)
+			// The round boundary has already persisted; a steer arrives after it,
+			// so it needs its own write or a restore would lose the message.
+			steerEvents := make([]EventRecord, 0, len(steers))
+			for _, steer := range steers {
+				steerEvents = append(steerEvents, messageEvent(steer))
+			}
+			s.persistQuietly(ctx, steerEvents)
 			contextMessages = task.History[:len(task.History)-1]
 			input = inference.GenerateInput{
 				Role:    inference.InputRoleUser,
