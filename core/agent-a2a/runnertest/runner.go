@@ -92,7 +92,8 @@ func runEndsInATerminalState(t *testing.T, build func(*testing.T) a2a.Runner) {
 
 func resumeWithoutAPauseFails(t *testing.T, build func(*testing.T) a2a.Runner) {
 	runner := build(t)
-	_, err := drain(runner.Resume(context.Background(), agent.Reply{Text: "an answer"}))
+	_, err := drain(runner.Resume(context.Background(),
+		agent.Reply{Content: message.NewTextContent("an answer")}))
 	if err == nil {
 		t.Fatal("Resume without a pause = nil, want an error")
 	}

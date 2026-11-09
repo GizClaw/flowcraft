@@ -129,9 +129,8 @@ func CloneMessages(msgs []Message) []Message {
 // is the slice element itself (not a deep copy); callers that intend to
 // mutate it should call [Message.Clone] first.
 //
-// Typical use is for graph nodes that need to read a single role-scoped
-// turn from a board channel — e.g. "the latest user message on
-// MainChannel" — without re-implementing the reverse scan everywhere.
+// Typical use is reading one role-scoped turn — "the latest user message" —
+// without re-implementing the reverse scan everywhere.
 func LastByRole(msgs []Message, role Role) (Message, bool) {
 	for _, msg := range slices.Backward(msgs) {
 		if msg.Role == role {

@@ -62,15 +62,6 @@ func WithProtocols(protocols ...Protocol) ManagerOption {
 	}
 }
 
-// reactiveEngine opens the local loop over the agent's runtime.
-type reactiveEngine struct{ agent *Agent }
-
-func (e reactiveEngine) Open(ctx context.Context, conversationID string) (session, error) {
-	return e.agent.openLocalSession(ctx, conversationID)
-}
-
-func (reactiveEngine) Close() error { return nil }
-
 // proxyEngine opens conversations that forward to a remote A2A agent.
 type proxyEngine struct {
 	spec   EngineSpec
@@ -88,12 +79,6 @@ func (proxyEngine) Close() error { return nil }
 // registers its own after New, and New's defaults stay out of the way.
 func builtinEngines() map[string]Engine {
 	return map[string]Engine{
-		"react": {
-			Name: "react",
-			Build: func(_ context.Context, _ EngineSpec, agent *Agent) (engine, error) {
-				return reactiveEngine{agent: agent}, nil
-			},
-		},
 		"a2a": {
 			Name: "a2a",
 			Build: func(_ context.Context, spec EngineSpec, deployed *Agent) (engine, error) {

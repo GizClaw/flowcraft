@@ -7,9 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // A deployment that declares protocol a2a actually serves A2A: the config's
@@ -19,13 +17,10 @@ func TestExposedAgentServesA2A(t *testing.T) {
 	manager := New(WithProtocols(A2AProtocol()))
 	t.Cleanup(func() { _ = manager.Close() })
 
+	peer := backend(t, "served")
 	deployed, err := manager.Add(context.Background(), Spec{
-		Name:    "backend",
-		Engine:  EngineSpec{Kind: "react"},
-		Runtime: config(t),
-		RuntimeOptions: []runtime.Option{
-			driver(&scripted{steps: []inference.GenerateResponse{textStep("served")}}),
-		},
+		Name:   "backend",
+		Engine: EngineSpec{Kind: "a2a", Peer: peer.URL},
 		Protocol: &ProtocolSpec{
 			Kind: "a2a",
 			Decoded: a2a.ServerSettings{Card: a2a.CardConfig{
@@ -78,11 +73,9 @@ func TestA2AProtocolMustBeRegistered(t *testing.T) {
 	manager := New()
 	t.Cleanup(func() { _ = manager.Close() })
 	_, err := manager.Add(context.Background(), Spec{
-		Name:           "backend",
-		Engine:         EngineSpec{Kind: "react"},
-		Runtime:        config(t),
-		RuntimeOptions: []runtime.Option{driver(&scripted{})},
-		Protocol:       &ProtocolSpec{Kind: "a2a"},
+		Name:     "backend",
+		Engine:   EngineSpec{Kind: "a2a", Peer: "https://peer.example/.well-known/agent-card.json"},
+		Protocol: &ProtocolSpec{Kind: "a2a"},
 	})
 	if err == nil {
 		t.Fatal("an unregistered protocol was accepted")

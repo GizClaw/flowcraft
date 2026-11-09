@@ -7,32 +7,21 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
-// backend serves one local agent over A2A, so the proxy test talks to a real
+// backend serves one fake peer over A2A, so the proxy test talks to a real
 // protocol implementation rather than a mock.
-func backend(t *testing.T, provider inference.Generator) *httptest.Server {
+func backend(t *testing.T, text string) *httptest.Server {
 	t.Helper()
-	rt, err := runtime.New(context.Background(), config(t), driver(provider))
-	if err != nil {
-		t.Fatalf("runtime.New: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Close() })
 	server, err := a2a.NewServer(a2a.ServerConfig{
 		Card: a2a.CardConfig{
 			Name: "backend", Version: "1.0.0", URL: "http://backend.invalid",
 		},
 		Sessions: func(context.Context, *a2asrv.ExecutorContext) (a2a.Runner, error) {
-			session, err := agent.NewSession(rt)
-			if err != nil {
-				return nil, err
-			}
-			return session, nil
+			return &textRunner{text: text}, nil
 		},
 	})
 	if err != nil {
@@ -46,7 +35,7 @@ func backend(t *testing.T, provider inference.Generator) *httptest.Server {
 // A proxied request travels the whole stack: local proxy → real A2A server →
 // local agent → scripted model, and the answer comes back as local events.
 func TestProxyForwardsToARemoteAgent(t *testing.T) {
-	srv := backend(t, &scripted{steps: []inference.GenerateResponse{textStep("hello from backend")}})
+	srv := backend(t, "hello from backend")
 	conversation, err := newProxyConversation(context.Background(),
 		EngineSpec{Kind: "a2a", Peer: srv.URL}, nil, "", "conv-1")
 	if err != nil {

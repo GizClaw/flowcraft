@@ -292,9 +292,9 @@ type ImagePart struct {
 
 func (ImagePart) Kind() PartKind { return PartImage }
 func (p ImagePart) Clone() Part {
-	// The source owns the inline payload ([]byte for a data source, a stream
-	// handle). Sharing it would let a "clone" mutate its original, which a
-	// board snapshot, a checkpoint record or a retry rollback cannot tolerate.
+	// A clone must not share the inline payload: a caller that edits the copy
+	// would otherwise mutate a message that is already stored in history, and a
+	// checkpoint would silently record the edit.
 	p.Source = p.Source.Clone()
 	return p
 }

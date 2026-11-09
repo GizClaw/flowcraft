@@ -1,11 +1,6 @@
 package agent
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"slices"
-
-	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -69,42 +64,4 @@ type Task struct {
 	// Pending is the tool call the Task stopped on when it needed the user. It
 	// is checkpointed so a resume knows which call the answer belongs to.
 	Pending *message.ToolCall `json:"pending,omitempty"`
-}
-
-// newTaskID returns an opaque id. It is stable across resumptions because a
-// restored Task keeps the id it was checkpointed with.
-func newTaskID() string {
-	var buf [12]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "task"
-	}
-	return "task-" + hex.EncodeToString(buf[:])
-}
-
-// advance moves the Task to its next state, refusing an illegal transition.
-func (t *Task) advance(state TaskState) error {
-	if state == t.State {
-		return nil
-	}
-	if t.State.Terminal() {
-		return errdefs.Validationf("agent: task %s is %s and cannot become %s",
-			t.ID, t.State, state)
-	}
-	t.State = state
-	return nil
-}
-
-// clone returns a copy that shares no mutable state with the live task, except
-// message parts: the loop only appends messages, never modifies one already in
-// History, so sharing them is safe and saves a per-part copy on every snapshot.
-func (t *Task) clone() Task {
-	out := *t
-	out.System = t.System.Clone()
-	out.History = slices.Clone(t.History)
-	out.Artifacts = slices.Clone(t.Artifacts)
-	if t.Pending != nil {
-		pending := t.Pending.Clone()
-		out.Pending = &pending
-	}
-	return out
 }

@@ -132,15 +132,14 @@ func coreDispatch(catalog Catalog) Dispatch {
 		if len(content.Parts) == 0 {
 			// A tool that returned no parts said nothing. Normalizing here
 			// keeps every dispatched result a valid message payload, so a
-			// partless result can never reach message validation, the
-			// board, or a driver's wire compile.
+			// partless result can never reach message validation or a
+			// driver's wire compile.
 			content = message.NewTextContent("")
 		}
 		if err := content.Validate(); err != nil {
 			// Content that does not validate is a broken tool, not a
 			// broken run: report it as an error result instead of letting
-			// an invalid part reach the board, a checkpoint, or a
-			// provider compile.
+			// an invalid part reach a checkpoint or a provider compile.
 			RecordFailure(ctx, FailureToolError)
 			return message.NewErrorToolResult(call.ID,
 				fmt.Sprintf("tool %q returned invalid content: %v", call.Name, err))

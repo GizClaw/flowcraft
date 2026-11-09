@@ -2,12 +2,9 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
@@ -90,88 +87,4 @@ type Store interface {
 	PutBlob(ctx context.Context, data []byte) (string, error)
 	// GetBlob returns the bytes a reference names.
 	GetBlob(ctx context.Context, ref string) ([]byte, error)
-}
-
-// Snapshot captures the Session's current Task.
-func (s *Session) Snapshot() Checkpoint {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// The task is cloned: a checkpoint handed to an asynchronous store must not
-	// change when the loop appends to History afterwards.
-	checkpoint := Checkpoint{
-		Schema:  CheckpointSchema,
-		Runtime: s.resumeDigest(),
-		Task:    s.task.clone(),
-	}
-	if s.policyState != nil {
-		checkpoint.Sections = map[string]json.RawMessage{sectionContextPolicy: s.policyState}
-	}
-	return checkpoint
-}
-
-// resumeDigest is the identity a checkpoint records and a restore compares.
-//
-// It is a constant per Session: the runtime config cannot change and the option
-// is applied before construction finishes, so hashing it per Snapshot would
-// re-encode the same document every round.
-func (s *Session) resumeDigest() runtime.Digest { return s.digest }
-
-// computeDigest derives the identity once, at construction.
-func (s *Session) computeDigest() runtime.Digest {
-	base := s.runtime.Config().Digest()
-	if s.opts.Digest == "" {
-		return base
-	}
-	// An override extends the runtime's identity; replacing it would let a
-	// caller resume under a different model or permission set by supplying a
-	// constant.
-	sum := sha256.Sum256([]byte(string(base) + "\x00" + string(s.opts.Digest)))
-	return runtime.Digest("sha256:" + hex.EncodeToString(sum[:]))
-}
-
-// Restore resumes a Session from a checkpoint.
-//
-// The digest must match the runtime it is resumed against. Continuing a
-// transcript under a different model, boundary or permission set is the most
-// dangerous silent failure this layer has: everything the model was told about
-// what it may do came from the old configuration.
-func Restore(rt *runtime.Runtime, checkpoint Checkpoint, opts ...Option) (*Session, error) {
-	if rt == nil {
-		return nil, errdefs.Validationf("agent: a runtime is required")
-	}
-	if checkpoint.Schema != CheckpointSchema {
-		return nil, errdefs.Validationf(
-			"agent: checkpoint schema %d is not supported; this build reads %d",
-			checkpoint.Schema, CheckpointSchema)
-	}
-	session := &Session{runtime: rt, task: &checkpoint.Task}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&session.opts)
-		}
-	}
-	session.digest = session.computeDigest()
-	session.policyState = checkpoint.Sections[sectionContextPolicy]
-	session.policy = session.opts.ContextPolicy
-	if session.policy == nil {
-		session.policy = FullHistory{}
-	}
-	if want := session.digest; checkpoint.Runtime != want {
-		return nil, errdefs.Validationf(
-			"agent: checkpoint was taken under %s, this runtime is %s",
-			checkpoint.Runtime, want)
-	}
-	return session, nil
-}
-
-// RestoreFrom loads a task from a store and resumes it.
-func RestoreFrom(ctx context.Context, rt *runtime.Runtime, store Store, taskID string, opts ...Option) (*Session, error) {
-	if store == nil {
-		return nil, errdefs.Validationf("agent: a store is required")
-	}
-	checkpoint, err := store.Load(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	return Restore(rt, checkpoint, opts...)
 }

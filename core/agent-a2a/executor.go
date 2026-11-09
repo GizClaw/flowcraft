@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"iter"
-	"strings"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -141,7 +140,12 @@ func (e *Executor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext) it
 					stored.ID, session.State()))
 				return
 			}
-			sequence = session.Resume(runCtx, agent.Reply{Text: textContent(exec.Message)})
+			reply, err := fromA2AMessage(exec.Message)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			sequence = session.Resume(runCtx, agent.Reply{Content: reply.Content})
 		} else {
 			sequence = session.Run(runCtx, agent.Input{Messages: []message.Message{turn}})
 		}
@@ -284,18 +288,6 @@ func stateOf(state agent.TaskState) a2a.TaskState {
 }
 
 // textContent is the text parts of a wire message, concatenated.
-func textContent(msg *a2a.Message) string {
-	if msg == nil {
-		return ""
-	}
-	var out strings.Builder
-	for _, part := range msg.Parts {
-		if text, ok := part.Content.(a2a.Text); ok {
-			out.WriteString(string(text))
-		}
-	}
-	return out.String()
-}
 
 // fromA2AMessage converts an incoming wire message into the core shape.
 func fromA2AMessage(msg *a2a.Message) (message.Message, error) {

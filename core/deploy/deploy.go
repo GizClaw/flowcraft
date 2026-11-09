@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"iter"
 	"net/http"
 	"sort"
@@ -58,18 +57,13 @@ type Spec struct {
 	// secret resolvers. They are per deployment, not per agent, but they arrive
 	// with the spec so an agent is self-contained.
 	RuntimeOptions []runtime.Option
+	// OnEvent observes every event a conversation produces. Optional; a host
+	// uses it to stream progress without reaching into the engine.
+	OnEvent func(conversationID string, event agent.Event)
 	// Store persists this agent's conversations. It is applied to every session
 	// last, because a deployment that forgets it loses the ability to resume —
 	// the main reason this layer exists.
 	Store agent.Store
-	// Options apply to every session of this agent.
-	Options []agent.Option
-	// OptionsFor varies options per conversation: the same agent may answer a
-	// CLI on stdin and a service with input-required.
-	OptionsFor func(conversationID string) []agent.Option
-	// OnEvent observes the loop. Optional; tests and hosts use it to see
-	// progress without reaching into a Session.
-	OnEvent func(conversationID string, event agent.Event)
 	// IdleTimeout drops a conversation from memory after this long without use.
 	// Zero keeps every conversation for the agent's lifetime: state lives in the
 	// store, so eviction is a cache decision, not a data loss.
@@ -164,7 +158,7 @@ func (a *Agent) Submit(ctx context.Context, conversationID string, msg message.M
 		case agent.ModeSteer:
 			// Resuming is a run: it has to take the same slot, or a concurrent
 			// Submit could start a second Resume on the same session.
-			return a.resumePaused(ctx, entry, conversationID, agent.Reply{Text: msg.Content.Text()})
+			return a.resumePaused(ctx, entry, conversationID, agent.Reply{Content: msg.Content})
 		case agent.ModeInterrupt:
 			if err := entry.session.Abandon(); err != nil {
 				return err
@@ -407,37 +401,6 @@ func (a *Agent) Drain(ctx context.Context) error {
 // kind: the engine table decided that at Add.
 func (a *Agent) openSession(ctx context.Context, conversationID string) (session, error) {
 	return a.engine.Open(ctx, conversationID)
-}
-
-// openLocalSession is the local loop's construction, used by the react engine.
-func (a *Agent) openLocalSession(ctx context.Context, conversationID string) (session, error) {
-	options := make([]agent.Option, 0, len(a.spec.Options)+4)
-	options = append(options, a.spec.Options...)
-	if a.spec.OptionsFor != nil {
-		options = append(options, a.spec.OptionsFor(conversationID)...)
-	}
-	if a.spec.Store != nil {
-		options = append(options, agent.WithStore(a.spec.Store))
-	}
-	if a.digest != "" {
-		options = append(options, agent.WithDigest(a.digest))
-	}
-	if a.spec.Store != nil {
-		checkpoint, err := a.spec.Store.LatestForContext(ctx, conversationID)
-		switch {
-		case err == nil:
-			return agent.Restore(a.rt, checkpoint, options...)
-		case !errors.Is(err, agent.ErrNoCheckpoint):
-			return nil, err
-		}
-	}
-	session, err := agent.NewSession(a.rt, options...)
-	if err != nil {
-		return nil, err
-	}
-	// The id is the session's own; only the conversation comes from the manager.
-	session.SetIdentity("", conversationID)
-	return session, nil
 }
 
 func (a *Agent) goRun(entry *conversation, conversationID string) {

@@ -161,7 +161,8 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	}
 
 	// The engine decides whether a substrate is needed: a proxy has no local
-	// model, tools or sandbox, and a local engine cannot forward to a peer.
+	// model, tools or sandbox, and an engine that runs locally cannot forward to
+	// a peer.
 	needsRuntime := agent.Engine.Kind != "a2a"
 	switch {
 	case needsRuntime && agent.Runtime == nil:

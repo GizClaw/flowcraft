@@ -240,7 +240,7 @@ func (p *proxyConversation) Resume(ctx context.Context, reply agent.Reply) iter.
 				"manage: task is not waiting for input (state %s)", state))
 		}
 	}
-	return p.forward(ctx, []message.Message{message.NewTextMessage(message.RoleUser, reply.Text)})
+	return p.forward(ctx, []message.Message{{Role: message.RoleUser, Content: reply.Content}})
 }
 
 func (p *proxyConversation) forward(ctx context.Context, messages []message.Message) iter.Seq2[agent.Event, error] {

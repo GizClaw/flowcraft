@@ -1,18 +1,25 @@
-// Package agent runs the loop between a model and the tools a runtime exposes.
+// Package agent defines what an agent run is: the Task it advances, the events
+// it reports, and the store that makes it resumable.
 //
-// It owns exactly two things: the loop (model, tool calls, model again) and the
-// conversation state that loop advances. It does not own the substrate — model
-// access, the tool catalog, the sandbox, the file boundary — which belongs to
-// core/runtime, and it does not own grouping, tracing or wire formats, which
-// belong to whatever drives it.
+// It is a contract package. It owns no loop, no model call and no tool
+// execution: an engine that answers a Task lives in its own package
+// (core/agent-graph is one) and speaks these types, and core/deploy decides
+// which engine a deployment uses. That is why nothing here imports a runtime.
 //
-// One Run is one Task: a single user request, answered after as many model
-// rounds as it takes. History is continuous across Tasks by construction (each
-// Task starts with the transcript so far), so the tool visibility of a Task is
-// derived from that history rather than cached from the previous one.
+// # The shapes
 //
-// Streaming is the primary interface. Run returns a sequence of events; a
-// caller that wants a final answer folds them. Nothing in the loop parks state
-// where the caller cannot see it, which is why there is no board, no hook table
-// and no host interface here.
+// Task is the conversation-level projection a Task is checkpointed as: its
+// identity and state carry the names the A2A protocol uses, because a deployment
+// exposes engines through that protocol, while Round/System/Pending are what a
+// step-wise engine needs to continue. History is the transcript; Artifacts are
+// references to bytes the store holds.
+//
+// Event is a closed set. A consumer can switch over every kind, and the compiler
+// keeps that switch honest when a kind is added. A non-streaming caller folds the
+// sequence; a streaming one forwards it.
+//
+// Store is the durable side: a Task projection, an append-only event log, and
+// content-addressed blobs. What a store must guarantee is written down once, in
+// the conformance suite at core/agent/agenttest, so a second backend is verified
+// against the contract instead of re-deriving it.
 package agent
