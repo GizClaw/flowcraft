@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"iter"
@@ -110,7 +111,7 @@ func config(t *testing.T) runtime.Config {
 func driver(provider inference.Generator) runtime.Option {
 	return runtime.WithDrivers(runtime.Driver{
 		Name: "stub",
-		Build: func(map[string]any) (inference.Provider, error) {
+		Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: provider}, nil
 		},
 	})

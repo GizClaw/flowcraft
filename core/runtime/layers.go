@@ -1,14 +1,12 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
-	"errors"
-	"io"
 	"os"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -131,15 +129,18 @@ func (l Layer) body() ([]byte, error) {
 
 // decodeStrict turns the merged tree into a Config, rejecting unknown keys: a
 // typo in a permission section must not be silently ignored.
+// decodeStrict turns the merged document into JSON and decodes it strictly.
+//
+// Merging happens on YAML nodes because that is where per-kind merge rules and
+// provenance live; the document a caller writes is YAML, and the structure it
+// becomes is JSON with unknown fields rejected.
 func decodeStrict(node *yaml.Node) (Config, error) {
 	body, err := yaml.Marshal(node)
 	if err != nil {
 		return Config{}, errdefs.Validationf("runtime: re-encode merged document: %v", err)
 	}
-	decoder := yaml.NewDecoder(bytes.NewReader(body))
-	decoder.KnownFields(true)
-	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+	cfg, err := decode.Decode[Config](body)
+	if err != nil {
 		return Config{}, errdefs.Validationf("runtime configuration: %v", err)
 	}
 	return cfg, nil

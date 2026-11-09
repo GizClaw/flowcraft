@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestHostMiddlewareIsRegistered(t *testing.T) {
 
 	rt, err := New(context.Background(), cfg, WithMiddleware(MiddlewareOption{
 		Name: "refuse",
-		Build: func(map[string]any) (tool.Middleware, error) {
+		Build: func(json.RawMessage) (tool.Middleware, error) {
 			return func(tool.Dispatch) tool.Dispatch {
 				return func(context.Context, message.ToolCall) message.ToolResult {
 					return message.NewErrorToolResult("call-1", "refused by the host")
@@ -123,7 +124,7 @@ func TestMiddlewareSettingsAreTyped(t *testing.T) {
 
 	cfg.Tools.Middleware = []MiddlewareConfig{
 		{Name: MiddlewareRecover},
-		{Name: MiddlewareResultLimit, Settings: map[string]any{"max_bytes": 4096}},
+		{Name: MiddlewareResultLimit, Settings: settingsJSON(map[string]any{"max_bytes": 4096})},
 	}
 	rt, err := New(context.Background(), cfg)
 	if err != nil {

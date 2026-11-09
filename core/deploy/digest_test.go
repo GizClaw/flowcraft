@@ -28,10 +28,10 @@ func TestDeploymentDigestCoversTheDeployment(t *testing.T) {
 // input here, which is the point.
 func TestDeploymentDigestIgnoresTheCard(t *testing.T) {
 	first := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, &ProtocolSpec{
-		Kind: "a2a", Settings: map[string]any{"card": map[string]any{"description": "one"}},
+		Kind: "a2a", Settings: rawJSON(map[string]any{"card": map[string]any{"description": "one"}}),
 	})
 	second := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, &ProtocolSpec{
-		Kind: "a2a", Settings: map[string]any{"card": map[string]any{"description": "two"}},
+		Kind: "a2a", Settings: rawJSON(map[string]any{"card": map[string]any{"description": "two"}}),
 	})
 	if first != second {
 		t.Error("a card edit invalidated the deployment identity")

@@ -14,21 +14,21 @@ func TestDecodeSettingsRequiresThePromise(t *testing.T) {
 		"no url":        {"card": map[string]any{"version": "1.0.0"}},
 		"unknown field": {"card": map[string]any{"version": "1.0.0", "url": "https://x", "colour": "red"}},
 	} {
-		if _, err := DecodeSettings(settings); err == nil {
+		if _, err := DecodeSettings(settingsJSON(settings)); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
 	}
 }
 
 func TestDecodeSettingsCarriesTheClaims(t *testing.T) {
-	settings, err := DecodeSettings(map[string]any{
+	settings, err := DecodeSettings(settingsJSON(map[string]any{
 		"card": map[string]any{
 			"description": "story",
 			"version":     "1.0.0",
 			"url":         "https://host/agents/story",
 			"skills":      []any{map[string]any{"id": "publish", "name": "发布"}},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("DecodeSettings: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDecodeSettingsCarriesTheClaims(t *testing.T) {
 }
 
 func TestDecodeSettingsRejectsDuplicateSkills(t *testing.T) {
-	_, err := DecodeSettings(map[string]any{
+	_, err := DecodeSettings(settingsJSON(map[string]any{
 		"card": map[string]any{
 			"version": "1.0.0", "url": "https://x",
 			"skills": []any{
@@ -53,7 +53,7 @@ func TestDecodeSettingsRejectsDuplicateSkills(t *testing.T) {
 				map[string]any{"id": "a", "name": "B"},
 			},
 		},
-	})
+	}))
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("err = %v, want a duplicate complaint", err)
 	}

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"net/http"
 
@@ -21,7 +22,7 @@ import (
 func A2AProtocol() Protocol {
 	return Protocol{
 		Name: "a2a",
-		Decode: func(settings map[string]any) (any, error) {
+		Decode: func(settings json.RawMessage) (any, error) {
 			return a2a.DecodeSettings(settings)
 		},
 		Build: func(cfg ProtocolSpec, deployed *Agent) (protocol, error) {

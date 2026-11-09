@@ -10,7 +10,7 @@ func digestConfig(secret string) Config {
 		Inference: InferenceConfig{
 			Providers: []ProviderConfig{{
 				Name: "p", Driver: "openai",
-				Settings: map[string]any{"api_key": secret, "base_url": "https://x"},
+				Settings: settingsJSON(map[string]any{"api_key": secret, "base_url": "https://x"}),
 			}},
 			Models: []ModelConfig{{Provider: "p", Model: "m"}},
 		},
@@ -52,13 +52,13 @@ func TestDigestTracksTheModel(t *testing.T) {
 // twice yields the same value.
 func TestDigestIsStable(t *testing.T) {
 	cfg := digestConfig("k")
-	cfg.Inference.Providers[0].Settings = map[string]any{
+	cfg.Inference.Providers[0].Settings = settingsJSON(map[string]any{
 		"z": "1", "a": "2", "m": "3",
-	}
+	})
 	first := cfg.Digest()
-	cfg.Inference.Providers[0].Settings = map[string]any{
+	cfg.Inference.Providers[0].Settings = settingsJSON(map[string]any{
 		"a": "2", "m": "3", "z": "1",
-	}
+	})
 	if got := cfg.Digest(); got != first {
 		t.Errorf("digest depends on map order: %s != %s", got, first)
 	}

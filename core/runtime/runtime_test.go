@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestNewRejectsUnknownDriverAndListsOffered(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("nope", "primary", "m", nil)
 	_, err := New(context.Background(), cfg,
-		WithDrivers(Driver{Name: "alpha", Build: func(map[string]any) (inference.Provider, error) {
+		WithDrivers(Driver{Name: "alpha", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: stubGenerator{}}, nil
 		}}))
 	if err == nil {
@@ -90,7 +91,7 @@ func TestNewRejectsUncallableProvider(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("empty", "primary", "m", nil)
 	_, err := New(context.Background(), cfg,
-		WithDrivers(Driver{Name: "empty", Build: func(map[string]any) (inference.Provider, error) {
+		WithDrivers(Driver{Name: "empty", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{}, nil
 		}}))
 	if err == nil {
@@ -101,9 +102,9 @@ func TestNewRejectsUncallableProvider(t *testing.T) {
 func TestNewBuildsDriverProvider(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("stub", "primary", "gpt-6-luna", nil)
-	settingsSeen := map[string]any{}
+	var settingsSeen json.RawMessage
 	rt, err := New(context.Background(), cfg,
-		WithDrivers(Driver{Name: "stub", Build: func(settings map[string]any) (inference.Provider, error) {
+		WithDrivers(Driver{Name: "stub", Build: func(settings json.RawMessage) (inference.Provider, error) {
 			settingsSeen = settings
 			return inference.Provider{Generator: stubGenerator{}}, nil
 		}}))
@@ -230,7 +231,7 @@ func TestMCPDeferredByDefault(t *testing.T) {
 // inferenceConfig builds one provider block serving one model.
 func inferenceConfig(driver, provider, modelName string, settings map[string]any) InferenceConfig {
 	return InferenceConfig{
-		Providers: []ProviderConfig{{Name: provider, Driver: driver, Settings: settings}},
+		Providers: []ProviderConfig{{Name: provider, Driver: driver, Settings: settingsJSON(settings)}},
 		Models:    []ModelConfig{{Provider: provider, Model: modelName}},
 	}
 }

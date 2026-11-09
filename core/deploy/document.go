@@ -1,65 +1,62 @@
 package deploy
 
 import (
-	"bytes"
 	"context"
-	"errors"
-	"io"
+	"encoding/json"
 	"os"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/runtime"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // Document is the deployment file: which agents exist and what each is made of.
 type Document struct {
-	Version int             `yaml:"version"`
-	Agents  []AgentDocument `yaml:"agents"`
+	Version int             `json:"version"`
+	Agents  []AgentDocument `json:"agents"`
 }
 
 // AgentDocument is one agent's declaration.
 type AgentDocument struct {
-	Name     string            `yaml:"name"`
-	Engine   EngineDocument    `yaml:"engine"`
-	Runtime  *RuntimeDocument  `yaml:"runtime"`
-	Protocol *ProtocolDocument `yaml:"protocol"`
+	Name     string            `json:"name"`
+	Engine   EngineDocument    `json:"engine"`
+	Runtime  *RuntimeDocument  `json:"runtime"`
+	Protocol *ProtocolDocument `json:"protocol"`
 }
 
 // EngineDocument selects the implementation and carries its settings.
 type EngineDocument struct {
 	// Kind is required. There is no default implementation: an agent that does
 	// not say what it is cannot be deployed meaningfully.
-	Kind string `yaml:"kind"`
+	Kind string `json:"kind"`
 	// Peer is the remote card URL for the a2a engine.
-	Peer string `yaml:"peer"`
+	Peer string `json:"peer"`
 	// Auth is the credential for reaching Peer.
-	Auth map[string]any `yaml:"auth"`
+	Auth json.RawMessage `json:"auth"`
 	// Graph is the graph document path for the graph engine.
-	Graph string `yaml:"graph"`
+	Graph string `json:"graph"`
 }
 
 // RuntimeDocument is the substrate configuration as a stack of layers.
 type RuntimeDocument struct {
-	Layers []LayerDocument `yaml:"layers"`
+	Layers []LayerDocument `json:"layers"`
 }
 
 // LayerDocument is one file in the stack.
 type LayerDocument struct {
-	Priority int    `yaml:"priority"`
-	Path     string `yaml:"path"`
+	Priority int    `json:"priority"`
+	Path     string `json:"path"`
 }
 
 // ProtocolDocument selects the exposure and carries its settings.
 type ProtocolDocument struct {
 	// Kind is required when the block is present.
-	Kind string `yaml:"kind"`
+	Kind string `json:"kind"`
 	// Card is the a2a protocol's advertisement, written beside kind.
-	Card map[string]any `yaml:"card"`
+	Card json.RawMessage `json:"card"`
 	// Settings is the protocol's own configuration, decoded by its factory.
-	Settings map[string]any `yaml:"settings"`
+	Settings json.RawMessage `json:"settings"`
 }
 
 // Loader turns a deployment document into specs.
@@ -114,9 +111,8 @@ func (l Loader) Load(ctx context.Context, body []byte) ([]Spec, error) {
 	if err != nil {
 		return nil, errdefs.Validationf("manage: %w", err)
 	}
-	decoder := yaml.NewDecoder(bytes.NewReader(expanded))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&document); err != nil && !errors.Is(err, io.EOF) {
+	document, err = decode.Decode[Document](expanded)
+	if err != nil {
 		return nil, errdefs.Validationf("manage: deployment document: %v", err)
 	}
 	if document.Version != 1 {
@@ -197,14 +193,21 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 				where("protocol"), agent.Protocol.Kind, strings.Join(protocolNames(l.Protocols), ", "))
 		}
 		settings := agent.Protocol.Settings
-		if agent.Protocol.Card != nil {
+		if len(agent.Protocol.Card) > 0 {
 			// The written form puts the card beside kind; the decoder reads it
-			// from a settings map, so fold it in without mutating the document.
-			merged := make(map[string]any, len(settings)+1)
-			for key, value := range settings {
-				merged[key] = value
+			// from the settings object, so fold it in without mutating the
+			// document.
+			fields := make(map[string]json.RawMessage, 1)
+			if len(settings) > 0 {
+				if err := json.Unmarshal(settings, &fields); err != nil {
+					return Spec{}, errdefs.Validationf("%s: settings: %w", where("protocol"), err)
+				}
 			}
-			merged["card"] = agent.Protocol.Card
+			fields["card"] = agent.Protocol.Card
+			merged, err := json.Marshal(fields)
+			if err != nil {
+				return Spec{}, errdefs.Validationf("%s: settings: %w", where("protocol"), err)
+			}
 			settings = merged
 		}
 		protocolSpec = &ProtocolSpec{Kind: agent.Protocol.Kind, Settings: settings}

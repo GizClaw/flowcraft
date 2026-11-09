@@ -1,11 +1,11 @@
 package a2a
 
 import (
-	"bytes"
+	"encoding/json"
+
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // ServerSettings is the typed form of a deployment's protocol block:
@@ -20,26 +20,26 @@ type ServerSettings struct {
 
 // settingsDocument mirrors the written block, so unknown keys are rejected.
 type settingsDocument struct {
-	Card cardDocument `yaml:"card"`
+	Card cardDocument `json:"card"`
 }
 
 type cardDocument struct {
-	Name               string          `yaml:"name"`
-	Description        string          `yaml:"description"`
-	Version            string          `yaml:"version"`
-	URL                string          `yaml:"url"`
-	Skills             []skillDocument `yaml:"skills"`
-	DefaultInputModes  []string        `yaml:"defaultInputModes"`
-	DefaultOutputModes []string        `yaml:"defaultOutputModes"`
-	PushNotifications  bool            `yaml:"pushNotifications"`
+	Name               string          `json:"name"`
+	Description        string          `json:"description"`
+	Version            string          `json:"version"`
+	URL                string          `json:"url"`
+	Skills             []skillDocument `json:"skills"`
+	DefaultInputModes  []string        `json:"defaultInputModes"`
+	DefaultOutputModes []string        `json:"defaultOutputModes"`
+	PushNotifications  bool            `json:"pushNotifications"`
 }
 
 type skillDocument struct {
-	ID          string   `yaml:"id"`
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Tags        []string `yaml:"tags"`
-	Examples    []string `yaml:"examples"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	Examples    []string `json:"examples"`
 }
 
 // DecodeSettings validates a protocol block at load time.
@@ -48,19 +48,13 @@ type skillDocument struct {
 // only the builder knows that name. Everything else — the version it advertises,
 // the URL clients will call, the skills it claims — must be declared here,
 // because a card is a promise and a promise with a default is not one.
-func DecodeSettings(settings map[string]any) (ServerSettings, error) {
-	if len(settings) == 0 {
+func DecodeSettings(settings json.RawMessage) (ServerSettings, error) {
+	if len(settings) == 0 || string(settings) == "null" {
 		return ServerSettings{}, errdefs.Validationf(
 			"a2a: settings.card is required; a server has to advertise something")
 	}
-	body, err := yaml.Marshal(settings)
+	document, err := decode.Decode[settingsDocument](settings)
 	if err != nil {
-		return ServerSettings{}, errdefs.Validationf("a2a: encode settings: %w", err)
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(body))
-	decoder.KnownFields(true)
-	var document settingsDocument
-	if err := decoder.Decode(&document); err != nil {
 		return ServerSettings{}, errdefs.Validationf("a2a: settings: %v", err)
 	}
 	card := document.Card

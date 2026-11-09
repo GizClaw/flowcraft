@@ -150,15 +150,21 @@ func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error
 
 // bearerToken reads the deployment's credential. Only bearer is understood: an
 // auth block this build cannot honour must not be silently ignored.
-func bearerToken(auth map[string]any) string {
+func bearerToken(auth json.RawMessage) string {
 	if len(auth) == 0 {
 		return ""
 	}
-	if kind, _ := auth["type"].(string); kind != "" && kind != "bearer" {
+	var header struct {
+		Type  string `json:"type"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(auth, &header); err != nil {
 		return ""
 	}
-	token, _ := auth["token"].(string)
-	return token
+	if header.Type != "" && header.Type != "bearer" {
+		return ""
+	}
+	return header.Token
 }
 
 // SetIdentity keeps the remote task id and takes only the conversation.

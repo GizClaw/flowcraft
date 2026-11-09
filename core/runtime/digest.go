@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"sort"
 )
 
 // Digest identifies the configuration a runtime was built from.
@@ -64,18 +63,22 @@ func (c Config) redacted() Config {
 
 // redactMap keeps the keys and drops the values: a settings map is a schema, and
 // only its shape is part of what a runtime is.
-func redactMap(settings map[string]any) map[string]any {
-	if len(settings) == 0 {
+func redactMap(settings json.RawMessage) json.RawMessage {
+	if len(settings) == 0 || string(settings) == "null" {
 		return nil
 	}
-	keys := make([]string, 0, len(settings))
-	for key := range settings {
-		keys = append(keys, key)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(settings, &fields); err != nil {
+		// A settings blob that is not an object still names nothing; a digest
+		// must never confirm a guessed secret.
+		return json.RawMessage("{}")
 	}
-	sort.Strings(keys)
-	out := make(map[string]any, len(settings))
-	for _, key := range keys {
-		out[key] = "<redacted>"
+	for key := range fields {
+		fields[key] = json.RawMessage(`"<redacted>"`)
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return json.RawMessage("{}")
 	}
 	return out
 }

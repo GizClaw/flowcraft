@@ -1,6 +1,10 @@
 package runtime
 
-import "github.com/GizClaw/flowcraft/core/inference"
+import (
+	"encoding/json"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+)
 
 // DriverFunc builds a provider from a driver's settings block.
 //
@@ -8,7 +12,7 @@ import "github.com/GizClaw/flowcraft/core/inference"
 // into every binary that links this package. The host names the drivers it
 // compiles in, which also makes "which drivers exist" a fact of the binary
 // rather than a side effect of an init function.
-type DriverFunc func(settings map[string]any) (inference.Provider, error)
+type DriverFunc func(settings json.RawMessage) (inference.Provider, error)
 
 // Driver resolves a driver name to a constructor.
 type Driver struct {

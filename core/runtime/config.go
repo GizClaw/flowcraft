@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,13 +42,13 @@ type Config struct {
 	// Version is the schema version. It is required so a future format change
 	// has an anchor to reject or migrate against, instead of being discovered
 	// as a field that silently means something else.
-	Version   int             `yaml:"version"`
-	Name      string          `yaml:"name"`
-	Sandbox   SandboxConfig   `yaml:"sandbox"`
-	Files     FilesConfig     `yaml:"files"`
-	Inference InferenceConfig `yaml:"inference"`
-	Tools     ToolsConfig     `yaml:"tools"`
-	Skills    SkillsConfig    `yaml:"skills"`
+	Version   int             `json:"version"`
+	Name      string          `json:"name"`
+	Sandbox   SandboxConfig   `json:"sandbox"`
+	Files     FilesConfig     `json:"files"`
+	Inference InferenceConfig `json:"inference"`
+	Tools     ToolsConfig     `json:"tools"`
+	Skills    SkillsConfig    `json:"skills"`
 }
 
 // SandboxConfig describes the process boundary: which backend enforces it, what
@@ -55,40 +56,40 @@ type Config struct {
 type SandboxConfig struct {
 	// Backend is one of local, seatbelt, bwrap, windows. There is no default:
 	// a boundary that gets picked by guessing is a boundary nobody chose.
-	Backend string `yaml:"backend"`
+	Backend string `json:"backend"`
 	// WorkDir is the directory commands run in. Empty means the first files
 	// root: a deployment that lists one root should not have to say it twice.
-	WorkDir string `yaml:"workdir"`
+	WorkDir string `json:"workdir"`
 	// Writes lists absolute paths a command may write. Empty means read-only.
-	Writes []string `yaml:"writes"`
+	Writes []string `json:"writes"`
 	// Net is the outbound posture.
-	Net NetConfig `yaml:"net"`
+	Net NetConfig `json:"net"`
 	// CPU is a millicore budget; zero means unbounded.
-	CPU int `yaml:"cpu_millicores"`
+	CPU int `json:"cpu_millicores"`
 	// MemoryMiB caps address space; zero means unbounded.
-	MemoryMiB int `yaml:"memory_mib"`
+	MemoryMiB int `json:"memory_mib"`
 	// OutputMiB caps captured output per call; zero means the backend default.
-	OutputMiB int `yaml:"output_mib"`
+	OutputMiB int `json:"output_mib"`
 	// Journal records filesystem events under the runner root.
-	Journal bool `yaml:"journal"`
+	Journal bool `json:"journal"`
 }
 
 // NetConfig is the outbound posture in the words a person uses.
 type NetConfig struct {
 	// Mode is one of default, none, allow_list, proxy.
-	Mode string `yaml:"mode"`
+	Mode string `json:"mode"`
 	// AllowHosts is meaningful for allow_list: hostname suffixes and IP
 	// literals, optionally with a port.
-	AllowHosts []string `yaml:"allow_hosts"`
+	AllowHosts []string `json:"allow_hosts"`
 	// Proxy is the address used by proxy mode.
-	Proxy string `yaml:"proxy"`
+	Proxy string `json:"proxy"`
 }
 
 // FilesConfig describes the file boundary the tools work inside.
 type FilesConfig struct {
 	// Roots are absolute directories writes may touch. They must exist when the
 	// runtime is built: a handle that cannot be opened cannot enforce anything.
-	Roots []string `yaml:"roots"`
+	Roots []string `json:"roots"`
 }
 
 // InferenceConfig declares the models this runtime may call and how it fails
@@ -102,11 +103,11 @@ type InferenceConfig struct {
 	// Providers are reusable construction blocks: one driver, one set of
 	// credentials and endpoints, many models. Declaring them separately keeps a
 	// deployment from repeating the same api_key and base_url for every model.
-	Providers []ProviderConfig `yaml:"providers"`
+	Providers []ProviderConfig `json:"providers"`
 	// Models are callable endpoints: a provider, an API model name, and the
 	// facts the driver's catalog does not declare. Order is priority.
-	Models []ModelConfig `yaml:"models"`
-	Route  RouteConfig   `yaml:"route"`
+	Models []ModelConfig `json:"models"`
+	Route  RouteConfig   `json:"route"`
 }
 
 // ProviderConfig is one construction block: which driver, with which settings,
@@ -115,12 +116,12 @@ type ProviderConfig struct {
 	// Name is the deployment identity: it becomes model.ModelRef.Profile and the
 	// target name, and it is what distinguishes the same vendor model deployed
 	// through two accounts.
-	Name string `yaml:"name"`
+	Name string `json:"name"`
 	// Driver is the constructor, resolved by the host's driver table. Its name is
 	// also the public vendor identity, model.ModelID.Provider.
-	Driver string `yaml:"driver"`
+	Driver string `json:"driver"`
 	// Settings is passed to the driver verbatim.
-	Settings map[string]any `yaml:"settings"`
+	Settings json.RawMessage `json:"settings"`
 }
 
 // ModelConfig is one callable model: which API model, through which driver, with
@@ -129,79 +130,79 @@ type ModelConfig struct {
 	// Provider names the construction block this model runs on. The block owns
 	// the driver, the credentials and the endpoints; one block serves many
 	// models.
-	Provider string `yaml:"provider"`
+	Provider string `json:"provider"`
 	// Model is the API model name: model.ModelID.Name.
-	Model string `yaml:"model"`
+	Model string `json:"model"`
 	// Weight is used by selectors that weigh targets; the order of this list is
 	// the default preference.
-	Weight int `yaml:"weight"`
+	Weight int `json:"weight"`
 	// Capabilities and Limits fill in what the driver's catalog does not
 	// declare. A declaration that contradicts the catalog fails assembly.
-	Capabilities *CapabilitiesConfig `yaml:"capabilities"`
-	Limits       *LimitsConfig       `yaml:"limits"`
+	Capabilities *CapabilitiesConfig `json:"capabilities"`
+	Limits       *LimitsConfig       `json:"limits"`
 }
 
 // CapabilitiesConfig is the written form of model.ModelCapabilities. Only the
 // content kinds are expressible: the remaining bits are driver facts.
 type CapabilitiesConfig struct {
-	Inputs  []string `yaml:"inputs"`
-	Outputs []string `yaml:"outputs"`
+	Inputs  []string `json:"inputs"`
+	Outputs []string `json:"outputs"`
 }
 
 // LimitsConfig is the written form of model.ModelLimits; zero means undeclared.
 type LimitsConfig struct {
-	MaxInputTokens  int   `yaml:"max_input_tokens"`
-	MaxOutputTokens int   `yaml:"max_output_tokens"`
-	MaxInputBytes   int64 `yaml:"max_input_bytes"`
+	MaxInputTokens  int   `json:"max_input_tokens"`
+	MaxOutputTokens int   `json:"max_output_tokens"`
+	MaxInputBytes   int64 `json:"max_input_bytes"`
 }
 
 // RouteConfig mirrors route.RetryPolicy plus a selector name.
 type RouteConfig struct {
 	// Selector names a selector from the host's table. Empty means "every
 	// candidate, in the order models declares".
-	Selector string `yaml:"selector"`
+	Selector string `json:"selector"`
 	// SelectorSettings is handed to the named selector's factory verbatim; the
 	// runtime does not interpret it.
-	SelectorSettings map[string]any `yaml:"selector_settings"`
+	SelectorSettings json.RawMessage `json:"selector_settings"`
 	// AttemptsPerTarget is how often one model is retried on a transient
 	// failure; zero means once.
-	AttemptsPerTarget int `yaml:"attempts_per_target"`
+	AttemptsPerTarget int `json:"attempts_per_target"`
 	// MaxTargets caps how many models are tried; zero means every candidate.
-	MaxTargets int `yaml:"max_targets"`
+	MaxTargets int `json:"max_targets"`
 	// BaseDelay is the first backoff, doubling per attempt; empty means no wait.
-	BaseDelay string `yaml:"base_delay"`
+	BaseDelay string `json:"base_delay"`
 	// MaxDelay caps the backoff; empty means no cap.
-	MaxDelay string `yaml:"max_delay"`
+	MaxDelay string `json:"max_delay"`
 }
 
 // ToolsConfig selects which built-in tools are wired.
 type ToolsConfig struct {
 	// Enable lists files, exec and skills. Empty means all three.
-	Enable []string `yaml:"enable"`
+	Enable []string `json:"enable"`
 	// TTY publishes pseudo-terminal parameters on the session tool.
-	TTY bool `yaml:"tty"`
+	TTY bool `json:"tty"`
 	// Dynamic defers tools instead of sending all of them every round. Omitted
 	// means static: every wired tool is visible to the model from the first
 	// round, which is the behaviour a small tool set wants.
-	Dynamic *DynamicConfig `yaml:"dynamic"`
+	Dynamic *DynamicConfig `json:"dynamic"`
 	// Images lets read_file return an image part. It belongs here because it
 	// describes what a tool may hand the model, not what the filesystem is or
 	// what the driver supports: a deployment that lists it wrong gets refused
 	// parts, and the fix is a tool setting.
-	Images bool `yaml:"images"`
+	Images bool `json:"images"`
 	// MCP declares MCP servers, which are one more tool source. Declaring a
 	// server is what enables it; there is no separate name in enable.
-	MCP MCPConfig `yaml:"mcp"`
+	MCP MCPConfig `json:"mcp"`
 	// Middleware lists the dispatch chain, outermost first. Omitted means
 	// [recover, telemetry]: a tool call should produce a span and must not be
 	// able to stop the process.
-	Middleware []MiddlewareConfig `yaml:"middleware"`
+	Middleware []MiddlewareConfig `json:"middleware"`
 }
 
 // MiddlewareConfig names one entry of the dispatch chain and its settings.
 type MiddlewareConfig struct {
-	Name     string         `yaml:"name"`
-	Settings map[string]any `yaml:"settings"`
+	Name     string          `json:"name"`
+	Settings json.RawMessage `json:"settings"`
 }
 
 // DynamicConfig enables deferred tool exposure: the model sees a bounded set
@@ -214,26 +215,26 @@ type MiddlewareConfig struct {
 type DynamicConfig struct {
 	// Default is the exposure for tools with no explicit entry: always, direct,
 	// deferred or hidden. Omitted means deferred, the engine's default.
-	Default string `yaml:"default"`
+	Default string `json:"default"`
 	// Always names tools that stay visible every round.
-	Always []string `yaml:"always"`
+	Always []string `json:"always"`
 	// Hidden names tools that never appear; tool_search cannot surface them.
-	Hidden []string `yaml:"hidden"`
+	Hidden []string `json:"hidden"`
 	// Budget caps how many definitions one round can carry.
-	Budget int `yaml:"budget"`
+	Budget int `json:"budget"`
 	// MaxBytes caps the serialized size of one round's definitions.
-	MaxBytes int `yaml:"max_bytes"`
+	MaxBytes int `json:"max_bytes"`
 	// IdleRounds evicts a discovered tool that goes unused this long.
-	IdleRounds int `yaml:"idle_rounds"`
+	IdleRounds int `json:"idle_rounds"`
 	// SearchWithLoad makes tool_search load every deferred source before
 	// ranking. Off by default: a search must not spawn processes it does not
 	// need.
-	SearchWithLoad bool `yaml:"search_with_load"`
+	SearchWithLoad bool `json:"search_with_load"`
 }
 
 // SkillsConfig points at SKILL.md trees.
 type SkillsConfig struct {
-	Roots []string `yaml:"roots"`
+	Roots []string `json:"roots"`
 }
 
 // Validate rejects a configuration that cannot be built, with the YAML path in
@@ -494,8 +495,8 @@ type MCPConfig struct {
 	// Defer starts a server only when a tool from it is loaded. Omitted means
 	// true: a configured server that the model never uses should not cost a
 	// process or a connection.
-	Defer   *bool             `yaml:"defer"`
-	Servers []MCPServerConfig `yaml:"servers"`
+	Defer   *bool             `json:"defer"`
+	Servers []MCPServerConfig `json:"servers"`
 }
 
 // deferred reports whether servers start on demand.
@@ -510,22 +511,22 @@ func (m MCPConfig) deferred() bool {
 // from "false": an absent value keeps the package default, an explicit value
 // overrides it.
 type MCPServerConfig struct {
-	Name        string            `yaml:"name"`
-	Transport   string            `yaml:"transport"`
-	Command     string            `yaml:"command"`
-	Args        []string          `yaml:"args"`
-	Env         map[string]string `yaml:"env"`
-	URL         string            `yaml:"url"`
-	Headers     map[string]string `yaml:"headers"`
-	HTTPTimeout string            `yaml:"http_timeout"`
-	Liveness    string            `yaml:"liveness"`
-	Prefix      string            `yaml:"prefix"`
+	Name        string            `json:"name"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+	URL         string            `json:"url"`
+	Headers     map[string]string `json:"headers"`
+	HTTPTimeout string            `json:"http_timeout"`
+	Liveness    string            `json:"liveness"`
+	Prefix      string            `json:"prefix"`
 	// Description is what a model sees before the server is connected. It is
 	// the only thing search can rank on, because the real tools are unknown
 	// until the server starts.
-	Description string `yaml:"description"`
-	Resources   *bool  `yaml:"resources"`
-	Required    *bool  `yaml:"required"`
+	Description string `json:"description"`
+	Resources   *bool  `json:"resources"`
+	Required    *bool  `json:"required"`
 }
 
 func (m MCPConfig) validate() error {

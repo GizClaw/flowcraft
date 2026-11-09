@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,10 +46,10 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 		t.Errorf("provenance for sandbox.backend = %+v, %v", ref, ok)
 	}
 
-	var settings map[string]any
+	var settings json.RawMessage
 	rt, err := runtime.New(context.Background(), cfg, runtime.WithDrivers(runtime.Driver{
 		Name: "openai",
-		Build: func(s map[string]any) (inference.Provider, error) {
+		Build: func(s json.RawMessage) (inference.Provider, error) {
 			settings = s
 			return inference.Provider{Generator: stubGenerator{}}, nil
 		},
@@ -58,8 +59,12 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	}
 	defer func() { _ = rt.Close() }()
 
-	if len(settings) != 0 {
-		t.Errorf("settings = %v, want the opaque block passed through untouched", settings)
+	var passed map[string]any
+	if err := json.Unmarshal(settings, &passed); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if len(passed) != 0 {
+		t.Errorf("settings = %v, want the opaque block passed through untouched", passed)
 	}
 	// The credential profile is a model entry field, not a driver setting: the
 	// driver resolves it per request.

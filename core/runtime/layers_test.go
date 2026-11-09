@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -206,7 +207,11 @@ inference:
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
-	if got := cfg.Inference.Providers[0].Settings["endpoint"]; got != "https://api.example.test/v1#fragment" {
+	var settings map[string]any
+	if err := json.Unmarshal(cfg.Inference.Providers[0].Settings, &settings); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if got := settings["endpoint"]; got != "https://api.example.test/v1#fragment" {
 		t.Errorf("endpoint = %v", got)
 	}
 }

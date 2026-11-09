@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -46,10 +47,10 @@ func TestRoutingFiltersByDeclaredModel(t *testing.T) {
 	})
 	second := &recorder{}
 	rt, err := New(context.Background(), cfg, WithDrivers(
-		Driver{Name: "first", Build: func(map[string]any) (inference.Provider, error) {
+		Driver{Name: "first", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: first}, nil
 		}},
-		Driver{Name: "second", Build: func(map[string]any) (inference.Provider, error) {
+		Driver{Name: "second", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: second}, nil
 		}},
 	))
@@ -97,16 +98,16 @@ func TestSelectorRegistryReachesTheRouter(t *testing.T) {
 	second := &recorder{}
 	rt, err := New(context.Background(), cfg,
 		WithDrivers(
-			Driver{Name: "first", Build: func(map[string]any) (inference.Provider, error) {
+			Driver{Name: "first", Build: func(json.RawMessage) (inference.Provider, error) {
 				return inference.Provider{Generator: first}, nil
 			}},
-			Driver{Name: "second", Build: func(map[string]any) (inference.Provider, error) {
+			Driver{Name: "second", Build: func(json.RawMessage) (inference.Provider, error) {
 				return inference.Provider{Generator: second}, nil
 			}},
 		),
 		WithSelectors(Selector{
 			Name: "reverse",
-			Generate: func(map[string]any) (route.Selector[inference.GenerateRequest], error) {
+			Generate: func(json.RawMessage) (route.Selector[inference.GenerateRequest], error) {
 				return reverseSelector{}, nil
 			},
 		}),
@@ -132,10 +133,10 @@ func TestUnknownSelectorIsRejected(t *testing.T) {
 	cfg, _ := routingConfig(t, inferenceConfig("stub", "alpha", "a", nil))
 	cfg.Inference.Route.Selector = "nope"
 	_, err := New(context.Background(), cfg,
-		WithDrivers(Driver{Name: "stub", Build: func(map[string]any) (inference.Provider, error) {
+		WithDrivers(Driver{Name: "stub", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: &recorder{}}, nil
 		}}),
-		WithSelectors(Selector{Name: "reverse", Generate: func(map[string]any) (route.Selector[inference.GenerateRequest], error) {
+		WithSelectors(Selector{Name: "reverse", Generate: func(json.RawMessage) (route.Selector[inference.GenerateRequest], error) {
 			return reverseSelector{}, nil
 		}}),
 	)
@@ -173,7 +174,7 @@ func TestCatalogConflictFailsAssembly(t *testing.T) {
 	withCaps.Models[0].Capabilities = &CapabilitiesConfig{Inputs: []string{"image"}}
 	cfg, _ := routingConfig(t, withCaps)
 	_, err := New(context.Background(), cfg, WithDrivers(
-		Driver{Name: "stub", Build: func(map[string]any) (inference.Provider, error) {
+		Driver{Name: "stub", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: &recorder{}, Catalog: driverCatalog{}}, nil
 		}},
 	))

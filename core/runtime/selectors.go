@@ -1,12 +1,13 @@
 package runtime
 
 import (
+	"encoding/json"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 )
 
 // SelectorFactory builds a selector from its written settings.
-type SelectorFactory[Req any] func(settings map[string]any) (route.Selector[Req], error)
+type SelectorFactory[Req any] func(settings json.RawMessage) (route.Selector[Req], error)
 
 // Selector names a selection strategy so YAML can refer to it.
 //

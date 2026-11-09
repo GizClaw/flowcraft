@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,11 +26,19 @@ func loader(t *testing.T) Loader {
 		Engines: []Engine{{Name: "a2a"}, {Name: "graph"}},
 		Protocols: []Protocol{{
 			Name: "a2a",
-			Decode: func(settings map[string]any) (any, error) {
-				if _, ok := settings["card"]; !ok {
+			Decode: func(settings json.RawMessage) (any, error) {
+				if len(settings) == 0 || string(settings) == "null" {
 					return nil, errdefs.Validationf("card is required")
 				}
-				return settings["card"], nil
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(settings, &fields); err != nil {
+					return nil, errdefs.Validationf("settings: %w", err)
+				}
+				card, ok := fields["card"]
+				if !ok {
+					return nil, errdefs.Validationf("card is required")
+				}
+				return card, nil
 			},
 		}},
 	}
@@ -239,8 +248,14 @@ agents:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := specs[0].Engine.Auth["token"]; got != "s3cr3t" {
-		t.Fatalf("auth token = %v, want the resolved secret", got)
+	var auth struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(specs[0].Engine.Auth, &auth); err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Token != "s3cr3t" {
+		t.Fatalf("auth token = %q, want the resolved secret", auth.Token)
 	}
 }
 

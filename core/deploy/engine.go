@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -40,7 +41,7 @@ type Protocol struct {
 	// Decode validates the written settings and returns the typed value Build
 	// consumes. It runs in the loader, so a deployment that forgets its card
 	// fails before any resource is built.
-	Decode func(settings map[string]any) (any, error)
+	Decode func(settings json.RawMessage) (any, error)
 	Build  func(cfg ProtocolSpec, agent *Agent) (protocol, error)
 }
 

@@ -2,12 +2,11 @@ package skill
 
 import (
 	"fmt"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
-
-	"sigs.k8s.io/yaml"
 )
 
 // Limits mirror the agentskills.io parser behaviour.
@@ -60,7 +59,7 @@ func Parse(path string, data []byte) (ParseResult, error) {
 			ShortDescription string `json:"short-description"`
 		} `json:"metadata"`
 	}
-	if err := yaml.Unmarshal(fm, &front); err != nil {
+	if err := decode.DecodeInto(fm, &front); err != nil {
 		return ParseResult{}, fmt.Errorf("skill: parse frontmatter of %s: %w", path, err)
 	}
 	front.Name = sanitizeSingleLine(front.Name)

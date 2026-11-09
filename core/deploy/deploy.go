@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"net/http"
 	"sort"
@@ -25,8 +26,8 @@ type EngineSpec struct {
 	Kind string
 	// Peer is the remote card URL for the a2a engine.
 	Peer string
-	// Auth is the credential for reaching Peer.
-	Auth map[string]any
+	// Auth is the credential for reaching Peer, as written (JSON).
+	Auth json.RawMessage
 	// Graph is the graph document path for the graph engine.
 	Graph string
 }
@@ -34,8 +35,8 @@ type EngineSpec struct {
 // ProtocolSpec selects how the agent is exposed.
 type ProtocolSpec struct {
 	Kind string
-	// Settings is the protocol's own configuration as written.
-	Settings map[string]any
+	// Settings is the protocol's own configuration as written (JSON).
+	Settings json.RawMessage
 	// Decoded is Settings after the registration's Decode ran. The loader fills
 	// it, so a deployment typo fails at load time instead of at Add.
 	Decoded any

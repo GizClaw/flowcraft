@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 
@@ -30,7 +31,7 @@ const (
 // drivers and selectors arrive.
 type MiddlewareOption struct {
 	Name  string
-	Build func(settings map[string]any) (tool.Middleware, error)
+	Build func(settings json.RawMessage) (tool.Middleware, error)
 }
 
 // WithMiddleware registers middleware names available to tools.middleware.
@@ -38,29 +39,29 @@ func WithMiddleware(entries ...MiddlewareOption) Option {
 	return func(o *options) { o.middleware = append(o.middleware, entries...) }
 }
 
-func middlewareTable(registered []MiddlewareOption) (map[string]func(map[string]any) (tool.Middleware, error), error) {
-	table := map[string]func(map[string]any) (tool.Middleware, error){
-		MiddlewareTelemetry: func(map[string]any) (tool.Middleware, error) {
+func middlewareTable(registered []MiddlewareOption) (map[string]func(json.RawMessage) (tool.Middleware, error), error) {
+	table := map[string]func(json.RawMessage) (tool.Middleware, error){
+		MiddlewareTelemetry: func(json.RawMessage) (tool.Middleware, error) {
 			return middleware.Telemetry(), nil
 		},
-		MiddlewareRecover: func(map[string]any) (tool.Middleware, error) {
+		MiddlewareRecover: func(json.RawMessage) (tool.Middleware, error) {
 			return middleware.Recover(), nil
 		},
-		MiddlewareResultLimit: func(settings map[string]any) (tool.Middleware, error) {
+		MiddlewareResultLimit: func(settings json.RawMessage) (tool.Middleware, error) {
 			max, err := intSetting(settings, "max_bytes")
 			if err != nil {
 				return nil, err
 			}
 			return middleware.ResultLimiter(max)
 		},
-		MiddlewareConcurrency: func(settings map[string]any) (tool.Middleware, error) {
+		MiddlewareConcurrency: func(settings json.RawMessage) (tool.Middleware, error) {
 			limit, err := intSetting(settings, "limit")
 			if err != nil {
 				return nil, err
 			}
 			return middleware.Concurrency(limit)
 		},
-		MiddlewareRedact: func(settings map[string]any) (tool.Middleware, error) {
+		MiddlewareRedact: func(settings json.RawMessage) (tool.Middleware, error) {
 			patterns, err := stringsSetting(settings, "patterns")
 			if err != nil {
 				return nil, err
@@ -94,7 +95,7 @@ func middlewareTable(registered []MiddlewareOption) (map[string]func(map[string]
 // Recover cannot be disabled. A panicking tool that reaches the runtime takes
 // the process with it, so that one is a floor rather than a deployment choice:
 // when the list omits it, it is prepended and the substitution is logged.
-func (r *Runtime) middlewareChain(ctx context.Context, table map[string]func(map[string]any) (tool.Middleware, error)) ([]tool.Middleware, error) {
+func (r *Runtime) middlewareChain(ctx context.Context, table map[string]func(json.RawMessage) (tool.Middleware, error)) ([]tool.Middleware, error) {
 	entries := r.cfg.Tools.Middleware
 	if len(entries) == 0 {
 		entries = []MiddlewareConfig{{Name: MiddlewareRecover}, {Name: MiddlewareTelemetry}}
@@ -125,44 +126,52 @@ func (r *Runtime) middlewareChain(ctx context.Context, table map[string]func(map
 	return chain, nil
 }
 
-func intSetting(settings map[string]any, key string) (int, error) {
-	value, found := settings[key]
+// settingsObject decodes the middleware settings object, so each entry reads the
+// keys it declares instead of a shared untyped map.
+func settingsObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, errdefs.Validationf("settings: %w", err)
+	}
+	return fields, nil
+}
+
+func intSetting(raw json.RawMessage, key string) (int, error) {
+	fields, err := settingsObject(raw)
+	if err != nil {
+		return 0, err
+	}
+	value, found := fields[key]
 	if !found {
 		return 0, errdefs.Validationf("settings.%s is required", key)
 	}
-	switch typed := value.(type) {
-	case int:
-		return typed, nil
-	case int64:
-		return int(typed), nil
-	case float64:
-		return int(typed), nil
-	default:
-		return 0, errdefs.Validationf("settings.%s: want an integer, got %T", key, value)
-	}
-}
-
-func stringsSetting(settings map[string]any, key string) ([]string, error) {
-	value, found := settings[key]
-	if !found {
-		return nil, nil
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, errdefs.Validationf("settings.%s: want a list, got %T", key, value)
-	}
-	out := make([]string, 0, len(items))
-	for i, item := range items {
-		text, ok := item.(string)
-		if !ok {
-			return nil, errdefs.Validationf("settings.%s[%d]: want a string, got %T", key, i, item)
-		}
-		out = append(out, text)
+	var out int
+	if err := json.Unmarshal(value, &out); err != nil {
+		return 0, errdefs.Validationf("settings.%s: want an integer: %w", key, err)
 	}
 	return out, nil
 }
 
-func offeredMiddleware(table map[string]func(map[string]any) (tool.Middleware, error)) string {
+func stringsSetting(raw json.RawMessage, key string) ([]string, error) {
+	fields, err := settingsObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	value, found := fields[key]
+	if !found {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return nil, errdefs.Validationf("settings.%s: want a list of strings: %w", key, err)
+	}
+	return out, nil
+}
+
+func offeredMiddleware(table map[string]func(json.RawMessage) (tool.Middleware, error)) string {
 	names := make([]string, 0, len(table))
 	for name := range table {
 		names = append(names, name)
