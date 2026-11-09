@@ -35,11 +35,13 @@ const (
 
 // Event is one step of a running Task.
 //
-// The interface has an unexported method on purpose: the set is closed, so a
-// consumer can switch over every kind and the compiler keeps that switch honest
-// when a kind is added.
+// The interface is sealed by an unexported method: only this package can
+// implement it, so a Kind always names one of the types below and a consumer's
+// type switch covers everything it can receive. Adding an event kind is an
+// `agent` change on purpose — the wire vocabulary stays closed.
 type Event interface {
 	Kind() EventKind
+	event()
 }
 
 // StreamStart announces one round's model call.
@@ -98,3 +100,17 @@ func (Status) Kind() EventKind          { return KindStatus }
 func (SteerApplied) Kind() EventKind    { return KindSteerApplied }
 func (Interrupted) Kind() EventKind     { return KindInterrupted }
 func (Undelivered) Kind() EventKind     { return KindUndelivered }
+
+// The seal. Every event kind is one of these types and nothing outside this
+// package can add another.
+func (StreamStart) event()     {}
+func (Text) event()            {}
+func (Reasoning) event()       {}
+func (ToolCallStart) event()   {}
+func (ToolResult) event()      {}
+func (ArtifactWritten) event() {}
+func (UsageEvent) event()      {}
+func (SteerApplied) event()    {}
+func (Interrupted) event()     {}
+func (Undelivered) event()     {}
+func (Status) event()          {}

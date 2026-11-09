@@ -31,5 +31,5 @@ func echoTool(name string) tool.Tool {
 }
 
 func call(name string) message.ToolCall {
-	return message.ToolCall{ID: "call-1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
+	return message.ToolCall{ID: "call-1", Name: name, Arguments: message.NewArguments(json.RawMessage(`{"x":1}`))}
 }

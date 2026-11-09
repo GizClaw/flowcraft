@@ -142,7 +142,7 @@ func responsesItems(item message.Message) ([]responses.ResponseInputItemUnionPar
 				OfFunctionCall: &responses.ResponseFunctionToolCallParam{
 					CallID:    call.ID,
 					Name:      call.Name,
-					Arguments: string(call.Arguments),
+					Arguments: call.Arguments.String(),
 				},
 			})
 		}
@@ -290,7 +290,7 @@ func (d *driver) responsesDecode(
 		parts = append(parts, message.ToolCallPart{Call: message.ToolCall{
 			ID:        item.CallID,
 			Name:      item.Name,
-			Arguments: toolArguments(item.Arguments.OfString),
+			Arguments: message.NewArguments(toolArguments(item.Arguments.OfString)),
 		}})
 	}
 	finish, err := responsesFinishReason(string(raw.Status), toolCalls)

@@ -124,7 +124,7 @@ func speechStreamDecoder(request inference.GenerateRequest) protocol.StreamDecod
 		}
 		part := message.AudioPart{Source: source}
 		if encoding != "" {
-			part.Format = &media.AudioFormat{
+			part.Format = media.AudioFormat{
 				Encoding:     encoding,
 				SampleRateHz: sampleRate,
 				Channels:     channels,

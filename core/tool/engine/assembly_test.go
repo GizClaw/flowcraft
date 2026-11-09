@@ -90,7 +90,7 @@ func TestAssembly_SessionRecorderRefreshesDiscovery(t *testing.T) {
 	ctx := engine.WithCatalogView(context.Background(), session)
 
 	res := assembly.Execute(ctx, message.ToolCall{
-		ID: "c1", Name: "web.search", Arguments: []byte(`{}`),
+		ID: "c1", Name: "web.search", Arguments: message.NewArguments([]byte(`{}`)),
 	})
 	if res.IsError {
 		t.Fatalf("Execute = %+v", res)
@@ -110,7 +110,7 @@ func TestAssembly_DispatcherDelegation(t *testing.T) {
 	}
 	var dispatcher tool.Dispatcher = assembly
 	res := dispatcher.Execute(context.Background(),
-		message.ToolCall{ID: "c", Name: "ok", Arguments: []byte(`{}`)})
+		message.ToolCall{ID: "c", Name: "ok", Arguments: message.NewArguments([]byte(`{}`))})
 	if res.IsError || res.Content.Text() != "fine" {
 		t.Fatalf("result = %+v", res)
 	}

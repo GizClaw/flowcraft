@@ -245,7 +245,7 @@ func (d *driver) speechDecode(
 	}
 	part := message.AudioPart{Source: source}
 	if encoding, sampleRate, channels := speechEncoding(format); encoding != "" {
-		part.Format = &media.AudioFormat{
+		part.Format = media.AudioFormat{
 			Encoding:     encoding,
 			SampleRateHz: sampleRate,
 			Channels:     channels,

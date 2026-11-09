@@ -47,7 +47,7 @@ func TestExecutor_ExecuteStampsCallID(t *testing.T) {
 	}
 	exec := tool.NewExecutor(reg, mw)
 	res := exec.Execute(context.Background(),
-		message.ToolCall{ID: "call-7", Name: "peek", Arguments: []byte(`{}`)})
+		message.ToolCall{ID: "call-7", Name: "peek", Arguments: message.NewArguments([]byte(`{}`))})
 	if res.IsError {
 		t.Fatalf("result = %+v", res)
 	}
@@ -76,9 +76,9 @@ func TestExecutor_ExecuteAllStampsPerCallIDs(t *testing.T) {
 	}
 	exec := tool.NewExecutor(reg)
 	calls := []message.ToolCall{
-		{ID: "a", Name: "peek", Arguments: []byte(`{}`)},
-		{ID: "b", Name: "peek", Arguments: []byte(`{}`)},
-		{ID: "c", Name: "peek", Arguments: []byte(`{}`)},
+		{ID: "a", Name: "peek", Arguments: message.NewArguments([]byte(`{}`))},
+		{ID: "b", Name: "peek", Arguments: message.NewArguments([]byte(`{}`))},
+		{ID: "c", Name: "peek", Arguments: message.NewArguments([]byte(`{}`))},
 	}
 	results := exec.ExecuteAll(context.Background(), calls)
 	var mu sync.Mutex

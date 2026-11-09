@@ -135,7 +135,7 @@ func TestSpeechDecodeWrapsAudio(t *testing.T) {
 	if part.Source.MediaType() != "audio/pcm" {
 		t.Fatalf("media type = %q", part.Source.MediaType())
 	}
-	if part.Format == nil || part.Format.Encoding != media.AudioEncodingPCM16 ||
+	if part.Format == (media.AudioFormat{}) || part.Format.Encoding != media.AudioEncodingPCM16 ||
 		part.Format.SampleRateHz != 24000 || part.Format.Channels != 1 {
 		t.Fatalf("format = %+v", part.Format)
 	}
@@ -160,7 +160,7 @@ func TestSpeechWAVReportsNoRawEncoding(t *testing.T) {
 	if part.Source.MediaType() != "audio/wav" {
 		t.Fatalf("media type = %q", part.Source.MediaType())
 	}
-	if part.Format != nil {
+	if part.Format != (media.AudioFormat{}) {
 		t.Fatalf("wav is a container, not a raw encoding: %+v", part.Format)
 	}
 }

@@ -28,6 +28,29 @@ type Toolset struct {
 }
 
 // NewToolset validates the definitions and builds the name index.
+// NewToolsetOwned is NewToolset for a caller that already owns the definitions
+// and will not mutate them.
+//
+// A catalog's Definitions returns a fresh slice whose schemas are shared with its
+// cache and never change, so cloning them again copies bytes for nothing. Every
+// other caller should use NewToolset.
+func NewToolsetOwned(definitions []message.ToolDefinition) (Toolset, error) {
+	if len(definitions) == 0 {
+		return Toolset{}, nil
+	}
+	names := make(map[string]struct{}, len(definitions))
+	for i, definition := range definitions {
+		if err := definition.Validate(); err != nil {
+			return Toolset{}, fmt.Errorf("tool %d: %w", i, err)
+		}
+		if _, ok := names[definition.Name]; ok {
+			return Toolset{}, fmt.Errorf("duplicate tool %q", definition.Name)
+		}
+		names[definition.Name] = struct{}{}
+	}
+	return Toolset{definitions: definitions, names: names}, nil
+}
+
 func NewToolset(definitions []message.ToolDefinition) (Toolset, error) {
 	if len(definitions) == 0 {
 		return Toolset{}, nil

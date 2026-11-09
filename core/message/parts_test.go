@@ -65,11 +65,10 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 
 	clone := decoded.Clone()
 	clone.Parts[5].(message.DataPart).Value[0] = '['
-	clone.Parts[6].(message.ToolCallPart).Call.Arguments[0] = '['
 	if string(decoded.Parts[5].(message.DataPart).Value) != `{"answer":42}` {
 		t.Fatal("data part clone mutated source")
 	}
-	if string(decoded.Parts[6].(message.ToolCallPart).Call.Arguments) != `{"query":"cat"}` {
+	if decoded.Parts[6].(message.ToolCallPart).Call.Arguments.String() != `{"query":"cat"}` {
 		t.Fatal("tool call part clone mutated source")
 	}
 }
@@ -231,9 +230,10 @@ func TestDefinitionAndCallValidation(t *testing.T) {
 		t.Fatalf("NewToolCall: %v", err)
 	}
 	cloned := call.Clone()
-	cloned.Arguments[0] = '['
-	if string(call.Arguments) == string(cloned.Arguments) {
-		t.Fatal("Clone did not deep-copy arguments")
+	// Arguments is immutable by construction, so a clone is indistinguishable
+	// from the original; the probe is that both still carry the same object.
+	if cloned.Arguments.String() != call.Arguments.String() {
+		t.Fatal("Clone lost the arguments")
 	}
 	if err := (message.ToolResult{}).Validate(); err == nil {
 		t.Fatal("empty result must be invalid")

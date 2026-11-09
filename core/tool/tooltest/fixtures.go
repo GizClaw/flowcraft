@@ -85,7 +85,7 @@ func Execute(
 	result := executor.Execute(context.Background(), message.ToolCall{
 		ID:        "tooltest-call",
 		Name:      name,
-		Arguments: json.RawMessage(arguments),
+		Arguments: message.NewArguments(json.RawMessage(arguments)),
 	})
 	if result.IsError {
 		t.Fatalf("tooltest.Execute(%q): %s", name, result.Content.Text())

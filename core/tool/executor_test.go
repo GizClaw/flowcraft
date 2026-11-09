@@ -32,7 +32,7 @@ func echoCatalog(fn func(args string) string) mapCatalog {
 
 func TestExecutorDispatches(t *testing.T) {
 	res := NewExecutor(echoCatalog(func(args string) string { return args })).
-		Execute(context.Background(), message.ToolCall{ID: "c1", Name: "echo", Arguments: []byte("hi")})
+		Execute(context.Background(), message.ToolCall{ID: "c1", Name: "echo", Arguments: message.NewArguments([]byte("hi"))})
 	if res.IsError {
 		t.Fatalf("unexpected error result: %+v", res)
 	}

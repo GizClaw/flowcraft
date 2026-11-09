@@ -300,7 +300,7 @@ func TestGenerateResponseValidateForRejectsUndefinedTool(t *testing.T) {
 	// A call to a defined tool is accepted.
 	good := message.NewTextMessage(message.RoleAssistant, "")
 	good.Content.Parts = append(good.Content.Parts, message.ToolCallPart{
-		Call: message.ToolCall{ID: "c1", Name: "search", Arguments: json.RawMessage(`{}`)},
+		Call: message.ToolCall{ID: "c1", Name: "search", Arguments: message.NewArguments(json.RawMessage(`{}`))},
 	})
 	if err := (inference.GenerateResponse{
 		Message:      good,
@@ -312,7 +312,7 @@ func TestGenerateResponseValidateForRejectsUndefinedTool(t *testing.T) {
 	// A call to an undefined tool is rejected and attached to the error.
 	bad := message.NewTextMessage(message.RoleAssistant, "")
 	bad.Content.Parts = append(bad.Content.Parts, message.ToolCallPart{
-		Call: message.ToolCall{ID: "c2", Name: "missing", Arguments: json.RawMessage(`{}`)},
+		Call: message.ToolCall{ID: "c2", Name: "missing", Arguments: message.NewArguments(json.RawMessage(`{}`))},
 	})
 	err := (inference.GenerateResponse{
 		Message:      bad,

@@ -74,7 +74,7 @@ type redactingSink struct {
 }
 
 func (s redactingSink) Record(ctx context.Context, rec AuditRecord) {
-	rec.Call.Arguments = s.redactor.Bytes(rec.Call.Arguments)
+	rec.Call.Arguments = message.NewArguments(s.redactor.Bytes(rec.Call.Arguments.Raw()))
 	rec.Result = s.redactor.Result(rec.Result)
 	s.sink.Record(ctx, rec)
 }
@@ -171,15 +171,15 @@ func (r *redactor) Content(content message.Content) message.Content {
 // rather than resurrecting the original secret. Name and id are identifiers
 // the call is addressed by, so they are left alone.
 func (r *redactor) toolCallPart(part message.ToolCallPart) message.Part {
-	redacted := r.Bytes(part.Call.Arguments)
-	if bytes.Equal(redacted, part.Call.Arguments) {
+	redacted := r.Bytes(part.Call.Arguments.Raw())
+	if bytes.Equal(redacted, part.Call.Arguments.Raw()) {
 		return part
 	}
 	if !isJSONObject(redacted) {
 		return message.TextPart{Text: string(redacted)}
 	}
 	call := part.Call
-	call.Arguments = json.RawMessage(redacted)
+	call.Arguments = message.NewArguments(json.RawMessage(redacted))
 	part.Call = call
 	return part
 }

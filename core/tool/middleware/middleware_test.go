@@ -43,8 +43,8 @@ func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 	exec := tool.NewExecutor(reg, Recover())
 
 	results := exec.ExecuteAll(context.Background(), []message.ToolCall{
-		{ID: "c1", Name: "panicker", Arguments: json.RawMessage("{}")},
-		{ID: "c2", Name: "fine", Arguments: json.RawMessage("{}")},
+		{ID: "c1", Name: "panicker", Arguments: message.NewArguments(json.RawMessage("{}"))},
+		{ID: "c2", Name: "fine", Arguments: message.NewArguments(json.RawMessage("{}"))},
 	})
 	if !results[0].IsError {
 		t.Error("panicking call should produce IsError result")
@@ -77,7 +77,7 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 
 	calls := make([]message.ToolCall, 6)
 	for i := range calls {
-		calls[i] = message.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "slow", Arguments: json.RawMessage("{}")}
+		calls[i] = message.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "slow", Arguments: message.NewArguments(json.RawMessage("{}"))}
 	}
 	exec.ExecuteAll(context.Background(), calls)
 	if got := maxSeen.Load(); got > 2 {

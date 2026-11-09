@@ -41,7 +41,7 @@ func runThroughChain(t *testing.T, mws []tool.Middleware, text string) message.T
 	t.Helper()
 	exec := tool.NewExecutor(singleToolCatalog{text: text}, mws...)
 	return exec.Execute(context.Background(),
-		message.ToolCall{ID: "call-1", Name: "big", Arguments: []byte(`{}`)})
+		message.ToolCall{ID: "call-1", Name: "big", Arguments: message.NewArguments([]byte(`{}`))})
 }
 
 func TestTruncatePersistsFullOutputAndTruncates(t *testing.T) {

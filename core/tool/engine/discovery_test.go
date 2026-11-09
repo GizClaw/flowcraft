@@ -111,7 +111,7 @@ func TestDynamicSession_DiscoveryIdleEviction(t *testing.T) {
 		t.Fatal("discovered tool must survive one idle round")
 	}
 
-	session.RecordCall(message.ToolCall{ID: "c1", Name: "a", Arguments: []byte(`{}`)})
+	session.RecordCall(message.ToolCall{ID: "c1", Name: "a", Arguments: message.NewArguments([]byte(`{}`))})
 	session.AdvanceRound()
 	if !contains(definitionNames(session.Definitions()), "a") {
 		t.Fatal("used tool must be refreshed past the idle horizon")

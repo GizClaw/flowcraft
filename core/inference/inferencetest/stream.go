@@ -266,7 +266,7 @@ func assertExpectations(
 		}
 		for i, want := range sample.WantCalls {
 			if calls[i].ID != want.ID || calls[i].Name != want.Name ||
-				string(calls[i].Arguments) != want.Arguments {
+				calls[i].Arguments.String() != want.Arguments {
 				t.Fatalf("call %d = %+v, want %+v", i, calls[i], want)
 			}
 		}
@@ -314,7 +314,7 @@ func partFacts(part message.Part) (message.PartKind, string, int) {
 	case message.ReasoningPart:
 		return message.PartReasoning, typed.Text, 0
 	case message.ToolCallPart:
-		return message.PartToolCall, typed.Call.Name, len(typed.Call.Arguments)
+		return message.PartToolCall, typed.Call.Name, typed.Call.Arguments.Len()
 	case message.ImagePart:
 		return message.PartImage, "", len(typed.Source.Bytes())
 	case message.AudioPart:

@@ -23,6 +23,14 @@ type AgentDocument struct {
 	Engine   EngineDocument    `json:"engine"`
 	Runtime  *RuntimeDocument  `json:"runtime"`
 	Protocol *ProtocolDocument `json:"protocol"`
+	// Catalog scopes the tool projection a local engine reads.
+	Catalog *CatalogDocument `json:"catalog"`
+}
+
+// CatalogDocument scopes the tool projection.
+type CatalogDocument struct {
+	// Scope is "run" (default) or "conversation".
+	Scope string `json:"scope"`
 }
 
 // EngineDocument selects the implementation and carries its settings.
@@ -220,8 +228,16 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		}
 	}
 
+	catalog := CatalogSpec{}
+	if agent.Catalog != nil {
+		catalog.Scope = agent.Catalog.Scope
+	}
+	if _, err := catalog.validatedScope(); err != nil {
+		return Spec{}, errdefs.Validationf("%s: %w", where("catalog"), err)
+	}
 	spec := Spec{
-		Name: agent.Name,
+		Name:    agent.Name,
+		Catalog: catalog,
 		Engine: EngineSpec{
 			Kind:  agent.Engine.Kind,
 			Peer:  agent.Engine.Peer,

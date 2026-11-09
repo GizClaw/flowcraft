@@ -151,7 +151,7 @@ func chatMessage(item message.Message) ([]openai.ChatCompletionMessageParamUnion
 						ID: call.ID,
 						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
 							Name:      call.Name,
-							Arguments: string(call.Arguments),
+							Arguments: call.Arguments.String(),
 						},
 					},
 				},
@@ -296,7 +296,7 @@ func (d *driver) chatDecode(
 		parts = append(parts, message.ToolCallPart{Call: message.ToolCall{
 			ID:        call.ID,
 			Name:      call.Function.Name,
-			Arguments: toolArguments(call.Function.Arguments),
+			Arguments: message.NewArguments(toolArguments(call.Function.Arguments)),
 		}})
 	}
 	finish, err := chatFinishReason(choice.FinishReason, len(choice.Message.ToolCalls))

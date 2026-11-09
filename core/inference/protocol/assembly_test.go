@@ -82,7 +82,7 @@ func TestAssemblyAccumulatesToolCallFragments(t *testing.T) {
 	if calls[0].ID != "call_1" || calls[0].Name != "search" {
 		t.Fatalf("call = %+v", calls[0])
 	}
-	if got := string(calls[0].Arguments); got != `{"q":"go"}` {
+	if got := calls[0].Arguments.String(); got != `{"q":"go"}` {
 		t.Fatalf("arguments = %q", got)
 	}
 }
@@ -96,11 +96,11 @@ func TestAssemblyDefaultsEmptyArguments(t *testing.T) {
 		inference.StreamEvent{Kind: inference.StreamEnd, Finish: inference.FinishToolCalls},
 	)
 	calls := response.Message.ToolCalls()
-	if len(calls) != 1 || !json.Valid(calls[0].Arguments) {
-		t.Fatalf("arguments = %q", calls[0].Arguments)
+	if len(calls) != 1 || !json.Valid(calls[0].Arguments.Raw()) {
+		t.Fatalf("arguments = %q", calls[0].Arguments.String())
 	}
-	if string(calls[0].Arguments) != `{}` {
-		t.Fatalf("arguments = %q, want {}", calls[0].Arguments)
+	if calls[0].Arguments.String() != `{}` {
+		t.Fatalf("arguments = %q, want {}", calls[0].Arguments.String())
 	}
 }
 
@@ -191,7 +191,7 @@ func audioChunk(t *testing.T, data string) message.Part {
 	}
 	return message.AudioPart{
 		Source: source,
-		Format: &media.AudioFormat{Encoding: media.AudioEncodingMP3},
+		Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
 	}
 }
 
@@ -218,7 +218,7 @@ func TestAssemblyAppendsChunks(t *testing.T) {
 	if audio.Source.MediaType() != "audio/mpeg" {
 		t.Fatalf("media type = %q", audio.Source.MediaType())
 	}
-	if audio.Format == nil || audio.Format.Encoding != media.AudioEncodingMP3 {
+	if audio.Format == (media.AudioFormat{}) || audio.Format.Encoding != media.AudioEncodingMP3 {
 		t.Fatalf("template format lost: %+v", audio.Format)
 	}
 }

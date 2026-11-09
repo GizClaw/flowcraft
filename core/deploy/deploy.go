@@ -15,9 +15,38 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
 
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// CatalogSpec scopes the tool projection a local engine reads.
+type CatalogSpec struct {
+	// Scope is CatalogScopeRun (default) or CatalogScopeConversation.
+	Scope string
+}
+
+const (
+	// CatalogScopeRun gives every Run a fresh view: discoveries persist across
+	// the steps of one run and reset on the next.
+	CatalogScopeRun = "run"
+	// CatalogScopeConversation keeps one view per conversation, so a discovery
+	// survives across user turns until the conversation is evicted.
+	CatalogScopeConversation = "conversation"
+)
+
+// validatedScope returns the scope, rejecting anything else.
+func (c CatalogSpec) validatedScope() (string, error) {
+	switch c.Scope {
+	case "":
+		return CatalogScopeRun, nil
+	case CatalogScopeRun, CatalogScopeConversation:
+		return c.Scope, nil
+	}
+	return "", errdefs.Validationf(
+		"manage: catalog.scope %q is not supported; use %q or %q",
+		c.Scope, CatalogScopeRun, CatalogScopeConversation)
+}
 
 // EngineSpec selects the loop implementation and carries its settings.
 type EngineSpec struct {
@@ -61,6 +90,8 @@ type Spec struct {
 	// OnEvent observes every event a conversation produces. Optional; a host
 	// uses it to stream progress without reaching into the engine.
 	OnEvent func(conversationID string, event agent.Event)
+	// Catalog says how the tool projection is scoped. Empty means per run.
+	Catalog CatalogSpec
 	// Store persists this agent's conversations. It is applied to every session
 	// last, because a deployment that forgets it loses the ability to resume —
 	// the main reason this layer exists.
@@ -117,6 +148,10 @@ type session interface {
 // conversation is one conversation's session and whether a Run owns it.
 type conversation struct {
 	session session
+	// view is the tool projection of a conversation-scoped catalog. It lives as
+	// long as the conversation and is dropped with it.
+	view     toolengine.CatalogView
+	viewOnce sync.Once
 	// lastUsed drives idle eviction.
 	lastUsed time.Time
 	running  bool
@@ -404,12 +439,28 @@ func (a *Agent) openSession(ctx context.Context, conversationID string) (session
 	return a.engine.Open(ctx, conversationID)
 }
 
+// runContext attaches the tool projection a local engine reads.
+//
+// The projection belongs to the run (or to the conversation, when the deployment
+// says so), never to the engine: a tool-agnostic engine receives it through the
+// context. A proxy has no local catalog at all, because the peer owns its own.
+func (a *Agent) runContext(ctx context.Context, entry *conversation) context.Context {
+	if a.rt == nil {
+		return ctx
+	}
+	if scope, _ := a.spec.Catalog.validatedScope(); scope == CatalogScopeConversation {
+		entry.viewOnce.Do(func() { entry.view = a.rt.NewCatalogView() })
+		return runtime.WithCatalogViewCtx(ctx, entry.view)
+	}
+	return a.rt.NewRunContext(ctx)
+}
+
 func (a *Agent) goRun(entry *conversation, conversationID string) {
 	a.working.Add(1)
 	go func() {
 		defer a.working.Done()
 		a.drive(entry, conversationID, func(yield func(agent.Event, error) bool) {
-			for event, err := range entry.session.Run(a.base, agent.Input{}) {
+			for event, err := range entry.session.Run(a.runContext(a.base, entry), agent.Input{}) {
 				if !yield(event, err) {
 					return
 				}
@@ -423,7 +474,7 @@ func (a *Agent) goRunResume(entry *conversation, conversationID string, reply ag
 	go func() {
 		defer a.working.Done()
 		a.drive(entry, conversationID, func(yield func(agent.Event, error) bool) {
-			for event, err := range entry.session.Resume(a.base, reply) {
+			for event, err := range entry.session.Resume(a.runContext(a.base, entry), reply) {
 				if !yield(event, err) {
 					return
 				}
@@ -520,6 +571,9 @@ func (m *Manager) Add(ctx context.Context, spec Spec) (*Agent, error) {
 	// past it.
 	if spec.Runtime.Version == 0 && strings.TrimSpace(spec.Engine.Peer) == "" {
 		return nil, errdefs.Validationf("manage: agent %q has no runtime config", spec.Name)
+	}
+	if _, err := spec.Catalog.validatedScope(); err != nil {
+		return nil, err
 	}
 	m.mu.Lock()
 	engineRegistration, engineFound := m.engines[spec.Engine.Kind]

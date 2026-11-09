@@ -71,7 +71,7 @@ func TestDynamicSession_DiscoverRecordAdvance(t *testing.T) {
 		t.Fatalf("discovered deferred tool missing: %v", names)
 	}
 
-	session.RecordCall(message.ToolCall{ID: "c1", Name: "direct", Arguments: []byte(`{}`)})
+	session.RecordCall(message.ToolCall{ID: "c1", Name: "direct", Arguments: message.NewArguments([]byte(`{}`))})
 	names = definitionNames(session.Definitions())
 	if !contains(names, "direct") {
 		t.Fatalf("used direct tool missing: %v", names)
@@ -152,7 +152,7 @@ func TestStaticSession(t *testing.T) {
 	}
 	session.Discover("a")
 	session.AdvanceRound()
-	session.RecordCall(message.ToolCall{ID: "c", Name: "a", Arguments: []byte(`{}`)})
+	session.RecordCall(message.ToolCall{ID: "c", Name: "a", Arguments: message.NewArguments([]byte(`{}`))})
 	if _, err := session.Search(context.Background(), "a", 8); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("static Search = %v, want NotAvailable", err)
 	}

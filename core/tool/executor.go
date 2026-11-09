@@ -124,7 +124,7 @@ func coreDispatch(catalog Catalog) Dispatch {
 			return message.NewErrorToolResult(call.ID,
 				fmt.Sprintf("tool %q not found", call.Name))
 		}
-		content, err := t.Execute(ctx, string(call.Arguments))
+		content, err := t.Execute(ctx, call.Arguments.String())
 		if err != nil {
 			RecordFailure(ctx, classifyToolFailure(err))
 			return message.NewErrorToolResult(call.ID, err.Error())

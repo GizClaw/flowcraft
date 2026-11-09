@@ -116,10 +116,10 @@ func MarshalPart(part Part) ([]byte, error) {
 		}{PartImage, value.Source}
 	case AudioPart:
 		wire = struct {
-			Type           PartKind           `json:"type"`
-			Source         media.AudioSource  `json:"source"`
-			Format         *media.AudioFormat `json:"format,omitempty"`
-			DurationMillis *int64             `json:"duration_millis,omitempty"`
+			Type           PartKind          `json:"type"`
+			Source         media.AudioSource `json:"source"`
+			Format         media.AudioFormat `json:"format,omitzero"`
+			DurationMillis int64             `json:"duration_millis,omitzero"`
 		}{PartAudio, value.Source, value.Format, value.DurationMillis}
 	case VideoPart:
 		wire = struct {
@@ -197,10 +197,10 @@ func UnmarshalPart(data []byte) (Part, error) {
 		return ImagePart{Source: item.Source}, nil
 	case PartAudio:
 		var item struct {
-			Type           PartKind           `json:"type"`
-			Source         media.AudioSource  `json:"source"`
-			Format         *media.AudioFormat `json:"format,omitempty"`
-			DurationMillis *int64             `json:"duration_millis,omitempty"`
+			Type           PartKind          `json:"type"`
+			Source         media.AudioSource `json:"source"`
+			Format         media.AudioFormat `json:"format,omitzero"`
+			DurationMillis int64             `json:"duration_millis,omitzero"`
 		}
 		if err := decodeStrict(data, &item); err != nil {
 			return nil, fmt.Errorf("content part: %w", err)
@@ -301,17 +301,22 @@ func (p ImagePart) Clone() Part {
 func (p ImagePart) Validate() error { return p.Source.Validate() }
 func (ImagePart) messagePart()      {}
 
+// AudioPart carries one audio payload.
+//
+// Format and DurationMillis are values, not pointers: a pointer is a mutable
+// field on an otherwise immutable part, so a reader could write through it and
+// change a message that is already in a transcript. Their zero values mean "not
+// stated", which is why the JSON form omits them.
 type AudioPart struct {
-	Source         media.AudioSource  `json:"source"`
-	Format         *media.AudioFormat `json:"format,omitempty"`
-	DurationMillis *int64             `json:"duration_millis,omitempty"`
+	Source         media.AudioSource `json:"source"`
+	Format         media.AudioFormat `json:"format,omitzero"`
+	DurationMillis int64             `json:"duration_millis,omitzero"`
 }
 
 func (AudioPart) Kind() PartKind { return PartAudio }
+
 func (p AudioPart) Clone() Part {
 	p.Source = p.Source.Clone()
-	p.Format = clonePointer(p.Format)
-	p.DurationMillis = clonePointer(p.DurationMillis)
 	return p
 }
 
@@ -319,7 +324,7 @@ func (p AudioPart) Validate() error {
 	if err := p.Source.Validate(); err != nil {
 		return err
 	}
-	if p.Format != nil {
+	if p.Format != (media.AudioFormat{}) {
 		if err := p.Format.Validate(); err != nil {
 			return err
 		}
@@ -328,7 +333,7 @@ func (p AudioPart) Validate() error {
 			return fmt.Errorf("audio source media type does not match its format")
 		}
 	}
-	if p.DurationMillis != nil && *p.DurationMillis < 0 {
+	if p.DurationMillis < 0 {
 		return fmt.Errorf("audio duration must not be negative")
 	}
 	return nil
@@ -448,11 +453,3 @@ func (p ReasoningPart) Validate() error {
 	return nil
 }
 func (ReasoningPart) messagePart() {}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}

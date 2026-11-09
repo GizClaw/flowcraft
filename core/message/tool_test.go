@@ -55,3 +55,19 @@ func TestToolResultRoundTripsMultimodalContent(t *testing.T) {
 		t.Fatalf("part 1 = %T, want message.ImagePart", decoded.Content.Parts[1])
 	}
 }
+
+// Arguments is immutable by construction: the constructor copies, so a caller
+// that keeps editing its source cannot change a call already in a transcript.
+func TestArgumentsCopyOnConstruction(t *testing.T) {
+	source := json.RawMessage(`{"query":"cat"}`)
+	arguments := message.NewArguments(source)
+	source[2] = 'X'
+	if got := arguments.String(); got != `{"query":"cat"}` {
+		t.Fatalf("arguments = %q, want the original object", got)
+	}
+	exported := arguments.Raw()
+	exported[2] = 'Y'
+	if got := arguments.String(); got != `{"query":"cat"}` {
+		t.Fatalf("Raw exposed the backing bytes: %q", got)
+	}
+}

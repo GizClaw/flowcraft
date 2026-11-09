@@ -113,11 +113,11 @@ func (r *protocolRunner) SetIdentity(taskID, conversationID string) {
 func (r *protocolRunner) Run(_ context.Context, in agent.Input) iter.Seq2[agent.Event, error] {
 	// The agent's context, not the request's: a Run outlives the HTTP request,
 	// and Close must be able to cancel it.
-	return r.wrap(r.entry.session.Run(r.agent.base, in))
+	return r.wrap(r.entry.session.Run(r.agent.runContext(r.agent.base, r.entry), in))
 }
 
 func (r *protocolRunner) Resume(_ context.Context, reply agent.Reply) iter.Seq2[agent.Event, error] {
-	return r.wrap(r.entry.session.Resume(r.agent.base, reply))
+	return r.wrap(r.entry.session.Resume(r.agent.runContext(r.agent.base, r.entry), reply))
 }
 
 func (r *protocolRunner) wrap(sequence iter.Seq2[agent.Event, error]) iter.Seq2[agent.Event, error] {

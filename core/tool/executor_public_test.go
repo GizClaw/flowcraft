@@ -33,17 +33,17 @@ func testCatalog(t *testing.T) tool.Catalog {
 
 func TestExecutor_Execute(t *testing.T) {
 	exec := tool.NewExecutor(testCatalog(t))
-	res := exec.Execute(context.Background(), message.ToolCall{ID: "c1", Name: "ok", Arguments: []byte(`{}`)})
+	res := exec.Execute(context.Background(), message.ToolCall{ID: "c1", Name: "ok", Arguments: message.NewArguments([]byte(`{}`))})
 	if res.IsError || res.Content.Text() != "fine" {
 		t.Fatalf("result = %+v", res)
 	}
 
-	res = exec.Execute(context.Background(), message.ToolCall{ID: "c2", Name: "missing", Arguments: []byte(`{}`)})
+	res = exec.Execute(context.Background(), message.ToolCall{ID: "c2", Name: "missing", Arguments: message.NewArguments([]byte(`{}`))})
 	if !res.IsError || !strings.Contains(res.Content.Text(), "not found") {
 		t.Fatalf("missing result = %+v", res)
 	}
 
-	res = exec.Execute(context.Background(), message.ToolCall{ID: "c3", Name: "boom", Arguments: []byte(`{}`)})
+	res = exec.Execute(context.Background(), message.ToolCall{ID: "c3", Name: "boom", Arguments: message.NewArguments([]byte(`{}`))})
 	if !res.IsError || !strings.Contains(res.Content.Text(), "kaboom") {
 		t.Fatalf("error result = %+v", res)
 	}
@@ -69,7 +69,7 @@ func TestExecutor_ExecuteRecoversPanickingTool(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 	exec := tool.NewExecutor(reg)
-	call := message.ToolCall{ID: "c1", Name: "panics", Arguments: []byte(`{}`)}
+	call := message.ToolCall{ID: "c1", Name: "panics", Arguments: message.NewArguments([]byte(`{}`))}
 
 	res := exec.Execute(context.Background(), call)
 	if !res.IsError || !strings.Contains(res.Content.Text(), "panicked") {
@@ -98,7 +98,7 @@ func TestExecutor_PreservesMultipartContent(t *testing.T) {
 		},
 	)
 	exec := tool.NewExecutor(catalogWithTools(t, shot))
-	res := exec.Execute(context.Background(), message.ToolCall{ID: "c1", Name: "shot", Arguments: []byte(`{}`)})
+	res := exec.Execute(context.Background(), message.ToolCall{ID: "c1", Name: "shot", Arguments: message.NewArguments([]byte(`{}`))})
 	if res.IsError {
 		t.Fatalf("result = %+v", res)
 	}
@@ -129,7 +129,7 @@ func TestExecutor_NormalizesPartlessContent(t *testing.T) {
 	)
 	exec := tool.NewExecutor(catalogWithTools(t, silent))
 	res := exec.Execute(context.Background(),
-		message.ToolCall{ID: "c1", Name: "silent", Arguments: []byte(`{}`)})
+		message.ToolCall{ID: "c1", Name: "silent", Arguments: message.NewArguments([]byte(`{}`))})
 	if res.IsError {
 		t.Fatalf("result = %+v", res)
 	}
@@ -150,9 +150,9 @@ func TestExecutor_NormalizesPartlessContent(t *testing.T) {
 func TestExecutor_ExecuteAllPreservesOrder(t *testing.T) {
 	exec := tool.NewExecutor(testCatalog(t))
 	calls := []message.ToolCall{
-		{ID: "a", Name: "ok", Arguments: []byte(`{}`)},
-		{ID: "b", Name: "missing", Arguments: []byte(`{}`)},
-		{ID: "c", Name: "ok", Arguments: []byte(`{}`)},
+		{ID: "a", Name: "ok", Arguments: message.NewArguments([]byte(`{}`))},
+		{ID: "b", Name: "missing", Arguments: message.NewArguments([]byte(`{}`))},
+		{ID: "c", Name: "ok", Arguments: message.NewArguments([]byte(`{}`))},
 	}
 	results := exec.ExecuteAll(context.Background(), calls)
 	if len(results) != 3 {
@@ -178,7 +178,7 @@ func TestExecutor_MiddlewareChainOrder(t *testing.T) {
 		}
 	}
 	exec := tool.NewExecutor(testCatalog(t), mark("outer"), mark("inner"))
-	exec.Execute(context.Background(), message.ToolCall{ID: "c", Name: "ok", Arguments: []byte(`{}`)})
+	exec.Execute(context.Background(), message.ToolCall{ID: "c", Name: "ok", Arguments: message.NewArguments([]byte(`{}`))})
 	want := []string{"outer:before", "inner:before", "inner:after", "outer:after"}
 	if len(order) != len(want) {
 		t.Fatalf("order = %v, want %v", order, want)
@@ -204,7 +204,7 @@ func TestExecutor_InvalidContentBecomesErrorResult(t *testing.T) {
 				})
 			exec := tool.NewExecutor(catalogWithTools(t, broken))
 			res := exec.Execute(context.Background(),
-				message.ToolCall{ID: "c1", Name: "broken", Arguments: []byte(`{}`)})
+				message.ToolCall{ID: "c1", Name: "broken", Arguments: message.NewArguments([]byte(`{}`))})
 			if !res.IsError {
 				t.Fatalf("result = %+v, want an error result", res)
 			}

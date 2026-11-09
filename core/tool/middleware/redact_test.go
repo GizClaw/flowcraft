@@ -26,7 +26,7 @@ func TestRedact_RedactsResultKeepsArguments(t *testing.T) {
 	}))
 
 	res := exec.Execute(context.Background(), message.ToolCall{
-		ID: "c1", Name: "secret", Arguments: json.RawMessage(`{"token":"abc123"}`),
+		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Content.Text())
@@ -78,7 +78,7 @@ func TestRedact_WithAuditRedactedRecord(t *testing.T) {
 	)
 
 	call := message.ToolCall{
-		ID: "c1", Name: "secret", Arguments: json.RawMessage(`{"token":"abc123"}`),
+		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	}
 	if res := exec.Execute(context.Background(), call); res.IsError {
 		t.Fatalf("unexpected error: %q", res.Content.Text())
@@ -89,8 +89,8 @@ func TestRedact_WithAuditRedactedRecord(t *testing.T) {
 		t.Fatalf("audit records = %d, want 1", len(recorded))
 	}
 	rec := recorded[0]
-	if strings.Contains(string(rec.Call.Arguments), "abc123") {
-		t.Errorf("audit call arguments are not redacted: %s", rec.Call.Arguments)
+	if strings.Contains(rec.Call.Arguments.String(), "abc123") {
+		t.Errorf("audit call arguments are not redacted: %s", rec.Call.Arguments.String())
 	}
 	if strings.Contains(rec.Result.Content.Text(), "abc123") {
 		t.Errorf("audit result content is not redacted: %q", rec.Result.Content.Text())
@@ -113,7 +113,7 @@ func TestAuditRedacted_ModelSeesOriginalAuditRedacted(t *testing.T) {
 	)
 
 	res := exec.Execute(context.Background(), message.ToolCall{
-		ID: "c1", Name: "secret", Arguments: json.RawMessage(`{"token":"abc123"}`),
+		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	})
 	if !strings.Contains(res.Content.Text(), "abc123") {
 		t.Errorf("model-facing content was redacted, want original: %q", res.Content.Text())
@@ -124,8 +124,8 @@ func TestAuditRedacted_ModelSeesOriginalAuditRedacted(t *testing.T) {
 	if strings.Contains(recorded[0].Result.Content.Text(), "abc123") {
 		t.Errorf("audit content is not redacted: %q", recorded[0].Result.Content.Text())
 	}
-	if strings.Contains(string(recorded[0].Call.Arguments), "abc123") {
-		t.Errorf("audit arguments are not redacted: %s", recorded[0].Call.Arguments)
+	if strings.Contains(recorded[0].Call.Arguments.String(), "abc123") {
+		t.Errorf("audit arguments are not redacted: %s", recorded[0].Call.Arguments.String())
 	}
 }
 
@@ -210,7 +210,7 @@ func TestRedact_CoversToolCallResultAndReasoningParts(t *testing.T) {
 				message.ToolCallPart{Call: message.ToolCall{
 					ID:        "c1",
 					Name:      "http",
-					Arguments: json.RawMessage(`{"token":"abc123","keep":"ok"}`),
+					Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123","keep":"ok"}`)),
 				}},
 				message.ToolResultPart{Result: message.NewTextToolResult(
 					"c2", "token=abc123",
@@ -232,8 +232,8 @@ func TestRedact_CoversToolCallResultAndReasoningParts(t *testing.T) {
 	if !ok {
 		t.Fatalf("part 0 = %T, want message.ToolCallPart", res.Content.Parts[0])
 	}
-	if strings.Contains(string(callPart.Call.Arguments), "abc123") ||
-		!strings.Contains(string(callPart.Call.Arguments), "redacted") {
+	if strings.Contains(callPart.Call.Arguments.String(), "abc123") ||
+		!strings.Contains(callPart.Call.Arguments.String(), "redacted") {
 		t.Fatalf("call arguments = %s, want the secret replaced",
 			callPart.Call.Arguments)
 	}
@@ -349,7 +349,7 @@ func partCarryingSecret(
 		return message.ToolCallPart{Call: message.ToolCall{
 			ID:        "c1",
 			Name:      "http",
-			Arguments: json.RawMessage(`{"token":"abc123"}`),
+			Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 		}}
 	case message.PartToolResult:
 		return message.ToolResultPart{Result: message.NewTextToolResult("c1", "token=abc123")}

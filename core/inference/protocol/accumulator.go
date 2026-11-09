@@ -167,7 +167,7 @@ func (a *accumulator) response() (inference.GenerateResponse, error) {
 			parts = append(parts, message.ToolCallPart{Call: message.ToolCall{
 				ID:        block.id,
 				Name:      block.name,
-				Arguments: toolArguments(block.args.String()),
+				Arguments: message.NewArguments(toolArguments(block.args.String())),
 			}})
 			continue
 		}
