@@ -7,5 +7,5 @@
 // protocol has no vocabulary for (tool calls, usage) never leaves the peer.
 //
 // The server side — advertising a card and executing tasks — lives in
-// core/agent-a2a/server.
+// core/deploy/a2aprotocol, which takes a session table, store and identity.
 package a2a

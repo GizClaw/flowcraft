@@ -1,50 +1,15 @@
-package server
+package a2aprotocol
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/internal/wire"
-	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
-
-func testInfo() a2a.TaskInfo {
-	return a2a.TaskInfo{TaskID: "task-1", ContextID: "conv-1"}
-}
-
-// Streaming is a fact about the loop; modes and skills are promises and stay
-// empty until a deployment makes them.
-func TestCardClaimsOnlyWhatItCan(t *testing.T) {
-	card, err := NewCard(CardConfig{Name: "storyteller", Version: "1.0.0", URL: "https://example.test"})
-	if err != nil {
-		t.Fatalf("NewCard: %v", err)
-	}
-	if !card.Capabilities.Streaming {
-		t.Error("streaming = false, want true")
-	}
-	if len(card.DefaultInputModes) != 0 || len(card.Skills) != 0 {
-		t.Errorf("modes/skills = %v/%v, want none: nothing was declared",
-			card.DefaultInputModes, card.Skills)
-	}
-	if len(card.SupportedInterfaces) != 1 {
-		t.Errorf("interfaces = %d, want the declared endpoint", len(card.SupportedInterfaces))
-	}
-}
-
-func TestCardRequiresTheDeclaredFacts(t *testing.T) {
-	if _, err := NewCard(CardConfig{Version: "1", URL: "https://x"}); err == nil {
-		t.Error("a card without a name was accepted")
-	}
-	if _, err := NewCard(CardConfig{Name: "x", URL: "https://x"}); err == nil {
-		t.Error("a card without a version was accepted")
-	}
-}
 
 // Answer text crosses as artifact chunks: a status update carries the latest
 // status, so one message per delta would shred the answer across the history.
@@ -172,112 +137,48 @@ func TestInternalEventsDoNotCrossTheWire(t *testing.T) {
 	}
 }
 
-// Inline bytes land in the part that matches them; anything else becomes an
-// inline file. A nil part is still refused.
-func TestFromA2APartCarriesInlineBytes(t *testing.T) {
-	if _, err := wire.FromPart(nil); err == nil {
-		t.Error("a nil part was accepted")
-	}
-	image, err := wire.FromPart(&a2a.Part{Content: a2a.Raw([]byte("png")), MediaType: "image/png"})
-	if err != nil {
-		t.Fatalf("image raw part: %v", err)
-	}
-	part, ok := image.(message.ImagePart)
-	if !ok || string(part.Source.Bytes()) != "png" {
-		t.Fatalf("image part = %#v, want inline bytes", image)
-	}
-	file, err := wire.FromPart(&a2a.Part{Content: a2a.Raw([]byte("pdf")), MediaType: "application/pdf", Filename: "a.pdf"})
-	if err != nil {
-		t.Fatalf("file raw part: %v", err)
-	}
-	filePart, ok := file.(message.FilePart)
-	if !ok || string(filePart.Source.Bytes()) != "pdf" || filePart.Name != "a.pdf" {
-		t.Fatalf("file part = %#v, want an inline file", file)
-	}
-}
-
-func TestFromA2AMessageCarriesMetadata(t *testing.T) {
-	msg := &a2a.Message{
-		ID:   "m1",
-		Role: a2a.MessageRoleUser,
-		Parts: []*a2a.Part{
-			{Content: a2a.Text("hi"), Metadata: map[string]any{"alt": "x"}},
-		},
-		ReferenceTasks: []a2a.TaskID{"task-1"},
-		Extensions:     []string{"https://example.test/ext"},
-		Metadata:       map[string]any{"note": map[string]any{"k": float64(1)}},
-	}
-	core, err := wire.FromMessage(msg)
-	if err != nil {
-		t.Fatalf("fromA2AMessage: %v", err)
-	}
-	if core.Metadata == nil {
-		t.Fatal("the metadata was dropped")
-	}
-	if len(core.Metadata.ReferenceTasks) != 1 || core.Metadata.ReferenceTasks[0] != "task-1" {
-		t.Errorf("reference tasks = %v", core.Metadata.ReferenceTasks)
-	}
-	if len(core.Metadata.Extensions) != 1 || core.Metadata.Extensions[0] != "https://example.test/ext" {
-		t.Errorf("extensions = %v", core.Metadata.Extensions)
-	}
-	if got := string(core.Metadata.Attributes["note"]); !strings.Contains(got, `"k":1`) {
-		t.Errorf("note = %s, want the protocol metadata", got)
-	}
-	if got := string(core.Metadata.Attributes[wire.PartAttributeKey(0)]); !strings.Contains(got, `"alt":"x"`) {
-		t.Errorf("part metadata = %s, want it kept by position", got)
-	}
-}
-
-func TestFromA2AMessageCarriesText(t *testing.T) {
-	msg, err := wire.FromMessage(a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello")))
-	if err != nil {
-		t.Fatalf("fromA2AMessage: %v", err)
-	}
-	if msg.Content.Text() != "hello" {
-		t.Errorf("content = %q, want hello", msg.Content.Text())
-	}
-}
-
-func TestExecuteReportsBuilderFailure(t *testing.T) {
-	executor, err := New(Config{
-		Card: CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
-			return nil, errors.New("no runtime")
-		},
+// An execution without a message has nothing to run; the protocol gets an error
+// rather than an empty task.
+func TestExecuteRefusesAnEmptyExecution(t *testing.T) {
+	executor, err := newExecutor(executorConfig{
+		Card:  cardConfig{Name: "x", Version: "1", URL: "https://x"},
+		Agent: tableFor(t, &completedRunner{}),
 	})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("newExecutor: %v", err)
 	}
-	exec := &a2asrv.ExecutorContext{
-		Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")),
-		TaskID:  "task-1",
-	}
-	var seen error
-	for _, err := range executor.Execute(context.Background(), exec) {
-		seen = err
-	}
-	if seen == nil || !strings.Contains(seen.Error(), "no runtime") {
-		t.Errorf("err = %v, want the builder failure", seen)
-	}
-}
-
-func TestCancelReportsTheRequestedState(t *testing.T) {
-	executor, err := New(Config{
-		Card:    CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) { return nil, nil },
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	exec := &a2asrv.ExecutorContext{TaskID: "task-1"}
-	var state a2a.TaskState
-	for event, err := range executor.Cancel(context.Background(), exec) {
-		if err != nil {
-			t.Fatalf("cancel: %v", err)
+	for _, exec := range []*a2asrv.ExecutorContext{nil, {}} {
+		var seen error
+		for _, err := range executor.Execute(context.Background(), exec) {
+			seen = err
 		}
-		state = event.(*a2a.TaskStatusUpdateEvent).Status.State
+		if seen == nil {
+			t.Errorf("execution %+v was accepted", exec)
+		}
 	}
-	if state != a2a.TaskStateCanceled {
-		t.Errorf("state = %q, want canceled", state)
+}
+
+// A run whose step failed still reports the failure: the loop could not report
+// it as a status, so the adapter says so instead of closing silently.
+func TestExecuteReportsAFailedStep(t *testing.T) {
+	executor, err := newExecutor(executorConfig{
+		Card:  cardConfig{Name: "x", Version: "1", URL: "https://x"},
+		Agent: tableFor(t, &failedRunner{err: errors.New("model down")}),
+	})
+	if err != nil {
+		t.Fatalf("newExecutor: %v", err)
+	}
+	var failed bool
+	for event, err := range executor.Execute(context.Background(), execContext()) {
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		update, ok := event.(*a2a.TaskStatusUpdateEvent)
+		if ok && update.Status.State == a2a.TaskStateFailed {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Error("a failed step was not reported to the client")
 	}
 }

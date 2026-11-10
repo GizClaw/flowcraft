@@ -35,28 +35,3 @@ func (c *Session) State(ctx context.Context) (agent.TaskState, error) {
 func (c *Session) Cancel(ctx context.Context, reason string) error {
 	return c.agent.Cancel(ctx, c.sessionID, reason)
 }
-
-// protocolSession is one session as the protocol sees it: Run, Cancel
-// and the state it reports. Close is the host's, not the protocol's.
-type protocolSession struct {
-	*Session
-	taskID string
-	// ctx is the request's; State may reach the store, and an unbounded lookup
-	// would outlive the request that needed it.
-	ctx context.Context
-}
-
-func (p *protocolSession) State() agent.TaskState {
-	ctx := p.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	state, _ := p.Session.State(ctx)
-	return state
-}
-
-func (p *protocolSession) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
-	return p.Session.Run(ctx, msg, agent.WithTaskID(p.taskID))
-}
-
-func (p *protocolSession) Close() error { return nil }

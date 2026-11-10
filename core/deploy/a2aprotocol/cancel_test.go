@@ -1,71 +1,29 @@
-package server
+package a2aprotocol
 
 import (
 	"context"
-	"errors"
-	"iter"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
-// cancelRunner blocks until its context is cancelled, then reports the state a
-// real loop reports.
-type cancelRunner struct {
-	started   chan struct{}
-	once      sync.Once
-	cancelled atomic.Bool
-}
-
-func (r *cancelRunner) State() agent.TaskState { return agent.StateWorking }
-
-func (r *cancelRunner) Run(ctx context.Context, _ message.Message) iter.Seq2[agent.Event, error] {
-	return func(yield func(agent.Event, error) bool) {
-		r.once.Do(func() { close(r.started) })
-		if !yield(agent.Status{State: agent.StateWorking}, nil) {
-			return
-		}
-		<-ctx.Done()
-		yield(agent.Status{State: agent.StateCanceled}, nil)
-	}
-}
-
-func (r *cancelRunner) Cancel(context.Context, string) error {
-	r.cancelled.Store(true)
-	return nil
-}
-
-func (r *cancelRunner) Close() error { return nil }
-
-func cancelExecutor(t *testing.T) (*Executor, *cancelRunner) {
+func cancelExecutor(t *testing.T) (*executor, *cancelRunner) {
 	t.Helper()
 	runner := &cancelRunner{started: make(chan struct{})}
-	executor, err := New(Config{
-		Card: CardConfig{Name: "x", Version: "1.0.0", URL: "https://x"},
-		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
-			return runner, nil
-		},
+	executor, err := newExecutor(executorConfig{
+		Card:  cardConfig{Name: "x", Version: "1.0.0", URL: "https://x"},
+		Agent: tableFor(t, runner),
 	})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("newExecutor: %v", err)
 	}
 	return executor, runner
-}
-
-func execContext() *a2asrv.ExecutorContext {
-	return &a2asrv.ExecutorContext{
-		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")),
-		TaskID:    "task-1",
-		ContextID: "conv-1",
-	}
 }
 
 // A cancel reaches the running execution, and the run itself reports the
@@ -107,8 +65,8 @@ func TestCancelSignalsTheRunningExecution(t *testing.T) {
 	if last != a2a.TaskStateCanceled {
 		t.Errorf("last state = %q, want canceled from the run", last)
 	}
-	if !runner.cancelled.Load() {
-		t.Error("Cancel never reached the runner")
+	if !runner.stopped.Load() {
+		t.Error("the run's context was never cancelled")
 	}
 }
 
@@ -128,31 +86,32 @@ func TestCancelOfAnIdleTaskAnswers(t *testing.T) {
 	}
 }
 
-// failCancelRunner refuses to stop.
-type failCancelRunner struct{}
-
-func (failCancelRunner) State() agent.TaskState { return agent.StateWorking }
-func (failCancelRunner) Run(context.Context, message.Message) iter.Seq2[agent.Event, error] {
-	return func(yield func(agent.Event, error) bool) {
-		yield(agent.Status{State: agent.StateCompleted}, nil)
-	}
-}
-func (failCancelRunner) Cancel(context.Context, string) error {
-	return errors.New("the engine refused to cancel")
-}
-func (failCancelRunner) Close() error { return nil }
-
 // A cancel the engine refuses is reported, not papered over with a canceled
 // status the checkpoint would contradict.
 func TestCancelReportsAFailedCancel(t *testing.T) {
-	executor, err := New(Config{
-		Card: CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+	store := agenttest.NewMemStore()
+	if _, _, err := store.Save(context.Background(), agent.Checkpoint{
+		Schema: agent.CheckpointSchema,
+		Task:   agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateInputRequired},
+	}, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	table, err := agent.NewAgent(agent.AgentOptions{
+		Store: store,
+		NewRunner: func(context.Context, string, string) (agent.Runner, error) {
 			return failCancelRunner{}, nil
 		},
 	})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewAgent: %v", err)
+	}
+	t.Cleanup(func() { _ = table.Close() })
+	executor, err := newExecutor(executorConfig{
+		Card:  cardConfig{Name: "x", Version: "1", URL: "https://x"},
+		Agent: table,
+	})
+	if err != nil {
+		t.Fatalf("newExecutor: %v", err)
 	}
 	var cancelled int
 	var seen error
@@ -170,5 +129,28 @@ func TestCancelReportsAFailedCancel(t *testing.T) {
 	}
 	if cancelled != 0 {
 		t.Errorf("emitted %d canceled updates after the engine refused", cancelled)
+	}
+}
+
+// A task with nothing to cancel still answers with the state the client asked
+// for.
+func TestCancelReportsTheRequestedState(t *testing.T) {
+	executor, err := newExecutor(executorConfig{
+		Card:  cardConfig{Name: "x", Version: "1", URL: "https://x"},
+		Agent: tableFor(t, &completedRunner{}),
+	})
+	if err != nil {
+		t.Fatalf("newExecutor: %v", err)
+	}
+	exec := &a2asrv.ExecutorContext{TaskID: "task-1", ContextID: "conv-1"}
+	var state a2a.TaskState
+	for event, err := range executor.Cancel(context.Background(), exec) {
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		state = event.(*a2a.TaskStatusUpdateEvent).Status.State
+	}
+	if state != a2a.TaskStateCanceled {
+		t.Errorf("state = %q, want canceled", state)
 	}
 }

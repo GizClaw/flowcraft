@@ -12,7 +12,7 @@ func testLoader(t *testing.T) Loader {
 	return Loader{
 		Kinds: BuiltinKinds().
 			WithEngines(EngineKind{Name: "local", Local: true}).
-			WithProtocols(A2AProtocol()),
+			WithProtocols(a2aKind()),
 	}
 }
 

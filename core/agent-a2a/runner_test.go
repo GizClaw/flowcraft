@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"iter"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync"
@@ -11,10 +12,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/server"
+	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/message"
 
+	sdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
@@ -86,21 +88,100 @@ func (s *scripted) wasCancelled() bool {
 	return s.cancelled
 }
 
+// peerExecutor exposes a scripted engine over A2A. It is deliberately minimal:
+// the client tests care about the protocol, not about a deployment's server.
+type peerExecutor struct{ engine *scripted }
+
+func (e *peerExecutor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext) iter.Seq2[sdk.Event, error] {
+	return func(yield func(sdk.Event, error) bool) {
+		e.engine.recordContext(exec.ContextID)
+		info := exec.TaskInfo()
+		if exec.StoredTask == nil {
+			if !yield(sdk.NewSubmittedTask(info, exec.Message), nil) {
+				return
+			}
+		}
+		turn, err := wire.FromMessage(exec.Message)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for event, runErr := range e.engine.Run(ctx, turn) {
+			if runErr != nil {
+				yield(nil, runErr)
+				return
+			}
+			for _, converted := range peerEvents(info, event) {
+				if !yield(converted, nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (e *peerExecutor) Cancel(ctx context.Context, exec *a2asrv.ExecutorContext) iter.Seq2[sdk.Event, error] {
+	return func(yield func(sdk.Event, error) bool) {
+		if err := e.engine.Cancel(ctx, "cancelled"); err != nil {
+			yield(nil, err)
+			return
+		}
+		yield(sdk.NewStatusUpdateEvent(exec.TaskInfo(), sdk.TaskStateCanceled, nil), nil)
+	}
+}
+
+func peerEvents(info sdk.TaskInfo, event agent.Event) []sdk.Event {
+	switch typed := event.(type) {
+	case agent.Status:
+		return []sdk.Event{sdk.NewStatusUpdateEvent(info, wire.State(typed.State), nil)}
+	case agent.Text:
+		if typed.Text == "" {
+			return nil
+		}
+		return []sdk.Event{&sdk.TaskArtifactUpdateEvent{
+			TaskID:    info.TaskID,
+			ContextID: info.ContextID,
+			LastChunk: true,
+			Artifact: &sdk.Artifact{
+				ID:    sdk.NewArtifactID(),
+				Parts: sdk.ContentParts{sdk.NewTextPart(typed.Text)},
+			},
+		}}
+	case agent.ArtifactWritten:
+		return []sdk.Event{&sdk.TaskArtifactUpdateEvent{
+			TaskID:    info.TaskID,
+			ContextID: info.ContextID,
+			LastChunk: true,
+			Artifact: &sdk.Artifact{
+				ID:   sdk.ArtifactID(typed.Artifact.ID),
+				Name: typed.Artifact.Name,
+				Parts: sdk.ContentParts{sdk.NewDataPart(map[string]string{
+					"blob":       typed.Artifact.Blob,
+					"media_type": typed.Artifact.MediaType,
+					"name":       typed.Artifact.Name,
+				})},
+			},
+		}}
+	}
+	return nil
+}
+
 // peer starts one A2A server over a scripted engine.
 func peer(t *testing.T, events ...agent.Event) (*httptest.Server, *scripted) {
 	t.Helper()
 	engine := &scripted{state: agent.StateSubmitted, events: events}
-	srv, err := server.NewServer(server.ServerConfig{
-		Card: server.CardConfig{Name: "peer", Version: "1.0.0", URL: "https://peer.test"},
-		Runners: func(_ context.Context, exec *a2asrv.ExecutorContext) (agent.Runner, error) {
-			engine.recordContext(exec.ContextID)
-			return engine, nil
+	card := &sdk.AgentCard{
+		Name:    "peer",
+		Version: "1.0.0",
+		SupportedInterfaces: []*sdk.AgentInterface{
+			sdk.NewAgentInterface("https://peer.test", sdk.TransportProtocolJSONRPC),
 		},
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
 	}
-	ts := httptest.NewServer(srv)
+	handler := a2asrv.NewHandler(&peerExecutor{engine: engine})
+	mux := http.NewServeMux()
+	mux.Handle("/.well-known/agent-card.json", a2asrv.NewStaticAgentCardHandler(card))
+	mux.Handle("/", a2asrv.NewJSONRPCHandler(handler))
+	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, engine
 }

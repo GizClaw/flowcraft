@@ -42,6 +42,13 @@ func newFakeFactory(pause bool) (func(context.Context, string, string) (agent.Ru
 	return factory, &built
 }
 
+// calls reports how many runs the fake has started.
+func (f *fakeRunner) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runCalls
+}
+
 func (f *fakeRunner) State() agent.TaskState {
 	f.mu.Lock()
 	defer f.mu.Unlock()

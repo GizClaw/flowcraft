@@ -1,4 +1,4 @@
-package server
+package a2aprotocol
 
 import (
 	"strings"
@@ -56,5 +56,36 @@ func TestDecodeSettingsRejectsDuplicateSkills(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("err = %v, want a duplicate complaint", err)
+	}
+}
+
+// Streaming is a fact about the loop; modes and skills are promises and stay
+// empty until a deployment makes them.
+func TestCardClaimsOnlyWhatItCan(t *testing.T) {
+	card, err := newCard(cardConfig{Name: "storyteller", Version: "1.0.0", URL: "https://example.test"})
+	if err != nil {
+		t.Fatalf("newCard: %v", err)
+	}
+	if !card.Capabilities.Streaming {
+		t.Error("streaming = false, want true")
+	}
+	if len(card.DefaultInputModes) != 0 || len(card.Skills) != 0 {
+		t.Errorf("modes/skills = %v/%v, want none: nothing was declared",
+			card.DefaultInputModes, card.Skills)
+	}
+	if len(card.SupportedInterfaces) != 1 {
+		t.Errorf("interfaces = %d, want the declared endpoint", len(card.SupportedInterfaces))
+	}
+}
+
+func TestCardRequiresTheDeclaredFacts(t *testing.T) {
+	if _, err := newCard(cardConfig{Version: "1", URL: "https://x"}); err == nil {
+		t.Error("a card without a name was accepted")
+	}
+	if _, err := newCard(cardConfig{Name: "x", URL: "https://x"}); err == nil {
+		t.Error("a card without a version was accepted")
+	}
+	if _, err := newCard(cardConfig{Name: "x", Version: "1"}); err == nil {
+		t.Error("a card without a url was accepted")
 	}
 }

@@ -32,7 +32,7 @@ func (s *failingStore) LatestForSession(ctx context.Context, sessionID string) (
 	return s.Store.LatestForSession(ctx, sessionID)
 }
 
-func (s *failingStore) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
+func (s *failingStore) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord, _ ...agent.SaveOption) (int64, int64, error) {
 	if s.saveErr != nil {
 		return 0, 0, s.saveErr
 	}

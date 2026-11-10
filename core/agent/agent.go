@@ -77,6 +77,10 @@ type AgentOptions struct {
 	// first. Zero is unbounded.
 	MaxSessions int
 	// OnEvent observes every event of every run. Optional.
+	//
+	// It runs synchronously on the run's own goroutine, before the event is
+	// yielded, so a slow observer slows the run it observes. Keep it short and
+	// non-blocking; hand slow work to another goroutine.
 	OnEvent func(sessionID string, event Event)
 	// OnEvict is called when a session leaves the table: idle timeout or
 	// MaxSessions. A finished task rolling over to the next one is the same
@@ -227,6 +231,9 @@ func (a *Agent) State(ctx context.Context, sessionID string) (TaskState, error) 
 	if strings.TrimSpace(sessionID) == "" {
 		return "", ErrSessionRequired
 	}
+	if a.closed.Load() {
+		return "", ErrClosed
+	}
 	shard := a.table.shard(sessionID)
 	shard.mu.Lock()
 	entry, found := shard.lookup(sessionID)
@@ -283,6 +290,12 @@ func (a *Agent) Steer(ctx context.Context, sessionID string, msg message.Message
 func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return ErrSessionRequired
+	}
+	// Cancel reaches the engine and may open a stored session, so a closed
+	// agent must refuse it. Draining is allowed: stopping runs is what a
+	// drain waits for.
+	if a.closed.Load() {
+		return ErrClosed
 	}
 	shard := a.table.shard(sessionID)
 	shard.mu.Lock()
@@ -374,6 +387,13 @@ func (a *Agent) Close() error {
 		if err := entry.runner.Close(); err != nil && first == nil {
 			first = err
 		}
+	}
+	// Drop the table: a closed agent answers no reads, so the entries would only
+	// keep every session's runner reachable.
+	for _, shard := range a.table.shards {
+		shard.mu.Lock()
+		shard.entries = make(map[string]*session)
+		shard.mu.Unlock()
 	}
 	return first
 }

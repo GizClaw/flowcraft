@@ -336,7 +336,7 @@ func TestHandlerAndSessionForUnknownAgent(t *testing.T) {
 
 // The registered kinds are what a host reports at startup.
 func TestManagerReportsRegisteredKinds(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithProtocols(A2AProtocol()), testHost(t))
+	manager := newManager(t, BuiltinKinds().WithProtocols(a2aKind()), testHost(t))
 	engines := manager.EngineNames()
 	if len(engines) != 1 || engines[0] != "a2a" {
 		t.Errorf("engines = %v, want [a2a]", engines)

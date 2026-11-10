@@ -1,4 +1,4 @@
-package server
+package a2aprotocol
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/internal/wire"
+	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -16,7 +16,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
-// TaskStore serves A2A task queries from the agent's checkpoint store.
+// taskStore serves A2A task queries from the agent's checkpoint store.
 //
 // Without it the server keeps a second, in-memory record of the same task: a
 // restart loses what tasks/get answers while the checkpoint still holds it, and
@@ -26,25 +26,22 @@ import (
 // history; this adapter appends the events the server hands it and never decides
 // a state of its own. A store adapter that also advanced state would fight the
 // loop over the same row.
-type TaskStore struct {
+type taskStore struct {
 	store agent.Store
 	// digest is the deployment identity the agent resumes under; a task row
 	// without it could never be restored.
 	digest runtime.Digest
 }
 
-var _ taskstore.Store = (*TaskStore)(nil)
+var _ taskstore.Store = (*taskStore)(nil)
 
-// NewTaskStore wraps an agent store.
-func NewTaskStore(store agent.Store, digest runtime.Digest) (*TaskStore, error) {
-	if store == nil {
-		return nil, errdefs.Validationf("a2a: a checkpoint store is required")
-	}
-	return &TaskStore{store: store, digest: digest}, nil
+// newTaskStore wraps an agent store.
+func newTaskStore(store agent.Store, digest runtime.Digest) *taskStore {
+	return &taskStore{store: store, digest: digest}
 }
 
 // Create stores a task the server just created.
-func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskVersion, error) {
+func (s *taskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskVersion, error) {
 	if task == nil || task.ID == "" {
 		return 0, errdefs.Validationf("a2a: a task without an id cannot be stored")
 	}
@@ -89,7 +86,7 @@ func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 // it — so the projection is left alone and only the token advances. A message
 // event is task history and a terminal state is the server's decision, and those
 // two are written.
-func (s *TaskStore) Update(ctx context.Context, update *taskstore.UpdateRequest) (taskstore.TaskVersion, error) {
+func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest) (taskstore.TaskVersion, error) {
 	if update == nil || update.Task == nil || update.Task.ID == "" {
 		return 0, errdefs.Validationf("a2a: an update without a task cannot be applied")
 	}
@@ -149,7 +146,7 @@ func (s *TaskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 }
 
 // Get returns the stored task with its history from the event log.
-func (s *TaskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.StoredTask, error) {
+func (s *taskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.StoredTask, error) {
 	checkpoint, err := s.store.Load(ctx, string(taskID))
 	if errors.Is(err, agent.ErrNoCheckpoint) {
 		return nil, a2a.ErrTaskNotFound
@@ -177,7 +174,7 @@ const (
 	listMaxPageSize     = 100
 )
 
-func (s *TaskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
+func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
 	summaries, err := s.store.List(ctx)
 	if err != nil {
 		return nil, err
@@ -259,7 +256,7 @@ func pageOffset(token string) (int, error) {
 	return offset, nil
 }
 
-func (s *TaskStore) version(ctx context.Context, taskID string) (taskstore.TaskVersion, error) {
+func (s *taskStore) version(ctx context.Context, taskID string) (taskstore.TaskVersion, error) {
 	checkpoint, err := s.store.Load(ctx, taskID)
 	if err != nil {
 		return 0, err

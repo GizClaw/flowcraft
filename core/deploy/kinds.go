@@ -40,15 +40,15 @@ type EngineDeps struct {
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment
-// internals: name, store, identity and the runner factory are all it needs.
+// internals: name, store, identity and the session table are all it needs.
 type ProtocolDeps struct {
 	Spec        ProtocolSpec
 	Name        string
 	Store       agent.Store
 	Digest      runtime.Digest
 	ArtifactURL func(ref string) string
-	// Runner binds one session for the protocol.
-	Runner agent.RunnerFactory
+	// Agent is the deployment's session table: a protocol drives it directly.
+	Agent *agent.Agent
 }
 
 // EngineKind registers one engine kind.

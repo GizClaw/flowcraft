@@ -8,8 +8,8 @@
 //
 // Every save is one transaction: append the round's events and update the
 // projection together, so a reader never sees a task that mentions a message the
-// event log does not have. Not persisting partial rounds is the same rule the
-// session services in the ecosystem converged on.
+// event log does not have. A round is the unit of durability; a partial one is
+// never visible.
 //
 // The types are SQLite's, but the shapes are portable: TEXT stays TEXT, BLOB
 // becomes BYTEA, INTEGER stays INTEGER, and the only upsert uses the standard
@@ -67,8 +67,40 @@ type SQLite struct {
 
 var _ agent.Store = (*SQLite)(nil)
 
+// Synchronous is SQLite's commit durability.
+type Synchronous int
+
+const (
+	// SynchronousFull fsyncs every commit, so a power loss cannot drop one.
+	// This is the default.
+	SynchronousFull Synchronous = iota
+	// SynchronousNormal skips the per-commit fsync. A process crash still
+	// recovers every commit; a power loss may lose the last few. A checkpoint is
+	// reconstructible from the engine's last durable step, so a host may trade a
+	// small replay for a much cheaper write path.
+	SynchronousNormal
+)
+
+// Option configures a store.
+type Option func(*options)
+
+type options struct {
+	synchronous Synchronous
+}
+
+// WithSynchronous sets the commit durability. The default is SynchronousFull.
+func WithSynchronous(mode Synchronous) Option {
+	return func(target *options) { target.synchronous = mode }
+}
+
 // Open prepares a SQLite store at path. ":memory:" is accepted for tests.
-func Open(path string) (*SQLite, error) {
+func Open(path string, config ...Option) (*SQLite, error) {
+	var opts options
+	for _, option := range config {
+		if option != nil {
+			option(&opts)
+		}
+	}
 	if path == "" {
 		return nil, errdefs.Validationf("checkpoint: a database path is required")
 	}
@@ -83,11 +115,20 @@ func Open(path string) (*SQLite, error) {
 	// Foreign keys are off by default in SQLite, and a cascade that silently
 	// does not fire leaves events behind a deleted task. WAL keeps a reader from
 	// blocking the loop's writes.
-	for _, pragma := range []string{
+	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=5000",
-	} {
+	}
+	switch opts.synchronous {
+	case SynchronousFull:
+		pragmas = append(pragmas, "PRAGMA synchronous=FULL")
+	case SynchronousNormal:
+		pragmas = append(pragmas, "PRAGMA synchronous=NORMAL")
+	default:
+		return nil, errdefs.Validationf("checkpoint: unknown synchronous mode %d", opts.synchronous)
+	}
+	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("checkpoint: %s: %w", pragma, err)
@@ -110,9 +151,20 @@ func Open(path string) (*SQLite, error) {
 func (l *SQLite) Close() error { return l.db.Close() }
 
 // Save updates the projection and appends the round's events in one transaction.
-func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
+// When the options ask for compaction, the obsolete prefix goes in that same
+// transaction: one step, one commit.
+func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord, config ...agent.SaveOption) (int64, int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
+	}
+	var options agent.SaveOptions
+	for _, option := range config {
+		if option != nil {
+			option(&options)
+		}
+	}
+	if options.Truncate && options.Through < 0 {
+		return 0, 0, errdefs.Validationf("checkpoint: truncation point must not be negative")
 	}
 	if checkpoint.Task.ID == "" {
 		return 0, 0, errdefs.Validationf("checkpoint: task id is required")
@@ -193,6 +245,11 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			); err != nil {
 				return 0, 0, fmt.Errorf("checkpoint: append event: %w", err)
 			}
+		}
+	}
+	if options.Truncate {
+		if err := truncateEvents(ctx, tx, checkpoint.Task.ID, options.Through); err != nil {
+			return 0, 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -332,11 +389,22 @@ func (l *SQLite) SetServerVersion(ctx context.Context, taskID string, version in
 
 // TruncateEvents removes the events at or before seq, keeping the tail.
 func (l *SQLite) TruncateEvents(ctx context.Context, taskID string, seq int64) error {
+	return truncateEvents(ctx, l.db, taskID, seq)
+}
+
+// execer is the part of *sql.DB and *sql.Tx truncation needs, so the same guard
+// runs whether compaction is its own call or part of a save.
+type execer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func truncateEvents(ctx context.Context, db execer, taskID string, seq int64) error {
 	if seq < 0 {
 		return errdefs.Validationf("checkpoint: truncation point must not be negative")
 	}
 	var newest int64
-	if err := l.db.QueryRowContext(ctx,
+	if err := db.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE task_id = ?`, taskID,
 	).Scan(&newest); err != nil {
 		return fmt.Errorf("checkpoint: latest sequence: %w", err)
@@ -350,7 +418,7 @@ func (l *SQLite) TruncateEvents(ctx context.Context, taskID string, seq int64) e
 		return errdefs.Validationf(
 			"checkpoint: truncating through %d would remove the newest event (%d)", seq, newest)
 	}
-	if _, err := l.db.ExecContext(ctx,
+	if _, err := db.ExecContext(ctx,
 		`DELETE FROM events WHERE task_id = ? AND seq <= ?`, taskID, seq); err != nil {
 		return fmt.Errorf("checkpoint: truncate events: %w", err)
 	}

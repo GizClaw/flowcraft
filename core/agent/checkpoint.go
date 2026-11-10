@@ -59,13 +59,37 @@ type TaskSummary struct {
 	UpdatedAt string
 }
 
+// SaveOption configures one Save.
+type SaveOption func(*SaveOptions)
+
+// SaveOptions is the resolved form of a Save's options.
+type SaveOptions struct {
+	// Truncate asks the save to compact the log as well.
+	Truncate bool
+	// Through is the last sequence the save may drop; only meaningful with
+	// Truncate.
+	Through int64
+}
+
+// TruncateThrough asks Save to drop the events at or before seq in the same
+// transaction that writes this round. Compaction belongs in the save that makes
+// the base durable: doing it as a second call pays two commits for one decision.
+//
+// A store still refuses to drop the newest event, and TruncateEvents remains the
+// standalone form for a host that compacts out of band.
+func TruncateThrough(seq int64) SaveOption {
+	return func(options *SaveOptions) {
+		options.Truncate = true
+		options.Through = seq
+	}
+}
+
 // Store persists tasks, their events, and the blobs they reference.
 //
-// The verbs follow the session-service shape the ecosystem converged on
-// (create/append/list/delete plus a projection), collapsed to one Save because a
-// Task is addressed by id and a first save is just a save. Where state lives — a
-// local file, Postgres, an object store — is a deployment decision, so the
-// interface stays semantic and the implementation is replaceable.
+// The interface is semantic rather than relational: a task is addressed by id,
+// and a first save is just a save, so create and append collapse into Save.
+// Where state lives — a local file, Postgres, an object store — is a deployment
+// decision, so the implementation stays replaceable.
 type Store interface {
 	// Save writes the Task projection and appends this round's events in one
 	// transaction. The first save creates the task; later ones advance it.
@@ -74,7 +98,10 @@ type Store interface {
 	// event log is its only source. Save returns the sequence range it assigned
 	// to the events (first, last), or (0, 0) when there were none, so a caller can
 	// point at an event it just wrote without a second query.
-	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord) (first, last int64, err error)
+	//
+	// Options may also compact the log: TruncateThrough drops what a new base
+	// already covers, in the same transaction.
+	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord, options ...SaveOption) (first, last int64, err error)
 	// Load returns the newest projection of one task.
 	//
 	// It does not replay the event log: Task.History is always empty. A caller

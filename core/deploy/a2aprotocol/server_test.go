@@ -1,28 +1,24 @@
-package server
+package a2aprotocol
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/GizClaw/flowcraft/core/agent"
-
-	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	server, err := NewServer(ServerConfig{
-		Card: CardConfig{Name: "storyteller", Version: "1.0.0", URL: "https://example.test"},
-		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
-			return nil, nil
-		},
+	server, err := New(Config{
+		Name: "storyteller",
+		Settings: settingsJSON(map[string]any{"card": map[string]any{
+			"version": "1.0.0", "url": "https://example.test",
+		}}),
+		Agent: tableFor(t, &completedRunner{}),
 	})
 	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	return server
 }
@@ -31,7 +27,7 @@ func testServer(t *testing.T) *Server {
 // convention expects and must say what the deployment declared.
 func TestServerServesTheCard(t *testing.T) {
 	rec := httptest.NewRecorder()
-	testServer(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, CardPath, nil))
+	testServer(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, cardPath, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -53,10 +49,16 @@ func TestServerServesTheCard(t *testing.T) {
 
 // The RPC endpoint is mounted, so a request reaches the SDK's handler rather
 // than a 404.
+func TestServerReportsItsCard(t *testing.T) {
+	if got := testServer(t).Card().Name; got != "storyteller" {
+		t.Errorf("card name = %q, want the deployment's", got)
+	}
+}
+
 func TestServerMountsTheRPCEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	body := strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"no/such"}`)
-	testServer(t).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, RPCPath, body))
+	testServer(t).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, rpcPath, body))
 	if rec.Code == http.StatusNotFound {
 		t.Fatal("the RPC endpoint is not mounted")
 	}
@@ -65,9 +67,14 @@ func TestServerMountsTheRPCEndpoint(t *testing.T) {
 	}
 }
 
-func TestNewServerRequiresASessionBuilder(t *testing.T) {
-	_, err := NewServer(ServerConfig{Card: CardConfig{Name: "x", Version: "1", URL: "https://x"}})
+func TestNewRequiresAnAgent(t *testing.T) {
+	_, err := New(Config{
+		Name: "x",
+		Settings: settingsJSON(map[string]any{"card": map[string]any{
+			"version": "1", "url": "https://x",
+		}}),
+	})
 	if err == nil {
-		t.Fatal("a server without a session builder was accepted")
+		t.Fatal("a server without an agent was accepted")
 	}
 }

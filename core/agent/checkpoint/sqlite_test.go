@@ -22,6 +22,37 @@ func openStore(t *testing.T) *SQLite {
 	return store
 }
 
+// The durability mode is a store decision; the option must actually reach the
+// connection, not just the struct.
+func TestSynchronousModeIsApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want int
+	}{
+		{"default", nil, 2}, // FULL
+		{"normal", []Option{WithSynchronous(SynchronousNormal)}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := Open(t.TempDir()+"/cp.db", tc.opts...)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			var mode int
+			if err := store.db.QueryRow("PRAGMA synchronous").Scan(&mode); err != nil {
+				t.Fatalf("read synchronous: %v", err)
+			}
+			if mode != tc.want {
+				t.Errorf("synchronous = %d, want %d", mode, tc.want)
+			}
+		})
+	}
+	if _, err := Open(t.TempDir()+"/cp.db", WithSynchronous(9)); err == nil {
+		t.Fatal("an unknown synchronous mode was accepted")
+	}
+}
+
 func checkpoint(taskID string, round int) agent.Checkpoint {
 	return agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,

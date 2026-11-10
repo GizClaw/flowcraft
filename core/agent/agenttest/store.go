@@ -39,6 +39,7 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"EventsAfterReturnsTheSuffix", eventsAfterReturnsTheSuffix},
 		{"TruncateKeepsTheTail", truncateKeepsTheTail},
 		{"TruncateRefusesTheTail", truncateRefusesTheTail},
+		{"SaveCompactsInTheSameTransaction", saveCompacts},
 		{"SetServerVersionLeavesTheProjectionAlone", setServerVersionOnly},
 		{"VersionAdvancesPerSave", versionAdvances},
 		{"ServerVersionRoundTrips", serverVersionRoundTrips},
@@ -311,6 +312,35 @@ func setServerVersionOnly(t *testing.T, open func(*testing.T) agent.Store) {
 }
 
 // Refusing to remove the newest event is what keeps sequence numbers monotonic.
+// Compaction belongs to the save that makes the base durable: the option drops
+// the prefix and writes the round in one transaction, with the same guard the
+// standalone call uses.
+func saveCompacts(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{
+		messageEvent(t, "one"), messageEvent(t, "two"), messageEvent(t, "three"),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 1),
+		[]agent.EventRecord{messageEvent(t, "four")}, agent.TruncateThrough(3)); err != nil {
+		t.Fatalf("save with compaction: %v", err)
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 || events[0].Seq != 4 {
+		t.Fatalf("events = %v, want only the newest fact", events)
+	}
+	// The tail is still refused, in the same transaction.
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 2), nil,
+		agent.TruncateThrough(4)); err == nil {
+		t.Fatal("a save that would remove the newest event was accepted")
+	}
+}
+
 func truncateRefusesTheTail(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
@@ -527,9 +557,18 @@ func NewMemStore() *MemStore {
 
 var _ agent.Store = (*MemStore)(nil)
 
-func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
+func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent.EventRecord, config ...agent.SaveOption) (int64, int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
+	}
+	var options agent.SaveOptions
+	for _, option := range config {
+		if option != nil {
+			option(&options)
+		}
+	}
+	if options.Truncate && options.Through < 0 {
+		return 0, 0, errors.New("agenttest: truncation point must not be negative")
 	}
 	if cp.Task.ID == "" {
 		return 0, 0, errors.New("agenttest: task id is required")
@@ -576,6 +615,24 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 		}
 		last = seq
 		entry.events = append(entry.events, event)
+	}
+	if options.Truncate {
+		newest := last
+		if newest == 0 && len(entry.events) > 0 {
+			newest = entry.events[len(entry.events)-1].Seq
+		}
+		if newest > 0 {
+			if options.Through >= newest {
+				return 0, 0, errors.New("agenttest: truncating through the newest event")
+			}
+			kept := entry.events[:0]
+			for _, event := range entry.events {
+				if event.Seq > options.Through {
+					kept = append(kept, event)
+				}
+			}
+			entry.events = kept
+		}
 	}
 	return first, last, nil
 }

@@ -10,9 +10,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-func benchStore(b *testing.B) *SQLite {
+func benchStore(b *testing.B, config ...Option) *SQLite {
 	b.Helper()
-	store, err := Open(b.TempDir() + "/checkpoints.db")
+	store, err := Open(b.TempDir()+"/checkpoints.db", config...)
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -60,28 +60,32 @@ func BenchmarkSaveWithHistory(b *testing.B) {
 
 // BenchmarkSaveDelta is the shape an engine should use: the projection carries no
 // history, the step's writes are events, and the cost does not grow with the
-// session.
+// session. The sub-benchmarks are the store's durability choice.
 func BenchmarkSaveDelta(b *testing.B) {
-	store := benchStore(b)
-	ctx := context.Background()
-	checkpoint := agent.Checkpoint{
-		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateWorking},
-	}
-	body, err := json.Marshal(message.NewTextMessage(message.RoleUser, "one turn"))
-	if err != nil {
-		b.Fatalf("encode: %v", err)
-	}
-	events := []agent.EventRecord{{Kind: "message", Payload: body}}
-	if _, _, err := store.Save(ctx, checkpoint, events[:0]); err != nil {
-		b.Fatalf("seed save: %v", err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, _, err := store.Save(ctx, checkpoint, events); err != nil {
-			b.Fatalf("save: %v", err)
-		}
+	for _, mode := range syncModes {
+		b.Run(mode.name, func(b *testing.B) {
+			store := benchStore(b, mode.opts...)
+			ctx := context.Background()
+			checkpoint := agent.Checkpoint{
+				Schema: agent.CheckpointSchema,
+				Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateWorking},
+			}
+			body, err := json.Marshal(message.NewTextMessage(message.RoleUser, "one turn"))
+			if err != nil {
+				b.Fatalf("encode: %v", err)
+			}
+			events := []agent.EventRecord{{Kind: "message", Payload: body}}
+			if _, _, err := store.Save(ctx, checkpoint, events[:0]); err != nil {
+				b.Fatalf("seed save: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, _, err := store.Save(ctx, checkpoint, events); err != nil {
+					b.Fatalf("save: %v", err)
+				}
+			}
+		})
 	}
 }
 

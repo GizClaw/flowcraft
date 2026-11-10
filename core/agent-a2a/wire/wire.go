@@ -7,6 +7,7 @@
 package wire
 
 import (
+	"encoding/gob"
 	"encoding/json"
 	"mime"
 	"strconv"
@@ -19,6 +20,13 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
+
+func init() {
+	// A data part's value is an interface, and the SDK's in-memory task store
+	// gob-encodes tasks: the concrete map an artifact reference falls back to
+	// must be registered before it can cross.
+	gob.Register(map[string]string{})
+}
 
 // Message renders one core message for the wire, metadata included.
 func Message(msg message.Message) (*a2a.Message, error) {

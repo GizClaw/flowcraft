@@ -58,6 +58,9 @@ type Host struct {
 	LoadOptions []runtime.LoadOption
 	// OnEvent observes every event of every session, named by agent. The
 	// agent name is not decoration: one host usually serves many agents.
+	//
+	// It runs synchronously on the session's run goroutine, so it must be fast
+	// and non-blocking: a slow observer stalls the run and its protocol stream.
 	OnEvent func(agentName, sessionID string, event agent.Event)
 	// ArtifactURL turns a blob reference into a URL a client can fetch. Nil keeps
 	// the reference in a data part.
@@ -98,8 +101,32 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 	if spec.Name == "" {
 		return errdefs.Validationf("manage: agent name is required")
 	}
-	if _, err := spec.Catalog.validatedScope(); err != nil {
+	m.mu.Lock()
+	_, exists := m.agents[spec.Name]
+	m.mu.Unlock()
+	if exists {
+		return errdefs.Validationf("manage: agent %q already exists", spec.Name)
+	}
+	deployed, err := m.build(ctx, spec)
+	if err != nil {
 		return err
+	}
+	m.mu.Lock()
+	if _, exists := m.agents[spec.Name]; exists {
+		m.mu.Unlock()
+		_ = deployed.close()
+		return errdefs.Validationf("manage: agent %q already exists", spec.Name)
+	}
+	m.agents[spec.Name] = deployed
+	m.mu.Unlock()
+	return nil
+}
+
+// build validates a spec and constructs its deployment without installing it, so
+// Add and Replace share one path and a failure leaves the manager untouched.
+func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
+	if _, err := spec.Catalog.validatedScope(); err != nil {
+		return nil, err
 	}
 	m.mu.Lock()
 	engineKind, engineFound := m.kinds.Engines[spec.Engine.Kind]
@@ -109,30 +136,26 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 	}
 	engineNames := sortedKeys(m.kinds.Engines)
 	protocolNames := sortedKeys(m.kinds.Protocols)
-	_, exists := m.agents[spec.Name]
 	m.mu.Unlock()
-	if exists {
-		return errdefs.Validationf("manage: agent %q already exists", spec.Name)
-	}
 	if !engineFound {
-		return errdefs.Validationf(
+		return nil, errdefs.Validationf(
 			"manage: agent %q: engine %q is not registered; offered: %s",
 			spec.Name, spec.Engine.Kind, strings.Join(engineNames, ", "))
 	}
 	if spec.Protocol != nil && !protocolFound {
-		return errdefs.Validationf(
+		return nil, errdefs.Validationf(
 			"manage: agent %q: protocol %q is not registered; offered: %s",
 			spec.Name, spec.Protocol.Kind, strings.Join(protocolNames, ", "))
 	}
 	if err := validateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
-		return errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
+		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
 	}
 
 	var rt *runtime.Runtime
 	if spec.Runtime.Version != 0 {
 		created, err := runtime.New(ctx, spec.Runtime, m.host.RuntimeOptions...)
 		if err != nil {
-			return errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
+			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 		}
 		rt = created
 	}
@@ -157,7 +180,7 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 		if rt != nil {
 			_ = rt.Close()
 		}
-		return errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
+		return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 	}
 	table, err := agent.NewAgent(agent.AgentOptions{
 		Store:       m.host.Store,
@@ -177,7 +200,7 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 		if rt != nil {
 			_ = rt.Close()
 		}
-		return errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
+		return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 	}
 	deployed.agent = table
 	if spec.Protocol != nil {
@@ -187,26 +210,53 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 			Store:       m.host.Store,
 			Digest:      deployed.digest,
 			ArtifactURL: m.host.ArtifactURL,
-			Runner:      deployed.protocolRunner,
+			Agent:       deployed.agent,
 		})
 		if err != nil {
 			_ = table.Close()
 			if rt != nil {
 				_ = rt.Close()
 			}
-			return errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
+			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 		}
 		deployed.protocol = surface
 	}
+	return deployed, nil
+}
+
+// Replace deploys a new runtime for one agent and stops the previous one.
+//
+// The new deployment is built before the old one is touched, so a spec that
+// fails to build leaves the running agent exactly as it was.
+//
+// The old runtime's sessions cannot continue on the new one: the
+// configuration digest differs, and continuing a transcript under different
+// permissions is the failure the digest exists to prevent. Replace therefore
+// means "new sessions use the new configuration; old ones end here".
+func (m *Manager) Replace(ctx context.Context, spec Spec) error {
+	if spec.Name == "" {
+		return errdefs.Validationf("manage: agent name is required")
+	}
 	m.mu.Lock()
-	if _, exists := m.agents[spec.Name]; exists {
+	_, exists := m.agents[spec.Name]
+	m.mu.Unlock()
+	if !exists {
+		return errdefs.Validationf("manage: agent %q is not deployed", spec.Name)
+	}
+	deployed, err := m.build(ctx, spec)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	previous, exists := m.agents[spec.Name]
+	if !exists {
 		m.mu.Unlock()
 		_ = deployed.close()
-		return errdefs.Validationf("manage: agent %q already exists", spec.Name)
+		return errdefs.Validationf("manage: agent %q is not deployed", spec.Name)
 	}
 	m.agents[spec.Name] = deployed
 	m.mu.Unlock()
-	return nil
+	return previous.close()
 }
 
 // Deploy adds every spec or none: on the first failure the agents this call
@@ -236,19 +286,6 @@ func (m *Manager) Remove(_ context.Context, name string) error {
 		return errdefs.Validationf("manage: agent %q is not deployed", name)
 	}
 	return deployed.close()
-}
-
-// Replace deploys a new runtime for one agent and stops the previous one.
-//
-// The old runtime's sessions cannot continue on the new one: the
-// configuration digest differs, and continuing a transcript under different
-// permissions is the failure the digest exists to prevent. Replace therefore
-// means "new sessions use the new configuration; old ones end here".
-func (m *Manager) Replace(ctx context.Context, spec Spec) error {
-	if err := m.Remove(ctx, spec.Name); err != nil {
-		return err
-	}
-	return m.Add(ctx, spec)
 }
 
 // Names returns the deployed agent names, sorted.
@@ -360,15 +397,6 @@ func (d *deployment) runContext(ctx context.Context, sessionID string) context.C
 		return runtime.WithCatalogViewCtx(ctx, catalog)
 	}
 	return d.rt.NewRunContext(ctx)
-}
-
-// protocolRunner binds one session for the protocol.
-func (d *deployment) protocolRunner(ctx context.Context, sessionID, taskID string) (agent.Runner, error) {
-	return &protocolSession{
-		Session: d.session(sessionID),
-		taskID:  taskID,
-		ctx:     ctx,
-	}, nil
 }
 
 func (d *deployment) session(sessionID string) *Session {
