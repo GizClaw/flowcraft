@@ -151,7 +151,7 @@ func TestNonTerminalUpdateLeavesTheProjectionAlone(t *testing.T) {
 	seed := agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
 		Task: agent.Task{
-			ID: "task-1", ContextID: "conv-1", State: agent.StateWorking, Round: 3,
+			ID: "task-1", SessionID: "conv-1", State: agent.StateWorking, Round: 3,
 		},
 	}
 	if _, _, err := store.Save(ctx, seed, nil); err != nil {
@@ -199,7 +199,7 @@ func TestTerminalUpdateWritesTheState(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "task-1", ContextID: "conv-1", State: agent.StateWorking},
+		Task:   agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateWorking},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -225,11 +225,11 @@ func TestTerminalUpdateWritesTheState(t *testing.T) {
 	}
 }
 
-func seedTask(t *testing.T, store agent.Store, id, conversationID string, state agent.TaskState) {
+func seedTask(t *testing.T, store agent.Store, id, sessionID string, state agent.TaskState) {
 	t.Helper()
 	if _, _, err := store.Save(context.Background(), agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: id, ContextID: conversationID, State: state},
+		Task:   agent.Task{ID: id, SessionID: sessionID, State: state},
 	}, nil); err != nil {
 		t.Fatalf("Save %s: %v", id, err)
 	}
@@ -303,7 +303,7 @@ func TestListHistoryLength(t *testing.T) {
 	}
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", ContextID: "conv-1", State: agent.StateCompleted},
+		Task:   agent.Task{ID: "t1", SessionID: "conv-1", State: agent.StateCompleted},
 	}, events); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

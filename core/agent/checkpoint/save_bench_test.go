@@ -23,7 +23,7 @@ func benchStore(b *testing.B) *SQLite {
 func longHistory(n int) []message.Message {
 	messages := make([]message.Message, n)
 	for i := range messages {
-		messages[i] = message.NewTextMessage(message.RoleUser, "a message in a long conversation")
+		messages[i] = message.NewTextMessage(message.RoleUser, "a message in a long session")
 	}
 	return messages
 }
@@ -39,7 +39,7 @@ func BenchmarkSaveWithHistory(b *testing.B) {
 			checkpoint := agent.Checkpoint{
 				Schema: agent.CheckpointSchema,
 				Task: agent.Task{
-					ID: "t1", ContextID: "c1",
+					ID: "t1", SessionID: "c1",
 					State:   agent.StateWorking,
 					History: longHistory(size),
 				},
@@ -60,13 +60,13 @@ func BenchmarkSaveWithHistory(b *testing.B) {
 
 // BenchmarkSaveDelta is the shape an engine should use: the projection carries no
 // history, the step's writes are events, and the cost does not grow with the
-// conversation.
+// session.
 func BenchmarkSaveDelta(b *testing.B) {
 	store := benchStore(b)
 	ctx := context.Background()
 	checkpoint := agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", ContextID: "c1", State: agent.StateWorking},
+		Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateWorking},
 	}
 	body, err := json.Marshal(message.NewTextMessage(message.RoleUser, "one turn"))
 	if err != nil {
@@ -94,7 +94,7 @@ func BenchmarkLoadProjection(b *testing.B) {
 			ctx := context.Background()
 			checkpoint := agent.Checkpoint{
 				Schema: agent.CheckpointSchema,
-				Task:   agent.Task{ID: "t1", ContextID: "c1", State: agent.StateWorking},
+				Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateWorking},
 			}
 			events := make([]agent.EventRecord, 0, size)
 			for i := 0; i < size; i++ {

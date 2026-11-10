@@ -2,48 +2,42 @@ package deploy
 
 import (
 	"context"
+	"iter"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/server"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
-// A deployment that declares protocol a2a actually serves A2A: the config's
-// promise is kept, and a client reaches the agent through the handler the
-// manager built.
+// A deployment that names protocol a2a actually serves A2A: the document's
+// promise is kept, and a client reaches the agent through the manager's handler.
 func TestExposedAgentServesA2A(t *testing.T) {
-	manager := New(WithProtocols(A2AProtocol()))
-	t.Cleanup(func() { _ = manager.Close() })
-
 	peer := backend(t, "served")
-	deployed, err := manager.Add(context.Background(), Spec{
+	manager := newManager(t, BuiltinKinds().WithProtocols(A2AProtocol()), testHost(t))
+	spec := Spec{
 		Name:   "backend",
-		Engine: EngineSpec{Kind: "a2a", Peer: peer.URL},
-		Protocol: &ProtocolSpec{
-			Kind: "a2a",
-			Decoded: server.ServerSettings{Card: server.CardConfig{
-				Version: "1.0.0", URL: "http://backend.invalid",
-			}},
-		},
-	})
-	if err != nil {
+		Engine: EngineSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"peer": peer.URL})},
+		Protocol: &ProtocolSpec{Kind: "a2a", Settings: rawSettings(map[string]any{
+			"card": map[string]any{"version": "1.0.0", "url": "http://backend.invalid"},
+		})},
+	}
+	if err := manager.Add(context.Background(), spec); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	handler := deployed.Handler()
-	if handler == nil {
+	handler, ok := manager.Handler("backend")
+	if !ok || handler == nil {
 		t.Fatal("the agent exposes no handler")
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	// The A2A client is the natural test client: it speaks the same protocol the
-	// deployment exposes.
+	// The A2A client is the natural test client: it speaks the same protocol.
 	client, err := agenta2a.New(context.Background(), agenta2a.Config{
-		Peer:           srv.URL,
-		ConversationID: "conv-1",
+		Peer:      srv.URL,
+		SessionID: "conv-1",
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -70,15 +64,81 @@ func TestExposedAgentServesA2A(t *testing.T) {
 	}
 }
 
+// artifactRunner produces one artifact and finishes.
+type artifactRunner struct{}
+
+func (artifactRunner) State() agent.TaskState { return agent.StateSubmitted }
+
+func (artifactRunner) Run(context.Context, message.Message) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		if !yield(agent.Status{State: agent.StateWorking}, nil) {
+			return
+		}
+		if !yield(agent.ArtifactWritten{Artifact: agent.Artifact{
+			ID: "a1", Name: "report", MediaType: "text/plain", Blob: "sha256:1",
+		}}, nil) {
+			return
+		}
+		yield(agent.Status{State: agent.StateCompleted}, nil)
+	}
+}
+
+func (artifactRunner) Cancel(context.Context, string) error { return nil }
+func (artifactRunner) Close() error                         { return nil }
+
+// The deployment decides how a blob becomes fetchable; without the hook the
+// server can only send the reference.
+func TestArtifactURLReachesTheWire(t *testing.T) {
+	kinds := BuiltinKinds().
+		WithEngines(engineFor("artifact", func() agent.Runner { return artifactRunner{} })).
+		WithProtocols(A2AProtocol())
+	manager := newManager(t, kinds, Host{
+		RuntimeOptions: []runtime.Option{driver(&scripted{})},
+		ArtifactURL:    func(ref string) string { return "https://files.test/" + ref },
+	})
+	spec := testSpec(t, "artifacts", "artifact")
+	spec.Protocol = &ProtocolSpec{Kind: "a2a", Settings: rawSettings(map[string]any{
+		"card": map[string]any{"version": "1.0.0", "url": "http://artifacts.invalid"},
+	})}
+	if err := manager.Add(context.Background(), spec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	handler, ok := manager.Handler("artifacts")
+	if !ok || handler == nil {
+		t.Fatal("the agent exposes no handler")
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	client, err := agenta2a.New(context.Background(), agenta2a.Config{
+		Peer:      srv.URL,
+		SessionID: "conv-1",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var blob string
+	for event, err := range client.Run(context.Background(),
+		message.NewTextMessage(message.RoleUser, "make a report")) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if written, ok := event.(agent.ArtifactWritten); ok {
+			blob = written.Artifact.Blob
+		}
+	}
+	if blob != "https://files.test/sha256:1" {
+		t.Fatalf("artifact blob = %q, want the resolved URL", blob)
+	}
+}
+
 // Without the protocol registered, the same spec is refused: exposure is a
 // deployment choice, not a silent default.
 func TestA2AProtocolMustBeRegistered(t *testing.T) {
-	manager := New()
-	t.Cleanup(func() { _ = manager.Close() })
-	_, err := manager.Add(context.Background(), Spec{
+	manager := newManager(t, BuiltinKinds(), testHost(t))
+	err := manager.Add(context.Background(), Spec{
 		Name:     "backend",
-		Engine:   EngineSpec{Kind: "a2a", Peer: "https://peer.example/.well-known/agent-card.json"},
-		Protocol: &ProtocolSpec{Kind: "a2a"},
+		Engine:   EngineSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"peer": "https://peer.example"})},
+		Protocol: &ProtocolSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"card": map[string]any{"version": "1", "url": "https://x"}})},
 	})
 	if err == nil {
 		t.Fatal("an unregistered protocol was accepted")

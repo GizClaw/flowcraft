@@ -1,5 +1,5 @@
 // Package agenttest is the conformance suite for the agent's contracts: the
-// Store that makes a conversation durable, and the Runner an engine implements.
+// Store that makes a session durable, and the Runner an engine implements.
 package agenttest
 
 import (

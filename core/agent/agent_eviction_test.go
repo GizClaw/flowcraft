@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// An idle conversation is dropped from memory: its state lives in the store, so
+// An idle session is dropped from memory: its state lives in the store, so
 // eviction is a cache decision.
 func TestAgentEvictsByIdleTimeout(t *testing.T) {
 	factory, built := newFakeFactory(false)
@@ -29,13 +29,13 @@ func TestAgentEvictsByIdleTimeout(t *testing.T) {
 	}
 }
 
-// A running conversation is never evicted, even when the table is over its
+// A running session is never evicted, even when the table is over its
 // bound: it is not reconstructible while the runner is mid-step.
-func TestAgentKeepsARunningConversationOverTheBound(t *testing.T) {
+func TestAgentKeepsARunningSessionOverTheBound(t *testing.T) {
 	var slow *fakeRunner
-	factory := func(_ context.Context, conversationID, _ string) (agent.Runner, error) {
-		runner := &fakeRunner{state: agent.StateSubmitted, block: conversationID == "c1"}
-		if conversationID == "c1" {
+	factory := func(_ context.Context, sessionID, _ string) (agent.Runner, error) {
+		runner := &fakeRunner{state: agent.StateSubmitted, block: sessionID == "c1"}
+		if sessionID == "c1" {
 			slow = runner
 		}
 		return runner, nil
@@ -61,7 +61,7 @@ func TestAgentKeepsARunningConversationOverTheBound(t *testing.T) {
 	<-started
 	drain(t, a.Run(ctx, "c2", message.NewTextMessage(message.RoleUser, "two")))
 	if slow.closeCalls != 0 {
-		t.Errorf("the running conversation was evicted")
+		t.Errorf("the running session was evicted")
 	}
 	if state, _ := a.State(ctx, "c1"); state != agent.StateWorking {
 		t.Errorf("c1 state = %s, want working", state)

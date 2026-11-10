@@ -194,7 +194,7 @@ func TestAgentContinuesAPausedTaskThroughTheSameEntry(t *testing.T) {
 	}
 }
 
-// A second run on a busy conversation is refused, not queued.
+// A second run on a busy session is refused, not queued.
 func TestAgentRefusesASecondRun(t *testing.T) {
 	factory, _ := newFakeFactory(false)
 	a, err := agent.NewAgent(agent.AgentOptions{NewRunner: factory})
@@ -218,8 +218,8 @@ func TestAgentRefusesASecondRun(t *testing.T) {
 	}()
 	<-started
 	err = firstError(a.Run(context.Background(), "c1", message.NewTextMessage(message.RoleUser, "second")))
-	if !errors.Is(err, agent.ErrConversationBusy) {
-		t.Fatalf("second run error = %v, want ErrConversationBusy", err)
+	if !errors.Is(err, agent.ErrSessionBusy) {
+		t.Fatalf("second run error = %v, want ErrSessionBusy", err)
 	}
 	close(release)
 	<-done
@@ -235,7 +235,7 @@ func TestAgentRefusesAnotherDeploymentsCheckpoint(t *testing.T) {
 		Runtime: "sha256:one",
 		Task: agent.Task{
 			ID:        "t1",
-			ContextID: "c1",
+			SessionID: "c1",
 			State:     agent.StateWorking,
 		},
 	}, nil); err != nil {
@@ -266,7 +266,7 @@ func TestAgentAdoptsAStoredPausedTask(t *testing.T) {
 		Runtime: "sha256:one",
 		Task: agent.Task{
 			ID:        "t1",
-			ContextID: "c1",
+			SessionID: "c1",
 			State:     agent.StateInputRequired,
 		},
 	}, nil); err != nil {
@@ -291,8 +291,8 @@ func TestAgentAdoptsAStoredPausedTask(t *testing.T) {
 	}
 }
 
-// MaxSessions evicts the oldest idle conversation and closes its runner.
-func TestAgentEvictsIdleConversations(t *testing.T) {
+// MaxSessions evicts the oldest idle session and closes its runner.
+func TestAgentEvictsIdleSessions(t *testing.T) {
 	factory, built := newFakeFactory(false)
 	a, err := agent.NewAgent(agent.AgentOptions{NewRunner: factory, MaxSessions: 1})
 	if err != nil {
@@ -312,23 +312,23 @@ func TestAgentEvictsIdleConversations(t *testing.T) {
 	}
 }
 
-// A conversation without an id is refused before anything is built.
-func TestAgentRejectsAnEmptyConversation(t *testing.T) {
+// A session without an id is refused before anything is built.
+func TestAgentRejectsAnEmptySession(t *testing.T) {
 	factory, built := newFakeFactory(false)
 	a, err := agent.NewAgent(agent.AgentOptions{NewRunner: factory})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
-	if err := firstError(a.Run(context.Background(), "", message.NewTextMessage(message.RoleUser, "hi"))); !errors.Is(err, agent.ErrConversationRequired) {
-		t.Fatalf("error = %v, want ErrConversationRequired", err)
+	if err := firstError(a.Run(context.Background(), "", message.NewTextMessage(message.RoleUser, "hi"))); !errors.Is(err, agent.ErrSessionRequired) {
+		t.Fatalf("error = %v, want ErrSessionRequired", err)
 	}
 	if len(*built) != 0 {
-		t.Errorf("a runner was built for an empty conversation")
+		t.Errorf("a runner was built for an empty session")
 	}
 }
 
 // A finished task takes no message: the next one starts a new task in the same
-// conversation, with its own identity and runner.
+// session, with its own identity and runner.
 func TestAgentStartsTheNextTaskAfterCompletion(t *testing.T) {
 	var taskIDs []string
 	var mu sync.Mutex
@@ -369,7 +369,7 @@ func TestAgentRefusesATaskThatStoppedMidRun(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", ContextID: "c1", State: agent.StateWorking},
+		Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateWorking},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestAgentRefusesAFinishedTaskAddressedExplicitly(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", ContextID: "c1", State: agent.StateCompleted},
+		Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateCompleted},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestAgentCancelsAStoredPausedTask(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema,
-		Task:   agent.Task{ID: "t1", ContextID: "c1", State: agent.StateInputRequired},
+		Task:   agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -548,9 +548,9 @@ func TestAgentCloseStopsARun(t *testing.T) {
 	}
 }
 
-// Two callers arriving on a cold conversation build one runner, not two: the
+// Two callers arriving on a cold session build one runner, not two: the
 // second waits for the open instead of racing it.
-func TestAgentOpensAConversationOnceUnderConcurrency(t *testing.T) {
+func TestAgentOpensASessionOnceUnderConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	var built int
 	gate := make(chan struct{})
@@ -603,7 +603,7 @@ func TestAgentOpensAConversationOnceUnderConcurrency(t *testing.T) {
 	}
 	busy := 0
 	for _, got := range []outcome{first, second} {
-		if errors.Is(got.err, agent.ErrConversationBusy) {
+		if errors.Is(got.err, agent.ErrSessionBusy) {
 			busy++
 		}
 	}
@@ -612,7 +612,7 @@ func TestAgentOpensAConversationOnceUnderConcurrency(t *testing.T) {
 	}
 }
 
-// Opening one conversation does not block the table: a lookup elsewhere answers
+// Opening one session does not block the table: a lookup elsewhere answers
 // while the runner is still being built.
 func TestAgentDoesNotBlockOnASlowOpen(t *testing.T) {
 	gate := make(chan struct{})
@@ -643,13 +643,13 @@ func TestAgentDoesNotBlockOnASlowOpen(t *testing.T) {
 	select {
 	case <-answered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("State blocked while another conversation was being opened")
+		t.Fatal("State blocked while another session was being opened")
 	}
 	close(gate)
 	<-done
 }
 
-// A conversation from another deployment is closed where it stands instead of
+// A session from another deployment is closed where it stands instead of
 // being adopted again on every open.
 func TestAgentClosesATaskFromAnotherDeployment(t *testing.T) {
 	store := agenttest.NewMemStore()
@@ -657,7 +657,7 @@ func TestAgentClosesATaskFromAnotherDeployment(t *testing.T) {
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,
 		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", ContextID: "c1", State: agent.StateInputRequired},
+		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -683,8 +683,8 @@ func TestAgentClosesATaskFromAnotherDeployment(t *testing.T) {
 	}
 }
 
-// OnEvict marks a conversation leaving the table, not a task rolling over: the
-// second is the same conversation.
+// OnEvict marks a session leaving the table, not a task rolling over: the
+// second is the same session.
 func TestOnEvictFiresForEvictionNotRollover(t *testing.T) {
 	var mu sync.Mutex
 	var evicted []string
@@ -692,9 +692,9 @@ func TestOnEvictFiresForEvictionNotRollover(t *testing.T) {
 	a, err := agent.NewAgent(agent.AgentOptions{
 		NewRunner:   factory,
 		MaxSessions: 1,
-		OnEvict: func(conversationID string) {
+		OnEvict: func(sessionID string) {
 			mu.Lock()
-			evicted = append(evicted, conversationID)
+			evicted = append(evicted, sessionID)
 			mu.Unlock()
 		},
 	})
@@ -710,11 +710,11 @@ func TestOnEvictFiresForEvictionNotRollover(t *testing.T) {
 	if rolled != 0 {
 		t.Fatalf("rollover fired OnEvict: %v", evicted)
 	}
-	// A second conversation pushes the first out of the bounded table.
+	// A second session pushes the first out of the bounded table.
 	drain(t, a.Run(ctx, "c2", message.NewTextMessage(message.RoleUser, "three")))
 	mu.Lock()
 	defer mu.Unlock()
 	if len(evicted) != 1 || evicted[0] != "c1" {
-		t.Fatalf("evicted = %v, want the first conversation", evicted)
+		t.Fatalf("evicted = %v, want the first session", evicted)
 	}
 }

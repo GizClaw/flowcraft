@@ -83,7 +83,7 @@ func TestAgentDrainAndClose(t *testing.T) {
 	}
 }
 
-// Cancelling nothing is not an error, and an empty conversation id is refused
+// Cancelling nothing is not an error, and an empty session id is refused
 // before anything is touched.
 func TestAgentCancelWithNothingToCancel(t *testing.T) {
 	factory, built := newFakeFactory(false)
@@ -96,14 +96,14 @@ func TestAgentCancelWithNothingToCancel(t *testing.T) {
 		t.Errorf("Cancel unknown = %v, want nil", err)
 	}
 	if len(*built) != 0 {
-		t.Errorf("Cancel built a runner for a conversation that does not exist")
+		t.Errorf("Cancel built a runner for a session that does not exist")
 	}
-	if err := a.Cancel(ctx, "", "nobody"); !errors.Is(err, agent.ErrConversationRequired) {
-		t.Errorf("Cancel empty = %v, want ErrConversationRequired", err)
+	if err := a.Cancel(ctx, "", "nobody"); !errors.Is(err, agent.ErrSessionRequired) {
+		t.Errorf("Cancel empty = %v, want ErrSessionRequired", err)
 	}
 }
 
-// A protocol addressing another task than the one the conversation is on is
+// A protocol addressing another task than the one the session is on is
 // refused rather than silently starting something else.
 func TestAgentRejectsAMismatchedTaskID(t *testing.T) {
 	factory, _ := newFakeFactory(true)
@@ -119,14 +119,14 @@ func TestAgentRejectsAMismatchedTaskID(t *testing.T) {
 	}
 }
 
-// State needs a conversation to name, like every other entry point.
-func TestAgentStateRequiresAConversation(t *testing.T) {
+// State needs a session to name, like every other entry point.
+func TestAgentStateRequiresASession(t *testing.T) {
 	factory, _ := newFakeFactory(false)
 	a, err := agent.NewAgent(agent.AgentOptions{NewRunner: factory})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
-	if _, err := a.State(context.Background(), ""); !errors.Is(err, agent.ErrConversationRequired) {
-		t.Fatalf("State empty = %v, want ErrConversationRequired", err)
+	if _, err := a.State(context.Background(), ""); !errors.Is(err, agent.ErrSessionRequired) {
+		t.Fatalf("State empty = %v, want ErrSessionRequired", err)
 	}
 }

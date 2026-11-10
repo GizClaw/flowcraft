@@ -50,7 +50,7 @@ func cancelExecutor(t *testing.T) (*Executor, *cancelRunner) {
 	runner := &cancelRunner{started: make(chan struct{})}
 	executor, err := New(Config{
 		Card: CardConfig{Name: "x", Version: "1.0.0", URL: "https://x"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
 			return runner, nil
 		},
 	})
@@ -147,7 +147,7 @@ func (failCancelRunner) Close() error { return nil }
 func TestCancelReportsAFailedCancel(t *testing.T) {
 	executor, err := New(Config{
 		Card: CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
 			return failCancelRunner{}, nil
 		},
 	})

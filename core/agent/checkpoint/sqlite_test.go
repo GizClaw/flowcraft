@@ -26,7 +26,7 @@ func checkpoint(taskID string, round int) agent.Checkpoint {
 	return agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,
 		Runtime: "sha256:x",
-		Task:    agent.Task{ID: taskID, ContextID: "conv", State: agent.StateWorking, Round: round},
+		Task:    agent.Task{ID: taskID, SessionID: "conv", State: agent.StateWorking, Round: round},
 	}
 }
 

@@ -86,7 +86,7 @@ func BenchmarkAgentRunEvents(b *testing.B) {
 }
 
 // BenchmarkAgentRunParallel measures the table under concurrent runs on
-// distinct conversations, which is what a server actually does.
+// distinct sessions, which is what a server actually does.
 func BenchmarkAgentRunParallel(b *testing.B) {
 	deployed := newBenchAgent(b, 1)
 	var next atomic.Int64
@@ -107,7 +107,7 @@ func BenchmarkAgentRunParallel(b *testing.B) {
 }
 
 // BenchmarkAgentRunBusy measures the refusal path: a second message while the
-// conversation's run is in flight.
+// session's run is in flight.
 func BenchmarkAgentRunBusy(b *testing.B) {
 	deployed := make(chan struct{})
 	release := make(chan struct{})
@@ -162,7 +162,7 @@ func (b *blockingRunner) Run(context.Context, message.Message) iter.Seq2[agent.E
 func (b *blockingRunner) Cancel(context.Context, string) error { return nil }
 func (b *blockingRunner) Close() error                         { return nil }
 
-// BenchmarkAgentStateOpen measures a lookup on a conversation this process has
+// BenchmarkAgentStateOpen measures a lookup on a session this process has
 // already served: the hot path for a protocol adapter.
 func BenchmarkAgentStateOpen(b *testing.B) {
 	deployed := newBenchAgent(b, 1)
@@ -178,7 +178,7 @@ func BenchmarkAgentStateOpen(b *testing.B) {
 	}
 }
 
-// BenchmarkAgentStateStored measures the cold lookup: no conversation in memory,
+// BenchmarkAgentStateStored measures the cold lookup: no session in memory,
 // one store read.
 func BenchmarkAgentStateStored(b *testing.B) {
 	store := agenttest.NewMemStore()
@@ -186,7 +186,7 @@ func BenchmarkAgentStateStored(b *testing.B) {
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,
 		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", ContextID: "c1", State: agent.StateCompleted},
+		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateCompleted},
 	}, nil); err != nil {
 		b.Fatalf("Save: %v", err)
 	}

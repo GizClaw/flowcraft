@@ -106,7 +106,7 @@ func TestAgentSteersARunningTask(t *testing.T) {
 	<-done
 }
 
-// A message for a conversation with no run belongs in Run, not Steer.
+// A message for a session with no run belongs in Run, not Steer.
 func TestAgentSteerRequiresARunInFlight(t *testing.T) {
 	factory, _ := newFakeFactory(false)
 	a, err := agent.NewAgent(agent.AgentOptions{NewRunner: factory})
@@ -114,15 +114,15 @@ func TestAgentSteerRequiresARunInFlight(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	ctx := context.Background()
-	if err := a.Steer(ctx, "never-seen", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrConversationIdle) {
-		t.Errorf("unknown conversation = %v, want ErrConversationIdle", err)
+	if err := a.Steer(ctx, "never-seen", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Errorf("unknown session = %v, want ErrSessionIdle", err)
 	}
 	drain(t, a.Run(ctx, "c1", message.NewTextMessage(message.RoleUser, "one")))
-	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrConversationIdle) {
-		t.Errorf("finished conversation = %v, want ErrConversationIdle", err)
+	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Errorf("finished session = %v, want ErrSessionIdle", err)
 	}
-	if err := a.Steer(ctx, "", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrConversationRequired) {
-		t.Errorf("empty conversation = %v, want ErrConversationRequired", err)
+	if err := a.Steer(ctx, "", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionRequired) {
+		t.Errorf("empty session = %v, want ErrSessionRequired", err)
 	}
 }
 
@@ -135,8 +135,8 @@ func TestAgentSteerRefusesAPausedTask(t *testing.T) {
 	}
 	ctx := context.Background()
 	drain(t, a.Run(ctx, "c1", message.NewTextMessage(message.RoleUser, "why?")))
-	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrConversationIdle) {
-		t.Errorf("paused conversation = %v, want ErrConversationIdle", err)
+	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Errorf("paused session = %v, want ErrSessionIdle", err)
 	}
 }
 

@@ -19,12 +19,12 @@ import (
 // The runner is the engine contract, not a protocol-specific one: an execution
 // hands it a message and forwards the events it produces. The host owns the
 // runner's lifetime and its Close; the executor never closes it.
-type Sessions func(ctx context.Context, exec *a2asrv.ExecutorContext) (agent.Runner, error)
+type Runners func(ctx context.Context, exec *a2asrv.ExecutorContext) (agent.Runner, error)
 
 // Config is one A2A server's two halves: what it claims, and how it runs.
 type Config struct {
-	Card     CardConfig
-	Sessions Sessions
+	Card    CardConfig
+	Runners Runners
 	// ArtifactURL turns a blob reference into a URL a client can fetch. Nil
 	// keeps the reference in a data part: a client then learns the pointer
 	// instead of a file URL that nobody can open.
@@ -44,7 +44,7 @@ type runningRun struct {
 // translation and not a state machine.
 type Executor struct {
 	card  *a2a.AgentCard
-	build Sessions
+	build Runners
 	cfg   Config
 
 	mu sync.Mutex
@@ -66,7 +66,7 @@ func init() {
 
 // New validates the card and the session builder.
 func New(cfg Config) (*Executor, error) {
-	if cfg.Sessions == nil {
+	if cfg.Runners == nil {
 		return nil, errdefs.Validationf("a2a: a session builder is required")
 	}
 	card, err := NewCard(cfg.Card)
@@ -75,7 +75,7 @@ func New(cfg Config) (*Executor, error) {
 	}
 	return &Executor{
 		card:      card,
-		build:     cfg.Sessions,
+		build:     cfg.Runners,
 		cfg:       cfg,
 		running:   make(map[string]*runningRun),
 		cancelled: make(map[string]struct{}),

@@ -19,8 +19,8 @@ const (
 // ServerConfig is one A2A server: what it claims, how it runs, and which SDK
 // options to apply.
 type ServerConfig struct {
-	Card     CardConfig
-	Sessions Sessions
+	Card    CardConfig
+	Runners Runners
 	// TaskStore, when set, makes the server read and write tasks where the agent
 	// resumes from them. Left nil the SDK keeps its in-memory store, which is a
 	// second record of the same task and does not survive a restart.
@@ -49,7 +49,7 @@ type Server struct {
 func NewServer(cfg ServerConfig) (*Server, error) {
 	executor, err := New(Config{
 		Card:        cfg.Card,
-		Sessions:    cfg.Sessions,
+		Runners:     cfg.Runners,
 		ArtifactURL: cfg.ArtifactURL,
 	})
 	if err != nil {

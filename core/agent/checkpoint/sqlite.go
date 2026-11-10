@@ -160,7 +160,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			server_version = excluded.server_version,
 			updated_at     = excluded.updated_at`,
 		checkpoint.Task.ID,
-		checkpoint.Task.ContextID,
+		checkpoint.Task.SessionID,
 		string(checkpoint.Task.State),
 		checkpoint.Task.Round,
 		checkpoint.Schema,
@@ -232,7 +232,7 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		if err := json.Unmarshal(seed, &checkpoint); err != nil {
 			return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode seed: %w", err)
 		}
-		checkpoint.Task.ContextID = contextID
+		checkpoint.Task.SessionID = contextID
 		checkpoint.Task.State = agent.TaskState(state)
 		checkpoint.Task.Round = int(round)
 		var mutable struct {
@@ -266,12 +266,12 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 	return checkpoint, nil
 }
 
-// LatestForContext returns the newest task of one conversation.
-func (l *SQLite) LatestForContext(ctx context.Context, conversationID string) (agent.Checkpoint, error) {
+// LatestForSession returns the newest task of one session.
+func (l *SQLite) LatestForSession(ctx context.Context, sessionID string) (agent.Checkpoint, error) {
 	var taskID string
 	err := l.db.QueryRowContext(ctx,
 		`SELECT task_id FROM tasks WHERE context_id = ?
-		 ORDER BY updated_at DESC LIMIT 1`, conversationID).Scan(&taskID)
+		 ORDER BY updated_at DESC LIMIT 1`, sessionID).Scan(&taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -368,7 +368,7 @@ func (l *SQLite) List(ctx context.Context) ([]agent.TaskSummary, error) {
 	out := make([]agent.TaskSummary, 0, 16)
 	for rows.Next() {
 		var summary agent.TaskSummary
-		if err := rows.Scan(&summary.ID, &summary.ContextID, &summary.State,
+		if err := rows.Scan(&summary.ID, &summary.SessionID, &summary.State,
 			&summary.Round, &summary.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("checkpoint: scan summary: %w", err)
 		}

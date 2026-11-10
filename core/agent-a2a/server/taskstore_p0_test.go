@@ -66,7 +66,7 @@ func TestTaskStoreSkipsInternalEvents(t *testing.T) {
 	}
 	if _, _, err := backend.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema, Runtime: "sha256:deployment",
-		ServerVersion: 1, Task: agent.Task{ID: "task-1", ContextID: "conv-1", State: agent.StateWorking},
+		ServerVersion: 1, Task: agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateWorking},
 	}, events); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestTaskStoreSkipsInternalEvents(t *testing.T) {
 	}
 }
 
-// Create stamps the deployment digest, or a restored conversation could never
+// Create stamps the deployment digest, or a restored session could never
 // pass agent.Restore.
 func TestTaskStoreCreateStampsTheDigest(t *testing.T) {
 	store, backend, _ := newStore(t)

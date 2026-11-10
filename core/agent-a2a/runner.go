@@ -30,48 +30,48 @@ type Config struct {
 	Store agent.Store
 	// Identity is the deployment digest a stored task must carry to be resumed.
 	Identity runtime.Digest
-	// ConversationID is the local conversation this runner serves.
-	ConversationID string
+	// SessionID is the local session this runner serves.
+	SessionID string
 }
 
 // Runner is a remote A2A agent driven as an engine.
 //
 // It implements agent.Runner, so a deployment treats a peer exactly like a local
-// engine: one conversation, one task at a time, and a cancel that is forwarded.
+// engine: one session, one task at a time, and a cancel that is forwarded.
 type Runner struct {
 	client *a2aclient.Client
 	store  agent.Store
 	digest runtime.Digest
-	// conversation is the local address of the conversation; the peer's context
-	// is separate and lives in contextID.
-	conversation string
+	// session is the local address of the session; the peer's context is
+	// separate and lives in remoteContext.
+	session string
 
 	mu sync.Mutex
 	// taskID is the peer's task id, not the local protocol's.
 	taskID a2a.TaskID
 	// contextID is the context the peer assigned; a follow-up must carry it.
-	contextID string
-	state     agent.TaskState
+	remoteContext string
+	state         agent.TaskState
 }
 
 var _ agent.Runner = (*Runner)(nil)
 
 // New connects to the peer and restores whatever the store remembers about this
-// conversation.
+// session.
 func New(ctx context.Context, cfg Config) (*Runner, error) {
-	if strings.TrimSpace(cfg.ConversationID) == "" {
-		return nil, errdefs.Validationf("a2a: a conversation id is required")
+	if strings.TrimSpace(cfg.SessionID) == "" {
+		return nil, errdefs.Validationf("a2a: a session id is required")
 	}
 	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	runner := &Runner{
-		client:       client,
-		store:        cfg.Store,
-		digest:       cfg.Identity,
-		conversation: cfg.ConversationID,
-		state:        agent.StateSubmitted,
+		client:  client,
+		store:   cfg.Store,
+		digest:  cfg.Identity,
+		session: cfg.SessionID,
+		state:   agent.StateSubmitted,
 	}
 	runner.restore(ctx)
 	return runner, nil
@@ -82,23 +82,23 @@ func (r *Runner) restore(ctx context.Context) {
 	if r.store == nil {
 		return
 	}
-	checkpoint, err := r.store.LatestForContext(ctx, r.conversation)
+	checkpoint, err := r.store.LatestForSession(ctx, r.session)
 	if err != nil || checkpoint.Task.ID == "" {
 		return
 	}
 	if r.digest != "" && checkpoint.Runtime != r.digest {
-		// A conversation produced under another deployment is not this one's to
+		// A session produced under another deployment is not this one's to
 		// continue: the peer or the engine may have changed.
 		return
 	}
 	// The peer's context outlives the task: the next message continues the
-	// conversation even when the task it belonged to finished.
+	// session even when the task it belonged to finished.
 	if raw, ok := checkpoint.Sections["a2a"]; ok {
 		var section struct {
 			ContextID string `json:"context_id"`
 		}
 		if json.Unmarshal(raw, &section) == nil {
-			r.contextID = section.ContextID
+			r.remoteContext = section.ContextID
 		}
 	}
 	if checkpoint.Task.State.Terminal() {
@@ -114,7 +114,7 @@ func (r *Runner) persist(ctx context.Context) {
 	r.mu.Lock()
 	taskID := r.taskID
 	state := r.state
-	contextID := r.contextID
+	contextID := r.remoteContext
 	r.mu.Unlock()
 	if r.store == nil || taskID == "" {
 		return
@@ -131,7 +131,7 @@ func (r *Runner) persist(ctx context.Context) {
 		Runtime: r.digest,
 		Task: agent.Task{
 			ID:        string(taskID),
-			ContextID: r.conversation,
+			SessionID: r.session,
 			State:     state,
 		},
 		Sections: map[string]json.RawMessage{"a2a": section},
@@ -170,7 +170,7 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 		}
 		r.mu.Lock()
 		request.TaskID = r.taskID
-		request.ContextID = r.contextID
+		request.ContextID = r.remoteContext
 		r.state = agent.StateWorking
 		r.mu.Unlock()
 
@@ -224,7 +224,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 			r.taskID = typed.ID
 		}
 		if typed.ContextID != "" {
-			r.contextID = typed.ContextID
+			r.remoteContext = typed.ContextID
 		}
 		state := wire.FromState(typed.Status.State)
 		r.mu.Unlock()
@@ -236,7 +236,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 	case *a2a.TaskStatusUpdateEvent:
 		r.mu.Lock()
 		if typed.ContextID != "" {
-			r.contextID = typed.ContextID
+			r.remoteContext = typed.ContextID
 		}
 		r.mu.Unlock()
 		state := wire.FromState(typed.Status.State)

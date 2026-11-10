@@ -10,22 +10,18 @@ import (
 
 // deploymentDigest is the identity a checkpoint of this deployment records.
 //
-// The runtime configuration is only part of what makes a conversation what it is:
+// The runtime configuration is only part of what makes a session what it is:
 // the same model and tools reached through a different peer, or exposed through a
 // different protocol, is a different deployment entity. Resuming across either
 // would continue a transcript under conditions it was not produced under.
 //
 // The card is deliberately absent: it is an advertisement, and fixing a typo in
-// a description must not invalidate conversations.
-func deploymentDigest(runtimeDigest runtime.Digest, engine EngineSpec, protocol *ProtocolSpec) runtime.Digest {
-	kind := ""
-	if protocol != nil {
-		kind = protocol.Kind
-	}
+// a description must not invalidate sessions.
+func deploymentDigest(runtimeDigest runtime.Digest, engineKind, engineSettings, protocolKind string) runtime.Digest {
 	// The separator cannot appear in a digest or a kind, so the fields cannot
 	// collide into the same bytes as a different combination.
 	payload := strings.Join([]string{
-		string(runtimeDigest), engine.Kind, engine.Peer, engine.Graph, kind,
+		string(runtimeDigest), engineKind, engineSettings, protocolKind,
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return runtime.Digest("sha256:" + hex.EncodeToString(sum[:]))

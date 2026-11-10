@@ -6,17 +6,17 @@ import (
 	"sync"
 )
 
-// tableShards is how many independent indexes the conversation table is split
-// into. Runs on distinct conversations only touch their own shard, so the global
+// tableShards is how many independent indexes the session table is split
+// into. Runs on distinct sessions only touch their own shard, so the global
 // lock that used to serialize every run is gone; the number is a power of two
 // only by habit, the index is a modulo.
 const tableShards = 32
 
-// table is the conversation index: a fixed set of shards, each with its own
+// table is the session index: a fixed set of shards, each with its own
 // lock, its own entries, its own run counter and its own task-id sequence.
 //
 // It is deliberately unexported and small: the agent owns the lifecycle, this
-// owns only where a conversation lives and how many runs a shard has in flight.
+// owns only where a session lives and how many runs a shard has in flight.
 type table struct {
 	shards []*shard
 }
@@ -24,7 +24,7 @@ type table struct {
 type shard struct {
 	index   int
 	mu      sync.Mutex
-	entries map[string]*conversation
+	entries map[string]*session
 	// running is the number of runs in flight in this shard; idle is non-nil
 	// while someone is waiting for them to end.
 	running int
@@ -40,22 +40,22 @@ func newTable(size int) *table {
 	}
 	t := &table{shards: make([]*shard, size)}
 	for i := range t.shards {
-		t.shards[i] = &shard{index: i, entries: make(map[string]*conversation)}
+		t.shards[i] = &shard{index: i, entries: make(map[string]*session)}
 	}
 	return t
 }
 
-// shard returns the shard a conversation belongs to.
-func (t *table) shard(conversationID string) *shard {
-	return t.shards[shardIndex(conversationID, len(t.shards))]
+// shard returns the shard a session belongs to.
+func (t *table) shard(sessionID string) *shard {
+	return t.shards[shardIndex(sessionID, len(t.shards))]
 }
 
-// shardIndex is FNV-1a over the conversation id. It allocates nothing, which
+// shardIndex is FNV-1a over the session id. It allocates nothing, which
 // matters: it runs on every acquire.
-func shardIndex(conversationID string, shards int) int {
+func shardIndex(sessionID string, shards int) int {
 	hash := uint32(2166136261)
-	for i := 0; i < len(conversationID); i++ {
-		hash ^= uint32(conversationID[i])
+	for i := 0; i < len(sessionID); i++ {
+		hash ^= uint32(sessionID[i])
 		hash *= 16777619
 	}
 	return int(hash % uint32(shards))
@@ -64,16 +64,16 @@ func shardIndex(conversationID string, shards int) int {
 // lookup, insert and remove require the shard lock: they are the index
 // primitives, and a caller that needs several of them keeps the lock across all
 // of them.
-func (s *shard) lookup(conversationID string) (*conversation, bool) {
-	entry, found := s.entries[conversationID]
+func (s *shard) lookup(sessionID string) (*session, bool) {
+	entry, found := s.entries[sessionID]
 	return entry, found
 }
 
-func (s *shard) insert(entry *conversation) { s.entries[entry.id] = entry }
+func (s *shard) insert(entry *session) { s.entries[entry.id] = entry }
 
-func (s *shard) remove(conversationID string) *conversation {
-	entry := s.entries[conversationID]
-	delete(s.entries, conversationID)
+func (s *shard) remove(sessionID string) *session {
+	entry := s.entries[sessionID]
+	delete(s.entries, sessionID)
 	return entry
 }
 

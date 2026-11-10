@@ -29,7 +29,7 @@ type AgentDocument struct {
 
 // CatalogDocument scopes the tool projection.
 type CatalogDocument struct {
-	// Scope is "run" (default) or "conversation".
+	// Scope is "run" (default) or "session".
 	Scope string `json:"scope"`
 }
 
@@ -38,12 +38,8 @@ type EngineDocument struct {
 	// Kind is required. There is no default implementation: an agent that does
 	// not say what it is cannot be deployed meaningfully.
 	Kind string `json:"kind"`
-	// Peer is the remote card URL for the a2a engine.
-	Peer string `json:"peer"`
-	// Auth is the credential for reaching Peer.
-	Auth json.RawMessage `json:"auth"`
-	// Graph is the graph document path for the graph engine.
-	Graph string `json:"graph"`
+	// Settings is the kind's own configuration, decoded by its registration.
+	Settings json.RawMessage `json:"settings"`
 }
 
 // RuntimeDocument is the substrate configuration as a stack of layers.
@@ -61,26 +57,23 @@ type LayerDocument struct {
 type ProtocolDocument struct {
 	// Kind is required when the block is present.
 	Kind string `json:"kind"`
-	// Card is the a2a protocol's advertisement, written beside kind.
-	Card json.RawMessage `json:"card"`
-	// Settings is the protocol's own configuration, decoded by its factory.
+	// Settings is the protocol's own configuration, decoded by its kind.
 	Settings json.RawMessage `json:"settings"`
 }
 
 // Loader turns a deployment document into specs.
 //
-// The kind tables are names, not factories yet: an engine that is not registered
-// yet must still be rejected at load time, with the registered names in the
+// The same kind table the manager uses decides what a document may name: an
+// unregistered kind is rejected at load time, with the registered names in the
 // error, rather than failing halfway through assembling an agent.
 type Loader struct {
 	// LoadOptions are handed to runtime.LoadLayers: resolvers for placeholder
 	// schemes. They are not Spec fields because they are host wiring, not
 	// deployment data.
 	LoadOptions []runtime.LoadOption
-	// Engines and Protocols are the registered kinds. Decode is invoked here so
-	// a bad protocol block fails at load time.
-	Engines   []Engine
-	Protocols []Protocol
+	// Kinds are the registered engines and protocols. Decode is invoked here, so
+	// a bad settings block fails at load time.
+	Kinds Kinds
 }
 
 // LoadFile reads a document from disk.
@@ -158,62 +151,50 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if strings.TrimSpace(agent.Engine.Kind) == "" {
 		return Spec{}, errdefs.Validationf("%s: kind is required", where("engine"))
 	}
-	registration, found := l.engine(agent.Engine.Kind)
+	kind, found := l.engine(agent.Engine.Kind)
 	if !found {
 		return Spec{}, errdefs.Validationf(
 			"%s: kind %q is not registered; offered: %s",
-			where("engine"), agent.Engine.Kind, strings.Join(engineNames(l.Engines), ", "))
+			where("engine"), agent.Engine.Kind, strings.Join(sortedKeys(l.Kinds.Engines), ", "))
 	}
 
 	// The kind says whether it runs here and speaks for its own fields; the
-	// shared rules (runtime, peer) live beside the registration.
-	if err := validateEngineSpec(registration, EngineSpec{
-		Kind:  agent.Engine.Kind,
-		Peer:  agent.Engine.Peer,
-		Auth:  agent.Engine.Auth,
-		Graph: agent.Engine.Graph,
-	}, agent.Runtime != nil); err != nil {
+	// shared rules (runtime, local-vs-remote) live beside the registration.
+	settings := agent.Engine.Settings
+	if len(strings.TrimSpace(string(settings))) == 0 {
+		settings = json.RawMessage(`{}`)
+	}
+	engineSpec := EngineSpec{Kind: agent.Engine.Kind, Settings: settings}
+	if kind.Decode != nil {
+		if _, err := kind.Decode(settings); err != nil {
+			return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
+		}
+	}
+	if err := validateEngineSpec(kind, engineSpec, agent.Runtime != nil); err != nil {
 		return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 	}
 
 	var protocolSpec *ProtocolSpec
-	var decoded any
 	if agent.Protocol != nil {
 		if strings.TrimSpace(agent.Protocol.Kind) == "" {
 			return Spec{}, errdefs.Validationf("%s: kind is required", where("protocol"))
 		}
-		registration, found := l.protocol(agent.Protocol.Kind)
+		kind, found := l.protocol(agent.Protocol.Kind)
 		if !found {
 			return Spec{}, errdefs.Validationf(
 				"%s: kind %q is not registered; offered: %s",
-				where("protocol"), agent.Protocol.Kind, strings.Join(protocolNames(l.Protocols), ", "))
+				where("protocol"), agent.Protocol.Kind, strings.Join(sortedKeys(l.Kinds.Protocols), ", "))
 		}
 		settings := agent.Protocol.Settings
-		if len(agent.Protocol.Card) > 0 {
-			// The written form puts the card beside kind; the decoder reads it
-			// from the settings object, so fold it in without mutating the
-			// document.
-			fields := make(map[string]json.RawMessage, 1)
-			if len(settings) > 0 {
-				if err := json.Unmarshal(settings, &fields); err != nil {
-					return Spec{}, errdefs.Validationf("%s: settings: %w", where("protocol"), err)
-				}
+		if len(strings.TrimSpace(string(settings))) == 0 {
+			settings = json.RawMessage(`{}`)
+		}
+		if kind.Decode != nil {
+			if _, err := kind.Decode(settings); err != nil {
+				return Spec{}, errdefs.Validationf("%s: %v", where("protocol"), err)
 			}
-			fields["card"] = agent.Protocol.Card
-			merged, err := json.Marshal(fields)
-			if err != nil {
-				return Spec{}, errdefs.Validationf("%s: settings: %w", where("protocol"), err)
-			}
-			settings = merged
 		}
 		protocolSpec = &ProtocolSpec{Kind: agent.Protocol.Kind, Settings: settings}
-		if registration.Decode != nil {
-			value, err := registration.Decode(settings)
-			if err != nil {
-				return Spec{}, errdefs.Validationf("%s: %w", where("protocol"), err)
-			}
-			decoded = value
-		}
 	}
 
 	catalog := CatalogSpec{}
@@ -224,18 +205,10 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		return Spec{}, errdefs.Validationf("%s: %w", where("catalog"), err)
 	}
 	spec := Spec{
-		Name:    agent.Name,
-		Catalog: catalog,
-		Engine: EngineSpec{
-			Kind:  agent.Engine.Kind,
-			Peer:  agent.Engine.Peer,
-			Auth:  agent.Engine.Auth,
-			Graph: agent.Engine.Graph,
-		},
+		Name:     agent.Name,
+		Catalog:  catalog,
+		Engine:   engineSpec,
 		Protocol: protocolSpec,
-	}
-	if protocolSpec != nil {
-		protocolSpec.Decoded = decoded
 	}
 	if agent.Runtime != nil {
 		layers, err := l.layers(agent.Name, agent.Runtime)
@@ -272,36 +245,12 @@ func (l Loader) layers(agent string, runtimeDocument *RuntimeDocument) ([]runtim
 	return layers, nil
 }
 
-func (l Loader) engine(name string) (Engine, bool) {
-	for _, candidate := range l.Engines {
-		if candidate.Name == name {
-			return candidate, true
-		}
-	}
-	return Engine{}, false
+func (l Loader) engine(name string) (EngineKind, bool) {
+	kind, found := l.Kinds.Engines[name]
+	return kind, found
 }
 
-func (l Loader) protocol(name string) (Protocol, bool) {
-	for _, candidate := range l.Protocols {
-		if candidate.Name == name {
-			return candidate, true
-		}
-	}
-	return Protocol{}, false
-}
-
-func engineNames(engines []Engine) []string {
-	names := make([]string, 0, len(engines))
-	for _, engine := range engines {
-		names = append(names, engine.Name)
-	}
-	return names
-}
-
-func protocolNames(protocols []Protocol) []string {
-	names := make([]string, 0, len(protocols))
-	for _, item := range protocols {
-		names = append(names, item.Name)
-	}
-	return names
+func (l Loader) protocol(name string) (ProtocolKind, bool) {
+	kind, found := l.Kinds.Protocols[name]
+	return kind, found
 }

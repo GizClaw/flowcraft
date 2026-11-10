@@ -25,11 +25,11 @@ func (s *failingStore) Load(ctx context.Context, taskID string) (agent.Checkpoin
 	return s.Store.Load(ctx, taskID)
 }
 
-func (s *failingStore) LatestForContext(ctx context.Context, conversationID string) (agent.Checkpoint, error) {
+func (s *failingStore) LatestForSession(ctx context.Context, sessionID string) (agent.Checkpoint, error) {
 	if s.latestErr != nil {
 		return agent.Checkpoint{}, s.latestErr
 	}
-	return s.Store.LatestForContext(ctx, conversationID)
+	return s.Store.LatestForSession(ctx, sessionID)
 }
 
 func (s *failingStore) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
@@ -39,14 +39,14 @@ func (s *failingStore) Save(ctx context.Context, checkpoint agent.Checkpoint, ev
 	return s.Store.Save(ctx, checkpoint, events)
 }
 
-// State answers from the store for a conversation this process never opened.
+// State answers from the store for a session this process never opened.
 func TestAgentStateReadsTheStore(t *testing.T) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,
 		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", ContextID: "c1", State: agent.StateInputRequired},
+		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestAgentPropagatesStoreErrors(t *testing.T) {
 }
 
 // Closing a task from another deployment is best effort: a failed write must
-// not stop the conversation from continuing on this deployment.
+// not stop the session from continuing on this deployment.
 func TestAgentAbandonsWithoutFailingTheRun(t *testing.T) {
 	boom := errors.New("write refused")
 	store := &failingStore{Store: agenttest.NewMemStore(), saveErr: boom}
@@ -108,7 +108,7 @@ func TestAgentAbandonsWithoutFailingTheRun(t *testing.T) {
 	if _, _, err := store.Store.Save(ctx, agent.Checkpoint{
 		Schema:  agent.CheckpointSchema,
 		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", ContextID: "c1", State: agent.StateInputRequired},
+		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

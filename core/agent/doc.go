@@ -3,12 +3,12 @@
 //
 // It owns no model call and no tool execution: an engine implements Runner (the
 // four verbs a Task needs — advance, cancel, release, and report state), and
-// Agent is the conversation table around it. Nothing here imports a runtime; the context a
+// Agent is the session table around it. Nothing here imports a runtime; the context a
 // run executes under comes from the host through AgentOptions.RunContext.
 //
 // # The shapes
 //
-// Task is the conversation-level projection a run is checkpointed as: its
+// Task is the session-level projection a run is checkpointed as: its
 // identity and state carry the names the A2A protocol uses, because a deployment
 // exposes agents through that protocol, while Round/Pending are what a step-wise
 // engine needs to continue. History is the transcript — a system prompt is a
@@ -29,7 +29,7 @@
 // There is no mailbox, no queue and no steering mode. A message is handled by
 // the call that carries it: Runner.Run starts a Task, Agent.Run handles one
 // message (starting it, or answering the question it paused on), and a
-// conversation that already has a run in flight is refused rather than
+// session that already has a run in flight is refused rather than
 // buffered. That is the protocol's model too — A2A refuses a message to a
 // running task with "task execution is already in progress" and offers only
 // cancel. A host that wants to queue input queues it in its own application, not

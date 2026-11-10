@@ -11,7 +11,7 @@ import (
 
 // Terminal is the one predicate every consumer branches on, so its table is
 // worth pinning: a state that becomes terminal by accident strands a
-// conversation, and one that stops being terminal makes a finished task take
+// session, and one that stops being terminal makes a finished task take
 // messages.
 func TestTaskStateTerminal(t *testing.T) {
 	terminal := []agent.TaskState{
@@ -48,7 +48,7 @@ func TestTaskJSONRoundTrip(t *testing.T) {
 	}
 	task := agent.Task{
 		ID:        "t1",
-		ContextID: "c1",
+		SessionID: "c1",
 		State:     agent.StateInputRequired,
 		Round:     3,
 		History: []message.Message{

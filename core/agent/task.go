@@ -55,7 +55,7 @@ type Artifact struct {
 // model, how many tokens, how long) is telemetry, not state, so it is not here.
 type Task struct {
 	ID        string            `json:"id"`
-	ContextID string            `json:"context_id,omitempty"`
+	SessionID string            `json:"context_id,omitempty"`
 	State     TaskState         `json:"state"`
 	Round     int               `json:"round"`
 	History   []message.Message `json:"history,omitempty"`

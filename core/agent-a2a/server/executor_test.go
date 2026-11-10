@@ -241,7 +241,7 @@ func TestFromA2AMessageCarriesText(t *testing.T) {
 func TestExecuteReportsBuilderFailure(t *testing.T) {
 	executor, err := New(Config{
 		Card: CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
 			return nil, errors.New("no runtime")
 		},
 	})
@@ -263,8 +263,8 @@ func TestExecuteReportsBuilderFailure(t *testing.T) {
 
 func TestCancelReportsTheRequestedState(t *testing.T) {
 	executor, err := New(Config{
-		Card:     CardConfig{Name: "x", Version: "1", URL: "https://x"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) { return nil, nil },
+		Card:    CardConfig{Name: "x", Version: "1", URL: "https://x"},
+		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

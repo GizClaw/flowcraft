@@ -15,7 +15,7 @@ import (
 // knows which — its own state says so. A caller never has to.
 //
 // It owns no mailbox and no queue: a message arrives in the call that handles it,
-// and a conversation that already has a run in flight is refused rather than
+// and a session that already has a run in flight is refused rather than
 // buffered. That is the protocol's model too — a message is a request, not an
 // append to a backlog.
 //

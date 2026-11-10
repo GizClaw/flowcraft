@@ -53,7 +53,7 @@ type EventRecord struct {
 // TaskSummary is the list projection.
 type TaskSummary struct {
 	ID        string
-	ContextID string
+	SessionID string
 	State     TaskState
 	Round     int
 	UpdatedAt string
@@ -82,10 +82,10 @@ type Store interface {
 	// small is what makes Load cost the same for a one-turn task and a
 	// thousand-turn one.
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
-	// LatestForContext returns the newest task of one conversation, which is
-	// what resuming a conversation needs: checkpoints are keyed by task, but a
-	// conversation outlives each of its tasks.
-	LatestForContext(ctx context.Context, conversationID string) (Checkpoint, error)
+	// LatestForSession returns the newest task of one session, which is
+	// what resuming a session needs: checkpoints are keyed by task, but a
+	// session outlives each of its tasks.
+	LatestForSession(ctx context.Context, sessionID string) (Checkpoint, error)
 	// Events returns every appended fact of one task, oldest first.
 	Events(ctx context.Context, taskID string) ([]EventRecord, error)
 	// EventsAfter returns the facts recorded after seq (exclusive), oldest first.

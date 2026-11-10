@@ -2,7 +2,7 @@
 //
 // It exists because the behaviours a Store promises are subtle — a seed that is
 // written once, events that only append, two version counters, a latest task per
-// conversation — and a backend that gets one of them wrong only shows it as a
+// session — and a backend that gets one of them wrong only shows it as a
 // resume that quietly loses a message. The suite is the one place those promises
 // are written down; a new backend (a Postgres sibling of the SQLite one) runs it
 // instead of re-deriving them.
@@ -42,7 +42,7 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"SetServerVersionLeavesTheProjectionAlone", setServerVersionOnly},
 		{"VersionAdvancesPerSave", versionAdvances},
 		{"ServerVersionRoundTrips", serverVersionRoundTrips},
-		{"LatestForContextPicksTheNewest", latestForContext},
+		{"LatestForSessionPicksTheNewest", latestForContext},
 		{"ListIsNewestFirst", listIsNewestFirst},
 		{"DeleteRemovesTaskAndEvents", deleteRemovesTaskAndEvents},
 		{"SectionsSurviveLaterSaves", sectionsSurviveLaterSaves},
@@ -60,7 +60,7 @@ func task(id, contextID string, round int) agent.Checkpoint {
 		Runtime: "sha256:test",
 		Task: agent.Task{
 			ID:        id,
-			ContextID: contextID,
+			SessionID: contextID,
 			State:     agent.StateWorking,
 			Round:     round,
 			History: []message.Message{
@@ -86,8 +86,8 @@ func missingTask(t *testing.T, open func(*testing.T) agent.Store) {
 	if _, err := store.Load(ctx, "absent"); !errors.Is(err, agent.ErrNoCheckpoint) {
 		t.Fatalf("Load(absent) = %v, want ErrNoCheckpoint", err)
 	}
-	if _, err := store.LatestForContext(ctx, "absent"); !errors.Is(err, agent.ErrNoCheckpoint) {
-		t.Fatalf("LatestForContext(absent) = %v, want ErrNoCheckpoint", err)
+	if _, err := store.LatestForSession(ctx, "absent"); !errors.Is(err, agent.ErrNoCheckpoint) {
+		t.Fatalf("LatestForSession(absent) = %v, want ErrNoCheckpoint", err)
 	}
 }
 
@@ -385,9 +385,9 @@ func latestForContext(t *testing.T, open func(*testing.T) agent.Store) {
 	if _, _, err := store.Save(ctx, task("other", "conv-2", 0), nil); err != nil {
 		t.Fatalf("Save other: %v", err)
 	}
-	latest, err := store.LatestForContext(ctx, "conv-1")
+	latest, err := store.LatestForSession(ctx, "conv-1")
 	if err != nil {
-		t.Fatalf("LatestForContext: %v", err)
+		t.Fatalf("LatestForSession: %v", err)
 	}
 	if latest.Task.ID != "new" {
 		t.Errorf("latest = %q, want new", latest.Task.ID)
@@ -548,7 +548,7 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 	}
 	entry.state = cp.Task.State
 	entry.round = cp.Task.Round
-	entry.contextID = cp.Task.ContextID
+	entry.contextID = cp.Task.SessionID
 	entry.artifacts = cp.Task.Artifacts
 	entry.pending = cp.Task.Pending
 	if len(cp.Sections) > 0 {
@@ -592,7 +592,7 @@ func (m *MemStore) Load(ctx context.Context, taskID string) (agent.Checkpoint, e
 	}
 	cp := entry.seed
 	cp.Task.ID = taskID
-	cp.Task.ContextID = entry.contextID
+	cp.Task.SessionID = entry.contextID
 	cp.Task.State = entry.state
 	cp.Task.Round = entry.round
 	cp.Task.Artifacts = entry.artifacts
@@ -609,15 +609,15 @@ func (m *MemStore) Load(ctx context.Context, taskID string) (agent.Checkpoint, e
 	return cp, nil
 }
 
-func (m *MemStore) LatestForContext(ctx context.Context, conversationID string) (agent.Checkpoint, error) {
-	latest, ok := m.latestID(conversationID)
+func (m *MemStore) LatestForSession(ctx context.Context, sessionID string) (agent.Checkpoint, error) {
+	latest, ok := m.latestID(sessionID)
 	if !ok {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
 	return m.Load(ctx, latest)
 }
 
-func (m *MemStore) latestID(conversationID string) (string, bool) {
+func (m *MemStore) latestID(sessionID string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var (
@@ -627,7 +627,7 @@ func (m *MemStore) latestID(conversationID string) (string, bool) {
 	)
 	for _, taskID := range m.order {
 		entry := m.tasks[taskID]
-		if entry.contextID != conversationID {
+		if entry.contextID != sessionID {
 			continue
 		}
 		if !found || entry.updatedAt.After(newest) {
@@ -713,7 +713,7 @@ func (m *MemStore) List(ctx context.Context) ([]agent.TaskSummary, error) {
 		entry := m.tasks[taskID]
 		list = append(list, agent.TaskSummary{
 			ID:        taskID,
-			ContextID: entry.contextID,
+			SessionID: entry.contextID,
 			State:     entry.state,
 			Round:     entry.round,
 			UpdatedAt: entry.updatedAt.UTC().Format(time.RFC3339Nano),

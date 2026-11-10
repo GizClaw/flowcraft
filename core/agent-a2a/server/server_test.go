@@ -17,7 +17,7 @@ func testServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := NewServer(ServerConfig{
 		Card: CardConfig{Name: "storyteller", Version: "1.0.0", URL: "https://example.test"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+		Runners: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
 			return nil, nil
 		},
 	})

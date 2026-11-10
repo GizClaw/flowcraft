@@ -92,7 +92,7 @@ func peer(t *testing.T, events ...agent.Event) (*httptest.Server, *scripted) {
 	engine := &scripted{state: agent.StateSubmitted, events: events}
 	srv, err := server.NewServer(server.ServerConfig{
 		Card: server.CardConfig{Name: "peer", Version: "1.0.0", URL: "https://peer.test"},
-		Sessions: func(_ context.Context, exec *a2asrv.ExecutorContext) (agent.Runner, error) {
+		Runners: func(_ context.Context, exec *a2asrv.ExecutorContext) (agent.Runner, error) {
 			engine.recordContext(exec.ContextID)
 			return engine, nil
 		},
@@ -105,11 +105,11 @@ func peer(t *testing.T, events ...agent.Event) (*httptest.Server, *scripted) {
 	return ts, engine
 }
 
-func client(t *testing.T, peerURL, conversationID string) *a2a.Runner {
+func client(t *testing.T, peerURL, sessionID string) *a2a.Runner {
 	t.Helper()
 	runner, err := a2a.New(context.Background(), a2a.Config{
-		Peer:           peerURL,
-		ConversationID: conversationID,
+		Peer:      peerURL,
+		SessionID: sessionID,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -242,7 +242,7 @@ func sameJSON(t *testing.T, left json.RawMessage, right string) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// The peer's context outlives the task: a restart continues the conversation even
+// The peer's context outlives the task: a restart continues the session even
 // though the task it belonged to already finished.
 func TestRestartKeepsTheRemoteContext(t *testing.T) {
 	ts, engine := peer(t,
@@ -251,7 +251,7 @@ func TestRestartKeepsTheRemoteContext(t *testing.T) {
 	)
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
-	first, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, ConversationID: "conv-1", Store: store})
+	first, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, SessionID: "conv-1", Store: store})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -264,11 +264,11 @@ func TestRestartKeepsTheRemoteContext(t *testing.T) {
 	if before == "" {
 		t.Fatal("the peer assigned no context")
 	}
-	restored, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, ConversationID: "conv-1", Store: store})
+	restored, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, SessionID: "conv-1", Store: store})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	// The finished task is not resumed, but the conversation it belonged to is.
+	// The finished task is not resumed, but the session it belonged to is.
 	if state := restored.State(); state != agent.StateSubmitted {
 		t.Errorf("restored state = %s, want submitted for a finished task", state)
 	}
@@ -289,7 +289,7 @@ func TestCancelReachesThePeerAndTheTaskSurvivesARestart(t *testing.T) {
 	)
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
-	runner, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, ConversationID: "conv-1", Store: store})
+	runner, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, SessionID: "conv-1", Store: store})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -301,15 +301,15 @@ func TestCancelReachesThePeerAndTheTaskSurvivesARestart(t *testing.T) {
 	if state := runner.State(); state != agent.StateInputRequired {
 		t.Fatalf("state = %s, want input-required", state)
 	}
-	checkpoint, err := store.LatestForContext(ctx, "conv-1")
+	checkpoint, err := store.LatestForSession(ctx, "conv-1")
 	if err != nil {
-		t.Fatalf("LatestForContext: %v", err)
+		t.Fatalf("LatestForSession: %v", err)
 	}
 	if checkpoint.Task.ID == "" || checkpoint.Task.State != agent.StateInputRequired {
 		t.Fatalf("checkpoint = %s/%s, want the paused remote task",
 			checkpoint.Task.ID, checkpoint.Task.State)
 	}
-	restored, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, ConversationID: "conv-1", Store: store})
+	restored, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, SessionID: "conv-1", Store: store})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}

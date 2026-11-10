@@ -3,19 +3,19 @@ package deploy
 import "testing"
 
 func TestDeploymentDigestCoversTheDeployment(t *testing.T) {
-	base := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, nil)
+	base := deploymentDigest("sha256:rt", "a2a", "https://a", "")
 	if base == "" {
 		t.Fatal("empty digest")
 	}
-	same := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, nil)
+	same := deploymentDigest("sha256:rt", "a2a", "https://a", "")
 	if base != same {
 		t.Error("the same deployment produced two digests")
 	}
 	cases := map[string]string{
-		"runtime":  string(deploymentDigest("sha256:other", EngineSpec{Kind: "a2a", Peer: "https://a"}, nil)),
-		"peer":     string(deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://b"}, nil)),
-		"engine":   string(deploymentDigest("sha256:rt", EngineSpec{Kind: "react"}, nil)),
-		"protocol": string(deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, &ProtocolSpec{Kind: "a2a"})),
+		"runtime":  string(deploymentDigest("sha256:other", "a2a", "https://a", "")),
+		"peer":     string(deploymentDigest("sha256:rt", "a2a", "https://b", "")),
+		"engine":   string(deploymentDigest("sha256:rt", "react", "", "")),
+		"protocol": string(deploymentDigest("sha256:rt", "a2a", "https://a", "a2a")),
 	}
 	for name, digest := range cases {
 		if digest == string(base) {
@@ -27,12 +27,8 @@ func TestDeploymentDigestCoversTheDeployment(t *testing.T) {
 // An advertisement is not part of the deployment's identity: the card is not an
 // input here, which is the point.
 func TestDeploymentDigestIgnoresTheCard(t *testing.T) {
-	first := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, &ProtocolSpec{
-		Kind: "a2a", Settings: rawJSON(map[string]any{"card": map[string]any{"description": "one"}}),
-	})
-	second := deploymentDigest("sha256:rt", EngineSpec{Kind: "a2a", Peer: "https://a"}, &ProtocolSpec{
-		Kind: "a2a", Settings: rawJSON(map[string]any{"card": map[string]any{"description": "two"}}),
-	})
+	first := deploymentDigest("sha256:rt", "a2a", "https://a", "a2a")
+	second := deploymentDigest("sha256:rt", "a2a", "https://a", "a2a")
 	if first != second {
 		t.Error("a card edit invalidated the deployment identity")
 	}

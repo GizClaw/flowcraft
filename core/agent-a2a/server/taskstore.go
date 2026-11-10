@@ -53,7 +53,7 @@ func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	// server rejects its own reservation; a genuinely different task under the
 	// same id is the only case worth refusing.
 	if existing, err := s.store.Load(ctx, string(task.ID)); err == nil {
-		if existing.Task.ContextID != task.ContextID {
+		if existing.Task.SessionID != task.ContextID {
 			return 0, taskstore.ErrTaskAlreadyExists
 		}
 		return taskstore.TaskVersion(existing.ServerVersion), nil
@@ -199,7 +199,7 @@ func (s *TaskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 	}
 	matching := make([]agent.TaskSummary, 0, len(summaries))
 	for _, summary := range summaries {
-		if filter.ContextID != "" && summary.ContextID != filter.ContextID {
+		if filter.ContextID != "" && summary.SessionID != filter.ContextID {
 			continue
 		}
 		if filter.Status != "" && wire.State(summary.State) != filter.Status {
@@ -219,7 +219,7 @@ func (s *TaskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 	for _, summary := range matching[start:end] {
 		task := &a2a.Task{
 			ID:        a2a.TaskID(summary.ID),
-			ContextID: summary.ContextID,
+			ContextID: summary.SessionID,
 			Status:    a2a.TaskStatus{State: wire.State(summary.State)},
 		}
 		if filter.HistoryLength != nil && *filter.HistoryLength > 0 {
@@ -310,7 +310,7 @@ func fromA2ATask(task *a2a.Task) (agent.Task, error) {
 	}
 	return agent.Task{
 		ID:        string(task.ID),
-		ContextID: task.ContextID,
+		SessionID: task.ContextID,
 		State:     wire.FromState(task.Status.State),
 		History:   history,
 	}, nil
@@ -324,7 +324,7 @@ func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Ta
 	}
 	return &a2a.Task{
 		ID:        a2a.TaskID(checkpoint.Task.ID),
-		ContextID: checkpoint.Task.ContextID,
+		ContextID: checkpoint.Task.SessionID,
 		Status:    a2a.TaskStatus{State: wire.State(checkpoint.Task.State)},
 		History:   history,
 	}, nil
