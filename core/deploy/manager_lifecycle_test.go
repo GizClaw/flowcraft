@@ -20,7 +20,7 @@ func TestManagerLoaderSharesTheKinds(t *testing.T) {
 // A zero Kinds means "the built-ins": New makes that choice once, not per call.
 func TestZeroValueKindsFallsBackToBuiltins(t *testing.T) {
 	manager := newManager(t, Kinds{}, testHost(t))
-	if names := manager.EngineNames(); len(names) != 1 || names[0] != "a2a" {
+	if names := manager.EngineNames(); len(names) != 2 || names[0] != "a2a" || names[1] != "graph" {
 		t.Errorf("engines = %v, want the built-ins", names)
 	}
 }

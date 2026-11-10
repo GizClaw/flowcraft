@@ -338,8 +338,8 @@ func TestHandlerAndSessionForUnknownAgent(t *testing.T) {
 func TestManagerReportsRegisteredKinds(t *testing.T) {
 	manager := newManager(t, BuiltinKinds().WithProtocols(a2aKind()), testHost(t))
 	engines := manager.EngineNames()
-	if len(engines) != 1 || engines[0] != "a2a" {
-		t.Errorf("engines = %v, want [a2a]", engines)
+	if len(engines) != 2 || engines[0] != "a2a" || engines[1] != "graph" {
+		t.Errorf("engines = %v, want [a2a graph]", engines)
 	}
 	protocols := manager.ProtocolNames()
 	if len(protocols) != 1 || protocols[0] != "a2a" {

@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0
 	github.com/creack/pty v1.1.24
+	github.com/expr-lang/expr v1.17.8
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/openai/openai-go/v3 v3.95.0
 	github.com/rs/xid v1.6.0

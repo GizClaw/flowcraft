@@ -1,0 +1,156 @@
+package graph
+
+import (
+	"context"
+	"fmt"
+	"iter"
+	"sync"
+
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime"
+)
+
+// RunnerConfig is one session's graph engine: where it persists, under
+// which deployment, and which task it is.
+type RunnerConfig struct {
+	Store     agent.Store
+	Identity  runtime.Digest
+	SessionID string
+	TaskID    string
+}
+
+// Runner drives one session's graph.
+//
+// It is the engine contract a deployment sees: one message in, events out. The
+// graph itself is a compiled document shared by every session; the runner
+// owns the single run and its checkpoint identity.
+type Runner struct {
+	g   *Graph
+	cfg RunnerConfig
+
+	mu  sync.Mutex
+	run *Run
+}
+
+var _ agent.Runner = (*Runner)(nil)
+
+// NewRunner binds a compiled graph to one session.
+func NewRunner(g *Graph, cfg RunnerConfig) *Runner {
+	return &Runner{g: g, cfg: cfg}
+}
+
+// State reports the run's lifecycle, submitted before the first message.
+func (r *Runner) State() agent.TaskState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.run == nil {
+		return agent.StateSubmitted
+	}
+	return r.run.State()
+}
+
+// Run handles one message: it starts the task, or answers the question it paused
+// on. The graph decides which from its own state, so the caller never has to.
+//
+// A document that declares no input slot receives the message as a trigger: it
+// has nowhere to put the text, and a caller that needs it answered should give
+// the graph an input slot.
+func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		r.mu.Lock()
+		run := r.run
+		if run == nil {
+			// A document that declares no input slot takes the message as the
+			// trigger only: there is nowhere to seed it, and inventing a slot
+			// would change what the document said.
+			var seed []message.Message
+			if r.g.input != "" {
+				seed = []message.Message{msg}
+			}
+			started, err := r.g.Start(
+				ctx,
+				seed,
+				WithStore(r.cfg.Store, r.cfg.TaskID),
+				WithSession(r.cfg.SessionID),
+				WithDigest(r.cfg.Identity),
+			)
+			if err != nil {
+				r.mu.Unlock()
+				yield(nil, err)
+				return
+			}
+			r.run = started
+			run = started
+		}
+		r.mu.Unlock()
+
+		switch run.State() {
+		case agent.StateInputRequired:
+			for event, answerErr := range run.Answer(ctx, msg.Content) {
+				if !yield(event, answerErr) {
+					return
+				}
+			}
+		case agent.StateSubmitted:
+			run.advance(ctx, yield)
+		case agent.StateWorking:
+			yield(nil, fmt.Errorf("graph: the task is already running"))
+		default:
+			yield(nil, fmt.Errorf("graph: the task is %s; start a new one", run.State()))
+		}
+	}
+}
+
+// Cancel stops the session's task. A run in flight is stopped through its
+// context by the caller; a paused one is closed here, because nothing else will.
+//
+// A fresh process has no run in memory: the checkpoint is what says the task is
+// paused. Cancelling must therefore restore it and record the state where a
+// restart will find it, instead of silently doing nothing and letting the task
+// resume later.
+func (r *Runner) Cancel(ctx context.Context, reason string) error {
+	r.mu.Lock()
+	run := r.run
+	r.mu.Unlock()
+	if run == nil {
+		restored, found, err := r.g.restore(ctx, runOptions{
+			store:     r.cfg.Store,
+			taskID:    r.cfg.TaskID,
+			sessionID: r.cfg.SessionID,
+			digest:    r.cfg.Identity,
+		})
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		r.mu.Lock()
+		if r.run != nil {
+			// A Run started while the checkpoint was being read; the task it
+			// opened is the one the caller wants stopped.
+			run = r.run
+		} else {
+			r.run = restored
+			run = restored
+		}
+		r.mu.Unlock()
+	}
+	return run.cancel(ctx, reason)
+}
+
+// Close releases the runner; the graph holds nothing but the document.
+func (r *Runner) Close() error { return nil }
+
+// cancel closes a task that is not running: the state is recorded where a
+// restart will find it.
+func (r *Run) cancel(ctx context.Context, reason string) error {
+	if r.state.Terminal() {
+		return nil
+	}
+	r.state = agent.StateCanceled
+	r.pending = nil
+	r.persist(ctx, nil)
+	return nil
+}
