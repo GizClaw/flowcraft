@@ -39,6 +39,10 @@ type (
 	ImageSource struct{ source }
 	AudioSource struct{ source }
 	VideoSource struct{ source }
+	// FileSource is any other payload: a document, an archive, a data file. It
+	// carries the same URL/inline payload an image does, without the media-type
+	// prefix restriction.
+	FileSource struct{ source }
 )
 
 func (s ImageSource) Validate() error { return validateTypedSource(s.source, "image/") }
@@ -58,6 +62,11 @@ func (s VideoSource) Clone() VideoSource {
 	s.source = s.clone()
 	return s
 }
+func (s FileSource) Validate() error { return validateTypedSource(s.source, "") }
+func (s FileSource) Clone() FileSource {
+	s.source = s.clone()
+	return s
+}
 
 func (s source) clone() source {
 	s.data = bytes.Clone(s.data)
@@ -74,6 +83,10 @@ func (s *AudioSource) UnmarshalJSON(data []byte) error {
 
 func (s *VideoSource) UnmarshalJSON(data []byte) error {
 	return unmarshalTypedSource(data, &s.source, "video/")
+}
+
+func (s *FileSource) UnmarshalJSON(data []byte) error {
+	return unmarshalTypedSource(data, &s.source, "")
 }
 
 func NewImageURL(rawURL, mediaType string) (ImageSource, error) {
@@ -106,10 +119,25 @@ func NewVideoBytes(data []byte, mediaType string) (VideoSource, error) {
 	return VideoSource{source: value}, err
 }
 
+func NewFileURL(rawURL, mediaType string) (FileSource, error) {
+	value, err := newURL(rawURL, mediaType, "")
+	return FileSource{source: value}, err
+}
+
+func NewFileBytes(data []byte, mediaType string) (FileSource, error) {
+	value, err := newBytes(data, mediaType, "")
+	return FileSource{source: value}, err
+}
+
 func newURL(rawURL, mediaType, prefix string) (source, error) {
 	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Scheme == "" {
 		return source{}, fmt.Errorf("media URL must be absolute")
+	}
+	// A file URL legitimately has no host: file:///tmp/a.txt is the canonical
+	// spelling, and a deployment that keeps bytes on disk passes exactly that.
+	if parsed.Host == "" && parsed.Scheme != "file" {
+		return source{}, fmt.Errorf("media URL must name a host")
 	}
 	normalized, err := normalizeMediaType(mediaType, prefix, false)
 	if err != nil {

@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a"
+	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
+	"github.com/GizClaw/flowcraft/core/agent-a2a/server"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -23,7 +24,7 @@ func TestExposedAgentServesA2A(t *testing.T) {
 		Engine: EngineSpec{Kind: "a2a", Peer: peer.URL},
 		Protocol: &ProtocolSpec{
 			Kind: "a2a",
-			Decoded: a2a.ServerSettings{Card: a2a.CardConfig{
+			Decoded: server.ServerSettings{Card: server.CardConfig{
 				Version: "1.0.0", URL: "http://backend.invalid",
 			}},
 		},
@@ -38,17 +39,19 @@ func TestExposedAgentServesA2A(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	// The proxy is the only A2A client in the tree that needs no extra wiring,
-	// so it doubles as the test client.
-	client, err := newProxyConversation(context.Background(), EngineSpec{Kind: "a2a", Peer: srv.URL}, nil, "", "conv-1")
+	// The A2A client is the natural test client: it speaks the same protocol the
+	// deployment exposes.
+	client, err := agenta2a.New(context.Background(), agenta2a.Config{
+		Peer:           srv.URL,
+		ConversationID: "conv-1",
+	})
 	if err != nil {
-		t.Fatalf("newProxyConversation: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	var text string
 	var final agent.TaskState
-	for event, err := range client.Run(context.Background(), agent.Input{
-		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "hi")},
-	}) {
+	for event, err := range client.Run(context.Background(),
+		message.NewTextMessage(message.RoleUser, "hi")) {
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}

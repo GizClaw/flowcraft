@@ -147,7 +147,11 @@ func (r *redactor) Content(content message.Content) message.Content {
 		case message.DataPart:
 			out.Parts[i] = r.dataPart(value)
 		case message.FilePart:
-			value.URI = r.String(value.URI)
+			if value.Source.Kind() == media.SourceURL {
+				if source, err := media.NewFileURL(r.String(value.Source.URL()), value.Source.MediaType()); err == nil {
+					value.Source = source
+				}
+			}
 			value.Name = r.String(value.Name)
 			out.Parts[i] = value
 		case message.ToolCallPart:

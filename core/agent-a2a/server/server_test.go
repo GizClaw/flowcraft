@@ -1,4 +1,4 @@
-package a2a
+package server
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/agent"
+
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
@@ -15,7 +17,7 @@ func testServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := NewServer(ServerConfig{
 		Card: CardConfig{Name: "storyteller", Version: "1.0.0", URL: "https://example.test"},
-		Sessions: func(context.Context, *a2asrv.ExecutorContext) (Runner, error) {
+		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
 			return nil, nil
 		},
 	})

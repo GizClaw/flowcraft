@@ -25,13 +25,12 @@ func testCatalogRuntime(t *testing.T) *runtime.Runtime {
 // A run-scoped catalog gives every Run its own view.
 func TestRunScopedCatalogView(t *testing.T) {
 	deployed := &Agent{rt: testCatalogRuntime(t)}
-	entry := &conversation{}
 
-	first, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), entry))
+	first, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-1"))
 	if !ok {
 		t.Fatal("the run context carries no view")
 	}
-	second, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), entry))
+	second, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-1"))
 	if first == second {
 		t.Fatal("two runs shared one view; discoveries would leak between them")
 	}
@@ -43,16 +42,15 @@ func TestConversationScopedCatalogView(t *testing.T) {
 		rt:   testCatalogRuntime(t),
 		spec: Spec{Catalog: CatalogSpec{Scope: CatalogScopeConversation}},
 	}
-	entry := &conversation{}
-	first, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), entry))
+	first, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-1"))
 	if !ok {
 		t.Fatal("the run context carries no view")
 	}
-	second, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), entry))
+	second, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-1"))
 	if first != second {
 		t.Fatal("a conversation-scoped view was rebuilt between runs")
 	}
-	other, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), &conversation{}))
+	other, _ := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-2"))
 	if other == first {
 		t.Fatal("two conversations shared one view")
 	}
@@ -61,7 +59,7 @@ func TestConversationScopedCatalogView(t *testing.T) {
 // A proxy has no local catalog: the peer decides what the model sees.
 func TestProxyHasNoCatalogView(t *testing.T) {
 	deployed := &Agent{spec: Spec{Engine: EngineSpec{Kind: "a2a", Peer: "https://peer.example"}}}
-	if _, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), &conversation{})); ok {
+	if _, ok := runtime.CatalogViewFrom(deployed.runContext(context.Background(), "conv-1")); ok {
 		t.Fatal("a proxy run context carries a local view")
 	}
 }
@@ -93,39 +91,33 @@ agents:
 	}
 }
 
-// recordingSession captures the context each Run was given.
-type recordingSession struct {
+// recordingRunner captures the context each Run was given.
+type recordingRunner struct {
 	ran chan context.Context
 }
 
-func (s *recordingSession) SetIdentity(string, string) {}
-func (s *recordingSession) State() agent.TaskState     { return agent.StateSubmitted }
+func (r *recordingRunner) State() agent.TaskState { return agent.StateSubmitted }
 
-func (s *recordingSession) Run(ctx context.Context, _ agent.Input) iter.Seq2[agent.Event, error] {
-	s.ran <- ctx
+func (r *recordingRunner) Run(ctx context.Context, _ message.Message) iter.Seq2[agent.Event, error] {
+	r.ran <- ctx
 	return func(yield func(agent.Event, error) bool) {
 		yield(agent.Status{State: agent.StateCompleted}, nil)
 	}
 }
 
-func (s *recordingSession) Resume(ctx context.Context, _ agent.Reply) iter.Seq2[agent.Event, error] {
-	return s.Run(ctx, agent.Input{})
-}
-
-func (s *recordingSession) Send(context.Context, message.Message, agent.Mode) (agent.Mode, error) {
-	return agent.ModeQueue, nil
-}
-
-func (s *recordingSession) Pending() int   { return 0 }
-func (s *recordingSession) Abandon() error { return nil }
+func (r *recordingRunner) Cancel(context.Context, string) error { return nil }
+func (r *recordingRunner) Close() error                         { return nil }
 
 // The manager hands the view to the engine's Run, not just to a helper.
 func TestManagerRunsWithACatalogView(t *testing.T) {
-	session := &recordingSession{ran: make(chan context.Context, 4)}
+	runner := &recordingRunner{ran: make(chan context.Context, 4)}
 	manager := New(WithEngines(Engine{
-		Name: "record",
-		Build: func(context.Context, EngineSpec, *Agent) (engine, error) {
-			return fakeEngine{session: session}, nil
+		Name:  "record",
+		Local: true,
+		Build: func(context.Context, EngineDeps) (RunnerFactory, error) {
+			return func(context.Context, string, string) (agent.Runner, error) {
+				return runner, nil
+			}, nil
 		},
 	}))
 	t.Cleanup(func() { _ = manager.Close() })
@@ -141,16 +133,57 @@ func TestManagerRunsWithACatalogView(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := deployed.Submit(context.Background(), "conv-1",
-		message.NewTextMessage(message.RoleUser, "go"), agent.ModeQueue); err != nil {
-		t.Fatalf("Submit: %v", err)
+	for _, err := range deployed.Run(context.Background(), "conv-1",
+		message.NewTextMessage(message.RoleUser, "go")) {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
 	}
 	select {
-	case ctx := <-session.ran:
+	case ctx := <-runner.ran:
 		if _, ok := runtime.CatalogViewFrom(ctx); !ok {
 			t.Fatal("the engine's Run context carries no catalog view")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the session never ran")
+	}
+}
+
+// A conversation-scoped view lives exactly as long as its conversation: the
+// table says when it ends, and deploy drops the view with it.
+func TestConversationScopedViewIsDroppedOnEviction(t *testing.T) {
+	manager := New(WithEngines(Engine{
+		Name:  "record",
+		Local: true,
+		Build: func(context.Context, EngineDeps) (RunnerFactory, error) {
+			return func(context.Context, string, string) (agent.Runner, error) {
+				return &recordingRunner{ran: make(chan context.Context, 4)}, nil
+			}, nil
+		},
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	deployed, err := manager.Add(context.Background(), Spec{
+		Name:    "a",
+		Engine:  EngineSpec{Kind: "record"},
+		Runtime: config(t),
+		RuntimeOptions: []runtime.Option{
+			driver(&scripted{}),
+		},
+		Catalog:     CatalogSpec{Scope: CatalogScopeConversation},
+		MaxSessions: 1,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	ctx := context.Background()
+	for range deployed.Run(ctx, "conv-1", message.NewTextMessage(message.RoleUser, "go")) {
+	}
+	if _, ok := deployed.views.Load("conv-1"); !ok {
+		t.Fatal("the run cached no view")
+	}
+	for range deployed.Run(ctx, "conv-2", message.NewTextMessage(message.RoleUser, "go")) {
+	}
+	if _, ok := deployed.views.Load("conv-1"); ok {
+		t.Fatal("the view outlived its conversation")
 	}
 }

@@ -39,10 +39,10 @@ func TestSaveAdvancesAndAppends(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
 
-	if err := store.Save(ctx, checkpoint("task-1", 0), []agent.EventRecord{event("message", `"a"`)}); err != nil {
+	if _, _, err := store.Save(ctx, checkpoint("task-1", 0), []agent.EventRecord{event("message", `"a"`)}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := store.Save(ctx, checkpoint("task-1", 1), []agent.EventRecord{event("message", `"b"`)}); err != nil {
+	if _, _, err := store.Save(ctx, checkpoint("task-1", 1), []agent.EventRecord{event("message", `"b"`)}); err != nil {
 		t.Fatalf("Save 2: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestLoadMissingTask(t *testing.T) {
 func TestListAndDelete(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, checkpoint("task-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, checkpoint("task-1", 0), nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	summaries, err := store.List(ctx)
@@ -130,7 +130,7 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 	seed.Task.History = []message.Message{
 		message.NewTextMessage(message.RoleUser, "write the report"),
 	}
-	if err := store.Save(ctx, seed, nil); err != nil {
+	if _, _, err := store.Save(ctx, seed, nil); err != nil {
 		t.Fatalf("Save seed: %v", err)
 	}
 	bodySize := func() int {
@@ -151,7 +151,7 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 		}
 		cp := checkpoint("task-1", round)
 		cp.Task.History = append(seed.Task.History, round1)
-		if err := store.Save(ctx, cp, []agent.EventRecord{{Kind: "message", Payload: payload}}); err != nil {
+		if _, _, err := store.Save(ctx, cp, []agent.EventRecord{{Kind: "message", Payload: payload}}); err != nil {
 			t.Fatalf("Save round %d: %v", round, err)
 		}
 	}
@@ -163,12 +163,17 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(loaded.Task.History) != 51 {
-		t.Fatalf("history = %d messages, want the seed plus 50 replayed events",
+	// Load is the projection only: the 50 messages are in the event log.
+	if len(loaded.Task.History) != 0 {
+		t.Fatalf("history = %d messages, want the projection to carry none",
 			len(loaded.Task.History))
 	}
-	if got := loaded.Task.History[0].Content.Parts[0]; got == nil {
-		t.Error("first message lost its content")
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 50 {
+		t.Fatalf("events = %d, want the 50 messages", len(events))
 	}
 }
 

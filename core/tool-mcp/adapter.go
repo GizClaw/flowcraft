@@ -247,11 +247,9 @@ func contentPart(content mcpsdk.Content) (message.Part, bool) {
 		}
 	case *mcpsdk.ResourceLink:
 		if typed.URI != "" {
-			return message.FilePart{
-				URI:       typed.URI,
-				MediaType: typed.MIMEType,
-				Name:      typed.Name,
-			}, true
+			if source, err := media.NewFileURL(typed.URI, typed.MIMEType); err == nil {
+				return message.FilePart{Source: source, Name: typed.Name}, true
+			}
 		}
 	case *mcpsdk.EmbeddedResource:
 		if part, ok := resourceContentsPart(typed.Resource); ok {

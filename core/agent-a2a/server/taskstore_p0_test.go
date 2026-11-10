@@ -1,4 +1,4 @@
-package a2a
+package server
 
 import (
 	"context"
@@ -64,7 +64,7 @@ func TestTaskStoreSkipsInternalEvents(t *testing.T) {
 		}
 		events = append(events, agent.EventRecord{Kind: "message", Payload: body})
 	}
-	if err := backend.Save(ctx, agent.Checkpoint{
+	if _, _, err := backend.Save(ctx, agent.Checkpoint{
 		Schema: agent.CheckpointSchema, Runtime: "sha256:deployment",
 		ServerVersion: 1, Task: agent.Task{ID: "task-1", ContextID: "conv-1", State: agent.StateWorking},
 	}, events); err != nil {
@@ -123,7 +123,7 @@ func TestTaskStoreVersionIsIndependentOfTheLoops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := backend.Save(ctx, current, nil); err != nil {
+	if _, _, err := backend.Save(ctx, current, nil); err != nil {
 		t.Fatalf("loop Save: %v", err)
 	}
 

@@ -30,7 +30,7 @@ func TestResultContentMapsTypedBlocks(t *testing.T) {
 		t.Fatalf("part 2 = %#v, want audio/mpeg part", content.Parts[2])
 	}
 	file, ok := content.Parts[3].(message.FilePart)
-	if !ok || file.URI != "file:///tmp/a.txt" || file.Name != "a.txt" {
+	if !ok || file.Source.URL() != "file:///tmp/a.txt" || file.Name != "a.txt" {
 		t.Fatalf("part 3 = %#v, want file part", content.Parts[3])
 	}
 	if err := content.Validate(); err != nil {

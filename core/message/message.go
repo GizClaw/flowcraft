@@ -23,10 +23,55 @@ const (
 type Message struct {
 	Role    Role    `json:"role"`
 	Content Content `json:"content"`
+	// Metadata is what the transport knew and the model does not: the tasks a
+	// message cites, the extensions the sender attached, and annotations a
+	// protocol carries beside the content.
+	Metadata *Metadata `json:"metadata,omitempty"`
+}
+
+// Metadata is message-scoped annotation. It is typed where the framework has a
+// meaning for the field and an attribute map where it does not, because a value
+// that round-trips as any is a value whose type changes on reload.
+//
+// A message id is deliberately absent: it is transport identity, assigned per
+// request, and storing it here would create a second identity for the same
+// message.
+type Metadata struct {
+	// ReferenceTasks names earlier tasks this message continues or cites.
+	ReferenceTasks []string `json:"reference_tasks,omitempty"`
+	// Extensions are the protocol extension URIs the sender attached.
+	Extensions []string `json:"extensions,omitempty"`
+	// Attributes carries everything else, one JSON value per key.
+	Attributes map[string]json.RawMessage `json:"attributes,omitempty"`
+}
+
+// Clone deep-copies the metadata: a stored message must not change when a caller
+// edits the copy it holds.
+func (m Metadata) Clone() Metadata {
+	cloned := Metadata{
+		ReferenceTasks: slices.Clone(m.ReferenceTasks),
+		Extensions:     slices.Clone(m.Extensions),
+	}
+	if m.Attributes != nil {
+		cloned.Attributes = make(map[string]json.RawMessage, len(m.Attributes))
+		for key, value := range m.Attributes {
+			cloned.Attributes[key] = json.RawMessage(bytes.Clone(value))
+		}
+	}
+	return cloned
+}
+
+// Empty reports whether the metadata would carry nothing.
+func (m Metadata) Empty() bool {
+	return len(m.ReferenceTasks) == 0 && len(m.Extensions) == 0 && len(m.Attributes) == 0
 }
 
 func (m Message) Clone() Message {
 	m.Content = m.Content.Clone()
+	if m.Metadata != nil {
+		cloned := m.Metadata.Clone()
+		m.Metadata = &cloned
+	}
 	return m
 }
 

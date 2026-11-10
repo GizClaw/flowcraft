@@ -158,34 +158,22 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if strings.TrimSpace(agent.Engine.Kind) == "" {
 		return Spec{}, errdefs.Validationf("%s: kind is required", where("engine"))
 	}
-	if _, found := l.engine(agent.Engine.Kind); !found {
+	registration, found := l.engine(agent.Engine.Kind)
+	if !found {
 		return Spec{}, errdefs.Validationf(
 			"%s: kind %q is not registered; offered: %s",
 			where("engine"), agent.Engine.Kind, strings.Join(engineNames(l.Engines), ", "))
 	}
 
-	// The engine decides whether a substrate is needed: a proxy has no local
-	// model, tools or sandbox, and an engine that runs locally cannot forward to
-	// a peer.
-	needsRuntime := agent.Engine.Kind != "a2a"
-	switch {
-	case needsRuntime && agent.Runtime == nil:
-		return Spec{}, errdefs.Validationf(
-			"%s: kind %q needs a runtime", where("engine"), agent.Engine.Kind)
-	case !needsRuntime && agent.Runtime != nil:
-		return Spec{}, errdefs.Validationf(
-			"%s: kind %q has no local runtime to configure", where("engine"), agent.Engine.Kind)
-	}
-	switch agent.Engine.Kind {
-	case "a2a":
-		if strings.TrimSpace(agent.Engine.Peer) == "" {
-			return Spec{}, errdefs.Validationf("%s: peer is required", where("engine"))
-		}
-	default:
-		if agent.Engine.Peer != "" {
-			return Spec{}, errdefs.Validationf(
-				"%s: peer belongs to the a2a engine", where("engine"))
-		}
+	// The kind says whether it runs here and speaks for its own fields; the
+	// shared rules (runtime, peer) live beside the registration.
+	if err := validateEngineSpec(registration, EngineSpec{
+		Kind:  agent.Engine.Kind,
+		Peer:  agent.Engine.Peer,
+		Auth:  agent.Engine.Auth,
+		Graph: agent.Engine.Graph,
+	}, agent.Runtime != nil); err != nil {
+		return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 	}
 
 	var protocolSpec *ProtocolSpec

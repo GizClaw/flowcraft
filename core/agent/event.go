@@ -25,12 +25,6 @@ const (
 	KindUsage EventKind = "usage"
 	// KindStatus reports a lifecycle transition.
 	KindStatus EventKind = "status"
-	// KindSteerApplied reports queued steering that reached the model.
-	KindSteerApplied EventKind = "steer-applied"
-	// KindInterrupted reports that an interrupt cancelled the running round.
-	KindInterrupted EventKind = "interrupted"
-	// KindUndelivered reports input left in the mailbox when the Task ended.
-	KindUndelivered EventKind = "undelivered"
 )
 
 // Event is one step of a running Task.
@@ -68,21 +62,6 @@ type ArtifactWritten struct{ Artifact Artifact }
 // UsageEvent reports one round's accounting.
 type UsageEvent struct{ Usage usage.Usage }
 
-// SteerApplied reports steering messages that were appended to the transcript
-// and are visible to the next model request.
-type SteerApplied struct {
-	Count    int
-	Messages []message.Message
-}
-
-// Interrupted reports that the running round was cancelled by an interrupt.
-type Interrupted struct{ Reason string }
-
-// Undelivered reports mailbox entries the Task did not consume. They are handed
-// up rather than dropped: only the caller knows whether the conversation
-// continues or the client is gone.
-type Undelivered struct{ Messages []message.Message }
-
 // Status reports a lifecycle transition.
 type Status struct {
 	State  TaskState
@@ -97,9 +76,6 @@ func (ToolResult) Kind() EventKind      { return KindToolResult }
 func (ArtifactWritten) Kind() EventKind { return KindArtifact }
 func (UsageEvent) Kind() EventKind      { return KindUsage }
 func (Status) Kind() EventKind          { return KindStatus }
-func (SteerApplied) Kind() EventKind    { return KindSteerApplied }
-func (Interrupted) Kind() EventKind     { return KindInterrupted }
-func (Undelivered) Kind() EventKind     { return KindUndelivered }
 
 // The seal. Every event kind is one of these types and nothing outside this
 // package can add another.
@@ -110,7 +86,4 @@ func (ToolCallStart) event()   {}
 func (ToolResult) event()      {}
 func (ArtifactWritten) event() {}
 func (UsageEvent) event()      {}
-func (SteerApplied) event()    {}
-func (Interrupted) event()     {}
-func (Undelivered) event()     {}
 func (Status) event()          {}

@@ -110,30 +110,38 @@ func Open(path string) (*SQLite, error) {
 func (l *SQLite) Close() error { return l.db.Close() }
 
 // Save updates the projection and appends the round's events in one transaction.
-func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) error {
+func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, 0, err
 	}
 	if checkpoint.Task.ID == "" {
-		return errdefs.Validationf("checkpoint: task id is required")
+		return 0, 0, errdefs.Validationf("checkpoint: task id is required")
 	}
+	// The projection never carries history: the event log is its only source, so
+	// serializing a reconstructed transcript here would be wasted bytes on every
+	// save.
+	checkpoint.Task.History = nil
 	// The seed is the task as of the first save and never changes; the body holds
 	// only what changes after it. Writing history here made every save rewrite the
 	// whole task, so n rounds cost O(n^2) bytes.
 	seed, err := json.Marshal(checkpoint)
 	if err != nil {
-		return fmt.Errorf("checkpoint: encode seed: %w", err)
+		return 0, 0, fmt.Errorf("checkpoint: encode seed: %w", err)
 	}
+	// The body is the mutable part of the row: the projection plus whatever an
+	// adapter above the agent keeps in Sections. History is not here; it lives in
+	// the event log.
 	body, err := json.Marshal(struct {
-		Artifacts []agent.Artifact  `json:"artifacts,omitempty"`
-		Pending   *message.ToolCall `json:"pending,omitempty"`
-	}{checkpoint.Task.Artifacts, checkpoint.Task.Pending})
+		Artifacts []agent.Artifact           `json:"artifacts,omitempty"`
+		Pending   *message.ToolCall          `json:"pending,omitempty"`
+		Sections  map[string]json.RawMessage `json:"sections,omitempty"`
+	}{checkpoint.Task.Artifacts, checkpoint.Task.Pending, checkpoint.Sections})
 	if err != nil {
-		return fmt.Errorf("checkpoint: encode projection: %w", err)
+		return 0, 0, fmt.Errorf("checkpoint: encode projection: %w", err)
 	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("checkpoint: begin: %w", err)
+		return 0, 0, fmt.Errorf("checkpoint: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -162,33 +170,35 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		checkpoint.ServerVersion,
 		now,
 	); err != nil {
-		return fmt.Errorf("checkpoint: project task: %w", err)
+		return 0, 0, fmt.Errorf("checkpoint: project task: %w", err)
 	}
 
+	var first, last int64
 	if len(events) > 0 {
 		var next int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE task_id = ?`,
 			checkpoint.Task.ID,
 		).Scan(&next); err != nil {
-			return fmt.Errorf("checkpoint: next sequence: %w", err)
+			return 0, 0, fmt.Errorf("checkpoint: next sequence: %w", err)
 		}
+		first, last = next, next+int64(len(events))-1
 		for i, event := range events {
 			if event.Kind == "" {
-				return errdefs.Validationf("checkpoint: event %d has no kind", i)
+				return 0, 0, errdefs.Validationf("checkpoint: event %d has no kind", i)
 			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO events (task_id, seq, kind, payload) VALUES (?, ?, ?, ?)`,
 				checkpoint.Task.ID, next+int64(i), event.Kind, []byte(event.Payload),
 			); err != nil {
-				return fmt.Errorf("checkpoint: append event: %w", err)
+				return 0, 0, fmt.Errorf("checkpoint: append event: %w", err)
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("checkpoint: commit: %w", err)
+		return 0, 0, fmt.Errorf("checkpoint: commit: %w", err)
 	}
-	return nil
+	return first, last, nil
 }
 
 // Load reconstructs one task: the immutable seed plus the event log, which is the
@@ -226,8 +236,9 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		checkpoint.Task.State = agent.TaskState(state)
 		checkpoint.Task.Round = int(round)
 		var mutable struct {
-			Artifacts []agent.Artifact  `json:"artifacts,omitempty"`
-			Pending   *message.ToolCall `json:"pending,omitempty"`
+			Artifacts []agent.Artifact           `json:"artifacts,omitempty"`
+			Pending   *message.ToolCall          `json:"pending,omitempty"`
+			Sections  map[string]json.RawMessage `json:"sections,omitempty"`
 		}
 		if len(body) > 0 {
 			if err := json.Unmarshal(body, &mutable); err != nil {
@@ -236,48 +247,23 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		}
 		checkpoint.Task.Artifacts = mutable.Artifacts
 		checkpoint.Task.Pending = mutable.Pending
-		if err := l.appendEvents(ctx, &checkpoint); err != nil {
-			return agent.Checkpoint{}, err
+		// The seed holds the sections of the first save; later saves update them
+		// through the projection. An adapter that stops writing a section keeps
+		// its last value, which is what "owner-keyed" means.
+		if len(mutable.Sections) > 0 {
+			if checkpoint.Sections == nil {
+				checkpoint.Sections = make(map[string]json.RawMessage, len(mutable.Sections))
+			}
+			for key, value := range mutable.Sections {
+				checkpoint.Sections[key] = value
+			}
 		}
 	}
+	// History is the event log's, not the projection's.
+	checkpoint.Task.History = nil
 	checkpoint.Version = version
 	checkpoint.ServerVersion = serverVersion
 	return checkpoint, nil
-}
-
-// appendEvents replays the log onto the seed. Kinds other than "message" carry
-// protocol bookkeeping, not history, and are skipped.
-func (l *SQLite) appendEvents(ctx context.Context, checkpoint *agent.Checkpoint) error {
-	rows, err := l.db.QueryContext(ctx,
-		`SELECT kind, payload FROM events WHERE task_id = ? ORDER BY seq`,
-		checkpoint.Task.ID)
-	if err != nil {
-		return fmt.Errorf("checkpoint: load events: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var (
-			kind    string
-			payload []byte
-		)
-		if err := rows.Scan(&kind, &payload); err != nil {
-			return fmt.Errorf("checkpoint: scan event: %w", err)
-		}
-		if kind != "message" {
-			continue
-		}
-		var msg message.Message
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			// One record the loop cannot represent must not make the task
-			// unreadable; the same rule governs tasks/get on the wire.
-			continue
-		}
-		checkpoint.Task.History = append(checkpoint.Task.History, msg)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("checkpoint: load events: %w", err)
-	}
-	return nil
 }
 
 // LatestForContext returns the newest task of one conversation.
@@ -295,10 +281,16 @@ func (l *SQLite) LatestForContext(ctx context.Context, conversationID string) (a
 	return l.Load(ctx, taskID)
 }
 
-// Events returns the appended facts of one task, oldest first.
+// Events returns every appended fact of one task, oldest first.
 func (l *SQLite) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
+	return l.EventsAfter(ctx, taskID, 0)
+}
+
+// EventsAfter returns the facts recorded after seq, oldest first.
+func (l *SQLite) EventsAfter(ctx context.Context, taskID string, after int64) ([]agent.EventRecord, error) {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT seq, kind, payload FROM events WHERE task_id = ? ORDER BY seq`, taskID)
+		`SELECT seq, kind, payload FROM events WHERE task_id = ? AND seq > ? ORDER BY seq`,
+		taskID, after)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: read events: %w", err)
 	}
@@ -314,6 +306,55 @@ func (l *SQLite) Events(ctx context.Context, taskID string) ([]agent.EventRecord
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// SetServerVersion advances the adapter's counter, leaving the projection and
+// the store's own version alone: nothing the engine owns changed.
+func (l *SQLite) SetServerVersion(ctx context.Context, taskID string, version int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res, err := l.db.ExecContext(ctx,
+		`UPDATE tasks SET server_version = ?, updated_at = ? WHERE task_id = ?`,
+		version, time.Now().UTC().Format(time.RFC3339Nano), taskID)
+	if err != nil {
+		return fmt.Errorf("checkpoint: set server version: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checkpoint: set server version: %w", err)
+	}
+	if affected == 0 {
+		return agent.ErrNoCheckpoint
+	}
+	return nil
+}
+
+// TruncateEvents removes the events at or before seq, keeping the tail.
+func (l *SQLite) TruncateEvents(ctx context.Context, taskID string, seq int64) error {
+	if seq < 0 {
+		return errdefs.Validationf("checkpoint: truncation point must not be negative")
+	}
+	var newest int64
+	if err := l.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE task_id = ?`, taskID,
+	).Scan(&newest); err != nil {
+		return fmt.Errorf("checkpoint: latest sequence: %w", err)
+	}
+	if newest == 0 {
+		return nil // nothing recorded
+	}
+	if seq >= newest {
+		// Removing the tail would reset MAX(seq)+1 and let a later save reuse an
+		// identifier that a snapshot may still name.
+		return errdefs.Validationf(
+			"checkpoint: truncating through %d would remove the newest event (%d)", seq, newest)
+	}
+	if _, err := l.db.ExecContext(ctx,
+		`DELETE FROM events WHERE task_id = ? AND seq <= ?`, taskID, seq); err != nil {
+		return fmt.Errorf("checkpoint: truncate events: %w", err)
+	}
+	return nil
 }
 
 // List returns every task, newest first.

@@ -33,7 +33,7 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 			message.ImagePart{Source: image},
 			message.AudioPart{Source: audio},
 			message.VideoPart{Source: video},
-			message.FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
+			message.FilePart{Source: mustFileURL(t, "s3://bucket/document.pdf", "application/pdf"), Name: "document.pdf"},
 			message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
 			message.ToolCallPart{Call: call},
 			message.ToolResultPart{Result: message.NewTextToolResult("call-1", "found")},
@@ -349,8 +349,8 @@ func TestNormalizePart(t *testing.T) {
 		{"video", message.VideoPart{Source: video}, &message.VideoPart{Source: video}},
 		{
 			"file",
-			message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
-			&message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
+			message.FilePart{Source: mustFileURL(t, "file:///tmp/a.txt", "text/plain")},
+			&message.FilePart{Source: mustFileURL(t, "file:///tmp/a.txt", "text/plain")},
 		},
 		{
 			"data",
@@ -557,4 +557,14 @@ func TestPartCloneDetachesInlineMedia(t *testing.T) {
 	if got := videoClone.(message.VideoPart).Source.Bytes(); len(got) == 0 || got[0] != 9 {
 		t.Fatalf("video clone shares its source buffer: %v", got)
 	}
+}
+
+// mustFileURL builds a file source or fails the test.
+func mustFileURL(t *testing.T, uri, mediaType string) media.FileSource {
+	t.Helper()
+	source, err := media.NewFileURL(uri, mediaType)
+	if err != nil {
+		t.Fatalf("NewFileURL: %v", err)
+	}
+	return source
 }

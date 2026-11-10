@@ -23,7 +23,7 @@ inference:
 func loader(t *testing.T) Loader {
 	t.Helper()
 	return Loader{
-		Engines: []Engine{{Name: "a2a"}, {Name: "graph"}},
+		Engines: []Engine{{Name: "a2a"}, {Name: "graph", Local: true}},
 		Protocols: []Protocol{{
 			Name: "a2a",
 			Decode: func(settings json.RawMessage) (any, error) {

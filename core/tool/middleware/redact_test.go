@@ -157,8 +157,8 @@ func TestRedact_CoversTextDataFileAndMediaURLParts(t *testing.T) {
 				message.TextPart{Text: "token=abc123 keep=ok"},
 				data.Parts[0],
 				message.FilePart{
-					URI:  "https://files.example.com/a?token=abc123",
-					Name: "abc123.txt",
+					Source: mustFileURL(t, "https://files.example.com/a?token=abc123", ""),
+					Name:   "abc123.txt",
 				},
 				message.ImagePart{Source: inline},
 				message.ImagePart{Source: linked},
@@ -188,7 +188,7 @@ func TestRedact_CoversTextDataFileAndMediaURLParts(t *testing.T) {
 		t.Fatalf("redacted data part must stay a JSON object: %v", err)
 	}
 	file := res.Content.Parts[2].(message.FilePart)
-	if strings.Contains(file.URI, "abc123") || strings.Contains(file.Name, "abc123") {
+	if strings.Contains(file.Source.URL(), "abc123") || strings.Contains(file.Name, "abc123") {
 		t.Fatalf("file part = %#v, want the secret replaced", file)
 	}
 	if got := string(res.Content.Parts[3].(message.ImagePart).Source.Bytes()); got != "abc123" {
@@ -338,7 +338,7 @@ func partCarryingSecret(
 	case message.PartVideo:
 		return message.VideoPart{Source: video}
 	case message.PartFile:
-		return message.FilePart{URI: "https://files.example.com/a?token=abc123", Name: "abc123.txt"}
+		return message.FilePart{Source: mustFileURL(t, "https://files.example.com/a?token=abc123", ""), Name: "abc123.txt"}
 	case message.PartData:
 		content, err := message.NewJSONContent([]byte(`{"token":"abc123"}`))
 		if err != nil {
@@ -362,4 +362,14 @@ func partCarryingSecret(
 		)
 		return nil
 	}
+}
+
+// mustFileURL builds a file source or fails the test.
+func mustFileURL(t *testing.T, uri, mediaType string) media.FileSource {
+	t.Helper()
+	source, err := media.NewFileURL(uri, mediaType)
+	if err != nil {
+		t.Fatalf("NewFileURL: %v", err)
+	}
+	return source
 }

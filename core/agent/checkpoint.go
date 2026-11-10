@@ -69,15 +69,40 @@ type TaskSummary struct {
 type Store interface {
 	// Save writes the Task projection and appends this round's events in one
 	// transaction. The first save creates the task; later ones advance it.
-	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord) error
+	//
+	// The projection never carries history: Task.History is ignored, because the
+	// event log is its only source. Save returns the sequence range it assigned
+	// to the events (first, last), or (0, 0) when there were none, so a caller can
+	// point at an event it just wrote without a second query.
+	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord) (first, last int64, err error)
 	// Load returns the newest projection of one task.
+	//
+	// It does not replay the event log: Task.History is always empty. A caller
+	// that needs history reads Events or EventsAfter. Keeping the projection
+	// small is what makes Load cost the same for a one-turn task and a
+	// thousand-turn one.
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
 	// LatestForContext returns the newest task of one conversation, which is
 	// what resuming a conversation needs: checkpoints are keyed by task, but a
 	// conversation outlives each of its tasks.
 	LatestForContext(ctx context.Context, conversationID string) (Checkpoint, error)
-	// Events returns the appended facts of one task, oldest first.
+	// Events returns every appended fact of one task, oldest first.
 	Events(ctx context.Context, taskID string) ([]EventRecord, error)
+	// EventsAfter returns the facts recorded after seq (exclusive), oldest first.
+	// It is what a restore reads when a snapshot already covers everything up to
+	// that point.
+	EventsAfter(ctx context.Context, taskID string, after int64) ([]EventRecord, error)
+	// SetServerVersion advances the adapter's own counter without rewriting the
+	// projection. A protocol adapter that records one event per message uses it:
+	// the engine owns the state, and the adapter owns only its token.
+	SetServerVersion(ctx context.Context, taskID string, version int64) error
+	// TruncateEvents removes the events at or before seq.
+	//
+	// It is the caller's invariant that a later snapshot covers them; a store
+	// cannot tell an obsolete event from a missing one. The newest event is never
+	// removable, so sequence numbers stay monotonic and a later Save continues
+	// after the tail rather than reusing a number.
+	TruncateEvents(ctx context.Context, taskID string, seq int64) error
 	// List returns every task, newest first.
 	List(ctx context.Context) ([]TaskSummary, error)
 	// Delete removes a task and its events.

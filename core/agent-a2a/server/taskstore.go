@@ -1,11 +1,13 @@
-package a2a
+package server
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-a2a/internal/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -74,19 +76,52 @@ func (s *TaskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	if err != nil {
 		return 0, err
 	}
-	if err := s.store.Save(ctx, checkpoint, events); err != nil {
+	if _, _, err := s.store.Save(ctx, checkpoint, events); err != nil {
 		return 0, err
 	}
 	return s.version(ctx, string(task.ID))
 }
 
-// Update appends the event the server produced and leaves the projection to the
-// loop.
+// Update records one event the server produced.
+//
+// The engine owns the task state; the adapter owns the server's token. A status
+// or artifact event carries nothing durable — the engine has already checkpointed
+// it — so the projection is left alone and only the token advances. A message
+// event is task history and a terminal state is the server's decision, and those
+// two are written.
 func (s *TaskStore) Update(ctx context.Context, update *taskstore.UpdateRequest) (taskstore.TaskVersion, error) {
 	if update == nil || update.Task == nil || update.Task.ID == "" {
 		return 0, errdefs.Validationf("a2a: an update without a task cannot be applied")
 	}
 	taskID := string(update.Task.ID)
+	events, err := eventsOf(update.Event)
+	if err != nil {
+		return 0, err
+	}
+	terminal := isTerminal(update.Task.Status.State)
+	if !terminal && len(events) == 0 {
+		// The token advances in one statement; rewriting the projection here
+		// would fight the engine's checkpoint for the same row on every chunk.
+		next := update.PrevVersion
+		if next == taskstore.TaskVersionMissing {
+			current, loadErr := s.store.Load(ctx, taskID)
+			if errors.Is(loadErr, agent.ErrNoCheckpoint) {
+				return 0, a2a.ErrTaskNotFound
+			}
+			if loadErr != nil {
+				return 0, loadErr
+			}
+			next = taskstore.TaskVersion(current.ServerVersion)
+		}
+		version := int64(next) + 1
+		if err := s.store.SetServerVersion(ctx, taskID, version); err != nil {
+			if errors.Is(err, agent.ErrNoCheckpoint) {
+				return 0, a2a.ErrTaskNotFound
+			}
+			return 0, err
+		}
+		return taskstore.TaskVersion(version), nil
+	}
 	current, err := s.store.Load(ctx, taskID)
 	if errors.Is(err, agent.ErrNoCheckpoint) {
 		return 0, a2a.ErrTaskNotFound
@@ -102,19 +137,15 @@ func (s *TaskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 		return 0, taskstore.ErrConcurrentModification
 	}
 	current.ServerVersion++
-	if update.Task != nil && isTerminal(update.Task.Status.State) {
+	if terminal {
 		// A cancel or a failure is decided by the server, not by the loop, so the
 		// projection has to take it from here.
-		current.Task.State = stateFromA2A(update.Task.Status.State)
+		current.Task.State = wire.FromState(update.Task.Status.State)
 	}
-	events, err := eventsOf(update.Event)
-	if err != nil {
+	if _, _, err := s.store.Save(ctx, current, events); err != nil {
 		return 0, err
 	}
-	if err := s.store.Save(ctx, current, events); err != nil {
-		return 0, err
-	}
-	return s.version(ctx, taskID)
+	return taskstore.TaskVersion(current.ServerVersion), nil
 }
 
 // Get returns the stored task with its history from the event log.
@@ -138,27 +169,94 @@ func (s *TaskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.Stor
 }
 
 // List answers the tasks query, filtered by context when asked.
+// List answers a filtered page. The store returns every summary; the adapter
+// applies the protocol's filters and pagination, because a page is a wire
+// concern and the store's job is the newest-first order.
+const (
+	listDefaultPageSize = 50
+	listMaxPageSize     = 100
+)
+
 func (s *TaskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
 	summaries, err := s.store.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	contextID := ""
+	var filter a2a.ListTasksRequest
 	if req != nil {
-		contextID = req.ContextID
+		filter = *req
 	}
-	tasks := make([]*a2a.Task, 0, len(summaries))
+	pageSize := filter.PageSize
+	if pageSize <= 0 {
+		pageSize = listDefaultPageSize
+	}
+	if pageSize > listMaxPageSize {
+		pageSize = listMaxPageSize
+	}
+	offset, err := pageOffset(filter.PageToken)
+	if err != nil {
+		return nil, err
+	}
+	matching := make([]agent.TaskSummary, 0, len(summaries))
 	for _, summary := range summaries {
-		if contextID != "" && summary.ContextID != contextID {
+		if filter.ContextID != "" && summary.ContextID != filter.ContextID {
 			continue
 		}
-		tasks = append(tasks, &a2a.Task{
+		if filter.Status != "" && wire.State(summary.State) != filter.Status {
+			continue
+		}
+		matching = append(matching, summary)
+	}
+	start := offset
+	if start > len(matching) {
+		start = len(matching)
+	}
+	end := start + pageSize
+	if end > len(matching) {
+		end = len(matching)
+	}
+	tasks := make([]*a2a.Task, 0, end-start)
+	for _, summary := range matching[start:end] {
+		task := &a2a.Task{
 			ID:        a2a.TaskID(summary.ID),
 			ContextID: summary.ContextID,
-			Status:    a2a.TaskStatus{State: stateOf(summary.State)},
-		})
+			Status:    a2a.TaskStatus{State: wire.State(summary.State)},
+		}
+		if filter.HistoryLength != nil && *filter.HistoryLength > 0 {
+			events, err := s.store.Events(ctx, summary.ID)
+			if err != nil {
+				return nil, err
+			}
+			history, err := historyOf(events, *filter.HistoryLength)
+			if err != nil {
+				return nil, err
+			}
+			task.History = history
+		}
+		tasks = append(tasks, task)
 	}
-	return &a2a.ListTasksResponse{Tasks: tasks}, nil
+	response := &a2a.ListTasksResponse{
+		Tasks:     tasks,
+		PageSize:  pageSize,
+		TotalSize: len(matching),
+	}
+	if end < len(matching) {
+		response.NextPageToken = strconv.Itoa(end)
+	}
+	return response, nil
+}
+
+// pageOffset reads the token the previous page left. The token is the offset
+// into the filtered list; anything else is a caller error, not an empty page.
+func pageOffset(token string) (int, error) {
+	if token == "" {
+		return 0, nil
+	}
+	offset, err := strconv.Atoi(token)
+	if err != nil || offset < 0 {
+		return 0, errdefs.Validationf("a2a: page token %q is not an offset", token)
+	}
+	return offset, nil
 }
 
 func (s *TaskStore) version(ctx context.Context, taskID string) (taskstore.TaskVersion, error) {
@@ -176,7 +274,7 @@ func eventsOf(event a2a.Event) ([]agent.EventRecord, error) {
 	if !ok || msg == nil {
 		return nil, nil
 	}
-	core, err := fromA2AMessage(msg)
+	core, err := wire.FromMessage(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +302,7 @@ func messageEvents(messages []message.Message) ([]agent.EventRecord, error) {
 func fromA2ATask(task *a2a.Task) (agent.Task, error) {
 	history := make([]message.Message, 0, len(task.History))
 	for _, msg := range task.History {
-		converted, err := fromA2AMessage(msg)
+		converted, err := wire.FromMessage(msg)
 		if err != nil {
 			return agent.Task{}, err
 		}
@@ -213,13 +311,28 @@ func fromA2ATask(task *a2a.Task) (agent.Task, error) {
 	return agent.Task{
 		ID:        string(task.ID),
 		ContextID: task.ContextID,
-		State:     stateFromA2A(task.Status.State),
+		State:     wire.FromState(task.Status.State),
 		History:   history,
 	}, nil
 }
 
 // toA2ATask renders a stored task; its history is the message events.
 func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Task, error) {
+	history, err := historyOf(events, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &a2a.Task{
+		ID:        a2a.TaskID(checkpoint.Task.ID),
+		ContextID: checkpoint.Task.ContextID,
+		Status:    a2a.TaskStatus{State: wire.State(checkpoint.Task.State)},
+		History:   history,
+	}, nil
+}
+
+// historyOf renders the message events of a task as wire history, keeping at
+// most limit messages from the end when limit is positive.
+func historyOf(events []agent.EventRecord, limit int) ([]*a2a.Message, error) {
 	history := make([]*a2a.Message, 0, len(events))
 	for _, event := range events {
 		if event.Kind != "message" {
@@ -229,7 +342,7 @@ func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Ta
 		if err := json.Unmarshal(event.Payload, &core); err != nil {
 			return nil, errdefs.Validationf("a2a: decode message event: %w", err)
 		}
-		converted, err := toA2AMessage(core)
+		converted, err := wire.Message(core)
 		if err != nil {
 			// The loop persists its own working (tool calls, results, reasoning)
 			// in the same log; those parts have no wire form. Skipping them keeps
@@ -239,34 +352,10 @@ func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Ta
 		}
 		history = append(history, converted)
 	}
-	return &a2a.Task{
-		ID:        a2a.TaskID(checkpoint.Task.ID),
-		ContextID: checkpoint.Task.ContextID,
-		Status:    a2a.TaskStatus{State: stateOf(checkpoint.Task.State)},
-		History:   history,
-	}, nil
-}
-
-// toA2AMessage renders one core message for the wire.
-func toA2AMessage(msg message.Message) (*a2a.Message, error) {
-	role := a2a.MessageRoleAgent
-	if msg.Role == message.RoleUser {
-		role = a2a.MessageRoleUser
+	if limit > 0 && len(history) > limit {
+		history = history[len(history)-limit:]
 	}
-	parts := make([]*a2a.Part, 0, len(msg.Content.Parts))
-	for _, part := range msg.Content.Parts {
-		switch typed := part.(type) {
-		case message.TextPart:
-			parts = append(parts, a2a.NewTextPart(typed.Text))
-		case message.DataPart:
-			parts = append(parts, a2a.NewDataPart(typed.Value))
-		case message.FilePart:
-			parts = append(parts, a2a.NewFileURLPart(a2a.URL(typed.URI), typed.MediaType))
-		default:
-			return nil, errdefs.Validationf("a2a: part kind %q has no wire form", part.Kind())
-		}
-	}
-	return a2a.NewMessage(role, parts...), nil
+	return history, nil
 }
 
 // isTerminal reports whether a wire state ends a task.
@@ -276,27 +365,5 @@ func isTerminal(state a2a.TaskState) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// stateFromA2A translates the protocol's spelling back into the internal one.
-func stateFromA2A(state a2a.TaskState) agent.TaskState {
-	switch state {
-	case a2a.TaskStateSubmitted:
-		return agent.StateSubmitted
-	case a2a.TaskStateWorking:
-		return agent.StateWorking
-	case a2a.TaskStateInputRequired:
-		return agent.StateInputRequired
-	case a2a.TaskStateCompleted:
-		return agent.StateCompleted
-	case a2a.TaskStateCanceled:
-		return agent.StateCanceled
-	case a2a.TaskStateRejected:
-		return agent.StateRejected
-	case a2a.TaskStateAuthRequired:
-		return agent.StateAuthRequired
-	default:
-		return agent.StateFailed
 	}
 }

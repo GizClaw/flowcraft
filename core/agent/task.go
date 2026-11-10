@@ -58,7 +58,6 @@ type Task struct {
 	ContextID string            `json:"context_id,omitempty"`
 	State     TaskState         `json:"state"`
 	Round     int               `json:"round"`
-	System    message.Content   `json:"system,omitzero"`
 	History   []message.Message `json:"history,omitempty"`
 	Artifacts []Artifact        `json:"artifacts,omitempty"`
 	// Pending is the tool call the Task stopped on when it needed the user. It

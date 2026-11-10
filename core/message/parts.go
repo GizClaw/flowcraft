@@ -128,11 +128,10 @@ func MarshalPart(part Part) ([]byte, error) {
 		}{PartVideo, value.Source}
 	case FilePart:
 		wire = struct {
-			Type      PartKind `json:"type"`
-			URI       string   `json:"uri"`
-			MediaType string   `json:"media_type,omitempty"`
-			Name      string   `json:"name,omitempty"`
-		}{PartFile, value.URI, value.MediaType, value.Name}
+			Type   PartKind         `json:"type"`
+			Source media.FileSource `json:"source"`
+			Name   string           `json:"name,omitempty"`
+		}{PartFile, value.Source, value.Name}
 	case DataPart:
 		wire = struct {
 			Type      PartKind        `json:"type"`
@@ -220,15 +219,14 @@ func UnmarshalPart(data []byte) (Part, error) {
 		return VideoPart{Source: item.Source}, nil
 	case PartFile:
 		var item struct {
-			Type      PartKind `json:"type"`
-			URI       string   `json:"uri"`
-			MediaType string   `json:"media_type,omitempty"`
-			Name      string   `json:"name,omitempty"`
+			Type   PartKind         `json:"type"`
+			Source media.FileSource `json:"source"`
+			Name   string           `json:"name,omitempty"`
 		}
 		if err := decodeStrict(data, &item); err != nil {
 			return nil, fmt.Errorf("content part: %w", err)
 		}
-		return FilePart{URI: item.URI, MediaType: item.MediaType, Name: item.Name}, nil
+		return FilePart{Source: item.Source, Name: item.Name}, nil
 	case PartData:
 		var item struct {
 			Type      PartKind        `json:"type"`
@@ -353,16 +351,21 @@ func (p VideoPart) Validate() error { return p.Source.Validate() }
 func (VideoPart) messagePart()      {}
 
 type FilePart struct {
-	URI       string `json:"uri"`
-	MediaType string `json:"media_type,omitempty"`
-	Name      string `json:"name,omitempty"`
+	// Source is where the payload lives: a URL, or the bytes themselves when a
+	// protocol sends them inline. A file is not special enough to need a second
+	// shape beside the media parts.
+	Source media.FileSource `json:"source"`
+	Name   string           `json:"name,omitempty"`
 }
 
 func (FilePart) Kind() PartKind { return PartFile }
-func (p FilePart) Clone() Part  { return p }
+func (p FilePart) Clone() Part {
+	p.Source = p.Source.Clone()
+	return p
+}
 func (p FilePart) Validate() error {
-	if p.URI == "" {
-		return fmt.Errorf("file URI is required")
+	if err := p.Source.Validate(); err != nil {
+		return fmt.Errorf("file source: %w", err)
 	}
 	return nil
 }

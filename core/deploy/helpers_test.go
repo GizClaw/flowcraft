@@ -6,12 +6,16 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-a2a/server"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 // scripted answers each round from a list.
@@ -66,14 +70,13 @@ func (s *stream) Next(context.Context) (inference.StreamEvent, error) {
 func (s *stream) Result() (inference.GenerateResponse, error) { return s.resp, nil }
 func (s *stream) Close() error                                { return nil }
 
-// textRunner answers once with text. The proxy and the protocol adapter only need
-// a peer that speaks A2A, not a local engine.
+// textRunner answers once with text. The A2A client only needs a peer that
+// speaks A2A, not a local engine.
 type textRunner struct{ text string }
 
-func (r *textRunner) SetIdentity(string, string) {}
-func (r *textRunner) State() agent.TaskState     { return agent.StateSubmitted }
+func (r *textRunner) State() agent.TaskState { return agent.StateSubmitted }
 
-func (r *textRunner) Run(_ context.Context, _ agent.Input) iter.Seq2[agent.Event, error] {
+func (r *textRunner) Run(_ context.Context, _ message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
 		if !yield(agent.Status{State: agent.StateWorking}, nil) {
 			return
@@ -85,12 +88,24 @@ func (r *textRunner) Run(_ context.Context, _ agent.Input) iter.Seq2[agent.Event
 	}
 }
 
-func (r *textRunner) Resume(ctx context.Context, _ agent.Reply) iter.Seq2[agent.Event, error] {
-	return r.Run(ctx, agent.Input{})
-}
+func (r *textRunner) Cancel(context.Context, string) error { return nil }
+func (r *textRunner) Close() error                         { return nil }
 
-func textStep(text string) inference.GenerateResponse {
-	return inference.GenerateResponse{Message: message.NewTextMessage(message.RoleAssistant, text)}
+// backend serves an A2A agent answering with text, for tests that need a peer.
+func backend(t *testing.T, text string) *httptest.Server {
+	t.Helper()
+	srv, err := server.NewServer(server.ServerConfig{
+		Card: server.CardConfig{Name: "backend", Version: "1.0.0", URL: "https://backend.test"},
+		Sessions: func(context.Context, *a2asrv.ExecutorContext) (agent.Runner, error) {
+			return &textRunner{text: text}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	return ts
 }
 
 func config(t *testing.T) runtime.Config {

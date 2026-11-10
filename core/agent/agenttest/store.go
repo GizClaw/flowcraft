@@ -34,12 +34,18 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"MissingTaskIsNotACheckpoint", missingTask},
 		{"FirstSaveCreatesTheTask", firstSave},
 		{"EventsOnlyAppend", eventsOnlyAppend},
-		{"HistoryIsSeedPlusEvents", historyIsSeedPlusEvents},
+		{"ProjectionCarriesNoHistory", projectionCarriesNoHistory},
+		{"LoadDoesNotReplay", loadDoesNotReplay},
+		{"EventsAfterReturnsTheSuffix", eventsAfterReturnsTheSuffix},
+		{"TruncateKeepsTheTail", truncateKeepsTheTail},
+		{"TruncateRefusesTheTail", truncateRefusesTheTail},
+		{"SetServerVersionLeavesTheProjectionAlone", setServerVersionOnly},
 		{"VersionAdvancesPerSave", versionAdvances},
 		{"ServerVersionRoundTrips", serverVersionRoundTrips},
 		{"LatestForContextPicksTheNewest", latestForContext},
 		{"ListIsNewestFirst", listIsNewestFirst},
 		{"DeleteRemovesTaskAndEvents", deleteRemovesTaskAndEvents},
+		{"SectionsSurviveLaterSaves", sectionsSurviveLaterSaves},
 		{"BlobIsContentAddressed", blobIsContentAddressed},
 	}
 	for _, tc := range cases {
@@ -89,7 +95,7 @@ func firstSave(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
 	want := task("task-1", "conv-1", 0)
-	if err := store.Save(ctx, want, nil); err != nil {
+	if _, _, err := store.Save(ctx, want, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	got, err := store.Load(ctx, "task-1")
@@ -104,18 +110,18 @@ func firstSave(t *testing.T, open func(*testing.T) agent.Store) {
 		t.Errorf("task = %s/%d, want %s/%d",
 			got.Task.State, got.Task.Round, want.Task.State, want.Task.Round)
 	}
-	if len(got.Task.History) != 1 {
-		t.Errorf("history = %d messages, want the seed", len(got.Task.History))
+	if len(got.Task.History) != 0 {
+		t.Errorf("history = %d messages, want the projection to carry none", len(got.Task.History))
 	}
 }
 
 func eventsOnlyAppend(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{messageEvent(t, "one")}); err != nil {
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{messageEvent(t, "one")}); err != nil {
 		t.Fatalf("Save 1: %v", err)
 	}
-	if err := store.Save(ctx, task("task-1", "conv-1", 1), []agent.EventRecord{messageEvent(t, "two")}); err != nil {
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 1), []agent.EventRecord{messageEvent(t, "two")}); err != nil {
 		t.Fatalf("Save 2: %v", err)
 	}
 	events, err := store.Events(ctx, "task-1")
@@ -135,20 +141,41 @@ func eventsOnlyAppend(t *testing.T, open func(*testing.T) agent.Store) {
 	}
 }
 
-// History after the seed has exactly one source: the event log.
-func historyIsSeedPlusEvents(t *testing.T, open func(*testing.T) agent.Store) {
+// A projection never carries history: what the caller passes in Task.History is
+// ignored, because the log is its only source.
+func projectionCarriesNoHistory(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
-		t.Fatalf("Save seed: %v", err)
+	seed := task("task-1", "conv-1", 0)
+	seed.Task.History = []message.Message{message.NewTextMessage(message.RoleUser, "write it")}
+	if _, _, err := store.Save(ctx, seed, []agent.EventRecord{messageEvent(t, "one")}); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
-	const rounds = 20
-	for i := 0; i < rounds; i++ {
-		cp := task("task-1", "conv-1", i+1)
-		// A backend that wrote history into the projection would return whatever
-		// this field held, hiding a broken replay.
-		cp.Task.History = append(cp.Task.History, message.NewTextMessage(message.RoleAssistant, "x"))
-		if err := store.Save(ctx, cp, []agent.EventRecord{messageEvent(t, "x")}); err != nil {
+	loaded, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Task.History) != 0 {
+		t.Fatalf("history = %d messages, want none in the projection", len(loaded.Task.History))
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want the one written", len(events))
+	}
+}
+
+// Load is the projection only: messages are not replayed into it.
+func loadDoesNotReplay(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, _, err := store.Save(ctx, task("task-1", "conv-1", i+1), []agent.EventRecord{messageEvent(t, "x")}); err != nil {
 			t.Fatalf("Save %d: %v", i, err)
 		}
 	}
@@ -156,23 +183,167 @@ func historyIsSeedPlusEvents(t *testing.T, open func(*testing.T) agent.Store) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(loaded.Task.History) != rounds+1 {
-		t.Fatalf("history = %d messages, want the seed plus %d replayed events",
-			len(loaded.Task.History), rounds)
+	if len(loaded.Task.History) != 0 {
+		t.Fatalf("history = %d messages, want the projection only", len(loaded.Task.History))
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5", len(events))
+	}
+}
+
+// EventsAfter returns the suffix, exclusive of the bound.
+func eventsAfterReturnsTheSuffix(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	batch := make([]agent.EventRecord, 0, 5)
+	for i := 0; i < 5; i++ {
+		batch = append(batch, messageEvent(t, "x"))
+	}
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 5), batch); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5", len(events))
+	}
+	suffix, err := store.EventsAfter(ctx, "task-1", events[1].Seq)
+	if err != nil {
+		t.Fatalf("EventsAfter: %v", err)
+	}
+	if len(suffix) != 3 {
+		t.Fatalf("suffix = %d events, want 3", len(suffix))
+	}
+	if suffix[0].Seq != events[2].Seq {
+		t.Errorf("suffix starts at %d, want %d", suffix[0].Seq, events[2].Seq)
+	}
+	tail, err := store.EventsAfter(ctx, "task-1", events[len(events)-1].Seq)
+	if err != nil {
+		t.Fatalf("EventsAfter tail: %v", err)
+	}
+	if len(tail) != 0 {
+		t.Errorf("tail = %d events, want none", len(tail))
+	}
+}
+
+// Truncation keeps the tail: the newest event is never removable, so a later
+// Save continues past it instead of reusing an identifier.
+func truncateKeepsTheTail(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	batch := make([]agent.EventRecord, 0, 5)
+	for i := 0; i < 5; i++ {
+		batch = append(batch, messageEvent(t, "x"))
+	}
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 5), batch); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	stored, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if err := store.TruncateEvents(ctx, "task-1", stored[2].Seq); err != nil {
+		t.Fatalf("TruncateEvents: %v", err)
+	}
+	kept, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events after truncate: %v", err)
+	}
+	if len(kept) != 2 {
+		t.Fatalf("kept = %d events, want the two after the cut", len(kept))
+	}
+	if kept[0].Seq != stored[3].Seq {
+		t.Errorf("first kept seq = %d, want %d", kept[0].Seq, stored[3].Seq)
+	}
+	first, last, err := store.Save(ctx, task("task-1", "conv-1", 6), []agent.EventRecord{messageEvent(t, "y")})
+	if err != nil {
+		t.Fatalf("Save after truncate: %v", err)
+	}
+	if first != stored[4].Seq+1 || last != first {
+		t.Errorf("new seq range = %d..%d, want %d", first, last, stored[4].Seq+1)
+	}
+}
+
+// The adapter's counter advances without the projection being rewritten: the
+// engine owns the state, the adapter owns only its token.
+func setServerVersionOnly(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	seed := task("task-1", "conv-1", 0)
+	if _, _, err := store.Save(ctx, seed, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	before, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store.SetServerVersion(ctx, "task-1", 9); err != nil {
+		t.Fatalf("SetServerVersion: %v", err)
+	}
+	after, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load after: %v", err)
+	}
+	if after.ServerVersion != 9 {
+		t.Errorf("server version = %d, want 9", after.ServerVersion)
+	}
+	if after.Version != before.Version {
+		t.Errorf("version %d -> %d; the projection write counter moved", before.Version, after.Version)
+	}
+	if after.Task.State != before.Task.State || after.Task.Round != before.Task.Round {
+		t.Errorf("the projection changed: %+v -> %+v", before.Task, after.Task)
+	}
+	if err := store.SetServerVersion(ctx, "absent", 1); !errors.Is(err, agent.ErrNoCheckpoint) {
+		t.Errorf("SetServerVersion(absent) = %v, want ErrNoCheckpoint", err)
+	}
+}
+
+// Refusing to remove the newest event is what keeps sequence numbers monotonic.
+func truncateRefusesTheTail(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{messageEvent(t, "x")}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if err := store.TruncateEvents(ctx, "task-1", events[0].Seq); err == nil {
+		t.Fatal("truncating the newest event was accepted")
+	}
+	kept, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(kept) != 1 {
+		t.Errorf("events = %d, want the tail preserved", len(kept))
 	}
 }
 
 func versionAdvances(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	first, err := store.Load(ctx, "task-1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := store.Save(ctx, task("task-1", "conv-1", 1), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 1), nil); err != nil {
 		t.Fatalf("Save 2: %v", err)
 	}
 	second, err := store.Load(ctx, "task-1")
@@ -189,7 +360,7 @@ func serverVersionRoundTrips(t *testing.T, open func(*testing.T) agent.Store) {
 	ctx := context.Background()
 	cp := task("task-1", "conv-1", 0)
 	cp.ServerVersion = 7
-	if err := store.Save(ctx, cp, nil); err != nil {
+	if _, _, err := store.Save(ctx, cp, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	loaded, err := store.Load(ctx, "task-1")
@@ -204,14 +375,14 @@ func serverVersionRoundTrips(t *testing.T, open func(*testing.T) agent.Store) {
 func latestForContext(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("old", "conv-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("old", "conv-1", 0), nil); err != nil {
 		t.Fatalf("Save old: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond) // updated_at must be able to differ
-	if err := store.Save(ctx, task("new", "conv-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("new", "conv-1", 0), nil); err != nil {
 		t.Fatalf("Save new: %v", err)
 	}
-	if err := store.Save(ctx, task("other", "conv-2", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("other", "conv-2", 0), nil); err != nil {
 		t.Fatalf("Save other: %v", err)
 	}
 	latest, err := store.LatestForContext(ctx, "conv-1")
@@ -226,11 +397,11 @@ func latestForContext(t *testing.T, open func(*testing.T) agent.Store) {
 func listIsNewestFirst(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("a", "conv-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("a", "conv-1", 0), nil); err != nil {
 		t.Fatalf("Save a: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	if err := store.Save(ctx, task("b", "conv-1", 0), nil); err != nil {
+	if _, _, err := store.Save(ctx, task("b", "conv-1", 0), nil); err != nil {
 		t.Fatalf("Save b: %v", err)
 	}
 	list, err := store.List(ctx)
@@ -251,7 +422,7 @@ func listIsNewestFirst(t *testing.T, open func(*testing.T) agent.Store) {
 func deleteRemovesTaskAndEvents(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{messageEvent(t, "x")}); err != nil {
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{messageEvent(t, "x")}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := store.Delete(ctx, "task-1"); err != nil {
@@ -266,6 +437,30 @@ func deleteRemovesTaskAndEvents(t *testing.T, open func(*testing.T) agent.Store)
 	}
 	if len(events) != 0 {
 		t.Errorf("events after Delete = %d, want none", len(events))
+	}
+}
+
+// Sections are owner-keyed state an adapter above the agent writes on every save;
+// they must not be frozen at the first one.
+func sectionsSurviveLaterSaves(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	first := task("task-1", "conv-1", 0)
+	first.Sections = map[string]json.RawMessage{"a2a": json.RawMessage(`{"context_id":"one"}`)}
+	if _, _, err := store.Save(ctx, first, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	second := task("task-1", "conv-1", 1)
+	second.Sections = map[string]json.RawMessage{"a2a": json.RawMessage(`{"context_id":"two"}`)}
+	if _, _, err := store.Save(ctx, second, nil); err != nil {
+		t.Fatalf("Save 2: %v", err)
+	}
+	loaded, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := string(loaded.Sections["a2a"]); got != `{"context_id":"two"}` {
+		t.Fatalf("section = %s, want the second save's value", got)
 	}
 }
 
@@ -314,6 +509,7 @@ type memTask struct {
 	contextID string
 	artifacts []agent.Artifact
 	pending   *message.ToolCall
+	sections  map[string]json.RawMessage
 	version   int64
 	serverVer int64
 	updatedAt time.Time
@@ -331,13 +527,14 @@ func NewMemStore() *MemStore {
 
 var _ agent.Store = (*MemStore)(nil)
 
-func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent.EventRecord) error {
+func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent.EventRecord) (int64, int64, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, 0, err
 	}
 	if cp.Task.ID == "" {
-		return errors.New("agenttest: task id is required")
+		return 0, 0, errors.New("agenttest: task id is required")
 	}
+	cp.Task.History = nil
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.saves++
@@ -354,15 +551,33 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 	entry.contextID = cp.Task.ContextID
 	entry.artifacts = cp.Task.Artifacts
 	entry.pending = cp.Task.Pending
+	if len(cp.Sections) > 0 {
+		if entry.sections == nil {
+			entry.sections = make(map[string]json.RawMessage, len(cp.Sections))
+		}
+		for key, value := range cp.Sections {
+			entry.sections[key] = value
+		}
+	}
 	entry.serverVer = cp.ServerVersion
 	entry.updatedAt = time.Now()
-	for _, event := range events {
-		seq := m.nextSeq[cp.Task.ID]
+	var first, last int64
+	for i, event := range events {
+		// Sequences start at 1, like the SQL backend: EventsAfter is exclusive,
+		// so a sequence of 0 would be invisible to Events.
+		seq, ok := m.nextSeq[cp.Task.ID]
+		if !ok {
+			seq = 1
+		}
 		m.nextSeq[cp.Task.ID] = seq + 1
 		event.Seq = seq
+		if i == 0 {
+			first = seq
+		}
+		last = seq
 		entry.events = append(entry.events, event)
 	}
-	return nil
+	return first, last, nil
 }
 
 func (m *MemStore) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
@@ -382,20 +597,15 @@ func (m *MemStore) Load(ctx context.Context, taskID string) (agent.Checkpoint, e
 	cp.Task.Round = entry.round
 	cp.Task.Artifacts = entry.artifacts
 	cp.Task.Pending = entry.pending
+	if len(entry.sections) > 0 {
+		cp.Sections = make(map[string]json.RawMessage, len(entry.sections))
+		for key, value := range entry.sections {
+			cp.Sections[key] = value
+		}
+	}
 	cp.Version = entry.version
 	cp.ServerVersion = entry.serverVer
-	history := append([]message.Message(nil), entry.seed.Task.History...)
-	for _, event := range entry.events {
-		if event.Kind != "message" {
-			continue
-		}
-		var msg message.Message
-		if err := json.Unmarshal(event.Payload, &msg); err != nil {
-			continue
-		}
-		history = append(history, msg)
-	}
-	cp.Task.History = history
+	cp.Task.History = nil
 	return cp, nil
 }
 
@@ -428,6 +638,10 @@ func (m *MemStore) latestID(conversationID string) (string, bool) {
 }
 
 func (m *MemStore) Events(ctx context.Context, taskID string) ([]agent.EventRecord, error) {
+	return m.EventsAfter(ctx, taskID, 0)
+}
+
+func (m *MemStore) EventsAfter(ctx context.Context, taskID string, after int64) ([]agent.EventRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -437,7 +651,55 @@ func (m *MemStore) Events(ctx context.Context, taskID string) ([]agent.EventReco
 	if !ok {
 		return nil, nil
 	}
-	return append([]agent.EventRecord(nil), entry.events...), nil
+	out := make([]agent.EventRecord, 0, len(entry.events))
+	for _, event := range entry.events {
+		if event.Seq > after {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemStore) SetServerVersion(ctx context.Context, taskID string, version int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.tasks[taskID]
+	if !ok {
+		return agent.ErrNoCheckpoint
+	}
+	entry.serverVer = version
+	entry.updatedAt = time.Now()
+	return nil
+}
+
+func (m *MemStore) TruncateEvents(ctx context.Context, taskID string, seq int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if seq < 0 {
+		return errors.New("agenttest: truncation point must not be negative")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.tasks[taskID]
+	if !ok || len(entry.events) == 0 {
+		return nil
+	}
+	newest := entry.events[len(entry.events)-1].Seq
+	if seq >= newest {
+		return errors.New("agenttest: truncating would remove the newest event")
+	}
+	kept := entry.events[:0]
+	for _, event := range entry.events {
+		if event.Seq > seq {
+			kept = append(kept, event)
+		}
+	}
+	entry.events = kept
+	return nil
 }
 
 func (m *MemStore) List(ctx context.Context) ([]agent.TaskSummary, error) {
