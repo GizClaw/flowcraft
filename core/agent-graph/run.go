@@ -292,6 +292,64 @@ type stepResult struct {
 	err    error
 }
 
+// runStepInline runs a one-node frontier on the caller's goroutine.
+//
+// It matches the concurrent path event for event: the same stream pull, the same
+// consumer-stop rule, the same panic barrier, and writes applied before the
+// checkpoint. Only the scheduling overhead is gone.
+func (r *Run) runStepInline(
+	ctx context.Context,
+	yield func(agent.Event, error) bool,
+	id string,
+	inv Invoke,
+) ([]string, message.Content, error) {
+	stopped := false
+	emit := func(event agent.Event) bool {
+		switch typed := event.(type) {
+		case agent.StreamStart:
+			r.streamed.Reset()
+		case agent.Text:
+			r.streamed.WriteString(typed.Text)
+		}
+		if !yield(event, nil) {
+			stopped = true
+			return false
+		}
+		return true
+	}
+	result, err := r.invokeInline(ctx, id, inv, emit)
+	if stopped {
+		return nil, message.Content{}, errConsumerStopped
+	}
+	if err != nil {
+		return nil, message.Content{}, fmt.Errorf("graph: node %q: %w", id, err)
+	}
+	if result.Suspend != nil {
+		r.persist(ctx, nil)
+		return []string{id}, result.Suspend.Question, nil
+	}
+	if err := r.values.apply(result.State, r.g.state); err != nil {
+		return nil, message.Content{}, err
+	}
+	r.persist(ctx, result.State)
+	return nil, message.Content{}, nil
+}
+
+// invokeInline is invokeOnce with the panic barrier the goroutine used to give.
+func (r *Run) invokeInline(
+	ctx context.Context,
+	id string,
+	inv Invoke,
+	emit func(agent.Event) bool,
+) (result Result, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("node %q panicked: %v", id, recovered)
+		}
+	}()
+	return r.invokeOnce(ctx, id, inv, emit)
+}
+
 // runStep invokes one frontier, forwards the events its streams produce, and
 // applies its writes.
 //
@@ -309,6 +367,7 @@ func (r *Run) runStep(
 	run := make([]bool, len(active))
 	invocations := make([]Invoke, len(active))
 	var skipEnv map[string]any
+	running, single := 0, -1
 	for i, id := range active {
 		spec := r.g.nodes[id]
 		if spec.skip != nil {
@@ -324,6 +383,8 @@ func (r *Run) runStep(
 			}
 		}
 		run[i] = true
+		running++
+		single = i
 		invocations[i] = Invoke{
 			Node:     id,
 			Config:   spec.config,
@@ -333,6 +394,11 @@ func (r *Run) runStep(
 			Step:     r.step,
 			Answer:   r.answer,
 		}
+	}
+	// A frontier with one node has nothing to run in parallel: it pays no
+	// goroutine, channel or semaphore, which for a linear graph is every step.
+	if running == 1 {
+		return r.runStepInline(ctx, yield, active[single], invocations[single])
 	}
 
 	stepCtx, cancel := context.WithCancel(ctx)
@@ -346,12 +412,10 @@ func (r *Run) runStep(
 	}
 	semaphore := make(chan struct{}, limit)
 	var pumps sync.WaitGroup
-	running := 0
 	for i, id := range active {
 		if !run[i] {
 			continue
 		}
-		running++
 		pumps.Add(1)
 		go func(i int, id string) {
 			defer pumps.Done()
@@ -374,7 +438,15 @@ func (r *Run) runStep(
 				}
 				done <- outcome
 			}()
-			outcome.result, outcome.err = r.invokeOnce(stepCtx, id, invocations[i], emitted)
+			emit := func(event agent.Event) bool {
+				select {
+				case emitted <- event:
+					return true
+				case <-stepCtx.Done():
+					return false
+				}
+			}
+			outcome.result, outcome.err = r.invokeOnce(stepCtx, id, invocations[i], emit)
 		}(i, id)
 	}
 	go func() {
@@ -464,13 +536,13 @@ func (r *Run) invokeOnce(
 	ctx context.Context,
 	id string,
 	inv Invoke,
-	emitted chan<- agent.Event,
+	emit func(agent.Event) bool,
 ) (Result, error) {
 	spec := r.g.nodes[id]
 	attempts := spec.retries + 1
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		result, produced, err := r.invokeStream(ctx, id, inv, emitted)
+		result, produced, err := r.invokeStream(ctx, id, inv, emit)
 		if err == nil {
 			return result, nil
 		}
@@ -492,7 +564,7 @@ func (r *Run) invokeStream(
 	ctx context.Context,
 	id string,
 	inv Invoke,
-	emitted chan<- agent.Event,
+	emit func(agent.Event) bool,
 ) (Result, bool, error) {
 	spec := r.g.nodes[id]
 	invokeCtx := ctx
@@ -524,10 +596,11 @@ func (r *Run) invokeStream(
 				"node %q emitted a %s event, which the engine owns", id, event.Kind())
 		}
 		produced = true
-		select {
-		case emitted <- event:
-		case <-ctx.Done():
-			return Result{}, true, ctx.Err()
+		if !emit(event) {
+			if ctx.Err() != nil {
+				return Result{}, true, ctx.Err()
+			}
+			return Result{}, true, errConsumerStopped
 		}
 	}
 	result, err := stream.Result()

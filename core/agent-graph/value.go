@@ -192,12 +192,22 @@ func EmptyMessages() Messages { return Messages{} }
 // later appends to the caller's slice do not change this value; the messages
 // themselves are shared, which is safe because a message does not change after it
 // is built.
+//
+// The chain is built in one allocation: Append allocates a node per message,
+// which for a restored transcript is one allocation per turn.
 func MessagesFromSlice(msgs []message.Message) Messages {
-	out := Messages{}
-	for _, msg := range msgs {
-		out = out.Append(msg)
+	if len(msgs) == 0 {
+		return Messages{}
 	}
-	return out
+	nodes := make([]Messages, len(msgs))
+	for i, msg := range msgs {
+		var parent *Messages
+		if i > 0 {
+			parent = &nodes[i-1]
+		}
+		nodes[i] = Messages{parent: parent, msg: msg, n: i + 1}
+	}
+	return nodes[len(nodes)-1]
 }
 
 // Append returns a new session with msg at the end. The receiver is
