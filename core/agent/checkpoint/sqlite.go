@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 	state      TEXT NOT NULL,
 	round      INTEGER NOT NULL DEFAULT 0,
 	schema     INTEGER NOT NULL,
-	runtime    TEXT NOT NULL,
+	fingerprint TEXT NOT NULL,
 	seed           BLOB NOT NULL DEFAULT '',
 	body           BLOB NOT NULL,
 	version        INTEGER NOT NULL DEFAULT 1,
@@ -199,14 +199,14 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tasks (task_id, context_id, state, round, schema, runtime, seed, body, version, server_version, updated_at)
+		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, version, server_version, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
 			context_id     = excluded.context_id,
 			state          = excluded.state,
 			round          = excluded.round,
 			schema         = excluded.schema,
-			runtime        = excluded.runtime,
+			fingerprint    = excluded.fingerprint,
 			body           = excluded.body,
 			version        = tasks.version + 1,
 			server_version = excluded.server_version,
@@ -216,7 +216,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		string(checkpoint.Task.State),
 		checkpoint.Task.Round,
 		checkpoint.Schema,
-		string(checkpoint.Runtime),
+		string(checkpoint.Fingerprint),
 		seed,
 		body,
 		checkpoint.ServerVersion,

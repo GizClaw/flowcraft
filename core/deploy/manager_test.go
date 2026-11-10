@@ -156,7 +156,7 @@ func TestNamesIsSorted(t *testing.T) {
 	}
 }
 
-// Replace ends the old deployment: its digest differs, so its sessions are
+// Replace ends the old deployment: its fingerprint differs, so its sessions are
 // not continued on the new one.
 func TestReplaceEndsTheOldDeployment(t *testing.T) {
 	store := agenttest.NewMemStore()

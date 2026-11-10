@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -57,9 +56,9 @@ var (
 type AgentOptions struct {
 	// Store makes sessions resumable. Nil keeps them in memory only.
 	Store Store
-	// Identity is the deployment digest a checkpoint must carry to be resumed.
+	// Identity is the fingerprint a checkpoint must carry to be resumed.
 	// Empty disables the check.
-	Identity runtime.Digest
+	Identity Fingerprint
 	// NewRunner builds the engine for one session. The task id is settled
 	// before this is called, so an engine may key its checkpoint by it.
 	//
@@ -251,7 +250,7 @@ func (a *Agent) State(ctx context.Context, sessionID string) (TaskState, error) 
 	if err != nil {
 		return "", err
 	}
-	if a.opts.Identity != "" && checkpoint.Runtime != a.opts.Identity {
+	if a.opts.Identity != "" && checkpoint.Fingerprint != a.opts.Identity {
 		return StateSubmitted, nil
 	}
 	return checkpoint.Task.State, nil
@@ -323,7 +322,7 @@ func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 	if checkpoint.Task.State.Terminal() {
 		return nil
 	}
-	if a.opts.Identity != "" && checkpoint.Runtime != a.opts.Identity {
+	if a.opts.Identity != "" && checkpoint.Fingerprint != a.opts.Identity {
 		a.abandon(ctx, checkpoint)
 		return nil
 	}
@@ -569,7 +568,7 @@ func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID
 			checkpoint, err := a.opts.Store.Load(ctx, taskID)
 			switch {
 			case err == nil:
-				if a.opts.Identity != "" && checkpoint.Runtime != a.opts.Identity {
+				if a.opts.Identity != "" && checkpoint.Fingerprint != a.opts.Identity {
 					return nil, fmt.Errorf("%w: task %q", ErrDeploymentChanged, taskID)
 				}
 				state = checkpoint.Task.State
@@ -582,7 +581,7 @@ func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID
 			checkpoint, err := a.opts.Store.LatestForSession(ctx, sessionID)
 			switch {
 			case err == nil && !checkpoint.Task.State.Terminal():
-				if a.opts.Identity == "" || checkpoint.Runtime == a.opts.Identity {
+				if a.opts.Identity == "" || checkpoint.Fingerprint == a.opts.Identity {
 					taskID = checkpoint.Task.ID
 					state = checkpoint.Task.State
 				} else {

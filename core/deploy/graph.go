@@ -29,7 +29,7 @@ func GraphEngine(options ...nodes.Option) EngineKind {
 		Decode: func(settings json.RawMessage) (any, error) {
 			return decodeGraphSettings(settings)
 		},
-		Digest: graphDigest,
+		Fingerprint: graphFingerprint,
 		Build: func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error) {
 			settings, err := decodeGraphSettings(deps.Spec.Settings)
 			if err != nil {
@@ -44,7 +44,7 @@ func GraphEngine(options ...nodes.Option) EngineKind {
 			return func(_ context.Context, sessionID, taskID string) (agent.Runner, error) {
 				return graph.NewRunner(built, graph.RunnerConfig{
 					Store:     deps.Store,
-					Identity:  deps.Digest,
+					Identity:  deps.Fingerprint,
 					SessionID: sessionID,
 					TaskID:    taskID,
 				}), nil
@@ -80,10 +80,10 @@ func decodeGraphSettings(settings json.RawMessage) (graphSettings, error) {
 	return decoded, nil
 }
 
-// graphDigest is the document's identity: its path and its bytes. Editing the
+// graphFingerprint is the document's identity: its path and its bytes. Editing the
 // file therefore invalidates the checkpoints taken under the old graph, which is
 // the same rule a changed runtime or engine setting follows.
-func graphDigest(settings json.RawMessage) string {
+func graphFingerprint(settings json.RawMessage) string {
 	var decoded graphSettings
 	_ = json.Unmarshal(settings, &decoded)
 	sum := sha256.Sum256([]byte(decoded.Path))

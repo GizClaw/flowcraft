@@ -55,9 +55,9 @@ func TestSynchronousModeIsApplied(t *testing.T) {
 
 func checkpoint(taskID string, round int) agent.Checkpoint {
 	return agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:x",
-		Task:    agent.Task{ID: taskID, SessionID: "conv", State: agent.StateWorking, Round: round},
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:x",
+		Task:        agent.Task{ID: taskID, SessionID: "conv", State: agent.StateWorking, Round: round},
 	}
 }
 

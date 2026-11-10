@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // CheckpointSchema versions the checkpoint shape. A reader that does not know
@@ -18,8 +16,8 @@ var ErrNoCheckpoint = errors.New("agent: no checkpoint")
 // Checkpoint is one Task plus the configuration it ran under.
 //
 // It does not contain a runtime: a runtime holds processes, handles and
-// connections that cannot be serialised. What can be is the digest of the
-// configuration needed to rebuild one, plus the transcript to replay — which is
+// connections that cannot be serialised. What can be is the fingerprint of the
+// deployment needed to rebuild one, plus the transcript to replay — which is
 // why a checkpoint is a retrieval point for the whole stack.
 type Checkpoint struct {
 	Schema int `json:"schema"`
@@ -29,10 +27,11 @@ type Checkpoint struct {
 	// ServerVersion belongs to a protocol adapter (the A2A task store) and only
 	// it changes this. The loop's own saves never touch it: two writers sharing
 	// one counter would reject each other's writes, and both are legitimate.
-	ServerVersion int64                      `json:"server_version,omitempty"`
-	Runtime       runtime.Digest             `json:"runtime"`
-	Task          Task                       `json:"task"`
-	Sections      map[string]json.RawMessage `json:"sections,omitempty"`
+	ServerVersion int64 `json:"server_version,omitempty"`
+	// Fingerprint is the deployment that wrote this checkpoint.
+	Fingerprint Fingerprint                `json:"fingerprint"`
+	Task        Task                       `json:"task"`
+	Sections    map[string]json.RawMessage `json:"sections,omitempty"`
 }
 
 // EventRecord is one appended fact of a Task.
@@ -83,6 +82,14 @@ func TruncateThrough(seq int64) SaveOption {
 		options.Through = seq
 	}
 }
+
+// Fingerprint is the identity a checkpoint records: the deployment that produced
+// it. A resume compares it, so a task cannot continue under a runtime, engine or
+// protocol different from the one it was written under.
+//
+// It is opaque here: deploy composes it from the runtime's own digest and the
+// engine and protocol identities, and a store only persists the string.
+type Fingerprint string
 
 // Store persists tasks, their events, and the blobs they reference.
 //

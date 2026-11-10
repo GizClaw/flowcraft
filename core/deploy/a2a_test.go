@@ -33,15 +33,15 @@ func TestA2AEngineDecodeRequiresAPeer(t *testing.T) {
 
 // The token is not part of the deployment's identity: rotating a credential must
 // not invalidate a session, changing the peer must.
-func TestA2ADigestIgnoresTheToken(t *testing.T) {
-	digest := BuiltinKinds().Engines["a2a"].Digest
-	one := digest(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "one"}}))
-	two := digest(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "two"}}))
+func TestA2AFingerprintIgnoresTheToken(t *testing.T) {
+	fingerprint := BuiltinKinds().Engines["a2a"].Fingerprint
+	one := fingerprint(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "one"}}))
+	two := fingerprint(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "two"}}))
 	if one != two {
-		t.Error("rotating the token changed the digest")
+		t.Error("rotating the token changed the fingerprint")
 	}
-	other := digest(rawSettings(map[string]any{"peer": "https://b"}))
+	other := fingerprint(rawSettings(map[string]any{"peer": "https://b"}))
 	if one == other {
-		t.Error("changing the peer did not change the digest")
+		t.Error("changing the peer did not change the fingerprint")
 	}
 }

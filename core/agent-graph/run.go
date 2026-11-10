@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // Run is one execution of a graph: its state, its frontier and its step counter.
@@ -29,12 +28,12 @@ import (
 type Run struct {
 	g *Graph
 	// values is the state; store is where it is checkpointed, if anywhere.
-	values    *stateStore
-	store     agent.Store
-	taskID    string
-	sessionID string
-	digest    runtime.Digest
-	needBase  bool
+	values      *stateStore
+	store       agent.Store
+	taskID      string
+	sessionID   string
+	fingerprint agent.Fingerprint
+	needBase    bool
 	// namedBase is the base the projection names; pendingBase is one this run
 	// wrote and has not confirmed in a projection yet.
 	namedBase        *baseRef
@@ -94,14 +93,14 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 			"graph: the document declares no input slot; add `input: <state key>` or send no messages")
 	}
 	run := &Run{
-		g:         g,
-		values:    store,
-		store:     settings.store,
-		taskID:    settings.taskID,
-		sessionID: settings.sessionID,
-		digest:    settings.digest,
-		active:    []string{g.entry},
-		state:     agent.StateSubmitted,
+		g:           g,
+		values:      store,
+		store:       settings.store,
+		taskID:      settings.taskID,
+		sessionID:   settings.sessionID,
+		fingerprint: settings.fingerprint,
+		active:      []string{g.entry},
+		state:       agent.StateSubmitted,
 	}
 	run.startedAt = time.Now()
 	if g.timeout > 0 {

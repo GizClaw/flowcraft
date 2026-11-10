@@ -109,7 +109,7 @@ output: {key: text}
 }
 
 // A checkpoint taken under another deployment is refused.
-func TestDigestMismatchIsRefused(t *testing.T) {
+func TestFingerprintMismatchIsRefused(t *testing.T) {
 	store := agenttest.NewMemStore()
 	g := build(t, `
 version: 1
@@ -119,14 +119,14 @@ nodes:
 edges:
   - {from: a, to: end}
 `, &countKind{})
-	first, err := g.Start(context.Background(), nil, WithStore(store, "run-1"), WithDigest("sha256:one"))
+	first, err := g.Start(context.Background(), nil, WithStore(store, "run-1"), WithFingerprint("sha256:one"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if _, err := drainRun(t, first); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if _, err := g.Start(context.Background(), nil, WithStore(store, "run-1"), WithDigest("sha256:two")); err == nil {
+	if _, err := g.Start(context.Background(), nil, WithStore(store, "run-1"), WithFingerprint("sha256:two")); err == nil {
 		t.Fatal("a checkpoint from another deployment was accepted")
 	}
 }

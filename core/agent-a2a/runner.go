@@ -12,7 +12,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -28,8 +27,8 @@ type Config struct {
 	// Store persists the remote task identity, so a restarted process can still
 	// answer a question the peer asked. Nil keeps it in memory only.
 	Store agent.Store
-	// Identity is the deployment digest a stored task must carry to be resumed.
-	Identity runtime.Digest
+	// Identity is the deployment fingerprint a stored task must carry to be resumed.
+	Identity agent.Fingerprint
 	// SessionID is the local session this runner serves.
 	SessionID string
 }
@@ -39,9 +38,9 @@ type Config struct {
 // It implements agent.Runner, so a deployment treats a peer exactly like a local
 // engine: one session, one task at a time, and a cancel that is forwarded.
 type Runner struct {
-	client *a2aclient.Client
-	store  agent.Store
-	digest runtime.Digest
+	client      *a2aclient.Client
+	store       agent.Store
+	fingerprint agent.Fingerprint
 	// session is the local address of the session; the peer's context is
 	// separate and lives in remoteContext.
 	session string
@@ -67,11 +66,11 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		return nil, err
 	}
 	runner := &Runner{
-		client:  client,
-		store:   cfg.Store,
-		digest:  cfg.Identity,
-		session: cfg.SessionID,
-		state:   agent.StateSubmitted,
+		client:      client,
+		store:       cfg.Store,
+		fingerprint: cfg.Identity,
+		session:     cfg.SessionID,
+		state:       agent.StateSubmitted,
 	}
 	runner.restore(ctx)
 	return runner, nil
@@ -86,7 +85,7 @@ func (r *Runner) restore(ctx context.Context) {
 	if err != nil || checkpoint.Task.ID == "" {
 		return
 	}
-	if r.digest != "" && checkpoint.Runtime != r.digest {
+	if r.fingerprint != "" && checkpoint.Fingerprint != r.fingerprint {
 		// A session produced under another deployment is not this one's to
 		// continue: the peer or the engine may have changed.
 		return
@@ -127,8 +126,8 @@ func (r *Runner) persist(ctx context.Context) {
 		return
 	}
 	checkpoint := agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: r.digest,
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: r.fingerprint,
 		Task: agent.Task{
 			ID:        string(taskID),
 			SessionID: r.session,

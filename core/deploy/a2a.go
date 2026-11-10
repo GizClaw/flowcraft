@@ -18,10 +18,10 @@ import (
 // it, exactly as GraphEngine maps a document onto core/agent-graph.
 func A2AEngine() EngineKind {
 	return EngineKind{
-		Name:   "a2a",
-		Decode: decodeA2ASettings,
-		Digest: a2aDigest,
-		Build:  buildA2AEngine,
+		Name:        "a2a",
+		Decode:      decodeA2ASettings,
+		Fingerprint: a2aFingerprint,
+		Build:       buildA2AEngine,
 	}
 }
 
@@ -49,9 +49,9 @@ func decodeA2ASettings(settings json.RawMessage) (any, error) {
 	return decoded, nil
 }
 
-// a2aDigest is the identity the peer contributes: where it is and how it is
+// a2aFingerprint is the identity the peer contributes: where it is and how it is
 // reached, without the token.
-func a2aDigest(settings json.RawMessage) string {
+func a2aFingerprint(settings json.RawMessage) string {
 	var decoded a2aSettings
 	_ = json.Unmarshal(settings, &decoded)
 	var auth struct {
@@ -67,13 +67,13 @@ func buildA2AEngine(_ context.Context, deps EngineDeps) (agent.RunnerFactory, er
 		return nil, err
 	}
 	settings := decoded.(a2aSettings)
-	store, digest := deps.Store, deps.Digest
+	store, fingerprint := deps.Store, deps.Fingerprint
 	return func(ctx context.Context, sessionID, _ string) (agent.Runner, error) {
 		return agenta2a.New(ctx, agenta2a.Config{
 			Peer:      settings.Peer,
 			Auth:      settings.Auth,
 			Store:     store,
-			Identity:  digest,
+			Identity:  fingerprint,
 			SessionID: sessionID,
 		})
 	}, nil

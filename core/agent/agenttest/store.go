@@ -57,8 +57,8 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 // task is a checkpoint with one seed message and the given identity.
 func task(id, contextID string, round int) agent.Checkpoint {
 	return agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:test",
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:test",
 		Task: agent.Task{
 			ID:        id,
 			SessionID: contextID,
@@ -103,9 +103,9 @@ func firstSave(t *testing.T, open func(*testing.T) agent.Store) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Schema != want.Schema || got.Runtime != want.Runtime {
+	if got.Schema != want.Schema || got.Fingerprint != want.Fingerprint {
 		t.Errorf("identity = %d/%s, want %d/%s",
-			got.Schema, got.Runtime, want.Schema, want.Runtime)
+			got.Schema, got.Fingerprint, want.Schema, want.Fingerprint)
 	}
 	if got.Task.State != want.Task.State || got.Task.Round != want.Task.Round {
 		t.Errorf("task = %s/%d, want %s/%d",

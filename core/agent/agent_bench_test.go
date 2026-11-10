@@ -184,9 +184,9 @@ func BenchmarkAgentStateStored(b *testing.B) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateCompleted},
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
+		Task:        agent.Task{ID: "t1", SessionID: "c1", State: agent.StateCompleted},
 	}, nil); err != nil {
 		b.Fatalf("Save: %v", err)
 	}

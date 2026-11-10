@@ -147,7 +147,7 @@ func BenchmarkPersistStep(b *testing.B) {
 	store := benchmarkStore(b)
 	g := benchmarkGraph(b, benchDoc, benchKind{})
 	ctx := context.Background()
-	run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithDigest("sha256:bench"))
+	run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithFingerprint("sha256:bench"))
 	if err != nil {
 		b.Fatalf("Start: %v", err)
 	}
@@ -170,7 +170,7 @@ func BenchmarkPersistBaseEvery10(b *testing.B) {
 	store := benchmarkStore(b)
 	g := benchmarkGraph(b, benchDocBase, benchKind{})
 	ctx := context.Background()
-	run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithDigest("sha256:bench"))
+	run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithFingerprint("sha256:bench"))
 	if err != nil {
 		b.Fatalf("Start: %v", err)
 	}
@@ -195,7 +195,7 @@ func BenchmarkRestore(b *testing.B) {
 			store := benchmarkStore(b)
 			g := benchmarkGraph(b, benchDocBase, benchKind{})
 			ctx := context.Background()
-			run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithDigest("sha256:bench"))
+			run, err := g.Start(ctx, nil, WithStore(store, "task-1"), WithFingerprint("sha256:bench"))
 			if err != nil {
 				b.Fatalf("Start: %v", err)
 			}
@@ -206,7 +206,7 @@ func BenchmarkRestore(b *testing.B) {
 			}
 			options := runOptions{
 				store: store, taskID: "task-1",
-				sessionID: "bench", digest: "sha256:bench",
+				sessionID: "bench", fingerprint: "sha256:bench",
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -257,7 +257,7 @@ func BenchmarkSuspendResumeDurable(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
 		taskID := fmt.Sprintf("task-%d", i)
-		first, err := g.Start(ctx, nil, WithStore(store, taskID), WithDigest("sha256:bench"))
+		first, err := g.Start(ctx, nil, WithStore(store, taskID), WithFingerprint("sha256:bench"))
 		if err != nil {
 			b.Fatalf("Start: %v", err)
 		}
@@ -269,7 +269,7 @@ func BenchmarkSuspendResumeDurable(b *testing.B) {
 		// A restarted process knows only the checkpoint.
 		resumed, found, err := g.restore(ctx, runOptions{
 			store: store, taskID: taskID,
-			sessionID: "bench", digest: "sha256:bench",
+			sessionID: "bench", fingerprint: "sha256:bench",
 		})
 		if err != nil || !found {
 			b.Fatalf("restore = %v, found %v", err, found)

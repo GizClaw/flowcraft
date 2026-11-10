@@ -32,7 +32,7 @@ func Kind(options ...a2asrv.RequestHandlerOption) deploy.ProtocolKind {
 				Settings:    deps.Spec.Settings,
 				Agent:       deps.Agent,
 				Store:       deps.Store,
-				Digest:      deps.Digest,
+				Fingerprint: deps.Fingerprint,
 				ArtifactURL: deps.ArtifactURL,
 				Options:     options,
 			})

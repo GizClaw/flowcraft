@@ -160,21 +160,21 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		rt = created
 	}
 	deployed := &deployment{name: spec.Name, spec: spec, rt: rt}
-	engineDigest := canonicalSettings(spec.Engine.Settings)
-	if engineKind.Digest != nil {
-		engineDigest = engineKind.Digest(spec.Engine.Settings)
+	engineFingerprint := canonicalSettings(spec.Engine.Settings)
+	if engineKind.Fingerprint != nil {
+		engineFingerprint = engineKind.Fingerprint(spec.Engine.Settings)
 	}
 	protocolName := ""
 	if spec.Protocol != nil {
 		protocolName = spec.Protocol.Kind
 	}
-	deployed.digest = deploymentDigest(runtimeDigest(rt), spec.Engine.Kind, engineDigest, protocolName)
+	deployed.fingerprint = deploymentFingerprint(runtimeDigest(rt), spec.Engine.Kind, engineFingerprint, protocolName)
 
 	factory, err := engineKind.Build(ctx, EngineDeps{
-		Spec:    spec.Engine,
-		Runtime: rt,
-		Store:   m.host.Store,
-		Digest:  deployed.digest,
+		Spec:        spec.Engine,
+		Runtime:     rt,
+		Store:       m.host.Store,
+		Fingerprint: deployed.fingerprint,
 	})
 	if err != nil {
 		if rt != nil {
@@ -184,7 +184,7 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 	}
 	table, err := agent.NewAgent(agent.AgentOptions{
 		Store:       m.host.Store,
-		Identity:    deployed.digest,
+		Identity:    deployed.fingerprint,
 		NewRunner:   factory,
 		RunContext:  deployed.runContext,
 		IdleTimeout: spec.IdleTimeout,
@@ -208,7 +208,7 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 			Spec:        *spec.Protocol,
 			Name:        spec.Name,
 			Store:       m.host.Store,
-			Digest:      deployed.digest,
+			Fingerprint: deployed.fingerprint,
 			ArtifactURL: m.host.ArtifactURL,
 			Agent:       deployed.agent,
 		})
@@ -230,8 +230,8 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 // fails to build leaves the running agent exactly as it was.
 //
 // The old runtime's sessions cannot continue on the new one: the
-// configuration digest differs, and continuing a transcript under different
-// permissions is the failure the digest exists to prevent. Replace therefore
+// configuration fingerprint differs, and continuing a transcript under different
+// permissions is the failure the fingerprint exists to prevent. Replace therefore
 // means "new sessions use the new configuration; old ones end here".
 func (m *Manager) Replace(ctx context.Context, spec Spec) error {
 	if spec.Name == "" {
@@ -373,12 +373,12 @@ func (m *Manager) ProtocolNames() []string {
 // deployment is one built agent: the resources a spec produced, and the few
 // fields of the spec it still needs.
 type deployment struct {
-	name     string
-	spec     Spec
-	rt       *runtime.Runtime
-	agent    *agent.Agent
-	protocol Protocol
-	digest   runtime.Digest
+	name        string
+	spec        Spec
+	rt          *runtime.Runtime
+	agent       *agent.Agent
+	protocol    Protocol
+	fingerprint agent.Fingerprint
 	// views holds the tool projection of a session-scoped catalog.
 	views     sync.Map
 	closeOnce sync.Once

@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/runtime"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -33,8 +32,8 @@ type Config struct {
 	// the agent resumes from them. Left nil the SDK keeps its in-memory store,
 	// which is a second record of the same task and does not survive a restart.
 	Store agent.Store
-	// Digest is the deployment identity a task row must carry to be restorable.
-	Digest runtime.Digest
+	// Fingerprint is the deployment identity a task row must carry to be restorable.
+	Fingerprint agent.Fingerprint
 	// ArtifactURL turns a blob reference into a URL a client can fetch. Nil keeps
 	// the reference in a data part.
 	ArtifactURL func(ref string) string
@@ -68,7 +67,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	var store taskstore.Store
 	if cfg.Store != nil {
-		store = newTaskStore(cfg.Store, cfg.Digest)
+		store = newTaskStore(cfg.Store, cfg.Fingerprint)
 	}
 	executor, err := newExecutor(executorConfig{
 		Card:        card,

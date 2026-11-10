@@ -30,10 +30,10 @@ type ProtocolSpec struct {
 
 // EngineDeps is what an engine kind is built from.
 type EngineDeps struct {
-	Spec    EngineSpec
-	Runtime *runtime.Runtime
-	Store   agent.Store
-	Digest  runtime.Digest
+	Spec        EngineSpec
+	Runtime     *runtime.Runtime
+	Store       agent.Store
+	Fingerprint agent.Fingerprint
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment
@@ -42,7 +42,7 @@ type ProtocolDeps struct {
 	Spec        ProtocolSpec
 	Name        string
 	Store       agent.Store
-	Digest      runtime.Digest
+	Fingerprint agent.Fingerprint
 	ArtifactURL func(ref string) string
 	// Agent is the deployment's session table: a protocol drives it directly.
 	Agent *agent.Agent
@@ -58,10 +58,10 @@ type EngineKind struct {
 	// Decode validates the written settings. The loader calls it so a typo fails
 	// before any resource is built; Build calls it again to get the typed value.
 	Decode func(settings json.RawMessage) (any, error)
-	// Digest is the non-secret part of the settings. Nil means the whole
+	// Fingerprint is the non-secret part of the settings. Nil means the whole
 	// canonical settings object, which is wrong for anything with a credential.
-	Digest func(settings json.RawMessage) string
-	Build  func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error)
+	Fingerprint func(settings json.RawMessage) string
+	Build       func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error)
 }
 
 // ProtocolKind registers one protocol kind.
@@ -141,7 +141,7 @@ func validateEngineSpec(kind EngineKind, spec EngineSpec, hasRuntime bool) error
 }
 
 // canonicalSettings renders settings the same way regardless of the whitespace
-// they were written with. Kinds with a credential must provide Digest instead.
+// they were written with. Kinds with a credential must provide Fingerprint instead.
 func canonicalSettings(settings json.RawMessage) string {
 	if len(settings) == 0 {
 		return "{}"

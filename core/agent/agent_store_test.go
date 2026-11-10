@@ -44,9 +44,9 @@ func TestAgentStateReadsTheStore(t *testing.T) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
+		Task:        agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -106,9 +106,9 @@ func TestAgentAbandonsWithoutFailingTheRun(t *testing.T) {
 	store := &failingStore{Store: agenttest.NewMemStore(), saveErr: boom}
 	ctx := context.Background()
 	if _, _, err := store.Store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
+		Task:        agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

@@ -354,7 +354,7 @@ func TestTaskStoreSkipsInternalEvents(t *testing.T) {
 		events = append(events, agent.EventRecord{Kind: "message", Payload: body})
 	}
 	if _, _, err := backend.Save(ctx, agent.Checkpoint{
-		Schema: agent.CheckpointSchema, Runtime: "sha256:deployment",
+		Schema: agent.CheckpointSchema, Fingerprint: "sha256:deployment",
 		ServerVersion: 1, Task: agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateWorking},
 	}, events); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -368,9 +368,9 @@ func TestTaskStoreSkipsInternalEvents(t *testing.T) {
 	}
 }
 
-// Create stamps the deployment digest, or a restored session could never
+// Create stamps the deployment fingerprint, or a restored session could never
 // pass agent.Restore.
-func TestTaskStoreCreateStampsTheDigest(t *testing.T) {
+func TestTaskStoreCreateStampsTheFingerprint(t *testing.T) {
 	store, backend := openStore(t)
 	ctx := context.Background()
 	if _, err := store.Create(ctx, taskWith("hi")); err != nil {
@@ -380,8 +380,8 @@ func TestTaskStoreCreateStampsTheDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if checkpoint.Runtime != "sha256:deployment" {
-		t.Errorf("digest = %q, want the deployment's", checkpoint.Runtime)
+	if checkpoint.Fingerprint != "sha256:deployment" {
+		t.Errorf("fingerprint = %q, want the deployment's", checkpoint.Fingerprint)
 	}
 	if checkpoint.ServerVersion == 0 {
 		t.Error("the adapter's own version was not initialised")

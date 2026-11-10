@@ -9,7 +9,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -144,10 +143,10 @@ func decodeValue(encoded encodedValue) (Value, error) {
 type RunOption func(*runOptions)
 
 type runOptions struct {
-	store     agent.Store
-	taskID    string
-	sessionID string
-	digest    runtime.Digest
+	store       agent.Store
+	taskID      string
+	sessionID   string
+	fingerprint agent.Fingerprint
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
@@ -161,10 +160,10 @@ func WithSession(id string) RunOption {
 	return func(o *runOptions) { o.sessionID = id }
 }
 
-// WithDigest sets the resume identity: a checkpoint taken under another
+// WithFingerprint sets the resume identity: a checkpoint taken under another
 // deployment (or another graph) is refused.
-func WithDigest(digest runtime.Digest) RunOption {
-	return func(o *runOptions) { o.digest = digest }
+func WithFingerprint(fingerprint agent.Fingerprint) RunOption {
+	return func(o *runOptions) { o.fingerprint = fingerprint }
 }
 
 // persist writes the projection and this step's writes.
@@ -226,8 +225,8 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 		return
 	}
 	checkpoint := agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: r.digest,
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: r.fingerprint,
 		Task: agent.Task{
 			ID:        r.taskID,
 			SessionID: r.sessionID,
@@ -312,10 +311,10 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 	if err != nil {
 		return nil, false, err
 	}
-	if opts.digest != "" && checkpoint.Runtime != opts.digest {
+	if opts.fingerprint != "" && checkpoint.Fingerprint != opts.fingerprint {
 		return nil, false, fmt.Errorf(
 			"graph: checkpoint was taken under %s, this deployment is %s",
-			checkpoint.Runtime, opts.digest)
+			checkpoint.Fingerprint, opts.fingerprint)
 	}
 	var proj projection
 	if raw, ok := checkpoint.Sections[sectionGraph]; ok {
@@ -328,18 +327,18 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 		return nil, false, err
 	}
 	run := &Run{
-		g:         g,
-		store:     opts.store,
-		taskID:    opts.taskID,
-		sessionID: opts.sessionID,
-		digest:    opts.digest,
-		values:    values,
-		active:    proj.Frontier,
-		pending:   proj.Pending,
-		step:      proj.Step,
-		routed:    proj.Routed,
-		state:     checkpoint.Task.State,
-		namedBase: proj.Base,
+		g:           g,
+		store:       opts.store,
+		taskID:      opts.taskID,
+		sessionID:   opts.sessionID,
+		fingerprint: opts.fingerprint,
+		values:      values,
+		active:      proj.Frontier,
+		pending:     proj.Pending,
+		step:        proj.Step,
+		routed:      proj.Routed,
+		state:       checkpoint.Task.State,
+		namedBase:   proj.Base,
 	}
 	startedAt := time.Now()
 	if proj.StartedAt > 0 {

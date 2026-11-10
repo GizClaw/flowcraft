@@ -238,8 +238,8 @@ func TestAgentRefusesAnotherDeploymentsCheckpoint(t *testing.T) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
 		Task: agent.Task{
 			ID:        "t1",
 			SessionID: "c1",
@@ -269,8 +269,8 @@ func TestAgentAdoptsAStoredPausedTask(t *testing.T) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
 		Task: agent.Task{
 			ID:        "t1",
 			SessionID: "c1",
@@ -662,9 +662,9 @@ func TestAgentClosesATaskFromAnotherDeployment(t *testing.T) {
 	store := agenttest.NewMemStore()
 	ctx := context.Background()
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
-		Schema:  agent.CheckpointSchema,
-		Runtime: "sha256:one",
-		Task:    agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
+		Schema:      agent.CheckpointSchema,
+		Fingerprint: "sha256:one",
+		Task:        agent.Task{ID: "t1", SessionID: "c1", State: agent.StateInputRequired},
 	}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

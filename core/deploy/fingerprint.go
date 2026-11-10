@@ -5,10 +5,11 @@ import (
 	"encoding/hex"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
-// deploymentDigest is the identity a checkpoint of this deployment records.
+// deploymentFingerprint is the identity a checkpoint of this deployment records.
 //
 // The runtime configuration is only part of what makes a session what it is:
 // the same model and tools reached through a different peer, or exposed through a
@@ -17,12 +18,12 @@ import (
 //
 // The card is deliberately absent: it is an advertisement, and fixing a typo in
 // a description must not invalidate sessions.
-func deploymentDigest(runtimeDigest runtime.Digest, engineKind, engineSettings, protocolKind string) runtime.Digest {
-	// The separator cannot appear in a digest or a kind, so the fields cannot
+func deploymentFingerprint(runtimeDigest runtime.Digest, engineKind, engineSettings, protocolKind string) agent.Fingerprint {
+	// The separator cannot appear in a component or a kind, so the fields cannot
 	// collide into the same bytes as a different combination.
 	payload := strings.Join([]string{
 		string(runtimeDigest), engineKind, engineSettings, protocolKind,
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
-	return runtime.Digest("sha256:" + hex.EncodeToString(sum[:]))
+	return agent.Fingerprint("sha256:" + hex.EncodeToString(sum[:]))
 }

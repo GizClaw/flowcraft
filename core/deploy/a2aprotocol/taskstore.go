@@ -10,7 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
@@ -28,16 +27,16 @@ import (
 // loop over the same row.
 type taskStore struct {
 	store agent.Store
-	// digest is the deployment identity the agent resumes under; a task row
+	// fingerprint is the deployment identity the agent resumes under; a task row
 	// without it could never be restored.
-	digest runtime.Digest
+	fingerprint agent.Fingerprint
 }
 
 var _ taskstore.Store = (*taskStore)(nil)
 
 // newTaskStore wraps an agent store.
-func newTaskStore(store agent.Store, digest runtime.Digest) *taskStore {
-	return &taskStore{store: store, digest: digest}
+func newTaskStore(store agent.Store, fingerprint agent.Fingerprint) *taskStore {
+	return &taskStore{store: store, fingerprint: fingerprint}
 }
 
 // Create stores a task the server just created.
@@ -63,7 +62,7 @@ func (s *taskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	}
 	checkpoint := agent.Checkpoint{
 		Schema:        agent.CheckpointSchema,
-		Runtime:       s.digest,
+		Fingerprint:   s.fingerprint,
 		ServerVersion: 1,
 		Task:          core,
 	}

@@ -8,14 +8,13 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // RunnerConfig is one session's graph engine: where it persists, under
 // which deployment, and which task it is.
 type RunnerConfig struct {
 	Store     agent.Store
-	Identity  runtime.Digest
+	Identity  agent.Fingerprint
 	SessionID string
 	TaskID    string
 }
@@ -73,7 +72,7 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 				seed,
 				WithStore(r.cfg.Store, r.cfg.TaskID),
 				WithSession(r.cfg.SessionID),
-				WithDigest(r.cfg.Identity),
+				WithFingerprint(r.cfg.Identity),
 			)
 			if err != nil {
 				r.mu.Unlock()
@@ -115,10 +114,10 @@ func (r *Runner) Cancel(ctx context.Context, reason string) error {
 	r.mu.Unlock()
 	if run == nil {
 		restored, found, err := r.g.restore(ctx, runOptions{
-			store:     r.cfg.Store,
-			taskID:    r.cfg.TaskID,
-			sessionID: r.cfg.SessionID,
-			digest:    r.cfg.Identity,
+			store:       r.cfg.Store,
+			taskID:      r.cfg.TaskID,
+			sessionID:   r.cfg.SessionID,
+			fingerprint: r.cfg.Identity,
 		})
 		if err != nil {
 			return err

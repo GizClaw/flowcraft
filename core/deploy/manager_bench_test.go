@@ -77,7 +77,7 @@ func BenchmarkSessionRun(b *testing.B) {
 	}
 }
 
-// BenchmarkManagerAdd measures deploying an agent: validation, digest, table and
+// BenchmarkManagerAdd measures deploying an agent: validation, fingerprint, table and
 // no runtime.
 func BenchmarkManagerAdd(b *testing.B) {
 	manager := New(BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
