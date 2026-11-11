@@ -1,10 +1,11 @@
-package deploy
+package host
 
 import (
 	"context"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
@@ -42,7 +43,7 @@ func TestRunScopedCatalogView(t *testing.T) {
 func TestSessionScopedCatalogView(t *testing.T) {
 	d := &deployment{
 		rt:   testCatalogRuntime(t),
-		spec: Spec{Catalog: CatalogSpec{Scope: CatalogScopeSession}},
+		spec: deploy.Spec{Catalog: deploy.CatalogSpec{Scope: deploy.CatalogScopeSession}},
 	}
 	first := catalogView(t, d, "conv-1")
 	second := catalogView(t, d, "conv-1")
@@ -57,7 +58,7 @@ func TestSessionScopedCatalogView(t *testing.T) {
 
 // A remote engine has no local catalog: the peer decides what the model sees.
 func TestRemoteEngineHasNoCatalogView(t *testing.T) {
-	d := &deployment{spec: Spec{Engine: EngineSpec{Kind: "a2a"}}}
+	d := &deployment{spec: deploy.Spec{Engine: deploy.EngineSpec{Kind: "a2a"}}}
 	if _, ok := runtime.CatalogViewFrom(d.runContext(context.Background(), "conv-1")); ok {
 		t.Fatal("a remote run context carries a local view")
 	}
@@ -66,11 +67,11 @@ func TestRemoteEngineHasNoCatalogView(t *testing.T) {
 // The view lives exactly as long as its session: the table says when it
 // ends, and deploy drops the view with it.
 func TestSessionScopedViewIsDroppedOnEviction(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	spec := testSpec(t, "a", "done")
-	spec.Catalog = CatalogSpec{Scope: CatalogScopeSession}
+	spec.Catalog = deploy.CatalogSpec{Scope: deploy.CatalogScopeSession}
 	spec.MaxSessions = 1
 	if err := manager.Add(context.Background(), spec); err != nil {
 		t.Fatalf("Add: %v", err)

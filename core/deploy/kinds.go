@@ -133,9 +133,9 @@ func (k Kinds) clone() Kinds {
 	return cloned
 }
 
-// validateEngineSpec applies the rules every kind shares: a local engine has a
+// ValidateEngineSpec applies the rules every kind shares: a local engine has a
 // runtime, a remote one has none. Kind-specific fields belong to Decode.
-func validateEngineSpec(kind EngineKind, spec EngineSpec, hasRuntime bool) error {
+func ValidateEngineSpec(kind EngineKind, spec EngineSpec, hasRuntime bool) error {
 	if kind.Local && !hasRuntime {
 		return errdefs.Validationf("kind %q needs a runtime", spec.Kind)
 	}
@@ -145,9 +145,9 @@ func validateEngineSpec(kind EngineKind, spec EngineSpec, hasRuntime bool) error
 	return nil
 }
 
-// canonicalSettings renders settings the same way regardless of the whitespace
+// CanonicalSettings renders settings the same way regardless of the whitespace
 // they were written with. Kinds with a credential must provide Fingerprint instead.
-func canonicalSettings(settings json.RawMessage) string {
+func CanonicalSettings(settings json.RawMessage) string {
 	if len(settings) == 0 {
 		return "{}"
 	}

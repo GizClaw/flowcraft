@@ -1,4 +1,8 @@
-package deploy
+// Package host owns the process-level side of deployed agents: the bindings a
+// host supplies, the deployment table, and the session handle a protocol or a
+// caller drives. Documents and kinds live in core/deploy.
+
+package host
 
 import (
 	"context"
@@ -8,9 +12,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
@@ -18,37 +22,9 @@ import (
 	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
 )
 
-// CatalogSpec scopes the tool projection a local engine reads.
-type CatalogSpec struct {
-	// Scope is CatalogScopeRun (default) or CatalogScopeSession.
-	Scope string
-}
-
-const (
-	// CatalogScopeRun gives every Run a fresh view: discoveries persist across
-	// the steps of one run and reset on the next.
-	CatalogScopeRun = "run"
-	// CatalogScopeSession keeps one view per session, so a discovery
-	// survives across user turns.
-	CatalogScopeSession = "session"
-)
-
-// validatedScope returns the scope, rejecting anything else.
-func (c CatalogSpec) validatedScope() (string, error) {
-	switch c.Scope {
-	case "":
-		return CatalogScopeRun, nil
-	case CatalogScopeRun, CatalogScopeSession:
-		return c.Scope, nil
-	}
-	return "", errdefs.Validationf(
-		"manage: catalog.scope %q is not supported; use %q or %q",
-		c.Scope, CatalogScopeRun, CatalogScopeSession)
-}
-
-// Host is what the host supplies besides configuration: the durable store, the
+// Bindings is what the host supplies besides configuration: the durable store, the
 // process-wide construction options, and the hooks a document cannot describe.
-type Host struct {
+type Bindings struct {
 	// Store persists every deployment's sessions. Nil keeps them in memory
 	// only, which loses the ability to resume — the main reason this layer exists.
 	Store agent.Store
@@ -86,34 +62,34 @@ type Host struct {
 // Manager owns the deployed agents: one table, one kind registry, one set of
 // host bindings.
 type Manager struct {
-	mu     sync.Mutex
-	agents map[string]*deployment
-	kinds  Kinds
-	host   Host
+	mu       sync.Mutex
+	agents   map[string]*deployment
+	kinds    deploy.Kinds
+	bindings Bindings
 }
 
 // New returns a manager over the given kinds and host bindings. Pass
-// BuiltinKinds() to start from the defaults, or a zero Kinds for none.
-func New(kinds Kinds, host Host) *Manager {
+// BuiltinKinds() to start from the defaults, or a zero deploy.Kinds for none.
+func New(kinds deploy.Kinds, bindings Bindings) *Manager {
 	if kinds.Engines == nil && kinds.Protocols == nil {
-		kinds = BuiltinKinds()
+		kinds = deploy.BuiltinKinds()
 	}
 	return &Manager{
-		agents: make(map[string]*deployment),
-		kinds:  kinds,
-		host:   host,
+		agents:   make(map[string]*deployment),
+		kinds:    kinds,
+		bindings: bindings,
 	}
 }
 
 // Loader returns a document loader over the same kinds this manager deploys: a
 // kind that loads and a kind that deploys cannot diverge.
-func (m *Manager) Loader() Loader {
-	return Loader{Kinds: m.kinds, LoadOptions: m.host.LoadOptions}
+func (m *Manager) Loader() deploy.Loader {
+	return deploy.Loader{Kinds: m.kinds, LoadOptions: m.bindings.LoadOptions}
 }
 
 // Add deploys one agent. A failure leaves the manager unchanged: half-built
 // agents are the kind of thing that only shows up under load.
-func (m *Manager) Add(ctx context.Context, spec Spec) error {
+func (m *Manager) Add(ctx context.Context, spec deploy.Spec) error {
 	if spec.Name == "" {
 		return errdefs.Validationf("manage: agent name is required")
 	}
@@ -140,13 +116,13 @@ func (m *Manager) Add(ctx context.Context, spec Spec) error {
 
 // build validates a spec and constructs its deployment without installing it, so
 // Add and Replace share one path and a failure leaves the manager untouched.
-func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
-	if _, err := spec.Catalog.validatedScope(); err != nil {
+func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, error) {
+	if _, err := spec.Catalog.ValidatedScope(); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
 	engineKind, engineFound := m.kinds.Engines[spec.Engine.Kind]
-	protocolKind, protocolFound := ProtocolKind{}, false
+	protocolKind, protocolFound := deploy.ProtocolKind{}, false
 	if spec.Protocol != nil {
 		protocolKind, protocolFound = m.kinds.Protocols[spec.Protocol.Kind]
 	}
@@ -163,13 +139,13 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 			"manage: agent %q: protocol %q is not registered; offered: %s",
 			spec.Name, spec.Protocol.Kind, strings.Join(protocolNames, ", "))
 	}
-	if err := validateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
+	if err := deploy.ValidateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
 		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
 	}
 
 	var rt *runtime.Runtime
 	if spec.Runtime.Version != 0 {
-		created, err := runtime.New(ctx, spec.Runtime, m.host.RuntimeOptions...)
+		created, err := runtime.New(ctx, spec.Runtime, m.bindings.RuntimeOptions...)
 		if err != nil {
 			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 		}
@@ -177,11 +153,11 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 	}
 	deployed := &deployment{
 		name:   spec.Name,
-		tenant: m.host.TenantID,
+		tenant: m.bindings.TenantID,
 		spec:   spec,
 		rt:     rt,
 	}
-	engineFingerprint := canonicalSettings(spec.Engine.Settings)
+	engineFingerprint := deploy.CanonicalSettings(spec.Engine.Settings)
 	if engineKind.Fingerprint != nil {
 		engineFingerprint = engineKind.Fingerprint(spec.Engine.Settings)
 	}
@@ -196,16 +172,16 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		Protocol:   protocolName,
 		Models:     manifestModels(rt),
 		Tools:      manifestTools(rt),
-		Harness:    m.host.Harness,
+		Harness:    m.bindings.Harness,
 	}
 
-	factory, err := engineKind.Build(ctx, EngineDeps{
+	factory, err := engineKind.Build(ctx, deploy.EngineDeps{
 		Spec:        spec.Engine,
 		Runtime:     rt,
-		Store:       m.host.Store,
+		Store:       m.bindings.Store,
 		Fingerprint: deployed.fingerprint,
 		Manifest:    deployed.manifest,
-		Trace:       m.host.Trace,
+		Trace:       m.bindings.Trace,
 	})
 	if err != nil {
 		if rt != nil {
@@ -214,14 +190,14 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 	}
 	table, err := agent.NewAgent(agent.AgentOptions{
-		Store:      m.host.Store,
+		Store:      m.bindings.Store,
 		Identity:   deployed.fingerprint,
 		NewRunner:  factory,
 		RunContext: deployed.runContext,
-		Trace:      m.host.Trace,
+		Trace:      m.bindings.Trace,
 		OnRun: func(record agent.RunRecord) {
-			if m.host.OnRun != nil {
-				m.host.OnRun(spec.Name, record)
+			if m.bindings.OnRun != nil {
+				m.bindings.OnRun(spec.Name, record)
 			}
 		},
 		IdleTimeout: spec.IdleTimeout,
@@ -241,12 +217,12 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 	}
 	deployed.agent = table
 	if spec.Protocol != nil {
-		surface, err := protocolKind.Build(ctx, ProtocolDeps{
+		surface, err := protocolKind.Build(ctx, deploy.ProtocolDeps{
 			Spec:        *spec.Protocol,
 			Name:        spec.Name,
-			Store:       m.host.Store,
+			Store:       m.bindings.Store,
 			Fingerprint: deployed.fingerprint,
-			ArtifactURL: m.host.ArtifactURL,
+			ArtifactURL: m.bindings.ArtifactURL,
 			Agent:       deployed.agent,
 		})
 		if err != nil {
@@ -270,7 +246,7 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 // configuration fingerprint differs, and continuing a transcript under different
 // permissions is the failure the fingerprint exists to prevent. Replace therefore
 // means "new sessions use the new configuration; old ones end here".
-func (m *Manager) Replace(ctx context.Context, spec Spec) error {
+func (m *Manager) Replace(ctx context.Context, spec deploy.Spec) error {
 	if spec.Name == "" {
 		return errdefs.Validationf("manage: agent name is required")
 	}
@@ -299,7 +275,7 @@ func (m *Manager) Replace(ctx context.Context, spec Spec) error {
 // Deploy adds every spec or none: on the first failure the agents this call
 // already added are closed and removed, so a half-applied document never serves
 // traffic.
-func (m *Manager) Deploy(ctx context.Context, specs ...Spec) ([]string, error) {
+func (m *Manager) Deploy(ctx context.Context, specs ...deploy.Spec) ([]string, error) {
 	added := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		if err := m.Add(ctx, spec); err != nil {
@@ -412,10 +388,10 @@ func (m *Manager) ProtocolNames() []string {
 type deployment struct {
 	name        string
 	tenant      string
-	spec        Spec
+	spec        deploy.Spec
 	rt          *runtime.Runtime
 	agent       *agent.Agent
-	protocol    Protocol
+	protocol    deploy.Protocol
 	fingerprint agent.Fingerprint
 	manifest    agent.Manifest
 	// views holds the tool projection of a session-scoped catalog.
@@ -437,7 +413,7 @@ func (d *deployment) runContext(ctx context.Context, sessionID string) context.C
 		return ctx
 	}
 	ctx = d.rt.Context(ctx)
-	if scope, _ := d.spec.Catalog.validatedScope(); scope == CatalogScopeSession {
+	if scope, _ := d.spec.Catalog.ValidatedScope(); scope == deploy.CatalogScopeSession {
 		view, _ := d.views.LoadOrStore(sessionID, d.rt.NewCatalogView())
 		catalog, _ := view.(toolengine.CatalogView)
 		return runtime.WithCatalogViewCtx(ctx, catalog)
@@ -483,11 +459,11 @@ func (d *deployment) close() error {
 
 // observer names the agent in every event: one host usually serves many.
 func (m *Manager) observer(name string) func(string, agent.Event) {
-	if m.host.OnEvent == nil {
+	if m.bindings.OnEvent == nil {
 		return nil
 	}
 	return func(sessionID string, event agent.Event) {
-		m.host.OnEvent(name, sessionID, event)
+		m.bindings.OnEvent(name, sessionID, event)
 	}
 }
 
@@ -507,28 +483,4 @@ func sortedKeys[V any](values map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// Spec is everything needed to deploy one agent: configuration only. Host
-// dependencies live in Host, so a Spec can be compared, logged and rebuilt.
-type Spec struct {
-	// Name identifies the agent. It is unique within a Manager and is what a
-	// caller addresses.
-	Name string
-	// Engine says what runs the agent.
-	Engine EngineSpec
-	// Protocol says how it is reached. Nil means not exposed.
-	Protocol *ProtocolSpec
-	// Runtime is the substrate configuration for this agent. Absent for a
-	// remote engine, which has no local model, tools or sandbox.
-	Runtime runtime.Config
-	// Catalog says how the tool projection is scoped. Empty means per run.
-	Catalog CatalogSpec
-	// IdleTimeout drops a session from memory after this long without use.
-	// Zero keeps every session for the agent's lifetime: state lives in the
-	// store, so eviction is a cache decision, not a data loss.
-	IdleTimeout time.Duration
-	// MaxSessions bounds the session table the agent keeps; zero is
-	// unbounded. The oldest idle session is evicted first.
-	MaxSessions int
 }

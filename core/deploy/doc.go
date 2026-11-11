@@ -1,9 +1,7 @@
-// Package deploy owns deployed agents: their runtimes, their sessions, and
-// their lifetime.
-//
-// It sits above core/agent and core/runtime. Its unit is one deployed agent: a
-// runtime built from one configuration, an engine kind that builds a runner per
-// session, and the protocol that exposes it.
+// Package deploy is the document and assembly layer: it turns a deployment
+// document into Specs and registers the engine and protocol kinds a host can
+// build. The process-level Manager, Session and host bindings live in
+// core/agent-host.
 //
 // The built-in exposure is A2A: the server lives in deploy/a2aprotocol, which
 // takes a session table, store and identity as values; deploy only registers it.

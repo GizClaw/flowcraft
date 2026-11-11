@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
+	"github.com/GizClaw/flowcraft/core/agent-host"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/deploy/a2aprotocol"
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -61,9 +62,9 @@ func runtimeConfig(t *testing.T) runtime.Config {
 	}
 }
 
-func newManager(t *testing.T, kinds deploy.Kinds, host deploy.Host) *deploy.Manager {
+func newManager(t *testing.T, kinds deploy.Kinds, bindings host.Bindings) *host.Manager {
 	t.Helper()
-	manager := deploy.New(kinds, host)
+	manager := host.New(kinds, bindings)
 	t.Cleanup(func() { _ = manager.Close() })
 	return manager
 }
@@ -143,7 +144,7 @@ func TestExposedAgentServesA2A(t *testing.T) {
 	peerServer := peer(t, "served")
 	manager := newManager(t,
 		deploy.BuiltinKinds().WithProtocols(a2aprotocol.Kind()),
-		deploy.Host{RuntimeOptions: []runtime.Option{stubDriver()}})
+		host.Bindings{RuntimeOptions: []runtime.Option{stubDriver()}})
 	spec := deploy.Spec{
 		Name:   "backend",
 		Engine: deploy.EngineSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{"peer": peerServer.URL})},
@@ -219,7 +220,7 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 	kinds := deploy.BuiltinKinds().
 		WithEngines(artifactEngine()).
 		WithProtocols(a2aprotocol.Kind())
-	manager := newManager(t, kinds, deploy.Host{
+	manager := newManager(t, kinds, host.Bindings{
 		RuntimeOptions: []runtime.Option{stubDriver()},
 		ArtifactURL:    func(ref string) string { return "https://files.test/" + ref },
 	})
@@ -261,7 +262,7 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 // Without the protocol registered, the same spec is refused: exposure is a
 // deployment choice, not a silent default.
 func TestA2AProtocolMustBeRegistered(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds(), deploy.Host{})
+	manager := newManager(t, deploy.BuiltinKinds(), host.Bindings{})
 	err := manager.Add(context.Background(), deploy.Spec{
 		Name:     "backend",
 		Engine:   deploy.EngineSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{"peer": "https://peer.example"})},

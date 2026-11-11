@@ -170,7 +170,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 			return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 		}
 	}
-	if err := validateEngineSpec(kind, engineSpec, agent.Runtime != nil); err != nil {
+	if err := ValidateEngineSpec(kind, engineSpec, agent.Runtime != nil); err != nil {
 		return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 	}
 
@@ -201,7 +201,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if agent.Catalog != nil {
 		catalog.Scope = agent.Catalog.Scope
 	}
-	if _, err := catalog.validatedScope(); err != nil {
+	if _, err := catalog.ValidatedScope(); err != nil {
 		return Spec{}, errdefs.Validationf("%s: %w", where("catalog"), err)
 	}
 	spec := Spec{

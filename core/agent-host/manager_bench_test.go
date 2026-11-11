@@ -1,4 +1,4 @@
-package deploy
+package host
 
 import (
 	"context"
@@ -6,15 +6,16 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // benchSpec is one agent with a runtime, the shape a real deployment has.
-func benchSpec(b *testing.B, name, kind string) Spec {
+func benchSpec(b *testing.B, name, kind string) deploy.Spec {
 	b.Helper()
 	root := b.TempDir()
-	return Spec{Name: name, Engine: EngineSpec{Kind: kind}, Runtime: runtime.Config{
+	return deploy.Spec{Name: name, Engine: deploy.EngineSpec{Kind: kind}, Runtime: runtime.Config{
 		Version: 1,
 		Sandbox: runtime.SandboxConfig{Backend: runtime.BackendLocal, Writes: []string{root}},
 		Files:   runtime.FilesConfig{Roots: []string{root}},
@@ -26,15 +27,15 @@ func benchSpec(b *testing.B, name, kind string) Spec {
 	}}
 }
 
-func benchHost() Host {
-	return Host{RuntimeOptions: []runtime.Option{driver(&scripted{})}}
+func benchHost() Bindings {
+	return Bindings{RuntimeOptions: []runtime.Option{driver(&scripted{})}}
 }
 
 // benchManager deploys one local agent with no runtime: the layer's own costs,
 // without the substrate a real deployment builds.
 func benchManager(b *testing.B) *Manager {
 	b.Helper()
-	manager := New(BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := New(deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	})), benchHost())
 	b.Cleanup(func() { _ = manager.Close() })
@@ -80,7 +81,7 @@ func BenchmarkSessionRun(b *testing.B) {
 // BenchmarkManagerAdd measures deploying an agent: validation, fingerprint, table and
 // no runtime.
 func BenchmarkManagerAdd(b *testing.B) {
-	manager := New(BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := New(deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	})), benchHost())
 	b.Cleanup(func() { _ = manager.Close() })

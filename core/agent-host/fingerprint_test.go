@@ -1,4 +1,4 @@
-package deploy
+package host
 
 import "testing"
 

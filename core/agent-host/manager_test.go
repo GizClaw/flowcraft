@@ -1,4 +1,4 @@
-package deploy
+package host
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -28,7 +29,7 @@ func run(t *testing.T, session *Session) []agent.Event {
 }
 
 func TestAddDeploysAnAgent(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "a", "done")); err != nil {
@@ -46,7 +47,7 @@ func TestAddDeploysAnAgent(t *testing.T) {
 
 // A duplicate name is refused and the deployed agent keeps working.
 func TestAddRejectsADuplicateName(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	spec := testSpec(t, "a", "done")
@@ -64,21 +65,21 @@ func TestAddRejectsADuplicateName(t *testing.T) {
 }
 
 func TestAddValidatesTheEngineKind(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
-	cases := map[string]Spec{
-		"unregistered": {Name: "a", Engine: EngineSpec{Kind: "missing"}},
+	cases := map[string]deploy.Spec{
+		"unregistered": {Name: "a", Engine: deploy.EngineSpec{Kind: "missing"}},
 		"local without runtime": {
 			Name:   "b",
-			Engine: EngineSpec{Kind: "done"},
+			Engine: deploy.EngineSpec{Kind: "done"},
 		},
 		"remote with a runtime": {
 			Name:    "c",
-			Engine:  EngineSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"peer": "https://peer.test"})},
+			Engine:  deploy.EngineSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"peer": "https://peer.test"})},
 			Runtime: config(t),
 		},
-		"remote without a peer": {Name: "d", Engine: EngineSpec{Kind: "a2a"}},
+		"remote without a peer": {Name: "d", Engine: deploy.EngineSpec{Kind: "a2a"}},
 	}
 	for name, spec := range cases {
 		if err := manager.Add(context.Background(), spec); err == nil {
@@ -89,12 +90,12 @@ func TestAddValidatesTheEngineKind(t *testing.T) {
 
 // A document is applied whole: one bad spec leaves nothing deployed.
 func TestDeployIsAllOrNothing(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	if _, err := manager.Deploy(context.Background(),
 		testSpec(t, "a", "done"),
-		Spec{Name: "x", Engine: EngineSpec{Kind: "not-registered"}},
+		deploy.Spec{Name: "x", Engine: deploy.EngineSpec{Kind: "not-registered"}},
 	); err == nil {
 		t.Fatal("a batch with an unregistered engine was accepted")
 	}
@@ -112,7 +113,7 @@ func TestDeployIsAllOrNothing(t *testing.T) {
 
 // Remove stops one agent and leaves the others serving.
 func TestRemoveStopsOneAgent(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	if _, err := manager.Deploy(context.Background(), testSpec(t, "a", "done"), testSpec(t, "b", "done")); err != nil {
@@ -141,7 +142,7 @@ func TestRemoveStopsOneAgent(t *testing.T) {
 
 // Names is what a host shows an operator: sorted, not map order.
 func TestNamesIsSorted(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	for _, name := range []string{"zeta", "alpha", "mu"} {
@@ -162,7 +163,7 @@ func TestReplaceEndsTheOldDeployment(t *testing.T) {
 	store := agenttest.NewMemStore()
 	host := testHost(t)
 	host.Store = store
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), host)
 	if err := manager.Add(context.Background(), testSpec(t, "a", "done")); err != nil {
@@ -189,7 +190,7 @@ func TestReplaceEndsTheOldDeployment(t *testing.T) {
 // A drain with no patience reports what is still running instead of pretending.
 func TestDrainWaitsAndReportsTimeouts(t *testing.T) {
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
 		return runner
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "blocking", "blocking")); err != nil {
@@ -218,10 +219,10 @@ func TestManagerDrainFansOut(t *testing.T) {
 	second := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
 	runners := []agent.Runner{first, second}
 	var next atomic.Int64
-	kinds := BuiltinKinds().WithEngines(EngineKind{
+	kinds := deploy.BuiltinKinds().WithEngines(deploy.EngineKind{
 		Name:  "blocking",
 		Local: true,
-		Build: func(context.Context, EngineDeps) (agent.RunnerFactory, error) {
+		Build: func(context.Context, deploy.EngineDeps) (agent.RunnerFactory, error) {
 			return func(context.Context, string, string) (agent.Runner, error) {
 				index := (next.Add(1) - 1) % int64(len(runners))
 				return runners[index], nil
@@ -266,7 +267,7 @@ func TestManagerDrainFansOut(t *testing.T) {
 // Close cancels a run, is idempotent, and refuses new work afterwards.
 func TestCloseIsIdempotentAndStopsRuns(t *testing.T) {
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
 		return runner
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "blocking", "blocking")); err != nil {
@@ -303,7 +304,7 @@ func TestOnEventSeesEveryEvent(t *testing.T) {
 		names = append(names, agentName)
 		mu.Unlock()
 	}
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), host)
 	if err := manager.Add(context.Background(), testSpec(t, "a", "done")); err != nil {
@@ -325,7 +326,7 @@ func TestOnEventSeesEveryEvent(t *testing.T) {
 }
 
 func TestHandlerAndSessionForUnknownAgent(t *testing.T) {
-	manager := newManager(t, BuiltinKinds(), testHost(t))
+	manager := newManager(t, deploy.BuiltinKinds(), testHost(t))
 	if _, ok := manager.Handler("absent"); ok {
 		t.Error("an unknown agent has a handler")
 	}
@@ -336,7 +337,7 @@ func TestHandlerAndSessionForUnknownAgent(t *testing.T) {
 
 // The registered kinds are what a host reports at startup.
 func TestManagerReportsRegisteredKinds(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithProtocols(a2aKind()), testHost(t))
+	manager := newManager(t, deploy.BuiltinKinds().WithProtocols(a2aKind()), testHost(t))
 	engines := manager.EngineNames()
 	if len(engines) != 2 || engines[0] != "a2a" || engines[1] != "graph" {
 		t.Errorf("engines = %v, want [a2a graph]", engines)

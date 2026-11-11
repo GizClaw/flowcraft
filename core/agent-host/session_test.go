@@ -1,4 +1,4 @@
-package deploy
+package host
 
 import (
 	"context"
@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // A session carries the answer and the state that produced it.
 func TestSessionRunReportsTheAnswer(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hello"}
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "a", "echo")); err != nil {
@@ -45,7 +46,7 @@ func TestSessionRunReportsTheAnswer(t *testing.T) {
 // Cancel stops the run in flight and the run records the outcome.
 func TestSessionCancelStopsTheRun(t *testing.T) {
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("blocking", func() agent.Runner {
 		return runner
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "a", "blocking")); err != nil {
@@ -77,7 +78,7 @@ func TestSessionCancelStopsTheRun(t *testing.T) {
 
 // A session needs an id before it can carry anything.
 func TestSessionRequiresAnID(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hello"}
 	})), testHost(t))
 	if err := manager.Add(context.Background(), testSpec(t, "a", "echo")); err != nil {
@@ -106,7 +107,7 @@ func TestSessionRunCarriesTheTenant(t *testing.T) {
 	host.OnRun = func(_ string, record agent.RunRecord) {
 		records = append(records, record)
 	}
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hello"}
 	})), host)
 	if err := manager.Add(context.Background(), testSpec(t, "a", "echo")); err != nil {
@@ -135,7 +136,7 @@ func (r *resultTextRunner) Result(context.Context) (agent.Result, error) {
 // Session.Result forwards to the agent and returns only the final assistant
 // message.
 func TestSessionResultReturnsTheFinalAnswer(t *testing.T) {
-	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("result", func() agent.Runner {
+	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("result", func() agent.Runner {
 		return &resultTextRunner{
 			textRunner: &textRunner{text: "hello"},
 			content:    message.NewTextContent("hello"),
