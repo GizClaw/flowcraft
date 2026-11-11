@@ -46,8 +46,12 @@ type Runner struct {
 	session string
 
 	mu sync.Mutex
-	// taskID is the peer's task id, not the local protocol's.
+	// taskID is the peer's task id to continue, not the local protocol's.
 	taskID a2a.TaskID
+	// lastTaskID is the last remote task this session saw, even after it
+	// finished. Result reads it; taskID is cleared for a terminal task so a
+	// new message starts a new task.
+	lastTaskID a2a.TaskID
 	// contextID is the context the peer assigned; a follow-up must carry it.
 	remoteContext string
 	state         agent.TaskState
@@ -100,18 +104,23 @@ func (r *Runner) restore(ctx context.Context) {
 			r.remoteContext = section.ContextID
 		}
 	}
+	r.lastTaskID = a2a.TaskID(checkpoint.Task.ID)
 	if checkpoint.Task.State.Terminal() {
-		// A finished task is not resumed; the context is what carries over.
+		// A finished task is not resumed; the context is what carries over,
+		// but Result still needs the id to ask the peer for its history.
 		return
 	}
-	r.taskID = a2a.TaskID(checkpoint.Task.ID)
+	r.taskID = r.lastTaskID
 	r.state = checkpoint.Task.State
 }
 
 // persist records the remote task identity so a restart can continue it.
 func (r *Runner) persist(ctx context.Context) {
 	r.mu.Lock()
-	taskID := r.taskID
+	taskID := r.lastTaskID
+	if taskID == "" {
+		taskID = r.taskID
+	}
 	state := r.state
 	contextID := r.remoteContext
 	r.mu.Unlock()
@@ -221,6 +230,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		r.mu.Lock()
 		if typed.ID != "" {
 			r.taskID = typed.ID
+			r.lastTaskID = typed.ID
 		}
 		if typed.ContextID != "" {
 			r.remoteContext = typed.ContextID
@@ -236,6 +246,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		r.mu.Lock()
 		if typed.TaskID != "" {
 			r.taskID = typed.TaskID
+			r.lastTaskID = typed.TaskID
 		}
 		if typed.ContextID != "" {
 			r.remoteContext = typed.ContextID
@@ -256,6 +267,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		r.mu.Lock()
 		if typed.TaskID != "" {
 			r.taskID = typed.TaskID
+			r.lastTaskID = typed.TaskID
 		}
 		if typed.ContextID != "" {
 			r.remoteContext = typed.ContextID

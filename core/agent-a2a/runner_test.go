@@ -133,7 +133,15 @@ func (e *peerExecutor) Cancel(ctx context.Context, exec *a2asrv.ExecutorContext)
 func peerEvents(info sdk.TaskInfo, event agent.Event) []sdk.Event {
 	switch typed := event.(type) {
 	case agent.Status:
-		return []sdk.Event{sdk.NewStatusUpdateEvent(info, wire.State(typed.State), nil)}
+		var msg *sdk.Message
+		if typed.Reason != "" {
+			msg = &sdk.Message{
+				ID:    sdk.NewMessageID(),
+				Role:  sdk.MessageRoleAgent,
+				Parts: sdk.ContentParts{sdk.NewTextPart(typed.Reason)},
+			}
+		}
+		return []sdk.Event{sdk.NewStatusUpdateEvent(info, wire.State(typed.State), msg)}
 	case agent.Text:
 		if typed.Text == "" {
 			return nil
@@ -233,6 +241,58 @@ func TestRunCarriesTheRemoteAnswer(t *testing.T) {
 	}
 	if answer != "hello world" {
 		t.Fatalf("answer = %q, want the peer's text", answer)
+	}
+}
+
+// Result reads the peer's answer back: the proxied text lives in artifacts, not
+// in a local history.
+func TestRunnerResultCarriesTheRemoteAnswer(t *testing.T) {
+	ts, _ := peer(t,
+		agent.Status{State: agent.StateWorking},
+		agent.Text{Text: "hello "},
+		agent.Text{Text: "world"},
+		agent.Status{State: agent.StateCompleted},
+	)
+	runner := client(t, ts.URL, "conv-1")
+	for range runner.Run(context.Background(), message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	result, err := runner.Result(context.Background())
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if result.State != agent.StateCompleted {
+		t.Fatalf("state = %s, want completed", result.State)
+	}
+	if result.Content.Text() != "hello world" {
+		t.Fatalf("content = %q, want the peer's text", result.Content.Text())
+	}
+}
+
+// Result also reads a completed task's artifacts and the question a paused peer
+// put on the status.
+func TestRunnerResultCarriesArtifactsAndQuestion(t *testing.T) {
+	ts, _ := peer(t,
+		agent.Status{State: agent.StateWorking},
+		agent.ArtifactWritten{Artifact: agent.Artifact{
+			ID: "a1", Name: "report", MediaType: "text/plain", Blob: "sha256:1",
+		}},
+		agent.Status{State: agent.StateInputRequired, Reason: "which one?"},
+	)
+	runner := client(t, ts.URL, "conv-1")
+	for range runner.Run(context.Background(), message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	result, err := runner.Result(context.Background())
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].Blob != "sha256:1" {
+		t.Fatalf("artifacts = %+v", result.Artifacts)
+	}
+	if result.State != agent.StateInputRequired {
+		t.Fatalf("state = %s, want input-required", result.State)
+	}
+	if result.Question == nil || result.Question.Text() != "which one?" {
+		t.Fatalf("question = %+v", result.Question)
 	}
 }
 
