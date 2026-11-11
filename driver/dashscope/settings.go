@@ -2,7 +2,9 @@ package dashscope
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -12,7 +14,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
-	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // SecretAPIKey is the provider-owned secret name for the DashScope API key.
@@ -45,10 +46,10 @@ type Spec struct {
 	// retries so the route Router owns the full retry budget; nil keeps
 	// the httpkit default. Task polling is not a retry: it is modeled as
 	// the wait it is.
-	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// PollIntervalMillis paces task polling; defaults to 5000. Declared
 	// values below one millisecond keep the default rather than spinning.
-	PollIntervalMillis resource.Int `json:"poll_interval_millis,omitempty"`
+	PollIntervalMillis int `json:"poll_interval_millis,omitempty"`
 	// ReasoningScope declares the verification scope this deployment's
 	// reasoning traces belong to. DashScope emits reasoning traces and
 	// consumes them back only on models declared with
@@ -60,6 +61,12 @@ type Spec struct {
 	// Models declares the line-up this deployment serves. It is the only
 	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
+
+	// APIKey authenticates every call. It is resolved by the host before the
+	// driver is built.
+	APIKey string `json:"-"`
+	// HTTPClient overrides the transport. Nil builds one from the timeout.
+	HTTPClient *http.Client `json:"-"`
 }
 
 // ModelSpec declares one model this deployment serves. The driver ships no
@@ -823,9 +830,9 @@ func validateURL(name, value string) error {
 	return nil
 }
 
-func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {
-	spec, err := resource.DecodeTyped[Spec](ctx, raw)
-	if err != nil {
+func decodeSpec(_ context.Context, raw []byte) (Spec, error) {
+	var spec Spec
+	if err := json.Unmarshal(raw, &spec); err != nil {
 		return Spec{}, fmt.Errorf("dashscope spec: %w", err)
 	}
 	if err := spec.Validate(); err != nil {
@@ -834,9 +841,9 @@ func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {
 	return spec, nil
 }
 
-func decodeProfileSpec(ctx context.Context, raw []byte) (ProfileSpec, error) {
-	spec, err := resource.DecodeTyped[ProfileSpec](ctx, raw)
-	if err != nil {
+func decodeProfileSpec(_ context.Context, raw []byte) (ProfileSpec, error) {
+	var spec ProfileSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
 		return ProfileSpec{}, fmt.Errorf("dashscope profile spec: %w", err)
 	}
 	if err := spec.Validate(); err != nil {

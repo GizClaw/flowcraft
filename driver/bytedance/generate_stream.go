@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -15,51 +16,37 @@ import (
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/utils"
 )
 
-// responsesStream adapts the ark SSE reader to ProviderStream[streamRaw]. It
-// is the stateful stage of the streaming pipeline: it assigns canonical part
-// indices to ark output items and collapses the API's snapshot-style events
-// into deltas, so the decoder function stays pure.
 type responsesStream struct {
-	reader *utils.ResponsesStreamReader
-	// requestID is the provider-echoed X-Client-Request-Id header captured
-	// from the stream response at open; it survives truncation where the
-	// terminal event does not.
+	reader    *utils.ResponsesStreamReader
 	requestID string
-
-	parts    map[int64]*streamPart // ark output index → canonical part
-	nextPart int
-	finished bool
-	sawTools bool
-
-	// webSearchOutput is the cumulative provider output snapshot for the
-	// hosted web_search tool.
-	webSearchOutput WebSearchOutput
+	parts     map[int64]*streamPart
+	nextPart  int
+	finished  bool
+	sawTools  bool
 }
 
 type streamPart struct {
 	index        int
 	tool         bool
 	reasoning    bool
-	id           string // reasoning item id from output_item.added
+	id           string
 	sawArgsDelta bool
 	sawSummary   bool
 }
 
-func transportGenerateStream(
+func openGenerateStream(
 	client *arkruntime.Client,
 	options []arkruntime.RequestOption,
-) inference.Transport[*arkresponses.ResponsesRequest, inference.ProviderStream[streamRaw]] {
+) protocol.StreamOpener[inference.GenerateRequest, *arkresponses.ResponsesRequest, streamRaw] {
 	return func(
 		ctx context.Context,
+		_ inference.GenerateRequest,
 		request *arkresponses.ResponsesRequest,
-	) (inference.ProviderStream[streamRaw], error) {
+	) (protocol.RawStream[streamRaw], error) {
 		reader, err := client.CreateResponsesStream(ctx, request, options...)
 		if err != nil {
-			classified := classifyError(err)
-			inference.LogProviderStream(ctx, providerID, "generate", request.Model, classified, "")
-			return nil, classified
+			return nil, classifyError(err)
 		}
-		inference.LogProviderStream(ctx, providerID, "generate", request.Model, nil, "")
 		return &responsesStream{
 			reader:    reader,
 			requestID: reader.Header().Get(arkmodel.ClientRequestHeader),
@@ -67,9 +54,6 @@ func transportGenerateStream(
 		}, nil
 	}
 }
-
-func (s *responsesStream) RequestID() string  { return s.requestID }
-func (s *responsesStream) ResponseID() string { return "" }
 
 func (s *responsesStream) Close() error {
 	if s.reader == nil {
@@ -80,7 +64,7 @@ func (s *responsesStream) Close() error {
 
 func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 	if err := ctx.Err(); err != nil {
-		return streamRaw{}, errdefs.FromContext(err)
+		return streamRaw{}, err
 	}
 	for {
 		event, err := s.reader.Recv()
@@ -88,9 +72,7 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 			if errors.Is(err, io.EOF) {
 				return streamRaw{}, io.EOF
 			}
-			classified := classifyError(err)
-			inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
-			return streamRaw{}, classified
+			return streamRaw{}, classifyError(err)
 		}
 		if event == nil {
 			continue
@@ -105,18 +87,9 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 	}
 }
 
-// apply folds one ark event into a streamRaw. keep=false means the event was
-// bookkeeping-only (part registration, lifecycle pings) and the loop should
-// read on. The event union has no shared discriminator, so dispatch follows
-// accessor presence plus each payload's Type field.
-func (s *responsesStream) apply(
-	event *arkresponses.Event,
-) (streamRaw, bool, error) {
+func (s *responsesStream) apply(event *arkresponses.Event) (streamRaw, bool, error) {
 	if failure := event.GetError(); failure != nil {
-		return streamRaw{}, false, classifyResponseError(
-			failure.GetCode(),
-			failure.GetMessage(),
-		)
+		return streamRaw{}, false, classifyResponseError(failure.GetCode(), failure.GetMessage())
 	}
 	if completed := event.GetResponseCompleted(); completed != nil {
 		return s.applyTerminal(completed.GetResponse(), "")
@@ -124,24 +97,16 @@ func (s *responsesStream) apply(
 	if failed := event.GetResponseFailed(); failed != nil {
 		response := failed.GetResponse()
 		if failure := response.GetError(); failure != nil {
-			return streamRaw{}, false, classifyResponseError(
-				failure.GetCode(),
-				failure.GetMessage(),
-			)
+			return streamRaw{}, false, classifyResponseError(failure.GetCode(), failure.GetMessage())
 		}
-		return streamRaw{}, false, errdefs.NotAvailablef(
-			"bytedance: response failed without detail",
-		)
+		return streamRaw{}, false, errdefs.NotAvailablef("bytedance: response failed without detail")
 	}
 	if incomplete := event.GetResponseIncomplete(); incomplete != nil {
 		response := incomplete.GetResponse()
 		reason := response.GetIncompleteDetails().GetReason()
 		finish := arkIncompleteFinish(reason)
 		if finish == "" {
-			return streamRaw{}, false, errdefs.NotAvailablef(
-				"bytedance: response incomplete: %s",
-				reason,
-			)
+			return streamRaw{}, false, errdefs.NotAvailablef("bytedance: response incomplete: %s", reason)
 		}
 		return s.applyTerminal(response, finish)
 	}
@@ -152,10 +117,6 @@ func (s *responsesStream) apply(
 			if reasoning.GetId() != "" {
 				part.id = reasoning.GetId()
 			}
-			return streamRaw{}, false, nil
-		}
-		if call := item.GetItem().GetFunctionWebSearch(); call != nil {
-			s.addWebSearchCall(arkWebSearchCall(call))
 			return streamRaw{}, false, nil
 		}
 		call := item.GetItem().GetFunctionToolCall()
@@ -171,54 +132,36 @@ func (s *responsesStream) apply(
 	}
 	if done := event.GetItemDone(); done != nil {
 		reasoning := done.GetItem().GetReasoning()
-		if reasoning != nil {
-			// item.done is the reasoning terminal: it carries the full summary
-			// when no text deltas streamed, plus the item id.
-			part := s.registerPart(done.GetOutputIndex(), false)
-			part.reasoning = true
-			if reasoning.GetId() != "" {
-				part.id = reasoning.GetId()
-			}
-			text := ""
-			if !part.sawSummary {
-				text = reasoningSummaryText(reasoning.GetSummary())
-			}
-			if text == "" && !part.sawSummary {
-				// Nothing visible ever streamed: an id-only terminal would
-				// accumulate into an empty reasoning part, which the canonical
-				// contract rejects.
-				return streamRaw{}, false, nil
-			}
-			return streamRaw{
-				kind: streamRawReasoning,
-				part: part.index,
-				text: text,
-				id:   part.id,
-			}, true, nil
+		if reasoning == nil {
+			return streamRaw{}, false, nil
 		}
-		if call := done.GetItem().GetFunctionWebSearch(); call != nil {
-			s.addWebSearchCall(arkWebSearchCall(call))
-			return s.webSearchSnapshot()
+		part := s.registerPart(done.GetOutputIndex(), false)
+		part.reasoning = true
+		if reasoning.GetId() != "" {
+			part.id = reasoning.GetId()
 		}
-		return streamRaw{}, false, nil
+		text := ""
+		if !part.sawSummary {
+			text = reasoningSummaryText(reasoning.GetSummary())
+		}
+		if text == "" && !part.sawSummary {
+			return streamRaw{}, false, nil
+		}
+		return streamRaw{kind: streamRawReasoning, part: part.index, text: text, id: part.id}, true, nil
 	}
 	if text := event.GetText(); text != nil {
 		if text.GetType() != arkresponses.EventType_response_output_text_delta {
-			return streamRaw{}, false, nil // output_text.done: skip snapshots
+			return streamRaw{}, false, nil
 		}
 		part := s.registerPart(text.GetOutputIndex(), false)
 		if text.GetDelta() == "" {
 			return streamRaw{}, false, nil
 		}
-		return streamRaw{
-			kind: streamRawText,
-			part: part.index,
-			text: text.GetDelta(),
-		}, true, nil
+		return streamRaw{kind: streamRawText, part: part.index, text: text.GetDelta()}, true, nil
 	}
 	if summary := event.GetReasoningText(); summary != nil {
 		if summary.GetType() != arkresponses.EventType_response_reasoning_summary_text_delta {
-			return streamRaw{}, false, nil // summary .done snapshots: skip
+			return streamRaw{}, false, nil
 		}
 		part := s.registerPart(summary.GetOutputIndex(), false)
 		part.reasoning = true
@@ -226,11 +169,7 @@ func (s *responsesStream) apply(
 		if summary.GetDelta() == "" {
 			return streamRaw{}, false, nil
 		}
-		return streamRaw{
-			kind: streamRawReasoning,
-			part: part.index,
-			text: summary.GetDelta(),
-		}, true, nil
+		return streamRaw{kind: streamRawReasoning, part: part.index, text: summary.GetDelta()}, true, nil
 	}
 	if fragment := event.GetFunctionCallArguments(); fragment != nil {
 		part := s.registerPart(fragment.GetOutputIndex(), true)
@@ -257,28 +196,16 @@ func (s *responsesStream) apply(
 		}
 		return streamRaw{}, false, nil
 	}
-	if annotation := event.GetResponseAnnotationAdded(); annotation != nil {
-		citation := arkAnnotationCitation(annotation.GetAnnotation())
-		if citation.URL == "" {
-			return streamRaw{}, false, nil
-		}
-		s.addCitation(citation)
-		return s.webSearchSnapshot()
-	}
-	// Reasoning part markers, web-search lifecycle, and transcription
-	// events are bookkeeping for this operation's output.
 	return streamRaw{}, false, nil
 }
 
-// applyTerminal renders the completed/incomplete terminal event. An empty
-// finishOverride means completed; the saw-tools rule picks the reason.
 func (s *responsesStream) applyTerminal(
 	response *arkresponses.ResponseObject,
 	finishOverride inference.FinishReason,
 ) (streamRaw, bool, error) {
 	finish := finishOverride
 	if finish == "" {
-		finish = inference.FinishCompleted
+		finish = inference.FinishStop
 		if s.sawTools {
 			finish = inference.FinishToolCalls
 		}
@@ -287,10 +214,6 @@ func (s *responsesStream) applyTerminal(
 	return raw, err == nil, err
 }
 
-// registerPart assigns a stable canonical part index per ark output index.
-// Text output (the answer message) lands before tool calls in the canonical
-// response only when ark emits it first; the runtime assembles parts in
-// index order, which mirrors the request's output order here.
 func (s *responsesStream) registerPart(outputIndex int64, tool bool) *streamPart {
 	part, ok := s.parts[outputIndex]
 	if !ok {
@@ -304,153 +227,73 @@ func (s *responsesStream) registerPart(outputIndex int64, tool bool) *streamPart
 	return part
 }
 
-// finishEvent renders the single terminal event. A duplicate terminal event
-// would violate the runtime's single-finish invariant, so it is an error.
 func (s *responsesStream) finishEvent(
 	response *arkresponses.ResponseObject,
 	finish inference.FinishReason,
 ) (streamRaw, error) {
 	if s.finished {
-		return streamRaw{}, errdefs.Internalf(
-			"bytedance: stream emitted a duplicate terminal event",
-		)
+		return streamRaw{}, errdefs.Internalf("bytedance: stream emitted a duplicate terminal event")
 	}
 	s.finished = true
 	usage := arkUsage(response.GetUsage())
-	raw := streamRaw{
+	return streamRaw{
 		kind:       streamRawFinish,
 		usage:      &usage,
 		finish:     finish,
 		responseID: response.GetId(),
-	}
-	if len(s.webSearchOutput.Calls) > 0 || len(s.webSearchOutput.Citations) > 0 {
-		raw.providerOutputs = inference.ProviderOutputs{
-			&WebSearchOutput{
-				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
-				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
-			},
-		}
-	}
-	return raw, nil
-}
-
-func (s *responsesStream) addWebSearchCall(call inference.WebSearchCall) {
-	for i := range s.webSearchOutput.Calls {
-		if s.webSearchOutput.Calls[i].ID != call.ID {
-			continue
-		}
-		if call.Status != "" {
-			s.webSearchOutput.Calls[i].Status = call.Status
-		}
-		if call.Action != "" {
-			s.webSearchOutput.Calls[i].Action = call.Action
-		}
-		if len(call.Queries) > 0 {
-			s.webSearchOutput.Calls[i].Queries = call.Queries
-		}
-		if len(call.Sources) > 0 {
-			s.webSearchOutput.Calls[i].Sources = call.Sources
-		}
-		return
-	}
-	s.webSearchOutput.Calls = append(s.webSearchOutput.Calls, call)
-}
-
-func (s *responsesStream) addCitation(citation inference.Citation) {
-	for i := range s.webSearchOutput.Citations {
-		existing := s.webSearchOutput.Citations[i]
-		if existing.URL == citation.URL {
-			return
-		}
-	}
-	s.webSearchOutput.Citations = append(s.webSearchOutput.Citations, citation)
-}
-
-func (s *responsesStream) webSearchSnapshot() (streamRaw, bool, error) {
-	if len(s.webSearchOutput.Calls) == 0 && len(s.webSearchOutput.Citations) == 0 {
-		return streamRaw{}, false, nil
-	}
-	return streamRaw{
-		kind: streamRawProviderOutput,
-		providerOutputs: inference.ProviderOutputs{
-			&WebSearchOutput{
-				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
-				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
-			},
-		},
-	}, true, nil
-}
-
-func arkAnnotationCitation(annotation *arkresponses.Annotation) inference.Citation {
-	if annotation == nil {
-		return inference.Citation{}
-	}
-	return inference.Citation{
-		URL:         annotation.GetUrl(),
-		Title:       annotation.GetTitle(),
-		SiteName:    annotation.GetSiteName(),
-		PublishTime: annotation.GetPublishTime(),
-	}
+	}, nil
 }
 
 func arkIncompleteFinish(reason string) inference.FinishReason {
 	switch reason {
 	case "max_output_tokens", "max_tokens":
-		return inference.FinishMaxOutput
+		return inference.FinishLength
 	case "content_filter":
 		return inference.FinishContentFilter
 	}
 	return ""
 }
 
-// decodeGenerateStream is pure: streamRaw already carries canonical part
-// indices assigned by the stateful transport.
-func decodeGenerateStream(
-	ctx context.Context,
-	raw streamRaw,
-) (inference.GenerateStreamEvent, error) {
-	switch raw.kind {
-	case streamRawText:
-		return inference.GenerateStreamEvent{
-			PartIndex: raw.part,
-			Delta:     inference.TextPartDelta{Text: raw.text},
-		}, nil
-	case streamRawToolFragment:
-		return inference.GenerateStreamEvent{
-			PartIndex: raw.part,
-			Delta: inference.ToolCallDelta{
-				ID:                raw.tool.id,
-				Name:              raw.tool.name,
-				ArgumentsFragment: raw.tool.argsFragment,
-			},
-		}, nil
-	case streamRawReasoning:
-		return inference.GenerateStreamEvent{
-			PartIndex: raw.part,
-			Delta: inference.ReasoningDelta{
-				Text: raw.text,
-				ID:   raw.id,
-			},
-		}, nil
-	case streamRawProviderOutput:
-		return inference.GenerateStreamEvent{
-			ProviderOutputs: raw.providerOutputs.Clone(),
-		}, nil
-	case streamRawFinish:
-		event := inference.GenerateStreamEvent{
-			FinishReason:    raw.finish,
-			ResponseID:      raw.responseID,
-			ProviderOutputs: raw.providerOutputs.Clone(),
+func newGenerateStreamDecoder(
+	_ inference.GenerateRequest,
+) protocol.StreamDecoder[streamRaw] {
+	started := false
+	return func(_ context.Context, raw streamRaw) ([]inference.StreamEvent, error) {
+		var events []inference.StreamEvent
+		if !started {
+			started = true
+			events = append(events, inference.StreamEvent{Kind: inference.StreamStart})
 		}
-		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
-		if raw.usage != nil {
-			usage := rawUsageCanonical(*raw.usage)
-			event.Usage = &usage
+		switch raw.kind {
+		case streamRawText:
+			events = append(events, inference.StreamEvent{
+				Kind: inference.StreamText, Index: raw.part, Text: raw.text,
+			})
+		case streamRawToolFragment:
+			events = append(events, inference.StreamEvent{
+				Kind:  inference.StreamToolCall,
+				Index: raw.part,
+				Tool: &inference.ToolCallDelta{
+					ID: raw.tool.id, Name: raw.tool.name, Arguments: raw.tool.argsFragment,
+				},
+			})
+		case streamRawReasoning:
+			events = append(events, inference.StreamEvent{
+				Kind: inference.StreamReasoning, Index: raw.part, Text: raw.text, ID: raw.id,
+			})
+		case streamRawFinish:
+			if raw.usage != nil {
+				accounting := rawUsageCanonical(*raw.usage)
+				events = append(events, inference.StreamEvent{
+					Kind: inference.StreamUsage, Usage: &accounting,
+				})
+			}
+			events = append(events, inference.StreamEvent{
+				Kind: inference.StreamEnd, Finish: raw.finish,
+			})
+		default:
+			return nil, fmt.Errorf("bytedance: unknown stream raw kind %d", raw.kind)
 		}
-		return event, nil
+		return events, nil
 	}
-	return inference.GenerateStreamEvent{}, fmt.Errorf(
-		"bytedance: unknown stream raw kind %d",
-		raw.kind,
-	)
 }

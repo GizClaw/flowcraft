@@ -3,35 +3,31 @@ package bytedance
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
-// Raw model — transport-owned response data, decoded into canonical forms.
-// ---------------------------------------------------------------------------
-
 type generateRaw struct {
-	id             string
-	reasonings     []rawReasoning // reasoning items in output order
-	texts          []string       // output_text items in order
-	toolCalls      []rawToolCall
-	webSearchCalls []inference.WebSearchCall
-	citations      []inference.Citation
-	finish         inference.FinishReason
-	usage          rawUsage
-	failedReason   string // non-empty when the provider reported failure
+	id         string
+	reasonings []rawReasoning
+	texts      []string
+	toolCalls  []rawToolCall
+	finish     inference.FinishReason
+	usage      rawUsage
+	failed     string
 }
 
-// rawReasoning lowers one reasoning item: joined summary text and the item
-// id. ark signs nothing, so the trace cannot round-trip; it is display-only.
 type rawReasoning struct {
 	id   string
 	text string
@@ -46,7 +42,6 @@ type rawToolCall struct {
 type rawUsage struct {
 	inputTokens       int64
 	outputTokens      int64
-	totalTokens       int64
 	cachedTokens      int64
 	reasoningTokens   int64
 	inputAudioTokens  int64
@@ -54,19 +49,15 @@ type rawUsage struct {
 	mcpRequests       int64
 }
 
-// streamRaw is one provider stream event. The streaming transport assigns
-// canonical part indices (it is the stateful stage) so the decoder function
-// stays pure and concurrency-safe.
 type streamRaw struct {
-	kind            streamRawKind
-	part            int    // canonical part index (text / tool / reasoning kinds)
-	text            string // text / summary delta
-	id              string // terminal reasoning item id
-	responseID      string // response id from the terminal event
-	tool            streamRawTool
-	usage           *rawUsage
-	finish          inference.FinishReason
-	providerOutputs inference.ProviderOutputs
+	kind       streamRawKind
+	part       int
+	text       string
+	id         string
+	responseID string
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
 }
 
 type streamRawKind int
@@ -75,7 +66,6 @@ const (
 	streamRawText streamRawKind = iota
 	streamRawToolFragment
 	streamRawReasoning
-	streamRawProviderOutput
 	streamRawFinish
 )
 
@@ -85,66 +75,6 @@ type streamRawTool struct {
 	argsFragment string
 }
 
-// partField resolves a part kind to its ledger field through core's table, so
-// the driver cannot drift from the field list the runtime activates. A miss
-// cannot happen — core's TestGenerateLedgerCoversPartKinds pins the table
-// against message.PartKinds — and panics rather than returning an empty field,
-// because a decision recorded against "" never reaches the report.
-func partField(
-	lookup func(message.PartKind) (inference.FieldID, bool),
-) func(message.PartKind) inference.FieldID {
-	return func(kind message.PartKind) inference.FieldID {
-		field, ok := lookup(kind)
-		if !ok {
-			panic("bytedance: no ledger field for part kind " + string(kind))
-		}
-		return field
-	}
-}
-
-var (
-	contextPartField = partField(inference.GenerateContextPartField)
-	inputPartField   = partField(inference.GenerateInputPartField)
-	embedPartField   = partField(inference.EmbedItemPartField)
-)
-
-// ---------------------------------------------------------------------------
-// Compiler
-// ---------------------------------------------------------------------------
-
-// compileGenerate lowers a canonical request into the Ark Responses request.
-// It never downgrades silently: parts the model cannot consume natively are
-// rejected in the ledger with a precise reason.
-// rejectTextControls rejects the text-only intent controls (tools, sampling,
-// reasoning) for a non-text operation, one decision per active field so the
-// report stays field-precise.
-func rejectTextControls(
-	text *inference.TextIntent,
-	ledger *inference.Ledger,
-	toolsReason, samplingReason, reasoningReason string,
-) {
-	if len(text.Tools) > 0 {
-		ledger.Reject(inference.FieldGenerateIntentTools, toolsReason)
-	}
-	if text.ToolChoice != nil {
-		ledger.Reject(inference.FieldGenerateIntentToolChoice, toolsReason)
-	}
-	if text.Temperature != nil {
-		ledger.Reject(inference.FieldGenerateIntentTemperature, samplingReason)
-	}
-	if text.TopP != nil {
-		ledger.Reject(inference.FieldGenerateIntentTopP, samplingReason)
-	}
-	if text.ReasoningEnabled != nil {
-		ledger.Reject(inference.FieldGenerateIntentReasoningEnabled, reasoningReason)
-	}
-	if text.ReasoningEffort != "" {
-		ledger.Reject(inference.FieldGenerateIntentReasoningEffort, reasoningReason)
-	}
-}
-
-// sourceURI renders an image source as the single URI string the API accepts:
-// absolute URLs pass through, inline bytes become a data: URI.
 func sourceURI(source media.ImageSource) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
@@ -169,42 +99,31 @@ func audioSourceURI(source media.AudioSource) string {
 		base64.StdEncoding.EncodeToString(source.Bytes())
 }
 
-func bytesClone(raw []byte) []byte {
-	return append([]byte(nil), raw...)
-}
-
-// compileGenerate lowers a canonical request into the Ark Responses request
-// body. It never downgrades silently: parts the model cannot consume natively
-// are rejected in the ledger with a precise reason.
 func compileGenerate(
 	endpoint string,
-	declared ModelSpec,
-) inference.GenerateCompiler[*arkresponses.ResponsesRequest] {
+	descriptor model.ModelDescriptor,
+) protocol.Compiler[inference.GenerateRequest, *arkresponses.ResponsesRequest] {
 	return func(
 		_ context.Context,
-		_ model.ModelRef,
 		request inference.GenerateRequest,
-		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[*arkresponses.ResponsesRequest], error) {
-		ledger := inference.NewLedger(
-			model.OperationGenerate,
-			providerID,
-			request.ActiveFieldsFor(shape),
-		)
+		shape protocol.Shape,
+	) (protocol.Compiled[*arkresponses.ResponsesRequest], error) {
+		if request.Output.Kind() != inference.OutputText {
+			return protocol.Compiled[*arkresponses.ResponsesRequest]{}, inference.NewError(
+				inference.UnsupportedFeature, inference.FieldOutput,
+				fmt.Errorf("bytedance: only text generation uses the Responses API"),
+			)
+		}
+		options, err := generateOptions(request.Extensions)
+		if err != nil {
+			return protocol.Compiled[*arkresponses.ResponsesRequest]{}, err
+		}
 		ark := &arkresponses.ResponsesRequest{Model: endpoint}
-		if shape == inference.GenerateExecutionStream {
+		if shape == protocol.ShapeStream {
 			stream := true
 			ark.Stream = &stream
 		}
-		if len(request.RequestMetadata) > 0 {
-			ledger.Drop(
-				inference.FieldGenerateRequestMetadata,
-				"bytedance Ark SDK has no arbitrary request metadata channel",
-			)
-		}
-
-		// Context messages → items. System text folds into the native
-		// instructions field; non-text system parts have no native home.
+		var warnings []inference.Warning
 		var system []string
 		for _, turn := range request.Context {
 			switch turn.Role {
@@ -216,53 +135,81 @@ func compileGenerate(
 					case message.DataPart:
 						system = append(system, "\n"+string(value.Value)+"\n")
 					default:
-						ledger.Reject(
-							contextPartField(part.Kind()),
-							"system messages carry text only on the Responses API",
+						return protocol.Compiled[*arkresponses.ResponsesRequest]{}, inference.NewError(
+							inference.UnsupportedFeature, inference.FieldContext,
+							fmt.Errorf("bytedance: system messages carry text only, not %s", part.Kind()),
 						)
 					}
 				}
 			case message.RoleTool:
-				compileToolResults(ark, turn.Content.Parts, contextPartField, ledger)
-			default: // user / assistant
-				compileMessage(ark, string(turn.Role), turn.Content.Parts, declared, contextPartField, ledger)
+				if err := compileToolResults(ark, turn.Content.Parts); err != nil {
+					return protocol.Compiled[*arkresponses.ResponsesRequest]{}, err
+				}
+			default:
+				if err := compileMessage(ark, string(turn.Role), turn.Content.Parts, descriptor, &warnings); err != nil {
+					return protocol.Compiled[*arkresponses.ResponsesRequest]{}, err
+				}
 			}
 		}
 		if instructions := strings.Join(system, "\n\n"); instructions != "" {
 			ark.Instructions = &instructions
 		}
-
-		// Current input.
-		switch request.Input.Role {
-		case inference.InputRoleTool:
-			compileToolResults(ark, request.Input.Content.Parts, inputPartField, ledger)
-		default:
-			compileMessage(ark, "user", request.Input.Content.Parts, declared, inputPartField, ledger)
+		if request.Input.Role == inference.InputRoleTool {
+			if err := compileToolResults(ark, request.Input.Content.Parts); err != nil {
+				return protocol.Compiled[*arkresponses.ResponsesRequest]{}, err
+			}
+		} else if err := compileMessage(ark, "user", request.Input.Content.Parts, descriptor, &warnings); err != nil {
+			return protocol.Compiled[*arkresponses.ResponsesRequest]{}, err
 		}
 
-		compileIntent(ark, request.Input.Content.Intent, declared, ledger)
-
-		// Provider options: GenerateOptions fields lower onto the request one
-		// by one; extensions for other operations are rejected wholesale.
-		options, other := inference.ExtensionFor[GenerateOptions](request.Extensions)
-		ledger.RejectExtensions("generate", other)
-		compileGenerateOptions(ark, options, declared, ledger)
-
-		report := ledger.Report()
-		if ledger.Rejected() {
-			return inference.Compiled[*arkresponses.ResponsesRequest]{Report: report}, ledger.Err()
+		for _, definition := range request.Tools.Definitions() {
+			ark.Tools = append(ark.Tools, arkTool(definition))
 		}
-		return inference.Compiled[*arkresponses.ResponsesRequest]{Wire: ark, Report: report}, nil
+		if choice := request.Tools.Choice(); choice != nil {
+			ark.ToolChoice = arkToolChoice(*choice)
+		}
+		applyGenerateOptions(ark, options)
+		return protocol.Compiled[*arkresponses.ResponsesRequest]{
+			Wire:     ark,
+			Fields:   request.ActiveFields(),
+			Warnings: warnings,
+		}, nil
 	}
 }
 
-// compileGenerateOptions lowers GenerateOptions onto the request.
-func compileGenerateOptions(
-	ark *arkresponses.ResponsesRequest,
-	options GenerateOptions,
-	declared ModelSpec,
-	ledger *inference.Ledger,
-) {
+func generateOptions(extensions inference.Extensions) (*GenerateOptions, error) {
+	var found *GenerateOptions
+	for _, extension := range extensions {
+		options, ok := extension.(*GenerateOptions)
+		if !ok {
+			return nil, inference.NewError(
+				inference.InvalidExtension, inference.FieldExtensions,
+				fmt.Errorf("bytedance: extension %s/%s is not understood",
+					extension.ProviderID(), extension.ExtensionID()),
+			)
+		}
+		if found != nil {
+			return nil, inference.NewError(
+				inference.InvalidExtension, inference.FieldExtensions,
+				fmt.Errorf("bytedance: duplicate generation options"),
+			)
+		}
+		found = options
+	}
+	if found != nil {
+		if err := found.Validate(); err != nil {
+			return nil, inference.NewError(
+				inference.InvalidExtension, inference.FieldExtensions, err,
+			)
+		}
+	}
+	return found, nil
+}
+
+func applyGenerateOptions(ark *arkresponses.ResponsesRequest, options *GenerateOptions) {
+	if options == nil {
+		return
+	}
 	if options.ServiceTier != "" {
 		ark.ServiceTier = arkServiceTier(options.ServiceTier)
 	}
@@ -302,133 +249,115 @@ func compileGenerateOptions(
 		ark.SafetyIdentifier = &identifier
 	}
 	if options.WebSearch != nil {
-		if !declared.Capabilities.HostedWebSearch {
-			ledger.Reject(
-				inference.ExtensionField("web_search").Qualify(options),
-				"model does not support hosted web search",
-			)
-			return
-		}
 		ark.Tools = append(ark.Tools, arkWebSearchTool(options.WebSearch))
 	}
+	if options.Temperature != nil {
+		ark.Temperature = options.Temperature
+	}
+	if options.TopP != nil {
+		ark.TopP = options.TopP
+	}
+	if options.MaxOutputTokens != nil {
+		max := *options.MaxOutputTokens
+		ark.MaxOutputTokens = &max
+	}
+	if options.ResponseFormat != nil {
+		ark.Text = &arkresponses.ResponsesText{
+			Format: arkTextFormat(
+				options.ResponseFormat.Kind,
+				options.ResponseFormat.Name,
+				options.ResponseFormat.Schema,
+				options.ResponseFormat.Strict,
+			),
+		}
+	}
+	setArkThinking(ark, options.ReasoningEnabled, options.ReasoningEffort)
 }
 
-// compileMessage appends one user/assistant turn. The ark item model
-// separates function calls from messages, so a message with interleaved text
-// and tool parts becomes a run of message items plus call items in order.
 func compileMessage(
 	ark *arkresponses.ResponsesRequest,
 	role string,
 	parts []message.Part,
-	declared ModelSpec,
-	fields func(message.PartKind) inference.FieldID,
-	ledger *inference.Ledger,
-) {
+	descriptor model.ModelDescriptor,
+	warnings *[]inference.Warning,
+) error {
 	var content []*arkresponses.ContentItem
 	flush := func() {
-		if len(content) == 0 {
-			return
+		if len(content) > 0 {
+			appendInputItem(ark, arkMessageItem(role, content))
+			content = nil
 		}
-		appendInputItem(ark, arkMessageItem(role, content))
-		content = nil
 	}
 	for _, part := range parts {
 		switch value := part.(type) {
 		case message.TextPart:
 			content = append(content, arkContentText(value.Text))
 		case message.ImagePart:
-			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
-				ledger.Reject(fields(message.PartImage), "model does not accept image input")
-				continue
+			if !slices.Contains(descriptor.Capabilities.Inputs, message.PartImage) {
+				return inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+					fmt.Errorf("bytedance: model does not accept image input"))
 			}
 			content = append(content, arkContentImage(sourceURI(value.Source)))
 		case message.VideoPart:
-			if !slices.Contains(declared.Capabilities.Inputs, message.PartVideo) {
-				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
-				continue
+			if !slices.Contains(descriptor.Capabilities.Inputs, message.PartVideo) {
+				return inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+					fmt.Errorf("bytedance: model does not accept video input"))
 			}
 			content = append(content, arkContentVideo(videoSourceURI(value.Source)))
 		case message.AudioPart:
-			if !slices.Contains(declared.Capabilities.Inputs, message.PartAudio) {
-				ledger.Reject(fields(message.PartAudio), "model does not accept audio input")
-				continue
+			if !slices.Contains(descriptor.Capabilities.Inputs, message.PartAudio) {
+				return inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+					fmt.Errorf("bytedance: model does not accept audio input"))
 			}
 			content = append(content, arkContentAudio(audioSourceURI(value.Source)))
 		case message.FilePart:
-			ledger.Reject(fields(message.PartFile), "file references are not supported")
+			return inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+				fmt.Errorf("bytedance: file references are not supported"))
 		case message.DataPart:
 			content = append(content, arkContentText("\n"+string(value.Value)+"\n"))
 		case message.ToolCallPart:
 			flush()
-			appendInputItem(ark, arkToolCallItem(
-				value.Call.ID, value.Call.Name, value.Call.Arguments,
-			))
+			appendInputItem(ark, arkToolCallItem(value.Call.ID, value.Call.Name, value.Call.Arguments.Raw()))
 		case message.ToolResultPart:
 			flush()
-			appendInputItem(ark, arkToolResultItem(
-				value.Result.CallID,
-				compileToolResultContent(
-					value.Result.Content,
-					fields(message.PartToolResult),
-					ledger,
-				),
-			))
+			appendInputItem(ark, arkToolResultItem(value.Result.CallID,
+				compileToolResultContent(value.Result.Content)))
 		case message.ReasoningPart:
 			flush()
-			field := fields(message.PartReasoning)
 			if role != "assistant" {
-				ledger.Reject(field, "reasoning parts belong to assistant context")
-				continue
+				return inference.NewError(inference.InvalidRequest, inference.FieldContent,
+					fmt.Errorf("bytedance: reasoning belongs to assistant context"))
 			}
-			// ark emits reasoning traces but signs nothing and consumes no
-			// reasoning input: the trace cannot round-trip, so it drops with
-			// the reason on the ledger rather than vanishing.
-			ledger.Drop(field, "ark does not consume reasoning input")
+			*warnings = append(*warnings, inference.Warning{
+				Field:   inference.FieldContent,
+				Code:    "reasoning_not_consumed",
+				Message: "bytedance: Ark does not consume reasoning input",
+			})
+			continue
+		default:
+			return inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+				fmt.Errorf("bytedance: unsupported content part %q", part.Kind()))
 		}
 	}
 	flush()
+	return nil
 }
 
-// compileToolResults appends tool-role content. ark carries no error flag on
-// tool outputs; the result content is preserved verbatim.
-func compileToolResults(
-	ark *arkresponses.ResponsesRequest,
-	parts []message.Part,
-	fields func(message.PartKind) inference.FieldID,
-	ledger *inference.Ledger,
-) {
+func compileToolResults(ark *arkresponses.ResponsesRequest, parts []message.Part) error {
 	for _, part := range parts {
 		result, ok := part.(message.ToolResultPart)
 		if !ok {
-			ledger.Reject(
-				fields(part.Kind()),
-				"tool-role content carries tool results only",
-			)
-			continue
+			return inference.NewError(inference.InvalidRequest, inference.FieldContent,
+				fmt.Errorf("bytedance: tool-role content carries tool results only"))
 		}
-		appendInputItem(ark, arkToolResultItem(
-			result.Result.CallID,
-			compileToolResultContent(
-				result.Result.Content,
-				fields(message.PartToolResult),
-				ledger,
-			),
-		))
+		appendInputItem(ark, arkToolResultItem(result.Result.CallID,
+			compileToolResultContent(result.Result.Content)))
 	}
+	return nil
 }
 
-// compileToolResultContent lowers a tool result's content into the string ark
-// carries on function_call_output. That field has no content-list form, so
-// text and structured data ride and everything else becomes an in-place text
-// placeholder reported on the ledger: the model still sees where something was
-// omitted, and the loss is auditable instead of silent.
-func compileToolResultContent(
-	content message.Content,
-	field inference.FieldID,
-	ledger *inference.Ledger,
-) string {
+func compileToolResultContent(content message.Content) string {
 	var builder strings.Builder
-	omitted := make([]string, 0, len(content.Parts))
 	for _, part := range content.Parts {
 		switch value := part.(type) {
 		case message.TextPart:
@@ -438,117 +367,80 @@ func compileToolResultContent(
 			builder.Write(value.Value)
 			builder.WriteString("\n")
 		default:
-			reason := string(part.Kind()) + " (ark tool output is text only)"
-			omitted = append(omitted, reason)
-			builder.WriteString("[omitted tool output: " + reason + "]")
+			builder.WriteString("[omitted tool output: " + string(part.Kind()) + "]")
 		}
-	}
-	if len(omitted) > 0 {
-		ledger.Drop(field, "tool output omitted "+strings.Join(omitted, ", "))
 	}
 	return builder.String()
 }
 
-// compileIntent lowers the output controls onto the request.
-func compileIntent(
-	ark *arkresponses.ResponsesRequest,
-	intent inference.Intent,
-	declared ModelSpec,
-	ledger *inference.Ledger,
-) {
-	if text := intent.Text; text != nil {
-		if format := text.Response; format != nil {
-			switch format.Kind {
-			case "", inference.ResponseText:
-			case inference.ResponseJSONObject:
-				ark.Text = &arkresponses.ResponsesText{
-					Format: arkTextFormat("json_object", "", nil, false),
-				}
-			case inference.ResponseJSONSchema:
-				ark.Text = &arkresponses.ResponsesText{
-					Format: arkTextFormat(
-						"json_schema", format.Name, format.Schema, true,
-					),
-				}
-			}
+func decodeGenerate(
+	_ context.Context,
+	request inference.GenerateRequest,
+	raw generateRaw,
+) (inference.GenerateResponse, error) {
+	if raw.failed != "" {
+		return inference.GenerateResponse{}, fmt.Errorf("bytedance: response failed: %s", raw.failed)
+	}
+	parts := make([]message.Part, 0, len(raw.reasonings)+len(raw.texts)+len(raw.toolCalls))
+	for _, reasoning := range raw.reasonings {
+		parts = append(parts, message.ReasoningPart{Text: reasoning.text, ID: reasoning.id})
+	}
+	for _, text := range raw.texts {
+		parts = append(parts, message.TextPart{Text: text})
+	}
+	for _, call := range raw.toolCalls {
+		arguments := json.RawMessage(call.args)
+		if !json.Valid(arguments) || len(arguments) == 0 {
+			arguments = json.RawMessage(`{}`)
 		}
-		if text.MaxOutputTokens != nil {
-			max := int64(*text.MaxOutputTokens)
-			ark.MaxOutputTokens = &max
+		parts = append(parts, message.ToolCallPart{Call: message.ToolCall{
+			ID:        call.id,
+			Name:      call.name,
+			Arguments: message.NewArguments(arguments),
+		}})
+	}
+	return inference.GenerateResponse{
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
+		},
+		FinishReason: raw.finish,
+		Usage:        rawUsageCanonical(raw.usage),
+		Metadata:     inference.Metadata{Model: request.Model.ID, ResponseID: raw.id},
+	}, nil
+}
+
+func rawUsageCanonical(raw rawUsage) usage.Usage {
+	out := usage.Usage{
+		InputTokens:  raw.inputTokens,
+		OutputTokens: raw.outputTokens,
+	}
+	if raw.inputTokens > 0 {
+		read := min(max(raw.cachedTokens, 0), raw.inputTokens)
+		if read > 0 {
+			out.Input.CacheReadTokens = &read
 		}
+		uncached := raw.inputTokens - read
+		out.Input.UncachedTokens = &uncached
 	}
-	if intent.Image != nil {
-		ledger.Reject(
-			inference.FieldGenerateIntentImage,
-			"text models do not generate images; route a seedream model",
-		)
+	if raw.reasoningTokens > 0 {
+		reasoning := raw.reasoningTokens
+		out.Details.Output.ReasoningTokens = &reasoning
+		out.Details.Output.ReasoningAccounting = usage.ReasoningIncludedInOutput
 	}
-	if intent.Audio != nil {
-		ledger.Reject(
-			inference.FieldGenerateIntentAudio,
-			"text models do not synthesize speech",
-		)
-	}
-	text := intent.Text
-	if text == nil {
-		return
-	}
-	for _, definition := range text.Tools {
-		ark.Tools = append(ark.Tools, arkTool(definition))
-	}
-	if choice := text.ToolChoice; choice != nil {
-		ark.ToolChoice = arkToolChoice(*choice)
-	}
-	ark.Temperature = text.Temperature
-	ark.TopP = text.TopP
-	if text.ReasoningEnabled != nil {
-		switch {
-		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
-			ledger.Reject(
-				inference.FieldGenerateIntentReasoningEnabled,
-				"model has no thinking control",
-			)
-		case declared.Capabilities.Reasoning.Kind == model.ReasoningAlways &&
-			!*text.ReasoningEnabled:
-			ledger.Reject(
-				inference.FieldGenerateIntentReasoningEnabled,
-				"model cannot disable thinking",
-			)
-		default:
-			setArkThinking(ark, text.ReasoningEnabled, "")
+	if raw.inputAudioTokens > 0 {
+		out.Details.InputModalities = map[usage.Modality]int64{
+			usage.ModalityAudio: raw.inputAudioTokens,
 		}
 	}
-	if text.ReasoningEffort != "" {
-		switch {
-		case declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
-			ledger.Reject(
-				inference.FieldGenerateIntentReasoningEffort,
-				"model has no thinking control",
-			)
-		case len(declared.Capabilities.Reasoning.EffortMap) == 0:
-			// Spec-declared reasoning models without a dial: honor the
-			// request for reasoning itself and report the lost level.
-			on := true
-			setArkThinking(ark, &on, "")
-			ledger.Drop(
-				inference.FieldGenerateIntentReasoningEffort,
-				"model's thinking is binary; no effort dial exists",
-			)
-		default:
-			mode, _ := declared.Capabilities.Reasoning.ResolveEffort(
-				text.ReasoningEffort,
-			)
-			setArkThinking(ark, text.ReasoningEnabled, mode)
-			if mode != string(text.ReasoningEffort) {
-				ledger.Drop(
-					inference.FieldGenerateIntentReasoningEffort,
-					fmt.Sprintf(
-						"model maps reasoning effort %q to %q",
-						text.ReasoningEffort,
-						mode,
-					),
-				)
-			}
+	if raw.webSearchRequests > 0 || raw.mcpRequests > 0 {
+		out.Details.Tools = map[usage.ToolUsageKind]int64{}
+		if raw.webSearchRequests > 0 {
+			out.Details.Tools[usage.ToolUsageWebSearch] = raw.webSearchRequests
+		}
+		if raw.mcpRequests > 0 {
+			out.Details.Tools[usage.ToolUsageMCP] = raw.mcpRequests
 		}
 	}
+	return out
 }
