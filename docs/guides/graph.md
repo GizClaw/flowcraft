@@ -4,69 +4,65 @@ title: Graph Runtime
 ---
 # Graph Runtime Guide
 
-`core/graph` is the built-in declarative DAG engine. It compiles a JSON or
-YAML graph definition into an `agent.Engine`, then runs waves over an
-`agent.Board`.
+`core/agent-graph` is the declarative engine an agent can be built from: a graph
+of nodes driven by a frontier. It is a sibling of `core/agent`, not a layer above
+it — both produce `agent.Event` streams, so a deployment exposes either through
+the same protocol.
 
 ## Layers
 
-| Layer        | Type                       | Job                                   |
-| ------------ | -------------------------- | ------------------------------------- |
-| Wire         | `GraphDefinition`          | serializable graph document           |
-| Registration | `Registry` + node types    | bind node type names to handlers      |
-| Build        | `Build(def, reg, opts...)` | validate and compile edges/conditions |
-| Execution    | `*Graph`                   | run the frontier wave by wave         |
+| Layer | Type | Job |
+| --- | --- | --- |
+| Wire | `graph.Document` | the YAML or JSON document: state, nodes, edges, output |
+| Registry | `graph.Registry` + `graph.NodeKind` | bind a node kind name to an implementation |
+| Build | `graph.Build(doc, registry, opts...)` | validate, compile conditions, check kinds |
+| Execution | `graph.Run` | the frontier loop, its checkpoints and its records |
 
-A `*Graph` is an `agent.Engine`.
+## Document
 
-## Definition
-
-```json
-{
-  "name": "assistant",
-  "version": "1",
-  "entry": "chat",
-  "nodes": [
-    {
-      "id": "chat",
-      "type": "inference",
-      "config": {
-        "model": {
-          "id": { "provider": "deepseek", "name": "deepseek-flash" }
-        },
-        "messages_channel": "__main_channel"
-      }
-    },
-    {
-      "id": "tools",
-      "type": "tool",
-      "config": {
-        "messages_channel": "__main_channel",
-        "results_key": "tool_results"
-      }
-    }
-  ],
-  "edges": [
-    { "from": "chat", "to": "tools", "condition": "tool_pending == true" },
-    { "from": "tools", "to": "chat" },
-    { "from": "chat", "to": "__end__" }
-  ]
-}
+```yaml
+version: 1
+name: assistant
+entry: model
+input: messages            # the state key a run's message is seeded into
+state:
+  messages: {type: messages, merge: append}
+  pending:  {type: json}
+  answer:   {type: text}
+nodes:
+  - id: model
+    kind: model
+    config: {messages: messages, pending: pending, output: answer}
+  - id: tools
+    kind: tool
+    config: {messages: messages, pending: pending}
+edges:
+  - {from: model, to: tools, when: len(state.pending) > 0}
+  - {from: tools, to: model}
+  - {from: model, to: end}
+output: {key: answer}
 ```
 
-`condition` and `skip_condition` use expr-lang expressions over board
-variables. `${board:<path>}` references inside config strings resolve before
-node decode, so `system_prompt` may interpolate upstream output. Paths are
-dot-separated: `${board:user.name}` reads var `user` and then its `name`
-field (an exact variable named `user.name` wins). Nested lookup walks maps
-with string keys (`map[string]any`, `map[string]string`, ...) and exported
-struct fields. An optional default follows a colon (`${board:limit:3}`); a
-reference standing alone keeps the variable's typed value, and defaults that
-are valid JSON literals keep their type. Referencing a missing variable is a
-validation error unless a default is given — prefix with a backslash
-(`\${board:x}`) to emit literal text. Node types must be registered in the
-registry passed to `Build`; an unregistered type fails `Build`, not
-`GraphDefinition.Validate`.
+- `state` declares every key a node may read or write, with its kind and its merge
+  rule. An undeclared key is a load error, not a new variable.
+- `edges[].when` is an expression over `state` and `step`, compiled at Build, so a
+  typo fails the load instead of a run.
+- A node returns state updates and nothing else: values do not travel along edges.
+- `output.key` is what a finished run reports, and `input` is where the caller's
+  message lands.
+- `limits` bounds a run: `max_steps`, `max_nodes`, `timeout`, `concurrency`.
+
+## Node kinds
+
+The built-in kinds are `model`, `tool` and `condition`. A host adds its own with
+`nodes.WithKinds(...)`; the script kind lives in `nodes/script` and runs a rule
+written in Starlark — see [script.md](script.md).
+
+> **The rest of this page predates the current engine.** The sections below
+> describe the board, channels, node-type resources and script bridges that
+> `core/agent-graph` no longer has. Until they are rewritten, treat
+> `core/agent-graph/{graph,node,run}.go` and the package docs as the source of
+> truth.
 
 ## Engine settings (`agent.Engine/graph`)
 
