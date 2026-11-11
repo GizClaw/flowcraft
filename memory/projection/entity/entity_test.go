@@ -1,0 +1,497 @@
+package entity
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+
+	corememory "github.com/GizClaw/flowcraft/core/memory"
+	coremessage "github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
+)
+
+const (
+	// testShard is where entityArtifact's conversation lives.
+	testShard = "c:conversation"
+	// documentShard is where the document fixtures' dataset lives.
+	documentShard = "d:dataset"
+)
+
+func TestEntityIndependentRecallAndStableSort(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+	artifacts := []component.Artifact{
+		entityArtifact("b", `["OpenAI", "海维"]`),
+		entityArtifact("a", "openai, Cursor"),
+		{
+			Kind: "fact", ID: "skipped",
+			Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "OpenAI appears only in content"}}},
+			Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-skipped"}},
+			Metadata: corememory.Metadata{"conversation_id": "conversation"},
+		},
+	}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OPENAI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].ID != "a" || results[1].ID != "b" || results[0].Score != 1 {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+// TestEntityIDFWeightsRareEntities pins the selectivity upgrade: a document
+// linked to a rare entity outranks documents linked only to a common one.
+func TestEntityIDFWeightsRareEntities(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	artifacts := make([]component.Artifact, 0, 20)
+	// "Common" appears in half of the corpus, so the saturation gate does not
+	// apply and its IDF weight stays low; "Rare Entity" appears once.
+	for index := 0; index < 10; index++ {
+		value := entityArtifact(fmt.Sprintf("common-%02d", index), "")
+		value.Entities = []string{"Common"}
+		artifacts = append(artifacts, value)
+	}
+	for index := 0; index < 9; index++ {
+		value := entityArtifact(fmt.Sprintf("filler-%02d", index), "")
+		value.Entities = []string{fmt.Sprintf("Filler %d", index)}
+		artifacts = append(artifacts, value)
+	}
+	rare := entityArtifact("rare-doc", "")
+	rare.Entities = []string{"Common", "Rare Entity"}
+	artifacts = append(artifacts, rare)
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "Common Rare Entity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 || results[0].ID != "rare-doc" || results[0].Score != 1 {
+		t.Fatalf("results = %+v", results)
+	}
+	if len(results) < 2 || results[1].Score >= results[0].Score {
+		t.Fatalf("common-only documents must score below the rare-entity match: %+v", results)
+	}
+}
+
+// TestEntitySaturationGateSkipsUbiquitousEntities pins the pollution gate:
+// once a corpus is large enough, an entity present in (almost) every entry
+// carries no selectivity and is skipped at query time.
+func TestEntitySaturationGateSkipsUbiquitousEntities(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	artifacts := make([]component.Artifact, 0, 10)
+	for item := 0; item < 10; item++ {
+		value := entityArtifact(fmt.Sprintf("doc-%02d", item), "")
+		value.Entities = []string{"Ubiquitous"}
+		artifacts = append(artifacts, value)
+	}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{Scope: scope, Artifacts: artifacts}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "Ubiquitous"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("saturated entity still matched: %+v", results)
+	}
+}
+
+// TestEntityProducerIdentityIsTheAlgorithmVersion pins the entity lane's
+// producer identity: the lane re-tokenizes stored keys on every search, so the
+// algorithm version is the whole identity, and the version a rebuild stamps is
+// the version the index writes with.
+func TestEntityProducerIdentityIsTheAlgorithmVersion(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version := index.ProducerVersion(); version != AlgorithmVersion {
+		t.Fatalf("producer version = %q, want %q", version, AlgorithmVersion)
+	}
+	if _, found, err := index.StoredProducerIdentity(ctx, scope); err != nil || found {
+		t.Fatalf("empty lane reported state = %v, %v", found, err)
+	}
+	if err := index.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities", Artifacts: []component.Artifact{entityArtifact("a", "openai")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	identity, found, err := index.StoredProducerIdentity(ctx, scope)
+	if err != nil || !found {
+		t.Fatalf("stored identity = %#v, %v, %v", identity, found, err)
+	}
+	if identity.Version != AlgorithmVersion || identity.SourceDigest == "" {
+		t.Fatalf("stored identity = %#v", identity)
+	}
+}
+
+func TestEntityRejectsMalformedJSON(t *testing.T) {
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
+	err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope:     corememory.Scope{RuntimeID: "runtime"},
+		Artifacts: []component.Artifact{entityArtifact("a", `["broken"`)},
+	})
+	if err == nil {
+		t.Fatal("accepted malformed entity JSON")
+	}
+}
+
+func TestEntityExtractsMentionFromNormalQueryAndTypedFact(t *testing.T) {
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	value := entityArtifact("typed", "")
+	value.Entities = []string{"OpenAI", "Sam Altman"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{value},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "What did Sam Altman announce at OpenAI?",
+	})
+	if err != nil || len(results) != 1 || results[0].ID != "typed" || results[0].Score != 1 {
+		t.Fatalf("results = %+v, %v", results, err)
+	}
+	empty, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "what happened yesterday?",
+	})
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("entity-free query = %+v, %v", empty, err)
+	}
+}
+
+// TestEntityMatchesCJKEntityWithoutWordBoundaries pins the tokenizer contract
+// for the entity lane: the stored key is the folded entity text, never its
+// tokens, and matching tokenizes that key back with the kernel, so a sentence
+// that mentions the entity contains the same tokens as a contiguous run and the
+// mention is extracted. A whitespace tokenizer would have compared one long run
+// against another and never matched.
+func TestEntityMatchesCJKEntityWithoutWordBoundaries(t *testing.T) {
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	value := entityArtifact("typed", "")
+	value.Entities = []string{"海维"}
+	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{value},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "海维昨天在会议上说了什么？",
+	})
+	if err != nil || len(results) != 1 || results[0].ID != "typed" || results[0].Score != 1 {
+		t.Fatalf("results = %+v, %v", results, err)
+	}
+	// A query that does not mention the entity stays out of the lane.
+	empty, err := index.Search(context.Background(), component.SearchRequest{
+		Scope: scope, Query: "昨天发生了什么事情？",
+	})
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("mention-free query = %+v, %v", empty, err)
+	}
+}
+
+func TestEntityDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
+	kinds := []corememory.ContextItemKind{
+		corememory.ContextDocumentResource,
+		corememory.ContextDocumentSection,
+		corememory.ContextDocumentChunk,
+		corememory.ContextDocumentSummary,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			index, err := New(Config{KV: kvFor(t), Projection: "documents"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := corememory.Scope{RuntimeID: "runtime", UserID: "user"}
+			allowed := entityArtifact("allowed", `["needle"]`)
+			excluded := entityArtifact("excluded", `["needle","second"]`)
+			for _, item := range []*component.Artifact{&allowed, &excluded} {
+				item.Kind = component.ArtifactKind(kind)
+				item.Metadata["context_kind"] = string(kind)
+				item.Metadata["document_id"] = "document-" + item.ID
+				item.Metadata["item_id"] = item.ID
+			}
+			allowed.Metadata["dataset_id"] = "allowed"
+			excluded.Metadata["dataset_id"] = "excluded"
+			if err := index.Rebuild(context.Background(), component.ProjectionRequest{
+				Scope: scope, Projection: "documents", Artifacts: []component.Artifact{allowed, excluded},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			results, err := index.Search(context.Background(), component.SearchRequest{
+				Scope: scope, Query: "needle second", Limit: 1,
+				Metadata: corememory.Metadata{"dataset_ids": `["allowed"]`},
+			})
+			if err != nil || len(results) != 1 || results[0].ID != "allowed" {
+				t.Fatalf("results = %+v, %v", results, err)
+			}
+		})
+	}
+}
+
+// TestEntityValuesThatTokenizeToNothingAreDropped pins what the lane does
+// with a value the kernel cannot tokenize at all: a value that is only
+// punctuation used to be filtered out, and keeping it would leave a
+// vocabulary entry that can never match anything while still raising the
+// IDF denominator and the ubiquity gate. On the delta path an artifact left
+// with no usable entity keeps its old meaning: delete.
+func TestEntityValuesThatTokenizeToNothingAreDropped(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	if err := index.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{entityArtifact("fact-1", `["...", "OpenAI"]`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "..."}); err != nil || len(results) != 0 {
+		t.Fatalf("punctuation search = %+v, %v, want none", results, err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"}); err != nil || len(results) != 1 {
+		t.Fatalf("OpenAI search = %+v, %v, want one hit", results, err)
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Shard: testShard,
+		Upserts:        []component.Artifact{entityArtifact("fact-1", `["..."]`)},
+		SourceRevision: "r1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"}); err != nil || len(results) != 0 {
+		t.Fatalf("search after the punctuation-only upsert = %+v, %v, want none", results, err)
+	}
+}
+
+func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
+	meter := &entityMeter{Store: kvFor(t)}
+	index, err := New(Config{
+		KV: meter, Projection: "entities",
+		Thresholds: Thresholds{MaxSegments: 64, MinDeltaBytes: 1 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	artifacts := make([]component.Artifact, 1000)
+	for i := range artifacts {
+		artifacts[i] = entityArtifact(fmt.Sprintf("item-%04d", i), "OpenAI")
+		artifacts[i].Metadata["context_kind"] = string(corememory.ContextDocumentChunk)
+		artifacts[i].Metadata["dataset_id"] = "dataset"
+		artifacts[i].Metadata["document_id"] = "document"
+	}
+	if err := index.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: artifacts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meter.reset()
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Shard: documentShard, DeleteIDs: []string{artifacts[0].ID}, SourceRevision: "r1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if meter.written > 8192 {
+		t.Fatalf("single delete wrote %d bytes", meter.written)
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Shard: documentShard,
+		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}},
+		ActiveIDs:          []string{artifacts[1].ID}, SourceRevision: "r2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"})
+	if err != nil || len(results) != 1 || results[0].ID != artifacts[1].ID {
+		t.Fatalf("reconciled results = %+v, %v", results, err)
+	}
+	full, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := full.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{artifacts[1]},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fullResults, err := full.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"})
+	if err != nil || len(fullResults) != 1 || fullResults[0].ID != results[0].ID ||
+		fullResults[0].Score != results[0].Score {
+		t.Fatalf("full results = %+v, %v; delta = %+v", fullResults, err, results)
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope: scope, Shard: documentShard,
+		DeleteDocuments: []component.DocumentAddress{{DatasetID: "dataset", DocumentID: "document"}}, SourceRevision: "r3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err = index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("tombstoned results = %+v, %v", results, err)
+	}
+}
+
+func TestEntityReconcileIsDatasetQualified(t *testing.T) {
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	makeArtifact := func(id, dataset string) component.Artifact {
+		artifact := entityArtifact(id, "OpenAI")
+		artifact.Metadata["context_kind"] = string(corememory.ContextDocumentChunk)
+		artifact.Metadata["dataset_id"] = dataset
+		artifact.Metadata["document_id"] = "shared-document"
+		return artifact
+	}
+	first, second := makeArtifact("first", "dataset-a"), makeArtifact("second", "dataset-b")
+	if err := index.FullRebuild(context.Background(), component.ProjectionRequest{
+		Scope: scope, Artifacts: []component.Artifact{first, second},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.ApplyDelta(context.Background(), component.ProjectionDelta{
+		Scope:              scope,
+		Shard:              "d:dataset-a",
+		ReconcileDocuments: []component.DocumentAddress{{DatasetID: "dataset-a", DocumentID: "shared-document"}},
+		ActiveIDs:          []string{}, SourceRevision: "reconcile-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(context.Background(), component.SearchRequest{Scope: scope, Query: "OpenAI"})
+	if err != nil || len(results) != 1 || results[0].ID != second.ID {
+		t.Fatalf("dataset-qualified reconcile = %#v, %v", results, err)
+	}
+}
+
+// TestEntityShardedSearchEqualsALaneHoldingTheScoringSet pins the two-pass
+// read against the lane's unsharded answer. IDF and the ubiquity gate count the
+// entity across the whole scoring set, so a sharded scope has to score like a
+// lane that holds exactly the records the selector admits in one table.
+func TestEntityShardedSearchEqualsALaneHoldingTheScoringSet(t *testing.T) {
+	ctx := context.Background()
+	scope := corememory.Scope{RuntimeID: "runtime"}
+	first := entityArtifact("a1", `["OpenAI", "Rare Entity"]`)
+	second := entityArtifact("b1", `["OpenAI"]`)
+	second.Metadata["conversation_id"] = "other"
+	third := entityArtifact("b2", `["OpenAI", "Rare Entity"]`)
+	third.Metadata["conversation_id"] = "other"
+	sharded, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sharded.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities",
+		Artifacts: []component.Artifact{first, second, third},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The same records, addressed to one conversation, are one shard: that is
+	// the table a selector-scoped read has to reproduce.
+	unsharded, err := New(Config{KV: kvFor(t), Projection: "entities"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	single := make([]component.Artifact, 0, 2)
+	for _, artifact := range []component.Artifact{second, third} {
+		artifact.Metadata["conversation_id"] = "conversation"
+		single = append(single, artifact)
+	}
+	if err := unsharded.FullRebuild(ctx, component.ProjectionRequest{
+		Scope: scope, Projection: "entities", Artifacts: single,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"OpenAI", "Rare Entity", "OpenAI Rare Entity"} {
+		want, err := unsharded.Search(ctx, component.SearchRequest{Scope: scope, Query: query})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := sharded.Search(ctx, component.SearchRequest{
+			Scope: scope, Query: query,
+			Metadata: corememory.Metadata{"conversation_id": "other"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("query %q = %+v, want %+v", query, got, want)
+		}
+		for i := range want {
+			if got[i].ID != want[i].ID || got[i].Score != want[i].Score {
+				t.Fatalf("query %q result %d = %+v, want %+v", query, i, got[i], want[i])
+			}
+		}
+	}
+	// And the global plan sees both conversations, ordered by the same scores.
+	all, err := sharded.Search(ctx, component.SearchRequest{Scope: scope, Query: "Rare Entity"})
+	if err != nil || len(all) != 2 || all[0].ID != "a1" || all[1].ID != "b2" {
+		t.Fatalf("global recall = %+v, %v, want both conversations", all, err)
+	}
+}
+
+type entityMeter struct {
+	storage.Store
+	mu      sync.Mutex
+	written int
+}
+
+func (meter *entityMeter) Put(ctx context.Context, key string, data []byte) error {
+	meter.mu.Lock()
+	meter.written += len(data)
+	meter.mu.Unlock()
+	return meter.Store.Put(ctx, key, data)
+}
+
+func (meter *entityMeter) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	meter.mu.Lock()
+	meter.written += len(data)
+	meter.mu.Unlock()
+	return meter.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}
+
+func (meter *entityMeter) reset() {
+	meter.mu.Lock()
+	meter.written = 0
+	meter.mu.Unlock()
+}
+
+func kvFor(t *testing.T) storage.Store {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(newTestWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvStore
+}
+
+func entityArtifact(id, entities string) component.Artifact {
+	return component.Artifact{
+		Kind: "fact", ID: id,
+		Content:  coremessage.Content{Parts: []coremessage.Part{coremessage.TextPart{Text: "content"}}},
+		Sources:  []corememory.SourceRef{{Kind: corememory.SourceMessage, ID: "source-" + id}},
+		Metadata: corememory.Metadata{"conversation_id": "conversation", "entities": entities},
+	}
+}

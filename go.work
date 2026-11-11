@@ -1,13 +1,10 @@
 go 1.26.0
 
 use (
-	./backends/checkpoint
-	./backends/memory
-	./backends/memory/eval
 	./core
-	./craft
+	./memory
+	./memory/eval
 	./driver
-	./examples/anvil
 	./examples/forge
 )
 

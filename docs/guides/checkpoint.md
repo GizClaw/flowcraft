@@ -145,7 +145,7 @@ type CheckpointJournal interface {
   one record will interleave. `Load` cannot detect that (there is no gap), so it
   is a precondition of the contract.
 
-`backends/checkpoint/sqlite` is the reference implementation: a base row plus a
+`core/agent/checkpoint` is the reference implementation: a base row plus a
 `(exec_id, seq)` table, replayed on load. `agenttest.JournalStore` is an
 in-memory double that also reports how many bases and increments were written, so
 an engine test can assert the shape of a run.

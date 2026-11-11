@@ -16,8 +16,7 @@
 FlowCraft is a Go workspace for building and evaluating AI applications without
 tying application code to one model provider or execution model. Graphs are one
 built-in option, not a required architecture: use the core packages directly, or
-start with the forge demo in `examples/forge` for a runnable local workspace, or
-the anvil example in `examples/anvil` for a minimal `craft` host application.
+start with the forge demo in `examples/forge` for a runnable local workspace.
 
 ## Modules
 
@@ -25,31 +24,17 @@ the anvil example in `examples/anvil` for a minimal `craft` host application.
   model, message, skills, inference, memory contracts, event bus, telemetry,
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
-- **`craft`** — Application assembly on top of `core`: the `craft.yaml`
-  definition, compile-time capabilities, the MCP plugin host (plugin processes
-  as MCP servers, host primitives as MCP tools for plugins), tools / graph
-  nodes / skills / hooks / UI contributed by plugins, and the process-level
-  `craft/manager` lifecycle. Plugins install from a directory or a zip
-  package, update in place with a rollback snapshot, and uninstall with
-  the data they own; a remote update source is validated here and fetched
-  by the application (`plugin.Installer`).
-- **`driver`** — Provider adapters built on `core`, one module: OpenAI (serving the
-  whole OpenAI wire family), Anthropic (the Messages family), ByteDance,
-  MiniMax, DashScope (Alibaba Cloud Model Studio's native surfaces: text
-  generation, embeddings, speech synthesis, file transcription, and the Wan
-  image and video families), and TypeSafe (the System One decision surface).
-- **`backends/*`** — Platform-specific implementations: SQLite checkpoints
-  (`backends/checkpoint`) and the long-term memory backend with its eval
-  harness (`backends/memory`); the sandbox backends (`bwrap`, `seatbelt`)
-  and the encrypted keychain secret store (`core/secret/keychain`) live in
-  `core/`.
+- **`driver`** — Provider adapters built on `core`, one module: Anthropic
+  (the Messages family), ByteDance, MiniMax, DashScope (Alibaba Cloud Model
+  Studio's native surfaces: text generation, embeddings, speech synthesis,
+  file transcription, and the Wan image and video families), and TypeSafe
+  (the System One decision surface).
+- **`memory`** — The long-term memory backend and its eval harness
+  (`memory/eval`); the sandbox backends (`bwrap`, `seatbelt`) and the
+  encrypted keychain secret store (`core/secret/keychain`) live in `core/`.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
-- **`examples/anvil`** — The runnable `craft` example: a minimal host
-  application that assembles a Craft from a `craft.yaml` definition, a
-  capability and a plugin directory, then walks the lifecycle — keyed runtimes,
-  tool calls, reload, plugin hot-plug. No provider, no network.
 - **`tools/releasegate`** — Release automation: changeset validation, release
   planning, and changelog aggregation.
 
@@ -97,26 +82,10 @@ simulations. Command reference, scenario layout, and credentials live in
 [`examples/forge/README.md`](examples/forge/README.md) (中文版:
 [`examples/forge/README_zh.md`](examples/forge/README_zh.md)).
 
-### Run the craft example
-
-[`examples/anvil`](examples/anvil/) is a minimal host application built on
-`craft`: it assembles a Craft from a definition, a capability and a plugin, and
-walks the lifecycle (keyed runtimes, tool calls, reload, hot-plug). No provider
-or network needed:
-
-```bash
-cd examples/anvil
-go run .
-```
-
-See [`examples/anvil/README.md`](examples/anvil/README.md) (中文版:
-[`examples/anvil/README_zh.md`](examples/anvil/README_zh.md)) for the tour step
-by step.
-
 ### Embed FlowCraft in a Go service
 
-Use `core` directly and add `driver` or `backends/*` for provider
-adapters and platform backends.
+Use `core` directly and add `driver` or `memory` for provider
+adapters and the long-term memory backend.
 Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
 `core/runtime`, and drive turns through `core/runtime/session`:
 
@@ -139,77 +108,11 @@ See [`docs/guides/deploy.md`](docs/guides/deploy.md) and
 [`docs/guides/runtime.md`](docs/guides/runtime.md) for the full assembly and
 session contracts.
 
-### Assemble a Craft
-
-`craft` is the layer above a deployment document: one `craft.yaml` describes the
-application, a set of compile-time capabilities extends it, and every runtime is
-built from the layers they compose. A minimal definition inlines its deployment
-document:
-
-```yaml
-craft:
-  id: notes
-  name: Notes
-  version: 0.1.0
-deploy:
-  version: v1
-  resources:
-    bus:
-      kind: event.Bus
-      impl: memory
-  runtime:
-    event_bus: bus
-```
-
-Each capability registers the resource factories its documents reference, so a
-Craft needs at least the ones its deployment declares:
-
-```go
-type appCapability struct{}
-
-func (appCapability) Name() string { return "app" }
-
-func (appCapability) Register(registry *resource.Registry) error {
-    resource.MustRegister(registry, event.NewFactory())
-    return nil
-}
-```
-
-`craft.New` validates the definition and builds the shared services; runtimes
-are opened explicitly and are keyed by an application-defined value:
-
-```go
-def, err := craft.ParseDefinition(craftYAML)
-if err != nil {
-    return err
-}
-c, err := craft.New(def, craft.Options{
-    ConfigDir:    configDir,
-    DataDir:      dataDir,
-    Capabilities: []craft.Capability{appCapability{}},
-})
-if err != nil {
-    return err
-}
-defer c.Close()
-
-if err := c.Start(ctx); err != nil {
-    return err
-}
-rt, err := c.OpenRuntime(ctx, craft.DefaultKey, craft.RuntimeOptions{})
-```
-
-The runtime is the same `core/runtime` one shown above; craft owns the layers,
-the plugin host, the host primitives and the reload/drain lifecycle around it.
-See [`docs/guides/craft.md`](docs/guides/craft.md) for the definition schema,
-the plugin manifest and permissions, the host-primitive protocol, and
-`craft/manager`.
-
 ## Architecture
 
 `core` defines the execution contracts: `core/agent` owns the execution
-primitives (`Engine`, `Host`, `Board`, `Run`, `Interrupt`, `Checkpoint`),
-while `core/graph` compiles declarative graphs into `agent.Engine`
+primitives (`Engine`, `Runner`, `Agent`, `Checkpoint`), while
+`core/agent-graph` compiles declarative graphs into `agent.Engine`
 implementations. Memory and provider adapters compose those contracts
 without becoming dependencies of the core.
 
@@ -239,39 +142,19 @@ without becoming dependencies of the core.
 
 **Layering rule:** execution contracts live in `core/agent` (`agent.Engine`,
 `agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
-import graph or tool packages. `core/graph` builds on those contracts and
+import graph or tool packages. `core/agent-graph` builds on those contracts and
 returns an `agent.Engine`. Memory contracts live in core, while
-app-registered implementations and adapters (`driver`, `backends/*`) stay outside
+app-registered implementations and adapters (`driver`, `memory`) stay outside
 the core and depend on it, never the reverse.
-
-`craft` is the optional assembly layer above that picture — it owns the
-definition, the compile-time capabilities, the plugin host and the host
-primitives, and hands `core/deploy` documents to `core/runtime`:
-
-```
-        Your application
-               │  craft.yaml + capabilities + plugins
-               ▼
-      ┌──────────────────┐
-      │      craft       │  layers · plugin host · host primitives · manager
-      └────────┬─────────┘
-               │  one deploy.Document per runtime key
-               ▼
-      ┌──────────────────┐
-      │      core        │  deploy · runtime · sessions · agent · graph · tool
-      └──────────────────┘
-```
 
 ## Module map
 
 | Path                                                  | Role                                                                                     | Distribution         |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
-| [`craft`](craft/)                                     | Application assembly: craft.yaml, capabilities, plugin host, host primitives, manager     | Versioned Go module  |
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go module  |
-| [`backends`](backends/)                               | SQLite checkpoints and the long-term memory backend (sandbox and keychain backends live in `core/`) | Versioned Go modules |
+| [`memory`](memory/)                                   | Long-term memory backend and its eval harness                                             | Versioned Go module  |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
-| [`examples/anvil`](examples/anvil/)                   | Minimal `craft` host application (keyed runtimes, plugins, reload)                       | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
 
@@ -300,46 +183,18 @@ primitives, and hands `core/deploy` documents to `core/runtime`:
   native text, embedding, speech, image, and video surfaces), and TypeSafe
   (the System One decision surface).
 
-### Application assembly and plugins (`craft`)
-
-- Two extension axes with a hard boundary: **capabilities** are Go code
-  registered at compile time (resource factories, host-primitive services,
-  layers, resolvers, host decorators, runtime binding), while **plugins** carry
-  no Go code and contribute their manifest, data, UI bundle, skills, hooks, MCP
-  tools and graph nodes. A plugin can never register a resource kind; a
-  declaration that arrives without its permission is dropped fail-closed.
-- **MCP on both sides**: each plugin process is an MCP server whose tools reach
-  agents through the shared tool set, and `craft/hostmcp` exposes the host
-  primitives as MCP tools — behind a per-plugin bearer token — for the plugin to
-  call back into the host.
-- **Layered configuration**: definition layers, craft-level layers and
-  per-runtime layers merge into one `deploy.Document` per runtime key, with the
-  `${craft:...}` scheme feeding craft-wide and per-runtime values.
-- **Process lifecycle**: `craft/manager` adds definition lookup, profiles, a
-  single-instance lock, a state machine, blue-green `Replace`, and `Group` for
-  several Crafts in one process.
-
 ### Runnable local workspace demo (`examples/forge`)
 
 A runnable demo on the current stack: native scenario documents, an interactive
 TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
 [`examples/forge/README.md`](examples/forge/README.md) for details.
 
-### Minimal craft host application (`examples/anvil`)
-
-The runnable `craft` example: one small host application that assembles a Craft
-from a `craft.yaml` definition, one compile-time capability and one plugin
-directory, then walks the lifecycle a real shell drives — scanning plugins,
-opening keyed runtimes, calling tools through the runtime's assembly, reloading
-one runtime, hot-plugging a plugin and shutting down. Everything is local and
-deterministic. See [`examples/anvil/README.md`](examples/anvil/README.md).
-
 ## Documentation
 
 The canonical reference is the per-package `doc.go` files, browsable on
 pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 
-- [Graph Runtime](docs/guides/graph.md) — `core/graph`: declarative DAG
+- [Graph Runtime](docs/guides/graph.md) — `core/agent-graph`: declarative DAG
   engine, node I/O roles, parallel branches, custom node types.
 - [Tool System](docs/guides/tool.md) — `core/tool`: LLM function-calling
   contract, the Registry / Catalog / Executor split, middleware chain, and
@@ -375,9 +230,6 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 - [Delegation](docs/guides/delegation.md) — `core/delegation`: backend-neutral
   target discovery, sync / async execution, and the session-bound
   delegation lifecycle.
-- [Craft Assembly](docs/guides/craft.md) — `craft`: the `craft.yaml`
-  definition and capability set, the plugin manifest and permissions, the
-  host-primitive protocol, and the process-level manager.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)
 
@@ -416,21 +268,16 @@ Reference material:
 
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
 - [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai) — example provider adapter.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/driver](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver) — provider adapters.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox) — sandbox backends.
 
 ## Status
 
-The active project surface is `core`, `craft`, `driver`, `backends/*`, and the
-forge demo. `core` and `craft` are the two release-managed modules and both
-remain pre-1.0; `craft` is still an unreleased module in the workspace (its
-first tag ships with its first changeset), and the current `craft` surface is
-the definition, capabilities, the plugin host with the v1 host primitives, and
-`craft/manager` — the plugin install/update surface and the shell's UI
-rendering live outside it. Durable execution contracts (checkpoints,
-interrupt/resume, scheduling), OTel instrumentation, and retrieval end-to-end
-coverage are maintained in-tree; checkpoint persistence is host-provided
-through the `CheckpointStore` contract.
+The active project surface is `core`, `driver`, `memory`, and the forge demo.
+`core` is the release-managed module and remains pre-1.0. Durable execution
+contracts (checkpoints, interrupt/resume, scheduling), OTel instrumentation,
+and retrieval end-to-end coverage are maintained in-tree; checkpoint
+persistence is host-provided through the `CheckpointStore` contract.
 
 API surface is governed by SemVer per module. Breaking changes may ship as
 minor bumps until a module reaches `v1.0.0`.
@@ -446,9 +293,9 @@ make ci            # vet + test for all in-tree modules
 make release-check # validate changesets and the pending release plan
 ```
 
-This repository is a Go workspace. Active members are `core`, `craft`,
-`driver`, `backends/*`, `examples/forge`, and `examples/anvil`; release
-tooling in `tools/releasegate` builds standalone with `GOWORK=off`.
+This repository is a Go workspace. Active members are `core`, `memory`,
+`memory/eval`, `driver`, and `examples/forge`; release tooling in
+`tools/releasegate` builds standalone with `GOWORK=off`.
 
 ## Contributing
 
@@ -461,7 +308,7 @@ Issues and pull requests are welcome. Before opening a PR:
    `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`
-changesets for `core` and `craft`; a changeset is optional for ordinary PRs.
+changesets for `core`; a changeset is optional for ordinary PRs.
 After merge, automation aggregates pending summaries into a Release PR that
 updates `CHANGELOG.md`. Merging that PR gates each planned module in dependency
 order — isolated tidy, build, vet, and race tests — and pushes each tag as its

@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "craft", "examples/forge", "examples/anvil"]
+              dirs = ["core", "memory", "memory/eval", "examples/forge"]
               for base in ("backends", "driver"):
                   for path in pathlib.Path(base).rglob("go.mod"):
                       if "vendor" in path.parts or "testdata" in path.parts:
@@ -43,8 +43,7 @@ jobs:
               return sorted(set(dirs))
 
           dirs = module_dirs()
-          # examples/forge stays out of the lint gate; examples/anvil is a
-          # workspace module like any other and is linted and tested.
+          # examples/forge stays out of the lint gate.
           lint_dirs = [d for d in dirs if d != "examples/forge"]
 
           # Parse each in-workspace module's identity and its requires on
@@ -107,8 +106,6 @@ jobs:
           lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
           # examples/forge pins released module versions and builds with
           # GOWORK=off, so it always runs rather than joining the closure.
-          # examples/anvil requires craft, so the closure pulls it in
-          # whenever craft or core changes.
           test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
           test = sorted(set(test) | {"examples/forge"})
           json.dump(
@@ -175,7 +172,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core craft driver backends examples/forge examples/anvil tools)
+          diff=$(gofmt -s -l core memory driver examples/forge tools)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -190,8 +187,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      # Every example (and `craft` itself) is read the way a reader reads
-      # it: its own go.mod and go.sum, no workspace. The target also
+      # Every example is read the way a reader reads it: its own go.mod
+      # and go.sum, no workspace. The target also
       # checks that an exemption in CONSUMER_EXEMPT is still needed — a
       # module that starts building here turns this lane red instead of
       # leaving a stale exemption behind. See the Makefile.
@@ -244,8 +241,7 @@ jobs:
       - name: go mod tidy
         run: |
           set -e
-          modules="core craft examples/forge examples/anvil driver"
-          modules="$modules $(find backends -name go.mod -printf '%h\n')"
+          modules="core memory memory/eval examples/forge driver"
           for d in $modules; do
             echo "==> $d"
             ( cd "$d" && go mod tidy -diff )
@@ -302,7 +298,7 @@ jobs:
         working-directory: ${{ matrix.module }}
       # The driver module is consumed outside this workspace — by deployments,
       # by the examples — where its own go.mod and go.sum are the whole story.
-      # The release workflow gates the planned modules (core, craft) with
+      # The release workflow gates the planned modules with
       # GOWORK=off, but a driver tag is not part of a planned release, so
       # nothing checked the driver's pin or tidiness before it shipped. Build it
       # the way a consumer does: a missing symbol or a short go.sum would
@@ -331,7 +327,7 @@ jobs:
         working-directory: ${{ matrix.module }}
 
   test-memory-postgres:
-    name: Test backends/memory (postgres)
+    name: Test memory (postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -353,13 +349,13 @@ jobs:
         with:
           go-version: "1.26"
       - name: Test
-        working-directory: backends/memory
+        working-directory: memory
         env:
           FC_PG_DSN: postgres://test:test@127.0.0.1:5432/test?sslmode=disable
         run: go test -count=1 -race ./storage/postgres/...
 
   test-memory-windows:
-    name: Test backends/memory (windows)
+    name: Test memory (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -367,7 +363,7 @@ jobs:
         with:
           go-version: "1.26"
       - name: Test
-        working-directory: backends/memory
+        working-directory: memory
         run: go test -count=1 ./...
 
   test-sandbox-bwrap:
@@ -466,30 +462,6 @@ jobs:
         working-directory: core
         run: go test -count=1 ./...
 
-  test-craft-windows:
-    name: Test craft (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
-      - name: Build
-        working-directory: craft
-        run: go build ./...
-      - name: Vet
-        working-directory: craft
-        run: go vet ./...
-      # The LockFileEx half of core/utils/lock and the single-instance
-      # lock of craft/manager only compile - and only behave - on
-      # windows; the linux lanes cover the flock half. The rest of craft
-      # is built and vetted here but not run: the graphnode and plugin
-      # process suites stage their helper binary behind a symlink, which
-      # a windows runner cannot be relied on to allow.
-      - name: Test
-        working-directory: craft
-        run: go test -count=1 ./manager/...
-
   test-sandbox-windows:
     name: Integration core/sandbox/windows
     runs-on: windows-latest
@@ -537,7 +509,6 @@ jobs:
       - test-memory-windows
       - test-sandbox-bwrap
       - test-core-windows
-      - test-craft-windows
       - test-sandbox-windows
       - test-sandbox-macos
     runs-on: ubuntu-latest
@@ -558,7 +529,6 @@ jobs:
             "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
-            "${{ needs.test-craft-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \
             "${{ needs.test-sandbox-macos.result }}" \
           )

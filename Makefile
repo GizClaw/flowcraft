@@ -9,34 +9,28 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod backends/*/*/go.mod))
 # The provider adapters share one module: `driver` provides every
 # `driver/<name>` package, so a new provider is a package, not a module.
 # Spelled out rather than globbed — a wildcard that stops matching a
 # consolidated module silently drops it from every target below.
 DRIVER_MODULES := driver
 
-MODULES_WORK := core craft $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge examples/anvil
+MODULES_WORK := core memory memory/eval $(DRIVER_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core craft $(BACKEND_MODULES) $(DRIVER_MODULES)
+MODULES_LINT := core memory memory/eval $(DRIVER_MODULES)
 
 # Modules a reader builds from their own go.mod and go.sum, without this
-# workspace: every example, plus `craft` itself — a reader requires it
-# directly, so its own pins have to stand on their own, and the workspace
-# was hiding exactly that. They are checked with GOWORK=off (see
+# workspace: every example. They are checked with GOWORK=off (see
 # `check-consumers`); the drivers get the same treatment per module in
 # CI's test matrix.
 #
 # An exemption is a claim about today, and it is checked as one: a module
 # listed here that starts building outside the workspace fails the
 # target, so an exemption cannot outlive the release that made it
-# obsolete. Empty since core v0.7.0 shipped the two symbols that kept
-# craft and examples/anvil pinned below it (core/hooks and
-# core/tool/mcp.WithServerLost); name a module here only with the reason
-# it cannot build yet.
+# obsolete. Name a module here only with the reason it cannot build yet.
 CONSUMER_EXEMPT :=
-CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)) craft)
+CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)))
 
 # `make fmt` mirrors the CI gofmt -s gate.
 ALL_MODULES := $(MODULES_WORK)
@@ -62,8 +56,7 @@ help:
 	@echo "  make test-shuffle   Run the tests in random order, three times"
 	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"
 	@echo "  make stress      Stress one test (PKG= ./pkg RUN=TestName COUNT=200)"
-	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
-	@echo "                      plus craft itself; exemptions must still be exempt."
+	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off)."
 	@echo "  make ci          vet + test"
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
@@ -101,9 +94,9 @@ tidy:
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree
 # (nothing is ever left behind next to the source). For a library module
-# like `craft` it writes no binary but still compiles every package — the
-# pin check a reader's own build makes — where `go build -o dir/` refuses
-# to run at all ("no main packages to build").
+# it writes no binary but still compiles every package — the pin check a
+# reader's own build makes — where `go build -o dir/` refuses to run at
+# all ("no main packages to build").
 .PHONY: check-consumers
 check-consumers:
 	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
@@ -193,9 +186,9 @@ release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
 
 # Live probes: the credentialed measurement lanes of the memory eval module.
-# They need backends/memory/eval/.env (or a repo-root .env) and spend model
+# They need memory/eval/.env (or a repo-root .env) and spend model
 # calls, so they are opt-in rather than part of `make ci`.
 memory-eval-probes:
-	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
+	cd memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
 		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|IngestTagsDatasetTurns|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB)' \
 		-timeout 60m
