@@ -25,10 +25,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-// backendName is the name every fixture registers its backend under: the suite's
-// configs cannot know another name.
-const backendName = "test"
-
 // Fixture is one backend under test and the sources that drive the cases.
 //
 // The state is "game" (JSON) and "answer" (text); every source receives that
@@ -58,6 +54,10 @@ func Run(t *testing.T, fixture Fixture) {
 	if fixture.Backend == nil {
 		t.Fatal("scripttest: a backend is required")
 	}
+	backend := fixture.Backend.Name()
+	if strings.TrimSpace(backend) == "" {
+		t.Fatal("scripttest: the backend reports no name")
+	}
 	sources := &static{text: map[string]string{
 		"echo":       fixture.Echo,
 		"extra":      fixture.Extra,
@@ -68,7 +68,7 @@ func Run(t *testing.T, fixture Fixture) {
 	kind := newKind(t, fixture, sources)
 
 	t.Run("echo round trip", func(t *testing.T) {
-		stream := invoke(t, kind, "echo", `"reads":["game","answer"],"writes":["game","answer"]`)
+		stream := invoke(t, kind, backend, "echo", `"reads":["game","answer"],"writes":["game","answer"]`)
 		updates := updatesByKey(drain(t, stream))
 		if len(updates) != 2 {
 			t.Fatalf("updates = %d, want game and answer", len(updates))
@@ -83,7 +83,7 @@ func Run(t *testing.T, fixture Fixture) {
 	})
 
 	t.Run("undeclared write", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("extra",
+		_, err := kind.Invoke(context.Background(), input(backend, "extra",
 			`"reads":["game","answer"],"writes":["game","answer"]`, nil))
 		requireClass(t, err, errdefs.IsValidation, "undeclared write")
 		if !strings.Contains(err.Error(), "config.writes") {
@@ -92,19 +92,19 @@ func Run(t *testing.T, fixture Fixture) {
 	})
 
 	t.Run("undeclared read", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("echo",
+		_, err := kind.Invoke(context.Background(), input(backend, "echo",
 			`"reads":["missing"],"writes":["answer"]`, nil))
 		requireClass(t, err, errdefs.IsValidation, "undeclared read")
 	})
 
 	t.Run("wrong kind", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("wrong_kind",
+		_, err := kind.Invoke(context.Background(), input(backend, "wrong_kind",
 			`"reads":["game"],"writes":["answer"]`, nil))
 		requireClass(t, err, errdefs.IsValidation, "wrong kind")
 	})
 
 	t.Run("output cap", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("echo",
+		_, err := kind.Invoke(context.Background(), input(backend, "echo",
 			`"reads":["game","answer"],"writes":["game","answer"],"max_output_bytes":2`, nil))
 		requireClass(t, err, errdefs.IsValidation, "output cap")
 		if !strings.Contains(err.Error(), "max_output_bytes") {
@@ -113,14 +113,14 @@ func Run(t *testing.T, fixture Fixture) {
 	})
 
 	t.Run("failing script", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("broken", `"reads":[],"writes":[]`, nil))
+		_, err := kind.Invoke(context.Background(), input(backend, "broken", `"reads":[],"writes":[]`, nil))
 		if err == nil {
 			t.Fatal("a failing script must fail the node")
 		}
 	})
 
 	t.Run("missing source", func(t *testing.T) {
-		_, err := kind.Invoke(context.Background(), input("absent", `"reads":[],"writes":[]`, nil))
+		_, err := kind.Invoke(context.Background(), input(backend, "absent", `"reads":[],"writes":[]`, nil))
 		requireClass(t, err, errdefs.IsNotFound, "missing source")
 	})
 
@@ -131,13 +131,13 @@ func Run(t *testing.T, fixture Fixture) {
 		if strings.TrimSpace(fixture.Slow) == "" {
 			t.Fatal("the fixture declares Terminating but supplies no Slow source")
 		}
-		_, err := kind.Invoke(context.Background(), input("slow",
+		_, err := kind.Invoke(context.Background(), input(backend, "slow",
 			`"reads":[],"writes":[],"budget":{"max_steps":50}`, nil))
 		requireClass(t, err, errdefs.IsBudgetExceeded, "budget")
 	})
 
 	t.Run("concurrent invocations", func(t *testing.T) {
-		request := input("echo", `"reads":["game","answer"],"writes":["game","answer"]`, nil)
+		request := input(backend, "echo", `"reads":["game","answer"],"writes":["game","answer"]`, nil)
 		const workers = 8
 		var wg sync.WaitGroup
 		failures := make(chan error, workers)
@@ -169,7 +169,7 @@ func newKind(t *testing.T, fixture Fixture, sources script.Source) graph.NodeKin
 
 // input builds the Invoke the engine passes: the source reference, the rest of
 // the node config, and optionally a replacement state.
-func input(path, fields string, values map[string]graph.Value) graph.Invoke {
+func input(backend, path, fields string, values map[string]graph.Value) graph.Invoke {
 	if values == nil {
 		values = map[string]graph.Value{
 			"game":   graph.JSON([]byte(`{"phase":"night"}`)),
@@ -182,13 +182,13 @@ func input(path, fields string, values map[string]graph.Value) graph.Invoke {
 	}
 	request.Node = "n"
 	request.Config = []byte(
-		`{"backend":"` + backendName + `","path":"` + path + `",` + fields + `}`)
+		`{"backend":"` + backend + `","path":"` + path + `",` + fields + `}`)
 	return request
 }
 
-func invoke(t *testing.T, kind graph.NodeKind, path, fields string) graph.NodeStream {
+func invoke(t *testing.T, kind graph.NodeKind, backend, path, fields string) graph.NodeStream {
 	t.Helper()
-	stream, err := kind.Invoke(context.Background(), input(path, fields, nil))
+	stream, err := kind.Invoke(context.Background(), input(backend, path, fields, nil))
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

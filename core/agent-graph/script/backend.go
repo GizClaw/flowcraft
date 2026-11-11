@@ -46,6 +46,16 @@ type Program interface {
 	Version() string
 }
 
+// ToolResult is what one tool call answered.
+//
+// The text is the tool's content, not a structured value: a tool already speaks
+// JSON when it has structure to convey, and re-shaping it here would invent a
+// second schema.
+type ToolResult struct {
+	OK   bool
+	Text string
+}
+
 // Host is the only way a backend reaches the host.
 //
 // Keeping the callback here, instead of letting a backend call the runtime
@@ -56,6 +66,13 @@ type Host interface {
 	// node itself writes nothing, because a library that logs on its own account
 	// cannot be silenced.
 	Log(level LogLevel, msg string)
+	// Tool runs one host tool and returns its result.
+	//
+	// The node enforces config.allow, records the call and classifies a failure,
+	// so a backend calls this without knowing the policy. An error means the
+	// script must stop: Starlark has no exceptions to catch, and a rule that
+	// cannot complete its action should fail the step rather than guess.
+	Tool(ctx context.Context, name string, args map[string]any) (ToolResult, error)
 }
 
 // LogLevel is how loud one script line is.

@@ -28,6 +28,11 @@ type Config struct {
 	// Writes names the state keys the script may return. A write outside this
 	// list is an error, not a silently dropped value.
 	Writes []string `json:"writes"`
+	// Allow names the host tools this script may call. An entry is
+	// "tool:<name>". Empty means the script can call nothing, which is the
+	// default: a rule reads state, and reaching outside it is a decision a
+	// document has to state.
+	Allow []string `json:"allow"`
 	// MaxOutputBytes caps the total encoded size of one invocation's writes.
 	// Zero means unbounded. Over the cap is an error, never a truncation: a rule
 	// that wrote half a state would carry on with half a fact.
@@ -65,6 +70,8 @@ type Capabilities struct {
 	MemoryBounded bool
 	// Isolated means the script runs outside the host process.
 	Isolated bool
+	// Tools means a script may call host tools through [Host.Tool].
+	Tools bool
 }
 
 // decodeConfig parses and validates one node's config. It is called at Build and
@@ -85,6 +92,12 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, err
 	}
 	if err := uniqueKeys("writes", cfg.Writes); err != nil {
+		return Config{}, err
+	}
+	if err := uniqueKeys("allow", cfg.Allow); err != nil {
+		return Config{}, err
+	}
+	if _, err := toolNames(cfg.Allow); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxOutputBytes < 0 {
@@ -126,10 +139,41 @@ func checkCapabilities(cfg Config, backend string, caps Capabilities) error {
 			"script: config.budget.max_steps needs a backend that terminates; %q does not declare it",
 			backend)
 	}
+	if len(cfg.Allow) > 0 && !caps.Tools {
+		return errdefs.Validationf(
+			"script: config.allow needs a backend that can call tools; %q does not declare it",
+			backend)
+	}
 	if cfg.Budget.MemoryMiB > 0 && !caps.MemoryBounded {
 		return errdefs.Validationf(
 			"script: config.budget.memory_mib needs a backend that bounds memory; %q does not declare it",
 			backend)
 	}
 	return nil
+}
+
+// toolNames parses config.allow into the set of tool names it permits.
+//
+// The prefix is required rather than implied: a capability list that grows other
+// kinds later (a model call, a file read) must not be distinguishable from a tool
+// name by position alone.
+func toolNames(allow []string) (map[string]struct{}, error) {
+	if len(allow) == 0 {
+		return nil, nil
+	}
+	names := make(map[string]struct{}, len(allow))
+	for _, entry := range allow {
+		scheme, name, qualified := strings.Cut(entry, ":")
+		if !qualified || name == "" {
+			return nil, errdefs.Validationf(
+				"script: config.allow entry %q must be \"tool:<name>\"", entry)
+		}
+		if scheme != "tool" {
+			return nil, errdefs.Validationf(
+				"script: config.allow entry %q names an unknown capability; the only kind is \"tool\"",
+				entry)
+		}
+		names[name] = struct{}{}
+	}
+	return names, nil
 }

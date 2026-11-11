@@ -49,8 +49,9 @@ func (backend) Capabilities() script.Capabilities {
 	return script.Capabilities{
 		Deterministic: true,
 		Terminating:   true,
-		MemoryBounded: false,
-		Isolated:      false,
+		// A tool call is a Go function call through the host, so a rule can use
+		// the tools its document allows.
+		Tools: true,
 	}
 }
 
@@ -74,7 +75,7 @@ func (backend) Compile(_ context.Context, source script.Script) (script.Program,
 
 // isPredeclared tells the resolver which free names the host supplies. `print` is
 // not listed because Starlark's universe already provides it.
-func isPredeclared(name string) bool { return name == "log" }
+func isPredeclared(name string) bool { return name == "log" || name == "tool" }
 
 // compiled is one resolved program.
 type compiled struct {
@@ -129,7 +130,8 @@ func (b backend) Run(
 	}()
 
 	globals, err := compiled.program.Init(thread, star.StringDict{
-		"log": builtinLog(host),
+		"log":  builtinLog(host),
+		"tool": builtinTool(ctx, host),
 	})
 	if err != nil {
 		return nil, b.failure(ctx, compiled.name, steps, thread, &exhausted, err)
@@ -197,6 +199,42 @@ func builtinLog(host script.Host) *star.Builtin {
 		}
 		host.Log(script.LogInfo, strings.Join(parts, " "))
 		return star.None, nil
+	})
+}
+
+// builtinTool is the script's `tool(name, args)`.
+//
+// The policy lives in the host: this binding only spells the call. A script whose
+// config allows no tools gets a refusal the first time it tries, which is a
+// clearer failure than a name that does not resolve.
+func builtinTool(ctx context.Context, host script.Host) *star.Builtin {
+	return star.NewBuiltin("tool", func(_ *star.Thread, _ *star.Builtin, args star.Tuple, kwargs []star.Tuple) (star.Value, error) {
+		var name string
+		var argument star.Value = star.None
+		if err := star.UnpackArgs("tool", args, kwargs, "name", &name, "args?", &argument); err != nil {
+			return nil, err
+		}
+		callArgs := map[string]any{}
+		if argument != star.None {
+			converted, err := fromStarlark(argument)
+			if err != nil {
+				return nil, fmt.Errorf("tool: args: %w", err)
+			}
+			dict, ok := converted.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("tool: args must be a dict, got %s", argument.Type())
+			}
+			callArgs = dict
+		}
+		result, err := host.Tool(ctx, name, callArgs)
+		if err != nil {
+			return nil, err
+		}
+		answer, err := toStarlark(map[string]any{"ok": result.OK, "text": result.Text})
+		if err != nil {
+			return nil, fmt.Errorf("tool: result: %w", err)
+		}
+		return answer, nil
 	})
 }
 

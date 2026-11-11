@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // programCacheLimit bounds the compiled programs one kind keeps. A host normally
@@ -39,6 +40,13 @@ func WithSource(source Source) Option {
 			k.source = source
 		}
 	}
+}
+
+// WithRuntime gives the kind the substrate a tool call needs. A script without an
+// allow list never touches it; one that declares a tool and has no runtime fails
+// at Build, because a capability the host cannot serve is a configuration error.
+func WithRuntime(rt *runtime.Runtime) Option {
+	return func(k *Kind) { k.rt = rt }
 }
 
 // WithLog routes the lines a script writes. The default discards them: a library
@@ -79,6 +87,7 @@ type Kind struct {
 	order    []string
 	source   Source
 	log      io.Writer
+	rt       *runtime.Runtime
 
 	mu       sync.Mutex
 	programs map[string]*cachedProgram
@@ -94,6 +103,8 @@ type cachedProgram struct {
 type plan struct {
 	config  Config
 	backend Backend
+	// tools is the parsed config.allow: the names this node may dispatch.
+	tools map[string]struct{}
 }
 
 // Name implements [graph.NodeKind].
@@ -119,7 +130,16 @@ func (k *Kind) decode(raw json.RawMessage) (plan, error) {
 	if err := checkCapabilities(cfg, backend.Name(), backend.Capabilities()); err != nil {
 		return plan{}, err
 	}
-	return plan{config: cfg, backend: backend}, nil
+	tools, err := toolNames(cfg.Allow)
+	if err != nil {
+		return plan{}, err
+	}
+	if len(tools) > 0 && k.rt == nil {
+		return plan{}, errdefs.Validationf(
+			"script: config.allow names %d tool(s) but this kind was built without a runtime",
+			len(tools))
+	}
+	return plan{config: cfg, backend: backend, tools: tools}, nil
 }
 
 // Invoke implements [graph.NodeKind].
@@ -143,7 +163,9 @@ func (k *Kind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, e
 	if err != nil {
 		return nil, err
 	}
-	out, err := built.backend.Run(ctx, program, state, built.config.Budget, hostFor(in, k.log))
+	host := hostFor(in, k.log, k.rt, built.tools)
+	host.start(built.config.Path, source.Version)
+	out, err := built.backend.Run(ctx, program, state, built.config.Budget, host)
 	if err != nil {
 		return nil, nodeError(in.Node, err)
 	}
@@ -151,7 +173,7 @@ func (k *Kind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, e
 	if err != nil {
 		return nil, err
 	}
-	return graph.Static(graph.Result{State: updates}), nil
+	return graph.Static(graph.Result{State: updates, Records: host.records}), nil
 }
 
 // program returns the compiled program for one source version, compiling it once.
@@ -249,31 +271,4 @@ func classified(err error) bool {
 	return false
 }
 
-// scriptHost is the [Host] one invocation sees.
-type scriptHost struct {
-	node  string
-	level LogLevel
-	log   io.Writer
-}
-
-func hostFor(in graph.Invoke, w io.Writer) Host {
-	return &scriptHost{node: in.Node, log: w}
-}
-
-// Log implements [Host]. The line is prefixed with the node name so a shared log
-// says which rule spoke.
-func (h *scriptHost) Log(level LogLevel, msg string) {
-	if h.log == nil || level < h.level {
-		return
-	}
-	if h.node != "" {
-		fmt.Fprintf(h.log, "[%s] script node %q: %s\n", level, h.node, msg)
-		return
-	}
-	fmt.Fprintf(h.log, "[%s] script: %s\n", level, msg)
-}
-
-var (
-	_ graph.NodeKind = (*Kind)(nil)
-	_ Host           = (*scriptHost)(nil)
-)
+var _ graph.NodeKind = (*Kind)(nil)

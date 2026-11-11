@@ -64,6 +64,9 @@ func TestBackendDeclaresItsLimits(t *testing.T) {
 	if !caps.Deterministic || !caps.Terminating {
 		t.Fatalf("capabilities = %+v, want the language guarantees", caps)
 	}
+	if !caps.Tools {
+		t.Fatalf("capabilities = %+v, want tool calls", caps)
+	}
 	if caps.MemoryBounded || caps.Isolated {
 		t.Fatalf("capabilities = %+v, want no memory bound and no isolation", caps)
 	}
@@ -309,6 +312,11 @@ func runWith(t *testing.T, source string, state map[string]any, budget script.Bu
 type capture struct {
 	mu    sync.Mutex
 	lines []string
+}
+
+func (c *capture) Tool(_ context.Context, name string, _ map[string]any) (script.ToolResult, error) {
+	c.Log(script.LogInfo, "tool:"+name)
+	return script.ToolResult{OK: true, Text: "{}"}, nil
 }
 
 func (c *capture) Log(_ script.LogLevel, msg string) {

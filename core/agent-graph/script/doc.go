@@ -37,6 +37,19 @@
 //
 //	budget.max_steps requires Capabilities.Terminating
 //	budget.memory_mib requires Capabilities.MemoryBounded
+//	allow               requires Capabilities.Tools
+//
+// # Tools, and why a script cannot suspend
+//
+// A script may call host tools, but only the ones config.allow names. The node
+// dispatches them through the runtime - the same middleware chain, policy checks
+// and catalog view a tool node uses - and records each call, so a replay answers
+// from the record instead of running the tool again.
+//
+// A script cannot suspend. There is no suspension in [Host], so no backend can
+// offer one, and that is deliberate: a suspended node is re-entered from the
+// start, and a rule that already called a tool would call it twice. A rule that
+// needs the user models the question as a graph edge, not as a pause.
 //
 // # Budgets
 //

@@ -320,6 +320,7 @@ func TestDecodeRefusesAnUnhonourableBudget(t *testing.T) {
 	for name, config := range map[string]string{
 		"steps":  `{"backend":"fake","path":"x","reads":[],"writes":[],"budget":{"max_steps":10}}`,
 		"memory": `{"backend":"fake","path":"x","reads":[],"writes":[],"budget":{"memory_mib":64}}`,
+		"tools":  `{"backend":"fake","path":"x","reads":[],"writes":[],"allow":["tool:echo"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := kind.Invoke(context.Background(), invoke("n", config, declared()))
