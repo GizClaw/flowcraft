@@ -206,6 +206,19 @@ func client(t *testing.T, peerURL, sessionID string) *a2a.Runner {
 	return runner
 }
 
+// The remote runner also satisfies the result suite: the peer's text comes back
+// as the final assistant content.
+func TestA2AResultConformance(t *testing.T) {
+	ts, _ := peer(t,
+		agent.Status{State: agent.StateWorking},
+		agent.Text{Text: "hello"},
+		agent.Status{State: agent.StateCompleted},
+	)
+	agenttest.Result(t, func(t *testing.T) agent.Runner {
+		return client(t, ts.URL, "conv-"+t.Name())
+	})
+}
+
 // The remote agent satisfies the same contract a local engine does.
 func TestRunnerSatisfiesTheContract(t *testing.T) {
 	agenttest.Runner(t, func(t *testing.T) agent.Runner {

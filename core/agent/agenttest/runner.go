@@ -1,5 +1,6 @@
 // Package agenttest is the conformance suite for the agent's contracts: the
-// Store that makes a session durable, and the Runner an engine implements.
+// Store that makes a session durable, the Runner an engine implements, and the
+// optional ResultReader and Steerer capabilities.
 package agenttest
 
 import (

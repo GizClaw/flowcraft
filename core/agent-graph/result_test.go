@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -107,4 +108,18 @@ func TestRunnerResultForwardsToTheRun(t *testing.T) {
 	if result.Content.Text() != "the answer" {
 		t.Fatalf("content = %q", result.Content.Text())
 	}
+}
+
+func TestGraphResultConformance(t *testing.T) {
+	g := build(t, resultDoc, assistantKind{})
+	agenttest.Result(t, func(*testing.T) agent.Runner {
+		return NewRunner(g, RunnerConfig{})
+	})
+}
+
+func TestGraphSteerConformance(t *testing.T) {
+	g := build(t, resultDoc, assistantKind{})
+	agenttest.Steer(t, func(*testing.T) agent.Runner {
+		return NewRunner(g, RunnerConfig{})
+	})
 }

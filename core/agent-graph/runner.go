@@ -126,6 +126,12 @@ func (r *Runner) Steer(ctx context.Context, msg message.Message, kind agent.Inte
 	if run == nil {
 		return agent.Interruption{}, agent.ErrSessionIdle
 	}
+	switch run.State() {
+	case agent.StateInputRequired:
+		return agent.Interruption{}, agent.ErrSessionIdle
+	case agent.StateCompleted, agent.StateFailed, agent.StateCanceled, agent.StateRejected:
+		return agent.Interruption{}, agent.ErrRunEnded
+	}
 	return run.queueSteer(msg, kind)
 }
 
