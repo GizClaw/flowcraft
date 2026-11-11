@@ -219,6 +219,64 @@ jobs:
           working-directory: ${{ matrix.module }}
           args: --new-from-rev=${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
 
+  hygiene:
+    name: Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # The config in .github/actionlint.yaml makes the workflow files
+      # self-checking: a wrong expression or a missing needs entry fails here.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      # Working-tree scan: a pull request checkout has no history to scan, and
+      # a secret committed in this PR is still in the tree.
+      - name: gitleaks
+        run: go run github.com/zricethezav/gitleaks/v8@v8.28.0 detect --no-git --redact --verbose
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          config: .github/markdownlint-cli2.jsonc
+      # A module that needs a tidy is a module whose go.mod no longer describes
+      # its imports; the release gate rejects that state, so catch it earlier.
+      - name: go mod tidy
+        run: |
+          set -e
+          modules="core craft examples/forge examples/anvil driver"
+          modules="$modules $(find backends -name go.mod -printf '%h\n')"
+          for d in $modules; do
+            echo "==> $d"
+            ( cd "$d" && go mod tidy -diff )
+          done
+
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # A short fixed budget per target: enough to catch a panic on an edge
+      # input, not a real hunt (FUZZTIME extends it locally).
+      - run: FUZZTIME=15s tools/fuzz.sh
+
+  test-shuffle:
+    name: Shuffle (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # Order-dependent tests are invisible under the default order; three
+      # shuffled runs are cheap and catch shared state in the table and the
+      # stores.
+      - run: go test -shuffle=on -count=3 ./...
+        working-directory: core
+
   test:
     name: Test (${{ matrix.module }})
     needs: compute-matrix
@@ -465,7 +523,23 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, check-consumers, compute-matrix, lint, test, test-memory-postgres, test-memory-windows, test-sandbox-bwrap, test-core-windows, test-craft-windows, test-sandbox-windows, test-sandbox-macos]
+    needs:
+      - release-intent
+      - gofmt
+      - check-consumers
+      - compute-matrix
+      - lint
+      - hygiene
+      - fuzz
+      - test-shuffle
+      - test
+      - test-memory-postgres
+      - test-memory-windows
+      - test-sandbox-bwrap
+      - test-core-windows
+      - test-craft-windows
+      - test-sandbox-windows
+      - test-sandbox-macos
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -476,6 +550,9 @@ jobs:
             "${{ needs.check-consumers.result }}" \
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \
+            "${{ needs.hygiene.result }}" \
+            "${{ needs.fuzz.result }}" \
+            "${{ needs.test-shuffle.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.test-memory-postgres.result }}" \
             "${{ needs.test-memory-windows.result }}" \

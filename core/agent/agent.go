@@ -782,10 +782,11 @@ func (a *Agent) sweep(now time.Time) []*session {
 		shard.mu.Unlock()
 	}
 	for a.opts.MaxSessions > 0 && total > a.opts.MaxSessions {
-		victim, where := a.oldestIdle()
-		if where == nil {
+		victim := a.oldestIdle()
+		if victim == nil {
 			break
 		}
+		where := a.table.shard(victim.id)
 		where.mu.Lock()
 		if where.entries[victim.id] == victim {
 			where.remove(victim.id)
@@ -804,9 +805,11 @@ func (a *Agent) sweep(now time.Time) []*session {
 }
 
 // oldestIdle finds the least recently used session that is not running.
-func (a *Agent) oldestIdle() (*session, *shard) {
+// oldestIdle returns the least recently used idle session, or nil when every
+// session is running or opening. The shard is derived from the session's id at
+// the call site, so a caller cannot hold a session without its shard.
+func (a *Agent) oldestIdle() *session {
 	var oldest *session
-	var where *shard
 	for _, shard := range a.table.shards {
 		shard.mu.Lock()
 		for _, entry := range shard.entries {
@@ -814,12 +817,12 @@ func (a *Agent) oldestIdle() (*session, *shard) {
 				continue
 			}
 			if oldest == nil || entry.lastUsed.Before(oldest.lastUsed) {
-				oldest, where = entry, shard
+				oldest = entry
 			}
 		}
 		shard.mu.Unlock()
 	}
-	return oldest, where
+	return oldest
 }
 
 // newSession starts an entry in the submitted state.

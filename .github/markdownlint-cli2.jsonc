@@ -1,0 +1,21 @@
+{
+  // The docs are Chinese prose and tables: line length is a typographic hint,
+  // not a correctness rule, and duplicate sibling headings are common in
+  // reference pages.
+  "config": {
+    "MD013": false,
+    "MD024": false,
+    "MD033": false
+  },
+  "globs": [
+    "README.md",
+    "CHANGELOG.md",
+    "docs/**/*.md"
+  ],
+  "ignores": [
+    "docs/plans/**",
+    "docs/reports/**",
+    "docs/reviews/**",
+    "docs/week_reporters/**"
+  ]
+}

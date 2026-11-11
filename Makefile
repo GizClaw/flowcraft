@@ -1,3 +1,7 @@
+# shellcheck disable=SC2046
+# Make expands $(...) before the shell sees it: the unquoted expansions are
+# argument lists (module names), and quoting them would pass one string.
+#
 # Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
 # stable across hosts (default sh on some macOS setups treats `set -e`
 # inside compound statements differently).
@@ -53,6 +57,11 @@ help:
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
+	@echo "  make bench       Run benchmarks for BENCH_MODULES into .bench/"
+	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
+	@echo "  make test-shuffle   Run the tests in random order, three times"
+	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"
+	@echo "  make stress      Stress one test (PKG= ./pkg RUN=TestName COUNT=200)"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
 	@echo "                      plus craft itself; exemptions must still be exempt."
 	@echo "  make ci          vet + test"
@@ -112,6 +121,47 @@ check-consumers:
 		fi; \
 		echo "$$log" | head -1 | sed 's/^/    /'; \
 	done
+
+# Correctness and stability lanes. None of these gate `make ci`: they answer
+# different questions (statistical benchmark matches, ordering-dependent bugs,
+# parser inputs, nil paths), and a developer chooses when to pay for them.
+
+BENCH_MODULES ?= core
+BENCH_LABEL ?= run
+
+.PHONY: bench
+bench:
+	@mkdir -p .bench
+	@set -e; for m in $(BENCH_MODULES); do \
+		label="$${m//\//-}-$(BENCH_LABEL)"; \
+		echo "==> bench $$m -> .bench/$$label.txt"; \
+		( cd $$m && go test -run '^$$' -bench . -benchmem -count=5 ./... ) \
+			> ".bench/$$label.txt"; \
+	done
+
+.PHONY: bench-compare
+bench-compare:
+	@if [ -z "$(OLD)" ] || [ -z "$(NEW)" ]; then \
+		echo "usage: make bench-compare OLD=.bench/core-old.txt NEW=.bench/core-new.txt" >&2; \
+		exit 2; \
+	fi
+	@go run golang.org/x/perf/cmd/benchstat@latest "$(OLD)" "$(NEW)"
+
+.PHONY: test-shuffle
+test-shuffle:
+	@$(call GO_FOREACH,$(MODULES_WORK),test-shuffle,go test -shuffle=on -count=3 ./...)
+
+.PHONY: fuzz
+fuzz:
+	@tools/fuzz.sh
+
+.PHONY: stress
+stress:
+	@if [ -z "$(PKG)" ] || [ -z "$(RUN)" ]; then \
+		echo "usage: make stress PKG=./agent RUN=TestAgentRun COUNT=200" >&2; \
+		exit 2; \
+	fi
+	@tools/stress.sh "$(PKG)" "$(RUN)" "$(COUNT)"
 
 .PHONY: ci
 ci: vet test
