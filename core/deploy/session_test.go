@@ -122,3 +122,39 @@ func TestSessionRunCarriesTheTenant(t *testing.T) {
 		t.Fatalf("tenant = %q, want acme", records[0].TenantID)
 	}
 }
+
+type resultTextRunner struct {
+	*textRunner
+	content message.Content
+}
+
+func (r *resultTextRunner) Result(context.Context) (agent.Result, error) {
+	return agent.Result{State: agent.StateCompleted, Content: r.content}, nil
+}
+
+// Session.Result forwards to the agent and returns only the final assistant
+// message.
+func TestSessionResultReturnsTheFinalAnswer(t *testing.T) {
+	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("result", func() agent.Runner {
+		return &resultTextRunner{
+			textRunner: &textRunner{text: "hello"},
+			content:    message.NewTextContent("hello"),
+		}
+	})), testHost(t))
+	if err := manager.Add(context.Background(), testSpec(t, "a", "result")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	session, _ := manager.Session("a", "conv-1")
+	for range session.Run(context.Background(), message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	result, err := session.Result(context.Background())
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if result.TaskID == "" {
+		t.Error("task id is empty")
+	}
+	if result.Content.Text() != "hello" {
+		t.Errorf("content = %q", result.Content.Text())
+	}
+}

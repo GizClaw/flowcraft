@@ -35,3 +35,8 @@ func (c *Session) State(ctx context.Context) (agent.TaskState, error) {
 func (c *Session) Cancel(ctx context.Context, reason string) error {
 	return c.agent.Cancel(ctx, c.sessionID, reason)
 }
+
+// Result returns the final assistant message and the Task's state.
+func (c *Session) Result(ctx context.Context) (agent.Result, error) {
+	return c.agent.Result(ctx, c.sessionID)
+}
