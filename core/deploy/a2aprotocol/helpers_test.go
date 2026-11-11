@@ -38,7 +38,7 @@ func execContext() *a2asrv.ExecutorContext {
 }
 
 // tableFor builds a one-session table whose engine returns runner.
-func tableFor(t *testing.T, runner agent.Runner) *agent.Agent {
+func tableFor(t testing.TB, runner agent.Runner) *agent.Agent {
 	t.Helper()
 	table, err := agent.NewAgent(agent.AgentOptions{
 		NewRunner: func(context.Context, string, string) (agent.Runner, error) {

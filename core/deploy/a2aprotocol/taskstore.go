@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
@@ -30,13 +31,23 @@ type taskStore struct {
 	// fingerprint is the deployment identity the agent resumes under; a task row
 	// without it could never be restored.
 	fingerprint agent.Fingerprint
+	// mu guards pending, the versions handed out for token-only advances that
+	// have not been written. A streamed chunk is not task state: committing it
+	// would pay one fsync per chunk while the engine's checkpoint already holds
+	// the task. The token is flushed by the next save that writes the projection.
+	mu      sync.Mutex
+	pending map[string]int64
 }
 
 var _ taskstore.Store = (*taskStore)(nil)
 
 // newTaskStore wraps an agent store.
 func newTaskStore(store agent.Store, fingerprint agent.Fingerprint) *taskStore {
-	return &taskStore{store: store, fingerprint: fingerprint}
+	return &taskStore{
+		store:       store,
+		fingerprint: fingerprint,
+		pending:     make(map[string]int64),
+	}
 }
 
 // Create stores a task the server just created.
@@ -52,7 +63,8 @@ func (s *taskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 		if existing.Task.SessionID != task.ContextID {
 			return 0, taskstore.ErrTaskAlreadyExists
 		}
-		return taskstore.TaskVersion(existing.ServerVersion), nil
+		return taskstore.TaskVersion(
+			s.effectiveVersion(string(task.ID), existing.ServerVersion)), nil
 	} else if !errors.Is(err, agent.ErrNoCheckpoint) {
 		return 0, err
 	}
@@ -75,7 +87,12 @@ func (s *taskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskV
 	if _, _, err := s.store.Save(ctx, checkpoint, events); err != nil {
 		return 0, err
 	}
-	return s.version(ctx, string(task.ID))
+	version, err := s.version(ctx, string(task.ID))
+	if err != nil {
+		return 0, err
+	}
+	s.rememberVersion(string(task.ID), int64(version))
+	return version, nil
 }
 
 // Update records one event the server produced.
@@ -96,10 +113,19 @@ func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 	}
 	terminal := isTerminal(update.Task.Status.State)
 	if !terminal && len(events) == 0 {
-		// The token advances in one statement; rewriting the projection here
-		// would fight the engine's checkpoint for the same row on every chunk.
-		next := update.PrevVersion
-		if next == taskstore.TaskVersionMissing {
+		// A streamed chunk is not task state. Keep the token in memory and let
+		// the next save that writes the projection flush it: one commit per
+		// stream is the engine's checkpoint, not one per chunk.
+		base := s.effectiveVersion(taskID, 0)
+		switch {
+		case base > 0:
+			if update.PrevVersion != taskstore.TaskVersionMissing &&
+				int64(update.PrevVersion) > base {
+				base = int64(update.PrevVersion)
+			}
+		case update.PrevVersion != taskstore.TaskVersionMissing:
+			base = int64(update.PrevVersion)
+		default:
 			current, loadErr := s.store.Load(ctx, taskID)
 			if errors.Is(loadErr, agent.ErrNoCheckpoint) {
 				return 0, a2a.ErrTaskNotFound
@@ -107,16 +133,11 @@ func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 			if loadErr != nil {
 				return 0, loadErr
 			}
-			next = taskstore.TaskVersion(current.ServerVersion)
+			base = current.ServerVersion
 		}
-		version := int64(next) + 1
-		if err := s.store.SetServerVersion(ctx, taskID, version); err != nil {
-			if errors.Is(err, agent.ErrNoCheckpoint) {
-				return 0, a2a.ErrTaskNotFound
-			}
-			return 0, err
-		}
-		return taskstore.TaskVersion(version), nil
+		next := base + 1
+		s.rememberVersion(taskID, next)
+		return taskstore.TaskVersion(next), nil
 	}
 	current, err := s.store.Load(ctx, taskID)
 	if errors.Is(err, agent.ErrNoCheckpoint) {
@@ -128,11 +149,12 @@ func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 	// The adapter owns this counter; the loop owns the other one. Sharing a
 	// single version would make the loop's round-boundary save invalidate the
 	// server's token and fail every tool-using task.
+	effective := s.effectiveVersion(taskID, current.ServerVersion)
 	if update.PrevVersion != taskstore.TaskVersionMissing &&
-		taskstore.TaskVersion(current.ServerVersion) != update.PrevVersion {
+		int64(update.PrevVersion) != effective {
 		return 0, taskstore.ErrConcurrentModification
 	}
-	current.ServerVersion++
+	current.ServerVersion = effective + 1
 	if terminal {
 		// A cancel or a failure is decided by the server, not by the loop, so the
 		// projection has to take it from here.
@@ -141,6 +163,7 @@ func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 	if _, _, err := s.store.Save(ctx, current, events); err != nil {
 		return 0, err
 	}
+	s.forgetVersion(taskID, current.ServerVersion)
 	return taskstore.TaskVersion(current.ServerVersion), nil
 }
 
@@ -161,7 +184,8 @@ func (s *taskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.Stor
 	if err != nil {
 		return nil, err
 	}
-	return &taskstore.StoredTask{Task: task, Version: taskstore.TaskVersion(checkpoint.ServerVersion)}, nil
+	version := s.effectiveVersion(string(taskID), checkpoint.ServerVersion)
+	return &taskstore.StoredTask{Task: task, Version: taskstore.TaskVersion(version)}, nil
 }
 
 // List answers the tasks query, filtered by context when asked.
@@ -253,6 +277,34 @@ func pageOffset(token string) (int, error) {
 		return 0, errdefs.Validationf("a2a: page token %q is not an offset", token)
 	}
 	return offset, nil
+}
+
+// effectiveVersion is the highest version handed out, including advances that
+// have not been written yet.
+func (s *taskStore) effectiveVersion(taskID string, persisted int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pending := s.pending[taskID]; pending > persisted {
+		return pending
+	}
+	return persisted
+}
+
+func (s *taskStore) rememberVersion(taskID string, version int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if version > s.pending[taskID] {
+		s.pending[taskID] = version
+	}
+}
+
+// forgetVersion drops the pending advance once it has been written.
+func (s *taskStore) forgetVersion(taskID string, persisted int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending[taskID] <= persisted {
+		delete(s.pending, taskID)
+	}
 }
 
 func (s *taskStore) version(ctx context.Context, taskID string) (taskstore.TaskVersion, error) {

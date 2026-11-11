@@ -42,6 +42,7 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"SaveCompactsInTheSameTransaction", saveCompacts},
 		{"TruncateByKindKeepsRecords", truncateKeepsRecords},
 		{"SetServerVersionLeavesTheProjectionAlone", setServerVersionOnly},
+		{"SaveLeavesTheServerVersionAlone", saveLeavesServerVersion},
 		{"VersionAdvancesPerSave", versionAdvances},
 		{"ServerVersionRoundTrips", serverVersionRoundTrips},
 		{"LatestForSessionPicksTheNewest", latestForContext},
@@ -280,6 +281,29 @@ func truncateKeepsTheTail(t *testing.T, open func(*testing.T) agent.Store) {
 
 // The adapter's counter advances without the projection being rewritten: the
 // engine owns the state, the adapter owns only its token.
+// A loop save carries no server version; it must not reset the adapter's token,
+// which lives in the same row.
+func saveLeavesServerVersion(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.SetServerVersion(ctx, "task-1", 5); err != nil {
+		t.Fatalf("SetServerVersion: %v", err)
+	}
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 1), nil); err != nil {
+		t.Fatalf("loop save: %v", err)
+	}
+	checkpoint, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if checkpoint.ServerVersion != 5 {
+		t.Fatalf("server version = %d, want 5 after a loop save", checkpoint.ServerVersion)
+	}
+}
+
 func setServerVersionOnly(t *testing.T, open func(*testing.T) agent.Store) {
 	store := open(t)
 	ctx := context.Background()
@@ -624,7 +648,9 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 			entry.sections[key] = value
 		}
 	}
-	entry.serverVer = cp.ServerVersion
+	if cp.ServerVersion > 0 {
+		entry.serverVer = cp.ServerVersion
+	}
 	entry.updatedAt = time.Now()
 	var first, last int64
 	for i, event := range events {

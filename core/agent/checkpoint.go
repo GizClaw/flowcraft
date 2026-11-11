@@ -27,6 +27,8 @@ type Checkpoint struct {
 	// ServerVersion belongs to a protocol adapter (the A2A task store) and only
 	// it changes this. The loop's own saves never touch it: two writers sharing
 	// one counter would reject each other's writes, and both are legitimate.
+	// Zero leaves the stored value untouched, so an engine save cannot reset the
+	// adapter's counter.
 	ServerVersion int64 `json:"server_version,omitempty"`
 	// Fingerprint is the deployment that wrote this checkpoint.
 	Fingerprint Fingerprint                `json:"fingerprint"`

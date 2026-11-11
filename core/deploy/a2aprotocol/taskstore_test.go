@@ -16,7 +16,7 @@ import (
 )
 
 // openStore opens a checkpoint store and the adapter over it.
-func openStore(t *testing.T) (*taskStore, *checkpoint.SQLite) {
+func openStore(t testing.TB) (*taskStore, *checkpoint.SQLite) {
 	t.Helper()
 	backend, err := checkpoint.Open(filepath.Join(t.TempDir(), "cp.db"))
 	if err != nil {
@@ -181,9 +181,19 @@ func TestNonTerminalUpdateLeavesTheProjectionAlone(t *testing.T) {
 	if after.Version != before.Version {
 		t.Errorf("version %d -> %d; the projection was rewritten", before.Version, after.Version)
 	}
-	if after.ServerVersion != before.ServerVersion+1 || int64(version) != after.ServerVersion {
-		t.Errorf("server version = %d (returned %d), want %d",
-			after.ServerVersion, version, before.ServerVersion+1)
+	if after.ServerVersion != before.ServerVersion {
+		t.Errorf("server version %d -> %d; a chunk committed the token",
+			before.ServerVersion, after.ServerVersion)
+	}
+	if int64(version) != before.ServerVersion+1 {
+		t.Errorf("returned version = %d, want %d", version, before.ServerVersion+1)
+	}
+	stored, err := adapter.Get(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if int64(stored.Version) != int64(version) {
+		t.Errorf("Get version = %d, want the handed-out %d", stored.Version, version)
 	}
 	if after.Task.State != before.Task.State || after.Task.Round != before.Task.Round {
 		t.Errorf("the projection changed: %+v -> %+v", before.Task, after.Task)
@@ -425,5 +435,80 @@ func TestTaskStoreVersionIsIndependentOfTheLoops(t *testing.T) {
 	update.PrevVersion = version
 	if _, err := store.Update(ctx, update); !errors.Is(err, taskstore.ErrConcurrentModification) {
 		t.Errorf("err = %v, want ErrConcurrentModification", err)
+	}
+}
+
+// Chunk tokens stay in memory until a write flushes them: a streamed answer
+// must not pay one commit per chunk, and a restart must not lose task state.
+func TestTokenAdvancesCoalesceUntilAWrite(t *testing.T) {
+	adapter, store := openStore(t)
+	ctx := context.Background()
+	if _, err := adapter.Create(ctx, a2aTask("task-1", "conv-1")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	persisted, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	update := &taskstore.UpdateRequest{
+		Task: &a2a.Task{
+			ID: "task-1", ContextID: "conv-1",
+			Status: a2a.TaskStatus{State: a2a.TaskStateWorking},
+		},
+	}
+	version := taskstore.TaskVersion(persisted.ServerVersion)
+	for i := 0; i < 3; i++ {
+		update.PrevVersion = version
+		version, err = adapter.Update(ctx, update)
+		if err != nil {
+			t.Fatalf("Update %d: %v", i, err)
+		}
+	}
+	after, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load after: %v", err)
+	}
+	if after.ServerVersion != persisted.ServerVersion {
+		t.Fatalf("server version = %d, want the persisted %d",
+			after.ServerVersion, persisted.ServerVersion)
+	}
+	stored, err := adapter.Get(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Version != version {
+		t.Errorf("Get version = %d, want the handed-out %d", stored.Version, version)
+	}
+
+	// A terminal state is a write, and it carries the coalesced token.
+	update.Task.Status = a2a.TaskStatus{State: a2a.TaskStateCanceled}
+	update.PrevVersion = version
+	flushed, err := adapter.Update(ctx, update)
+	if err != nil {
+		t.Fatalf("terminal Update: %v", err)
+	}
+	after, err = store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load flushed: %v", err)
+	}
+	if after.ServerVersion != int64(flushed) || after.Task.State != agent.StateCanceled {
+		t.Errorf("flushed = %d/%s, want %d/canceled",
+			after.ServerVersion, after.Task.State, flushed)
+	}
+
+	// The loop's own save carries no token and must not reset it.
+	if _, _, err := store.Save(ctx, agent.Checkpoint{
+		Schema: agent.CheckpointSchema,
+		Task:   after.Task,
+	}, nil); err != nil {
+		t.Fatalf("loop Save: %v", err)
+	}
+	again, err := store.Load(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Load again: %v", err)
+	}
+	if again.ServerVersion != int64(flushed) {
+		t.Errorf("server version = %d after a loop save, want %d",
+			again.ServerVersion, flushed)
 	}
 }

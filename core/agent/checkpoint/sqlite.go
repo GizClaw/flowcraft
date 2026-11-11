@@ -210,7 +210,8 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			fingerprint    = excluded.fingerprint,
 			body           = excluded.body,
 			version        = tasks.version + 1,
-			server_version = excluded.server_version,
+			server_version = CASE WHEN excluded.server_version > 0
+				THEN excluded.server_version ELSE tasks.server_version END,
 			updated_at     = excluded.updated_at`,
 		checkpoint.Task.ID,
 		checkpoint.Task.SessionID,
