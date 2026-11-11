@@ -35,6 +35,8 @@ func (m Mode) Validate() error {
 type Status string
 
 const (
+	// StatusAccepted means an async job is stored and not yet claimed.
+	StatusAccepted Status = "accepted"
 	// StatusRunning means the child is still working.
 	StatusRunning Status = "running"
 	// StatusCompleted means the child produced a final answer.

@@ -3,9 +3,9 @@ package delegation_test
 import (
 	"context"
 	"iter"
-	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/delegation"
@@ -19,6 +19,7 @@ type fakeSession struct {
 	state  agent.TaskState
 	result agent.Result
 	runs   int
+	stop   chan struct{}
 	run    func(*fakeSession, context.Context) iter.Seq2[agent.Event, error]
 }
 
@@ -56,6 +57,16 @@ func (f *fakeSession) Run(ctx context.Context, _ message.Message, _ ...agent.Tur
 }
 
 func (f *fakeSession) Cancel(context.Context, string) error {
+	f.mu.Lock()
+	stop := f.stop
+	f.mu.Unlock()
+	if stop != nil {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}
 	f.setState(agent.StateCanceled)
 	return nil
 }
@@ -215,20 +226,6 @@ func TestDelegateRejectsDepthAndInputOverflow(t *testing.T) {
 	}
 }
 
-func TestDelegateAsyncIsNotAvailableYet(t *testing.T) {
-	sessions, _ := newFake()
-	service, _ := delegation.New(sessions, delegation.Policy{
-		Targets: []string{"worker"},
-		Modes:   []delegation.Mode{delegation.ModeSync, delegation.ModeAsync},
-	})
-	_, err := service.Delegate(parentCtx("call-1"), delegation.Request{
-		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
-	})
-	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("error = %v, want not implemented", err)
-	}
-}
-
 func TestDelegateRequiresACallID(t *testing.T) {
 	sessions, _ := newFake()
 	service, _ := delegation.New(sessions, delegation.Policy{Targets: []string{"worker"}})
@@ -252,5 +249,163 @@ func TestDelegateInheritsTheChain(t *testing.T) {
 	}
 	if outcome.Depth != 3 || outcome.ChainID != "chain-1" {
 		t.Fatalf("lineage = depth %d chain %q", outcome.Depth, outcome.ChainID)
+	}
+}
+
+func asyncPolicy() delegation.Policy {
+	return delegation.Policy{
+		Targets: []string{"worker"},
+		Modes:   []delegation.Mode{delegation.ModeSync, delegation.ModeAsync},
+	}
+}
+
+func waitStatus(t *testing.T, service *delegation.Service, ctx context.Context, id string, want delegation.Status) delegation.Outcome {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		outcome, err := service.Status(ctx, id)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if outcome.Status == want {
+			return outcome
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("status did not reach %s", want)
+	return delegation.Outcome{}
+}
+
+func TestDelegateAsyncCompletes(t *testing.T) {
+	sessions, _ := newFake()
+	service, err := delegation.New(sessions, asyncPolicy())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+	ctx := parentCtx("call-1")
+	outcome, err := service.Delegate(ctx, delegation.Request{
+		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
+	})
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if outcome.Status != delegation.StatusAccepted {
+		t.Fatalf("status = %s, want accepted", outcome.Status)
+	}
+	done := waitStatus(t, service, ctx, outcome.ID, delegation.StatusCompleted)
+	if done.Content.Text() != "done" {
+		t.Fatalf("content = %q", done.Content.Text())
+	}
+}
+
+func TestDelegateAsyncAnswerResumes(t *testing.T) {
+	sessions, child := newFake()
+	question := message.NewTextContent("which?")
+	done := agent.Result{State: agent.StateCompleted, Content: message.NewTextContent("done")}
+	child.result = agent.Result{State: agent.StateInputRequired, Question: &question}
+	var mu sync.Mutex
+	runs := 0
+	child.run = func(f *fakeSession, _ context.Context) iter.Seq2[agent.Event, error] {
+		return func(yield func(agent.Event, error) bool) {
+			mu.Lock()
+			runs++
+			run := runs
+			mu.Unlock()
+			if run == 1 {
+				f.setState(agent.StateInputRequired)
+				yield(agent.Status{State: agent.StateInputRequired}, nil)
+				return
+			}
+			f.mu.Lock()
+			f.result = done
+			f.mu.Unlock()
+			f.setState(agent.StateCompleted)
+			yield(agent.Status{State: agent.StateCompleted}, nil)
+		}
+	}
+	service, _ := delegation.New(sessions, asyncPolicy())
+	defer func() { _ = service.Close() }()
+	ctx := parentCtx("call-1")
+	outcome, err := service.Delegate(ctx, delegation.Request{
+		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
+	})
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	paused := waitStatus(t, service, ctx, outcome.ID, delegation.StatusInputRequired)
+	if paused.Question == nil || paused.Question.Text() != "which?" {
+		t.Fatalf("question = %+v", paused.Question)
+	}
+	resumed, err := service.Answer(ctx, outcome.ID, "yes")
+	if err != nil {
+		t.Fatalf("Answer: %v", err)
+	}
+	if resumed.Status != delegation.StatusRunning {
+		t.Fatalf("answer status = %s", resumed.Status)
+	}
+	finished := waitStatus(t, service, ctx, outcome.ID, delegation.StatusCompleted)
+	if finished.Content.Text() != "done" {
+		t.Fatalf("content = %q", finished.Content.Text())
+	}
+}
+
+func TestDelegateAsyncCancel(t *testing.T) {
+	sessions, child := newFake()
+	started := make(chan struct{})
+	child.stop = make(chan struct{})
+	child.run = func(f *fakeSession, ctx context.Context) iter.Seq2[agent.Event, error] {
+		return func(yield func(agent.Event, error) bool) {
+			close(started)
+			select {
+			case <-ctx.Done():
+			case <-f.stop:
+			}
+			f.setState(agent.StateCanceled)
+			yield(agent.Status{State: agent.StateCanceled}, nil)
+		}
+	}
+	service, _ := delegation.New(sessions, asyncPolicy())
+	defer func() { _ = service.Close() }()
+	ctx := parentCtx("call-1")
+	outcome, err := service.Delegate(ctx, delegation.Request{
+		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
+	})
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	<-started
+	canceled, err := service.Cancel(ctx, outcome.ID)
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if canceled.Status != delegation.StatusCanceled {
+		t.Fatalf("status = %s", canceled.Status)
+	}
+}
+
+func TestDelegateAsyncIsIdempotent(t *testing.T) {
+	sessions, child := newFake()
+	service, _ := delegation.New(sessions, asyncPolicy())
+	defer func() { _ = service.Close() }()
+	ctx := parentCtx("call-1")
+	first, err := service.Delegate(ctx, delegation.Request{
+		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
+	})
+	if err != nil {
+		t.Fatalf("first Delegate: %v", err)
+	}
+	second, err := service.Delegate(ctx, delegation.Request{
+		Mode: delegation.ModeAsync, Target: "worker", Input: "do it",
+	})
+	if err != nil {
+		t.Fatalf("second Delegate: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("ids = %q/%q", first.ID, second.ID)
+	}
+	waitStatus(t, service, ctx, first.ID, delegation.StatusCompleted)
+	if child.runs != 1 {
+		t.Fatalf("runs = %d, want one", child.runs)
 	}
 }

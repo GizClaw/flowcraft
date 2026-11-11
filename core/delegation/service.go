@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -20,11 +21,24 @@ type Service struct {
 	sessions Sessions
 	policy   Policy
 	slots    chan struct{}
+	store    Store
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	close    sync.Once
+}
+
+// Option adjusts a service.
+type Option func(*Service)
+
+// WithStore replaces the default in-memory job store.
+func WithStore(store Store) Option {
+	return func(s *Service) { s.store = store }
 }
 
 // New builds a service. The policy defaults are applied here, so every caller
 // sees the effective limits.
-func New(sessions Sessions, policy Policy) (*Service, error) {
+func New(sessions Sessions, policy Policy, opts ...Option) (*Service, error) {
 	if sessions == nil {
 		return nil, errdefs.Validationf("delegation: sessions is nil")
 	}
@@ -56,11 +70,24 @@ func New(sessions Sessions, policy Policy) (*Service, error) {
 	if policy.Timeout < 0 {
 		return nil, errdefs.Validationf("delegation: timeout must not be negative")
 	}
-	return &Service{
+	ctx, cancel := context.WithCancel(context.Background())
+	service := &Service{
 		sessions: sessions,
 		policy:   policy,
 		slots:    make(chan struct{}, policy.MaxConcurrent),
-	}, nil
+		store:    NewMemStore(),
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	if service.store == nil {
+		service.store = NewMemStore()
+	}
+	return service, nil
 }
 
 // Policy returns the effective policy.
@@ -98,9 +125,6 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	if !s.allowedMode(req.Mode) {
 		return Outcome{}, errdefs.Validationf("delegation: mode %q is not allowed", req.Mode)
 	}
-	if req.Mode == ModeAsync {
-		return Outcome{}, errdefs.NotAvailablef("delegation: async is not implemented yet")
-	}
 	if strings.TrimSpace(req.Target) == "" {
 		return Outcome{}, errdefs.Validationf("delegation: target is required")
 	}
@@ -137,6 +161,11 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	childCall := call.Child()
 
 	childSession := cleanID(run.SessionID) + "/d/" + cleanID(req.Target) + "/" + cleanID(callID)
+
+	if req.Mode == ModeAsync {
+		return s.startAsync(ctx, req, run, callID, childCall, childSession)
+	}
+
 	session, ok := s.sessions.Session(req.Target, childSession)
 	if !ok {
 		return Outcome{}, errdefs.NotFoundf("delegation: target %q is not deployed", req.Target)

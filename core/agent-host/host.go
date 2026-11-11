@@ -145,6 +145,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	}
 
 	runtimeOptions := append([]runtime.Option(nil), m.bindings.RuntimeOptions...)
+	var delegationService *delegation.Service
 	if spec.Delegation != nil {
 		if spec.Runtime.Version == 0 {
 			return nil, errdefs.Validationf(
@@ -155,8 +156,9 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		if err != nil {
 			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 		}
+		delegationService = service
 		runtimeOptions = append(runtimeOptions,
-			runtime.WithToolSource(delegation.Tools(service)))
+			runtime.WithToolSource(delegation.Tools(delegationService)))
 	}
 
 	var rt *runtime.Runtime
@@ -168,10 +170,11 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		rt = created
 	}
 	deployed := &deployment{
-		name:   spec.Name,
-		tenant: m.bindings.TenantID,
-		spec:   spec,
-		rt:     rt,
+		name:       spec.Name,
+		tenant:     m.bindings.TenantID,
+		spec:       spec,
+		rt:         rt,
+		delegation: delegationService,
 	}
 	engineFingerprint := deploy.CanonicalSettings(spec.Engine.Settings)
 	if engineKind.Fingerprint != nil {
@@ -408,6 +411,7 @@ type deployment struct {
 	rt          *runtime.Runtime
 	agent       *agent.Agent
 	protocol    deploy.Protocol
+	delegation  *delegation.Service
 	fingerprint agent.Fingerprint
 	manifest    agent.Manifest
 	// views holds the tool projection of a session-scoped catalog.
@@ -453,6 +457,11 @@ func (d *deployment) handler() http.Handler {
 func (d *deployment) close() error {
 	d.closeOnce.Do(func() {
 		var first error
+		if d.delegation != nil {
+			if err := d.delegation.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
 		if d.protocol != nil {
 			if err := d.protocol.Close(); err != nil && first == nil {
 				first = err
