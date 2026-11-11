@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -70,6 +71,10 @@ type AgentOptions struct {
 	// host usually asks for TraceNode so a run, its frontiers and its nodes
 	// are attributable. The cost is a span per unit, not per event.
 	Trace telemetry.TraceLevel
+	// OnRun observes every finished run. It runs synchronously on the run's
+	// goroutine, after the last event, so it must be fast and non-blocking.
+	// Runs that never acquired a session (busy, closed) report nothing.
+	OnRun func(RunRecord)
 	// NewRunner builds the engine for one session. The task id is settled
 	// before this is called, so an engine may key its checkpoint by it.
 	//
@@ -207,6 +212,9 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		}
 		defer a.release(entry)
 		defer cancel()
+		startedAt := time.Now()
+		var runUsage usage.Usage
+		var failure error
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
@@ -216,15 +224,42 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 				trace.WithAttributes(runctx.Attrs(runCtx)...))
 			defer span.End()
 		}
+		defer func() {
+			if a.opts.OnRun == nil {
+				return
+			}
+			record := RunRecord{
+				SessionID: sessionID,
+				TaskID:    entry.taskID,
+				State:     entry.loadState(),
+				ErrorKind: errorKind(failure),
+				LatencyMs: time.Since(startedAt).Milliseconds(),
+				Usage:     runUsage,
+			}
+			if run, ok := runctx.From(runCtx); ok {
+				record.Manifest = run.Manifest
+			}
+			if span != nil {
+				if sc := span.SpanContext(); sc.IsValid() {
+					record.TraceID = sc.TraceID().String()
+					record.SpanID = sc.SpanID().String()
+				}
+			}
+			a.opts.OnRun(record)
+		}()
 
 		for event, runErr := range entry.runner.Run(runCtx, msg) {
 			if runErr != nil {
+				failure = runErr
 				if span != nil {
 					span.RecordError(runErr)
 					span.SetStatus(codes.Error, "")
 				}
 				yield(nil, runErr)
 				return
+			}
+			if accounting, ok := event.(UsageEvent); ok {
+				addUsage(&runUsage, accounting.Usage)
 			}
 			a.record(entry, event)
 			if a.opts.OnEvent != nil {

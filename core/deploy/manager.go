@@ -73,6 +73,9 @@ type Host struct {
 	// Harness is the host's build identity (version or git SHA), recorded in
 	// each deployment's manifest.
 	Harness string
+	// OnRun observes every finished run, named by agent. Like OnEvent it runs
+	// synchronously on the run's goroutine, so it must be fast.
+	OnRun func(agentName string, record agent.RunRecord)
 }
 
 // Manager owns the deployed agents: one table, one kind registry, one set of
@@ -201,11 +204,16 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 	}
 	table, err := agent.NewAgent(agent.AgentOptions{
-		Store:       m.host.Store,
-		Identity:    deployed.fingerprint,
-		NewRunner:   factory,
-		RunContext:  deployed.runContext,
-		Trace:       m.host.Trace,
+		Store:      m.host.Store,
+		Identity:   deployed.fingerprint,
+		NewRunner:  factory,
+		RunContext: deployed.runContext,
+		Trace:      m.host.Trace,
+		OnRun: func(record agent.RunRecord) {
+			if m.host.OnRun != nil {
+				m.host.OnRun(spec.Name, record)
+			}
+		},
 		IdleTimeout: spec.IdleTimeout,
 		MaxSessions: spec.MaxSessions,
 		OnEvent:     m.observer(spec.Name),

@@ -28,6 +28,15 @@ const (
 	eventEffect     = "graph.effect"
 )
 
+// Record kinds a host needs when it prunes a trace: they are the records that
+// survive state compaction, so a retention job names them explicitly.
+const (
+	// RecordLLMCall is one model call.
+	RecordLLMCall = eventLLMCall
+	// RecordEffect is one tool execution.
+	RecordEffect = eventEffect
+)
+
 // projection is the small, per-step part of a checkpoint: where the run is, not
 // what it holds.
 type projection struct {
@@ -188,6 +197,11 @@ func WithManifest(manifest agent.Manifest) RunOption {
 // WithTrace sets how much of the run is traced.
 func WithTrace(trace telemetry.TraceLevel) RunOption {
 	return func(o *runOptions) { o.trace = trace }
+}
+
+// WithReplay answers model calls from the run's records instead of calling out.
+func WithReplay(replay bool) RunOption {
+	return func(o *runOptions) { o.replay = replay }
 }
 
 // persist writes the projection and this step's writes.

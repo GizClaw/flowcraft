@@ -81,3 +81,33 @@ func TestHandlerIsNilForAnUnexposedAgent(t *testing.T) {
 		t.Error("an unknown agent has a handler")
 	}
 }
+
+// The host sees every finished run named by agent, so one exporter can serve a
+// multi-agent host.
+func TestHostOnRunNamesTheAgent(t *testing.T) {
+	var names []string
+	host := testHost(t)
+	host.OnRun = func(name string, record agent.RunRecord) {
+		names = append(names, name)
+	}
+	kinds := BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+		return &textRunner{text: "hi"}
+	}))
+	manager := newManager(t, kinds, host)
+	if err := manager.Add(context.Background(), testSpec(t, "a", "echo")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	session, ok := manager.Session("a", "conv-1")
+	if !ok {
+		t.Fatal("no session")
+	}
+	for _, err := range session.Run(context.Background(),
+		message.NewTextMessage(message.RoleUser, "hi")) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	if len(names) != 1 || names[0] != "a" {
+		t.Fatalf("OnRun = %v, want the agent name", names)
+	}
+}

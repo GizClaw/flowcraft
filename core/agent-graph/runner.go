@@ -22,6 +22,9 @@ type RunnerConfig struct {
 	Manifest agent.Manifest
 	// Trace controls the spans the graph emits.
 	Trace telemetry.TraceLevel
+	// Replay answers model calls from this task's records instead of calling
+	// out. A miss is an error.
+	Replay bool
 }
 
 // Runner drives one session's graph.
@@ -83,6 +86,7 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 				WithFingerprint(r.cfg.Identity),
 				WithManifest(r.cfg.Manifest),
 				WithTrace(r.cfg.Trace),
+				WithReplay(r.cfg.Replay),
 			)
 			if err != nil {
 				r.mu.Unlock()
