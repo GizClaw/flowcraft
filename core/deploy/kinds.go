@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // EngineSpec selects an engine kind and carries its settings.
@@ -34,6 +35,10 @@ type EngineDeps struct {
 	Runtime     *runtime.Runtime
 	Store       agent.Store
 	Fingerprint agent.Fingerprint
+	// Manifest is the version combination this deployment records.
+	Manifest agent.Manifest
+	// Trace is the host's tracing policy for runs of this engine.
+	Trace telemetry.TraceLevel
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment

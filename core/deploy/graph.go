@@ -47,6 +47,8 @@ func GraphEngine(options ...nodes.Option) EngineKind {
 					Identity:  deps.Fingerprint,
 					SessionID: sessionID,
 					TaskID:    taskID,
+					Manifest:  deps.Manifest,
+					Trace:     deps.Trace,
 				}), nil
 			}, nil
 		},

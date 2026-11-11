@@ -38,14 +38,14 @@ func (r *steerRunner) Run(ctx context.Context, _ message.Message) iter.Seq2[agen
 	}
 }
 
-func (r *steerRunner) Steer(_ context.Context, msg message.Message) error {
+func (r *steerRunner) Steer(_ context.Context, msg message.Message, kind agent.InterruptKind) (agent.Interruption, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.steerErr != nil {
-		return r.steerErr
+		return agent.Interruption{}, r.steerErr
 	}
 	r.steers = append(r.steers, msg)
-	return nil
+	return agent.Interruption{IntentKind: kind}, nil
 }
 
 func (r *steerRunner) Cancel(context.Context, string) error { return nil }
@@ -93,7 +93,7 @@ func TestAgentSteersARunningTask(t *testing.T) {
 	done := startRun(t, a)
 	<-runner.started
 	steer := message.NewTextMessage(message.RoleUser, "also check the logs")
-	if err := a.Steer(context.Background(), "c1", steer); err != nil {
+	if _, err := a.Steer(context.Background(), "c1", steer, agent.InterruptSteer); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
 	runner.mu.Lock()
@@ -114,14 +114,14 @@ func TestAgentSteerRequiresARunInFlight(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	ctx := context.Background()
-	if err := a.Steer(ctx, "never-seen", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+	if _, err := a.Steer(ctx, "never-seen", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrSessionIdle) {
 		t.Errorf("unknown session = %v, want ErrSessionIdle", err)
 	}
 	drain(t, a.Run(ctx, "c1", message.NewTextMessage(message.RoleUser, "one")))
-	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+	if _, err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrSessionIdle) {
 		t.Errorf("finished session = %v, want ErrSessionIdle", err)
 	}
-	if err := a.Steer(ctx, "", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionRequired) {
+	if _, err := a.Steer(ctx, "", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrSessionRequired) {
 		t.Errorf("empty session = %v, want ErrSessionRequired", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestAgentSteerRefusesAPausedTask(t *testing.T) {
 	}
 	ctx := context.Background()
 	drain(t, a.Run(ctx, "c1", message.NewTextMessage(message.RoleUser, "why?")))
-	if err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSessionIdle) {
+	if _, err := a.Steer(ctx, "c1", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrSessionIdle) {
 		t.Errorf("paused session = %v, want ErrSessionIdle", err)
 	}
 }
@@ -151,7 +151,7 @@ func TestAgentSteerNeedsEngineSupport(t *testing.T) {
 	}
 	done := startRun(t, a)
 	<-runner.started
-	if err := a.Steer(context.Background(), "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrSteerUnsupported) {
+	if _, err := a.Steer(context.Background(), "c1", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrSteerUnsupported) {
 		t.Fatalf("Steer = %v, want ErrSteerUnsupported", err)
 	}
 	close(runner.release)
@@ -174,7 +174,7 @@ func TestAgentSteerReportsARunThatEnded(t *testing.T) {
 	}
 	done := startRun(t, a)
 	<-runner.started
-	if err := a.Steer(context.Background(), "c1", message.NewTextMessage(message.RoleUser, "hi")); !errors.Is(err, agent.ErrRunEnded) {
+	if _, err := a.Steer(context.Background(), "c1", message.NewTextMessage(message.RoleUser, "hi"), agent.InterruptSteer); !errors.Is(err, agent.ErrRunEnded) {
 		t.Fatalf("Steer = %v, want ErrRunEnded", err)
 	}
 	close(runner.release)

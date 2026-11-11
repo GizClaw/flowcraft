@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // RunnerConfig is one session's graph engine: where it persists, under
@@ -17,6 +18,10 @@ type RunnerConfig struct {
 	Identity  agent.Fingerprint
 	SessionID string
 	TaskID    string
+	// Manifest is the version combination the run records.
+	Manifest agent.Manifest
+	// Trace controls the spans the graph emits.
+	Trace telemetry.TraceLevel
 }
 
 // Runner drives one session's graph.
@@ -32,7 +37,10 @@ type Runner struct {
 	run *Run
 }
 
-var _ agent.Runner = (*Runner)(nil)
+var (
+	_ agent.Runner  = (*Runner)(nil)
+	_ agent.Steerer = (*Runner)(nil)
+)
 
 // NewRunner binds a compiled graph to one session.
 func NewRunner(g *Graph, cfg RunnerConfig) *Runner {
@@ -73,6 +81,8 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 				WithStore(r.cfg.Store, r.cfg.TaskID),
 				WithSession(r.cfg.SessionID),
 				WithFingerprint(r.cfg.Identity),
+				WithManifest(r.cfg.Manifest),
+				WithTrace(r.cfg.Trace),
 			)
 			if err != nil {
 				r.mu.Unlock()
@@ -99,6 +109,19 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 			yield(nil, fmt.Errorf("graph: the task is %s; start a new one", run.State()))
 		}
 	}
+}
+
+// Steer queues a message for the run's next step boundary. The current node is
+// not interrupted: a long model call finishes first, and the message reaches
+// the graph at the beginning of the next frontier.
+func (r *Runner) Steer(ctx context.Context, msg message.Message, kind agent.InterruptKind) (agent.Interruption, error) {
+	r.mu.Lock()
+	run := r.run
+	r.mu.Unlock()
+	if run == nil {
+		return agent.Interruption{}, agent.ErrSessionIdle
+	}
+	return run.queueSteer(msg, kind)
 }
 
 // Cancel stops the session's task. A run in flight is stopped through its
@@ -150,6 +173,6 @@ func (r *Run) cancel(ctx context.Context, reason string) error {
 	}
 	r.state = agent.StateCanceled
 	r.pending = nil
-	r.persist(ctx, nil)
+	r.persist(ctx, nil, nil)
 	return nil
 }

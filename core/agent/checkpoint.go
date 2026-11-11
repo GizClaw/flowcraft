@@ -68,6 +68,9 @@ type SaveOptions struct {
 	// Through is the last sequence the save may drop; only meaningful with
 	// Truncate.
 	Through int64
+	// Kinds limits truncation to these event kinds. Empty means every kind,
+	// which is the pre-trace behaviour.
+	Kinds []string
 }
 
 // TruncateThrough asks Save to drop the events at or before seq in the same
@@ -76,10 +79,11 @@ type SaveOptions struct {
 //
 // A store still refuses to drop the newest event, and TruncateEvents remains the
 // standalone form for a host that compacts out of band.
-func TruncateThrough(seq int64) SaveOption {
+func TruncateThrough(seq int64, kinds ...string) SaveOption {
 	return func(options *SaveOptions) {
 		options.Truncate = true
 		options.Through = seq
+		options.Kinds = kinds
 	}
 }
 
@@ -136,7 +140,11 @@ type Store interface {
 	// cannot tell an obsolete event from a missing one. The newest event is never
 	// removable, so sequence numbers stay monotonic and a later Save continues
 	// after the tail rather than reusing a number.
-	TruncateEvents(ctx context.Context, taskID string, seq int64) error
+	//
+	// Kinds limits the deletion to those event kinds: an engine that keeps
+	// trace records beside its state compacts only the state, so the records
+	// survive. Empty means every kind.
+	TruncateEvents(ctx context.Context, taskID string, seq int64, kinds ...string) error
 	// List returns every task, newest first.
 	List(ctx context.Context) ([]TaskSummary, error)
 	// Delete removes a task and its events.

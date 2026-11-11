@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // Invoke is one node execution.
@@ -34,7 +35,20 @@ type Invoke struct {
 	// node is re-entered from the start: anything it did before suspending is
 	// its own idempotency problem.
 	Answer message.Content
+	// Lookup returns a model call this run recorded earlier, by request hash.
+	// Nil when nothing was recorded; a node must not assume replay is on.
+	Lookup func(requestHash string) (agent.LLMCallRecord, bool)
+	// Replay is true when the run should answer from Lookup instead of calling
+	// out. A miss is an error, not a silent live call.
+	Replay bool
+	// Trace is how much of the run is traced. A node that computes input
+	// digests only does so when this allows TraceNode or Replay is on.
+	Trace telemetry.TraceLevel
 }
+
+// Record is one durable fact a node produced; the engine persists it with the
+// step's save.
+type Record = agent.Record
 
 // Result is one node's outcome.
 //
@@ -49,6 +63,9 @@ type Result struct {
 	// Suspend asks the run to stop and wait for the caller. The step finishes
 	// first, so the suspension cannot tear a concurrent step apart.
 	Suspend *Suspend
+	// Records are durable facts this invocation produced: a model call, an
+	// input digest, a side effect. The engine writes them with the step's save.
+	Records []Record
 }
 
 // Suspend is a node asking the caller a question.

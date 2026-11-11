@@ -113,3 +113,26 @@ func BenchmarkAttrs(b *testing.B) {
 		_ = Attrs(ctx)
 	}
 }
+
+// The session identity deploy attaches survives nesting: a graph adds the turn
+// and manifest without erasing the session it inherited.
+func TestAttrsCarrySessionIdentity(t *testing.T) {
+	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1"})
+	ctx = WithRun(ctx, Run{SessionID: "s1", AgentName: "writer"})
+	ctx = WithRun(ctx, Run{Turn: 3, Manifest: "sha256:m"})
+	run, _ := From(ctx)
+	if run.RuntimeID != "rt-1" || run.SessionID != "s1" || run.AgentName != "writer" ||
+		run.Turn != 3 || run.Manifest != "sha256:m" {
+		t.Fatalf("run = %+v, want every field", run)
+	}
+	attrs := make(map[string]any, 6)
+	for _, kv := range Attrs(ctx) {
+		attrs[string(kv.Key)] = kv.Value.AsInterface()
+	}
+	if attrs[telemetry.AttrSessionID] != "s1" || attrs[telemetry.AttrAgentName] != "writer" {
+		t.Errorf("identity attrs = %v", attrs)
+	}
+	if attrs[telemetry.AttrTurn] != int64(3) || attrs[telemetry.AttrManifestID] != "sha256:m" {
+		t.Errorf("turn/manifest attrs = %v", attrs)
+	}
+}

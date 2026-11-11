@@ -47,5 +47,9 @@ type Steerer interface {
 	// Steer hands msg to the running Task and returns once the Task has taken
 	// it. A Task that ends first reports ErrRunEnded, so the caller knows the
 	// message was not applied and can send it again.
-	Steer(ctx context.Context, msg message.Message) error
+	//
+	// The engine decides what "taken" means: an engine that queues to a step
+	// boundary returns as soon as the message is queued, and reports the
+	// applied boundary in the Interrupted event.
+	Steer(ctx context.Context, msg message.Message, kind InterruptKind) (Interruption, error)
 }

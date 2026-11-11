@@ -327,3 +327,54 @@ func (bumpKind) Invoke(_ context.Context, in Invoke) (NodeStream, error) {
 	}
 	return Static(Result{State: []StateUpdate{{Key: config.Key, Value: JSON(encoded)}}}), nil
 }
+
+// The first save records the version combination: a badcase report can then say
+// which deployment, engine and tool schema produced the trace.
+func TestManifestIsWrittenToTheFirstSave(t *testing.T) {
+	store := agenttest.NewMemStore()
+	g := build(t, `
+version: 1
+entry: a
+state:
+  flag: {type: text}
+nodes:
+  - {id: a, kind: const, config: {key: flag, value: "true"}}
+edges:
+  - {from: a, to: end}
+`)
+	manifest := agent.Manifest{
+		Deployment: "sha256:deployment",
+		Engine:     "graph",
+		Tools:      "sha256:tools",
+		Harness:    "test",
+	}
+	run, err := g.Start(context.Background(), nil,
+		WithStore(store, "run-1"),
+		WithFingerprint("sha256:deployment"),
+		WithManifest(manifest),
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := drainRun(t, run); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	checkpoint, err := store.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	raw, ok := checkpoint.Sections["manifest"]
+	if !ok {
+		t.Fatal("the manifest was not written")
+	}
+	var stored agent.Manifest
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if stored.Engine != "graph" || stored.Tools != "sha256:tools" || stored.Harness != "test" {
+		t.Errorf("manifest = %+v", stored)
+	}
+	if stored.ID() != manifest.ID() || stored.ID() == "" {
+		t.Errorf("manifest id = %q, want %q", stored.ID(), manifest.ID())
+	}
+}

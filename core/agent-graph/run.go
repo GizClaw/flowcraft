@@ -2,10 +2,13 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Run is one execution of a graph: its state, its frontier and its step counter.
@@ -58,6 +67,26 @@ type Run struct {
 	// publish uses it to avoid reporting the same answer a second time: a
 	// caller that folds Text events would otherwise see it twice.
 	streamed strings.Builder
+	// manifest is the version combination the run executed under; the first
+	// save writes it into the checkpoint.
+	manifest        agent.Manifest
+	manifestWritten bool
+	// trace is how much of the run is traced.
+	trace telemetry.TraceLevel
+	// calls indexes the model calls this run recorded, by request hash. Replay
+	// answers from it; a live run only grows it.
+	calls map[string]agent.LLMCallRecord
+	// replay answers from calls instead of calling out.
+	replay bool
+	// steerMu guards the steer a caller queued for the next boundary.
+	steerMu sync.Mutex
+	steer   *steerRequest
+}
+
+// steerRequest is one message waiting for the next frontier.
+type steerRequest struct {
+	message message.Message
+	kind    agent.InterruptKind
 }
 
 // Start begins a run. The caller then drains Events, or calls Answer if it
@@ -99,6 +128,10 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 		taskID:      settings.taskID,
 		sessionID:   settings.sessionID,
 		fingerprint: settings.fingerprint,
+		manifest:    settings.manifest,
+		trace:       settings.trace,
+		calls:       make(map[string]agent.LLMCallRecord),
+		replay:      settings.replay,
 		active:      []string{g.entry},
 		state:       agent.StateSubmitted,
 	}
@@ -112,7 +145,7 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 		run.persist(ctx, []StateUpdate{{
 			Key:   g.input,
 			Value: store.values[g.input],
-		}})
+		}}, nil)
 	}
 	return run, nil
 }
@@ -187,7 +220,7 @@ func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) 
 	for len(r.active) > 0 {
 		if err := ctx.Err(); err != nil {
 			r.state = agent.StateCanceled
-			r.persist(ctx, nil)
+			r.persist(ctx, nil, nil)
 			yield(agent.Status{State: agent.StateCanceled, Reason: err.Error()}, nil)
 			yield(nil, err)
 			return
@@ -196,56 +229,14 @@ func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) 
 			r.fail(ctx, yield, errdefs.BudgetExceededf("graph: exceeded limits.max_steps %d", max))
 			return
 		}
-		// A skipped node still routes, so it consumes budget: a cycle of skipped
-		// nodes terminates instead of spinning forever.
-		r.routed += len(r.active)
-		if max := r.g.maxNodes; max > 0 && r.routed > max {
-			r.fail(ctx, yield, errdefs.BudgetExceededf("graph: exceeded limits.max_nodes %d", max))
+		outcome, err := r.frontier(ctx, yield)
+		switch outcome {
+		case frontierStopped:
 			return
-		}
-
-		suspended, question, err := r.runStep(ctx, yield)
-		if errors.Is(err, errConsumerStopped) {
-			// The caller stopped reading. Side effects cannot be undone, so the
-			// run ends here rather than replaying the step later.
-			r.state = agent.StateCanceled
-			return
-		}
-		if err != nil {
+		case frontierFailed:
 			r.fail(ctx, yield, err)
 			return
-		}
-		if len(suspended) > 0 {
-			if len(suspended) > 1 {
-				r.fail(ctx, yield, fmt.Errorf(
-					"graph: nodes %v asked for input in one step; only one may", suspended))
-				return
-			}
-			r.pending = r.active
-			r.active = suspended
-			r.answer = message.Content{}
-			r.state = agent.StateInputRequired
-			reason := ""
-			if text := question.Text(); text != "" {
-				reason = text
-			}
-			r.persist(ctx, nil)
-			yield(agent.Status{State: agent.StateInputRequired, Reason: reason}, nil)
-			return
-		}
-		r.answer = message.Content{}
-
-		next, err := r.nextFrontier()
-		if err != nil {
-			r.fail(ctx, yield, err)
-			return
-		}
-		r.active = next
-		r.step++
-		if !r.emit(yield, agent.Status{
-			State:  agent.StateWorking,
-			Reason: fmt.Sprintf("step %d", r.step),
-		}) {
+		case frontierSuspended:
 			return
 		}
 	}
@@ -259,8 +250,127 @@ func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) 
 		}
 	}
 	r.state = agent.StateCompleted
-	r.persist(ctx, nil)
+	r.persist(ctx, nil, nil)
 	yield(agent.Status{State: agent.StateCompleted}, nil)
+}
+
+// frontierOutcome says why one iteration of the loop ended.
+type frontierOutcome int
+
+const (
+	frontierContinue frontierOutcome = iota
+	frontierSuspended
+	frontierStopped
+	frontierFailed
+)
+
+// frontier runs one iteration: route accounting, the step, suspension and the
+// next frontier. It owns the step span, whose lifetime is exactly one
+// iteration, and the per-step turn identity the child spans inherit.
+func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool) (outcome frontierOutcome, err error) {
+	ctx, end := r.startStepSpan(ctx)
+	defer func() { end(err) }()
+
+	if ok, err := r.applySteer(yield); err != nil {
+		return frontierFailed, err
+	} else if !ok {
+		return frontierStopped, nil
+	}
+
+	// A skipped node still routes, so it consumes budget: a cycle of skipped
+	// nodes terminates instead of spinning forever.
+	r.routed += len(r.active)
+	if max := r.g.maxNodes; max > 0 && r.routed > max {
+		return frontierFailed, errdefs.BudgetExceededf("graph: exceeded limits.max_nodes %d", max)
+	}
+
+	suspended, question, err := r.runStep(ctx, yield)
+	if errors.Is(err, errConsumerStopped) {
+		// The caller stopped reading. Side effects cannot be undone, so the
+		// run ends here rather than replaying the step later.
+		r.state = agent.StateCanceled
+		return frontierStopped, nil
+	}
+	if err != nil {
+		return frontierFailed, err
+	}
+	if len(suspended) > 0 {
+		if len(suspended) > 1 {
+			return frontierFailed, fmt.Errorf(
+				"graph: nodes %v asked for input in one step; only one may", suspended)
+		}
+		r.pending = r.active
+		r.active = suspended
+		r.answer = message.Content{}
+		r.state = agent.StateInputRequired
+		reason := ""
+		if text := question.Text(); text != "" {
+			reason = text
+		}
+		r.persist(ctx, nil, nil)
+		yield(agent.Status{State: agent.StateInputRequired, Reason: reason}, nil)
+		return frontierSuspended, nil
+	}
+	r.answer = message.Content{}
+
+	next, err := r.nextFrontier()
+	if err != nil {
+		return frontierFailed, err
+	}
+	r.active = next
+	r.step++
+	if !r.emit(yield, agent.Status{
+		State:  agent.StateWorking,
+		Reason: fmt.Sprintf("step %d", r.step),
+	}) {
+		return frontierStopped, nil
+	}
+	return frontierContinue, nil
+}
+
+// startStepSpan opens the step span. With tracing off it returns the context
+// unchanged and a no-op end, so the loop pays one branch.
+func (r *Run) startStepSpan(ctx context.Context) (context.Context, func(error)) {
+	if r.trace == telemetry.TraceOff {
+		return ctx, func(error) {}
+	}
+	ctx = runctx.WithRun(ctx, runctx.Run{Turn: r.step + 1, Manifest: r.manifest.ID()})
+	if !r.trace.Allows(telemetry.TraceStep) {
+		return ctx, func(error) {}
+	}
+	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.step",
+		trace.WithAttributes(runctx.Attrs(ctx)...),
+		trace.WithAttributes(
+			attribute.Int(telemetry.AttrGraphFrontier, len(r.active)),
+			attribute.Int(telemetry.AttrGraphRouted, r.routed),
+		))
+	return ctx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "")
+		}
+		span.End()
+	}
+}
+
+// startNodeSpan opens one node's span, a child of the step span.
+func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (context.Context, func(error)) {
+	if !r.trace.Allows(telemetry.TraceNode) {
+		return ctx, func(error) {}
+	}
+	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.node",
+		trace.WithAttributes(runctx.Attrs(ctx)...),
+		trace.WithAttributes(
+			attribute.String(telemetry.AttrNodeID, id),
+			attribute.String(telemetry.AttrNodeKind, kind.Name()),
+		))
+	return ctx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "")
+		}
+		span.End()
+	}
 }
 
 // emit yields one progress event. A consumer that stopped leaves the run
@@ -278,7 +388,7 @@ func (r *Run) emit(yield func(agent.Event, error) bool, event agent.Event) bool 
 // fail reports a terminal failure.
 func (r *Run) fail(ctx context.Context, yield func(agent.Event, error) bool, err error) {
 	r.state = agent.StateFailed
-	r.persist(ctx, nil)
+	r.persist(ctx, nil, nil)
 	yield(agent.Status{State: agent.StateFailed, Reason: err.Error()}, nil)
 	yield(nil, err)
 }
@@ -316,7 +426,9 @@ func (r *Run) runStepInline(
 		}
 		return true
 	}
-	result, err := r.invokeInline(ctx, id, inv, emit)
+	nodeCtx, end := r.startNodeSpan(ctx, id, r.g.nodes[id].kind)
+	result, err := r.invokeInline(nodeCtx, id, inv, emit)
+	end(err)
 	if stopped {
 		return nil, message.Content{}, errConsumerStopped
 	}
@@ -324,13 +436,13 @@ func (r *Run) runStepInline(
 		return nil, message.Content{}, fmt.Errorf("graph: node %q: %w", id, err)
 	}
 	if result.Suspend != nil {
-		r.persist(ctx, nil)
+		r.persist(ctx, nil, result.Records)
 		return []string{id}, result.Suspend.Question, nil
 	}
 	if err := r.values.apply(result.State, r.g.state); err != nil {
 		return nil, message.Content{}, err
 	}
-	r.persist(ctx, result.State)
+	r.persist(ctx, result.State, result.Records)
 	return nil, message.Content{}, nil
 }
 
@@ -392,6 +504,9 @@ func (r *Run) runStep(
 			Snapshot: func() Snapshot { return Snapshot{values: snapshot} },
 			Step:     r.step,
 			Answer:   r.answer,
+			Lookup:   r.lookup,
+			Replay:   r.replay,
+			Trace:    r.trace,
 		}
 	}
 	// A frontier with one node has nothing to run in parallel: it pays no
@@ -445,7 +560,9 @@ func (r *Run) runStep(
 					return false
 				}
 			}
-			outcome.result, outcome.err = r.invokeOnce(stepCtx, id, invocations[i], emit)
+			nodeCtx, end := r.startNodeSpan(stepCtx, id, r.g.nodes[id].kind)
+			outcome.result, outcome.err = r.invokeOnce(nodeCtx, id, invocations[i], emit)
+			end(outcome.err)
 		}(i, id)
 	}
 	go func() {
@@ -507,10 +624,12 @@ func (r *Run) runStep(
 	// Declaration order decides how writes merge; completion order never does.
 	var (
 		updates   []StateUpdate
+		records   []agent.Record
 		suspended []string
 		question  message.Content
 	)
 	for i, result := range results {
+		records = append(records, result.Records...)
 		if result.Suspend != nil {
 			suspended = append(suspended, active[i])
 			if question.Text() == "" {
@@ -523,8 +642,65 @@ func (r *Run) runStep(
 	if err := r.values.apply(updates, r.g.state); err != nil {
 		return nil, message.Content{}, err
 	}
-	r.persist(ctx, updates)
+	r.persist(ctx, updates, records)
 	return suspended, question, nil
+}
+
+// queueSteer records a message for the next boundary. The run's own goroutine
+// applies it, so a caller never touches state it does not own.
+func (r *Run) queueSteer(msg message.Message, kind agent.InterruptKind) (agent.Interruption, error) {
+	if r.g.input == "" {
+		return agent.Interruption{}, fmt.Errorf(
+			"%w: the document declares no input slot", agent.ErrSteerUnsupported)
+	}
+	r.steerMu.Lock()
+	defer r.steerMu.Unlock()
+	r.steer = &steerRequest{message: msg, kind: kind}
+	return agent.Interruption{IntentKind: kind}, nil
+}
+
+// applySteer appends the queued message to the input slot and reports the
+// interruption. It runs on the run's goroutine, just before the step.
+func (r *Run) applySteer(yield func(agent.Event, error) bool) (bool, error) {
+	r.steerMu.Lock()
+	request := r.steer
+	r.steer = nil
+	r.steerMu.Unlock()
+	if request == nil {
+		return true, nil
+	}
+	delta := MessagesValue(MessagesFromSlice([]message.Message{request.message}))
+	if err := r.values.apply([]StateUpdate{{
+		Key:   r.g.input,
+		Value: delta,
+	}}, r.g.state); err != nil {
+		return false, fmt.Errorf("graph: apply steer: %w", err)
+	}
+	interruption := agent.Interruption{
+		IntentKind:     request.kind,
+		BeforePlanHash: r.planHash(),
+		BoundaryStep:   r.step + 1,
+	}
+	if !yield(agent.Interrupted{Interruption: interruption}, nil) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// planHash identifies the frontier an interruption arrived in.
+func (r *Run) planHash() string {
+	body := strings.Join(r.active, "\x00") + "\x00" + strconv.Itoa(r.step)
+	sum := sha256.Sum256([]byte(body))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// lookup returns a recorded call by request hash.
+func (r *Run) lookup(requestHash string) (agent.LLMCallRecord, bool) {
+	if requestHash == "" || r.calls == nil {
+		return agent.LLMCallRecord{}, false
+	}
+	record, ok := r.calls[requestHash]
+	return record, ok
 }
 
 // invokeOnce runs one node, retrying a retryable failure that produced no events.

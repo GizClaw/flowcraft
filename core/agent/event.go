@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"time"
+
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -25,6 +27,8 @@ const (
 	KindUsage EventKind = "usage"
 	// KindStatus reports a lifecycle transition.
 	KindStatus EventKind = "status"
+	// KindInterrupted reports an applied (or accepted) interruption.
+	KindInterrupted EventKind = "interrupted"
 )
 
 // Event is one step of a running Task.
@@ -51,10 +55,23 @@ type Text struct{ Text string }
 type Reasoning struct{ Text string }
 
 // ToolCallStart announces one tool call.
-type ToolCallStart struct{ Call message.ToolCall }
+type ToolCallStart struct {
+	Call message.ToolCall
+	// ArgsHash is the call's canonical argument hash: the trace keeps the
+	// identity, not the payload.
+	ArgsHash string
+}
 
 // ToolResult carries one tool result.
-type ToolResult struct{ Result message.ToolResult }
+type ToolResult struct {
+	Result message.ToolResult
+	// ResultHash is the result's canonical hash.
+	ResultHash string
+	// Duration is how long the call took.
+	Duration time.Duration
+	// ErrorKind classifies a failed result; empty for success.
+	ErrorKind string
+}
 
 // ArtifactWritten announces a produced artifact.
 type ArtifactWritten struct{ Artifact Artifact }
@@ -68,6 +85,9 @@ type Status struct {
 	Reason string
 }
 
+// Interrupted reports an interruption the engine applied at a boundary.
+type Interrupted struct{ Interruption }
+
 func (StreamStart) Kind() EventKind     { return KindStreamStart }
 func (Text) Kind() EventKind            { return KindText }
 func (Reasoning) Kind() EventKind       { return KindReasoning }
@@ -76,6 +96,7 @@ func (ToolResult) Kind() EventKind      { return KindToolResult }
 func (ArtifactWritten) Kind() EventKind { return KindArtifact }
 func (UsageEvent) Kind() EventKind      { return KindUsage }
 func (Status) Kind() EventKind          { return KindStatus }
+func (Interrupted) Kind() EventKind     { return KindInterrupted }
 
 // The seal. Every event kind is one of these types and nothing outside this
 // package can add another.
@@ -87,3 +108,4 @@ func (ToolResult) event()      {}
 func (ArtifactWritten) event() {}
 func (UsageEvent) event()      {}
 func (Status) event()          {}
+func (Interrupted) event()     {}

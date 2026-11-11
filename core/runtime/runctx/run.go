@@ -18,16 +18,23 @@ import (
 // the carrier lives here rather than in core/runtime: tool and inference must be
 // able to read it without importing that package.
 //
-// It deliberately carries no conversation identity. A conversation is an agent
-// concern: the runtime serves whatever context it is handed and has no opinion
-// about turns, history or users. A layer that owns a conversation attaches
-// AttrConversationID itself.
+// The runtime fills RuntimeID/TenantID; a layer that owns a session adds
+// SessionID/AgentName/Turn/Manifest. Nothing here is conversation *content*:
+// the fields are the identity a span or log record is correlated by.
 type Run struct {
 	// RuntimeID identifies the assembled runtime (agent.runtime.id).
 	RuntimeID string
 	// TenantID identifies the tenant on whose behalf the work happens. Empty
 	// for a single-tenant deployment, which stays a valid configuration.
 	TenantID string
+	// SessionID identifies the session (the container of tasks).
+	SessionID string
+	// AgentName names the deployed agent.
+	AgentName string
+	// Turn is the conversation turn a step belongs to.
+	Turn int
+	// Manifest is the deployment manifest a run executed under.
+	Manifest string
 }
 
 type runKey struct{}
@@ -56,6 +63,18 @@ func WithRun(ctx context.Context, run Run) context.Context {
 	if run.TenantID != "" {
 		merged.TenantID = run.TenantID
 	}
+	if run.SessionID != "" {
+		merged.SessionID = run.SessionID
+	}
+	if run.AgentName != "" {
+		merged.AgentName = run.AgentName
+	}
+	if run.Turn != 0 {
+		merged.Turn = run.Turn
+	}
+	if run.Manifest != "" {
+		merged.Manifest = run.Manifest
+	}
 	return context.WithValue(ctx, runKey{}, attached{run: merged, attrs: buildAttrs(merged)})
 }
 
@@ -77,12 +96,24 @@ func stored(ctx context.Context) Run {
 
 // buildAttrs renders the identity once, when it is attached.
 func buildAttrs(run Run) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 2)
+	attrs := make([]attribute.KeyValue, 0, 6)
 	if run.RuntimeID != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrRuntimeID, run.RuntimeID))
 	}
 	if run.TenantID != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrTenantID, run.TenantID))
+	}
+	if run.SessionID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrSessionID, run.SessionID))
+	}
+	if run.AgentName != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrAgentName, run.AgentName))
+	}
+	if run.Turn > 0 {
+		attrs = append(attrs, attribute.Int(telemetry.AttrTurn, run.Turn))
+	}
+	if run.Manifest != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrManifestID, run.Manifest))
 	}
 	return attrs
 }

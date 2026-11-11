@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/checkpoint"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // benchKind writes one boolean, so a benchmark measures the engine rather than a
@@ -141,6 +142,38 @@ func BenchmarkRunFanOut(b *testing.B) {
 	}
 }
 
+// BenchmarkRunOneStepTrace is the same step under each trace level. With the
+// global noop provider it measures the branch and the span bookkeeping; the
+// real SDK cost is measured in core/telemetry (0.8-1.2 us per span).
+func BenchmarkRunOneStepTrace(b *testing.B) {
+	for _, level := range []struct {
+		name  string
+		level telemetry.TraceLevel
+	}{
+		{"off", telemetry.TraceOff},
+		{"step", telemetry.TraceStep},
+		{"node", telemetry.TraceNode},
+	} {
+		b.Run(level.name, func(b *testing.B) {
+			g := benchmarkGraph(b, benchDoc, benchKind{})
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				run, err := g.Start(ctx, nil, WithTrace(level.level))
+				if err != nil {
+					b.Fatalf("Start: %v", err)
+				}
+				for _, err := range run.Events(ctx) {
+					if err != nil {
+						b.Fatalf("Events: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkPersistStep is the durable cost of one step: encode the write, bump
 // the projection and append the event, in one transaction.
 func BenchmarkPersistStep(b *testing.B) {
@@ -156,7 +189,7 @@ func BenchmarkPersistStep(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		run.step++
-		run.persist(ctx, updates)
+		run.persist(ctx, updates, nil)
 	}
 	b.StopTimer()
 	if _, err := store.Load(ctx, "task-1"); err != nil {
@@ -179,7 +212,7 @@ func BenchmarkPersistBaseEvery10(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		run.step++
-		run.persist(ctx, updates)
+		run.persist(ctx, updates, nil)
 	}
 	b.StopTimer()
 	if _, err := store.Load(ctx, "task-1"); err != nil {
@@ -202,7 +235,7 @@ func BenchmarkRestore(b *testing.B) {
 			updates := []StateUpdate{{Key: "flag", Value: Bool(true)}}
 			for i := 0; i < steps; i++ {
 				run.step++
-				run.persist(ctx, updates)
+				run.persist(ctx, updates, nil)
 			}
 			options := runOptions{
 				store: store, taskID: "task-1",

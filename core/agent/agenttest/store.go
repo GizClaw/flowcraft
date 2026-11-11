@@ -40,6 +40,7 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"TruncateKeepsTheTail", truncateKeepsTheTail},
 		{"TruncateRefusesTheTail", truncateRefusesTheTail},
 		{"SaveCompactsInTheSameTransaction", saveCompacts},
+		{"TruncateByKindKeepsRecords", truncateKeepsRecords},
 		{"SetServerVersionLeavesTheProjectionAlone", setServerVersionOnly},
 		{"VersionAdvancesPerSave", versionAdvances},
 		{"ServerVersionRoundTrips", serverVersionRoundTrips},
@@ -312,6 +313,31 @@ func setServerVersionOnly(t *testing.T, open func(*testing.T) agent.Store) {
 }
 
 // Refusing to remove the newest event is what keeps sequence numbers monotonic.
+// Truncation can be limited to the kinds a base supersedes: an engine that
+// keeps trace records beside its state must not lose them to compaction.
+func truncateKeepsRecords(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0), []agent.EventRecord{
+		{Kind: "state", Payload: []byte(`1`)},
+		{Kind: "record", Payload: []byte(`2`)},
+		{Kind: "state", Payload: []byte(`3`)},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.TruncateEvents(ctx, "task-1", 2, "state"); err != nil {
+		t.Fatalf("TruncateEvents: %v", err)
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 2 || events[0].Kind != "record" || events[1].Kind != "state" ||
+		events[0].Seq != 2 || events[1].Seq != 3 {
+		t.Fatalf("events = %+v, want the record and the state after the point", events)
+	}
+}
+
 // Compaction belongs to the save that makes the base durable: the option drops
 // the prefix and writes the round in one transaction, with the same guard the
 // standalone call uses.
@@ -627,7 +653,7 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 			}
 			kept := entry.events[:0]
 			for _, event := range entry.events {
-				if event.Seq > options.Through {
+				if event.Seq > options.Through || (len(options.Kinds) > 0 && !containsKind(options.Kinds, event.Kind)) {
 					kept = append(kept, event)
 				}
 			}
@@ -732,7 +758,7 @@ func (m *MemStore) SetServerVersion(ctx context.Context, taskID string, version 
 	return nil
 }
 
-func (m *MemStore) TruncateEvents(ctx context.Context, taskID string, seq int64) error {
+func (m *MemStore) TruncateEvents(ctx context.Context, taskID string, seq int64, kinds ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -751,12 +777,22 @@ func (m *MemStore) TruncateEvents(ctx context.Context, taskID string, seq int64)
 	}
 	kept := entry.events[:0]
 	for _, event := range entry.events {
-		if event.Seq > seq {
+		if event.Seq > seq || (len(kinds) > 0 && !containsKind(kinds, event.Kind)) {
 			kept = append(kept, event)
 		}
 	}
 	entry.events = kept
 	return nil
+}
+
+// containsKind reports whether one event kind is in the truncation allow-list.
+func containsKind(kinds []string, kind string) bool {
+	for _, candidate := range kinds {
+		if candidate == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemStore) List(ctx context.Context) ([]agent.TaskSummary, error) {

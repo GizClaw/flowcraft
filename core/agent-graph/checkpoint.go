@@ -16,9 +16,11 @@ import (
 // lifecycle, the projection rides Sections, and the state itself is an
 // append-only stream of two record kinds.
 const (
-	sectionGraph = "graph"
-	eventState   = "graph.state"
-	eventBase    = "graph.base"
+	sectionGraph    = "graph"
+	sectionManifest = "manifest"
+	eventState      = "graph.state"
+	eventBase       = "graph.base"
+	eventLLMCall    = "llm.call"
 )
 
 // projection is the small, per-step part of a checkpoint: where the run is, not
@@ -147,6 +149,9 @@ type runOptions struct {
 	taskID      string
 	sessionID   string
 	fingerprint agent.Fingerprint
+	manifest    agent.Manifest
+	trace       telemetry.TraceLevel
+	replay      bool
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
@@ -166,12 +171,23 @@ func WithFingerprint(fingerprint agent.Fingerprint) RunOption {
 	return func(o *runOptions) { o.fingerprint = fingerprint }
 }
 
+// WithManifest records the version combination the run executed under. The
+// first save writes it into the checkpoint, where a badcase report can read it.
+func WithManifest(manifest agent.Manifest) RunOption {
+	return func(o *runOptions) { o.manifest = manifest }
+}
+
+// WithTrace sets how much of the run is traced.
+func WithTrace(trace telemetry.TraceLevel) RunOption {
+	return func(o *runOptions) { o.trace = trace }
+}
+
 // persist writes the projection and this step's writes.
 //
 // A failed save is reported and does not fail the run: the next save writes a
 // base instead of deltas, so the log never ends up with a hole. The cost is a
 // checkpoint that lags by at most the unsaved steps.
-func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
+func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agent.Record) {
 	if r.store == nil {
 		return
 	}
@@ -189,6 +205,13 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 			// The base could not be built; keep the flag for the next attempt.
 			r.needBase = true
 		}
+	}
+	for _, record := range records {
+		if record.Kind == "" || len(record.Payload) == 0 {
+			continue
+		}
+		record = r.storedRecord(ctx, record)
+		events = append(events, agent.EventRecord{Kind: record.Kind, Payload: record.Payload})
 	}
 	for _, update := range updates {
 		encoded, err := encodeValue(ctx, r.store, update.Value)
@@ -224,6 +247,15 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 		r.needBase = true
 		return
 	}
+	sections := map[string]json.RawMessage{sectionGraph: body}
+	writeManifest := !r.manifestWritten && r.manifest.ID() != ""
+	if writeManifest {
+		if raw, err := json.Marshal(r.manifest); err == nil {
+			sections[sectionManifest] = raw
+		} else {
+			writeManifest = false
+		}
+	}
 	checkpoint := agent.Checkpoint{
 		Schema:      agent.CheckpointSchema,
 		Fingerprint: r.fingerprint,
@@ -233,7 +265,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 			State:     r.state,
 			Round:     r.step,
 		},
-		Sections: map[string]json.RawMessage{sectionGraph: body},
+		Sections: sections,
 	}
 	// The base the projection names is known before the save, so the events it
 	// supersedes can go in the same transaction: one step, one commit.
@@ -245,13 +277,19 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 	}
 	var options []agent.SaveOption
 	if compactThrough > 0 {
-		options = append(options, agent.TruncateThrough(compactThrough))
+		options = append(options, agent.TruncateThrough(compactThrough, eventState, eventBase))
 	}
 	first, _, err := r.store.Save(ctx, checkpoint, events, options...)
 	if err != nil {
 		telemetry.WarnErr(ctx, "graph: checkpoint write failed", err)
 		r.needBase = true
 		return
+	}
+	if writeManifest {
+		r.manifestWritten = true
+	}
+	for _, record := range records {
+		r.indexRecord(record)
 	}
 	// The projection this save wrote is durable: promote its base. The log was
 	// already compacted in the same transaction. Then a base written by this save
@@ -264,6 +302,45 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate) {
 		fresh.Seq = first
 		r.pendingBase = fresh
 	}
+}
+
+// storedRecord moves a model response into a blob, so the event log carries a
+// reference rather than the answer's bytes.
+func (r *Run) storedRecord(ctx context.Context, record agent.Record) agent.Record {
+	if record.Kind != eventLLMCall || r.store == nil {
+		return record
+	}
+	var call agent.LLMCallRecord
+	if err := json.Unmarshal(record.Payload, &call); err != nil || len(call.Response) == 0 {
+		return record
+	}
+	ref, err := r.store.PutBlob(ctx, call.Response)
+	if err != nil {
+		telemetry.WarnErr(ctx, "graph: store model response", err)
+		return record
+	}
+	call.Response = nil
+	call.ResponseRef = ref
+	payload, err := json.Marshal(call)
+	if err != nil {
+		return record
+	}
+	return agent.Record{Kind: record.Kind, Payload: payload}
+}
+
+// indexRecord adds a recorded model call to the replay index.
+func (r *Run) indexRecord(record agent.Record) {
+	if record.Kind != eventLLMCall {
+		return
+	}
+	var call agent.LLMCallRecord
+	if err := json.Unmarshal(record.Payload, &call); err != nil || call.RequestHash == "" {
+		return
+	}
+	if r.calls == nil {
+		r.calls = make(map[string]agent.LLMCallRecord)
+	}
+	r.calls[call.RequestHash] = call
 }
 
 // writeBase snapshots the state and appends the event that names it.
@@ -322,23 +399,36 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 			return nil, false, fmt.Errorf("graph: decode projection: %w", err)
 		}
 	}
-	values, err := g.restoreState(ctx, opts, proj.Base)
+	values, calls, err := g.restoreState(ctx, opts, proj.Base)
 	if err != nil {
 		return nil, false, err
 	}
+	manifest := opts.manifest
+	manifestWritten := false
+	if raw, ok := checkpoint.Sections[sectionManifest]; ok {
+		manifestWritten = true
+		if manifest == (agent.Manifest{}) {
+			_ = json.Unmarshal(raw, &manifest)
+		}
+	}
 	run := &Run{
-		g:           g,
-		store:       opts.store,
-		taskID:      opts.taskID,
-		sessionID:   opts.sessionID,
-		fingerprint: opts.fingerprint,
-		values:      values,
-		active:      proj.Frontier,
-		pending:     proj.Pending,
-		step:        proj.Step,
-		routed:      proj.Routed,
-		state:       checkpoint.Task.State,
-		namedBase:   proj.Base,
+		g:               g,
+		store:           opts.store,
+		taskID:          opts.taskID,
+		sessionID:       opts.sessionID,
+		fingerprint:     opts.fingerprint,
+		manifest:        manifest,
+		manifestWritten: manifestWritten,
+		trace:           opts.trace,
+		calls:           calls,
+		replay:          opts.replay,
+		values:          values,
+		active:          proj.Frontier,
+		pending:         proj.Pending,
+		step:            proj.Step,
+		routed:          proj.Routed,
+		state:           checkpoint.Task.State,
+		namedBase:       proj.Base,
 	}
 	startedAt := time.Now()
 	if proj.StartedAt > 0 {
@@ -355,18 +445,19 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 
 // restoreState replays the event log from the projection's base: the blob gives
 // the state as of that sequence, and only the events after it are read.
-func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef) (*stateStore, error) {
+func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef) (*stateStore, map[string]agent.LLMCallRecord, error) {
 	store := newStateStore(g.state)
+	calls := make(map[string]agent.LLMCallRecord)
 	var after int64
 	if base != nil {
 		if err := g.loadBase(ctx, opts, store, base.Blob); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		after = base.Seq
 	}
 	events, err := opts.store.EventsAfter(ctx, opts.taskID, after)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i := 0; i < len(events); {
 		event := events[i]
@@ -374,10 +465,19 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 		case eventBase:
 			var record baseEvent
 			if err := json.Unmarshal(event.Payload, &record); err != nil {
-				return nil, fmt.Errorf("graph: decode base: %w", err)
+				return nil, nil, fmt.Errorf("graph: decode base: %w", err)
 			}
 			if err := g.loadBase(ctx, opts, store, record.Blob); err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			i++
+		case eventLLMCall:
+			var call agent.LLMCallRecord
+			if err := json.Unmarshal(event.Payload, &call); err != nil {
+				return nil, nil, fmt.Errorf("graph: decode model call: %w", err)
+			}
+			if call.RequestHash != "" {
+				calls[call.RequestHash] = call
 			}
 			i++
 		case eventState:
@@ -385,13 +485,13 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 			// apply them, then continue with the next group.
 			var first stateEvent
 			if err := json.Unmarshal(event.Payload, &first); err != nil {
-				return nil, fmt.Errorf("graph: decode state event: %w", err)
+				return nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 			}
 			updates := make([]StateUpdate, 0, 4)
 			for {
 				value, err := decodeValue(first.Value)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				updates = append(updates, StateUpdate{Key: first.Key, Value: value})
 				i++
@@ -400,7 +500,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 				}
 				var next stateEvent
 				if err := json.Unmarshal(events[i].Payload, &next); err != nil {
-					return nil, fmt.Errorf("graph: decode state event: %w", err)
+					return nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 				}
 				if next.Step != first.Step {
 					break
@@ -408,13 +508,13 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 				first = next
 			}
 			if err := store.apply(updates, g.state); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		default:
 			i++
 		}
 	}
-	return store, nil
+	return store, calls, nil
 }
 
 // loadBase replaces the state with the one the blob holds.

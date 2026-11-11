@@ -13,6 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
 )
 
@@ -65,6 +67,12 @@ type Host struct {
 	// ArtifactURL turns a blob reference into a URL a client can fetch. Nil keeps
 	// the reference in a data part.
 	ArtifactURL func(ref string) string
+	// Trace controls the spans every run of every deployment emits. Zero emits
+	// none; a durable host usually asks for TraceNode.
+	Trace telemetry.TraceLevel
+	// Harness is the host's build identity (version or git SHA), recorded in
+	// each deployment's manifest.
+	Harness string
 }
 
 // Manager owns the deployed agents: one table, one kind registry, one set of
@@ -169,12 +177,22 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		protocolName = spec.Protocol.Kind
 	}
 	deployed.fingerprint = deploymentFingerprint(runtimeDigest(rt), spec.Engine.Kind, engineFingerprint, protocolName)
+	deployed.manifest = agent.Manifest{
+		Deployment: deployed.fingerprint,
+		Engine:     spec.Engine.Kind,
+		Protocol:   protocolName,
+		Models:     manifestModels(rt),
+		Tools:      manifestTools(rt),
+		Harness:    m.host.Harness,
+	}
 
 	factory, err := engineKind.Build(ctx, EngineDeps{
 		Spec:        spec.Engine,
 		Runtime:     rt,
 		Store:       m.host.Store,
 		Fingerprint: deployed.fingerprint,
+		Manifest:    deployed.manifest,
+		Trace:       m.host.Trace,
 	})
 	if err != nil {
 		if rt != nil {
@@ -187,6 +205,7 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		Identity:    deployed.fingerprint,
 		NewRunner:   factory,
 		RunContext:  deployed.runContext,
+		Trace:       m.host.Trace,
 		IdleTimeout: spec.IdleTimeout,
 		MaxSessions: spec.MaxSessions,
 		OnEvent:     m.observer(spec.Name),
@@ -379,6 +398,7 @@ type deployment struct {
 	agent       *agent.Agent
 	protocol    Protocol
 	fingerprint agent.Fingerprint
+	manifest    agent.Manifest
 	// views holds the tool projection of a session-scoped catalog.
 	views     sync.Map
 	closeOnce sync.Once
@@ -388,9 +408,14 @@ type deployment struct {
 // runContext gives one run its execution context: the tool projection the
 // catalog scope names. The session table calls it per run.
 func (d *deployment) runContext(ctx context.Context, sessionID string) context.Context {
+	ctx = runctx.WithRun(ctx, runctx.Run{
+		SessionID: sessionID,
+		AgentName: d.name,
+	})
 	if d.rt == nil {
 		return ctx
 	}
+	ctx = d.rt.Context(ctx)
 	if scope, _ := d.spec.Catalog.validatedScope(); scope == CatalogScopeSession {
 		view, _ := d.views.LoadOrStore(sessionID, d.rt.NewCatalogView())
 		catalog, _ := view.(toolengine.CatalogView)

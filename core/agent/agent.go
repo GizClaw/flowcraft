@@ -13,7 +13,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Sentinels a caller can test for.
@@ -59,6 +63,10 @@ type AgentOptions struct {
 	// Identity is the fingerprint a checkpoint must carry to be resumed.
 	// Empty disables the check.
 	Identity Fingerprint
+	// Trace controls the spans this agent emits. Zero emits none; a durable
+	// host usually asks for TraceNode so a run, its frontiers and its nodes
+	// are attributable. The cost is a span per unit, not per event.
+	Trace telemetry.TraceLevel
 	// NewRunner builds the engine for one session. The task id is settled
 	// before this is called, so an engine may key its checkpoint by it.
 	//
@@ -199,9 +207,19 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
+		var span trace.Span
+		if a.opts.Trace.Allows(telemetry.TraceRun) {
+			runCtx, span = telemetry.TracerWithSuffix("agent").Start(runCtx, "agent.run",
+				trace.WithAttributes(runctx.Attrs(runCtx)...))
+			defer span.End()
+		}
 
 		for event, runErr := range entry.runner.Run(runCtx, msg) {
 			if runErr != nil {
+				if span != nil {
+					span.RecordError(runErr)
+					span.SetStatus(codes.Error, "")
+				}
 				yield(nil, runErr)
 				return
 			}
@@ -263,24 +281,27 @@ func (a *Agent) State(ctx context.Context, sessionID string) (TaskState, error) 
 // and that the engine can take one. A session that is idle — including one
 // waiting for input, whose message belongs in Run — reports ErrSessionIdle,
 // and an engine without the optional Steerer reports ErrSteerUnsupported.
-func (a *Agent) Steer(ctx context.Context, sessionID string, msg message.Message) error {
+func (a *Agent) Steer(ctx context.Context, sessionID string, msg message.Message, kind InterruptKind) (Interruption, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return ErrSessionRequired
+		return Interruption{}, ErrSessionRequired
+	}
+	if kind == "" {
+		kind = InterruptSteer
 	}
 	shard := a.table.shard(sessionID)
 	shard.mu.Lock()
 	entry, found := shard.lookup(sessionID)
 	if !found || !entry.running {
 		shard.mu.Unlock()
-		return ErrSessionIdle
+		return Interruption{}, ErrSessionIdle
 	}
 	steerer, ok := entry.runner.(Steerer)
 	if !ok {
 		shard.mu.Unlock()
-		return ErrSteerUnsupported
+		return Interruption{}, ErrSteerUnsupported
 	}
 	shard.mu.Unlock()
-	return steerer.Steer(ctx, msg)
+	return steerer.Steer(ctx, msg, kind)
 }
 
 // Cancel stops the session's Task. A session that is not open is

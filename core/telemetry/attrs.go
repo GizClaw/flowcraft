@@ -56,6 +56,19 @@ const (
 	// tenant boundary is meaningful (multi-tenant SaaS deployments).
 	AttrTenantID = "tenant.id"
 
+	// AttrSessionID identifies the session an operation belongs to: the
+	// container of tasks, which outlives each of them.
+	AttrSessionID = "session.id"
+
+	// AttrAgentName names the deployed agent within a multi-agent host.
+	AttrAgentName = "agent.name"
+
+	// AttrTurn is the conversation turn a step belongs to.
+	AttrTurn = "turn"
+
+	// AttrManifestID identifies the deployment manifest a run executed under.
+	AttrManifestID = "agent.manifest.id"
+
 	// ----- Execution (what unit of work) -----
 
 	// AttrRunID identifies one engine.Run execution
@@ -100,6 +113,15 @@ const (
 	// AttrNodeID identifies one graph node (graph.Node.ID) inside a
 	// graph run. Emitted on per-node spans, metrics and log records.
 	AttrNodeID = "node.id"
+
+	// AttrNodeKind is the node kind that ran ("model", "tool", "condition").
+	AttrNodeKind = "node.kind"
+
+	// AttrGraphFrontier is how many nodes the step's frontier held.
+	AttrGraphFrontier = "graph.frontier"
+
+	// AttrGraphRouted is how many node invocations the run has routed so far.
+	AttrGraphRouted = "graph.routed"
 
 	// ----- Tools -----
 

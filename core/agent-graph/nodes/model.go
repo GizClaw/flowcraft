@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
@@ -14,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 )
 
@@ -140,6 +142,13 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 	if err != nil {
 		return nil, fmt.Errorf("model: %w", err)
 	}
+	record := in.Trace.Allows(telemetry.TraceNode) || in.Replay
+	var digests []agent.MessageDigest
+	var segments []agent.PromptSegment
+	if record {
+		digests, segments = describePrompt(request)
+	}
+	started := time.Now()
 	stream, err := m.open(ctx, request)
 	if err != nil {
 		return nil, err
@@ -152,6 +161,11 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		pendingKey:  config.Pending,
 		usageKey:    config.Usage,
 		outputKey:   config.Output,
+		model:       request.Model,
+		started:     started,
+		record:      record,
+		digests:     digests,
+		segments:    segments,
 	}, nil
 }
 
@@ -318,8 +332,15 @@ type modelStream struct {
 	pendingKey  string
 	usageKey    string
 	outputKey   string
-	result      graph.Result
-	done        bool
+	model       model.ModelRef
+	started     time.Time
+	// record says this call's identity is kept: the input digests and the
+	// assembled response ride the step's checkpoint.
+	record   bool
+	digests  []agent.MessageDigest
+	segments []agent.PromptSegment
+	result   graph.Result
+	done     bool
 }
 
 func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
@@ -396,7 +417,24 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 			updates = append(updates, graph.StateUpdate{Key: s.outputKey, Value: graph.Text(text)})
 		}
 	}
-	return graph.Result{State: updates}, nil
+	result := graph.Result{State: updates}
+	if s.record {
+		record := agent.LLMCallRecord{
+			Model:      s.model,
+			Usage:      response.Usage,
+			StopReason: string(response.FinishReason),
+			LatencyMs:  time.Since(s.started).Milliseconds(),
+			Messages:   s.digests,
+			Segments:   s.segments,
+		}
+		if body, err := json.Marshal(response.Message); err == nil {
+			record.Response = body
+		}
+		if payload, err := json.Marshal(record); err == nil {
+			result.Records = []graph.Record{{Kind: recordLLMCall, Payload: payload}}
+		}
+	}
+	return result, nil
 }
 
 // open starts the call through the router when the runtime declared models, and

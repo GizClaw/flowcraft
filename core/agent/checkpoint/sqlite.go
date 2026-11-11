@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -248,7 +249,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		}
 	}
 	if options.Truncate {
-		if err := truncateEvents(ctx, tx, checkpoint.Task.ID, options.Through); err != nil {
+		if err := truncateEvents(ctx, tx, checkpoint.Task.ID, options.Through, options.Kinds...); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -388,8 +389,8 @@ func (l *SQLite) SetServerVersion(ctx context.Context, taskID string, version in
 }
 
 // TruncateEvents removes the events at or before seq, keeping the tail.
-func (l *SQLite) TruncateEvents(ctx context.Context, taskID string, seq int64) error {
-	return truncateEvents(ctx, l.db, taskID, seq)
+func (l *SQLite) TruncateEvents(ctx context.Context, taskID string, seq int64, kinds ...string) error {
+	return truncateEvents(ctx, l.db, taskID, seq, kinds...)
 }
 
 // execer is the part of *sql.DB and *sql.Tx truncation needs, so the same guard
@@ -399,7 +400,7 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func truncateEvents(ctx context.Context, db execer, taskID string, seq int64) error {
+func truncateEvents(ctx context.Context, db execer, taskID string, seq int64, kinds ...string) error {
 	if seq < 0 {
 		return errdefs.Validationf("checkpoint: truncation point must not be negative")
 	}
@@ -418,8 +419,16 @@ func truncateEvents(ctx context.Context, db execer, taskID string, seq int64) er
 		return errdefs.Validationf(
 			"checkpoint: truncating through %d would remove the newest event (%d)", seq, newest)
 	}
-	if _, err := db.ExecContext(ctx,
-		`DELETE FROM events WHERE task_id = ? AND seq <= ?`, taskID, seq); err != nil {
+	query := `DELETE FROM events WHERE task_id = ? AND seq <= ?`
+	args := []any{taskID, seq}
+	if len(kinds) > 0 {
+		placeholders := strings.Repeat(",?", len(kinds))[1:]
+		query += " AND kind IN (" + placeholders + ")"
+		for _, kind := range kinds {
+			args = append(args, kind)
+		}
+	}
+	if _, err := db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("checkpoint: truncate events: %w", err)
 	}
 	return nil
