@@ -234,6 +234,9 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		return state.Terminal(), nil
 	case *a2a.TaskStatusUpdateEvent:
 		r.mu.Lock()
+		if typed.TaskID != "" {
+			r.taskID = typed.TaskID
+		}
 		if typed.ContextID != "" {
 			r.remoteContext = typed.ContextID
 		}
@@ -250,6 +253,14 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		}
 		return state.Terminal(), nil
 	case *a2a.TaskArtifactUpdateEvent:
+		r.mu.Lock()
+		if typed.TaskID != "" {
+			r.taskID = typed.TaskID
+		}
+		if typed.ContextID != "" {
+			r.remoteContext = typed.ContextID
+		}
+		r.mu.Unlock()
 		if typed.Artifact == nil {
 			return false, nil
 		}
