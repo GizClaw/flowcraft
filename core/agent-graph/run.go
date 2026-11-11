@@ -79,6 +79,10 @@ type Run struct {
 	// calls indexes the model calls this run recorded, by request hash. Replay
 	// answers from it; a live run only grows it.
 	calls map[string]agent.LLMCallRecord
+	// records indexes every other durable fact by kind. A node that replays reads
+	// its own kind; the model-call index above stays separate because replay of a
+	// model call also has to reload a response blob.
+	records map[string][]agent.Record
 	// replay answers from calls instead of calling out.
 	replay bool
 	// steerMu guards the steer a caller queued for the next boundary.
@@ -514,6 +518,9 @@ func (r *Run) runStep(
 			Answer:   r.answer,
 			Lookup: func(hash string) (agent.LLMCallRecord, bool) {
 				return r.lookup(ctx, hash)
+			},
+			Records: func(kind string) []agent.Record {
+				return r.records[kind]
 			},
 			Replay: r.replay,
 			Trace:  r.trace,

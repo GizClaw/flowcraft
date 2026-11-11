@@ -155,6 +155,13 @@ func (k *Kind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, e
 	if err != nil {
 		return nil, err
 	}
+	if built.config.Version == VersionPinned {
+		if recorded := recordedRun(in, built.config.Path); recorded != "" && recorded != source.Version {
+			return nil, errdefs.Validationf(
+				"script: node %q: pinned version %s is no longer available; %s is now %s",
+				in.Node, recorded, built.config.Path, source.Version)
+		}
+	}
 	program, err := k.program(ctx, built, source)
 	if err != nil {
 		return nil, err

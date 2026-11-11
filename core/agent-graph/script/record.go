@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-graph"
 )
 
 // The record kinds one script invocation produces.
@@ -58,4 +59,26 @@ func payload(value any) json.RawMessage {
 // runRecord is the fact every invocation records.
 func runRecord(ref, version string) agent.Record {
 	return agent.Record{Kind: RecordRun, Payload: payload(RunRecord{Ref: ref, Version: version})}
+}
+
+// recordedRun returns the version the task last ran one source under.
+//
+// The newest record wins: a task may have run the same rule under several
+// versions across its steps, and a pinned node continues under the one its state
+// was produced with.
+func recordedRun(in graph.Invoke, ref string) string {
+	if in.Records == nil {
+		return ""
+	}
+	version := ""
+	for _, record := range in.Records(RecordRun) {
+		var run RunRecord
+		if err := json.Unmarshal(record.Payload, &run); err != nil {
+			continue
+		}
+		if run.Ref == ref {
+			version = run.Version
+		}
+	}
+	return version
 }

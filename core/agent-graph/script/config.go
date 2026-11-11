@@ -39,6 +39,11 @@ type Config struct {
 	MaxOutputBytes int `json:"max_output_bytes"`
 	// Budget bounds one invocation.
 	Budget Budget `json:"budget"`
+	// Version says which source a resumed run may use. "latest" (the default)
+	// takes whatever the source holds now; "pinned" refuses to continue under a
+	// version other than the one the task recorded, which is what makes a fix
+	// land only on new games.
+	Version string `json:"version"`
 }
 
 // Budget is what one invocation may consume.
@@ -92,6 +97,9 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, err
 	}
 	if err := uniqueKeys("writes", cfg.Writes); err != nil {
+		return Config{}, err
+	}
+	if err := checkVersion(cfg.Version); err != nil {
 		return Config{}, err
 	}
 	if err := uniqueKeys("allow", cfg.Allow); err != nil {
@@ -176,4 +184,22 @@ func toolNames(allow []string) (map[string]struct{}, error) {
 		names[name] = struct{}{}
 	}
 	return names, nil
+}
+
+// The version policies a config may name.
+const (
+	// VersionLatest takes the current source on every run.
+	VersionLatest = "latest"
+	// VersionPinned keeps a resumed task on the version it recorded.
+	VersionPinned = "pinned"
+)
+
+func checkVersion(value string) error {
+	switch value {
+	case "", VersionLatest, VersionPinned:
+		return nil
+	}
+	return errdefs.Validationf(
+		"script: config.version %q is not supported; use %q or %q",
+		value, VersionLatest, VersionPinned)
 }

@@ -27,11 +27,17 @@ type scriptHost struct {
 	log   io.Writer
 	rt    *runtime.Runtime
 	allow map[string]struct{}
-	// run and tools count calls so one invocation's records are ordered and its
-	// call ids are unique.
-	run     int
-	calls   int
+	// replay answers a tool call from the task's records instead of dispatching.
+	replay bool
+	// recorded reads those records back by kind.
+	recorded func(kind string) []agent.Record
+	// calls counts invocations so one run's records are ordered and its call ids
+	// are unique.
+	calls int
+	// records are this invocation's facts, in order.
 	records []agent.Record
+	// index is the replay view of the task's tool records, built on first use.
+	index map[string]ToolRecord
 }
 
 var _ Host = (*scriptHost)(nil)
@@ -60,17 +66,34 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 		return ToolResult{}, errdefs.Forbiddenf(
 			"script: node %q: tool %q is not in config.allow", h.node, name)
 	}
-	if h.rt == nil {
-		return ToolResult{}, errdefs.Validationf(
-			"script: node %q: this kind was built without a runtime, so a script cannot call tools", h.node)
-	}
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return ToolResult{}, errdefs.Validationf(
 			"script: node %q: tool %q arguments: %w", h.node, name, err)
 	}
+	index := h.calls
+	h.calls++
+	hash := hashArguments(raw)
+
+	if h.replay {
+		record, ok := h.lookup(hash, index)
+		if !ok {
+			return ToolResult{}, errdefs.Abortedf(
+				"script: node %q: replay has no record of tool %q call %d", h.node, name, index)
+		}
+		if !record.OK {
+			return ToolResult{}, errdefs.Abortedf(
+				"script: node %q: tool %q failed: %s", h.node, name, record.Text)
+		}
+		return ToolResult{OK: true, Text: record.Text}, nil
+	}
+
+	if h.rt == nil {
+		return ToolResult{}, errdefs.Validationf(
+			"script: node %q: this kind was built without a runtime, so a script cannot call tools", h.node)
+	}
 	call := message.ToolCall{
-		ID:        h.callID(name),
+		ID:        callID(h.node, name, index),
 		Name:      name,
 		Arguments: message.NewArguments(raw),
 	}
@@ -82,8 +105,8 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 	text := result.Content.Text()
 	h.record(ToolRecord{
 		Name:          name,
-		ArgumentsHash: hashArguments(raw),
-		Index:         h.calls - 1,
+		ArgumentsHash: hash,
+		Index:         index,
 		OK:            !result.IsError,
 		Text:          text,
 	})
@@ -94,8 +117,46 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 	return ToolResult{OK: true, Text: text}, nil
 }
 
+// lookup finds the record a replay answers with.
+//
+// The index is built once per invocation from the task's own records: a script
+// makes a handful of calls, so scanning them is cheaper than keeping a structure
+// the engine would have to key.
+func (h *scriptHost) lookup(hash string, index int) (ToolRecord, bool) {
+	if h.index == nil {
+		h.index = make(map[string]ToolRecord)
+		if h.recorded != nil {
+			for _, record := range h.recorded(RecordTool) {
+				var call ToolRecord
+				if err := json.Unmarshal(record.Payload, &call); err != nil {
+					continue
+				}
+				h.index[recordKey(call.ArgumentsHash, call.Index)] = call
+			}
+		}
+	}
+	call, ok := h.index[recordKey(hash, index)]
+	return call, ok
+}
+
+// recordKey identifies one call by what it asked and where it sat in the run.
+func recordKey(hash string, index int) string {
+	return hash + "#" + strconv.Itoa(index)
+}
+
+// callID names one call for the dispatch chain.
+func callID(node, name string, index int) string {
+	return "script:" + strconv.Itoa(index) + ":" + name
+}
+
 // record keeps one durable fact for the step's save.
+//
+// A replay records nothing: the facts it answers from are already in the task, and
+// appending them again would double the log the replay exists to read.
 func (h *scriptHost) record(value any) {
+	if h.replay {
+		return
+	}
 	kind := RecordTool
 	if _, isTool := value.(ToolRecord); !isTool {
 		kind = RecordRun
@@ -109,14 +170,6 @@ func (h *scriptHost) start(ref, version string) {
 	h.record(RunRecord{Ref: ref, Version: version})
 }
 
-// callID names one call for the dispatch chain. It is unique within the
-// invocation, which is all the chain needs: the invocation is itself identified by
-// the task and step.
-func (h *scriptHost) callID(name string) string {
-	h.calls++
-	return "script:" + strconv.Itoa(h.calls) + ":" + name
-}
-
 // hashArguments is the canonical identity of one call's arguments.
 func hashArguments(raw []byte) string {
 	sum := sha256.Sum256(raw)
@@ -125,5 +178,12 @@ func hashArguments(raw []byte) string {
 
 // hostFor builds the invocation's host.
 func hostFor(in graph.Invoke, log io.Writer, rt *runtime.Runtime, allow map[string]struct{}) *scriptHost {
-	return &scriptHost{node: in.Node, log: log, rt: rt, allow: allow}
+	return &scriptHost{
+		node:     in.Node,
+		log:      log,
+		rt:       rt,
+		allow:    allow,
+		replay:   in.Replay,
+		recorded: in.Records,
+	}
 }

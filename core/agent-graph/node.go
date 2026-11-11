@@ -44,6 +44,11 @@ type Invoke struct {
 	// Trace is how much of the run is traced. A node that computes input
 	// digests only does so when this allows TraceNode or Replay is on.
 	Trace telemetry.TraceLevel
+	// Records returns the durable facts earlier steps of this task recorded under
+	// one kind, oldest first. A node that replays reads its own record kind: an
+	// empty slice means nothing was recorded, which is a first run rather than an
+	// error, so the caller decides what a miss means.
+	Records func(kind string) []Record
 	// Checkpoint writes records immediately, for a side effect that must be
 	// recorded before it runs. Nil when the run has no store.
 	Checkpoint func(records []Record) error

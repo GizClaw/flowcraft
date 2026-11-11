@@ -238,6 +238,12 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 		}
 		record = r.storedRecord(ctx, record)
 		events = append(events, agent.EventRecord{Kind: record.Kind, Payload: record.Payload})
+		// A later step of the same run reads the fact back through Records, so the
+		// live index and the restored one answer the same question.
+		if r.records == nil {
+			r.records = make(map[string][]agent.Record)
+		}
+		r.records[record.Kind] = append(r.records[record.Kind], record)
 	}
 	for _, update := range updates {
 		encoded, err := encodeValue(ctx, r.store, update.Value)
@@ -436,7 +442,7 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 			return nil, false, fmt.Errorf("graph: decode projection: %w", err)
 		}
 	}
-	values, calls, uncertain, err := g.restoreState(ctx, opts, proj.Base)
+	values, calls, records, uncertain, err := g.restoreState(ctx, opts, proj.Base)
 	if err != nil {
 		return nil, false, err
 	}
@@ -462,6 +468,7 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 		manifestWritten: manifestWritten,
 		trace:           opts.trace,
 		calls:           calls,
+		records:         records,
 		replay:          opts.replay,
 		values:          values,
 		active:          proj.Frontier,
@@ -486,20 +493,23 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 
 // restoreState replays the event log from the projection's base: the blob gives
 // the state as of that sequence, and only the events after it are read.
-func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef) (*stateStore, map[string]agent.LLMCallRecord, []string, error) {
+func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef) (*stateStore, map[string]agent.LLMCallRecord, map[string][]agent.Record, []string, error) {
 	store := newStateStore(g.state)
 	calls := make(map[string]agent.LLMCallRecord)
+	// Every other durable fact is kept by kind in append order: a node that
+	// replays reads its own kind back and ignores the rest.
+	records := make(map[string][]agent.Record)
 	started := make(map[string]agent.EffectRecord)
 	var after int64
 	if base != nil {
 		if err := g.loadBase(ctx, opts, store, base.Blob); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		after = base.Seq
 	}
 	events, err := opts.store.EventsAfter(ctx, opts.taskID, after)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for i := 0; i < len(events); {
 		event := events[i]
@@ -507,16 +517,16 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 		case eventBase:
 			var record baseEvent
 			if err := json.Unmarshal(event.Payload, &record); err != nil {
-				return nil, nil, nil, fmt.Errorf("graph: decode base: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("graph: decode base: %w", err)
 			}
 			if err := g.loadBase(ctx, opts, store, record.Blob); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			i++
 		case eventLLMCall:
 			var call agent.LLMCallRecord
 			if err := json.Unmarshal(event.Payload, &call); err != nil {
-				return nil, nil, nil, fmt.Errorf("graph: decode model call: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("graph: decode model call: %w", err)
 			}
 			if call.RequestHash != "" {
 				calls[call.RequestHash] = call
@@ -525,7 +535,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 		case eventEffect:
 			var effect agent.EffectRecord
 			if err := json.Unmarshal(event.Payload, &effect); err != nil {
-				return nil, nil, nil, fmt.Errorf("graph: decode effect: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("graph: decode effect: %w", err)
 			}
 			if effect.Status == agent.EffectStarted {
 				started[effect.CallID] = effect
@@ -538,13 +548,13 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 			// apply them, then continue with the next group.
 			var first stateEvent
 			if err := json.Unmarshal(event.Payload, &first); err != nil {
-				return nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 			}
 			updates := make([]StateUpdate, 0, 4)
 			for {
 				value, err := decodeValue(first.Value)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, nil, err
 				}
 				updates = append(updates, StateUpdate{Key: first.Key, Value: value})
 				i++
@@ -553,7 +563,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 				}
 				var next stateEvent
 				if err := json.Unmarshal(events[i].Payload, &next); err != nil {
-					return nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
+					return nil, nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 				}
 				if next.Step != first.Step {
 					break
@@ -561,9 +571,13 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 				first = next
 			}
 			if err := store.apply(updates, g.state); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 		default:
+			records[event.Kind] = append(records[event.Kind], agent.Record{
+				Kind:    event.Kind,
+				Payload: event.Payload,
+			})
 			i++
 		}
 	}
@@ -572,7 +586,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef
 		uncertain = append(uncertain, callID)
 	}
 	sort.Strings(uncertain)
-	return store, calls, uncertain, nil
+	return store, calls, records, uncertain, nil
 }
 
 // loadBase replaces the state with the one the blob holds.
