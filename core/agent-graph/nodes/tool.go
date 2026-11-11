@@ -21,8 +21,10 @@ import (
 //
 // config:
 //
-//	messages: state key holding the transcript (type messages), required
-//	pending:  state key holding the calls (type json), required
+//	messages:    state key holding the transcript (type messages), required
+//	pending:     state key holding the calls (type json), required
+//	effects:     after (default) or before
+//	parallelism: how many calls run at once; 0 is unbounded
 //
 // It appends one tool message with every result and clears the pending list, so a
 // cycle back to the model reads both sides of the exchange. The messages key must
@@ -43,6 +45,10 @@ type toolConfig struct {
 	// record before the tool runs, so a crash leaves an outcome to reconcile
 	// instead of a silent duplicate.
 	Effects string `json:"effects"`
+	// Parallelism caps how many calls of one batch run at once. 0 leaves the
+	// batch unbounded, which is the runtime's default: a host that dispatches
+	// to a rate-limited provider should set it.
+	Parallelism int `json:"parallelism"`
 }
 
 // DecodeConfig parses the node's config at Build.
@@ -70,6 +76,9 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 	}
 	if strings.TrimSpace(config.Messages) == "" || strings.TrimSpace(config.Pending) == "" {
 		return nil, fmt.Errorf("tool: config.messages and config.pending are required")
+	}
+	if config.Parallelism < 0 {
+		return nil, fmt.Errorf("tool: parallelism must not be negative")
 	}
 	raw, err := in.State(config.Pending).JSON()
 	if err != nil {
@@ -116,86 +125,174 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 		pendingKey:  config.Pending,
 		effects:     effects,
 		checkpoint:  in.Checkpoint,
+		parallelism: config.Parallelism,
 	}, nil
 }
 
 const recordEffect = "graph.effect"
 
-// toolStream executes the batch in order and reports each call.
+// toolStream runs the batch concurrently and reports every call: the starts are
+// emitted first, then results as they complete. The transcript keeps input order
+// regardless of completion order.
 type toolStream struct {
 	rt          *runtime.Runtime
 	view        engine.CatalogView
 	calls       []message.ToolCall
-	index       int
-	pending     *message.ToolCall
+	startIndex  int
+	launched    bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	completions chan toolCompletion
+	pending     int
 	results     []message.ToolResult
+	records     [][]graph.Record
 	messagesKey string
 	pendingKey  string
 	effects     string
 	checkpoint  func([]graph.Record) error
-	records     []graph.Record
-	pendingArgs string
+	parallelism int
+	slots       chan struct{}
 	result      graph.Result
 	done        bool
 }
 
+// toolCompletion is one finished call: the event fields and the effect records
+// that ride the step's save.
+type toolCompletion struct {
+	index      int
+	result     message.ToolResult
+	resultHash string
+	duration   time.Duration
+	errorKind  string
+	records    []graph.Record
+}
+
 func (s *toolStream) Next(ctx context.Context) (agent.Event, error) {
-	if s.pending != nil {
-		call := *s.pending
-		s.pending = nil
-		if s.effects == "before" {
-			started := agent.EffectRecord{
-				CallID:         call.ID,
-				ToolName:       call.Name,
-				ArgsHash:       s.pendingArgs,
-				IdempotencyKey: call.ID,
-				Status:         agent.EffectStarted,
-			}
-			if err := s.recordEffect(started); err != nil {
-				return nil, fmt.Errorf("tool: record effect start: %w", err)
-			}
-		}
-		started := time.Now()
-		result := s.rt.Assembly().Execute(engine.WithCatalogView(ctx, s.view), call)
-		duration := time.Since(started)
-		s.results = append(s.results, result)
-		body, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		effect := agent.EffectRecord{
-			CallID:         call.ID,
-			ToolName:       call.Name,
-			ArgsHash:       s.pendingArgs,
-			IdempotencyKey: call.ID,
-			Status:         agent.EffectDone,
-			ResultHash:     hashBytes(body),
-			ErrorKind:      toolErrorKind(result),
-			DurationMs:     duration.Milliseconds(),
-		}
-		if result.IsError {
-			effect.Status = agent.EffectFailed
-		}
-		if err := s.recordEffect(effect); err != nil {
-			return nil, fmt.Errorf("tool: record effect: %w", err)
-		}
-		return agent.ToolResult{
-			Result:     result,
-			ResultHash: effect.ResultHash,
-			Duration:   duration,
-			ErrorKind:  effect.ErrorKind,
-		}, nil
+	if s.done {
+		return nil, io.EOF
 	}
-	if s.index < len(s.calls) {
-		call := s.calls[s.index]
-		s.index++
-		s.pending = &call
+	if s.startIndex < len(s.calls) {
+		call := s.calls[s.startIndex]
+		s.startIndex++
 		body, err := json.Marshal(call)
 		if err != nil {
 			return nil, err
 		}
-		s.pendingArgs = hashBytes(body)
-		return agent.ToolCallStart{Call: call, ArgsHash: s.pendingArgs}, nil
+		return agent.ToolCallStart{Call: call, ArgsHash: hashBytes(body)}, nil
+	}
+	if !s.launched {
+		s.launch(ctx)
+	}
+	if s.pending == 0 {
+		s.finish()
+		return nil, io.EOF
+	}
+	select {
+	case done := <-s.completions:
+		s.pending--
+		s.results[done.index] = done.result
+		s.records[done.index] = done.records
+		return agent.ToolResult{
+			Result:     done.result,
+			ResultHash: done.resultHash,
+			Duration:   done.duration,
+			ErrorKind:  done.errorKind,
+		}, nil
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
+	}
+}
+
+// launch starts one goroutine per call. Every call runs at once; the results
+// are collected in input order.
+func (s *toolStream) launch(ctx context.Context) {
+	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.completions = make(chan toolCompletion, len(s.calls))
+	s.pending = len(s.calls)
+	s.results = make([]message.ToolResult, len(s.calls))
+	s.records = make([][]graph.Record, len(s.calls))
+	if s.parallelism > 0 {
+		s.slots = make(chan struct{}, s.parallelism)
+	}
+	for i, call := range s.calls {
+		go s.execute(i, call)
+	}
+	s.launched = true
+}
+
+// execute runs one call and reports it. It is the only goroutine touching its
+// index's slots; the records it returns are concatenated in input order.
+func (s *toolStream) execute(index int, call message.ToolCall) {
+	if s.slots != nil {
+		select {
+		case s.slots <- struct{}{}:
+			defer func() { <-s.slots }()
+		case <-s.ctx.Done():
+			s.completions <- toolCompletion{index: index,
+				result: message.NewErrorToolResult(call.ID, s.ctx.Err().Error()), errorKind: "canceled"}
+			return
+		}
+	}
+	body, err := json.Marshal(call)
+	if err != nil {
+		s.completions <- toolCompletion{index: index,
+			result: message.NewErrorToolResult(call.ID, err.Error()), errorKind: "encode"}
+		return
+	}
+	argsHash := hashBytes(body)
+	var records []graph.Record
+	if s.effects == "before" {
+		started := agent.EffectRecord{
+			CallID: call.ID, ToolName: call.Name, ArgsHash: argsHash,
+			IdempotencyKey: call.ID, Status: agent.EffectStarted,
+		}
+		record, err := effectRecord(started)
+		if err != nil {
+			s.completions <- toolCompletion{index: index,
+				result: message.NewErrorToolResult(call.ID, err.Error()), errorKind: "encode"}
+			return
+		}
+		if err := s.checkpoint([]graph.Record{record}); err != nil {
+			s.completions <- toolCompletion{index: index,
+				result: message.NewErrorToolResult(call.ID, err.Error()), errorKind: "checkpoint"}
+			return
+		}
+	}
+	started := time.Now()
+	result := s.rt.Assembly().Execute(engine.WithCatalogView(s.ctx, s.view), call)
+	duration := time.Since(started)
+	body, err = json.Marshal(result)
+	if err != nil {
+		s.completions <- toolCompletion{index: index,
+			result: message.NewErrorToolResult(call.ID, err.Error()), errorKind: "encode"}
+		return
+	}
+	effect := agent.EffectRecord{
+		CallID: call.ID, ToolName: call.Name, ArgsHash: argsHash,
+		IdempotencyKey: call.ID, Status: agent.EffectDone,
+		ResultHash: hashBytes(body), ErrorKind: toolErrorKind(result),
+		DurationMs: duration.Milliseconds(),
+	}
+	if result.IsError {
+		effect.Status = agent.EffectFailed
+	}
+	record, err := effectRecord(effect)
+	if err != nil {
+		s.completions <- toolCompletion{index: index, result: result,
+			resultHash: effect.ResultHash, duration: duration, errorKind: effect.ErrorKind}
+		return
+	}
+	records = append(records, record)
+	s.completions <- toolCompletion{index: index, result: result,
+		resultHash: effect.ResultHash, duration: duration,
+		errorKind: effect.ErrorKind, records: records}
+}
+
+// finish turns the ordered results into the step's writes.
+func (s *toolStream) finish() {
+	var records []graph.Record
+	for _, perCall := range s.records {
+		records = append(records, perCall...)
 	}
 	msg := toolMessage(s.results)
 	msg.Metadata = toolOrigin(s.calls)
@@ -204,10 +301,9 @@ func (s *toolStream) Next(ctx context.Context) (agent.Event, error) {
 			{Key: s.messagesKey, Value: graph.MessagesValue(graph.MessagesFromSlice([]message.Message{msg}))},
 			{Key: s.pendingKey, Value: graph.JSON([]byte("[]"))},
 		},
-		Records: s.records,
+		Records: records,
 	}
 	s.done = true
-	return nil, io.EOF
 }
 
 func (s *toolStream) Result() (graph.Result, error) {
@@ -217,21 +313,21 @@ func (s *toolStream) Result() (graph.Result, error) {
 	return s.result, nil
 }
 
-func (*toolStream) Close() error { return nil }
+// Close stops calls that are still in flight.
+func (s *toolStream) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return nil
+}
 
-// recordEffect persists one effect record. A "started" record under effects:
-// before is saved immediately; every other record rides the step's save.
-func (s *toolStream) recordEffect(effect agent.EffectRecord) error {
+// effectRecord renders one effect record.
+func effectRecord(effect agent.EffectRecord) (graph.Record, error) {
 	payload, err := json.Marshal(effect)
 	if err != nil {
-		return err
+		return graph.Record{}, err
 	}
-	record := graph.Record{Kind: recordEffect, Payload: payload}
-	if s.effects == "before" && effect.Status == agent.EffectStarted {
-		return s.checkpoint([]graph.Record{record})
-	}
-	s.records = append(s.records, record)
-	return nil
+	return graph.Record{Kind: recordEffect, Payload: payload}, nil
 }
 
 // toolErrorKind classifies a result for the trace. A tool reports failure

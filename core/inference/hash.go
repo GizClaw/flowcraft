@@ -22,13 +22,31 @@ import (
 // Field values are length-prefixed, so concatenating two requests cannot produce
 // the same byte stream as one request with different boundaries.
 func RequestHash(request GenerateRequest) string {
+	hashes := make([]string, len(request.Context))
+	for i, msg := range request.Context {
+		hashes[i] = MessageHash(msg)
+	}
+	return RequestHashWith(request, hashes)
+}
+
+// RequestHashWith is RequestHash for a caller that already digests the context:
+// the model node computes the per-message identities for the trace and must not
+// serialize the same transcript twice.
+func RequestHashWith(request GenerateRequest, messageHashes []string) string {
 	h := sha256.New()
 	writeValue(h, "model", request.Model)
 	writeValue(h, "output", request.Output)
 	writeValue(h, "hint", request.ModelHint)
 	writeValue(h, "input", request.Input)
-	for _, msg := range request.Context {
-		writeValue(h, "message", msg)
+	for i, msg := range request.Context {
+		hash := ""
+		if i < len(messageHashes) {
+			hash = messageHashes[i]
+		}
+		if hash == "" {
+			hash = MessageHash(msg)
+		}
+		writeText(h, "message", hash)
 	}
 	definitions := append([]message.ToolDefinition(nil), request.Tools.Definitions()...)
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })

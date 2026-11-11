@@ -562,3 +562,13 @@ func TestModelSkipsToolsForNonTextOutput(t *testing.T) {
 		t.Errorf("output = %q, want image", got)
 	}
 }
+
+// A negative parallelism is a typo, not "unbounded".
+func TestToolRejectsNegativeParallelism(t *testing.T) {
+	rt := testRuntime(t, &stubProvider{})
+	_, err := nodes.Tool(rt).Invoke(context.Background(), invokeFor(map[string]graph.Value{},
+		`{"messages":"messages","pending":"pending","parallelism":-1}`))
+	if err == nil || !strings.Contains(err.Error(), "parallelism") {
+		t.Fatalf("err = %v, want a parallelism complaint", err)
+	}
+}

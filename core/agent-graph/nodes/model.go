@@ -148,7 +148,11 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 	var requestHash string
 	if record {
 		digests, segments = describePrompt(request)
-		requestHash = inference.RequestHash(request)
+		hashes := make([]string, 0, len(request.Context))
+		for i := 0; i < len(request.Context) && i < len(digests); i++ {
+			hashes = append(hashes, digests[i].Hash)
+		}
+		requestHash = inference.RequestHashWith(request, hashes)
 	}
 	if in.Replay {
 		call, ok := in.Lookup(requestHash)

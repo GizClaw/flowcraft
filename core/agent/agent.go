@@ -212,9 +212,9 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		}
 		defer a.release(entry)
 		defer cancel()
-		startedAt := time.Now()
-		var runUsage usage.Usage
 		var failure error
+		var startedAt time.Time
+		var runUsage usage.Usage
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
@@ -224,29 +224,31 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 				trace.WithAttributes(runctx.Attrs(runCtx)...))
 			defer span.End()
 		}
-		defer func() {
-			if a.opts.OnRun == nil {
-				return
-			}
-			record := RunRecord{
-				SessionID: sessionID,
-				TaskID:    entry.taskID,
-				State:     entry.loadState(),
-				ErrorKind: errorKind(failure),
-				LatencyMs: time.Since(startedAt).Milliseconds(),
-				Usage:     runUsage,
-			}
-			if run, ok := runctx.From(runCtx); ok {
-				record.Manifest = run.Manifest
-			}
-			if span != nil {
-				if sc := span.SpanContext(); sc.IsValid() {
-					record.TraceID = sc.TraceID().String()
-					record.SpanID = sc.SpanID().String()
+		// The run record is only built for a host that asked for one: the
+		// default path pays neither the clock nor the deferred closure.
+		if a.opts.OnRun != nil {
+			startedAt = time.Now()
+			defer func() {
+				record := RunRecord{
+					SessionID: sessionID,
+					TaskID:    entry.taskID,
+					State:     entry.loadState(),
+					ErrorKind: errorKind(failure),
+					LatencyMs: time.Since(startedAt).Milliseconds(),
+					Usage:     runUsage,
 				}
-			}
-			a.opts.OnRun(record)
-		}()
+				if run, ok := runctx.From(runCtx); ok {
+					record.Manifest = run.Manifest
+				}
+				if span != nil {
+					if sc := span.SpanContext(); sc.IsValid() {
+						record.TraceID = sc.TraceID().String()
+						record.SpanID = sc.SpanID().String()
+					}
+				}
+				a.opts.OnRun(record)
+			}()
+		}
 
 		for event, runErr := range entry.runner.Run(runCtx, msg) {
 			if runErr != nil {
@@ -258,7 +260,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 				yield(nil, runErr)
 				return
 			}
-			if accounting, ok := event.(UsageEvent); ok {
+			if accounting, ok := event.(UsageEvent); ok && a.opts.OnRun != nil {
 				addUsage(&runUsage, accounting.Usage)
 			}
 			a.record(entry, event)

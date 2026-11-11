@@ -61,18 +61,15 @@ func describePrompt(request inference.GenerateRequest) ([]agent.MessageDigest, [
 	return digests, segments
 }
 
-// digestOf renders one message's identity.
+// digestOf renders one message's identity. It uses the same structural digest
+// the request hash uses, so a call pays one pass over the transcript.
 func digestOf(msg message.Message) agent.MessageDigest {
-	body, err := json.Marshal(msg)
-	if err != nil {
-		body = []byte(msg.Role)
-	}
-	sum := sha256.Sum256(body)
+	hash, chars := inference.DigestMessage(msg)
 	return agent.MessageDigest{
 		Role:   msg.Role,
 		Origin: originOf(msg),
-		Chars:  len(body),
-		Hash:   "sha256:" + hex.EncodeToString(sum[:]),
+		Chars:  chars,
+		Hash:   hash,
 	}
 }
 

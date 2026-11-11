@@ -133,7 +133,6 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 		fingerprint: settings.fingerprint,
 		manifest:    settings.manifest,
 		trace:       settings.trace,
-		calls:       make(map[string]agent.LLMCallRecord),
 		replay:      settings.replay,
 		active:      []string{g.entry},
 		state:       agent.StateSubmitted,
