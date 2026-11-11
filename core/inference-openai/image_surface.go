@@ -402,10 +402,11 @@ func (d *driver) imageDecode(
 		},
 		FinishReason: inference.FinishStop,
 		Usage: usage.Usage{
-			InputTokens:     raw.Usage.InputTokens,
-			OutputTokens:    raw.Usage.OutputTokens,
-			TotalTokens:     raw.Usage.TotalTokens,
-			GeneratedImages: &count,
+			InputTokens:  raw.Usage.InputTokens,
+			OutputTokens: raw.Usage.OutputTokens,
+			Work: map[usage.WorkKind]int64{
+				usage.WorkImagesGenerated: count,
+			},
 		},
 		Metadata: inference.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},

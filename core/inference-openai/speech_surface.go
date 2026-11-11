@@ -261,7 +261,11 @@ func (d *driver) speechDecode(
 			Content: message.Content{Parts: []message.Part{part}},
 		},
 		FinishReason: inference.FinishStop,
-		Usage:        usage.Usage{InputCharacters: &characters},
+		Usage: usage.Usage{
+			Work: map[usage.WorkKind]int64{
+				usage.WorkInputCharacters: characters,
+			},
+		},
 		Metadata: inference.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},

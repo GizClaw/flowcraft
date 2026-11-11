@@ -13,14 +13,14 @@ func TestAddUsageSumsTokensCacheAndCost(t *testing.T) {
 	cost := usage.Money{Currency: "USD", Units: 10, Scale: 4}
 	total := usage.Usage{}
 	addUsage(&total, usage.Usage{
-		InputTokens: 5, OutputTokens: 7, TotalTokens: 12,
+		InputTokens: 5, OutputTokens: 7,
 		Input: usage.InputTokenUsage{CacheReadTokens: &cache},
 	})
 	addUsage(&total, usage.Usage{
-		InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
-		Billing: &usage.BillingUsage{Cost: &cost},
+		InputTokens: 1, OutputTokens: 2,
+		Billing: &usage.Billing{Cost: &cost},
 	})
-	if total.InputTokens != 6 || total.OutputTokens != 9 || total.TotalTokens != 15 {
+	if total.InputTokens != 6 || total.OutputTokens != 9 || total.TotalTokens() != 15 {
 		t.Errorf("tokens = %+v, want 6/9/15", total)
 	}
 	if total.Input.CacheReadTokens == nil || *total.Input.CacheReadTokens != 2 {

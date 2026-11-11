@@ -15,6 +15,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -253,8 +254,8 @@ func TestImageStreamPreviewReplacedByFinal(t *testing.T) {
 	if string(part.Source.Bytes()) != "FINAL" {
 		t.Fatalf("assembled image = %q, want the finished one", part.Source.Bytes())
 	}
-	if response.Usage.GeneratedImages == nil || *response.Usage.GeneratedImages != 1 {
-		t.Fatalf("generated images = %v", response.Usage.GeneratedImages)
+	if got := response.Usage.WorkValue(usage.WorkImagesGenerated); got != 1 {
+		t.Fatalf("generated images = %d, want 1", got)
 	}
 }
 
@@ -309,7 +310,7 @@ func TestLiveImageEdit(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	parts := response.Message.Content.Parts
-	t.Logf("parts=%d generated=%v", len(parts), response.Usage.GeneratedImages)
+	t.Logf("parts=%d generated=%d", len(parts), response.Usage.WorkValue(usage.WorkImagesGenerated))
 	if len(parts) == 0 {
 		t.Fatal("no image returned")
 	}

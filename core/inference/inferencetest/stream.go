@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -30,10 +31,10 @@ type PartExpectation struct {
 // UsageExpectation is the accounting the assembled answer must report. Only the
 // fields that are set are compared.
 type UsageExpectation struct {
-	Input           int64
-	Output          int64
-	Total           int64
-	GeneratedImages int64
+	Input  int64
+	Output int64
+	Total  int64
+	Work   map[usage.WorkKind]int64
 }
 
 // StreamSample is one canned server-sent-event stream.
@@ -127,7 +128,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 				}
 				if again.Message.Content.Text() != response.Message.Content.Text() ||
 					again.FinishReason != response.FinishReason ||
-					again.Usage.TotalTokens != response.Usage.TotalTokens {
+					again.Usage.TotalTokens() != response.Usage.TotalTokens() {
 					t.Fatalf("result is not idempotent: %+v vs %+v", response, again)
 				}
 				if sample.Check != nil {
@@ -293,14 +294,14 @@ func assertExpectations(
 		got := response.Usage
 		want := *sample.WantUsage
 		if got.InputTokens != want.Input || got.OutputTokens != want.Output ||
-			got.TotalTokens != want.Total {
+			got.TotalTokens() != want.Total {
 			t.Fatalf("usage = %d/%d/%d, want %d/%d/%d",
-				got.InputTokens, got.OutputTokens, got.TotalTokens,
+				got.InputTokens, got.OutputTokens, got.TotalTokens(),
 				want.Input, want.Output, want.Total)
 		}
-		if want.GeneratedImages != 0 {
-			if got.GeneratedImages == nil || *got.GeneratedImages != want.GeneratedImages {
-				t.Fatalf("generated images = %v, want %d", got.GeneratedImages, want.GeneratedImages)
+		for kind, wantValue := range want.Work {
+			if gotValue := got.WorkValue(kind); gotValue != wantValue {
+				t.Fatalf("%s = %d, want %d", kind, gotValue, wantValue)
 			}
 		}
 	}

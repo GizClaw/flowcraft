@@ -55,9 +55,8 @@ func TestUnaryCallEmitsOneSpan(t *testing.T) {
 		response.Usage = usage.Usage{
 			InputTokens:  10,
 			OutputTokens: 4,
-			TotalTokens:  14,
 			Input:        usage.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
-			Billing: &usage.BillingUsage{
+			Billing: &usage.Billing{
 				Cost: &usage.Money{Currency: "USD", Units: 25, Scale: 6},
 			},
 		}
@@ -246,7 +245,6 @@ func TestTokenAndDurationMetrics(t *testing.T) {
 		response.Usage = usage.Usage{
 			InputTokens:  10,
 			OutputTokens: 4,
-			TotalTokens:  14,
 			Input:        usage.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
 		}
 		return response, nil

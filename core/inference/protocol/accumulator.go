@@ -102,7 +102,7 @@ func (a *accumulator) add(events []inference.StreamEvent) {
 			}
 			build.data = append(build.data, partBytes(event.Part)...)
 		case inference.StreamUsage:
-			a.usage = a.usage.Add(*event.Usage)
+			a.usage = a.usage.AddMeter(*event.Usage)
 		case inference.StreamEnd:
 			a.finish = event.Finish
 			a.done = true

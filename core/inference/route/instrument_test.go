@@ -146,7 +146,7 @@ func TestRouteSpanDoesNotRecordUsage(t *testing.T) {
 
 	answering := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
 		response := okResponse("ok")
-		response.Usage = usage.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}
+		response.Usage = usage.Usage{InputTokens: 3, OutputTokens: 2}
 		return response, nil
 	}}
 	router, err := New([]Target{generateTarget("a", answering)}, Policy{})

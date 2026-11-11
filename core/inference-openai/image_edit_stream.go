@@ -59,7 +59,7 @@ func imageEditStreamDecoder(request inference.GenerateRequest) protocol.StreamDe
 				return nil, err
 			}
 			accounting := imageStreamUsage(
-				event.Usage.InputTokens, event.Usage.OutputTokens, event.Usage.TotalTokens,
+				event.Usage.InputTokens, event.Usage.OutputTokens,
 			)
 			events = append(events,
 				inference.StreamEvent{Kind: inference.StreamPart, Index: imagePartIndex, Part: part},

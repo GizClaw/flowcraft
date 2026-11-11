@@ -358,6 +358,12 @@ func (d *driver) transcribeDecode(
 		value := int64(math.Round(raw.Duration * float64(time.Second/time.Millisecond)))
 		millis = &value
 	}
+	accounting := usage.Usage{}
+	if millis != nil {
+		accounting.Work = map[usage.WorkKind]int64{
+			usage.WorkAudioDurationMillis: *millis,
+		}
+	}
 
 	return inference.GenerateResponse{
 		Message: message.Message{
@@ -365,7 +371,7 @@ func (d *driver) transcribeDecode(
 			Content: message.Content{Parts: parts},
 		},
 		FinishReason: inference.FinishStop,
-		Usage:        usage.Usage{AudioDurationMillis: millis},
+		Usage:        accounting,
 		Metadata: inference.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},

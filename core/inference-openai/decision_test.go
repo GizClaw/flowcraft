@@ -72,8 +72,8 @@ func TestDecisionDecodesThreeKinds(t *testing.T) {
 	if response.Answers[2].Kind != inference.AnswerRefusal {
 		t.Errorf("third answer = %+v, want a refusal", response.Answers[2])
 	}
-	if response.Usage.TotalTokens != 14 {
-		t.Errorf("total tokens = %d, want 14", response.Usage.TotalTokens)
+	if response.Usage.TotalTokens() != 14 {
+		t.Errorf("total tokens = %d, want 14", response.Usage.TotalTokens())
 	}
 }
 

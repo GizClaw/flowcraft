@@ -111,7 +111,11 @@ func speechStreamDecoder(request inference.GenerateRequest) protocol.StreamDecod
 					fmt.Errorf("openai: speech stream carried no audio"),
 				)
 			}
-			accounting := usage.Usage{InputCharacters: &characters}
+			accounting := usage.Usage{
+				Work: map[usage.WorkKind]int64{
+					usage.WorkInputCharacters: characters,
+				},
+			}
 			events = append(events,
 				inference.StreamEvent{Kind: inference.StreamUsage, Usage: &accounting},
 				inference.StreamEvent{Kind: inference.StreamEnd, Finish: inference.FinishStop},

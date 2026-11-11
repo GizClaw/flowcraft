@@ -158,6 +158,5 @@ func (d *driver) embedDecode(
 func usageFromEmbedding(raw openai.CreateEmbeddingResponse) usage.Usage {
 	return usage.Usage{
 		InputTokens: raw.Usage.PromptTokens,
-		TotalTokens: raw.Usage.TotalTokens,
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -140,8 +141,8 @@ func TestSpeechDecodeWrapsAudio(t *testing.T) {
 		t.Fatalf("format = %+v", part.Format)
 	}
 	// Speech is billed per character, so the counter must be reported.
-	if response.Usage.InputCharacters == nil || *response.Usage.InputCharacters != int64(len("hello")) {
-		t.Fatalf("input characters = %v", response.Usage.InputCharacters)
+	if got := response.Usage.WorkValue(usage.WorkInputCharacters); got != int64(len("hello")) {
+		t.Fatalf("input characters = %d", got)
 	}
 	if err := response.Usage.Validate(); err != nil {
 		t.Fatalf("usage invalid: %v", err)
@@ -307,8 +308,8 @@ func TestSpeechStreamDeliversChunks(t *testing.T) {
 	if part.Source.MediaType() != "audio/mpeg" {
 		t.Fatalf("media type = %q", part.Source.MediaType())
 	}
-	if response.Usage.InputCharacters == nil || *response.Usage.InputCharacters != int64(len("hello")) {
-		t.Fatalf("input characters = %v", response.Usage.InputCharacters)
+	if got := response.Usage.WorkValue(usage.WorkInputCharacters); got != int64(len("hello")) {
+		t.Fatalf("input characters = %d", got)
 	}
 }
 

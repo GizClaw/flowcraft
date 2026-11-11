@@ -225,7 +225,7 @@ func TestChatConformance(t *testing.T) {
 					if unary.FinishReason != streamed.FinishReason {
 						t.Fatalf("finish: %q vs %q", unary.FinishReason, streamed.FinishReason)
 					}
-					if unary.Usage.TotalTokens != streamed.Usage.TotalTokens {
+					if unary.Usage.TotalTokens() != streamed.Usage.TotalTokens() {
 						t.Fatalf("usage: %+v vs %+v", unary.Usage, streamed.Usage)
 					}
 				},

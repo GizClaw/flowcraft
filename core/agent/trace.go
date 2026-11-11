@@ -28,17 +28,12 @@ type RunRecord struct {
 // cache counters and cost are summed; counters a provider reports only in
 // aggregate stay on the last event.
 func addUsage(total *usage.Usage, add usage.Usage) {
-	total.InputTokens += add.InputTokens
-	total.OutputTokens += add.OutputTokens
-	total.TotalTokens += add.TotalTokens
-	total.LatencyMs += add.LatencyMs
-	total.Input.CacheReadTokens = addCounter(total.Input.CacheReadTokens, add.Input.CacheReadTokens)
-	total.Input.CacheWriteTokens = addCounter(total.Input.CacheWriteTokens, add.Input.CacheWriteTokens)
+	*total = total.AddMeter(add)
 	if add.Billing == nil || add.Billing.Cost == nil {
 		return
 	}
 	if total.Billing == nil {
-		total.Billing = &usage.BillingUsage{}
+		total.Billing = &usage.Billing{}
 	}
 	if total.Billing.Cost == nil {
 		cost := *add.Billing.Cost
@@ -48,18 +43,6 @@ func addUsage(total *usage.Usage, add usage.Usage) {
 	if sum, ok := total.Billing.Cost.Add(*add.Billing.Cost); ok {
 		total.Billing.Cost = &sum
 	}
-}
-
-func addCounter(total, add *int64) *int64 {
-	if add == nil {
-		return total
-	}
-	if total == nil {
-		value := *add
-		return &value
-	}
-	value := *total + *add
-	return &value
 }
 
 // errorKind classifies a run failure for the record. The full error stays in

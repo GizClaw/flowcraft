@@ -104,7 +104,7 @@ var llmFacts = map[string]llmFactHome{
 	},
 	AttrLLMModel: {
 		GenAI: AttrGenAIRequestModel,
-		Note:  "usage.Usage.Model carries the resolved model, emitted as " + AttrGenAIResponseModel,
+		Note:  "the response Metadata carries the resolved model, emitted as " + AttrGenAIResponseModel,
 	},
 	AttrLLMInputTokens: {
 		GenAI: AttrGenAIUsageInputTokens,

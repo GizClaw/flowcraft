@@ -60,7 +60,7 @@ func imageStreamDecoder(request inference.GenerateRequest) protocol.StreamDecode
 				return nil, err
 			}
 			accounting := imageStreamUsage(
-				event.Usage.InputTokens, event.Usage.OutputTokens, event.Usage.TotalTokens,
+				event.Usage.InputTokens, event.Usage.OutputTokens,
 			)
 			events = append(events,
 				inference.StreamEvent{Kind: inference.StreamPart, Index: imagePartIndex, Part: part},
@@ -77,12 +77,13 @@ func imageStreamDecoder(request inference.GenerateRequest) protocol.StreamDecode
 const imagePartIndex = 0
 
 // imageStreamUsage reports one generated image plus the token accounting.
-func imageStreamUsage(input, output, total int64) usage.Usage {
+func imageStreamUsage(input, output int64) usage.Usage {
 	count := int64(1)
 	return usage.Usage{
-		InputTokens:     input,
-		OutputTokens:    output,
-		TotalTokens:     total,
-		GeneratedImages: &count,
+		InputTokens:  input,
+		OutputTokens: output,
+		Work: map[usage.WorkKind]int64{
+			usage.WorkImagesGenerated: count,
+		},
 	}
 }

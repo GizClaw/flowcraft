@@ -6,9 +6,9 @@
 //
 // # Roles
 //
-// [Usage] is one call's account: token totals, an optional Model / LatencyMs
-// envelope the runtime stamps on, per-modality and cache breakdowns, and
-// [BillingUsage] for provider-reported billed units and [Money] cost. [Money]
+// [Usage] is one call's account: token totals, typed Work meters,
+// per-modality and cache breakdowns, and [BillingUsage] for provider-reported
+// billed units and [Money] cost. [Money]
 // is units over 10^scale in a currency, so a provider's 10^-10 USD ticks
 // survive without floating point. [Usage.Add] and [Money.Add] accumulate;
 // [Money.Add] refuses a mismatched currency or scale, because converting
@@ -34,7 +34,6 @@ package usage
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
@@ -42,85 +41,67 @@ import (
 // provider-reported generation dimensions and breakdowns. Optional counters
 // use pointers so an API can distinguish "not reported" from a reported zero.
 //
-// The Model / LatencyMs envelope is not provider-reported: it is call
-// context the runtime stamps on so hosts can enforce per-model rate
-// limits and surface per-call timing without a sidecar accumulation
-// channel. Cost has exactly one home — Billing.Cost, a Money with
-// explicit currency and scale — so there is never a second "cost"
-// field to disagree with it. Both envelope fields are optional: a
-// reporter that only knows token counts leaves them zero.
+// The call envelope is not here: the model lives on the response's Metadata
+// and call latency on the run record, so Usage carries only the numbers a
+// provider reported. Cost has exactly one home — Billing.Cost, a Money with
+// explicit currency and scale — so there is never a second "cost" field to
+// disagree with it.
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
 
-	GeneratedImages     *int64 `json:"generated_images,omitempty"`
-	GeneratedVideos     *int64 `json:"generated_videos,omitempty"`
-	InputCharacters     *int64 `json:"input_characters,omitempty"`
-	AudioDurationMillis *int64 `json:"audio_duration_millis,omitempty"`
+	// Work carries non-token meters, keyed so a new modality is a new
+	// WorkKind constant rather than another field.
+	Work map[WorkKind]int64 `json:"work,omitempty"`
 
-	// Model identifies the exact target this usage came from —
-	// provider, model name, and credential profile. Zero when the
-	// reporter does not know which model produced the call (aggregate
-	// reports). Hosts that bucket usage by model for budgeting / quota
-	// enforcement consume this field.
-	Model model.ModelRef `json:"model,omitzero"`
+	// Input carries the cache split of InputTokens. Every bucket is a subset
+	// of the inclusive prompt total, so the buckets sum to at most InputTokens.
+	Input InputTokenUsage `json:"input,omitzero"`
 
-	// LatencyMs is the wall-clock latency of the producing call in
-	// milliseconds. Zero when not measured. It surfaces per-call timing
-	// on the same channel as token counts instead of a parallel one.
-	LatencyMs int64 `json:"latency_ms,omitempty"`
+	// Details carries the breakdowns that cannot be summed across calls:
+	// modality splits, TTL-keyed cache writes, output token detail, auxiliary
+	// counters and tool requests.
+	Details Details `json:"details,omitzero"`
 
-	// Input carries the split of InputTokens. InputTokens is the
-	// inclusive prompt total — every prompt token, cache reads and cache
-	// writes included — because providers disagree on their wire
-	// counters, and normalizing here is what lets a host compare, budget
-	// and price a prompt without knowing which provider produced it.
-	Input  InputTokenUsage  `json:"input,omitzero"`
-	Output OutputTokenUsage `json:"output,omitzero"`
-
-	Auxiliary []AuxiliaryTokenUsage `json:"auxiliary,omitempty"`
-	Tools     []ToolUsage           `json:"tools,omitempty"`
-	Billing   *BillingUsage         `json:"billing,omitempty"`
+	// Billing carries provider-reported billed units and exact cost. It is a
+	// price, not a meter, so AddMeter never touches it.
+	Billing *Billing `json:"billing,omitempty"`
 }
 
-// InputTokenUsage splits Usage.InputTokens into disjoint buckets, each a
+// InputTokenUsage splits Usage.InputTokens into disjoint cache buckets, each a
 // subset of the inclusive input total. Drivers whose wire counters are
-// exclusive normalize on the way in: Anthropic's input_tokens counts only
-// the tokens that were neither read from nor written to the cache, so its
+// exclusive normalize on the way in: Anthropic's input_tokens counts only the
+// tokens that were neither read from nor written to the cache, so its
 // canonical total is input_tokens + cache_read + cache_write and
 // UncachedTokens carries the exclusive bucket unchanged.
 //
-// Consequence for consumers: cache_read / InputTokens is a cache-hit rate
-// for every provider, and TotalTokens - OutputTokens is the prompt size.
-// InputTokens already contains the buckets, so hosts read it as the prompt
-// total and must not add cache read / write to it: that sum is the
-// arithmetic of a provider's raw, cache-exclusive wire counters, and it
-// double counts here.
-//
-// A nil counter means "zero, or not reported": drivers omit cache read /
-// write when the provider reports zero, so a missing bucket is inferred
-// from the total rather than from its siblings. A self-contradictory wire
-// counter (a cache bucket larger than the prompt, or a negative count) is
-// clamped on the way in rather than propagated, so
-// uncached + cache read + cache write == InputTokens holds whenever
-// UncachedTokens is reported.
+// A nil counter means "zero, or not reported": drivers omit cache read / write
+// when the provider reports zero, so a missing bucket is inferred from the
+// total rather than from its siblings.
 type InputTokenUsage struct {
 	CacheReadTokens  *int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
 	UncachedTokens   *int64 `json:"uncached_tokens,omitempty"`
-
-	ByModality  []ModalityTokenUsage `json:"by_modality,omitempty"`
-	CacheWrites []CacheWriteUsage    `json:"cache_writes,omitempty"`
 }
 
+// OutputTokenUsage carries output-side detail whose sum semantics depend on
+// the provider. It is a detail, not a meter: Usage.AddMeter does not sum it.
 type OutputTokenUsage struct {
 	ReasoningTokens          *int64              `json:"reasoning_tokens,omitempty"`
 	ReasoningAccounting      ReasoningAccounting `json:"reasoning_accounting,omitempty"`
 	AcceptedPredictionTokens *int64              `json:"accepted_prediction_tokens,omitempty"`
 	RejectedPredictionTokens *int64              `json:"rejected_prediction_tokens,omitempty"`
+}
 
-	ByModality []ModalityTokenUsage `json:"by_modality,omitempty"`
+// Details is the non-summable half of one call's account. It has no Add: a
+// caller that wants to accumulate a breakdown does so explicitly.
+type Details struct {
+	InputModalities  map[Modality]int64           `json:"input_modalities,omitempty"`
+	OutputModalities map[Modality]int64           `json:"output_modalities,omitempty"`
+	CacheWrites      map[CacheTTL]int64           `json:"cache_writes,omitempty"`
+	Auxiliary        map[AuxiliaryTokenKind]int64 `json:"auxiliary,omitempty"`
+	Tools            map[ToolUsageKind]int64      `json:"tools,omitempty"`
+	Output           OutputTokenUsage             `json:"output,omitzero"`
 }
 
 type ReasoningAccounting string
@@ -130,12 +111,39 @@ const (
 	// Usage.OutputTokens.
 	ReasoningIncludedInOutput ReasoningAccounting = "included_in_output"
 	// ReasoningAdditional means the provider accounts for reasoning separately
-	// from Usage.OutputTokens and TotalTokens.
+	// from Usage.OutputTokens and the derived total.
 	ReasoningAdditional ReasoningAccounting = "additional"
 	// ReasoningAccountingUnknown preserves a reported count when inclusion
 	// semantics are undocumented.
 	ReasoningAccountingUnknown ReasoningAccounting = "unknown"
 )
+
+// WorkKind names a non-token meter. The unit is part of the name, so values of
+// different kinds never mix even though they share an int64 representation.
+type WorkKind string
+
+const (
+	// WorkImagesGenerated counts generated images.
+	WorkImagesGenerated WorkKind = "images.generated"
+	// WorkVideosGenerated counts generated videos.
+	WorkVideosGenerated WorkKind = "videos.generated"
+	// WorkInputCharacters counts characters sent to a speech surface.
+	WorkInputCharacters WorkKind = "characters.input"
+	// WorkAudioDurationMillis is generated audio duration in milliseconds.
+	WorkAudioDurationMillis WorkKind = "audio.duration_ms"
+	// WorkVideoDurationMillis is generated video duration in milliseconds.
+	WorkVideoDurationMillis WorkKind = "video.duration_ms"
+)
+
+// Valid reports whether the kind is part of this contract's vocabulary.
+func (k WorkKind) Valid() bool {
+	switch k {
+	case WorkImagesGenerated, WorkVideosGenerated, WorkInputCharacters,
+		WorkAudioDurationMillis, WorkVideoDurationMillis:
+		return true
+	}
+	return false
+}
 
 type Modality string
 
@@ -147,11 +155,6 @@ const (
 	ModalityFile  Modality = "file"
 )
 
-type ModalityTokenUsage struct {
-	Modality Modality `json:"modality"`
-	Tokens   int64    `json:"tokens"`
-}
-
 type CacheTTL string
 
 const (
@@ -159,24 +162,12 @@ const (
 	CacheTTL1Hour    CacheTTL = "1h"
 )
 
-type CacheWriteUsage struct {
-	TTL    CacheTTL `json:"ttl"`
-	Tokens int64    `json:"tokens"`
-}
-
 type AuxiliaryTokenKind string
 
 const (
 	AuxiliaryCitationTokens   AuxiliaryTokenKind = "citation"
 	AuxiliaryToolPromptTokens AuxiliaryTokenKind = "tool_prompt"
 )
-
-// AuxiliaryTokenUsage records token counters that a provider accounts for
-// outside the normalized input/output totals.
-type AuxiliaryTokenUsage struct {
-	Kind   AuxiliaryTokenKind `json:"kind"`
-	Tokens int64              `json:"tokens"`
-}
 
 type ToolUsageKind string
 
@@ -189,14 +180,9 @@ const (
 	ToolUsageSearchQuery   ToolUsageKind = "search_query"
 )
 
-type ToolUsage struct {
-	Kind     ToolUsageKind `json:"kind"`
-	Requests int64         `json:"requests"`
-}
-
-// BillingUsage retains provider-reported billed units and exact cost without
+// Billing retains provider-reported billed units and exact cost without
 // conflating them with raw model token counts.
-type BillingUsage struct {
+type Billing struct {
 	InputTokens  *int64 `json:"input_tokens,omitempty"`
 	OutputTokens *int64 `json:"output_tokens,omitempty"`
 	Cost         *Money `json:"cost,omitempty"`
@@ -224,72 +210,89 @@ func (m Money) Add(other Money) (Money, bool) {
 }
 
 func (u Usage) Clone() Usage {
-	u.GeneratedImages = ptr.Clone(u.GeneratedImages)
-	u.GeneratedVideos = ptr.Clone(u.GeneratedVideos)
-	u.InputCharacters = ptr.Clone(u.InputCharacters)
-	u.AudioDurationMillis = ptr.Clone(u.AudioDurationMillis)
-	u.Input.CacheReadTokens = ptr.Clone(u.Input.CacheReadTokens)
-	u.Input.CacheWriteTokens = ptr.Clone(u.Input.CacheWriteTokens)
-	u.Input.UncachedTokens = ptr.Clone(u.Input.UncachedTokens)
-	u.Input.ByModality = append([]ModalityTokenUsage(nil), u.Input.ByModality...)
-	u.Input.CacheWrites = append([]CacheWriteUsage(nil), u.Input.CacheWrites...)
-	u.Output.ReasoningTokens = ptr.Clone(u.Output.ReasoningTokens)
-	u.Output.AcceptedPredictionTokens = ptr.Clone(
-		u.Output.AcceptedPredictionTokens,
-	)
-	u.Output.RejectedPredictionTokens = ptr.Clone(
-		u.Output.RejectedPredictionTokens,
-	)
-	u.Output.ByModality = append([]ModalityTokenUsage(nil), u.Output.ByModality...)
-	u.Auxiliary = append([]AuxiliaryTokenUsage(nil), u.Auxiliary...)
-	u.Tools = append([]ToolUsage(nil), u.Tools...)
+	u.Work = cloneMap(u.Work)
+	u.Input = u.Input.Clone()
+	u.Details = u.Details.Clone()
 	if u.Billing != nil {
-		billing := *u.Billing
-		billing.InputTokens = ptr.Clone(billing.InputTokens)
-		billing.OutputTokens = ptr.Clone(billing.OutputTokens)
-		billing.Cost = ptr.Clone(billing.Cost)
+		billing := u.Billing.Clone()
 		u.Billing = &billing
 	}
 	return u
 }
 
-// Add returns a new Usage that is the sum of u and other, composing
-// the dimensions a budget accumulator sums: normalized token totals,
-// the plain input-side sub-counters (cache read/write, uncached — all
-// subset counters sharing the input unit), and the Model / LatencyMs
-// envelope, plus the plain workload counters (generated images and
-// videos, input characters, audio duration), which are counts like the
-// token totals and therefore sum without ambiguity. Model is preserved
-// from u when both are non-zero and disagree (the accumulator's identity wins); when one side is zero
-// the other fills it in — so per-model breakdowns SHOULD bucket by
-// Model before summing. Billing.Cost is deliberately not summed: cost
-// carries a currency and scale, and silently adding mixed currencies
-// is a bug — hosts accumulate cost with their own currency policy via
-// Money.Add. The output-side and keyed breakdowns (reasoning with its
-// per-provider accounting semantics, modality splits, TTL-keyed cache
-// writes, tool details) have no provider-independent sum semantics and
-// are not carried into the result.
-func (u Usage) Add(other Usage) Usage {
-	ref := u.Model
-	if ref == (model.ModelRef{}) {
-		ref = other.Model
+func (u InputTokenUsage) Clone() InputTokenUsage {
+	u.CacheReadTokens = ptr.Clone(u.CacheReadTokens)
+	u.CacheWriteTokens = ptr.Clone(u.CacheWriteTokens)
+	u.UncachedTokens = ptr.Clone(u.UncachedTokens)
+	return u
+}
+
+func (u OutputTokenUsage) Clone() OutputTokenUsage {
+	u.ReasoningTokens = ptr.Clone(u.ReasoningTokens)
+	u.AcceptedPredictionTokens = ptr.Clone(u.AcceptedPredictionTokens)
+	u.RejectedPredictionTokens = ptr.Clone(u.RejectedPredictionTokens)
+	return u
+}
+
+func (d Details) Clone() Details {
+	d.InputModalities = cloneMap(d.InputModalities)
+	d.OutputModalities = cloneMap(d.OutputModalities)
+	d.CacheWrites = cloneMap(d.CacheWrites)
+	d.Auxiliary = cloneMap(d.Auxiliary)
+	d.Tools = cloneMap(d.Tools)
+	d.Output = d.Output.Clone()
+	return d
+}
+
+func (b Billing) Clone() Billing {
+	b.InputTokens = ptr.Clone(b.InputTokens)
+	b.OutputTokens = ptr.Clone(b.OutputTokens)
+	b.Cost = ptr.Clone(b.Cost)
+	return b
+}
+
+func cloneMap[K comparable, V any](in map[K]V) map[K]V {
+	if in == nil {
+		return nil
 	}
+	out := make(map[K]V, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+// AddMeter sums the meters a budget accumulator sums: token totals, the
+// input-side cache counters, and the typed Work meters. It deliberately does
+// not touch Details or Billing: a breakdown and a price have no
+// provider-independent sum semantics.
+func (u Usage) AddMeter(other Usage) Usage {
 	return Usage{
-		InputTokens:         u.InputTokens + other.InputTokens,
-		OutputTokens:        u.OutputTokens + other.OutputTokens,
-		TotalTokens:         u.TotalTokens + other.TotalTokens,
-		GeneratedImages:     addPointers(u.GeneratedImages, other.GeneratedImages),
-		GeneratedVideos:     addPointers(u.GeneratedVideos, other.GeneratedVideos),
-		InputCharacters:     addPointers(u.InputCharacters, other.InputCharacters),
-		AudioDurationMillis: addPointers(u.AudioDurationMillis, other.AudioDurationMillis),
-		Model:               ref,
-		LatencyMs:           u.LatencyMs + other.LatencyMs,
+		InputTokens:  u.InputTokens + other.InputTokens,
+		OutputTokens: u.OutputTokens + other.OutputTokens,
+		Work:         mergeWork(u.Work, other.Work),
 		Input: InputTokenUsage{
 			CacheReadTokens:  addPointers(u.Input.CacheReadTokens, other.Input.CacheReadTokens),
 			CacheWriteTokens: addPointers(u.Input.CacheWriteTokens, other.Input.CacheWriteTokens),
 			UncachedTokens:   addPointers(u.Input.UncachedTokens, other.Input.UncachedTokens),
 		},
 	}
+}
+
+// mergeWork sums two Work maps; two empty maps stay nil so "not reported" does
+// not become an empty reported map.
+func mergeWork(a, b map[WorkKind]int64) map[WorkKind]int64 {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make(map[WorkKind]int64, len(a)+len(b))
+	for kind, value := range a {
+		out[kind] += value
+	}
+	for kind, value := range b {
+		out[kind] += value
+	}
+	return out
 }
 
 // addPointers sums two optional counters; both nil stays nil so "not
@@ -308,42 +311,40 @@ func addPointers(a, b *int64) *int64 {
 	return &sum
 }
 
+// TotalTokens is the inclusive prompt plus generated total. It is derived, so
+// it can never disagree with its parts.
+func (u Usage) TotalTokens() int64 { return u.InputTokens + u.OutputTokens }
+
+// WorkValue returns one meter, or zero when it was not reported.
+func (u Usage) WorkValue(kind WorkKind) int64 { return u.Work[kind] }
+
+// AddWork accumulates one meter.
+func (u *Usage) AddWork(kind WorkKind, value int64) {
+	if u.Work == nil {
+		u.Work = make(map[WorkKind]int64, 1)
+	}
+	u.Work[kind] += value
+}
+
 func (u Usage) Validate() error {
-	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 {
+	if u.InputTokens < 0 || u.OutputTokens < 0 {
 		return fmt.Errorf("usage token totals must be non-negative")
 	}
-	if u.TotalTokens != u.InputTokens+u.OutputTokens {
-		return fmt.Errorf("usage total must equal input plus output tokens")
-	}
-	if u.LatencyMs < 0 {
-		return fmt.Errorf("usage latency must be non-negative")
-	}
-	if u.Model != (model.ModelRef{}) {
-		if err := u.Model.Validate(); err != nil {
-			return fmt.Errorf("usage model: %w", err)
+	for kind, value := range u.Work {
+		if !kind.Valid() {
+			return fmt.Errorf("unknown work kind %q", kind)
 		}
-	}
-	for name, value := range map[string]*int64{
-		"generated images":            u.GeneratedImages,
-		"generated videos":            u.GeneratedVideos,
-		"input characters":            u.InputCharacters,
-		"audio duration milliseconds": u.AudioDurationMillis,
-	} {
-		if err := validateOptionalCount(name, value); err != nil {
-			return err
+		if value < 0 {
+			return fmt.Errorf("%s work must be non-negative", kind)
 		}
 	}
 	if err := u.Input.ValidateFor(u.InputTokens); err != nil {
 		return fmt.Errorf("input token usage: %w", err)
 	}
-	if err := u.Output.ValidateFor(u.OutputTokens); err != nil {
-		return fmt.Errorf("output token usage: %w", err)
-	}
-	if err := validateAuxiliaryUsage(u.Auxiliary); err != nil {
-		return err
-	}
-	if err := validateToolUsage(u.Tools); err != nil {
-		return err
+	if err := u.Details.ValidateFor(
+		u.InputTokens, u.OutputTokens, u.Input.CacheWriteTokens,
+	); err != nil {
+		return fmt.Errorf("usage details: %w", err)
 	}
 	if u.Billing != nil {
 		if err := u.Billing.Validate(); err != nil {
@@ -353,8 +354,7 @@ func (u Usage) Validate() error {
 	return nil
 }
 
-// ValidateFor checks the input breakdown against the prompt total it breaks
-// down.
+// ValidateFor checks the input-side cache counters against the prompt total.
 func (u InputTokenUsage) ValidateFor(inputTokens int64) error {
 	if err := validateOptionalCount("cache read", u.CacheReadTokens); err != nil {
 		return err
@@ -362,37 +362,31 @@ func (u InputTokenUsage) ValidateFor(inputTokens int64) error {
 	if err := validateOptionalCount("cache write", u.CacheWriteTokens); err != nil {
 		return err
 	}
-	if err := validateOptionalCount("uncached", u.UncachedTokens); err != nil {
+	return validateOptionalCount("uncached", u.UncachedTokens)
+}
+
+// ValidateFor checks the breakdowns against the totals they break down. A
+// breakdown may under-report — a driver attributes only the modalities a
+// provider names — but never exceed its total.
+func (d Details) ValidateFor(
+	inputTokens, outputTokens int64, cacheWriteTokens *int64,
+) error {
+	if err := validateModalityMap("input", d.InputModalities, inputTokens); err != nil {
 		return err
 	}
-	if err := validateModalities(u.ByModality); err != nil {
+	if err := validateModalityMap("output", d.OutputModalities, outputTokens); err != nil {
 		return err
 	}
-	if err := validateModalityTotal("input", u.ByModality, inputTokens); err != nil {
+	if err := validateCacheWrites(d.CacheWrites, cacheWriteTokens); err != nil {
 		return err
 	}
-	var cacheWriteTotal int64
-	seenTTLs := make(map[CacheTTL]struct{}, len(u.CacheWrites))
-	for _, write := range u.CacheWrites {
-		switch write.TTL {
-		case CacheTTL5Minutes, CacheTTL1Hour:
-		default:
-			return fmt.Errorf("unknown cache TTL %q", write.TTL)
-		}
-		if write.Tokens < 0 {
-			return fmt.Errorf("cache write tokens must be non-negative")
-		}
-		if _, ok := seenTTLs[write.TTL]; ok {
-			return fmt.Errorf("duplicate cache TTL %q", write.TTL)
-		}
-		seenTTLs[write.TTL] = struct{}{}
-		cacheWriteTotal += write.Tokens
+	if err := validateAuxiliary(d.Auxiliary); err != nil {
+		return err
 	}
-	if u.CacheWriteTokens != nil && len(u.CacheWrites) > 0 &&
-		cacheWriteTotal != *u.CacheWriteTokens {
-		return fmt.Errorf("cache write breakdown does not match cache write tokens")
+	if err := validateTools(d.Tools); err != nil {
+		return err
 	}
-	return nil
+	return d.Output.ValidateFor(outputTokens)
 }
 
 func (u OutputTokenUsage) ValidateFor(outputTokens int64) error {
@@ -420,26 +414,21 @@ func (u OutputTokenUsage) ValidateFor(outputTokens int64) error {
 			return fmt.Errorf("reasoning accounting is required")
 		}
 	}
-	if err := validateModalities(u.ByModality); err != nil {
-		return err
-	}
-	return validateModalityTotal("output", u.ByModality, outputTokens)
+	return nil
 }
 
-// validateModalityTotal checks a per-modality breakdown against the total it
-// breaks down. Drivers attribute only the modalities a provider names, so a
-// sum below the total means the rest went unattributed; a sum above it is a
-// contradiction, since a subset cannot hold more than the whole.
-//
-// A zero total is not a total: the count is a plain int64, so "the provider
-// reported nothing" and "the provider reported zero" are the same value, and
-// a driver that has a breakdown but no total — an audio response billed per
-// token where only the audio detail is populated — must not be failed for
-// reporting the only number it has. There is nothing to contradict.
-func validateModalityTotal(kind string, usages []ModalityTokenUsage, total int64) error {
+func validateModalityMap(kind string, usages map[Modality]int64, total int64) error {
 	var sum int64
-	for _, usage := range usages {
-		sum += usage.Tokens
+	for modality, tokens := range usages {
+		switch modality {
+		case ModalityText, ModalityImage, ModalityAudio, ModalityVideo, ModalityFile:
+		default:
+			return fmt.Errorf("unknown modality %q", modality)
+		}
+		if tokens < 0 {
+			return fmt.Errorf("%s modality tokens must be non-negative", modality)
+		}
+		sum += tokens
 	}
 	if total > 0 && sum > total {
 		return fmt.Errorf(
@@ -448,73 +437,63 @@ func validateModalityTotal(kind string, usages []ModalityTokenUsage, total int64
 	return nil
 }
 
-func validateModalities(usages []ModalityTokenUsage) error {
-	seen := make(map[Modality]struct{}, len(usages))
-	for _, usage := range usages {
-		switch usage.Modality {
-		case ModalityText, ModalityImage, ModalityAudio, ModalityVideo, ModalityFile:
+func validateCacheWrites(writes map[CacheTTL]int64, total *int64) error {
+	var sum int64
+	for ttl, tokens := range writes {
+		switch ttl {
+		case CacheTTL5Minutes, CacheTTL1Hour:
 		default:
-			return fmt.Errorf("unknown modality %q", usage.Modality)
+			return fmt.Errorf("unknown cache TTL %q", ttl)
 		}
-		if usage.Tokens < 0 {
-			return fmt.Errorf("%s modality tokens must be non-negative", usage.Modality)
+		if tokens < 0 {
+			return fmt.Errorf("cache write tokens must be non-negative")
 		}
-		if _, ok := seen[usage.Modality]; ok {
-			return fmt.Errorf("duplicate modality %q", usage.Modality)
-		}
-		seen[usage.Modality] = struct{}{}
+		sum += tokens
+	}
+	if total != nil && len(writes) > 0 && sum != *total {
+		return fmt.Errorf("cache write breakdown does not match cache write tokens")
 	}
 	return nil
 }
 
-func validateAuxiliaryUsage(usages []AuxiliaryTokenUsage) error {
-	seen := make(map[AuxiliaryTokenKind]struct{}, len(usages))
-	for _, usage := range usages {
-		switch usage.Kind {
+func validateAuxiliary(usages map[AuxiliaryTokenKind]int64) error {
+	for kind, tokens := range usages {
+		switch kind {
 		case AuxiliaryCitationTokens, AuxiliaryToolPromptTokens:
 		default:
-			return fmt.Errorf("unknown auxiliary token kind %q", usage.Kind)
+			return fmt.Errorf("unknown auxiliary token kind %q", kind)
 		}
-		if usage.Tokens < 0 {
-			return fmt.Errorf("%s tokens must be non-negative", usage.Kind)
+		if tokens < 0 {
+			return fmt.Errorf("%s tokens must be non-negative", kind)
 		}
-		if _, ok := seen[usage.Kind]; ok {
-			return fmt.Errorf("duplicate auxiliary token kind %q", usage.Kind)
-		}
-		seen[usage.Kind] = struct{}{}
 	}
 	return nil
 }
 
-func validateToolUsage(usages []ToolUsage) error {
-	seen := make(map[ToolUsageKind]struct{}, len(usages))
-	for _, usage := range usages {
-		switch usage.Kind {
+func validateTools(usages map[ToolUsageKind]int64) error {
+	for kind, requests := range usages {
+		switch kind {
 		case ToolUsageWebSearch, ToolUsageWebFetch, ToolUsageCodeExecution,
 			ToolUsageMCP, ToolUsageXSearch, ToolUsageSearchQuery:
 		default:
-			return fmt.Errorf("unknown tool usage kind %q", usage.Kind)
+			return fmt.Errorf("unknown tool usage kind %q", kind)
 		}
-		if usage.Requests < 0 {
-			return fmt.Errorf("%s requests must be non-negative", usage.Kind)
+		if requests < 0 {
+			return fmt.Errorf("%s requests must be non-negative", kind)
 		}
-		if _, ok := seen[usage.Kind]; ok {
-			return fmt.Errorf("duplicate tool usage kind %q", usage.Kind)
-		}
-		seen[usage.Kind] = struct{}{}
 	}
 	return nil
 }
 
-func (u BillingUsage) Validate() error {
-	if err := validateOptionalCount("billed input", u.InputTokens); err != nil {
+func (b Billing) Validate() error {
+	if err := validateOptionalCount("billed input", b.InputTokens); err != nil {
 		return err
 	}
-	if err := validateOptionalCount("billed output", u.OutputTokens); err != nil {
+	if err := validateOptionalCount("billed output", b.OutputTokens); err != nil {
 		return err
 	}
-	if u.Cost != nil {
-		if err := u.Cost.Validate(); err != nil {
+	if b.Cost != nil {
+		if err := b.Cost.Validate(); err != nil {
 			return err
 		}
 	}

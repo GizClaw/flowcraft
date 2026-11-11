@@ -143,7 +143,6 @@ func chatChunkUsage(raw openai.CompletionUsage) usage.Usage {
 	out := usage.Usage{
 		InputTokens:  raw.PromptTokens,
 		OutputTokens: raw.CompletionTokens,
-		TotalTokens:  raw.TotalTokens,
 	}
 	if cached := raw.PromptTokensDetails.CachedTokens; cached > 0 {
 		out.Input.CacheReadTokens = &cached

@@ -335,7 +335,6 @@ func responsesUsage(raw *responses.Response) usage.Usage {
 	out := usage.Usage{
 		InputTokens:  raw.Usage.InputTokens,
 		OutputTokens: raw.Usage.OutputTokens,
-		TotalTokens:  raw.Usage.TotalTokens,
 	}
 	if cached := raw.Usage.InputTokensDetails.CachedTokens; cached > 0 {
 		out.Input.CacheReadTokens = &cached

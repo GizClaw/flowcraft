@@ -343,7 +343,6 @@ func chatUsage(raw *openai.ChatCompletion) usage.Usage {
 	out := usage.Usage{
 		InputTokens:  raw.Usage.PromptTokens,
 		OutputTokens: raw.Usage.CompletionTokens,
-		TotalTokens:  raw.Usage.TotalTokens,
 	}
 	if cached := raw.Usage.PromptTokensDetails.CachedTokens; cached > 0 {
 		out.Input.CacheReadTokens = &cached

@@ -230,6 +230,5 @@ func decisionUsage(raw openai.Decision) usage.Usage {
 	return usage.Usage{
 		InputTokens:  raw.Usage.InputTokens,
 		OutputTokens: raw.Usage.OutputTokens,
-		TotalTokens:  raw.Usage.TotalTokens,
 	}
 }

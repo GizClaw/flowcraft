@@ -295,7 +295,7 @@ const (
 	AttrLLMTimeToFirstTokenMs = "llm.time_to_first_token.ms"
 
 	// AttrLLMLatencyMs is not a span attribute: the span duration already
-	// carries it. It survives for callers that read usage.Usage outside a span.
+	// carries it. It survives for callers that read a RunRecord outside a span.
 	AttrLLMLatencyMs = "llm.latency.ms"
 
 	// AttrLLMRequestID stays authoritative: gen_ai.response.id names the

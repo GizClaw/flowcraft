@@ -150,20 +150,22 @@ func TestAssemblyKeepsReasoningSignature(t *testing.T) {
 // TestAssemblySumsUsage covers providers that report accounting in more than one
 // event.
 func TestAssemblySumsUsage(t *testing.T) {
-	images := int64(1)
-	first := usage.Usage{InputTokens: 3, OutputTokens: 0, TotalTokens: 3}
-	second := usage.Usage{InputTokens: 0, OutputTokens: 4, TotalTokens: 4, GeneratedImages: &images}
+	first := usage.Usage{InputTokens: 3}
+	second := usage.Usage{
+		OutputTokens: 4,
+		Work:         map[usage.WorkKind]int64{usage.WorkImagesGenerated: 1},
+	}
 	response := assemble(t,
 		inference.StreamEvent{Kind: inference.StreamUsage, Usage: &first},
 		inference.StreamEvent{Kind: inference.StreamUsage, Usage: &second},
 		inference.StreamEvent{Kind: inference.StreamEnd, Finish: inference.FinishStop},
 	)
 	if response.Usage.InputTokens != 3 || response.Usage.OutputTokens != 4 ||
-		response.Usage.TotalTokens != 7 {
+		response.Usage.TotalTokens() != 7 {
 		t.Fatalf("usage = %+v", response.Usage)
 	}
-	if response.Usage.GeneratedImages == nil || *response.Usage.GeneratedImages != 1 {
-		t.Fatalf("generated images = %v", response.Usage.GeneratedImages)
+	if got := response.Usage.WorkValue(usage.WorkImagesGenerated); got != 1 {
+		t.Fatalf("generated images = %d, want 1", got)
 	}
 }
 
