@@ -173,6 +173,6 @@ func (r *Run) cancel(ctx context.Context, reason string) error {
 	}
 	r.state = agent.StateCanceled
 	r.pending = nil
-	r.persist(ctx, nil, nil)
+	_ = r.persist(ctx, nil, nil)
 	return nil
 }

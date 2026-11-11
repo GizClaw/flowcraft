@@ -44,6 +44,9 @@ type Invoke struct {
 	// Trace is how much of the run is traced. A node that computes input
 	// digests only does so when this allows TraceNode or Replay is on.
 	Trace telemetry.TraceLevel
+	// Checkpoint writes records immediately, for a side effect that must be
+	// recorded before it runs. Nil when the run has no store.
+	Checkpoint func(records []Record) error
 }
 
 // Record is one durable fact a node produced; the engine persists it with the

@@ -81,6 +81,9 @@ type Run struct {
 	// steerMu guards the steer a caller queued for the next boundary.
 	steerMu sync.Mutex
 	steer   *steerRequest
+	// persistMu serializes saves: a node may checkpoint a side effect while
+	// the loop is between steps.
+	persistMu sync.Mutex
 }
 
 // steerRequest is one message waiting for the next frontier.
@@ -142,7 +145,7 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 	// A durable run exists as soon as it starts: the seeded input is a step-zero
 	// write, so a restart finds it in the log instead of losing it.
 	if seeded && run.store != nil {
-		run.persist(ctx, []StateUpdate{{
+		_ = run.persist(ctx, []StateUpdate{{
 			Key:   g.input,
 			Value: store.values[g.input],
 		}}, nil)
@@ -220,7 +223,7 @@ func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) 
 	for len(r.active) > 0 {
 		if err := ctx.Err(); err != nil {
 			r.state = agent.StateCanceled
-			r.persist(ctx, nil, nil)
+			_ = r.persist(ctx, nil, nil)
 			yield(agent.Status{State: agent.StateCanceled, Reason: err.Error()}, nil)
 			yield(nil, err)
 			return
@@ -250,7 +253,7 @@ func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) 
 		}
 	}
 	r.state = agent.StateCompleted
-	r.persist(ctx, nil, nil)
+	_ = r.persist(ctx, nil, nil)
 	yield(agent.Status{State: agent.StateCompleted}, nil)
 }
 
@@ -307,7 +310,7 @@ func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool)
 		if text := question.Text(); text != "" {
 			reason = text
 		}
-		r.persist(ctx, nil, nil)
+		_ = r.persist(ctx, nil, nil)
 		yield(agent.Status{State: agent.StateInputRequired, Reason: reason}, nil)
 		return frontierSuspended, nil
 	}
@@ -388,7 +391,7 @@ func (r *Run) emit(yield func(agent.Event, error) bool, event agent.Event) bool 
 // fail reports a terminal failure.
 func (r *Run) fail(ctx context.Context, yield func(agent.Event, error) bool, err error) {
 	r.state = agent.StateFailed
-	r.persist(ctx, nil, nil)
+	_ = r.persist(ctx, nil, nil)
 	yield(agent.Status{State: agent.StateFailed, Reason: err.Error()}, nil)
 	yield(nil, err)
 }
@@ -436,13 +439,13 @@ func (r *Run) runStepInline(
 		return nil, message.Content{}, fmt.Errorf("graph: node %q: %w", id, err)
 	}
 	if result.Suspend != nil {
-		r.persist(ctx, nil, result.Records)
+		_ = r.persist(ctx, nil, result.Records)
 		return []string{id}, result.Suspend.Question, nil
 	}
 	if err := r.values.apply(result.State, r.g.state); err != nil {
 		return nil, message.Content{}, err
 	}
-	r.persist(ctx, result.State, result.Records)
+	_ = r.persist(ctx, result.State, result.Records)
 	return nil, message.Content{}, nil
 }
 
@@ -504,9 +507,14 @@ func (r *Run) runStep(
 			Snapshot: func() Snapshot { return Snapshot{values: snapshot} },
 			Step:     r.step,
 			Answer:   r.answer,
-			Lookup:   r.lookup,
-			Replay:   r.replay,
-			Trace:    r.trace,
+			Lookup: func(hash string) (agent.LLMCallRecord, bool) {
+				return r.lookup(ctx, hash)
+			},
+			Replay: r.replay,
+			Trace:  r.trace,
+			Checkpoint: func(records []agent.Record) error {
+				return r.persist(ctx, nil, records)
+			},
 		}
 	}
 	// A frontier with one node has nothing to run in parallel: it pays no
@@ -642,7 +650,7 @@ func (r *Run) runStep(
 	if err := r.values.apply(updates, r.g.state); err != nil {
 		return nil, message.Content{}, err
 	}
-	r.persist(ctx, updates, records)
+	_ = r.persist(ctx, updates, records)
 	return suspended, question, nil
 }
 
@@ -694,13 +702,24 @@ func (r *Run) planHash() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// lookup returns a recorded call by request hash.
-func (r *Run) lookup(requestHash string) (agent.LLMCallRecord, bool) {
+// lookup returns a recorded call by request hash, loading the response blob a
+// previous process stored.
+func (r *Run) lookup(ctx context.Context, requestHash string) (agent.LLMCallRecord, bool) {
 	if requestHash == "" || r.calls == nil {
 		return agent.LLMCallRecord{}, false
 	}
 	record, ok := r.calls[requestHash]
-	return record, ok
+	if !ok {
+		return agent.LLMCallRecord{}, false
+	}
+	if len(record.Response) == 0 && record.ResponseRef != "" && r.store != nil {
+		body, err := r.store.GetBlob(ctx, record.ResponseRef)
+		if err != nil {
+			return agent.LLMCallRecord{}, false
+		}
+		record.Response = body
+	}
+	return record, true
 }
 
 // invokeOnce runs one node, retrying a retryable failure that produced no events.

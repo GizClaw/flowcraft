@@ -145,8 +145,27 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 	record := in.Trace.Allows(telemetry.TraceNode) || in.Replay
 	var digests []agent.MessageDigest
 	var segments []agent.PromptSegment
+	var requestHash string
 	if record {
 		digests, segments = describePrompt(request)
+		requestHash = inference.RequestHash(request)
+	}
+	if in.Replay {
+		call, ok := in.Lookup(requestHash)
+		if !ok {
+			return nil, fmt.Errorf("model: replay miss for %s", requestHash)
+		}
+		return &modelStream{
+			replay:      &call,
+			view:        view,
+			transcript:  transcript,
+			messagesKey: config.Messages,
+			pendingKey:  config.Pending,
+			usageKey:    config.Usage,
+			outputKey:   config.Output,
+			model:       request.Model,
+			requestHash: requestHash,
+		}, nil
 	}
 	started := time.Now()
 	stream, err := m.open(ctx, request)
@@ -166,6 +185,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		record:      record,
 		digests:     digests,
 		segments:    segments,
+		requestHash: requestHash,
 	}, nil
 }
 
@@ -336,14 +356,41 @@ type modelStream struct {
 	started     time.Time
 	// record says this call's identity is kept: the input digests and the
 	// assembled response ride the step's checkpoint.
-	record   bool
-	digests  []agent.MessageDigest
-	segments []agent.PromptSegment
-	result   graph.Result
-	done     bool
+	record      bool
+	requestHash string
+	digests     []agent.MessageDigest
+	segments    []agent.PromptSegment
+	// replay answers from a recorded call instead of the provider.
+	replay *agent.LLMCallRecord
+	result graph.Result
+	done   bool
 }
 
 func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
+	if s.replay != nil {
+		if s.done {
+			return nil, io.EOF
+		}
+		var msg message.Message
+		if err := json.Unmarshal(s.replay.Response, &msg); err != nil {
+			return nil, fmt.Errorf("model: replay response: %w", err)
+		}
+		response := inference.GenerateResponse{
+			Message:      msg,
+			Usage:        s.replay.Usage,
+			FinishReason: inference.FinishReason(s.replay.StopReason),
+		}
+		result, err := s.finish(response)
+		if err != nil {
+			return nil, err
+		}
+		s.result = result
+		s.done = true
+		if text := msg.Content.Text(); text != "" {
+			return agent.Text{Text: text}, nil
+		}
+		return nil, io.EOF
+	}
 	for {
 		event, err := s.stream.Next(ctx)
 		if errors.Is(err, io.EOF) {
@@ -384,7 +431,12 @@ func (s *modelStream) Result() (graph.Result, error) {
 	return s.result, nil
 }
 
-func (s *modelStream) Close() error { return s.stream.Close() }
+func (s *modelStream) Close() error {
+	if s.stream == nil {
+		return nil
+	}
+	return s.stream.Close()
+}
 
 // finish turns the assembled response into the step's writes.
 func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result, error) {
@@ -418,14 +470,15 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 		}
 	}
 	result := graph.Result{State: updates}
-	if s.record {
+	if s.record && s.replay == nil {
 		record := agent.LLMCallRecord{
-			Model:      s.model,
-			Usage:      response.Usage,
-			StopReason: string(response.FinishReason),
-			LatencyMs:  time.Since(s.started).Milliseconds(),
-			Messages:   s.digests,
-			Segments:   s.segments,
+			RequestHash: s.requestHash,
+			Model:       s.model,
+			Usage:       response.Usage,
+			StopReason:  string(response.FinishReason),
+			LatencyMs:   time.Since(s.started).Milliseconds(),
+			Messages:    s.digests,
+			Segments:    s.segments,
 		}
 		if body, err := json.Marshal(response.Message); err == nil {
 			record.Response = body

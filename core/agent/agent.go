@@ -30,6 +30,9 @@ var (
 	ErrSessionBusy = errors.New("agent: the session already has a run in flight")
 	// ErrClosed reports work offered to a draining or closed agent.
 	ErrClosed = errors.New("agent: not accepting work")
+	// ErrEffectUncertain reports a resume whose checkpoint holds a side effect
+	// with no recorded outcome. The host reconciles it instead of re-running.
+	ErrEffectUncertain = errors.New("agent: an effect has no recorded outcome")
 	// ErrTaskMismatch reports a protocol retry addressing another task than the
 	// one the session is on.
 	ErrTaskMismatch = errors.New("agent: the session is on another task")

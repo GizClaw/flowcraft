@@ -189,7 +189,7 @@ func BenchmarkPersistStep(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		run.step++
-		run.persist(ctx, updates, nil)
+		_ = run.persist(ctx, updates, nil)
 	}
 	b.StopTimer()
 	if _, err := store.Load(ctx, "task-1"); err != nil {
@@ -212,7 +212,7 @@ func BenchmarkPersistBaseEvery10(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		run.step++
-		run.persist(ctx, updates, nil)
+		_ = run.persist(ctx, updates, nil)
 	}
 	b.StopTimer()
 	if _, err := store.Load(ctx, "task-1"); err != nil {
@@ -235,7 +235,7 @@ func BenchmarkRestore(b *testing.B) {
 			updates := []StateUpdate{{Key: "flag", Value: Bool(true)}}
 			for i := 0; i < steps; i++ {
 				run.step++
-				run.persist(ctx, updates, nil)
+				_ = run.persist(ctx, updates, nil)
 			}
 			options := runOptions{
 				store: store, taskID: "task-1",

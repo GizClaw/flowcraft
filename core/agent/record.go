@@ -37,6 +37,35 @@ type PromptSegment struct {
 	Hash  string `json:"hash"`
 }
 
+// EffectStatus is where a side effect stands.
+type EffectStatus string
+
+const (
+	// EffectStarted is written before the effect runs, so a crash leaves a
+	// trace of an action whose outcome nobody recorded.
+	EffectStarted EffectStatus = "started"
+	// EffectDone is written after the effect returned successfully.
+	EffectDone EffectStatus = "done"
+	// EffectFailed is written after the effect returned an error.
+	EffectFailed EffectStatus = "failed"
+)
+
+// EffectRecord is one tool execution as the trace keeps it.
+//
+// IdempotencyKey lets the next attempt recognise an effect that already
+// happened; Status started without a matching done/failed is what makes a
+// resume refuse to guess.
+type EffectRecord struct {
+	CallID         string       `json:"call_id"`
+	ToolName       string       `json:"tool_name"`
+	ArgsHash       string       `json:"args_hash,omitempty"`
+	IdempotencyKey string       `json:"idempotency_key,omitempty"`
+	Status         EffectStatus `json:"status"`
+	ResultHash     string       `json:"result_hash,omitempty"`
+	ErrorKind      string       `json:"error_kind,omitempty"`
+	DurationMs     int64        `json:"duration_ms,omitempty"`
+}
+
 // LLMCallRecord is one model call as the trace keeps it.
 //
 // Response is the assembled assistant turn; the engine stores it as a blob and
