@@ -18,9 +18,11 @@ import (
 // the carrier lives here rather than in core/runtime: tool and inference must be
 // able to read it without importing that package.
 //
-// The runtime fills RuntimeID/TenantID; a layer that owns a session adds
-// SessionID/AgentName/Turn/Manifest. Nothing here is conversation *content*:
-// the fields are the identity a span or log record is correlated by.
+// The runtime fills RuntimeID; deploy fills TenantID/SessionID/AgentName/
+// Manifest; the agent fills TaskID/Turn. Nothing here is conversation
+// *content*: the fields are the identity a span or log record is correlated
+// by. A graph step is execution detail and is a span attribute, not a field
+// here.
 type Run struct {
 	// RuntimeID identifies the assembled runtime (agent.runtime.id).
 	RuntimeID string
@@ -31,7 +33,13 @@ type Run struct {
 	SessionID string
 	// AgentName names the deployed agent.
 	AgentName string
-	// Turn is the conversation turn a step belongs to.
+	// TaskID identifies the Task a step belongs to (task.id). It is the
+	// checkpoint key, stable across a resume, and empty when the layer that
+	// attached the run does not know it yet.
+	TaskID string
+	// Turn is the 1-based ordinal of the Run call within the session in this
+	// process. It is correlation, not identity: it is not persisted and starts
+	// over after a restart or eviction.
 	Turn int
 	// Manifest is the deployment manifest a run executed under.
 	Manifest string
@@ -68,6 +76,9 @@ func WithRun(ctx context.Context, run Run) context.Context {
 	}
 	if run.AgentName != "" {
 		merged.AgentName = run.AgentName
+	}
+	if run.TaskID != "" {
+		merged.TaskID = run.TaskID
 	}
 	if run.Turn != 0 {
 		merged.Turn = run.Turn
@@ -108,6 +119,9 @@ func buildAttrs(run Run) []attribute.KeyValue {
 	}
 	if run.AgentName != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrAgentName, run.AgentName))
+	}
+	if run.TaskID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrTaskID, run.TaskID))
 	}
 	if run.Turn > 0 {
 		attrs = append(attrs, attribute.Int(telemetry.AttrTurn, run.Turn))

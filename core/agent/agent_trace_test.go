@@ -20,7 +20,7 @@ func TestOnRunReportsTheRun(t *testing.T) {
 		NewRunner: factory,
 		Trace:     telemetry.TraceRun,
 		RunContext: func(ctx context.Context, sessionID string) context.Context {
-			return runctx.WithRun(ctx, runctx.Run{SessionID: sessionID, Manifest: "sha256:m"})
+			return runctx.WithRun(ctx, runctx.Run{SessionID: sessionID, TenantID: "acme", Manifest: "sha256:m"})
 		},
 		OnRun: func(record agent.RunRecord) { records = append(records, record) },
 	})
@@ -41,6 +41,9 @@ func TestOnRunReportsTheRun(t *testing.T) {
 	}
 	if record.Manifest != "sha256:m" {
 		t.Errorf("manifest = %q", record.Manifest)
+	}
+	if record.TenantID != "acme" {
+		t.Errorf("tenant = %q", record.TenantID)
 	}
 	if record.TraceID == "" || record.SpanID == "" {
 		t.Errorf("trace ids = %q/%q, want the run span", record.TraceID, record.SpanID)

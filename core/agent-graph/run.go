@@ -336,13 +336,13 @@ func (r *Run) startStepSpan(ctx context.Context) (context.Context, func(error)) 
 	if r.trace == telemetry.TraceOff {
 		return ctx, func(error) {}
 	}
-	ctx = runctx.WithRun(ctx, runctx.Run{Turn: r.step + 1, Manifest: r.manifest.ID()})
 	if !r.trace.Allows(telemetry.TraceStep) {
 		return ctx, func(error) {}
 	}
 	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.step",
 		trace.WithAttributes(runctx.Attrs(ctx)...),
 		trace.WithAttributes(
+			attribute.Int(telemetry.AttrGraphStep, r.step+1),
 			attribute.Int(telemetry.AttrGraphFrontier, len(r.active)),
 			attribute.Int(telemetry.AttrGraphRouted, r.routed),
 		))
@@ -363,6 +363,7 @@ func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (cont
 	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.node",
 		trace.WithAttributes(runctx.Attrs(ctx)...),
 		trace.WithAttributes(
+			attribute.Int(telemetry.AttrGraphStep, r.step+1),
 			attribute.String(telemetry.AttrNodeID, id),
 			attribute.String(telemetry.AttrNodeKind, kind.Name()),
 		))

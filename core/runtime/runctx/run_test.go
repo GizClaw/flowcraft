@@ -136,3 +136,37 @@ func TestAttrsCarrySessionIdentity(t *testing.T) {
 		t.Errorf("turn/manifest attrs = %v", attrs)
 	}
 }
+
+// TaskID is identity: it is the checkpoint key and must survive a merge.
+// Turn is correlation: it is the in-process Run ordinal, not identity.
+func TestRunCarriesTaskAndTurn(t *testing.T) {
+	ctx := WithRun(context.Background(), Run{
+		RuntimeID: "rt-1",
+		SessionID: "s-1",
+		AgentName: "writer",
+		TaskID:    "t-1",
+		Turn:      2,
+	})
+	run, ok := From(ctx)
+	if !ok || run.TaskID != "t-1" || run.Turn != 2 {
+		t.Fatalf("run = %+v, ok = %v", run, ok)
+	}
+
+	// A later layer that only knows the turn must not erase the task id.
+	ctx = WithRun(ctx, Run{Turn: 3})
+	run, _ = From(ctx)
+	if run.TaskID != "t-1" || run.Turn != 3 {
+		t.Fatalf("merged run = %+v", run)
+	}
+
+	attrs := map[string]string{}
+	for _, attr := range Attrs(ctx) {
+		attrs[string(attr.Key)] = attr.Value.String()
+	}
+	if attrs[telemetry.AttrTaskID] != "t-1" {
+		t.Errorf("task attr = %v", attrs)
+	}
+	if attrs[telemetry.AttrTurn] != "3" {
+		t.Errorf("turn attr = %v", attrs)
+	}
+}

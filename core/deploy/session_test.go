@@ -96,3 +96,29 @@ func TestSessionRequiresAnID(t *testing.T) {
 		t.Fatalf("run = %v, want ErrSessionRequired", runErr)
 	}
 }
+
+// A host that serves one tenant stamps it on every finished run, so an OnRun
+// consumer can bucket records without a side channel.
+func TestSessionRunCarriesTheTenant(t *testing.T) {
+	var records []agent.RunRecord
+	host := testHost(t)
+	host.TenantID = "acme"
+	host.OnRun = func(_ string, record agent.RunRecord) {
+		records = append(records, record)
+	}
+	manager := newManager(t, BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+		return &textRunner{text: "hello"}
+	})), host)
+	if err := manager.Add(context.Background(), testSpec(t, "a", "echo")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	session, _ := manager.Session("a", "conv-1")
+	for range session.Run(context.Background(), message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want one", len(records))
+	}
+	if records[0].TenantID != "acme" {
+		t.Fatalf("tenant = %q, want acme", records[0].TenantID)
+	}
+}

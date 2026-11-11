@@ -73,6 +73,11 @@ type Host struct {
 	// Harness is the host's build identity (version or git SHA), recorded in
 	// each deployment's manifest.
 	Harness string
+	// TenantID is the tenant every agent in this Manager serves. It is stamped
+	// on every run, span and RunRecord. Empty means single-tenant. A process
+	// serving several tenants constructs one Manager per tenant: the session
+	// table is not tenant-keyed.
+	TenantID string
 	// OnRun observes every finished run, named by agent. Like OnEvent it runs
 	// synchronously on the run's goroutine, so it must be fast.
 	OnRun func(agentName string, record agent.RunRecord)
@@ -170,7 +175,12 @@ func (m *Manager) build(ctx context.Context, spec Spec) (*deployment, error) {
 		}
 		rt = created
 	}
-	deployed := &deployment{name: spec.Name, spec: spec, rt: rt}
+	deployed := &deployment{
+		name:   spec.Name,
+		tenant: m.host.TenantID,
+		spec:   spec,
+		rt:     rt,
+	}
 	engineFingerprint := canonicalSettings(spec.Engine.Settings)
 	if engineKind.Fingerprint != nil {
 		engineFingerprint = engineKind.Fingerprint(spec.Engine.Settings)
@@ -401,6 +411,7 @@ func (m *Manager) ProtocolNames() []string {
 // fields of the spec it still needs.
 type deployment struct {
 	name        string
+	tenant      string
 	spec        Spec
 	rt          *runtime.Runtime
 	agent       *agent.Agent
@@ -419,6 +430,8 @@ func (d *deployment) runContext(ctx context.Context, sessionID string) context.C
 	ctx = runctx.WithRun(ctx, runctx.Run{
 		SessionID: sessionID,
 		AgentName: d.name,
+		TenantID:  d.tenant,
+		Manifest:  d.manifest.ID(),
 	})
 	if d.rt == nil {
 		return ctx

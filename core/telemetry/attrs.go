@@ -117,6 +117,9 @@ const (
 	// AttrNodeKind is the node kind that ran ("model", "tool", "condition").
 	AttrNodeKind = "node.kind"
 
+	// AttrGraphStep is the 1-based step index within one graph run.
+	AttrGraphStep = "graph.step"
+
 	// AttrGraphFrontier is how many nodes the step's frontier held.
 	AttrGraphFrontier = "graph.frontier"
 

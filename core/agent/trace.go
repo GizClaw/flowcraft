@@ -17,6 +17,7 @@ type RunRecord struct {
 	SpanID    string      `json:"span_id,omitempty"`
 	SessionID string      `json:"session_id"`
 	TaskID    string      `json:"task_id"`
+	TenantID  string      `json:"tenant_id,omitempty"`
 	Manifest  string      `json:"manifest,omitempty"`
 	State     TaskState   `json:"state"`
 	ErrorKind string      `json:"error_kind,omitempty"`

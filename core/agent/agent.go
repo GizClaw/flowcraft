@@ -154,6 +154,9 @@ type session struct {
 	// openErr is set when the build failed; the waiter that observes it drops
 	// the entry.
 	openErr error
+	// turn counts accepted Run calls for this session in this process. It is
+	// carried across a terminal task replacement and is not persisted.
+	turn atomic.Uint32
 }
 
 // NewAgent builds the session table. It does not open anything: a runner is
@@ -218,6 +221,10 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
+		runCtx = runctx.WithRun(runCtx, runctx.Run{
+			TaskID: entry.taskID,
+			Turn:   int(entry.turn.Add(1)),
+		})
 		var span trace.Span
 		if a.opts.Trace.Allows(telemetry.TraceRun) {
 			runCtx, span = telemetry.TracerWithSuffix("agent").Start(runCtx, "agent.run",
@@ -238,6 +245,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 					Usage:     runUsage,
 				}
 				if run, ok := runctx.From(runCtx); ok {
+					record.TenantID = run.TenantID
 					record.Manifest = run.Manifest
 				}
 				if span != nil {
@@ -520,6 +528,7 @@ func (a *Agent) acquire(ctx context.Context, sessionID, taskID string) (*session
 					ErrTaskMismatch, sessionID, entry.taskID, taskID)
 			}
 			next := newSession(sessionID)
+			next.turn.Store(entry.turn.Load())
 			next.opening = make(chan struct{})
 			shard.insert(next)
 			evicted = append(evicted, entry)
@@ -531,6 +540,7 @@ func (a *Agent) acquire(ctx context.Context, sessionID, taskID string) (*session
 				return nil, nil, nil, fmt.Errorf("%w: task %q", ErrTaskFinished, taskID)
 			}
 			next := newSession(sessionID)
+			next.turn.Store(entry.turn.Load())
 			next.opening = make(chan struct{})
 			shard.insert(next)
 			evicted = append(evicted, entry)
