@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
@@ -25,6 +26,19 @@ type AgentDocument struct {
 	Protocol *ProtocolDocument `json:"protocol"`
 	// Catalog scopes the tool projection a local engine reads.
 	Catalog *CatalogDocument `json:"catalog"`
+	// Delegation is the policy this agent's delegate tools use. Nil means the
+	// agent gets no delegation tools at all.
+	Delegation *DelegationDocument `json:"delegation"`
+}
+
+// DelegationDocument is the written form of a delegation policy.
+type DelegationDocument struct {
+	Targets       []string `json:"targets,omitempty"`
+	Modes         []string `json:"modes,omitempty"`
+	MaxDepth      int      `json:"max_depth,omitempty"`
+	MaxConcurrent int      `json:"max_concurrent,omitempty"`
+	Timeout       string   `json:"timeout,omitempty"`
+	MaxInputBytes int      `json:"max_input_bytes,omitempty"`
 }
 
 // CatalogDocument scopes the tool projection.
@@ -204,11 +218,16 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if _, err := catalog.ValidatedScope(); err != nil {
 		return Spec{}, errdefs.Validationf("%s: %w", where("catalog"), err)
 	}
+	delegationSpec, err := buildDelegation(agent.Delegation, where)
+	if err != nil {
+		return Spec{}, err
+	}
 	spec := Spec{
-		Name:     agent.Name,
-		Catalog:  catalog,
-		Engine:   engineSpec,
-		Protocol: protocolSpec,
+		Name:       agent.Name,
+		Catalog:    catalog,
+		Engine:     engineSpec,
+		Protocol:   protocolSpec,
+		Delegation: delegationSpec,
 	}
 	if agent.Runtime != nil {
 		layers, err := l.layers(agent.Name, agent.Runtime)
@@ -253,4 +272,43 @@ func (l Loader) engine(name string) (EngineKind, bool) {
 func (l Loader) protocol(name string) (ProtocolKind, bool) {
 	kind, found := l.Kinds.Protocols[name]
 	return kind, found
+}
+
+// buildDelegation validates and converts the written policy.
+func buildDelegation(doc *DelegationDocument, where func(string) string) (*DelegationSpec, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	spec := &DelegationSpec{
+		Targets:       append([]string(nil), doc.Targets...),
+		Modes:         append([]string(nil), doc.Modes...),
+		MaxDepth:      doc.MaxDepth,
+		MaxConcurrent: doc.MaxConcurrent,
+		MaxInputBytes: doc.MaxInputBytes,
+	}
+	for _, mode := range spec.Modes {
+		if mode != "sync" && mode != "async" {
+			return nil, errdefs.Validationf("%s: unknown mode %q", where("delegation"), mode)
+		}
+	}
+	if spec.MaxDepth < 0 {
+		return nil, errdefs.Validationf("%s: max_depth must not be negative", where("delegation"))
+	}
+	if spec.MaxConcurrent < 0 {
+		return nil, errdefs.Validationf("%s: max_concurrent must not be negative", where("delegation"))
+	}
+	if spec.MaxInputBytes < 0 {
+		return nil, errdefs.Validationf("%s: max_input_bytes must not be negative", where("delegation"))
+	}
+	if doc.Timeout != "" {
+		timeout, err := time.ParseDuration(doc.Timeout)
+		if err != nil {
+			return nil, errdefs.Validationf("%s: timeout: %v", where("delegation"), err)
+		}
+		if timeout < 0 {
+			return nil, errdefs.Validationf("%s: timeout must not be negative", where("delegation"))
+		}
+		spec.Timeout = timeout
+	}
+	return spec, nil
 }

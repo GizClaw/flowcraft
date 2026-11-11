@@ -69,4 +69,16 @@ type Spec struct {
 	// MaxSessions bounds the session table the agent keeps; zero is
 	// unbounded. The oldest idle session is evicted first.
 	MaxSessions int
+	// Delegation is the policy its delegate tools use. Nil means no tools.
+	Delegation *DelegationSpec
+}
+
+// DelegationSpec is the validated, typed form of the written policy.
+type DelegationSpec struct {
+	Targets       []string
+	Modes         []string
+	MaxDepth      int
+	MaxConcurrent int
+	Timeout       time.Duration
+	MaxInputBytes int
 }

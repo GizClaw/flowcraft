@@ -43,6 +43,7 @@ type Runtime struct {
 	registry *tool.Registry
 	skills   *skill.Index
 	sessions io.Closer
+	sources  []tool.Source
 
 	closers []io.Closer
 
@@ -57,6 +58,7 @@ type options struct {
 	drivers    []Driver
 	selectors  []Selector
 	middleware []MiddlewareOption
+	sources    []tool.Source
 }
 
 // WithSelectors declares the selection strategies YAML may name. Pure Go callers
@@ -69,6 +71,13 @@ func WithSelectors(selectors ...Selector) Option {
 // in the table fails construction, and the error lists what is available.
 func WithDrivers(drivers ...Driver) Option {
 	return func(o *options) { o.drivers = append(o.drivers, drivers...) }
+}
+
+// WithToolSource adds host-provided tool sources beside the configured tool
+// sets. The runtime owns neither the source nor its lifecycle: the host that
+// built it closes it.
+func WithToolSource(sources ...tool.Source) Option {
+	return func(o *options) { o.sources = append(o.sources, sources...) }
 }
 
 // New builds one runtime from cfg and starts it.
@@ -96,7 +105,12 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Runtime, error) {
 		return nil, err
 	}
 
-	rt := &Runtime{id: newID(), cfg: cfg, middlewareOptions: settings.middleware}
+	rt := &Runtime{
+		id:                newID(),
+		cfg:               cfg,
+		middlewareOptions: settings.middleware,
+		sources:           settings.sources,
+	}
 	if err := rt.build(ctx, drivers, selectors); err != nil {
 		_ = rt.Close()
 		return nil, err

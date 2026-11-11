@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -64,6 +65,23 @@ func New(sessions Sessions, policy Policy) (*Service, error) {
 
 // Policy returns the effective policy.
 func (s *Service) Policy() Policy { return s.policy }
+
+// Targets lists the deployed agents this caller may address.
+func (s *Service) Targets(ctx context.Context) ([]string, error) {
+	run, ok := runctx.From(ctx)
+	if !ok || run.AgentName == "" {
+		return nil, errdefs.Validationf("delegation: a parent agent is required")
+	}
+	names := s.sessions.Names()
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if s.allowedTarget(name, run.AgentName, names) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
 
 // Delegate runs one synchronous delegation.
 //

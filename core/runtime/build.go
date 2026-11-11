@@ -133,7 +133,8 @@ func (r *Runtime) buildTools(ctx context.Context) error {
 // buildSources wires each enabled tool set. Each set contributes a tool.Source,
 // so the assembly decides visibility and the sources only describe tools.
 func (r *Runtime) buildSources(ctx context.Context) ([]tool.Source, error) {
-	sources := make([]tool.Source, 0, 4)
+	sources := make([]tool.Source, 0, 4+len(r.sources))
+	sources = append(sources, r.sources...)
 
 	if r.cfg.Tools.enabled(ToolFiles) {
 		group, err := files.New(r.tree, r.cfg.workDir(), files.WithImages(r.cfg.Tools.Images))

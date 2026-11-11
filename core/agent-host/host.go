@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -143,9 +144,24 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
 	}
 
+	runtimeOptions := append([]runtime.Option(nil), m.bindings.RuntimeOptions...)
+	if spec.Delegation != nil {
+		if spec.Runtime.Version == 0 {
+			return nil, errdefs.Validationf(
+				"manage: agent %q: a remote engine cannot delegate", spec.Name)
+		}
+		service, err := delegation.New(
+			delegationSessions{m: m}, delegationPolicy(spec.Delegation))
+		if err != nil {
+			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
+		}
+		runtimeOptions = append(runtimeOptions,
+			runtime.WithToolSource(delegation.Tools(service)))
+	}
+
 	var rt *runtime.Runtime
 	if spec.Runtime.Version != 0 {
-		created, err := runtime.New(ctx, spec.Runtime, m.bindings.RuntimeOptions...)
+		created, err := runtime.New(ctx, spec.Runtime, runtimeOptions...)
 		if err != nil {
 			return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 		}
@@ -455,6 +471,35 @@ func (d *deployment) close() error {
 		d.closeErr = first
 	})
 	return d.closeErr
+}
+
+// delegationSessions adapts the manager to delegation.Sessions. It is a value
+// so the dependency points host → delegation, never the reverse.
+type delegationSessions struct{ m *Manager }
+
+func (s delegationSessions) Session(name, sessionID string) (delegation.Session, bool) {
+	session, ok := s.m.Session(name, sessionID)
+	if !ok {
+		return nil, false
+	}
+	return session, true
+}
+
+func (s delegationSessions) Names() []string { return s.m.Names() }
+
+func delegationPolicy(spec *deploy.DelegationSpec) delegation.Policy {
+	modes := make([]delegation.Mode, len(spec.Modes))
+	for i, mode := range spec.Modes {
+		modes[i] = delegation.Mode(mode)
+	}
+	return delegation.Policy{
+		Targets:       spec.Targets,
+		Modes:         modes,
+		MaxDepth:      spec.MaxDepth,
+		MaxConcurrent: spec.MaxConcurrent,
+		Timeout:       spec.Timeout,
+		MaxInputBytes: spec.MaxInputBytes,
+	}
 }
 
 // observer names the agent in every event: one host usually serves many.
