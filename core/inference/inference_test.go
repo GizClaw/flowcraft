@@ -490,7 +490,7 @@ func TestProviderIsSatisfiableAndStreamEndsWithEOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stub stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		event, err := stream.Next(context.Background())
 		if errors.Is(err, io.EOF) {

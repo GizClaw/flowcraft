@@ -7,20 +7,6 @@ import (
 	"testing"
 )
 
-func seed(t *testing.T, tree interface {
-	Write(context.Context, string, []byte) error
-}, files map[string]string) string {
-	t.Helper()
-	var root string
-	for name, body := range files {
-		root = filepath.Dir(filepath.Dir(name))
-		if err := tree.Write(context.Background(), name, []byte(body)); err != nil {
-			t.Fatalf("Write %s: %v", name, err)
-		}
-	}
-	return root
-}
-
 func TestGrepFindsLinesWithNumbers(t *testing.T) {
 	fileTools, tree := group(t)
 	root := tree.Writable()[0]

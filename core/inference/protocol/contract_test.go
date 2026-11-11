@@ -468,7 +468,7 @@ func TestStreamWithoutTerminalEventIsTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		_, err := stream.Next(context.Background())
 		if err == nil {
@@ -495,19 +495,4 @@ func TestBindProviderReportsMissingHalf(t *testing.T) {
 	if _, err := provider.GenerateStream(context.Background(), request(t)); !inference.IsKind(err, inference.UnsupportedOperation) {
 		t.Fatalf("kind = %v, want UnsupportedOperation", err)
 	}
-}
-
-type fakeCatalog struct{}
-
-func (fakeCatalog) Models() []model.ModelDescriptor {
-	return []model.ModelDescriptor{{
-		ID: model.ModelID{Provider: "fake", Name: "m1"},
-	}}
-}
-
-func (fakeCatalog) Describe(id model.ModelID) (model.ModelDescriptor, bool) {
-	if id.Name == "m1" {
-		return model.ModelDescriptor{ID: id}, true
-	}
-	return model.ModelDescriptor{}, false
 }

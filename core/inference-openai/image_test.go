@@ -334,11 +334,3 @@ func openaiImagesResponse(t *testing.T, body string) *openai.ImagesResponse {
 	}
 	return &response
 }
-
-// stubStreamDriver fails the test if it is used: the dispatch must reject before
-// reaching it.
-type stubStreamDriver struct{}
-
-func (stubStreamDriver) Open(context.Context, inference.GenerateRequest) (inference.Stream, error) {
-	return nil, errors.New("stream driver must not be reached for image output")
-}

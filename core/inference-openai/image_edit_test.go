@@ -216,7 +216,7 @@ func TestImageStreamPreviewReplacedByFinal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var kinds []inference.StreamEventKind
 	for {
@@ -337,7 +337,7 @@ func TestLiveImageStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	parts := 0
 	for {

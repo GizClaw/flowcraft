@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -14,24 +12,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
-
-// sseServer replays a fixed SSE body and returns the events as chunks.
-func sseServer(t *testing.T, path string, body string) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != path {
-			t.Errorf("path = %q, want %q", r.URL.Path, path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("authorization = %q", got)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, body)
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
 
 // collect drains a stream and returns the text and the assembled response.
 func collect(t *testing.T, stream inference.Stream) (string, inference.GenerateResponse) {
@@ -54,24 +34,6 @@ func collect(t *testing.T, stream inference.Stream) (string, inference.GenerateR
 		t.Fatalf("result: %v", err)
 	}
 	return text.String(), response
-}
-
-func streamRequest(t *testing.T) inference.GenerateRequest {
-	t.Helper()
-	request := inference.GenerateRequest{
-		Model: model.ModelRef{
-			ID:      model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
-			Profile: "default",
-		},
-		Input: inference.GenerateInput{
-			Role:    inference.InputRoleUser,
-			Content: message.NewTextContent("hello"),
-		},
-	}
-	if err := request.Validate(); err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	return request
 }
 
 func TestLiveStream(t *testing.T) {
@@ -99,7 +61,7 @@ func TestLiveStream(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			text, response := collect(t, stream)
 			t.Logf("%s -> %q (finish=%s, in=%d out=%d)",
 				api, text, response.FinishReason,

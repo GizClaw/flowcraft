@@ -46,16 +46,6 @@ func (t *readFileTool) Definition() message.ToolDefinition {
 
 // describe varies with the wiring: a parameter that always fails is worse than
 // an absent one, because the model spends a turn discovering it.
-func (t *readFileTool) describe() string {
-	text := "Read the contents of a file. Returns the text as-is."
-	if t.images {
-		return text + " An image returns an image part plus a note with its format and " +
-			"size; images whose format this build cannot decode, or whose sides exceed " +
-			"4096 px, are refused with an instruction to convert or downscale them."
-	}
-	return text + " Images are refused: this model does not accept image input."
-}
-
 func (t *readFileTool) Metadata() tool.ToolMeta { return tool.ToolMeta{} }
 
 func (t *readFileTool) Execute(ctx context.Context, arguments string) (message.Content, error) {

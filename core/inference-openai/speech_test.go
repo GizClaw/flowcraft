@@ -261,7 +261,7 @@ func TestSpeechStreamDeliversChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var kinds []inference.StreamEventKind
 	chunks := 0
@@ -328,7 +328,7 @@ func TestSpeechStreamRejectsEmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		_, err := stream.Next(context.Background())
 		if err == nil {

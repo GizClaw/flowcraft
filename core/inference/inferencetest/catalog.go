@@ -46,176 +46,197 @@ func RunCatalog(t *testing.T, fixture CatalogFixture) {
 	const unreachable = "http://127.0.0.1:1"
 
 	t.Run("declarations are published", func(t *testing.T) {
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		catalog := provider.Catalog
-		if catalog == nil {
-			t.Fatal("provider does not publish a catalog")
-		}
-		published := catalog.Models()
-		if len(published) == 0 {
-			t.Fatal("catalog is empty")
-		}
-		seen := make(map[model.ModelID]struct{}, len(published))
-		for _, descriptor := range published {
-			if err := descriptor.Validate(); err != nil {
-				t.Fatalf("model %q is invalid: %v", descriptor.ID.Name, err)
-			}
-			if descriptor.ID.Provider != fixture.ProviderID {
-				t.Errorf("model %q declares provider %q, want %q",
-					descriptor.ID.Name, descriptor.ID.Provider, fixture.ProviderID)
-			}
-			if _, ok := seen[descriptor.ID]; ok {
-				t.Errorf("model %q is declared twice", descriptor.ID.Name)
-			}
-			seen[descriptor.ID] = struct{}{}
-		}
-		if len(published) != len(fixture.Declared) {
-			t.Errorf("published %d models, fixture declares %d", len(published), len(fixture.Declared))
-		}
+		runPublished(t, fixture, unreachable)
 	})
-
 	t.Run("lookup agrees with the list", func(t *testing.T) {
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		catalog := provider.Catalog
-		for _, descriptor := range catalog.Models() {
-			described, ok := catalog.Describe(descriptor.ID)
-			if !ok {
-				t.Errorf("model %q is listed but not described", descriptor.ID.Name)
-				continue
-			}
-			if described.ID != descriptor.ID || described.Label != descriptor.Label {
-				t.Errorf("describe(%q) = %+v, listed %+v", descriptor.ID.Name, described, descriptor)
-			}
-		}
-		unknown := model.ModelID{Provider: fixture.ProviderID, Name: "definitely-not-declared"}
-		if _, ok := catalog.Describe(unknown); ok {
-			t.Error("an undeclared model was described")
-		}
+		runLookup(t, fixture, unreachable)
 	})
-
 	// Callers may sort, filter or annotate what they receive; the catalog itself
 	// must not change as a result.
 	t.Run("published declarations are copies", func(t *testing.T) {
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		catalog := provider.Catalog
-		first := catalog.Models()
-		if len(first) == 0 {
-			t.Fatal("catalog is empty")
-		}
-		original := first[0].Label
-		first[0].Label = "mutated by the caller"
-		first[0].Capabilities.Inputs = append(first[0].Capabilities.Inputs, "injected")
-		second := catalog.Models()
-		if second[0].Label != original {
-			t.Fatalf("mutating the returned slice changed the catalog: %q", second[0].Label)
-		}
-		for _, kind := range second[0].Capabilities.Inputs {
-			if string(kind) == "injected" {
-				t.Fatal("mutating the returned capabilities changed the catalog")
-			}
-		}
-
-		described, _ := catalog.Describe(second[0].ID)
-		described.Label = "mutated by the caller"
-		again, _ := catalog.Describe(second[0].ID)
-		if again.Label != original {
-			t.Fatalf("mutating a described model changed the catalog: %q", again.Label)
-		}
+		runCopies(t, fixture, unreachable)
 	})
-
 	t.Run("declarations cover what the driver serves", func(t *testing.T) {
-		for _, output := range fixture.Served {
-			want := output.PartKind()
-			covered := false
-			for _, descriptor := range fixture.Declared {
-				if len(descriptor.Capabilities.Outputs) == 0 {
-					// An empty list declares nothing and filters nothing.
-					continue
-				}
-				for _, declared := range descriptor.Capabilities.Outputs {
-					if declared == want {
-						covered = true
-					}
-				}
-			}
-			if !covered {
-				t.Errorf("no declared model covers output %q", output)
-			}
-		}
+		runCoverage(t, fixture)
 	})
-
 	if !fixture.Enforces {
 		return
 	}
-
 	t.Run("an undeclared model is refused", func(t *testing.T) {
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		_, err = provider.Generate(
-			context.Background(),
-			fixture.Request(t, "definitely-not-declared", inference.OutputText),
-		)
-		if !inference.IsKind(err, inference.UnknownModel) {
-			t.Fatalf("kind = %v, want UnknownModel", err)
-		}
+		runUnknownModel(t, fixture, unreachable)
 	})
-
 	t.Run("an undeclared input is refused", func(t *testing.T) {
-		if fixture.UndeclaredInput == nil {
-			t.Skip("the fixture declares no input restriction")
-		}
-		request, kind := fixture.UndeclaredInput(t)
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		_, err = provider.Generate(context.Background(), request)
-		if !inference.IsKind(err, inference.UnsupportedFeature) {
-			t.Fatalf("kind = %v, want UnsupportedFeature for %q input", err, kind)
-		}
+		runUnknownInput(t, fixture, unreachable)
 	})
-
 	t.Run("an undeclared output is refused", func(t *testing.T) {
-		// Pick a model that declares outputs, then ask for one it excludes.
-		var target model.ModelDescriptor
-		var missing inference.Output
+		runUnknownOutput(t, fixture, unreachable)
+	})
+}
+
+func runPublished(t *testing.T, fixture CatalogFixture, unreachable string) {
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	catalog := provider.Catalog
+	if catalog == nil {
+		t.Fatal("provider does not publish a catalog")
+	}
+	published := catalog.Models()
+	if len(published) == 0 {
+		t.Fatal("catalog is empty")
+	}
+	seen := make(map[model.ModelID]struct{}, len(published))
+	for _, descriptor := range published {
+		if err := descriptor.Validate(); err != nil {
+			t.Fatalf("model %q is invalid: %v", descriptor.ID.Name, err)
+		}
+		if descriptor.ID.Provider != fixture.ProviderID {
+			t.Errorf("model %q declares provider %q, want %q",
+				descriptor.ID.Name, descriptor.ID.Provider, fixture.ProviderID)
+		}
+		if _, ok := seen[descriptor.ID]; ok {
+			t.Errorf("model %q is declared twice", descriptor.ID.Name)
+		}
+		seen[descriptor.ID] = struct{}{}
+	}
+	if len(published) != len(fixture.Declared) {
+		t.Errorf("published %d models, fixture declares %d", len(published), len(fixture.Declared))
+	}
+}
+
+func runLookup(t *testing.T, fixture CatalogFixture, unreachable string) {
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	catalog := provider.Catalog
+	for _, descriptor := range catalog.Models() {
+		described, ok := catalog.Describe(descriptor.ID)
+		if !ok {
+			t.Errorf("model %q is listed but not described", descriptor.ID.Name)
+			continue
+		}
+		if described.ID != descriptor.ID || described.Label != descriptor.Label {
+			t.Errorf("describe(%q) = %+v, listed %+v", descriptor.ID.Name, described, descriptor)
+		}
+	}
+	unknown := model.ModelID{Provider: fixture.ProviderID, Name: "definitely-not-declared"}
+	if _, ok := catalog.Describe(unknown); ok {
+		t.Error("an undeclared model was described")
+	}
+}
+
+func runCopies(t *testing.T, fixture CatalogFixture, unreachable string) {
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	catalog := provider.Catalog
+	first := catalog.Models()
+	if len(first) == 0 {
+		t.Fatal("catalog is empty")
+	}
+	original := first[0].Label
+	first[0].Label = "mutated by the caller"
+	first[0].Capabilities.Inputs = append(first[0].Capabilities.Inputs, "injected")
+	second := catalog.Models()
+	if second[0].Label != original {
+		t.Fatalf("mutating the returned slice changed the catalog: %q", second[0].Label)
+	}
+	for _, kind := range second[0].Capabilities.Inputs {
+		if string(kind) == "injected" {
+			t.Fatal("mutating the returned capabilities changed the catalog")
+		}
+	}
+
+	described, _ := catalog.Describe(second[0].ID)
+	described.Label = "mutated by the caller"
+	again, _ := catalog.Describe(second[0].ID)
+	if again.Label != original {
+		t.Fatalf("mutating a described model changed the catalog: %q", again.Label)
+	}
+}
+
+func runCoverage(t *testing.T, fixture CatalogFixture) {
+	for _, output := range fixture.Served {
+		want := output.PartKind()
+		covered := false
 		for _, descriptor := range fixture.Declared {
 			if len(descriptor.Capabilities.Outputs) == 0 {
+				// An empty list declares nothing and filters nothing.
 				continue
 			}
-			for _, output := range fixture.Served {
-				if !declaresOutput(descriptor, output) {
-					target, missing = descriptor, output
-					break
+			for _, declared := range descriptor.Capabilities.Outputs {
+				if declared == want {
+					covered = true
 				}
 			}
-			if missing != "" {
+		}
+		if !covered {
+			t.Errorf("no declared model covers output %q", output)
+		}
+	}
+}
+
+func runUnknownModel(t *testing.T, fixture CatalogFixture, unreachable string) {
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = provider.Generate(
+		context.Background(),
+		fixture.Request(t, "definitely-not-declared", inference.OutputText),
+	)
+	if !inference.IsKind(err, inference.UnknownModel) {
+		t.Fatalf("kind = %v, want UnknownModel", err)
+	}
+}
+
+func runUnknownInput(t *testing.T, fixture CatalogFixture, unreachable string) {
+	if fixture.UndeclaredInput == nil {
+		t.Skip("the fixture declares no input restriction")
+	}
+	request, kind := fixture.UndeclaredInput(t)
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = provider.Generate(context.Background(), request)
+	if !inference.IsKind(err, inference.UnsupportedFeature) {
+		t.Fatalf("kind = %v, want UnsupportedFeature for %q input", err, kind)
+	}
+}
+
+func runUnknownOutput(t *testing.T, fixture CatalogFixture, unreachable string) {
+	// Pick a model that declares outputs, then ask for one it excludes.
+	var target model.ModelDescriptor
+	var missing inference.Output
+	for _, descriptor := range fixture.Declared {
+		if len(descriptor.Capabilities.Outputs) == 0 {
+			continue
+		}
+		for _, output := range fixture.Served {
+			if !declaresOutput(descriptor, output) {
+				target, missing = descriptor, output
 				break
 			}
 		}
-		if missing == "" {
-			t.Skip("the fixture declares no model that excludes a served output")
+		if missing != "" {
+			break
 		}
-		provider, err := fixture.NewGenerator(t, unreachable)
-		if err != nil {
-			t.Fatalf("new provider: %v", err)
-		}
-		_, err = provider.Generate(context.Background(), fixture.Request(t, target.ID.Name, missing))
-		if !inference.IsKind(err, inference.UnsupportedOperation) {
-			t.Fatalf("kind = %v, want UnsupportedOperation", err)
-		}
-	})
+	}
+	if missing == "" {
+		t.Skip("the fixture declares no model that excludes a served output")
+	}
+	provider, err := fixture.NewGenerator(t, unreachable)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = provider.Generate(context.Background(), fixture.Request(t, target.ID.Name, missing))
+	if !inference.IsKind(err, inference.UnsupportedOperation) {
+		t.Fatalf("kind = %v, want UnsupportedOperation", err)
+	}
 }
 
 func declaresOutput(descriptor model.ModelDescriptor, output inference.Output) bool {

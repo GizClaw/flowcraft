@@ -215,7 +215,7 @@ func (d *driver) speechCall(
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("openai: reading speech audio: %w", err)

@@ -62,19 +62,19 @@ func Open(opts ...Option) (*Tree, error) {
 	for _, path := range c.writes {
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
-			tree.Close()
+			_ = tree.Close()
 			return nil, errdefs.Validationf(
 				"fsx: writable path %q must exist and be a directory: %v", path, err)
 		}
 		info, err := os.Stat(real)
 		if err != nil || !info.IsDir() {
-			tree.Close()
+			_ = tree.Close()
 			return nil, errdefs.Validationf(
 				"fsx: writable path %q is not a directory", path)
 		}
 		handle, err := os.OpenRoot(real)
 		if err != nil {
-			tree.Close()
+			_ = tree.Close()
 			return nil, fmt.Errorf("fsx: open writable root %q: %w", real, err)
 		}
 		tree.entries = append(tree.entries, entry{path: real, root: handle})
@@ -154,7 +154,7 @@ func denied(err error) error {
 		return nil
 	}
 	if isDenied(err) {
-		return fmt.Errorf("%w: %v", ErrDenied, err)
+		return fmt.Errorf("%w: %w", ErrDenied, err)
 	}
 	return err
 }

@@ -164,7 +164,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			var last error
 			for {
@@ -207,7 +207,7 @@ func RunStream(t *testing.T, fixture StreamFixture) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			drain(t, stream)
 			streamed, err := stream.Result()
 			if err != nil {

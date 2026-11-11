@@ -113,34 +113,48 @@ type StreamEvent struct {
 	Finish FinishReason `json:"finish,omitempty"`
 }
 
-// Validate checks the event's own invariants: a kind that names its payload,
-// and no payload for a kind that does not carry one.
+// streamPayload says which optional fields a kind carries.
+type streamPayload struct {
+	text   bool
+	tool   bool
+	part   bool
+	usage  bool
+	finish bool
+}
+
+var streamPayloads = map[StreamEventKind]streamPayload{
+	StreamStart:     {},
+	StreamText:      {text: true},
+	StreamReasoning: {text: true},
+	StreamToolCall:  {tool: true},
+	StreamPart:      {part: true},
+	StreamChunk:     {part: true},
+	StreamUsage:     {usage: true},
+	StreamEnd:       {finish: true},
+}
+
+// Validate checks the event's own invariants: a kind names its payload, and a
+// kind that does not carry a field rejects it.
 func (e StreamEvent) Validate() error {
 	if err := e.Kind.Validate(); err != nil {
 		return err
 	}
+	payload := streamPayloads[e.Kind]
+	if (e.Text != "" && !payload.text) ||
+		(e.Tool != nil && !payload.tool) ||
+		(e.Part != nil && !payload.part) ||
+		(e.Usage != nil && !payload.usage) ||
+		(e.Finish != "" && !payload.finish) {
+		return fmt.Errorf("stream %s event carries a foreign payload", e.Kind)
+	}
 	switch e.Kind {
-	case StreamStart:
-		if e.Text != "" || e.Tool != nil || e.Part != nil || e.Usage != nil || e.Finish != "" {
-			return fmt.Errorf("stream start event carries content")
-		}
-	case StreamText, StreamReasoning:
-		if e.Tool != nil || e.Part != nil || e.Usage != nil || e.Finish != "" {
-			return fmt.Errorf("%s event carries a foreign payload", e.Kind)
-		}
 	case StreamToolCall:
 		if e.Tool == nil {
 			return fmt.Errorf("stream tool_call event carries no fragment")
 		}
-		if e.Text != "" || e.Part != nil || e.Usage != nil || e.Finish != "" {
-			return fmt.Errorf("stream tool_call event carries a foreign payload")
-		}
 	case StreamPart:
 		if e.Part == nil {
 			return fmt.Errorf("stream part event carries no part")
-		}
-		if e.Text != "" || e.Tool != nil || e.Usage != nil || e.Finish != "" {
-			return fmt.Errorf("stream part event carries a foreign payload")
 		}
 	case StreamChunk:
 		if e.Part == nil {
@@ -151,22 +165,13 @@ func (e StreamEvent) Validate() error {
 		default:
 			return fmt.Errorf("stream chunk of %q has no bytes to append", e.Part.Kind())
 		}
-		if e.Text != "" || e.Tool != nil || e.Usage != nil || e.Finish != "" {
-			return fmt.Errorf("stream chunk event carries a foreign payload")
-		}
 	case StreamUsage:
 		if e.Usage == nil {
 			return fmt.Errorf("stream usage event carries no usage")
 		}
-		if e.Text != "" || e.Tool != nil || e.Part != nil || e.Finish != "" {
-			return fmt.Errorf("stream usage event carries a foreign payload")
-		}
 	case StreamEnd:
 		if err := e.Finish.Validate(); err != nil {
 			return err
-		}
-		if e.Text != "" || e.Tool != nil || e.Part != nil || e.Usage != nil {
-			return fmt.Errorf("stream end event carries content")
 		}
 	}
 	return nil

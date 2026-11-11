@@ -81,7 +81,7 @@ func RunCredentialed(t *testing.T, fixture CredentialedFixture) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			drain(t, stream)
 			response, err := stream.Result()
 			if err != nil {
