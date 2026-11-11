@@ -61,7 +61,7 @@ type placeholder struct {
 
 // scanPlaceholders splits one value into literals and references.
 //
-// It is the single parser: expansion, [RequiredEnv] and [Required] all read the
+// It is the single parser: expansion, [RequiredPlaceholders] and [Required] all read the
 // same split, so they cannot disagree about what counts as a reference.
 func scanPlaceholders(value, where string) ([]placeholder, error) {
 	out := make([]placeholder, 0, 4)

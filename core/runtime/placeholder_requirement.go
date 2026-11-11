@@ -9,13 +9,13 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// EnvRequirement is what a set of layers needs from the environment.
+// PlaceholderRequirement is what a set of layers needs from the environment.
 //
 // It exists because the alternative is discovering a missing variable one
 // process restart at a time: expansion fails at the first unset reference, so a
 // deployment with four required variables takes four starts to describe itself.
-// A host can call RequiredEnv first and report everything at once.
-type EnvRequirement struct {
+// A host can call RequiredPlaceholders first and report everything at once.
+type PlaceholderRequirement struct {
 	// Required names references with no fallback: the process cannot start
 	// without them.
 	Required []string
@@ -27,7 +27,7 @@ type EnvRequirement struct {
 }
 
 // Missing reports the required variables the given environment does not define.
-func (e EnvRequirement) Missing(lookup func(string) (string, bool)) []string {
+func (e PlaceholderRequirement) Missing(lookup func(string) (string, bool)) []string {
 	if lookup == nil {
 		return nil
 	}
@@ -40,28 +40,28 @@ func (e EnvRequirement) Missing(lookup func(string) (string, bool)) []string {
 	return missing
 }
 
-// RequiredEnv reports which environment variables the layers reference, without
+// RequiredPlaceholders reports which environment variables the layers reference, without
 // needing any of them to be set.
 //
 // It parses the same tree expansion parses and uses the same scanner, so a value
 // inside a comment or inside a key is not a reference — only a string value is.
-func RequiredEnv(layers ...Layer) (EnvRequirement, error) {
-	requirement := EnvRequirement{Sources: make(map[string][]string)}
+func RequiredPlaceholders(layers ...Layer) (PlaceholderRequirement, error) {
+	requirement := PlaceholderRequirement{Sources: make(map[string][]string)}
 	required := make(map[string]struct{})
 	optional := make(map[string]struct{})
 
 	for _, layer := range layers {
 		body, err := layer.body()
 		if err != nil {
-			return EnvRequirement{}, err
+			return PlaceholderRequirement{}, err
 		}
 		var document yaml.Node
 		if err := yaml.Unmarshal(body, &document); err != nil {
-			return EnvRequirement{}, errdefs.Validationf(
+			return PlaceholderRequirement{}, errdefs.Validationf(
 				"runtime: layer %q: %v", layer.Name, err)
 		}
 		if err := collectEnv(&document, layer, &requirement, required, optional); err != nil {
-			return EnvRequirement{}, err
+			return PlaceholderRequirement{}, err
 		}
 	}
 
@@ -70,9 +70,9 @@ func RequiredEnv(layers ...Layer) (EnvRequirement, error) {
 
 // finishEnv turns the accumulated name sets into the sorted report.
 func finishEnv(
-	requirement EnvRequirement,
+	requirement PlaceholderRequirement,
 	required, optional map[string]struct{},
-) EnvRequirement {
+) PlaceholderRequirement {
 	for name := range required {
 		requirement.Required = append(requirement.Required, name)
 	}
@@ -87,23 +87,23 @@ func finishEnv(
 	return requirement
 }
 
-// RequiredEnvDocument reports which environment variables one YAML document
+// RequiredPlaceholdersDocument reports which environment variables one YAML document
 // references, without resolving them.
 //
-// RequiredEnv answers the same question for layers, which have names and are
+// RequiredPlaceholders answers the same question for layers, which have names and are
 // merged; a caller that owns a single document — a deployment document — needs
 // the answer before it can build a layer, and needs the source name to say which
 // file to edit. The scan is the one expansion uses, so only string values count.
-func RequiredEnvDocument(body []byte, source string) (EnvRequirement, error) {
-	requirement := EnvRequirement{Sources: make(map[string][]string)}
+func RequiredPlaceholdersDocument(body []byte, source string) (PlaceholderRequirement, error) {
+	requirement := PlaceholderRequirement{Sources: make(map[string][]string)}
 	required := make(map[string]struct{})
 	optional := make(map[string]struct{})
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
-		return EnvRequirement{}, errdefs.Validationf("runtime: %s: %v", source, err)
+		return PlaceholderRequirement{}, errdefs.Validationf("runtime: %s: %v", source, err)
 	}
 	if err := collectEnv(&document, Layer{Name: source}, &requirement, required, optional); err != nil {
-		return EnvRequirement{}, err
+		return PlaceholderRequirement{}, err
 	}
 	return finishEnv(requirement, required, optional), nil
 }
@@ -111,7 +111,7 @@ func RequiredEnvDocument(body []byte, source string) (EnvRequirement, error) {
 func collectEnv(
 	node *yaml.Node,
 	layer Layer,
-	requirement *EnvRequirement,
+	requirement *PlaceholderRequirement,
 	required, optional map[string]struct{},
 ) error {
 	switch node.Kind {

@@ -48,33 +48,33 @@ func TestLoadFileReportsAnUnreadableFile(t *testing.T) {
 	}
 }
 
-// A host prints its startup checklist before loading: RequiredEnv reports every
+// A host prints its startup checklist before loading: RequiredPlaceholders reports every
 // reference in one pass instead of failing at the first one.
-func TestRequiredEnvNamesEveryVariable(t *testing.T) {
+func TestRequiredPlaceholdersNamesEveryVariable(t *testing.T) {
 	loader := Loader{Kinds: BuiltinKinds()}
-	requirement, err := loader.RequiredEnv([]byte(envDocument))
+	requirement, err := loader.RequiredPlaceholders([]byte(envDocument))
 	if err != nil {
-		t.Fatalf("RequiredEnv: %v", err)
+		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
 	if len(requirement.Required) != 1 || requirement.Required[0] != "PEER_URL" {
 		t.Errorf("required = %v, want PEER_URL", requirement.Required)
 	}
 }
 
-func TestRequiredEnvFileReadsTheDocument(t *testing.T) {
+func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
 	loader := Loader{Kinds: BuiltinKinds()}
-	requirement, err := loader.RequiredEnvFile(writeDocument(t))
+	requirement, err := loader.RequiredPlaceholdersFile(writeDocument(t))
 	if err != nil {
-		t.Fatalf("RequiredEnvFile: %v", err)
+		t.Fatalf("RequiredPlaceholdersFile: %v", err)
 	}
 	if len(requirement.Required) != 1 || requirement.Required[0] != "PEER_URL" {
 		t.Errorf("required = %v, want PEER_URL", requirement.Required)
 	}
 }
 
-func TestRequiredEnvFileReportsAnUnreadableFile(t *testing.T) {
+func TestRequiredPlaceholdersFileReportsAnUnreadableFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	_, err := Loader{Kinds: BuiltinKinds()}.RequiredEnvFile(missing)
+	_, err := Loader{Kinds: BuiltinKinds()}.RequiredPlaceholdersFile(missing)
 	if err == nil || !strings.Contains(err.Error(), "absent.yaml") {
 		t.Fatalf("err = %v, want the path named", err)
 	}

@@ -99,21 +99,21 @@ func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
 	return l.Load(ctx, body)
 }
 
-// RequiredEnv reports the environment variables a deployment document names,
+// RequiredPlaceholders reports the environment variables a deployment document names,
 // before the document is loaded. Load fails at the first unset reference; this
 // reports all of them in one pass, which is what a host needs to print a startup
 // checklist instead of a restart loop.
-func (l Loader) RequiredEnv(body []byte) (runtime.EnvRequirement, error) {
-	return runtime.RequiredEnvDocument(body, "deployment document")
+func (l Loader) RequiredPlaceholders(body []byte) (runtime.PlaceholderRequirement, error) {
+	return runtime.RequiredPlaceholdersDocument(body, "deployment document")
 }
 
-// RequiredEnvFile reads a document and reports its environment requirements.
-func (l Loader) RequiredEnvFile(path string) (runtime.EnvRequirement, error) {
+// RequiredPlaceholdersFile reads a document and reports its environment requirements.
+func (l Loader) RequiredPlaceholdersFile(path string) (runtime.PlaceholderRequirement, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return runtime.EnvRequirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
+		return runtime.PlaceholderRequirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
 	}
-	return runtime.RequiredEnvDocument(body, path)
+	return runtime.RequiredPlaceholdersDocument(body, path)
 }
 
 // Load parses and validates a deployment document.

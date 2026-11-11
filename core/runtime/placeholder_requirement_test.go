@@ -28,10 +28,10 @@ inference:
 
 // A host can describe what it needs before anything is set, instead of failing
 // one variable per restart.
-func TestRequiredEnvClassifiesReferences(t *testing.T) {
-	requirement, err := RequiredEnv(envLayer())
+func TestRequiredPlaceholdersClassifiesReferences(t *testing.T) {
+	requirement, err := RequiredPlaceholders(envLayer())
 	if err != nil {
-		t.Fatalf("RequiredEnv: %v", err)
+		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
 	if got := strings.Join(requirement.Required, ","); got != "ROOT,TOKEN" {
 		t.Errorf("required = %q, want ROOT,TOKEN", got)
@@ -51,10 +51,10 @@ func TestRequiredEnvClassifiesReferences(t *testing.T) {
 	}
 }
 
-func TestEnvRequirementMissing(t *testing.T) {
-	requirement, err := RequiredEnv(envLayer())
+func TestPlaceholderRequirementMissing(t *testing.T) {
+	requirement, err := RequiredPlaceholders(envLayer())
 	if err != nil {
-		t.Fatalf("RequiredEnv: %v", err)
+		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
 	env := map[string]string{"ROOT": "/work"}
 	missing := requirement.Missing(func(name string) (string, bool) {
@@ -72,15 +72,15 @@ func TestEnvRequirementMissing(t *testing.T) {
 // "$$" is a literal dollar, not a reference, while a real reference on the same
 // line still counts. The scanner is shared with expansion, so both views must
 // agree about which is which.
-func TestRequiredEnvAndExpansionAgree(t *testing.T) {
+func TestRequiredPlaceholdersAndExpansionAgree(t *testing.T) {
 	layer := Layer{Name: "a.yaml", Bytes: []byte(`
 sandbox: {backend: local}
 files: {roots: ["/work"]}
 name: "cost is $$5, not ${MONEY}"
 `)}
-	requirement, err := RequiredEnv(layer)
+	requirement, err := RequiredPlaceholders(layer)
 	if err != nil {
-		t.Fatalf("RequiredEnv: %v", err)
+		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
 	if got := strings.Join(requirement.Required, ","); got != "MONEY" {
 		t.Errorf("required = %q, want MONEY only", got)
@@ -109,14 +109,14 @@ name: "cost is $$5, not ${MONEY}"
 
 // One document, no layers: the deployment loader needs the answer before it can
 // build the layer stack, and it needs to name the file to edit.
-func TestRequiredEnvDocument(t *testing.T) {
-	requirement, err := RequiredEnvDocument([]byte(`
+func TestRequiredPlaceholdersDocument(t *testing.T) {
+	requirement, err := RequiredPlaceholdersDocument([]byte(`
 name: ${NAME}
 sandbox:
   memory_mib: ${MEM_MIB:-512}
 `), "deploy.yaml")
 	if err != nil {
-		t.Fatalf("RequiredEnvDocument: %v", err)
+		t.Fatalf("RequiredPlaceholdersDocument: %v", err)
 	}
 	if len(requirement.Required) != 1 || requirement.Required[0] != "NAME" {
 		t.Errorf("required = %v, want [NAME]", requirement.Required)
