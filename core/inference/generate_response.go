@@ -89,15 +89,54 @@ func (r GenerateResponse) Validate() error {
 	return nil
 }
 
-// ValidateFor checks the response against the request that produced it: a model
-// must not call a tool the request never defined. The first such call is
-// reported as [UndefinedTool] and attached to the error so a caller can rebuild
-// it.
+// ValidateFor checks the response against the request that produced it: the
+// answer must carry the modality the request asked for and nothing else, and a
+// model must not call a tool the request never defined. Decoding an image for a
+// text request, or text for a video request, is a driver bug rather than a
+// partial answer, so it is reported as [ProviderResponseUnusable] with a stable
+// "unrequested_part" detail.
+//
+// A text answer may also carry reasoning and tool-call parts: they are
+// assistant-side structure, not another output modality. A data part is
+// auxiliary structured payload (transcription segments, an image's revised
+// metadata) and may accompany every modality; it is never the answer itself. A
+// [FinishStop] answer must carry at least one part of the requested modality;
+// filter and error finishes are allowed to close with whatever the provider
+// returned.
 func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	if err := r.Validate(); err != nil {
 		return inferenceErr(
 			ProviderResponseUnusable, "", err,
 		)
+	}
+	want := request.Output.PartKind()
+	matched := false
+	for _, part := range r.Message.Content.Parts {
+		kind := part.Kind()
+		if kind == want {
+			matched = true
+			continue
+		}
+		if kind == message.PartData {
+			continue
+		}
+		if want == message.PartText &&
+			(kind == message.PartToolCall || kind == message.PartReasoning) {
+			continue
+		}
+		return NewError(
+			ProviderResponseUnusable, FieldOutput,
+			fmt.Errorf(
+				"response carries a %q part, but the request asked for %q",
+				kind, request.Output.Kind()),
+		).WithDetail("generate.validation.unrequested_part." + string(kind))
+	}
+	if r.FinishReason == FinishStop && !matched {
+		return NewError(
+			ProviderResponseUnusable, FieldOutput,
+			fmt.Errorf(
+				"response finished without a %q part", request.Output.Kind()),
+		).WithDetail("generate.validation.missing_part." + string(want))
 	}
 	for _, call := range r.Message.ToolCalls() {
 		if !request.Tools.Has(call.Name) {
