@@ -41,8 +41,9 @@ type Runner struct {
 }
 
 var (
-	_ agent.Runner  = (*Runner)(nil)
-	_ agent.Steerer = (*Runner)(nil)
+	_ agent.Runner       = (*Runner)(nil)
+	_ agent.Steerer      = (*Runner)(nil)
+	_ agent.ResultReader = (*Runner)(nil)
 )
 
 // NewRunner binds a compiled graph to one session.
@@ -164,6 +165,35 @@ func (r *Runner) Cancel(ctx context.Context, reason string) error {
 		r.mu.Unlock()
 	}
 	return run.cancel(ctx, reason)
+}
+
+// Result returns the run's final assistant message and state. A process that
+// did not run the task restores it from the checkpoint first.
+func (r *Runner) Result(ctx context.Context) (agent.Result, error) {
+	r.mu.Lock()
+	run := r.run
+	r.mu.Unlock()
+	if run == nil {
+		restored, found, err := r.g.restore(ctx, runOptions{
+			store:       r.cfg.Store,
+			taskID:      r.cfg.TaskID,
+			sessionID:   r.cfg.SessionID,
+			fingerprint: r.cfg.Identity,
+		})
+		if err != nil {
+			return agent.Result{}, err
+		}
+		if !found {
+			return agent.Result{}, agent.ErrNoCheckpoint
+		}
+		r.mu.Lock()
+		if r.run == nil {
+			r.run = restored
+		}
+		run = r.run
+		r.mu.Unlock()
+	}
+	return run.Result(ctx)
 }
 
 // Close releases the runner; the graph holds nothing but the document.

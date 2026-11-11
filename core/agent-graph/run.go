@@ -63,6 +63,9 @@ type Run struct {
 	// answer is the reply to a suspended question; it is handed to the nodes of
 	// the resumed step only.
 	answer message.Content
+	// question is what the suspended node asked. It is reported by Result while
+	// the run waits for input.
+	question message.Content
 	// streamed is the text the last model round reported as deltas. The output
 	// publish uses it to avoid reporting the same answer a second time: a
 	// caller that folds Text events would otherwise see it twice.
@@ -304,6 +307,7 @@ func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool)
 		r.pending = r.active
 		r.active = suspended
 		r.answer = message.Content{}
+		r.question = question
 		r.state = agent.StateInputRequired
 		reason := ""
 		if text := question.Text(); text != "" {
@@ -439,6 +443,7 @@ func (r *Run) runStepInline(
 		return nil, message.Content{}, fmt.Errorf("graph: node %q: %w", id, err)
 	}
 	if result.Suspend != nil {
+		r.question = result.Suspend.Question
 		_ = r.persist(ctx, nil, result.Records)
 		return []string{id}, result.Suspend.Question, nil
 	}
