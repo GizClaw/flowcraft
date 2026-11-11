@@ -9,8 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// Driver-side logging: one record per provider round trip, at the boundary the
-// driver owns.
+// Provider-boundary logging: one record per provider round trip.
 //
 // These helpers live here rather than in each driver because they are identical
 // apart from the provider name. They answer "which call did the endpoint
@@ -19,9 +18,10 @@ import (
 // whatever it said when it refused. Failures log at Warn, successes at Debug so
 // per-call correlation stays cheap enough to leave on.
 //
-// They are also the only place a driver reports an outcome for a call that
-// failed before the pipeline could classify it: a transport error inside a
-// stream, a task id that only appears on the error envelope.
+// The protocol execution funnel calls them for every driver and every modality:
+// unary calls and stream termination are adjacent to the one place that knows
+// whether the provider was actually contacted. A driver may also call them
+// directly when it has a richer provider id than the response metadata exposes.
 
 // LogProviderCall records one unary provider round trip.
 func LogProviderCall(

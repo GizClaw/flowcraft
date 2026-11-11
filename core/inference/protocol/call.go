@@ -78,17 +78,26 @@ func bind[Req Request, Wire, Raw, Res any](
 func (p pipeline[Req, Wire, Raw, Res]) do(ctx context.Context, request Req) (Res, error) {
 	request = p.normalize(request)
 	ctx, call := startCall(ctx, p.observe, p.providerID, request, ShapeUnary)
-	response, err := p.execute(ctx, request)
+	response, err := p.execute(ctx, request, call)
 	call.finish(response, err)
 	return response, err
 }
 
 // execute runs the pipeline stages.
-func (p pipeline[Req, Wire, Raw, Res]) execute(ctx context.Context, request Req) (Res, error) {
+func (p pipeline[Req, Wire, Raw, Res]) execute(
+	ctx context.Context,
+	request Req,
+	call *call[Res],
+) (Res, error) {
 	var zero Res
 	compiled, err := prepare(ctx, p.providerID, p.compile, request, ShapeUnary)
 	if err != nil {
 		return zero, err
+	}
+	if call != nil {
+		// A compilation failure never reaches the provider; only a call that
+		// crossed the transport boundary belongs in the provider log.
+		call.attempted = true
 	}
 	raw, err := p.transport(ctx, request, compiled.Wire)
 	if err != nil {

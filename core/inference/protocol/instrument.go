@@ -152,6 +152,8 @@ type call[Res any] struct {
 	operation string
 	provider  string
 	model     string
+	stream    bool
+	attempted bool
 
 	usageOf  func(Res) usage.Usage
 	metaOf   func(Res) inference.Metadata
@@ -192,6 +194,7 @@ func startCall[Req, Res any](
 		operation: operation,
 		provider:  providerID,
 		model:     ref.ID.Name,
+		stream:    shape == ShapeStream,
 		usageOf:   obs.usageOf,
 		metaOf:    obs.metaOf,
 		finishOf:  obs.finishOf,
@@ -212,6 +215,45 @@ func (c *call[Res]) firstToken() {
 	))
 }
 
+// logOpen records a stream that crossed the transport boundary. A compile
+// failure never reaches the provider, so it is not logged as an opened stream.
+func (c *call[Res]) logOpen() {
+	if c == nil || !c.attempted {
+		return
+	}
+	inference.LogProviderStream(c.ctx, c.provider, c.operation, c.model, nil, "")
+}
+
+// logOutcome records one provider round trip at the boundary the driver would
+// otherwise own. Doing it here covers every driver and every modality without a
+// per-driver copy: unary calls use the call record, streams use the opener and
+// terminal records.
+func (c *call[Res]) logOutcome(response Res, err error) {
+	if c == nil || !c.attempted {
+		return
+	}
+	if c.stream {
+		if err != nil {
+			inference.LogProviderStream(c.ctx, c.provider, c.operation, c.model, err, "")
+			return
+		}
+		metadata := c.metaOf(response)
+		if metadata.ResponseID != "" {
+			inference.LogProviderStreamEnd(c.ctx, c.provider, c.operation, metadata.ResponseID)
+		}
+		return
+	}
+	var requestID, responseID string
+	if err == nil {
+		metadata := c.metaOf(response)
+		requestID = metadata.RequestID
+		responseID = metadata.ResponseID
+	}
+	inference.LogProviderCall(
+		c.ctx, c.provider, c.operation, c.model, err, requestID, responseID,
+	)
+}
+
 // finish closes the call: response envelope, usage, error classification, metrics
 // and the span itself. It is safe to call on a nil call and more than once (the
 // stream relay guards its own double-finish with sync.Once).
@@ -219,6 +261,7 @@ func (c *call[Res]) finish(response Res, err error) {
 	if c == nil {
 		return
 	}
+	c.logOutcome(response, err)
 	duration := time.Since(c.start)
 
 	var tokens usage.Usage

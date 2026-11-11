@@ -98,11 +98,12 @@ func (d *streamDriver[Wire, Raw]) Open(
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {
 	ctx, call := startCall(ctx, d.observe, d.providerID, request, ShapeStream)
-	stream, err := d.start(ctx, request)
+	stream, err := d.start(ctx, request, call)
 	if err != nil {
 		call.finish(inference.GenerateResponse{}, err)
 		return nil, err
 	}
+	call.logOpen()
 	if call == nil {
 		return stream, nil
 	}
@@ -113,11 +114,15 @@ func (d *streamDriver[Wire, Raw]) Open(
 func (d *streamDriver[Wire, Raw]) start(
 	ctx context.Context,
 	request inference.GenerateRequest,
+	call *call[inference.GenerateResponse],
 ) (inference.Stream, error) {
 	request.Extensions = request.Extensions.ForProvider(d.providerID)
 	compiled, err := prepare(ctx, d.providerID, d.compile, request, ShapeStream)
 	if err != nil {
 		return nil, err
+	}
+	if call != nil {
+		call.attempted = true
 	}
 	raw, err := d.open(ctx, request, compiled.Wire)
 	if err != nil {
