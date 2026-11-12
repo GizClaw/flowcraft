@@ -122,10 +122,24 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 		return run, nil
 	}
 	store := newStateStore(g.state)
+	// A session continues itself: the keys the document marks `carry` start from the
+	// previous task's values instead of the zero value.
+	if err := g.carryInto(ctx, settings, store); err != nil {
+		return nil, err
+	}
 	seeded := false
 	switch {
 	case g.input != "" && len(messages) > 0:
-		store.values[g.input] = MessagesValue(MessagesFromSlice(messages))
+		if existing, carried := store.values[g.input]; carried && g.state[g.input].Merge == MergeAppend {
+			// A carried transcript continues: the turn is appended, not written over.
+			history, err := existing.Messages()
+			if err != nil {
+				return nil, err
+			}
+			store.values[g.input] = MessagesValue(history.Concat(MessagesFromSlice(messages)))
+		} else {
+			store.values[g.input] = MessagesValue(MessagesFromSlice(messages))
+		}
 		seeded = true
 	case g.input == "" && len(messages) > 0:
 		return nil, fmt.Errorf(

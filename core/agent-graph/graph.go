@@ -67,6 +67,16 @@ type StateDocument struct {
 	Type string `json:"type"`
 	// Merge is single (default), last or append.
 	Merge string `json:"merge"`
+	// Carry keeps this key across the tasks of one session: a new task seeds it
+	// from the previous task's state instead of the declared zero value. It is the
+	// document's way to say "this is the conversation, not the request".
+	//
+	// It is meant for bounded state - a game, a form, a plan - which carries in
+	// microseconds. A key that grows without bound costs its own size on every
+	// turn, because the state is re-read from the store: a 200-message transcript
+	// measured 667us and 5000 allocations per turn. A long conversation belongs in
+	// one task, not in a carried key.
+	Carry bool `json:"carry"`
 }
 
 // NodeDocument declares one node instance.
@@ -154,6 +164,7 @@ type Graph struct {
 	order       []string
 	edges       map[string][]edge
 	state       map[string]StateKey
+	carried     map[string]struct{}
 	output      string
 	blobs       BlobStore
 }
@@ -227,6 +238,7 @@ func Build(doc Document, registry *Registry, opts ...BuildOption) (*Graph, error
 		order:       make([]string, 0, len(doc.Nodes)),
 		edges:       make(map[string][]edge, len(doc.Nodes)),
 		state:       state,
+		carried:     carriedKeys(state),
 		blobs:       settings.blobs,
 	}
 	for i, node := range doc.Nodes {
@@ -334,9 +346,20 @@ func buildState(doc map[string]StateDocument) (map[string]StateKey, error) {
 		if merge == MergeAppend && kind != KindMessages {
 			return nil, errdefs.Validationf("graph: state %q: merge: append needs type: messages", key)
 		}
-		state[key] = StateKey{Kind: kind, Merge: merge}
+		state[key] = StateKey{Kind: kind, Merge: merge, Carry: spec.Carry}
 	}
 	return state, nil
+}
+
+// carriedKeys lists the keys a new task seeds from the session's previous one.
+func carriedKeys(state map[string]StateKey) map[string]struct{} {
+	carried := make(map[string]struct{})
+	for key, spec := range state {
+		if spec.Carry {
+			carried[key] = struct{}{}
+		}
+	}
+	return carried
 }
 
 // buildNode validates one node and decodes its config once.

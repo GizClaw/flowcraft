@@ -609,3 +609,52 @@ func (g *Graph) loadBase(ctx context.Context, opts runOptions, target *stateStor
 	}
 	return nil
 }
+
+// carryInto seeds the carried keys from the session's previous task.
+//
+// A task is one turn; a session is the conversation. The document marks which keys
+// belong to the conversation, and this is where they cross the task boundary. A
+// session with no previous task, or a previous task written by another deployment,
+// seeds nothing: the declared zero value is the honest starting point, not a state
+// produced under rules that no longer apply.
+//
+// The cost is the previous state's size, read back and decoded: microseconds for
+// a game, hundreds of them for a long transcript (see StateDocument.Carry). That
+// is the trade that keeps turns independent tasks instead of one endless one.
+func (g *Graph) carryInto(ctx context.Context, opts runOptions, target *stateStore) error {
+	if len(g.carried) == 0 || opts.store == nil || opts.sessionID == "" {
+		return nil
+	}
+	previous, err := opts.store.LatestForSession(ctx, opts.sessionID)
+	if errors.Is(err, agent.ErrNoCheckpoint) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if previous.Task.ID == "" || previous.Task.ID == opts.taskID {
+		return nil
+	}
+	if opts.fingerprint != "" && previous.Fingerprint != opts.fingerprint {
+		telemetry.WarnErr(ctx, "graph: not carrying state from another deployment's checkpoint", nil)
+		return nil
+	}
+	var proj projection
+	if raw, ok := previous.Sections[sectionGraph]; ok {
+		if err := json.Unmarshal(raw, &proj); err != nil {
+			return fmt.Errorf("graph: decode carried projection: %w", err)
+		}
+	}
+	// The previous task's state is its base plus the events written after it; the
+	// same replay a restore uses, addressed to the older task.
+	seeded := opts
+	seeded.taskID = previous.Task.ID
+	restored, _, _, _, err := g.restoreState(ctx, seeded, proj.Base)
+	if err != nil {
+		return err
+	}
+	for key := range g.carried {
+		target.values[key] = restored.values[key]
+	}
+	return nil
+}

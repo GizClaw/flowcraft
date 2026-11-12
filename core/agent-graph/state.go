@@ -34,6 +34,9 @@ func (m Merge) Valid() bool {
 type StateKey struct {
 	Kind  Kind
 	Merge Merge
+	// Carry seeds this key from the previous task of the same session instead of
+	// the declared zero value. See Graph.carryInto.
+	Carry bool
 }
 
 // StateUpdate is one node's write to one state key.
