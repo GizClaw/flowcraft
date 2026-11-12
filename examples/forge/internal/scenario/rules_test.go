@@ -484,3 +484,192 @@ func TestExileEndsTheGameWhenTheLastWolfLeaves(t *testing.T) {
 		t.Fatalf("winner = %v phase = %v, want good and ended", state["winner"], state["phase"])
 	}
 }
+
+// votePosition poses a table at the moment the vote is resolved. The phases that
+// would produce it are covered elsewhere; a test that needs a tie should not have
+// to play seven seats to get one.
+func votePosition(t *testing.T, raw []byte, extra map[string]any) graph.Value {
+	t.Helper()
+	base := map[string]any{
+		"phase":         "vote",
+		"day":           1,
+		"waiting_for":   "",
+		"vote_index":    0,
+		"vote_pending":  []any{},
+		"current_votes": []any{},
+		"pk":            map[string]any{"candidates": []any{}, "mode": "", "round": 0},
+		"speech_index":  0,
+	}
+	for key, value := range extra {
+		base[key] = value
+	}
+	return gameFrom(t, raw, base)
+}
+
+// TestTiedVoteOpensThePK: a tie is not an exile. The table gets the candidates'
+// second speeches and votes again, between them only.
+func TestTiedVoteOpensThePK(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	alive := decodeTable(t, raw).Alive
+	first, second := alive[0], alive[1]
+	writes := runRule(t, "rules/vote.star", voteConfig, map[string]graph.Value{
+		"game": votePosition(t, raw, map[string]any{
+			"phase":        "tally",
+			"vote_pending": alive,
+			"current_votes": []any{
+				map[string]any{"voter": alive[2], "target": first},
+				map[string]any{"voter": alive[3], "target": second},
+			},
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	})
+	game := decodeGame(t, writes["game"])
+	if game["phase"] != "pk" {
+		t.Fatalf("phase = %v, want pk", game["phase"])
+	}
+	pk, _ := game["pk"].(map[string]any)
+	if pk["mode"] != "speech" {
+		t.Fatalf("pk = %v", pk)
+	}
+	candidates, _ := pk["candidates"].([]any)
+	if len(candidates) != 2 || candidates[0] != float64(first) || candidates[1] != float64(second) {
+		t.Fatalf("candidates = %v, want %v", candidates, []int{first, second})
+	}
+}
+
+// TestPKSpeechesReopenTheVote: both candidates speak again, then the table votes
+// once more, and that round may only name a candidate.
+func TestPKSpeechesReopenTheVote(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	alive := decodeTable(t, raw).Alive
+	first, second := alive[0], alive[1]
+	// Two candidates after the tie, both non-human, so neither branch asks for input.
+	pk := map[string]any{"candidates": []any{first, second}, "mode": "speech", "round": 1}
+	base := map[string]any{
+		"phase":         "pk",
+		"speaker_order": []any{first, second},
+		"speech_index":  0,
+		"pk":            pk,
+	}
+	values := map[string]graph.Value{
+		"game":   votePosition(t, raw, base),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	}
+	firstTurn := runRule(t, "rules/vote.star", voteConfig, values)
+	game := decodeGame(t, firstTurn["game"])
+	if game["brief_seat"] != float64(first) || game["brief_kind"] != "speech" {
+		t.Fatalf("brief_seat = %v kind = %v", game["brief_seat"], game["brief_kind"])
+	}
+	brief, _ := firstTurn["brief"].Text()
+	if !strings.Contains(brief, "PK") {
+		t.Fatalf("brief = %q, want the PK speech brief", brief)
+	}
+
+	// The second candidate's speech, then the table votes again.
+	values["game"] = gameFrom(t, raw, map[string]any{
+		"phase":         "pk",
+		"speaker_order": []any{first, second},
+		"speech_index":  2,
+		"pk":            pk,
+	})
+	voteRound := runRule(t, "rules/vote.star", voteConfig, values)
+	game = decodeGame(t, voteRound["game"])
+	pending, _ := game["vote_pending"].([]any)
+	if game["phase"] != "pk" {
+		t.Fatalf("phase = %v", game["phase"])
+	}
+	for _, id := range pending {
+		if id == float64(first) || id == float64(second) {
+			t.Fatalf("vote_pending = %v, a candidate must not vote in the PK round", pending)
+		}
+	}
+}
+
+// TestPKTieExilesBySeatOrder: a second tie cannot reopen the PK forever, so the
+// table settles it deterministically.
+func TestPKTieExilesBySeatOrder(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	alive := decodeTable(t, raw).Alive
+	first, second := alive[0], alive[1]
+	game := decodeGame(t, runRule(t, "rules/vote.star", voteConfig, map[string]graph.Value{
+		"game": votePosition(t, raw, map[string]any{
+			"phase": "tally",
+			"pk":    map[string]any{"candidates": []any{first, second}, "mode": "vote", "round": 1},
+			"current_votes": []any{
+				map[string]any{"voter": alive[2], "target": first},
+				map[string]any{"voter": alive[3], "target": second},
+			},
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	})["game"])
+	if game["phase"] != "exile" {
+		t.Fatalf("phase = %v, want exile", game["phase"])
+	}
+	if game["exile_target"] != float64(first) {
+		t.Fatalf("exile_target = %v, want the earlier seat in order (%d)", game["exile_target"], first)
+	}
+}
+
+// TestHumanVoteRejectsAnUnparseableLine: the human's turn only advances on a line
+// the rules can read.
+func TestHumanVoteRejectsAnUnparseableLine(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	player := decodeTable(t, raw).PlayerSeat
+	writes := runRule(t, "rules/vote.star", voteConfig, map[string]graph.Value{
+		"game": votePosition(t, raw, map[string]any{
+			"waiting_for":  "vote",
+			"vote_pending": []any{player, 4},
+		}),
+		"speech": speechValue("我再想想，先不急着定"),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	})
+	game := decodeGame(t, writes["game"])
+	if game["waiting_for"] != "vote" {
+		t.Fatalf("waiting_for = %v, want the vote to stay open", game["waiting_for"])
+	}
+	prompt, _ := writes["prompt"].Text()
+	if !strings.Contains(prompt, "请明确投票座号") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	votes, _ := game["current_votes"].([]any)
+	if len(votes) != 0 {
+		t.Fatalf("current_votes = %v, want none", votes)
+	}
+}
+
+// TestHumanVoteReadsHowPeopleWrite: "我投六号" and "我这票投2号" are the same
+// instruction, and a parser that only reads one of them loses the vote.
+func TestHumanVoteReadsHowPeopleWrite(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	player := decodeTable(t, raw).PlayerSeat
+	for _, line := range []string{"我投六号。", "我这票投2号，先听解释。"} {
+		game := decodeGame(t, runRule(t, "rules/vote.star", voteConfig, map[string]graph.Value{
+			"game": votePosition(t, raw, map[string]any{
+				"waiting_for":  "vote",
+				"vote_pending": []any{player, 4},
+			}),
+			"speech": speechValue(line),
+			"prompt": graph.Text(""),
+			"brief":  graph.Text(""),
+		})["game"])
+		votes, _ := game["current_votes"].([]any)
+		if len(votes) != 1 {
+			t.Fatalf("%q recorded %d votes (waiting=%v)", line, len(votes), game["waiting_for"])
+		}
+		vote, _ := votes[0].(map[string]any)
+		want := float64(6)
+		if strings.Contains(line, "2号") {
+			want = 2
+		}
+		if vote["target"] != want {
+			t.Fatalf("%q = target %v, want %v", line, vote["target"], want)
+		}
+	}
+}

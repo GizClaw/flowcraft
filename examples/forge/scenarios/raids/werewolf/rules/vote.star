@@ -67,24 +67,29 @@ def _role_label(role):
     return labels.get(role, role)
 
 
+_NUMERAL_ORDER = ["一", "二", "两", "三", "四", "五", "六", "七", "八", "九", "十"]
+
+
 _NUMERALS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 
 def _seat_number(text, start):
-    # Seats answer in Chinese: "我投六号" is as common as "我投6号". A parser that
-    # only reads digits turns every one of those into a 0 - a vote for six becomes an
-    # abstention, and a wolf's "刀六号" becomes "whoever is first in the alive list".
-    numbers = _numbers(text[start:])
+    # Seats answer in Chinese: "我投六号" is as common as "我投6号". A Starlark
+    # string is a byte string - indexing it or calling elems() walks bytes, so a
+    # numeral is found by substring search, never by comparing one position.
+    rest = text[start:]
+    numbers = _numbers(rest)
     if numbers:
         return numbers[0]
-    rest = text[start:]
-    for index in range(len(rest)):
-        if rest[index] in _NUMERALS:
-            return _NUMERALS[rest[index]]
-    return 0
-
-
+    earliest = -1
+    found = 0
+    for name in _NUMERAL_ORDER:
+        at = rest.find(name)
+        if at >= 0 and (earliest < 0 or at < earliest):
+            earliest = at
+            found = _NUMERALS[name]
+    return found
 def _number(text):
     for number in _numbers(text):
         if number >= 1 and number <= 8:
@@ -106,20 +111,28 @@ def _numbers(text):
     return out
 
 
-def _vote(text):
+def _vote_answer(text):
+    # A line that names no target and no abstention is not a vote: the caller keeps
+    # the turn open instead of recording it as an abstention nobody chose.
     at = text.find("vote=")
     if at >= 0:
         number = _seat_number(text, at)
         if number:
-            return number
+            return number, True
     at = text.rfind("投")
     if at >= 0:
         number = _seat_number(text, at + 1)
         if number >= 1 and number <= 8:
-            return number
+            return number, True
     if "弃票" in text or "弃权" in text or "不投任何人" in text or "不投票" in text:
-        return 0
-    return _number(text)
+        return 0, True
+    number = _number(text)
+    return number, number != 0
+
+
+def _vote(text):
+    target, _ = _vote_answer(text)
+    return target
 
 
 def _last_said(channel, who):
@@ -247,8 +260,8 @@ def run(state):
         return {"game": game, "prompt": "", "brief": ""}
 
     if game["waiting_for"] == "vote" or game["waiting_for"] == "pk_vote":
-        target = _vote(_last_said(state["speech"], "user"))
-        if not _accept(game, pk, target):
+        target, sure = _vote_answer(_last_said(state["speech"], "user"))
+        if (not sure) or (not _accept(game, pk, target)):
             game["waiting_for"] = "vote" if pk == None else "pk_vote"
             return {"game": game, "prompt": "请明确投票座号或弃票，例如“我投5号”或“弃票”。", "brief": ""}
         game["current_votes"] = list(game.get("current_votes") or []) + [{"voter": game["player_seat"], "target": target}]

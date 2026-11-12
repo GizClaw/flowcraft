@@ -26,24 +26,29 @@ def _event(game, line):
     game["public_events"] = events
 
 
+_NUMERAL_ORDER = ["一", "二", "两", "三", "四", "五", "六", "七", "八", "九", "十"]
+
+
 _NUMERALS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 
 def _seat_number(text, start):
-    # Seats answer in Chinese: "我投六号" is as common as "我投6号". A parser that
-    # only reads digits turns every one of those into a 0 - a vote for six becomes an
-    # abstention, and a wolf's "刀六号" becomes "whoever is first in the alive list".
-    numbers = _numbers(text[start:])
+    # Seats answer in Chinese: "我投六号" is as common as "我投6号". A Starlark
+    # string is a byte string - indexing it or calling elems() walks bytes, so a
+    # numeral is found by substring search, never by comparing one position.
+    rest = text[start:]
+    numbers = _numbers(rest)
     if numbers:
         return numbers[0]
-    rest = text[start:]
-    for index in range(len(rest)):
-        if rest[index] in _NUMERALS:
-            return _NUMERALS[rest[index]]
-    return 0
-
-
+    earliest = -1
+    found = 0
+    for name in _NUMERAL_ORDER:
+        at = rest.find(name)
+        if at >= 0 and (earliest < 0 or at < earliest):
+            earliest = at
+            found = _NUMERALS[name]
+    return found
 def _target(text):
     at = text.find("target=")
     if at >= 0:
