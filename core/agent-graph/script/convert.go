@@ -46,15 +46,10 @@ func plainValue(value graph.Value) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		items := history.Slice()
-		out := make([]any, 0, len(items))
-		for _, item := range items {
-			out = append(out, map[string]any{
-				"role": string(item.Role),
-				"text": item.Content.Text(),
-			})
-		}
-		return out, nil
+		// The sequence is handed over as itself: materializing one map per message
+		// here and rebuilding it as a Starlark dict one layer down doubled the
+		// cost of the projection that dominates a chat-shaped rule.
+		return Messages{History: history}, nil
 	default:
 		return nil, fmt.Errorf("kind %q cannot be projected into a script", value.Kind())
 	}
@@ -167,3 +162,21 @@ func messagesValue(value any) (graph.Value, int, error) {
 	}
 	return graph.MessagesValue(graph.MessagesFromSlice(history)), total, nil
 }
+
+// Messages is a projected transcript.
+//
+// It is the sequence, not a list of maps, because the two consumers want
+// different shapes: a Starlark backend builds its dicts directly, and a backend
+// that speaks JSON reads [Messages.Slice] and encodes what it needs. Both avoid
+// an intermediate map per message.
+type Messages struct {
+	// History is the transcript: an immutable sequence a backend may render
+	// however its language spells a list.
+	History graph.Messages
+}
+
+// Slice returns the transcript's messages in order.
+func (m Messages) Slice() []message.Message { return m.History.Slice() }
+
+// Len reports how many messages the transcript holds.
+func (m Messages) Len() int { return m.History.Len() }

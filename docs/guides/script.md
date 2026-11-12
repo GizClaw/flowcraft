@@ -57,7 +57,10 @@ def run(state):
 - The entry point is `run(state)`; top-level code runs on every invocation, which
   is what keeps one call from observing another's globals. Put logic in `run()`.
 - `state` holds the `reads` keys as data: `text` becomes a string, `json` a dict,
-  `bool` a bool, and `messages` a list of `{"role", "text"}` objects.
+  `bool` a bool, and `messages` a list of `{"role", "text"}` objects. (On the Go
+  side a transcript is handed to the backend as `script.Messages`: the sequence
+  itself, so a backend builds its own representation instead of paying for an
+  intermediate map per message.)
 - A returned key must be declared in `writes`, and its value must match the kind
   the graph declared for it. `messages` is a **delta**: the key merges with
   append, so returning the transcript would duplicate it.

@@ -34,12 +34,15 @@ func TestPlainValueProjectsEveryReadableKind(t *testing.T) {
 			}
 		}},
 		"messages": {history, func(t *testing.T, plain any) {
-			list, ok := plain.([]any)
-			if !ok || len(list) != 2 {
-				t.Fatalf("plain = %T %v", plain, plain)
+			projected, ok := plain.(Messages)
+			if !ok {
+				t.Fatalf("plain = %T, want the transcript projection", plain)
 			}
-			first, _ := list[0].(map[string]any)
-			if first["role"] != "user" || first["text"] != "你好" {
+			if projected.Len() != 2 {
+				t.Fatalf("len = %d", projected.Len())
+			}
+			first := projected.Slice()[0]
+			if first.Role != message.RoleUser || first.Content.Text() != "你好" {
 				t.Fatalf("first = %v", first)
 			}
 		}},

@@ -27,9 +27,11 @@ type Backend interface {
 	// the state it wants written.
 	//
 	// The state value domain matches encoding/json: nil, bool, float64, string,
-	// []any and map[string]any, with a session projected as []any of
-	// {"role", "text"} objects. Run must not return a key the caller did not ask
-	// for; the node validates the result either way.
+	// []any and map[string]any, with one exception: a session is projected as
+	// [Messages], which carries the sequence itself. A backend builds whatever it
+	// wants from Messages.Slice; the intermediate map-per-message is not paid.
+	// Run must not return a key the caller did not ask for; the node validates
+	// the result either way.
 	//
 	// A budget that runs out is [errdefs.BudgetExceeded], and a script that
 	// fails while running is [errdefs.Aborted]. A backend that returns an

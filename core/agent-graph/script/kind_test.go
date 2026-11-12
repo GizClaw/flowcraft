@@ -70,12 +70,31 @@ func (f *fakeBackend) Run(_ context.Context, program Program, state map[string]a
 		if !ok || !strings.HasPrefix(ref, "$") {
 			continue
 		}
-		out[key] = state[strings.TrimPrefix(ref, "$")]
+		out[key] = asLanguage(state[strings.TrimPrefix(ref, "$")])
 	}
 	if host != nil {
 		host.Log(LogDebug, "ran "+fake.script.Name)
 	}
 	return out, nil
+}
+
+// asLanguage renders a projected value the way a language would see it: a
+// transcript becomes a list of {role, text} objects, which is what a script
+// returns when it hands one back.
+func asLanguage(value any) any {
+	projected, ok := value.(Messages)
+	if !ok {
+		return value
+	}
+	items := projected.Slice()
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"role": string(item.Role),
+			"text": item.Content.Text(),
+		})
+	}
+	return out
 }
 
 func (f *fakeBackend) compileCount() int {
