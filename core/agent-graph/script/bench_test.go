@@ -58,10 +58,21 @@ func benchInvoke(b *testing.B, kind graph.NodeKind, in graph.Invoke) {
 	}
 }
 
-func benchInput(tb testing.TB, values map[string]graph.Value, config string) graph.Invoke {
+// benchInput builds the Invoke the engine passes: the config is decoded once at
+// Build, so the invocation carries the decoded plan.
+func benchInput(tb testing.TB, kind graph.NodeKind, values map[string]graph.Value, config string) graph.Invoke {
 	tb.Helper()
+	decoder, ok := kind.(graph.ConfigDecoder)
+	if !ok {
+		tb.Fatal("the kind must decode its own config")
+	}
+	decoded, err := decoder.DecodeConfig(json.RawMessage(config))
+	if err != nil {
+		tb.Fatalf("DecodeConfig: %v", err)
+	}
 	return graph.Invoke{
 		Node:     "tally",
+		Decoded:  decoded,
 		Config:   json.RawMessage(config),
 		State:    func(key string) graph.Value { return values[key] },
 		Snapshot: func() graph.Snapshot { return graph.NewSnapshot(values) },
@@ -79,7 +90,7 @@ def run(state):
     state["game"]["votes"] = votes
     return {"game": state["game"]}
 `)
-	in := benchInput(b, benchState(b, 4),
+	in := benchInput(b, kind, benchState(b, 4),
 		`{"backend":"starlark","path":"rule.star","reads":["game","seats"],"writes":["game"]}`)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -109,7 +120,7 @@ def run(state):
 		"game":    graph.JSON([]byte(`{}`)),
 		"seats":   graph.JSON([]byte(`[]`)),
 	}
-	in := benchInput(b, values,
+	in := benchInput(b, kind, values,
 		`{"backend":"starlark","path":"rule.star","reads":["history"],"writes":["answer"]}`)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -143,7 +154,7 @@ def run(state):
 	if err != nil {
 		b.Fatalf("marshal record: %v", err)
 	}
-	in := benchInput(b, benchState(b, 4),
+	in := benchInput(b, kind, benchState(b, 4),
 		`{"backend":"starlark","path":"rule.star","reads":[],"writes":["answer"],"allow":["tool:echo"]}`)
 	in.Node = "cue"
 	in.Replay = true

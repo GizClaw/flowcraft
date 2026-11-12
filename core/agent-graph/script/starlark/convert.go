@@ -6,6 +6,7 @@ import (
 	star "go.starlark.net/starlark"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // The two keys every projected message carries. They are package values so
@@ -153,7 +154,7 @@ func messagesToStarlark(history script.Messages) (star.Value, error) {
 		if err := dict.SetKey(roleKey, star.String(item.Role)); err != nil {
 			return nil, fmt.Errorf("message %d: %w", i, err)
 		}
-		if err := dict.SetKey(textKey, star.String(item.Content.Text())); err != nil {
+		if err := dict.SetKey(textKey, star.String(contentText(item.Content))); err != nil {
 			return nil, fmt.Errorf("message %d: %w", i, err)
 		}
 		if err := list.Append(dict); err != nil {
@@ -161,4 +162,18 @@ func messagesToStarlark(history script.Messages) (star.Value, error) {
 		}
 	}
 	return list, nil
+}
+
+// contentText reads a message's text.
+//
+// A message carries one text part in every transcript this node sees, and
+// Content.Text builds a new string to concatenate parts; taking the part directly
+// keeps a transcript projection from allocating 200 strings it already has.
+func contentText(content message.Content) string {
+	if len(content.Parts) == 1 {
+		if part, ok := content.Parts[0].(message.TextPart); ok {
+			return part.Text
+		}
+	}
+	return content.Text()
 }
