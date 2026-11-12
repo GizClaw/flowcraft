@@ -62,6 +62,11 @@ var (
 // Nothing here is a loop: the engine is the Runner, and the Agent is the table
 // of sessions plus the one-run-per-session rule.
 type AgentOptions struct {
+	// Name is the deployment name. Hooks and records report it, so a host policy
+	// can be bound to one agent (a seat) without inspecting the context.
+	Name string
+	// Hooks are the host's policy at the boundaries of a turn.
+	Hooks Hooks
 	// Store makes sessions resumable. Nil keeps them in memory only.
 	Store Store
 	// Identity is the fingerprint a checkpoint must carry to be resumed.
@@ -208,6 +213,14 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		}
 	}
 	return func(yield func(Event, error) bool) {
+		turn := Turn{Agent: a.opts.Name, SessionID: sessionID, Message: msg}
+		if a.opts.Hooks.BeforeTurn != nil {
+			if err := a.opts.Hooks.BeforeTurn(ctx, &turn); err != nil {
+				yield(nil, err)
+				return
+			}
+			msg = turn.Message
+		}
 		entry, runCtx, cancel, err := a.acquire(ctx, sessionID, settings.taskID)
 		if err != nil {
 			yield(nil, err)
@@ -221,6 +234,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
+		turn.TaskID = entry.taskID
 		runCtx = runctx.WithRun(runCtx, runctx.Run{
 			TaskID: entry.taskID,
 			Turn:   int(entry.turn.Add(1)),
@@ -282,6 +296,30 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 				return
 			}
 		}
+		a.afterTurn(ctx, entry, turn)
+	}
+}
+
+// afterTurn reports the finished turn to the host.
+//
+// It runs after the last event, so the turn's work is durable and a failing hook
+// must not turn a completed run into a failed one: the error is logged and the
+// stream stays clean.
+func (a *Agent) afterTurn(ctx context.Context, entry *session, turn Turn) {
+	if a.opts.Hooks.AfterTurn == nil {
+		return
+	}
+	result := Result{TaskID: entry.taskID, State: entry.loadState()}
+	if reader, ok := entry.runner.(ResultReader); ok {
+		// The run is over, so the caller's cancellation no longer applies to a
+		// read that describes work already done.
+		if snapshot, err := reader.Result(context.WithoutCancel(ctx)); err == nil {
+			snapshot.TaskID = entry.taskID
+			result = snapshot
+		}
+	}
+	if err := a.opts.Hooks.AfterTurn(context.WithoutCancel(ctx), turn, result); err != nil {
+		telemetry.WarnErr(ctx, "agent: an after-turn hook failed", err)
 	}
 }
 
@@ -634,6 +672,7 @@ func (a *Agent) build(shard *shard, placeholder *session, ctx context.Context, s
 // table lock: it is the slow half of opening a session.
 func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID string) (*session, error) {
 	state := StateSubmitted
+	resumed := false
 	if a.opts.Store != nil {
 		if taskID != "" {
 			checkpoint, err := a.opts.Store.Load(ctx, taskID)
@@ -643,6 +682,7 @@ func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID
 					return nil, fmt.Errorf("%w: task %q", ErrDeploymentChanged, taskID)
 				}
 				state = checkpoint.Task.State
+				resumed = true
 			case errors.Is(err, ErrNoCheckpoint):
 				// A new task under the id the protocol issued.
 			default:
@@ -655,6 +695,7 @@ func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID
 				if a.opts.Identity == "" || checkpoint.Fingerprint == a.opts.Identity {
 					taskID = checkpoint.Task.ID
 					state = checkpoint.Task.State
+					resumed = true
 				} else {
 					// The session belongs to another deployment: it cannot
 					// be continued here, so it is closed where it stands instead
@@ -672,6 +713,19 @@ func (a *Agent) openSession(ctx context.Context, shard *shard, sessionID, taskID
 	runner, err := a.opts.NewRunner(ctx, sessionID, taskID)
 	if err != nil {
 		return nil, err
+	}
+	if a.opts.Hooks.OnSession != nil {
+		if err := a.opts.Hooks.OnSession(ctx, SessionInfo{
+			Agent:     a.opts.Name,
+			SessionID: sessionID,
+			TaskID:    taskID,
+			State:     state,
+			Resumed:   resumed,
+		}); err != nil {
+			// The session is not in the table yet, so nothing else owns the runner.
+			_ = runner.Close()
+			return nil, err
+		}
 	}
 	session := newSession(sessionID)
 	session.taskID = taskID
