@@ -9,6 +9,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Where the two endpoints live. The card path is the one the A2A discovery
@@ -85,7 +87,26 @@ func New(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle(cardPath, a2asrv.NewStaticAgentCardHandler(executor.Card()))
 	mux.Handle(rpcPath, a2asrv.NewJSONRPCHandler(handler))
-	return &Server{handler: mux, card: executor.Card()}, nil
+	return &Server{handler: propagateInbound(mux), card: executor.Card()}, nil
+}
+
+// propagateInbound extracts the caller's trace context from the request headers
+// into the context the executor runs under, so the run joins the caller's trace
+// instead of starting one of its own.
+//
+// It starts no span. The root of a turn belongs to the host: a server span
+// invented here would duplicate whatever the host's own HTTP middleware opened,
+// and a wrongly-parented root is worse than a missing one. The SDK threads
+// req.Context() into the executor, so extracting here is enough for agent.run —
+// and everything below it — to hang off the caller's span.
+//
+// With no propagator installed this is a pass-through: Extract on the no-op
+// propagator returns the context it was given.
+func propagateInbound(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // Handler serves the card and the JSON-RPC endpoint.

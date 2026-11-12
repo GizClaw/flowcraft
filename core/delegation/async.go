@@ -30,8 +30,11 @@ func (s *Service) startAsync(
 		Depth:           call.Depth,
 		ChainID:         call.ChainID,
 		ChildSessionID:  childSession,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		// The job runs after the call that started it returns, so the parent's
+		// span context travels with the job instead of with a context.
+		TraceParent: traceParent(ctx),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	created, found, err := s.store.Create(ctx, job)
 	if err != nil {
@@ -84,7 +87,7 @@ func (s *Service) runJob(id string, call Call, msg message.Message) {
 }
 
 func (s *Service) execute(job Job, call Call, msg message.Message) {
-	ctx := WithCall(s.ctx, call)
+	ctx := withParentTrace(WithCall(s.ctx, call), job.TraceParent)
 	if s.policy.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.policy.Timeout)

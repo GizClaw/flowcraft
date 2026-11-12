@@ -7,25 +7,36 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/httpkit"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 )
 
 // newClient connects to the peer named by the config.
+//
+// The transport is httpkit's for one reason: it injects the caller's trace
+// context into every outgoing request, so the peer's run joins this run's trace
+// instead of starting a second one that mentions the same task id by accident.
+// Two of its defaults are turned down for this protocol:
+//
+//   - retries, because an A2A message is not idempotent: a retried send can run
+//     the task twice on the peer, and a retried stream replays events the caller
+//     already consumed.
+//   - a client timeout, because a streaming task outlives any fixed bound. The
+//     run's own context bounds the call — cancel, drain and the delegation
+//     timeout all reach it through ctx.
 func newClient(ctx context.Context, cfg Config) (*a2aclient.Client, error) {
 	if strings.TrimSpace(cfg.Peer) == "" {
 		return nil, errdefs.Validationf("a2a: a peer is required")
 	}
-	options := make([]a2aclient.FactoryOption, 0, 1)
+	base := httpkit.NewRoundTripper(httpkit.WithoutRetry())
 	if token := bearerToken(cfg.Auth); token != "" {
-		options = append(options, a2aclient.WithJSONRPCTransport(&http.Client{
-			Transport: bearerTransport{token: token, base: http.DefaultTransport},
-		}))
+		base = bearerTransport{token: token, base: base}
 	}
 	client, err := a2aclient.NewFromEndpoints(ctx, []*a2a.AgentInterface{
 		a2a.NewAgentInterface(cfg.Peer, a2a.TransportProtocolJSONRPC),
-	}, options...)
+	}, a2aclient.WithJSONRPCTransport(&http.Client{Transport: base}))
 	if err != nil {
 		return nil, errdefs.Validationf("a2a: connect to %s: %w", cfg.Peer, err)
 	}

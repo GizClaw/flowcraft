@@ -17,6 +17,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -41,6 +42,20 @@ func New(t *testing.T) *Recorder {
 		otel.SetTracerProvider(previous)
 	})
 	return &Recorder{exporter: exporter}
+}
+
+// Propagator installs the W3C TraceContext propagator for the duration of the
+// test, restoring the previous one on cleanup.
+//
+// New installs a provider and not a propagator, because recording a span does not
+// need one. A test that asserts what crosses a process boundary needs both: the
+// injecting side renders a header only with a propagator installed, and the
+// extracting side reads it with the same one.
+func Propagator(t *testing.T) {
+	t.Helper()
+	previous := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(previous) })
 }
 
 // Spans returns the finished spans in completion order.

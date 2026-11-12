@@ -33,6 +33,11 @@ type Job struct {
 	Question *message.Content
 	Error    string
 
+	// TraceParent is the W3C traceparent of the turn that created this job. The
+	// job outlives that turn, so the context cannot: this is what lets the child's
+	// run join the trace it came from.
+	TraceParent string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
