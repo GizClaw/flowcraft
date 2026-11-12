@@ -55,6 +55,10 @@ type Bindings struct {
 	// serving several tenants constructs one Manager per tenant: the session
 	// table is not tenant-keyed.
 	TenantID string
+	// Hooks is the host's turn policy, resolved per agent by name. It runs before
+	// the hooks the document declares, so a host can always observe or adjust what
+	// a deployment configured.
+	Hooks func(agentName string) agent.Hooks
 	// OnRun observes every finished run, named by agent. Like OnEvent it runs
 	// synchronously on the run's goroutine, so it must be fast.
 	OnRun func(agentName string, record agent.RunRecord)
@@ -194,6 +198,14 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Harness:    m.bindings.Harness,
 	}
 
+	hooks, err := m.buildHooks(ctx, spec, rt)
+	if err != nil {
+		if rt != nil {
+			_ = rt.Close()
+		}
+		return nil, err
+	}
+
 	factory, err := engineKind.Build(ctx, deploy.EngineDeps{
 		Spec:        spec.Engine,
 		Runtime:     rt,
@@ -209,6 +221,8 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		return nil, errdefs.Validationf("manage: agent %q: %w", spec.Name, err)
 	}
 	table, err := agent.NewAgent(agent.AgentOptions{
+		Name:       spec.Name,
+		Hooks:      hooks,
 		Store:      m.bindings.Store,
 		Identity:   deployed.fingerprint,
 		NewRunner:  factory,
@@ -495,6 +509,41 @@ func (s delegationSessions) Session(name, sessionID string) (delegation.Session,
 }
 
 func (s delegationSessions) Names() []string { return s.m.Names() }
+
+// buildHooks composes the host's policy for one agent: the hook the host resolves
+// by name, then the document's hooks in declaration order.
+func (m *Manager) buildHooks(ctx context.Context, spec deploy.Spec, rt *runtime.Runtime) (agent.Hooks, error) {
+	var chained []agent.Hooks
+	if m.bindings.Hooks != nil {
+		if host := m.bindings.Hooks(spec.Name); !host.Empty() {
+			chained = append(chained, host)
+		}
+	}
+	for _, hook := range spec.Hooks {
+		m.mu.Lock()
+		kind, found := m.kinds.Hooks[hook.Kind]
+		offered := sortedKeys(m.kinds.Hooks)
+		m.mu.Unlock()
+		if !found {
+			return agent.Hooks{}, errdefs.Validationf(
+				"manage: agent %q: hook %q is not registered; offered: %s",
+				spec.Name, hook.Kind, strings.Join(offered, ", "))
+		}
+		built, err := kind.Build(ctx, deploy.HookDeps{
+			Agent:       spec.Name,
+			Spec:        hook,
+			Runtime:     rt,
+			Store:       m.bindings.Store,
+			LoadOptions: m.bindings.LoadOptions,
+		})
+		if err != nil {
+			return agent.Hooks{}, errdefs.Validationf(
+				"manage: agent %q: hook %q: %w", spec.Name, hook.Kind, err)
+		}
+		chained = append(chained, built)
+	}
+	return agent.Chain(chained...), nil
+}
 
 func delegationPolicy(spec *deploy.DelegationSpec) delegation.Policy {
 	modes := make([]delegation.Mode, len(spec.Modes))
