@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,19 @@ type AgentDocument struct {
 	// Delegation is the policy this agent's delegate tools use. Nil means the
 	// agent gets no delegation tools at all.
 	Delegation *DelegationDocument `json:"delegation"`
+	// Hooks are the host policies attached to this agent's lifecycle, in
+	// declaration order.
+	Hooks []HookDocument `json:"hooks"`
+}
+
+// HookDocument selects one host hook kind and carries its settings.
+type HookDocument struct {
+	// Kind is required when the entry is present. An unregistered kind is a
+	// document error naming what is registered, the same rule engines and
+	// protocols follow.
+	Kind string `json:"kind"`
+	// Settings is the kind's own configuration, decoded by its registration.
+	Settings json.RawMessage `json:"settings"`
 }
 
 // DelegationDocument is the written form of a delegation policy.
@@ -211,6 +225,11 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		protocolSpec = &ProtocolSpec{Kind: agent.Protocol.Kind, Settings: settings}
 	}
 
+	hooks, err := l.hookSpecs(agent.Name, agent.Hooks, where)
+	if err != nil {
+		return Spec{}, err
+	}
+
 	catalog := CatalogSpec{}
 	if agent.Catalog != nil {
 		catalog.Scope = agent.Catalog.Scope
@@ -225,6 +244,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	spec := Spec{
 		Name:       agent.Name,
 		Catalog:    catalog,
+		Hooks:      hooks,
 		Engine:     engineSpec,
 		Protocol:   protocolSpec,
 		Delegation: delegationSpec,
@@ -311,4 +331,38 @@ func buildDelegation(doc *DelegationDocument, where func(string) string) (*Deleg
 		spec.Timeout = timeout
 	}
 	return spec, nil
+}
+
+// hookSpecs validates the document's hook list against the registered kinds.
+//
+// A kind is resolved here rather than at build, so a deployment that names a hook
+// nothing implements fails before an agent exists - and the error lists what is
+// registered, because that is the question the reader has.
+func (l Loader) hookSpecs(agent string, documents []HookDocument, where func(string) string) ([]HookSpec, error) {
+	if len(documents) == 0 {
+		return nil, nil
+	}
+	specs := make([]HookSpec, 0, len(documents))
+	for i, document := range documents {
+		at := where("hooks[" + strconv.Itoa(i) + "]")
+		if strings.TrimSpace(document.Kind) == "" {
+			return nil, errdefs.Validationf("%s: kind is required", at)
+		}
+		kind, found := l.Kinds.Hooks[document.Kind]
+		if !found {
+			return nil, errdefs.Validationf("%s: kind %q is not registered; offered: %s",
+				at, document.Kind, strings.Join(sortedKeys(l.Kinds.Hooks), ", "))
+		}
+		settings := document.Settings
+		if len(strings.TrimSpace(string(settings))) == 0 {
+			settings = json.RawMessage(`{}`)
+		}
+		if kind.Decode != nil {
+			if _, err := kind.Decode(settings); err != nil {
+				return nil, errdefs.Validationf("%s: %v", at, err)
+			}
+		}
+		specs = append(specs, HookSpec{Kind: document.Kind, Settings: settings})
+	}
+	return specs, nil
 }

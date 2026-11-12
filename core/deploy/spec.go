@@ -71,6 +71,9 @@ type Spec struct {
 	MaxSessions int
 	// Delegation is the policy its delegate tools use. Nil means no tools.
 	Delegation *DelegationSpec
+	// Hooks are the host policies attached to this agent's lifecycle, in
+	// declaration order.
+	Hooks []HookSpec
 }
 
 // DelegationSpec is the validated, typed form of the written policy.

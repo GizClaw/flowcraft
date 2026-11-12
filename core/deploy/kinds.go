@@ -83,11 +83,49 @@ type Protocol interface {
 	Close() error
 }
 
+// HookSpec selects one host hook kind and carries its settings.
+type HookSpec struct {
+	// Kind is required. A hook a deployment names but the host did not register
+	// is a document error, not a silently absent policy.
+	Kind string
+	// Settings is the kind's own configuration as written (JSON).
+	Settings json.RawMessage
+}
+
+// HookDeps is what a hook kind is built from.
+type HookDeps struct {
+	// Agent is the deployment name the hook is attached to: what a seat-bound
+	// policy keys itself by.
+	Agent string
+	// Spec is the kind and its settings.
+	Spec HookSpec
+	// Runtime is the agent's substrate, nil for a remote engine: a hook that only
+	// observes turns does not need one.
+	Runtime *runtime.Runtime
+	// Store is the deployment's checkpoint store, so a hook can read the task log
+	// to assemble what it needs.
+	Store agent.Store
+	// LoadOptions resolve placeholders for a kind that reads its own documents.
+	LoadOptions []runtime.LoadOption
+}
+
+// HookKind registers one host hook kind: a policy attached to an agent's lifecycle.
+type HookKind struct {
+	Name string
+	// Decode validates the written settings. The loader calls it so a typo fails
+	// before the agent is built; Build calls it again to get the typed value.
+	Decode func(settings json.RawMessage) (any, error)
+	// Build composes this hook. Several hooks on one agent are chained in
+	// declaration order.
+	Build func(ctx context.Context, deps HookDeps) (agent.Hooks, error)
+}
+
 // Kinds is the registered engine and protocol kinds. One value is shared by the
 // loader and the manager, so a kind cannot be loadable and yet not deployable.
 type Kinds struct {
 	Engines   map[string]EngineKind
 	Protocols map[string]ProtocolKind
+	Hooks     map[string]HookKind
 }
 
 // BuiltinKinds returns the kinds every deployment starts with.
@@ -98,6 +136,8 @@ func BuiltinKinds() Kinds {
 			"graph": GraphEngine(),
 		},
 		Protocols: map[string]ProtocolKind{},
+		// Hooks are the host's own policy, so the built-ins register none.
+		Hooks: map[string]HookKind{},
 	}
 }
 
@@ -106,6 +146,15 @@ func (k Kinds) WithEngines(engines ...EngineKind) Kinds {
 	merged := k.clone()
 	for _, item := range engines {
 		merged.Engines[item.Name] = item
+	}
+	return merged
+}
+
+// WithHooks returns a copy with these hook kinds registered.
+func (k Kinds) WithHooks(hooks ...HookKind) Kinds {
+	merged := k.clone()
+	for _, item := range hooks {
+		merged.Hooks[item.Name] = item
 	}
 	return merged
 }
@@ -123,12 +172,16 @@ func (k Kinds) clone() Kinds {
 	cloned := Kinds{
 		Engines:   make(map[string]EngineKind, len(k.Engines)),
 		Protocols: make(map[string]ProtocolKind, len(k.Protocols)),
+		Hooks:     make(map[string]HookKind, len(k.Hooks)),
 	}
 	for name, engine := range k.Engines {
 		cloned.Engines[name] = engine
 	}
 	for name, protocol := range k.Protocols {
 		cloned.Protocols[name] = protocol
+	}
+	for name, hook := range k.Hooks {
+		cloned.Hooks[name] = hook
 	}
 	return cloned
 }
