@@ -131,7 +131,11 @@ def run(state):
     # The seat's turn: the game id rides the brief so its memory hook can key on it.
     answer = tool("delegate", {
         "target": "seat_" + str(seat),
-        "input": "game=" + str(game.get("seed") or "") + "\n" + brief,
+        # The brief's first lines are the contract a seat's hook reads: which game the
+        # memory belongs to, and what kind of turn this is. Prose below them is for the
+        # model; these two are for the code.
+        "input": ("game=" + str(game.get("seed") or "") + "\n"
+                  + "kind=" + str(kind) + "\n" + brief),
     })
     said = answer["text"]
 

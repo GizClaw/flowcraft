@@ -98,6 +98,12 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 				// answer without memory than to read another game's page.
 				return nil
 			}
+			if kindOf(turn.Message) == kindPostgame {
+				// A recap is asked after the table is over. What a seat remembers is a
+				// list of night actions, and handing it to the model as context turns
+				// "who were the wolves?" into "who do we knife?".
+				return nil
+			}
 			kept, err := load(ctx, deps, settings, game, seat)
 			if err != nil {
 				return fmt.Errorf("seat-memory: %s: %w", turn.Agent, err)
@@ -110,7 +116,7 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 		},
 		AfterTurn: func(ctx context.Context, turn agent.Turn, result agent.Result) error {
 			game := gameOf(turn.Message)
-			if game == "" {
+			if game == "" || kindOf(turn.Message) == kindPostgame {
 				return nil
 			}
 			said := strings.TrimSpace(result.Content.Text())
@@ -149,6 +155,19 @@ func gameOf(msg message.Message) string {
 	return ""
 }
 
+// kindPostgame is the brief kind that asks for a recap instead of a move.
+const kindPostgame = "postgame"
+
+// kindOf reads the second contract line of a brief, or "" when it has none.
+func kindOf(msg message.Message) string {
+	for _, line := range strings.Split(msg.Content.Text(), "\n") {
+		if rest, found := strings.CutPrefix(strings.TrimSpace(line), "kind="); found {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
 // briefOf is the question without the memory this hook injected: storing the recap
 // back into the file would grow it by one copy per turn.
 func briefOf(msg message.Message) string {
@@ -161,13 +180,16 @@ func briefOf(msg message.Message) string {
 
 // withRecap prepends what the seat remembers to the turn it is about to answer.
 func withRecap(msg message.Message, kept []entry) message.Message {
+	// The memory goes first and the brief stays last: the model acts on the end of its
+	// context, and a brief followed by a list of old actions reads as "continue the
+	// night" - which is how a recap question used to get an answer about who to knife.
 	var out strings.Builder
-	out.WriteString(msg.Content.Text())
-	out.WriteString("\n\n")
 	out.WriteString(recapHeader)
 	for _, item := range kept {
 		out.WriteString("\n- 你之前说：" + item.Said)
 	}
+	out.WriteString("\n\n")
+	out.WriteString(msg.Content.Text())
 	updated := message.NewTextMessage(msg.Role, out.String())
 	updated.Metadata = msg.Metadata
 	return updated

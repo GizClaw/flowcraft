@@ -98,6 +98,10 @@ func testAutoCmd(args []string) error {
 			fmt.Printf("--- the referee ended the game after %d rounds: %s\n", round, lastLine(said))
 			break
 		}
+		if strings.TrimSpace(said) == "" && rendered == "" {
+			fmt.Printf("--- the referee asked for nothing after %d rounds\n", round)
+			break
+		}
 
 		// The person's line, asked of the person's own seat: the same model, the same
 		// memory, and the same brief the referee would have sent a delegate.
@@ -153,12 +157,12 @@ func runAutoTurn(
 		return "", "", metric, failure
 	}
 	rendered := chatfmt.Render(observer.blocks.Blocks())
+	// Only the turn's own answer is a request for the next line. Falling back to the
+	// seats' text would feed a seat's words back to the referee as if a person had
+	// said them: an empty answer means the table asked for nothing.
 	said := chatfmt.ResultText(result)
 	if rendered == "" {
 		rendered = said
-	}
-	if said == "" {
-		said = observer.blocks.Text()
 	}
 	return said, rendered, metric, nil
 }
