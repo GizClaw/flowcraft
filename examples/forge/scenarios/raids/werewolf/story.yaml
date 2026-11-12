@@ -2,6 +2,8 @@
 # directs and what each of the others is called, which is what a surface labels
 # a seat's stream by.
 director: referee
+# The seat a person plays: the referee asks it, and an autoplay answers as it.
+player: seat_3
 speakers: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
 labels:
   seat_1: 1号林知

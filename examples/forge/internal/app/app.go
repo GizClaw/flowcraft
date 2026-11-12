@@ -38,6 +38,19 @@ import (
 // workspace's store, so reopening the same workspace resumes the conversation.
 const SessionID = "main"
 
+// sessionFor names the session one agent's conversation lives in.
+//
+// A checkpoint is looked up by session, and the store is shared by the whole
+// workspace, so two agents driven directly with the same session would resume each
+// other's tasks: the referee would find its state seeded from a seat's turn. The
+// agent name is the qualifier because the agent is what a session belongs to.
+func sessionFor(name string) string {
+	if name == "" {
+		return SessionID
+	}
+	return name + "/" + SessionID
+}
+
 // App owns one deployed workspace.
 //
 // It holds a manager, not a runtime: the runtime of each agent belongs to the
@@ -340,7 +353,7 @@ func (a *App) Stream(ctx context.Context, name, text string) (iter.Seq2[agent.Ev
 	if a == nil || a.mgr == nil {
 		return nil, errors.New("forge app is not open")
 	}
-	session, ok := a.mgr.Session(name, SessionID)
+	session, ok := a.mgr.Session(name, sessionFor(name))
 	if !ok {
 		return nil, fmt.Errorf("agent %q is not deployed; have %s", name, strings.Join(a.agents, ", "))
 	}
@@ -373,7 +386,7 @@ func (a *App) RunTurn(
 			observe(event)
 		}
 	}
-	session, ok := a.mgr.Session(name, SessionID)
+	session, ok := a.mgr.Session(name, sessionFor(name))
 	if !ok {
 		return agent.Result{}, fmt.Errorf("agent %q is not deployed", name)
 	}

@@ -69,7 +69,7 @@ Usage:
   forge tui new
   forge tui resume
   forge test -test <name|path> [--timeout 2m]
-  forge test-auto --raid <name|path> --persona <name|path> [--timeout 5m]
+  forge test-auto --raid <name|path> [--player <agent>] [--rounds 24] [--timeout 4m]
   forge inspect <workspace> [--task <id>] [--kind <kind>]
 `, "\n")
 }

@@ -29,6 +29,9 @@ type Cast struct {
 	// Labels are the user-facing names, keyed by agent. A missing label falls back
 	// to the agent name, so a cast without labels still works.
 	Labels map[string]string `json:"labels"`
+	// Player is the seat a person plays, when a scenario has one. The rest are
+	// played by the engine, and an autoplay has to know which line is its own.
+	Player string `json:"player"`
 }
 
 // Load reads the cast beside a deployment document. A workspace without a
@@ -54,6 +57,9 @@ func Load(dir string) (Cast, error) {
 
 // Declared reports whether this cast describes a directed workspace.
 func (c Cast) Declared() bool { return strings.TrimSpace(c.Director) != "" }
+
+// Seat is the agent a person plays, or "" for a cast with no human seat.
+func (c Cast) Seat() string { return strings.TrimSpace(c.Player) }
 
 // Label is the user-facing name of one agent.
 func (c Cast) Label(name string) string {
