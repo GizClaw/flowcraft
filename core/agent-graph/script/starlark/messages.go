@@ -58,7 +58,7 @@ func (m *messagesValue) String() string {
 	items := m.materialized()
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
-		parts = append(parts, messageDict(item).String())
+		parts = append(parts, messageValueOf(item).String())
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }
@@ -80,17 +80,17 @@ func (m *messagesValue) Len() int { return m.history.Len() }
 
 // Index implements [star.Indexable]. The interpreter has already normalized a
 // negative index into range.
-func (m *messagesValue) Index(i int) star.Value { return messageDict(m.materialized()[i]) }
+func (m *messagesValue) Index(i int) star.Value { return messageValueOf(m.materialized()[i]) }
 
 // Slice implements [star.Sliceable]. Only the requested range is built.
 func (m *messagesValue) Slice(start, end, step int) star.Value {
 	items := m.materialized()
 	list := star.NewList(nil)
 	for i := start; step > 0 && i < end; i += step {
-		_ = list.Append(messageDict(items[i]))
+		_ = list.Append(messageValueOf(items[i]))
 	}
 	for i := start; step < 0 && i > end; i += step {
-		_ = list.Append(messageDict(items[i]))
+		_ = list.Append(messageValueOf(items[i]))
 	}
 	return list
 }
@@ -107,12 +107,12 @@ func (m *messagesValue) Attr(name string) (star.Value, error) {
 		if m.Len() == 0 {
 			return star.None, nil
 		}
-		return messageDict(m.materialized()[0]), nil
+		return messageValueOf(m.materialized()[0]), nil
 	case "last":
 		if m.Len() == 0 {
 			return star.None, nil
 		}
-		return messageDict(m.materialized()[m.Len()-1]), nil
+		return messageValueOf(m.materialized()[m.Len()-1]), nil
 	}
 	return nil, nil
 }
@@ -138,35 +138,9 @@ func (it *messagesIterator) Next(p *star.Value) bool {
 	if it.next >= it.view.Len() {
 		return false
 	}
-	*p = messageDict(it.view.materialized()[it.next])
+	*p = messageValueOf(it.view.materialized()[it.next])
 	it.next++
 	return true
 }
 
 func (*messagesIterator) Done() {}
-
-// messageDict renders one message.
-//
-// The two keys are package values, and the text is read from the part it already
-// is, so a message costs one dict and nothing else.
-func messageDict(item message.Message) *star.Dict {
-	dict := star.NewDict(2)
-	// A fresh dict with two string keys cannot reject either insert.
-	_ = dict.SetKey(roleKey, star.String(item.Role))
-	_ = dict.SetKey(textKey, star.String(contentText(item.Content)))
-	return dict
-}
-
-// contentText reads a message's text.
-//
-// A message carries one text part in every transcript this node sees, and
-// Content.Text asks the content to concatenate its parts into a new string; taking
-// the part directly keeps a projection from allocating 200 strings it already has.
-func contentText(content message.Content) string {
-	if len(content.Parts) == 1 {
-		if part, ok := content.Parts[0].(message.TextPart); ok {
-			return part.Text
-		}
-	}
-	return content.Text()
-}

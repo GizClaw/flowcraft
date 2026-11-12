@@ -57,7 +57,7 @@ def run(state):
 - The entry point is `run(state)`; top-level code runs on every invocation, which
   is what keeps one call from observing another's globals. Put logic in `run()`.
 - `state` holds the `reads` keys as data: `text` becomes a string, `json` a dict,
-  `bool` a bool, and `messages` a sequence of `{"role", "text"}` objects.
+  `bool` a bool, and `messages` a sequence of message values (see below).
   (On the Go side a transcript is handed to the backend as `script.Messages`: the
   sequence itself, so a backend builds its own representation instead of paying
   for an intermediate map per message.)
@@ -85,6 +85,22 @@ The point is the shape a rule usually has: "how many turns have we had" and
 "what did they just say" cost nothing, and a 5,000-message transcript is the same
 price as an empty one. A rule that wants the whole history as text pays for it,
 once, when it asks.
+
+A message reads the way it always did, and it is one value rather than a dict plus
+a hashtable:
+
+```python
+message = state["history"][-1]
+message["role"]        # "narrator"
+message["text"]        # the line
+message.role           # the same, as an attribute
+message.get("text")    # dict-shaped access, with a default
+"role" in message      # True
+str(message)           # {"role": "narrator", "text": "..."}
+```
+
+It is read-only and unhashable: `message["role"] = ...` fails, and a message is
+not a key. Two messages compare equal when they carry the same role and text.
 
 The view is read-only: `t.pop()`, `t.append(...)` and `t[0] = ...` are errors. A
 rule computes new state and returns it; it does not edit the transcript it was

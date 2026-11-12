@@ -196,3 +196,69 @@ def run(state):
 		t.Fatalf("error %v does not describe the index failure", err)
 	}
 }
+
+// TestMessageReadsLikeADict pins the two spellings a script may use, so the value
+// can be cheap without being surprising.
+func TestMessageReadsLikeADict(t *testing.T) {
+	kind := messagesKind(t, `
+def run(state):
+    message = state["history"][0]
+    parts = [
+        message["role"],
+        message["text"],
+        message.role,
+        message.get("text"),
+        message.get("missing", "fallback"),
+        str("role" in message),
+    ]
+    return {"answer": "|".join(parts)}
+`)
+	answer, err := runTranscript(t, kind, history())
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if answer != "user|第一句|user|第一句|fallback|True" {
+		t.Fatalf("answer = %q", answer)
+	}
+}
+
+func TestMessageIsReadOnly(t *testing.T) {
+	kind := messagesKind(t, `
+def run(state):
+    state["history"][0]["role"] = "assistant"
+    return {"answer": "edited"}
+`)
+	if _, err := runTranscript(t, kind, history()); err == nil {
+		t.Fatal("a message must not be editable")
+	}
+}
+
+func TestMessageIsNotAKey(t *testing.T) {
+	kind := messagesKind(t, `
+def run(state):
+    index = {state["history"][0]: 1}
+    return {"answer": str(len(index))}
+`)
+	if _, err := runTranscript(t, kind, history()); err == nil {
+		t.Fatal("a message is not hashable")
+	} else if !strings.Contains(err.Error(), "unhashable") {
+		t.Fatalf("error %v does not explain the refusal", err)
+	}
+}
+
+func TestMessagesCompareByValue(t *testing.T) {
+	kind := messagesKind(t, `
+def run(state):
+    first = state["history"][0]
+    same = state["history"][0]
+    other = state["history"][2]
+    return {"answer": str(first == same) + ":" + str(first != other)}
+`)
+	answer, err := runTranscript(t, kind, history())
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if answer != "True:True" {
+		t.Fatalf("answer = %q", answer)
+	}
+}
