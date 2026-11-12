@@ -249,6 +249,11 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	// save at a time keeps the base bookkeeping consistent.
 	r.persistMu.Lock()
 	defer r.persistMu.Unlock()
+	// One clock read per save: every fact this save writes that does not carry its
+	// own time is dated by it, so one round's writes share an instant instead of
+	// disagreeing by however long the loop took. A record that names its own time
+	// (a model call's start, an effect's end) keeps it.
+	saved := time.Now()
 	events := make([]agent.EventRecord, 0, len(updates)+2)
 	// The step marker leads the step's records: every fact after it belongs to the
 	// same frontier, which is what makes a checkpoint readable as a timeline.
@@ -256,6 +261,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 		events = append(events, agent.EventRecord{
 			Kind:    r.stepMarker.Kind,
 			Payload: r.stepMarker.Payload,
+			At:      saved,
 		})
 		// One line per step: a later save of the same step must not repeat it.
 		r.stepMarker = nil
@@ -265,7 +271,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	due := r.g.baseEvery > 0 && r.step > 0 && r.step%r.g.baseEvery == 0
 	var fresh *baseRef
 	if r.needBase || due {
-		if ref, ok := r.writeBase(ctx, &events); ok {
+		if ref, ok := r.writeBase(ctx, &events, saved); ok {
 			fresh = &baseRef{Blob: ref}
 			updates = nil
 			r.needBase = false
@@ -279,7 +285,11 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			continue
 		}
 		record = r.storedRecord(ctx, record)
-		events = append(events, agent.EventRecord{Kind: record.Kind, Payload: record.Payload})
+		at := record.At
+		if at.IsZero() {
+			at = saved
+		}
+		events = append(events, agent.EventRecord{Kind: record.Kind, Payload: record.Payload, At: at})
 		// A later step of the same run reads the fact back through Records, so the
 		// live index and the restored one answer the same question.
 		if r.records == nil {
@@ -299,7 +309,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			r.needBase = true
 			continue
 		}
-		events = append(events, agent.EventRecord{Kind: eventState, Payload: payload})
+		events = append(events, agent.EventRecord{Kind: eventState, Payload: payload, At: saved})
 	}
 	// The projection names the base the store already confirmed, or the one this
 	// save is about to confirm: Save assigns the sequence, so a base can only be
@@ -432,7 +442,7 @@ func (r *Run) indexRecord(record agent.Record) {
 }
 
 // writeBase snapshots the state and appends the event that names it.
-func (r *Run) writeBase(ctx context.Context, events *[]agent.EventRecord) (string, bool) {
+func (r *Run) writeBase(ctx context.Context, events *[]agent.EventRecord, at time.Time) (string, bool) {
 	body, err := r.encodeState(ctx)
 	if err != nil {
 		return "", false
@@ -446,7 +456,7 @@ func (r *Run) writeBase(ctx context.Context, events *[]agent.EventRecord) (strin
 		telemetry.WarnErr(ctx, "graph: encode checkpoint base", err)
 		return "", false
 	}
-	*events = append(*events, agent.EventRecord{Kind: eventBase, Payload: payload})
+	*events = append(*events, agent.EventRecord{Kind: eventBase, Payload: payload, At: at})
 	return ref, true
 }
 

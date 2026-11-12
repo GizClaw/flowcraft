@@ -2,10 +2,12 @@ package checkpoint
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
@@ -214,4 +216,66 @@ func TestSQLiteConformance(t *testing.T) {
 	agenttest.Store(t, func(t *testing.T) agent.Store {
 		return openStore(t)
 	})
+}
+
+// A database written before events carried a time must still open, and its rows
+// must read back undated rather than dated at the epoch. The alternative — a
+// schema check that refuses — would turn an upgrade into a data migration, which
+// is exactly what this store's swallow-the-error style avoids.
+func TestOpenMigratesAnEventsTableWithoutCreatedAt(t *testing.T) {
+	path := t.TempDir() + "/old.db"
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	// The shape this store wrote before the column existed.
+	if _, err := old.Exec(`
+CREATE TABLE tasks (
+	task_id TEXT PRIMARY KEY, context_id TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL, round INTEGER NOT NULL DEFAULT 0,
+	schema INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+	body BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+);
+CREATE TABLE events (
+	task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+	payload BLOB NOT NULL, PRIMARY KEY (task_id, seq)
+);
+INSERT INTO events (task_id, seq, kind, payload) VALUES ('task-1', 1, 'message', '{"old":true}');
+`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed the old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open the old database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := store.Events(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want the row written before the migration", len(events))
+	}
+	if !events[0].At.IsZero() {
+		t.Errorf("an old row came back dated %v, want unknown", events[0].At)
+	}
+	// And the column is usable afterwards: a new save carries its own time.
+	at := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
+	if _, _, err := store.Save(context.Background(),
+		agent.Checkpoint{Schema: agent.CheckpointSchema, Task: agent.Task{ID: "task-1"}},
+		[]agent.EventRecord{{Kind: "message", Payload: json.RawMessage(`{}`), At: at}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	appended, err := store.EventsAfter(context.Background(), "task-1", events[0].Seq)
+	if err != nil {
+		t.Fatalf("EventsAfter: %v", err)
+	}
+	if len(appended) != 1 || !appended[0].At.Equal(at) {
+		t.Fatalf("appended = %+v, want the named time", appended)
+	}
 }

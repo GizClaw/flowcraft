@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
@@ -101,9 +102,10 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 	if !ok {
 		view = h.rt.NewCatalogView()
 	}
+	started := time.Now()
 	result := h.rt.Assembly().Execute(engine.WithCatalogView(ctx, view), call)
 	text := result.Content.Text()
-	h.record(ToolRecord{
+	h.recordAt(started, ToolRecord{
 		Name:          name,
 		ArgumentsHash: hash,
 		Index:         index,
@@ -149,11 +151,12 @@ func callID(node, name string, index int) string {
 	return "script:" + strconv.Itoa(index) + ":" + name
 }
 
-// record keeps one durable fact for the step's save.
+// recordAt keeps one durable fact for the step's save, dated where the fact it
+// describes began: a tool call is anchored at its start, the way a model call is.
 //
 // A replay records nothing: the facts it answers from are already in the task, and
 // appending them again would double the log the replay exists to read.
-func (h *scriptHost) record(value any) {
+func (h *scriptHost) recordAt(at time.Time, value any) {
 	if h.replay {
 		return
 	}
@@ -161,7 +164,11 @@ func (h *scriptHost) record(value any) {
 	if _, isTool := value.(ToolRecord); !isTool {
 		kind = RecordRun
 	}
-	h.records = append(h.records, agent.Record{Kind: kind, Payload: payload(value)})
+	h.records = append(h.records, agent.Record{
+		Kind:    kind,
+		Payload: payload(value),
+		At:      at,
+	})
 }
 
 // start records the invocation itself, which is what a pinned node reads back to
@@ -172,7 +179,11 @@ func (h *scriptHost) record(value any) {
 // answered rather than run, and a log that cannot say so reads like a live call.
 func (h *scriptHost) start(ref, version string) {
 	value := RunRecord{Ref: ref, Version: version, Replayed: h.replay}
-	h.records = append(h.records, agent.Record{Kind: RecordRun, Payload: payload(value)})
+	h.records = append(h.records, agent.Record{
+		Kind:    RecordRun,
+		Payload: payload(value),
+		At:      time.Now(),
+	})
 }
 
 // hashArguments is the canonical identity of one call's arguments.

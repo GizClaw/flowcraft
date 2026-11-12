@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
@@ -58,6 +59,7 @@ func (effectKind) Invoke(_ context.Context, in Invoke) (NodeStream, error) {
 func TestEffectsAreRecordedAroundTheCall(t *testing.T) {
 	store := agenttest.NewMemStore()
 	g := build(t, effectDoc, effectKind{})
+	before := time.Now()
 	run, err := g.Start(context.Background(), nil,
 		WithStore(store, "task-1"),
 		WithFingerprint("sha256:x"),
@@ -69,12 +71,23 @@ func TestEffectsAreRecordedAroundTheCall(t *testing.T) {
 	if _, err := drainRun(t, run); err != nil {
 		t.Fatalf("run: %v", err)
 	}
+	after := time.Now()
 	events, err := store.Events(context.Background(), "task-1")
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
 	var effects []agent.EffectRecord
+	var times []time.Time
 	for _, event := range events {
+		// Every fact of the run is dated: a store that dropped the time would
+		// leave a log that can be ordered and not read as a timeline.
+		if event.At.IsZero() {
+			t.Errorf("event %q (%d) came back undated", event.Kind, event.Seq)
+			continue
+		}
+		if event.At.Before(before) || event.At.After(after) {
+			t.Errorf("event %q dated %v, outside the run [%v, %v]", event.Kind, event.At, before, after)
+		}
 		if event.Kind != effectRecordKind {
 			continue
 		}
@@ -83,12 +96,22 @@ func TestEffectsAreRecordedAroundTheCall(t *testing.T) {
 			t.Fatalf("decode effect: %v", err)
 		}
 		effects = append(effects, effect)
+		times = append(times, event.At)
 	}
 	if len(effects) != 2 {
 		t.Fatalf("effects = %d, want started and done", len(effects))
 	}
 	if effects[0].Status != agent.EffectStarted || effects[1].Status != agent.EffectDone {
 		t.Errorf("effects = %+v, want started before done", effects)
+	}
+	// The pair is an interval: the start is not after the outcome, and the
+	// outcome's own duration says where the call began.
+	if times[0].After(times[1]) {
+		t.Errorf("the started record (%v) is dated after its outcome (%v)", times[0], times[1])
+	}
+	start := times[1].Add(-time.Duration(effects[1].DurationMs) * time.Millisecond)
+	if start.After(times[1]) {
+		t.Errorf("the outcome at %v began at %v", times[1], start)
 	}
 	checkpoint, err := store.Load(context.Background(), "task-1")
 	if err != nil {

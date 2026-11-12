@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS events (
 	seq     INTEGER NOT NULL,
 	kind    TEXT    NOT NULL,
 	payload BLOB    NOT NULL,
+	created_at INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (task_id, seq)
 );
 CREATE TABLE IF NOT EXISTS blobs (
@@ -141,6 +142,9 @@ func Open(path string, config ...Option) (*SQLite, error) {
 	// A database written before the projection stopped carrying history has no
 	// seed column; Load falls back to the body for those rows.
 	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN seed BLOB NOT NULL DEFAULT ''")
+	// And one written before events carried a time has no created_at: those rows
+	// read back as zero, which a reader treats as unknown rather than as 1970.
+	_, _ = db.Exec("ALTER TABLE events ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("checkpoint: migrate: %w", err)
@@ -237,13 +241,21 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			return 0, 0, fmt.Errorf("checkpoint: next sequence: %w", err)
 		}
 		first, last = next, next+int64(len(events))-1
+		// One clock read per save: the events of a round share an instant unless
+		// the producer named a better one, and a per-event Now() would make one
+		// round's facts disagree by however long the loop took.
+		saved := time.Now()
 		for i, event := range events {
 			if event.Kind == "" {
 				return 0, 0, errdefs.Validationf("checkpoint: event %d has no kind", i)
 			}
+			at := event.At
+			if at.IsZero() {
+				at = saved
+			}
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO events (task_id, seq, kind, payload) VALUES (?, ?, ?, ?)`,
-				checkpoint.Task.ID, next+int64(i), event.Kind, []byte(event.Payload),
+				`INSERT INTO events (task_id, seq, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)`,
+				checkpoint.Task.ID, next+int64(i), event.Kind, []byte(event.Payload), at.UnixNano(),
 			); err != nil {
 				return 0, 0, fmt.Errorf("checkpoint: append event: %w", err)
 			}
@@ -348,7 +360,7 @@ func (l *SQLite) Events(ctx context.Context, taskID string) ([]agent.EventRecord
 // EventsAfter returns the facts recorded after seq, oldest first.
 func (l *SQLite) EventsAfter(ctx context.Context, taskID string, after int64) ([]agent.EventRecord, error) {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT seq, kind, payload FROM events WHERE task_id = ? AND seq > ? ORDER BY seq`,
+		`SELECT seq, kind, payload, created_at FROM events WHERE task_id = ? AND seq > ? ORDER BY seq`,
 		taskID, after)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: read events: %w", err)
@@ -358,10 +370,17 @@ func (l *SQLite) EventsAfter(ctx context.Context, taskID string, after int64) ([
 	for rows.Next() {
 		var record agent.EventRecord
 		var payload []byte
-		if err := rows.Scan(&record.Seq, &record.Kind, &payload); err != nil {
+		var createdAt int64
+		if err := rows.Scan(&record.Seq, &record.Kind, &payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("checkpoint: scan event: %w", err)
 		}
 		record.Payload = payload
+		// Zero is "unknown", not 1970: a row written before events carried a time
+		// has no time, and a reader that invented one would place it first on
+		// every timeline.
+		if createdAt != 0 {
+			record.At = time.Unix(0, createdAt).UTC()
+		}
 		out = append(out, record)
 	}
 	return out, rows.Err()

@@ -34,6 +34,7 @@ func Store(t *testing.T, open func(t *testing.T) agent.Store) {
 		{"MissingTaskIsNotACheckpoint", missingTask},
 		{"FirstSaveCreatesTheTask", firstSave},
 		{"EventsOnlyAppend", eventsOnlyAppend},
+		{"EventsCarryTimestamps", eventsCarryTimestamps},
 		{"ProjectionCarriesNoHistory", projectionCarriesNoHistory},
 		{"LoadDoesNotReplay", loadDoesNotReplay},
 		{"EventsAfterReturnsTheSuffix", eventsAfterReturnsTheSuffix},
@@ -141,6 +142,59 @@ func eventsOnlyAppend(t *testing.T, open func(*testing.T) agent.Store) {
 	}
 	if events[0].Kind != "message" {
 		t.Errorf("kind = %q, want message", events[0].Kind)
+	}
+}
+
+// A fact is dated by its producer when the producer knows better, and by the
+// store when it does not. Both arrive in one field, so a reader never has to ask
+// which side wrote the time — and a store that dropped it would make a timeline
+// impossible without anything else looking wrong.
+func eventsCarryTimestamps(t *testing.T, open func(*testing.T) agent.Store) {
+	store := open(t)
+	ctx := context.Background()
+	named := time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC)
+	explicit := messageEvent(t, "named")
+	explicit.At = named
+	unnamed := messageEvent(t, "unnamed")
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 0),
+		[]agent.EventRecord{explicit, unnamed}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	events, err := store.Events(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if !events[0].At.Equal(named) {
+		t.Errorf("named event at %v, want %v", events[0].At, named)
+	}
+	if events[1].At.IsZero() {
+		t.Error("an event that named no time came back undated")
+	}
+	// A later save is later. A timeline that runs backwards is worse than none,
+	// because it looks like data rather than a gap. The baseline is the stamped
+	// event, not the named one: the store dates it with the wall clock.
+	later := events[1].At.Add(time.Hour)
+	after := messageEvent(t, "later")
+	after.At = later
+	if _, _, err := store.Save(ctx, task("task-1", "conv-1", 1),
+		[]agent.EventRecord{after}); err != nil {
+		t.Fatalf("Save 2: %v", err)
+	}
+	tail, err := store.EventsAfter(ctx, "task-1", events[1].Seq)
+	if err != nil {
+		t.Fatalf("EventsAfter: %v", err)
+	}
+	if len(tail) != 1 {
+		t.Fatalf("tail = %d events, want 1", len(tail))
+	}
+	if !tail[0].At.Equal(later) {
+		t.Errorf("later event at %v, want %v", tail[0].At, later)
+	}
+	if tail[0].At.Before(events[1].At) {
+		t.Errorf("the log went backwards in time: %v then %v", events[1].At, tail[0].At)
 	}
 }
 
@@ -662,6 +716,11 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 		}
 		m.nextSeq[cp.Task.ID] = seq + 1
 		event.Seq = seq
+		// A record that names no time is dated by the save, like the SQL
+		// backend: the same bytes must read back from either store.
+		if event.At.IsZero() {
+			event.At = entry.updatedAt
+		}
 		if i == 0 {
 			first = seq
 		}

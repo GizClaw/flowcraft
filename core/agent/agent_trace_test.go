@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -47,6 +48,17 @@ func TestOnRunReportsTheRun(t *testing.T) {
 	}
 	if record.TraceID == "" || record.SpanID == "" {
 		t.Errorf("trace ids = %q/%q, want the run span", record.TraceID, record.SpanID)
+	}
+	// The record carries both ends of the run: a latency without an anchor
+	// cannot be joined to anything outside the process.
+	if record.StartedAt.IsZero() {
+		t.Error("the record has no start time")
+	}
+	if record.StartedAt.After(time.Now()) {
+		t.Errorf("started at %v, which is in the future", record.StartedAt)
+	}
+	if record.StartedAt.Add(time.Duration(record.LatencyMs) * time.Millisecond).Before(record.StartedAt) {
+		t.Error("the run ended before it started")
 	}
 	if span := recorder.RequireNamed(t, "agent.run"); span.Name() != "agent.run" {
 		t.Errorf("span = %q", span.Name())

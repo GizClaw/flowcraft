@@ -500,7 +500,14 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 			record.Response = body
 		}
 		if payload, err := json.Marshal(record); err == nil {
-			result.Records = []graph.Record{{Kind: recordLLMCall, Payload: payload}}
+			// Dated at the call's start: the record describes an interval, and
+			// LatencyMs is what says how long it was. A reader that wants the end
+			// adds the two.
+			result.Records = []graph.Record{{
+				Kind:    recordLLMCall,
+				Payload: payload,
+				At:      s.started,
+			}}
 		}
 	}
 	return result, nil

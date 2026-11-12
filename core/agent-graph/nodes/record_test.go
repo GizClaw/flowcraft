@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
@@ -32,6 +33,18 @@ func modelInvoke(level telemetry.TraceLevel, bodies bool) graph.Invoke {
 	invoke.Trace = level
 	invoke.Bodies = bodies
 	return invoke
+}
+
+// recordAt returns when a record of the given kind happened.
+func recordAt(t *testing.T, result graph.Result, kind string) time.Time {
+	t.Helper()
+	for _, record := range result.Records {
+		if record.Kind == kind {
+			return record.At
+		}
+	}
+	t.Fatalf("the result holds no %q record", kind)
+	return time.Time{}
 }
 
 // callRecords returns every llm.call record a run produced.
@@ -79,6 +92,15 @@ func TestModelRecordsAtNodeLevel(t *testing.T) {
 	}
 	if len(calls[0].Response) != 0 || calls[0].ResponseRef != "" {
 		t.Error("bodies is off, but the response was stored")
+	}
+	// The record is dated where the call began, not where the step was saved:
+	// LatencyMs is what closes the interval.
+	at := recordAt(t, result, recordLLMCall)
+	if at.IsZero() {
+		t.Fatal("the model call record has no time")
+	}
+	if at.After(time.Now()) {
+		t.Errorf("the call is dated %v, which is in the future", at)
 	}
 }
 

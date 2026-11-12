@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
@@ -14,6 +15,11 @@ import (
 type Record struct {
 	Kind    string
 	Payload json.RawMessage
+	// At is when the fact happened, as the producing node knows it. Zero asks the
+	// engine to stamp the save: a node that records "this happened" without a
+	// better answer still gets the instant it was written. The per-kind anchor is
+	// documented on [EventRecord.At].
+	At time.Time
 }
 
 // MessageDigest is the identity of one message that entered a prompt.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // CheckpointSchema versions the checkpoint shape. A reader that does not know
@@ -42,6 +43,10 @@ type Checkpoint struct {
 // got there". Storing only the projection makes every write carry the whole
 // transcript; storing only events makes every read a replay. Both, in one
 // transaction, is what the shape below is for.
+//
+// A record is ordered by Seq and dated by At, and neither replaces the other: a
+// timeline reads them together, an audit reads the payload and the time, and a
+// resume reads only the order.
 type EventRecord struct {
 	// Seq is assigned by the store, monotonic per task.
 	Seq int64
@@ -49,6 +54,24 @@ type EventRecord struct {
 	Kind string
 	// Payload is the fact itself.
 	Payload json.RawMessage
+	// At is when the fact happened. Zero asks the store to stamp the save, so a
+	// producer with no better answer still gets a time.
+	//
+	// The anchor is per kind, because the facts are not all instants:
+	//
+	//	graph.state, graph.frontier, graph.base  the save that wrote them
+	//	llm.call                                the call's start;
+	//	                                        end = At + LatencyMs
+	//	graph.effect (started)                  the call's start
+	//	graph.effect (done, failed)             the call's end;
+	//	                                        start = At - DurationMs
+	//	script.run, script.tool                 the invocation's start
+	//	message                                 the arrival of the message
+	//
+	// It is not a replacement for Seq: Seq orders facts, At dates them, and a
+	// store keeps both. A reader must treat a zero At as unknown rather than as
+	// 1970 — a row written before this field existed has no time at all.
+	At time.Time
 }
 
 // TaskSummary is the list projection.

@@ -241,12 +241,15 @@ func (s *toolStream) execute(index int, call message.ToolCall) {
 	}
 	argsHash := hashBytes(body)
 	var records []graph.Record
+	// The call's start, named once: the "started" record is anchored at it, and the
+	// outcome is anchored at the end its duration implies.
+	calledAt := time.Now()
 	if s.effects == "before" {
 		started := agent.EffectRecord{
 			CallID: call.ID, ToolName: call.Name, ArgsHash: argsHash,
 			IdempotencyKey: call.ID, Status: agent.EffectStarted,
 		}
-		record, err := effectRecord(started)
+		record, err := effectRecord(started, calledAt)
 		if err != nil {
 			s.completions <- toolCompletion{index: index,
 				result: message.NewErrorToolResult(call.ID, err.Error()), errorKind: "encode"}
@@ -276,7 +279,7 @@ func (s *toolStream) execute(index int, call message.ToolCall) {
 	if result.IsError {
 		effect.Status = agent.EffectFailed
 	}
-	record, err := effectRecord(effect)
+	record, err := effectRecord(effect, started.Add(duration))
 	if err != nil {
 		s.completions <- toolCompletion{index: index, result: result,
 			resultHash: effect.ResultHash, duration: duration, errorKind: effect.ErrorKind}
@@ -321,13 +324,15 @@ func (s *toolStream) Close() error {
 	return nil
 }
 
-// effectRecord renders one effect record.
-func effectRecord(effect agent.EffectRecord) (graph.Record, error) {
+// effectRecord renders one effect record, dated at the instant the fact it
+// describes happened: the call's start for a "started" record, its end for an
+// outcome.
+func effectRecord(effect agent.EffectRecord, at time.Time) (graph.Record, error) {
 	payload, err := json.Marshal(effect)
 	if err != nil {
 		return graph.Record{}, err
 	}
-	return graph.Record{Kind: recordEffect, Payload: payload}, nil
+	return graph.Record{Kind: recordEffect, Payload: payload, At: at}, nil
 }
 
 // toolErrorKind classifies a result for the trace. A tool reports failure

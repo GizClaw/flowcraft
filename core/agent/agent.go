@@ -255,6 +255,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 					TaskID:    entry.taskID,
 					State:     entry.loadState(),
 					ErrorKind: errorKind(failure),
+					StartedAt: startedAt,
 					LatencyMs: time.Since(startedAt).Milliseconds(),
 					Usage:     runUsage,
 				}
