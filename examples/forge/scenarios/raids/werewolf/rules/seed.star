@@ -18,7 +18,11 @@ SEATS = [
     {"id": 8, "name": "苏禾", "persona": "安静，容易被忽视，但复盘时会补充细节"},
 ]
 
-ROLES = ["werewolf", "werewolf", "werewolf", "seer", "witch", "hunter", "villager", "villager"]
+# Eight seats, two wolves: with three, one night kill and one exile leave the
+# wolves at parity and the game is over on day one. Two keeps the table playing long
+# enough for the day, the vote and the recap to mean something.
+ROLES = ["werewolf", "werewolf", "seer", "witch", "hunter",
+         "villager", "villager", "villager"]
 
 PLAYER_SEAT = 3
 
