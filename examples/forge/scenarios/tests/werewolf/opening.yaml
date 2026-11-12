@@ -1,0 +1,5 @@
+name: werewolf_opening
+description: Start a game, let the wolves pick a victim, and resolve the night.
+raid: werewolf
+turns:
+  - 开始狼人杀

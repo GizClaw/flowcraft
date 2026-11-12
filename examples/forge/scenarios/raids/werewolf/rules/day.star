@@ -1,8 +1,7 @@
 # The day: every living seat speaks once, in seat order, and then the table votes.
 #
-# A seat's brief is written into its own channel (seat_<id>), never into public
-# speech: the brief carries that seat's private memory, and a shared channel would
-# hand it to the next speaker.
+# The rule decides; it does not speak. A seat's line is fetched by the perform rule
+# through the delegate tool, which is also where its private memory is injected.
 
 def _seat(game, id):
     for seat in game["seats"]:
@@ -88,25 +87,13 @@ def _last_said(channel, who):
 
 def run(state):
     game = state["game"]
-    channels = {"1": state["seat_1"], "2": state["seat_2"], "3": state["seat_3"], "4": state["seat_4"],
-                "5": state["seat_5"], "6": state["seat_6"], "7": state["seat_7"], "8": state["seat_8"]}
     order = game.get("speaker_order") or game["alive"]
     prompt = ""
-    target_channel = ""
 
     if game["waiting_for"] == "day_speech":
         _say(game, game["player_seat"], _last_said(state["speech"], "user"))
         game["speech_index"] = game["speech_index"] + 1
         game["waiting_for"] = ""
-
-    if game.get("speech_step") == "speak":
-        seat = game.get("speech_seat") or 0
-        said = _last_said(channels.get(str(seat), []), "assistant")
-        if said != "":
-            _say(game, seat, said)
-        game["speech_index"] = game["speech_index"] + 1
-        game["speech_step"] = ""
-        game["speech_seat"] = 0
 
     if game["speech_index"] >= len(order):
         game["phase"] = "vote"
@@ -122,12 +109,11 @@ def run(state):
         game["waiting_for"] = "day_speech"
         prompt = "轮到你（" + str(seat) + "号）发言。请说明你信谁、怀疑谁，以及理由。"
     else:
-        game["speech_seat"] = seat
-        game["speech_step"] = "speak"
-        target_channel = "seat_" + str(seat)
-        prompt = _brief(game, seat, "")
-
-    writes = {"game": game, "prompt": prompt}
-    if target_channel != "":
-        writes[target_channel] = prompt
-    return writes
+        # A seat's turn is a delegate call the perform rule makes; the decision rule
+        # only says who and why.
+        game["brief_seat"] = seat
+        game["brief_kind"] = "speech"
+        return {"game": game, "prompt": "", "brief": _brief(game, seat, "")}
+    if (game.get("brief_seat") or 0) != 0:
+        return {"game": game, "prompt": prompt, "brief": prompt}
+    return {"game": game, "prompt": prompt, "brief": ""}

@@ -69,6 +69,7 @@ def run(state):
         "seed": str(seed),
         "started": True,
         "phase": "night_wolf",
+        "private_phases": ["night_wolf", "night_witch", "night_seer"],
         "waiting_for": "",
         "next_rule": "night_wolf",
         "day": 1,
@@ -88,11 +89,15 @@ def run(state):
         "pk": {"candidates": [], "mode": "", "round": 0},
         "exile_target": 0,
         "hunter_pending": 0,
+        "hunter_target": None,
+        "post_game_turn": 0,
         "winner": "",
         "last_night_kill": 0,
         "last_exile": 0,
         "speaker_order": [],
         "speech_index": 0,
+        "brief_seat": 0,
+        "brief_kind": "",
         "post_game_announced": False,
     }
     return {"game": game, "prompt": "第1夜开始。你是" + str(PLAYER_SEAT) + "号" + SEATS[PLAYER_SEAT - 1]["name"] + "，身份：" + _role_label(roles[PLAYER_SEAT - 1]) + "。"}

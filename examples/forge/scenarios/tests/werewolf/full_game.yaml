@@ -1,0 +1,12 @@
+name: werewolf_full_game
+description: Play a whole game from the table's first line to the postgame.
+raid: werewolf
+turns:
+  - 开始狼人杀
+  - 我是3号村民。我先听大家的意见，目前比较怀疑5号，他急着带节奏。
+  - 我投5号
+  - 我继续怀疑5号，他的发言前后矛盾。
+  - 我投5号
+  - 我还是觉得5号最可疑。
+  - 我投5号
+  - 我投5号

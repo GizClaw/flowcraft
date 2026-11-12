@@ -63,15 +63,33 @@ def _numbers(text):
     return out
 
 
+_NUMERALS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+             "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _seat_number(text, start):
+    # Seats answer in Chinese: "我投六号" is as common as "我投6号". A parser that
+    # only reads digits turns every one of those into a 0 - a vote for six becomes an
+    # abstention, and a wolf's "刀六号" becomes "whoever is first in the alive list".
+    numbers = _numbers(text[start:])
+    if numbers:
+        return numbers[0]
+    rest = text[start:]
+    for index in range(len(rest)):
+        if rest[index] in _NUMERALS:
+            return _NUMERALS[rest[index]]
+    return 0
+
+
 def _target(text):
     at = text.find("target=")
     if at >= 0:
-        numbers = _numbers(text[at:])
-        if numbers:
-            return numbers[0]
-    for number in _numbers(text):
-        if number >= 1 and number <= 8:
+        number = _seat_number(text, at)
+        if number:
             return number
+    number = _seat_number(text, 0)
+    if number >= 1 and number <= 8:
+        return number
     return 0
 
 
@@ -118,6 +136,24 @@ def _night(game):
     return game["night"]
 
 
+def _context(game):
+    # A seat is asked about the *table*, not about a rule name: the day, who is
+    # alive and what was just said. Without this the brief is the same string every
+    # night, the delegate call's arguments hash matches the last one, and the script
+    # replay answers with the first night's decision instead of asking again.
+    alive = []
+    for seat in game["seats"]:
+        if seat["alive"]:
+            alive.append(str(seat["id"]) + "号" + seat["name"])
+    lines = ["第" + str(game["day"]) + "天。存活：" + "、".join(alive) + "。"]
+    recent = list(game.get("public_log") or [])[-6:]
+    if recent:
+        lines.append("最近公开记录：")
+        for line in recent:
+            lines.append("- " + line)
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def _wolves(game):
     out = []
     for seat in game["seats"]:
@@ -127,6 +163,8 @@ def _wolves(game):
 
 
 def _wolf_rule(game, night, said):
+    # A non-human wolf is a delegated turn: the perform rule asks it, this rule only
+    # decides who and with what brief.
     wolves = _wolves(game)
     if len(wolves) == 0:
         game["phase"] = "night_witch"
@@ -150,8 +188,11 @@ def _wolf_rule(game, night, said):
                 if mate != seat:
                     mates.append(str(mate) + "号" + _name(game, mate))
             return "狼人请睁眼（私密）。你的狼队友：" + "、".join(mates) + "。请选择今晚要袭击的座号，例如“刀5号”。"
-        night["wolf_speaker"] = seat
-        return ""
+        game["brief_seat"] = seat
+        game["brief_kind"] = "wolf_speak"
+        return ("你是" + str(seat) + "号" + _name(game, seat) + "，身份：狼人。"
+                + _context(game)
+                + "今晚请简短发言并给出建议，最后一行写 proposal=<座号>。")
     if human in wolves:
         for proposal in night["wolf_proposals"]:
             if proposal["seat"] == human:
@@ -160,8 +201,15 @@ def _wolf_rule(game, night, said):
         game["phase"] = "night_witch"
         game["waiting_for"] = ""
         return ""
-    night["wolf_speaker"] = wolves[0]
-    return ""
+    game["brief_seat"] = wolves[0]
+    game["brief_kind"] = "wolf_decide"
+    talks = []
+    for row in night["wolf_discussion"]:
+        talks.append(str(row["seat"]) + "号" + _name(game, row["seat"]) + "：" + row["text"])
+    return ("你是狼队最终决策者（" + str(wolves[0]) + "号" + _name(game, wolves[0]) + "）。"
+            + _context(game)
+            + "\n狼队今晚的提议：\n" + "\n".join(talks)
+            + "\n请输出今晚的最终决定，最后一行写 target=<座号>。")
 
 
 def _witch_rule(game, night, said):
@@ -196,8 +244,13 @@ def _witch_rule(game, night, said):
     if witch == game["player_seat"]:
         game["waiting_for"] = "witch_action"
         return "女巫请睁眼（私密）。今晚被袭击的是" + str(night["wolf_target"]) + "号。解药可用=" + str(not game["witch"]["save_used"]) + "；毒药可用=" + str(not game["witch"]["poison_used"]) + "。请决定：救X号 / 毒X号 / 不用药。"
-    night["witch_speaker"] = witch
-    return ""
+    game["brief_seat"] = witch
+    game["brief_kind"] = "witch"
+    return ("你是" + str(witch) + "号女巫。今晚被袭击的是" + str(night["wolf_target"])
+            + "号。解药可用=" + str(not game["witch"]["save_used"])
+            + "；毒药可用=" + str(not game["witch"]["poison_used"])
+            + _context(game)
+            + "\n请输出 action=save/poison/none，及 target=<座号>。")
 
 
 def _seer_rule(game, night, said):
@@ -220,8 +273,11 @@ def _seer_rule(game, night, said):
     if seer == game["player_seat"]:
         game["waiting_for"] = "seer_action"
         return "预言家请睁眼（私密）。请选择今晚查验的目标，例如“验5号”。"
-    night["seer_speaker"] = seer
-    return ""
+    game["brief_seat"] = seer
+    game["brief_kind"] = "seer"
+    return ("你是" + str(seer) + "号预言家。"
+            + _context(game)
+            + "\n请选择今晚查验的目标，最后一行输出 target=<座号>。")
 
 
 def run(state):
@@ -237,4 +293,6 @@ def run(state):
         prompt = _witch_rule(game, night, said)
     if game["phase"] == "night_seer":
         prompt = _seer_rule(game, night, said)
-    return {"game": game, "prompt": prompt}
+    if (game.get("brief_seat") or 0) != 0:
+        return {"game": game, "prompt": prompt, "brief": prompt}
+    return {"game": game, "prompt": prompt, "brief": ""}

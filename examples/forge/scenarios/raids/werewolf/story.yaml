@@ -1,0 +1,14 @@
+# Who the table is. The manager serves nine agents; this file says which one
+# directs and what each of the others is called, which is what a surface labels
+# a seat's stream by.
+director: referee
+speakers: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
+labels:
+  seat_1: 1号林知
+  seat_2: 2号阿澈
+  seat_3: 3号你
+  seat_4: 4号小满
+  seat_5: 5号周岚
+  seat_6: 6号陈医生
+  seat_7: 7号老赵
+  seat_8: 8号苏禾

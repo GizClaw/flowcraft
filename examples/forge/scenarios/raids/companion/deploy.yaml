@@ -1,0 +1,22 @@
+# One workspace: which agents exist, what runs them, and which runtime layer
+# each is built from.
+#
+# Paths are written with the ${workspace:root} reference forge resolves for the
+# directory being opened, so a scenario stays relocatable: copying it into
+# .out/<run>/workspace or workspaces/<name> needs no rewrite.
+version: 1
+
+agents:
+  - name: assistant
+    engine:
+      kind: graph
+      settings:
+        # The graph is compiled once per deployment and shared by every session.
+        path: ${workspace:root}/graphs/assistant.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    # The tool catalog a run reads: discoveries survive across the user turns of
+    # one session, which is what a device-control assistant wants.
+    catalog: {scope: session}
