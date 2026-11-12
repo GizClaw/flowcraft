@@ -44,7 +44,7 @@ func TestMessagesBecomeDictsWithTheDeclaredShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("toStarlark: %v", err)
 	}
-	if value.Type() != "list" {
+	if value.Type() != "messages" {
 		t.Fatalf("type = %q", value.Type())
 	}
 	if got := value.String(); got != `[{"role": "user", "text": "第一句"}, {"role": "assistant", "text": "第二句"}]` {

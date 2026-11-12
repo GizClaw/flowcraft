@@ -57,15 +57,38 @@ def run(state):
 - The entry point is `run(state)`; top-level code runs on every invocation, which
   is what keeps one call from observing another's globals. Put logic in `run()`.
 - `state` holds the `reads` keys as data: `text` becomes a string, `json` a dict,
-  `bool` a bool, and `messages` a list of `{"role", "text"}` objects. (On the Go
-  side a transcript is handed to the backend as `script.Messages`: the sequence
-  itself, so a backend builds its own representation instead of paying for an
-  intermediate map per message.)
+  `bool` a bool, and `messages` a sequence of `{"role", "text"}` objects.
+  (On the Go side a transcript is handed to the backend as `script.Messages`: the
+  sequence itself, so a backend builds its own representation instead of paying
+  for an intermediate map per message.)
 - A returned key must be declared in `writes`, and its value must match the kind
   the graph declared for it. `messages` is a **delta**: the key merges with
   append, so returning the transcript would duplicate it.
 - Host functions: `log(*args)` and, when the config allows tools,
   `tool(name, args)`.
+
+### Transcripts are a view, not a list
+
+`state["history"]` behaves like a list of `{"role", "text"}` dicts — `len()`,
+`t[i]` (negative indices included), `t[a:b]` and `for message in t` all work — but
+it is answered lazily:
+
+| question | cost |
+| --- | --- |
+| `len(t)` / `t.count` | O(1) |
+| `t.last` / `t.first` | one dict |
+| `t[i]`, `t[-2:]` | the messages asked for |
+| `for message in t` | every message, which is what asking for them means |
+| `str(t)` | every message, because that is what printing asks |
+
+The point is the shape a rule usually has: "how many turns have we had" and
+"what did they just say" cost nothing, and a 5,000-message transcript is the same
+price as an empty one. A rule that wants the whole history as text pays for it,
+once, when it asks.
+
+The view is read-only: `t.pop()`, `t.append(...)` and `t[0] = ...` are errors. A
+rule computes new state and returns it; it does not edit the transcript it was
+given.
 
 ## Tools
 

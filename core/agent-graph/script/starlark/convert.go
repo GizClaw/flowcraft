@@ -6,7 +6,6 @@ import (
 	star "go.starlark.net/starlark"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
-	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // The two keys every projected message carries. They are package values so
@@ -49,7 +48,7 @@ func toStarlark(value any) (star.Value, error) {
 		}
 		return list, nil
 	case script.Messages:
-		return messagesToStarlark(typed)
+		return newMessages(typed), nil
 	case map[string]any:
 		dict := star.NewDict(len(typed))
 		for key, item := range typed {
@@ -139,41 +138,4 @@ func fromStarlark(value star.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("a %s cannot be written to state", value.Type())
 	}
-}
-
-// messagesToStarlark renders a transcript as a list of {"role", "text"} dicts.
-//
-// It is the hot path of a chat-shaped rule, so it builds the values directly from
-// the sequence: no intermediate map per message, and the two key strings are
-// shared.
-func messagesToStarlark(history script.Messages) (star.Value, error) {
-	items := history.History.Slice()
-	list := star.NewList(make([]star.Value, 0, len(items)))
-	for i, item := range items {
-		dict := star.NewDict(2)
-		if err := dict.SetKey(roleKey, star.String(item.Role)); err != nil {
-			return nil, fmt.Errorf("message %d: %w", i, err)
-		}
-		if err := dict.SetKey(textKey, star.String(contentText(item.Content))); err != nil {
-			return nil, fmt.Errorf("message %d: %w", i, err)
-		}
-		if err := list.Append(dict); err != nil {
-			return nil, fmt.Errorf("message %d: %w", i, err)
-		}
-	}
-	return list, nil
-}
-
-// contentText reads a message's text.
-//
-// A message carries one text part in every transcript this node sees, and
-// Content.Text builds a new string to concatenate parts; taking the part directly
-// keeps a transcript projection from allocating 200 strings it already has.
-func contentText(content message.Content) string {
-	if len(content.Parts) == 1 {
-		if part, ok := content.Parts[0].(message.TextPart); ok {
-			return part.Text
-		}
-	}
-	return content.Text()
 }

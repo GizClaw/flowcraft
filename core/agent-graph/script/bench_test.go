@@ -42,6 +42,23 @@ func benchState(tb testing.TB, seats int) map[string]graph.Value {
 	}
 }
 
+// transcriptState is a declared state holding a transcript of n messages.
+func transcriptState(tb testing.TB, n int) map[string]graph.Value {
+	tb.Helper()
+	history := make([]message.Message, 0, n)
+	for i := 0; i < n; i++ {
+		role := message.RoleUser
+		if i%2 == 1 {
+			role = message.RoleAssistant
+		}
+		history = append(history, message.NewTextMessage(role, "这是对话里的一条消息，用来撑出真实的投影成本。"))
+	}
+	return map[string]graph.Value{
+		"history": graph.MessagesValue(graph.MessagesFromSlice(history)),
+		"answer":  graph.Text(""),
+	}
+}
+
 func benchInvoke(b *testing.B, kind graph.NodeKind, in graph.Invoke) {
 	b.Helper()
 	stream, err := kind.Invoke(context.Background(), in)
@@ -98,13 +115,13 @@ def run(state):
 	}
 }
 
-// BenchmarkNodeInvokeTranscript measures the projection a chat-shaped rule pays:
-// the transcript is re-read and re-encoded on every step, which is where a growing
-// session shows up.
+// BenchmarkNodeInvokeTranscript is the question a chat-shaped rule usually asks -
+// how many turns, what did they just say - and the view answers it without
+// materializing the transcript.
 func BenchmarkNodeInvokeTranscript(b *testing.B) {
 	kind := benchKind(b, `
 def run(state):
-    return {"answer": str(len(state["history"]))}
+    return {"answer": str(state["history"].count) + state["history"].last["text"]}
 `)
 	history := make([]message.Message, 0, 200)
 	for i := 0; i < 200; i++ {
@@ -114,13 +131,26 @@ def run(state):
 		}
 		history = append(history, message.NewTextMessage(role, "这是对话里的一条消息，用来撑出真实的投影成本。"))
 	}
-	values := map[string]graph.Value{
-		"history": graph.MessagesValue(graph.MessagesFromSlice(history)),
-		"answer":  graph.Text(""),
-		"game":    graph.JSON([]byte(`{}`)),
-		"seats":   graph.JSON([]byte(`[]`)),
+	in := benchInput(b, kind, transcriptState(b, len(history)),
+		`{"backend":"starlark","path":"rule.star","reads":["history"],"writes":["answer"]}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchInvoke(b, kind, in)
 	}
-	in := benchInput(b, kind, values,
+}
+
+// BenchmarkNodeInvokeTranscriptAll is the same transcript walked message by
+// message: this is what the narrow accessors avoid paying, kept as the reference
+// for when a rule genuinely needs every line.
+func BenchmarkNodeInvokeTranscriptAll(b *testing.B) {
+	kind := benchKind(b, `
+def run(state):
+    total = 0
+    for message in state["history"]:
+        total += len(message["text"])
+    return {"answer": str(total)}
+`)
+	in := benchInput(b, kind, transcriptState(b, 200),
 		`{"backend":"starlark","path":"rule.star","reads":["history"],"writes":["answer"]}`)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
