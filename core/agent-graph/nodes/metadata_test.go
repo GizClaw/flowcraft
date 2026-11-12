@@ -3,6 +3,7 @@ package nodes_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 
@@ -28,7 +29,7 @@ func (p *announcingProvider) Generate(ctx context.Context, request inference.Gen
 	}
 	for {
 		if _, err := inner.Next(ctx); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return inference.GenerateResponse{}, err

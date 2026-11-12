@@ -90,3 +90,40 @@ func BenchmarkCarryStart(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkCarryTranscriptSize answers whether a carry is bounded by the number of
+// messages or by the size of the state: the graph carries one key, so the two
+// scale together and the question is which end the cost follows.
+func BenchmarkCarryTranscriptSize(b *testing.B) {
+	g := benchmarkGraph(b, carryDocument, lengthKind{})
+	ctx := context.Background()
+	for _, size := range []int{10, 50, 200} {
+		b.Run(fmt.Sprintf("messages=%d", size), func(b *testing.B) {
+			store := agenttest.NewMemStore()
+			seed := make([]message.Message, 0, size)
+			for i := 0; i < size; i++ {
+				role := message.RoleUser
+				if i%2 == 1 {
+					role = message.RoleAssistant
+				}
+				seed = append(seed, message.NewTextMessage(role, "会话里的一条消息，用来把被携带的历史撑到真实大小。"))
+			}
+			first, err := g.Start(ctx, seed, WithStore(store, "seed"), WithSession("conv-1"))
+			if err != nil {
+				b.Fatalf("seed start: %v", err)
+			}
+			drainBench(b, first)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				target := newStateStore(g.state)
+				if err := g.carryInto(ctx, runOptions{
+					store: store, sessionID: "conv-1", taskID: fmt.Sprintf("nobody-%d", i),
+				}, target); err != nil {
+					b.Fatalf("carry: %v", err)
+				}
+			}
+		})
+	}
+}
