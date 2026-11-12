@@ -15,8 +15,24 @@ type Option func(*options)
 
 type options struct {
 	kinds    []graph.NodeKind
+	builders []func(*runtime.Runtime) ([]graph.NodeKind, error)
 	decoders map[string]inference.ExtensionDecoder
 	blobs    graph.BlobStore
+}
+
+// WithRuntimeKinds adds node kinds built from the runtime this graph is opened
+// for.
+//
+// A kind that dispatches through the substrate - the script node hands a tool call
+// to the runtime's assembly - cannot be built by the host, because the host
+// registers its kind table before any runtime exists. This hook runs once per
+// graph, when the runtime is known, which is where such a kind belongs.
+func WithRuntimeKinds(build func(*runtime.Runtime) ([]graph.NodeKind, error)) Option {
+	return func(target *options) {
+		if build != nil {
+			target.builders = append(target.builders, build)
+		}
+	}
 }
 
 // WithKinds adds node kinds beside the built-in model, tool and condition.
@@ -51,7 +67,11 @@ func Open(ctx context.Context, rt *runtime.Runtime, path string, opts ...Option)
 			option(&settings)
 		}
 	}
-	registry, err := graph.NewRegistry(registryKinds(rt, settings)...)
+	kinds, err := registryKinds(rt, settings)
+	if err != nil {
+		return nil, err
+	}
+	registry, err := graph.NewRegistry(kinds...)
 	if err != nil {
 		return nil, err
 	}
@@ -84,11 +104,19 @@ func load(ctx context.Context, path string) (graph.Document, error) {
 
 // registryKinds is the registry every graph starts with, plus the host's
 // additions.
-func registryKinds(rt *runtime.Runtime, settings options) []graph.NodeKind {
+func registryKinds(rt *runtime.Runtime, settings options) ([]graph.NodeKind, error) {
 	built := []graph.NodeKind{
 		Model(rt, WithExtensionDecoders(settings.decoders)),
 		Tool(rt),
 		Condition(),
 	}
-	return append(built, settings.kinds...)
+	built = append(built, settings.kinds...)
+	for _, build := range settings.builders {
+		added, err := build(rt)
+		if err != nil {
+			return nil, err
+		}
+		built = append(built, added...)
+	}
+	return built, nil
 }
