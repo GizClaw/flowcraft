@@ -1,0 +1,13 @@
+# Who tells this story. The narrator directs and speaks; the four are the cast.
+director: narrator
+speakers: [narrator, wukong, tangseng, bajie, monster]
+labels:
+  narrator: 旁白
+  seat_wukong: 孙悟空
+  seat_tangseng: 唐僧
+  seat_bajie: 猪八戒
+  seat_monster: 门外货郎
+# Nodes whose text is the engine's own: the scheduler picks a speaker, and the table
+# never hears the control line. The engine brackets every invocation, so a surface
+# can tell one node's words from another's.
+internal: [schedule]

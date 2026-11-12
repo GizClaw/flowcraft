@@ -1,0 +1,72 @@
+version: 1
+
+agents:
+  # The narrator directs and speaks: one model node picks the next speaker
+  # inside the list the rules allow, another writes the narration.
+  - name: narrator
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/narrator.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    delegation:
+      targets: [seat_wukong, seat_tangseng, seat_bajie, seat_monster]
+      modes: [sync]
+      timeout: 2m
+
+  - name: seat_wukong
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/seat_wukong.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    hooks:
+      # A character remembers what it said in this story, keyed by the table's
+      # session so the next arc starts clean.
+      - kind: seat-memory
+        settings: {dir: .forge/memory, keep: 10}
+
+  - name: seat_tangseng
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/seat_tangseng.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    hooks:
+      - kind: seat-memory
+        settings: {dir: .forge/memory, keep: 10}
+
+  - name: seat_bajie
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/seat_bajie.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    hooks:
+      - kind: seat-memory
+        settings: {dir: .forge/memory, keep: 10}
+
+  - name: seat_monster
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/seat_monster.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    hooks:
+      - kind: seat-memory
+        settings: {dir: .forge/memory, keep: 10}

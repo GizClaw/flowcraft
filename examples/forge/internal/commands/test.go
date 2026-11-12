@@ -225,6 +225,8 @@ func runOneTestTurn(
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	observer := newTurnObserver()
+	// A node the deployment calls silent reports to the graph, not to the table.
+	observer.blocks.SetSilent(a.Silent)
 	result, err := a.RunTurn(turnCtx, a.Info().Agent, input, observer.observe)
 	observer.drainSeats(a)
 	metric.StartedAt = observer.started

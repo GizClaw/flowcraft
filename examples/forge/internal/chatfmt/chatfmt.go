@@ -3,16 +3,17 @@
 // transcript written by `forge test` is the same text the interactive session
 // showed.
 //
-// A block carries no node identity: the framework's event vocabulary reports what
-// the model said and which tool ran, not which graph node produced it. A
-// deployment that needs per-speaker attribution gives each speaker its own agent
-// and reads the block under the agent's name.
+// A block records the graph node that produced it, because the engine brackets every
+// invocation on the same stream: that is how a scheduler's control line is told from
+// a line someone said. Speaker attribution still belongs to agents - a seat's words
+// arrive under its own name.
 package chatfmt
 
 import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-graph"
 )
 
 // BlockKind names what one block is.
@@ -37,6 +38,8 @@ type Block struct {
 	Name string
 	// Text is the speech, the call arguments, or the tool's answer.
 	Text strings.Builder
+	// Node is the graph node that produced the block, when the engine reported it.
+	Node string
 	// Phase is the game phase the block belonged to, when the caller knows it.
 	Phase string
 	// Private marks a line only the role acting in its phase could hear.
@@ -52,6 +55,10 @@ type Collector struct {
 	label   string
 	phase   string
 	private bool
+	// node is the graph node the engine is running, as its own event reports it.
+	node string
+	// silent reports a node whose text is not for the reader.
+	silent func(node string) bool
 }
 
 // SetSpeaker labels the blocks that follow. The caller sets it when it switches to
@@ -62,6 +69,13 @@ func (c *Collector) SetSpeaker(label string) {
 	}
 	c.label = label
 	c.current = nil
+}
+
+// SetSilent names the nodes whose text stays off the transcript: the engine reports
+// which node is running, and a node the deployment calls silent is a decision, not a
+// line someone said.
+func (c *Collector) SetSilent(silent func(node string) bool) {
+	c.silent = silent
 }
 
 // SetPhase tells the collector which phase the following lines belong to, and
@@ -84,10 +98,18 @@ func NewCollector() *Collector {
 // usage, artifacts) are ignored: they are the caller's accounting, not speech.
 func (c *Collector) Observe(event agent.Event) {
 	switch typed := event.(type) {
+	case agent.EventExtension[graph.NodeEvent]:
+		// The engine brackets every invocation, so the text that follows it belongs
+		// to that node - which is how a control line can be told from a speech act.
+		c.node = typed.Value.Node
+		return
 	case agent.Text:
+		if c.silent != nil && c.silent(c.node) {
+			return
+		}
 		c.tokens++
 		if c.current == nil || c.current.Kind != Speech {
-			c.current = &Block{Kind: Speech, Label: c.label, Phase: c.phase, Private: c.private}
+			c.current = &Block{Kind: Speech, Label: c.label, Node: c.node, Phase: c.phase, Private: c.private}
 			c.blocks = append(c.blocks, c.current)
 		}
 		c.current.Text.WriteString(typed.Text)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -147,7 +148,10 @@ type Model struct {
 	err           string
 	running       bool
 	// private is whether the seat now speaking is in a phase only its role hears.
-	private      bool
+	private bool
+	// node is the graph node the engine last reported running, which is how a
+	// silent node's text stays off the chat.
+	node         string
 	eventCh      <-chan eventMsg
 	width        int
 	height       int
@@ -279,7 +283,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // label means the line came from a seat rather than the turn's own agent.
 func (m *Model) observe(label string, event agent.Event) {
 	switch typed := event.(type) {
+	case agent.EventExtension[graph.NodeEvent]:
+		m.node = typed.Value.Node
+		return
 	case agent.Text:
+		if label == "" && m.app.Silent(m.node) {
+			// The node is the engine's own: its words are a decision, not a line.
+			return
+		}
 		if label != "" {
 			m.appendSpeaker(label, typed.Text, m.private)
 			return

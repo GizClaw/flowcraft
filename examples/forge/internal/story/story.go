@@ -32,6 +32,10 @@ type Cast struct {
 	// Player is the seat a person plays, when a scenario has one. The rest are
 	// played by the engine, and an autoplay has to know which line is its own.
 	Player string `json:"player"`
+	// Internal names graph nodes whose text is the engine's own business: a
+	// scheduler's control line, a judge's verdict. The table sees what the nodes
+	// that speak produce.
+	Internal []string `json:"internal"`
 }
 
 // Load reads the cast beside a deployment document. A workspace without a
@@ -57,6 +61,17 @@ func Load(dir string) (Cast, error) {
 
 // Declared reports whether this cast describes a directed workspace.
 func (c Cast) Declared() bool { return strings.TrimSpace(c.Director) != "" }
+
+// Silent reports whether a node's text stays off the table: it is a decision the
+// engine made, not a line someone said.
+func (c Cast) Silent(node string) bool {
+	for _, name := range c.Internal {
+		if strings.TrimSpace(name) == node {
+			return true
+		}
+	}
+	return false
+}
 
 // Seat is the agent a person plays, or "" for a cast with no human seat.
 func (c Cast) Seat() string { return strings.TrimSpace(c.Player) }

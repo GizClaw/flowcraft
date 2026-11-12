@@ -429,3 +429,25 @@ func TestInspectDescribesWhoTheWorkspaceIs(t *testing.T) {
 		t.Fatalf("a seat delegates to nobody: %v", seat.Delegates)
 	}
 }
+
+// TestStorytellerScenarioBuilds deploys the narrated raid: a director with its own
+// model calls plus four characters it delegates to. Loading it is what proves the
+// rules compile and every key a node writes is declared.
+func TestStorytellerScenarioBuilds(t *testing.T) {
+	dir := copyScenario(t, "raids", "../../scenarios/raids/storyteller")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	if got := a.Info().Agent; got != "narrator" {
+		t.Fatalf("director = %q, want narrator", got)
+	}
+	if got := len(a.Agents()); got != 5 {
+		t.Fatalf("agents = %d, want the narrator and four characters", got)
+	}
+	if got := a.InfoFor("seat_wukong").Label; got != "孙悟空" {
+		t.Fatalf("label = %q", got)
+	}
+}

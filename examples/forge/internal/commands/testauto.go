@@ -142,6 +142,7 @@ func runAutoTurn(
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	observer := newTurnObserver()
+	observer.blocks.SetSilent(a.Silent)
 	result, err := a.RunTurn(turnCtx, agentName, input, observer.observe)
 	observer.drainSeats(a)
 	metric.StartedAt = observer.started

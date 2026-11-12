@@ -171,7 +171,12 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 	a.mgr = mgr
 	for _, spec := range specs {
 		a.agents = append(a.agents, spec.Name)
-		a.infos[spec.Name] = describe(abs, spec, sim)
+		info := describe(abs, spec, sim)
+		// The cast says who speaks and under what name; the deployment only says
+		// which agents exist.
+		info.Label = cast.Label(spec.Name)
+		info.Director = cast.Director == spec.Name
+		a.infos[spec.Name] = info
 	}
 	return a, nil
 }
@@ -327,6 +332,15 @@ func enginePath(settings json.RawMessage) string {
 		return ""
 	}
 	return value.Path
+}
+
+// Silent reports whether one of an agent's graph nodes speaks for the engine rather
+// than for the reader: a scheduler's control line, a judge's verdict.
+func (a *App) Silent(node string) bool {
+	if a == nil {
+		return false
+	}
+	return a.cast.Silent(node)
 }
 
 // Info returns the metadata of the first agent: the one a single-agent workspace
